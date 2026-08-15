@@ -116,6 +116,15 @@ function writeVolumeBalanceEnabled(enabled) {
   writeSettings({ volumeBalanceEnabled: enabled });
 }
 
+function readHeadTrackingEnabled() {
+  return readSettings().experimentalHeadTrackingEnabled === true;
+}
+
+function writeHeadTrackingEnabled(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("invalid head tracking setting");
+  writeSettings({ experimentalHeadTrackingEnabled: enabled });
+}
+
 function readLastMediaDirectory() {
   const directory = readSettings().lastMediaDirectory;
   try {
@@ -123,6 +132,62 @@ function readLastMediaDirectory() {
   } catch {
     return null;
   }
+}
+
+// Phase 2 experimental provider. This is deliberately a calibrated mock only:
+// Windows AirPods transport remains an external user-mode helper defined in docs,
+// not a bundled Bluetooth implementation or driver.
+const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
+let headTrackingTimer = null;
+let headTrackingStartedAt = 0;
+let headTrackingStatus = { running: false, source: "mock", detail: "未启动" };
+
+function sendHeadTracking(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function publishHeadTrackingStatus() {
+  sendHeadTracking("sda:head-tracking-status", headTrackingStatus);
+  return headTrackingStatus;
+}
+
+function mockHeadPose() {
+  const elapsedSeconds = (Date.now() - headTrackingStartedAt) / 1000;
+  // Gentle yaw-only motion. The quaternion is normalized and uses SDA's
+  // world-coordinate convention; it exercises renderer APIs without hardware.
+  const yawRadians = Math.sin(elapsedSeconds * 0.7) * (Math.PI / 6);
+  return {
+    timestampMs: Date.now(),
+    orientation: { x: 0, y: 0, z: Math.sin(yawRadians / 2), w: Math.cos(yawRadians / 2) },
+  };
+}
+
+function startHeadTracking() {
+  if (headTrackingTimer) return publishHeadTrackingStatus();
+  writeHeadTrackingEnabled(true);
+  headTrackingStartedAt = Date.now();
+  headTrackingStatus = { running: true, source: "mock", detail: "模拟 yaw 姿态（仅实验）" };
+  headTrackingTimer = setInterval(() => sendHeadTracking("sda:head-tracking-pose", mockHeadPose()), HEAD_TRACKING_MOCK_INTERVAL_MS);
+  headTrackingTimer.unref();
+  return publishHeadTrackingStatus();
+}
+
+function stopHeadTracking(persist = true) {
+  if (headTrackingTimer) clearInterval(headTrackingTimer);
+  headTrackingTimer = null;
+  if (persist) writeHeadTrackingEnabled(false);
+  headTrackingStatus = { running: false, source: "mock", detail: "已停止" };
+  return publishHeadTrackingStatus();
+}
+
+function recenterHeadTracking() {
+  if (!headTrackingTimer) throw new Error("head tracking is not running");
+  headTrackingStartedAt = Date.now();
+  const pose = mockHeadPose();
+  sendHeadTracking("sda:head-tracking-recenter", pose);
+  return pose;
 }
 
 const webAssetRoots = () => [
@@ -277,6 +342,11 @@ ipcMain.on("sda:set-volume-balance-enabled", (event, enabled) => {
   }
 });
 
+ipcMain.handle("sda:head-tracking-status", () => headTrackingStatus);
+ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
+ipcMain.handle("sda:head-tracking-stop", () => stopHeadTracking());
+ipcMain.handle("sda:head-tracking-recenter", () => recenterHeadTracking());
+
 ipcMain.handle("sda:pick-file", async (event) => {
   // 挂到发起窗口上：弹窗跟随主窗口置顶，不会跑到后台/其他显示器；
   // 且异步版本不会冻结主进程事件循环，播放中的 IPC 读文件不受影响。
@@ -410,11 +480,13 @@ app.whenReady().then(() => {
   boostProcessTreePriority();
   setInterval(boostProcessTreePriority, 30_000).unref();
   createWindow();
+  if (readHeadTrackingEnabled()) startHeadTracking();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on("window-all-closed", () => {
+  stopHeadTracking(false);
   if (process.platform !== "darwin") app.quit();
 });

@@ -35,6 +35,17 @@ interface LocalHeadphoneProfileManifest {
 }
 
 declare global {
+  interface HeadTrackingStatus {
+    running: boolean;
+    source: "mock" | "external-helper";
+    detail: string;
+  }
+
+  interface HeadTrackingPose {
+    timestampMs: number;
+    orientation: { x: number; y: number; z: number; w: number };
+  }
+
   interface Window {
     sdaDesktop?: {
       electron3D: boolean;
@@ -43,6 +54,13 @@ declare global {
       setOutputLatencySeconds?: (seconds: 0.1 | 0.2 | 0.3) => boolean;
       getVolumeBalanceEnabled?: () => boolean;
       setVolumeBalanceEnabled?: (enabled: boolean) => boolean;
+      getHeadTrackingStatus?: () => Promise<HeadTrackingStatus>;
+      startHeadTracking?: () => Promise<HeadTrackingStatus>;
+      stopHeadTracking?: () => Promise<HeadTrackingStatus>;
+      recenterHeadTracking?: () => Promise<HeadTrackingPose>;
+      onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
+      onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
+      onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       pickFile?: () => Promise<string | null>;
       openPath?: (filePath: string) => Promise<{ id: number; size: number; name: string }>;
       readSlice?: (id: number, offset: number, length: number) => Promise<Uint8Array>;

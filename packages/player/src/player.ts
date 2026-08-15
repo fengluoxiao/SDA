@@ -23,6 +23,8 @@ import {
   type BinauralMode,
   type BinauralEqBands,
   type BinauralHealthTelemetry,
+  type HeadPose,
+  type HeadPoseOptions,
   type OutputMode,
   type VirtualSpeaker,
 } from "@sda/renderer";
@@ -94,6 +96,8 @@ export interface SdaPlayerOptions {
   /** Validated output FIFO setting to use when this player creates its first
    * AudioContext. Invalid values safely fall back to 100ms. */
   initialOutputLatencySeconds?: number;
+  /** Device-neutral head-pose filtering policy passed to the renderer. */
+  headPose?: HeadPoseOptions;
 }
 
 /** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
@@ -137,6 +141,8 @@ export class SdaPlayer {
 
   private worker: Worker;
   private renderer: SpatialRenderer | null = null;
+  private readonly headPoseOptions: HeadPoseOptions | undefined;
+  private latestHeadPose: HeadPose | null = null;
   private cb: PlayerCallbacks;
   private readyResolve!: () => void;
   private ready: Promise<void>;
@@ -230,6 +236,7 @@ export class SdaPlayer {
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
+    this.headPoseOptions = options.headPose;
     this.pendingOutputLatencySeconds = validatedOutputLatencySeconds(options.initialOutputLatencySeconds);
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health = this.createHealthSnapshot();
@@ -260,8 +267,10 @@ export class SdaPlayer {
         layout,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
+        headPose: this.headPoseOptions,
       });
       await this.renderer.init(workletUrl);
+      if (this.latestHeadPose) this.renderer.setHeadPose(this.latestHeadPose);
       this.observeWorkletHealth(this.renderer, generation);
       this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
       this.renderer.setBinauralEqBands(this.binauralEqBands);
@@ -318,6 +327,22 @@ export class SdaPlayer {
 
   get outputMode(): OutputMode | null {
     return this.renderer?.outputMode ?? this.initArgs?.mode ?? null;
+  }
+
+  /** Forward a calibrated canonical ADM head-to-world orientation. This is a
+   * real-time control, not codec metadata; it never recreates playback state. */
+  setHeadPose(pose: HeadPose): boolean {
+    this.latestHeadPose = pose;
+    return this.renderer?.setHeadPose(pose) ?? true;
+  }
+
+  clearHeadPose(): void {
+    this.latestHeadPose = null;
+    this.renderer?.clearHeadPose();
+  }
+
+  recenterHeadPose(): boolean {
+    return this.renderer?.recenterHeadPose() ?? false;
   }
 
   /** 切换杜比近/中/远（播放中实时生效）。 */
@@ -456,8 +481,10 @@ export class SdaPlayer {
         layout,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
+        headPose: this.headPoseOptions,
       });
       await r.init(workletUrl);
+      if (this.latestHeadPose) r.setHeadPose(this.latestHeadPose);
       this.observeWorkletHealth(r, generation);
       if (this.disposed) {
         await r.close();

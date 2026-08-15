@@ -23,6 +23,7 @@
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
+import { HeadPoseTracker, type HeadPose, type HeadPoseOptions } from "./head-pose.js";
 import {
   LAYOUT_7_1_4,
   LAYOUTS,
@@ -196,6 +197,8 @@ export interface RendererOptions {
   /** 预加载的双耳 IR 集（SADIE II KU100 派生）；也可 init 后 setBinauralData。
    *  缺省时双耳模式回退到浏览器内置 PannerNode HRTF。 */
   binauralIrSet?: BinauralIrSet;
+  /** Device-neutral ADM head-to-world pose processing policy. */
+  headPose?: HeadPoseOptions;
   /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
   onConsumedTick?: (stats: RendererStats) => void;
   onBatchResult?: (result: { sequence: number; accepted: boolean; samples: number; reason?: string }) => void;
@@ -236,6 +239,9 @@ interface SourceState {
   binauralMode?: BinauralRenderMode;
   lifecycleEvents: { at: number; active: boolean; order: number }[];
   lifecycleEventOrder: number;
+  /** Canonical object targets keyed to codec time, used only for wall-clock pose
+   * refreshes so future scheduled metadata is never pulled into the present. */
+  objectPoseTimeline: { at: number; position: Spherical; spread: number; gainDb: number }[];
 }
 
 export class SpatialRenderer {
@@ -260,6 +266,11 @@ export class SpatialRenderer {
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
+  /** Pose changes only recompute source gain vectors; they never touch the graph. */
+  private readonly headPose: HeadPoseTracker;
+  private poseUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private poseStaleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPoseGainUpdateMs = Number.NEGATIVE_INFINITY;
   private node: AudioWorkletNode | null = null;
   /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
   private peakGuard: AudioWorkletNode | null = null;
@@ -320,6 +331,7 @@ export class SpatialRenderer {
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
+    this.headPose = new HeadPoseTracker(options.headPose);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
     this.onBatchResult = options.onBatchResult;
@@ -626,6 +638,72 @@ export class SpatialRenderer {
 
   get outputMode(): OutputMode {
     return this.mode;
+  }
+
+  /** Apply a calibrated canonical ADM head-to-world pose. Pose updates use
+   * immediate worklet gain ramps, deliberately never rewriting codec-timeline
+   * metadata that may already be scheduled in the future. */
+  setHeadPose(pose: HeadPose): boolean {
+    const now = performance.now();
+    if (!this.headPose.set(pose, now)) return false;
+    this.schedulePoseGainUpdate(now);
+    if (this.poseStaleTimer !== null) globalThis.clearTimeout(this.poseStaleTimer);
+    this.poseStaleTimer = globalThis.setTimeout(() => {
+      this.poseStaleTimer = null;
+      // isActive() clears a stale orientation; force one neutral gain refresh.
+      if (!this.headPose.isActive(performance.now())) this.schedulePoseGainUpdate(performance.now(), true);
+    }, this.headPose.options.staleAfterMs + 1);
+    return true;
+  }
+
+  /** Disable head tracking and smoothly return world-locked sources to neutral. */
+  clearHeadPose(): void {
+    if (this.poseStaleTimer !== null) {
+      globalThis.clearTimeout(this.poseStaleTimer);
+      this.poseStaleTimer = null;
+    }
+    if (!this.headPose.clear()) return;
+    this.schedulePoseGainUpdate(performance.now(), true);
+  }
+
+  /** Set the current active head orientation as the neutral viewing direction. */
+  recenterHeadPose(): boolean {
+    if (!this.headPose.recenter()) return false;
+    this.schedulePoseGainUpdate(performance.now(), true);
+    return true;
+  }
+
+  private schedulePoseGainUpdate(now: number, force = false): void {
+    const interval = 1000 / this.headPose.options.updateHz;
+    const wait = force ? 0 : Math.max(0, interval - (now - this.lastPoseGainUpdateMs));
+    if (this.poseUpdateTimer !== null) return;
+    this.poseUpdateTimer = globalThis.setTimeout(() => {
+      this.poseUpdateTimer = null;
+      this.lastPoseGainUpdateMs = performance.now();
+      // Stale input automatically disables tracking here as well, so a provider
+      // disappearing returns to the unrotated world rather than freezing pose.
+      const trackingActive = this.mode === "binaural" && this.headPose.isActive(this.lastPoseGainUpdateMs);
+      for (const state of this.sources.values()) {
+        if (state.isLfe) continue;
+        // Object events are often prebuffered seconds ahead. Select the last
+        // target due at the rendered codec cursor instead of using `state`'s
+        // newest (possibly future) scheduled metadata.
+        let immediate = state;
+        if (!state.bedLabel && state.objectPoseTimeline.length > 0) {
+          let due: (typeof state.objectPoseTimeline)[number] | undefined;
+          for (const target of state.objectPoseTimeline) {
+            if (target.at > this.consumedSamples) break;
+            due = target;
+          }
+          if (!due) continue;
+          immediate = { ...state, position: due.position, spread: due.spread, gainDb: due.gainDb };
+        }
+        this.applyGains(immediate, 256);
+      }
+      // Continue convergence after a smoothed pose update even if the provider
+      // sends a lower-rate sample stream; staleness cancels this naturally.
+      if (trackingActive) this.schedulePoseGainUpdate(this.lastPoseGainUpdateMs);
+    }, wait);
   }
 
   private teardownPostNodes(): void {
@@ -1098,6 +1176,7 @@ export class SpatialRenderer {
       binauralMode: undefined,
       lifecycleEvents: [],
       lifecycleEventOrder: 0,
+      objectPoseTimeline: [],
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
@@ -1261,6 +1340,7 @@ export class SpatialRenderer {
       state.gainDb = ev.gainDb;
       state.hasObjectMetadata = true;
       state.objectRampEndSample = at + Math.max(1, ramp);
+      state.objectPoseTimeline.push({ at, position: nextPosition, spread: nextSpread, gainDb: ev.gainDb });
       messages.push(this.gainMessage(state, ramp, at));
     }
     if (messages.length === 1) this.node.port.postMessage(messages[0]);
@@ -1279,7 +1359,18 @@ export class SpatialRenderer {
     rampSamples: number,
     atSample?: number,
   ): ScheduledGainMessage {
-    const gains = this.vbap.pan(state.position, state.spread);
+    // Codec metadata remains canonical world-space. Only immediate gain updates
+    // use the live wall-clock pose; scheduled events must retain their original
+    // codec-clock semantics and are followed by subsequent pose refreshes.
+    const poseNow = performance.now();
+    // Physical speaker and plain stereo outputs stay room-locked. The UI exposes
+    // tracking only for binaural playback, and this guard preserves that rule for
+    // programmatic callers as well.
+    const headTrackingActive = this.mode === "binaural" && atSample === undefined && this.headPose.isActive(poseNow);
+    const spatialPosition = headTrackingActive
+      ? this.headPose.headRelative(state.position, poseNow)
+      : state.position;
+    const gains = this.vbap.pan(spatialPosition, state.spread);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
     // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径
@@ -1305,7 +1396,7 @@ export class SpatialRenderer {
       scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
       lp = 1;
-    } else if (state.snapBus >= 0) {
+    } else if (state.snapBus >= 0 && !headTrackingActive) {
       // 床声道吸附：直送同名音箱总线（AVR direct 语义）。
       // 上混扩展馈送仅用于多声道物理输出 —— 物理后环在真实房间里被房间
       // 反射去相关，听着是"填满"；而双耳/立体声里馈送是相干拷贝
@@ -1369,6 +1460,7 @@ export class SpatialRenderer {
       if (!state.bedLabel) {
         state.hasObjectMetadata = false;
         state.objectRampEndSample = Number.NEGATIVE_INFINITY;
+        state.objectPoseTimeline.length = 0;
       }
     }
     this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
@@ -1414,6 +1506,14 @@ export class SpatialRenderer {
   }
 
   async close(): Promise<void> {
+    if (this.poseUpdateTimer !== null) {
+      globalThis.clearTimeout(this.poseUpdateTimer);
+      this.poseUpdateTimer = null;
+    }
+    if (this.poseStaleTimer !== null) {
+      globalThis.clearTimeout(this.poseStaleTimer);
+      this.poseStaleTimer = null;
+    }
     this.teardownPostNodes();
     this.peakGuard?.disconnect();
     this.peakGuard = null;

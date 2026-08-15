@@ -12,6 +12,12 @@ ipcRenderer.on("sda:open-file", (_event, filePath) => {
   else pendingOpenPaths.push(filePath);
 });
 
+function subscribe(channel, callback) {
+  const listener = (_event, value) => callback(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
+
 contextBridge.exposeInMainWorld("sdaDesktop", {
   electron3D,
   rendererMode,
@@ -19,6 +25,13 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   setOutputLatencySeconds: (seconds) => ipcRenderer.sendSync("sda:set-output-latency-seconds", seconds),
   getVolumeBalanceEnabled: () => ipcRenderer.sendSync("sda:get-volume-balance-enabled"),
   setVolumeBalanceEnabled: (enabled) => ipcRenderer.sendSync("sda:set-volume-balance-enabled", enabled),
+  getHeadTrackingStatus: () => ipcRenderer.invoke("sda:head-tracking-status"),
+  startHeadTracking: () => ipcRenderer.invoke("sda:head-tracking-start"),
+  stopHeadTracking: () => ipcRenderer.invoke("sda:head-tracking-stop"),
+  recenterHeadTracking: () => ipcRenderer.invoke("sda:head-tracking-recenter"),
+  onHeadTrackingStatus: (callback) => subscribe("sda:head-tracking-status", callback),
+  onHeadTrackingPose: (callback) => subscribe("sda:head-tracking-pose", callback),
+  onHeadTrackingRecenter: (callback) => subscribe("sda:head-tracking-recenter", callback),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),

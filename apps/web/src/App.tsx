@@ -5,6 +5,7 @@ import {
   registerLocalHeadphoneCompensation,
   setBinauralAssetLoader,
   setHeadphoneCompensationAssetLoader,
+  type HeadPose,
   type LocalHeadphoneCompensationData,
   LAYOUTS,
   detectLayoutId,
@@ -19,6 +20,21 @@ import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
 
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
+type HeadTrackingPlayer = {
+  setHeadPose?: (pose: HeadPose) => void;
+  clearHeadPose?: () => void;
+  recenterHeadPose?: () => void;
+};
+
+function rendererHeadPose(pose: HeadTrackingPose): HeadPose {
+  // Electron receives epoch timestamps from the local provider, whereas the
+  // renderer filters against performance.now(). Timestamp at bridge receipt so
+  // both sides use one monotonic clock; transport jitter is handled by smoothing.
+  return {
+    timestampMs: performance.now(),
+    orientation: [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w],
+  };
+}
 
 const FILE_CHUNK_SIZE = 1 << 20;
 const OUTPUT_LATENCY_STORAGE_KEY = "sda-output-latency-seconds";
@@ -138,6 +154,8 @@ export function App() {
     return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
+  const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "objects" | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
@@ -243,6 +261,30 @@ export function App() {
 
   useEffect(() => {
     const desktop = window.sdaDesktop;
+    if (!desktop?.getHeadTrackingStatus) return;
+    void desktop.getHeadTrackingStatus().then(setHeadTrackingStatus).catch((error) => {
+      console.warn("[SDA] 读取头部追踪状态失败:", error);
+    });
+    const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
+    const applyPose = (pose: HeadTrackingPose) => {
+      const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
+      player?.setHeadPose?.(rendererHeadPose(pose));
+    };
+    const stopPose = desktop.onHeadTrackingPose?.(applyPose);
+    const stopRecenter = desktop.onHeadTrackingRecenter?.((pose) => {
+      const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
+      player?.setHeadPose?.(rendererHeadPose(pose));
+      player?.recenterHeadPose?.();
+    });
+    return () => {
+      stopStatus?.();
+      stopPose?.();
+      stopRecenter?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const desktop = window.sdaDesktop;
     if (!desktop?.listHeadphoneProfiles || !desktop.readHeadphoneProfile) return;
     void desktop.listHeadphoneProfiles()
       .then(async (manifests) => {
@@ -259,6 +301,42 @@ export function App() {
         localStorage.removeItem("sda-headphone-profile-id");
       })
       .catch((error) => setErrors((prev) => [...prev, `加载本地耳机档案失败: ${String(error)}`]));
+  }, []);
+
+  const setHeadTrackingRunning = useCallback(async (running: boolean) => {
+    const desktop = window.sdaDesktop;
+    const operation = running ? desktop?.startHeadTracking : desktop?.stopHeadTracking;
+    if (!operation) return;
+    setHeadTrackingBusy(true);
+    try {
+      setHeadTrackingStatus(await operation());
+      if (!running) {
+        const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
+        player?.clearHeadPose?.();
+      }
+    } catch (error) {
+      console.warn("[SDA] 头部追踪切换失败:", error);
+      setErrors((prev) => [...prev, `头部追踪切换失败: ${String(error)}`]);
+    } finally {
+      setHeadTrackingBusy(false);
+    }
+  }, []);
+
+  const recenterHeadTracking = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.recenterHeadTracking) return;
+    setHeadTrackingBusy(true);
+    try {
+      // The main process broadcasts the pose + recenter event to every window.
+      // Do not apply the returned pose a second time: smoothing would otherwise
+      // make a multi-window provider recenter inconsistently.
+      await desktop.recenterHeadTracking();
+    } catch (error) {
+      console.warn("[SDA] 头部追踪重置失败:", error);
+      setErrors((prev) => [...prev, `头部追踪重置失败: ${String(error)}`]);
+    } finally {
+      setHeadTrackingBusy(false);
+    }
   }, []);
 
   const importHeadphoneProfile = useCallback(async () => {
@@ -642,8 +720,36 @@ export function App() {
                 </label>
               ))}
             </fieldset>
+            {window.sdaDesktop?.getHeadTrackingStatus && (
+              <fieldset className="settings-group settings-section" disabled={mode !== "binaural" || headTrackingBusy}>
+                <legend>实验性头部追踪</legend>
+                <p className="settings-description">
+                  仅用于验证 SDA 双耳渲染接口。目前使用内置模拟姿态；未来 Windows AirPods 将通过外部 helper 接入，不包含驱动或蓝牙协议实现。
+                </p>
+                <p className="settings-description">
+                  状态：{headTrackingStatus?.running ? `运行中（${headTrackingStatus.source}；${headTrackingStatus.detail}）` : headTrackingStatus?.detail ?? "正在读取"}
+                </p>
+                <div className="settings-switch">
+                  <span>启用模拟追踪</span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={headTrackingStatus?.running ?? false}
+                    onChange={(event) => void setHeadTrackingRunning(event.target.checked)}
+                  />
+                </div>
+                <div className="settings-switch">
+                  <span>面向前方</span>
+                  <button
+                    disabled={!headTrackingStatus?.running}
+                    onClick={() => void recenterHeadTracking()}
+                    title="将当前实验性姿态设为前方"
+                  >重置</button>
+                </div>
+              </fieldset>
+            )}
             {mode === "multichannel" && <p className="settings-disabled">音量平衡仅用于双耳和立体声输出。</p>}
-            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
+            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ 和头部追踪。</p>}
           </section>
         </div>
       )}
