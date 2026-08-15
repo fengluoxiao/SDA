@@ -19,10 +19,16 @@ const ROOM_MAX_GAIN_DB = 3;
 const ROOM_FIR_TAPS = 257;
 const ROOM_GATE_START_MS = 2;
 const ROOM_GATE_END_MS = 4;
-const ROOM_DECORRELATION_VERSION = "sda-ku100-tail-ap-v1";
+/** Only the derived BRIR room residual is low-cut; dry HRIR and runtime LFE stay untouched. */
+const ROOM_RESIDUAL_HIGHPASS_HZ = 150;
+const ROOM_RESIDUAL_HIGHPASS_ORDER = 4;
+const ROOM_RESIDUAL_HIGHPASS_Q = Math.SQRT1_2;
+const ROOM_RESIDUAL_BASS_BAND_HZ = [20, 120];
+const ROOM_DECORRELATION_VERSION = "sda-ku100-tail-ap-v2";
 const ROOM_DECORRELATION_MINIMUM_HZ = 80;
 const ROOM_DECORRELATION_MAXIMUM_HZ = 16000;
-const ROOM_DECORRELATION_SECTIONS = 8;
+/** Four sections preserve C80 of the high-passed residual while separating reused BRIR variants. */
+const ROOM_DECORRELATION_SECTIONS = 4;
 const ROOM_DECORRELATION_MAX_ENERGY_TRIM_DB = 0.25;
 const MAX_SPEAKER_LEVEL_GAIN_DB = 3;
 /** v3 双侧对称化：KU100 头模左右耳/测量摆放的反对称偏差会让同一对象在 +θ 与 -θ
@@ -47,6 +53,10 @@ const archivePath = resolve(option("archive", "tmp/sadie-source/D1.zip"));
 const outputDirectory = resolve(option("out", "tmp/hrtf-calibrated"));
 const sourceManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (sourceManifest.schemaVersion !== 2) throw new Error("校准构建要求schema v2 provenance manifest");
+const sourceAssetDirectory = dirname(manifestPath);
+if (sourceManifest.calibrationVersion !== 3) {
+  throw new Error("v4校准要求以已验证的calibration v3资产作为低频residual基线");
+}
 if (sourceManifest.positions?.length !== 17) throw new Error("校准构建要求17个虚拟音箱方向");
 
 const archiveBytes = readFileSync(archivePath);
@@ -168,6 +178,38 @@ function roomTail(stereo) {
   return stereo;
 }
 
+/** RBJ Butterworth-Q high-pass biquad. Two identical linked sections form LR4. */
+function highPassBiquad(signal, cutoffHz) {
+  const w0 = 2 * Math.PI * cutoffHz / sampleRate;
+  const cosine = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * ROOM_RESIDUAL_HIGHPASS_Q);
+  const b0 = (1 + cosine) / 2;
+  const b1 = -(1 + cosine);
+  const b2 = b0;
+  const a0 = 1 + alpha;
+  const a1 = -2 * cosine;
+  const a2 = 1 - alpha;
+  const output = new Float64Array(signal.length);
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let index = 0; index < signal.length; index++) {
+    const x0 = signal[index];
+    const y0 = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+    output[index] = y0;
+    x2 = x1;
+    x1 = x0;
+    y2 = y1;
+    y1 = y0;
+  }
+  return output;
+}
+
+function highPassRoomResidual(stereo) {
+  return {
+    left: highPassBiquad(highPassBiquad(stereo.left, ROOM_RESIDUAL_HIGHPASS_HZ), ROOM_RESIDUAL_HIGHPASS_HZ),
+    right: highPassBiquad(highPassBiquad(stereo.right, ROOM_RESIDUAL_HIGHPASS_HZ), ROOM_RESIDUAL_HIGHPASS_HZ),
+  };
+}
+
 function stereoEnergy(stereo) {
   let total = 0;
   for (let index = 0; index < stereo.left.length; index++) {
@@ -182,6 +224,23 @@ function stereoRangeEnergy(stereo, start, end) {
   const last = Math.min(stereo.left.length, Math.trunc(end));
   for (let index = first; index < last; index++) {
     total += stereo.left[index] ** 2 + stereo.right[index] ** 2;
+  }
+  return total;
+}
+
+function stereoBandEnergy(stereo, minimumHz, maximumHz) {
+  let total = 0;
+  for (let frequency = minimumHz; frequency <= maximumHz; frequency += 5) {
+    const phase = 2 * Math.PI * frequency / sampleRate;
+    for (const channel of [stereo.left, stereo.right]) {
+      let real = 0;
+      let imaginary = 0;
+      for (let index = 0; index < channel.length; index++) {
+        real += channel[index] * Math.cos(phase * index);
+        imaginary -= channel[index] * Math.sin(phase * index);
+      }
+      total += real ** 2 + imaginary ** 2;
+    }
   }
   return total;
 }
@@ -313,7 +372,27 @@ function stereoBytes(stereo) {
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength);
 }
 
+function readAssetStereo(fileName) {
+  const bytes = readFileSync(resolve(sourceAssetDirectory, fileName));
+  const samples = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+  const perEar = samples.length >> 1;
+  return {
+    left: Float64Array.from(samples.subarray(0, perEar)),
+    right: Float64Array.from(samples.subarray(perEar)),
+  };
+}
+
 const rows = sourceManifest.positions.map((position) => {
+  const baselineDry = readAssetStereo(position.dry);
+  const baselineWet = readAssetStereo(position.wet);
+  const baselineResidual = {
+    left: Float64Array.from(baselineWet.left),
+    right: Float64Array.from(baselineWet.right),
+  };
+  for (let index = 0; index < baselineDry.left.length; index++) {
+    baselineResidual.left[index] -= baselineDry.left[index];
+    baselineResidual.right[index] -= baselineDry.right[index];
+  }
   const targetDry = dryByPath.get(position.measurement.dry.sourcePath);
   const wet = wetByPath.get(position.measurement.wet.sourcePath);
   if (!targetDry || !wet) throw new Error(`manifest源路径未命中: ${position.azimuth}/${position.elevation}`);
@@ -323,6 +402,8 @@ const rows = sourceManifest.positions.map((position) => {
   }
   return {
     position,
+    baselineResidualBassEnergyDb: energyDb(stereoBandEnergy(baselineResidual, ...ROOM_RESIDUAL_BASS_BAND_HZ)),
+    baselineResidualMidEnergyDb: energyDb(stereoBandEnergy(baselineResidual, 250, 4000)),
     targetDry,
     wet,
     pairedDry: pairedDryMatch.impulse,
@@ -482,7 +563,16 @@ const prepared = rows.map((row) => {
     filteredWetAnalysis.onset.commonSample,
     WET_TAPS,
   );
-  let tail = roomTail(wetAligned);
+  // Isolate wet - dry before the gate. The LR4 is never applied to the target dry HRIR.
+  const residual = {
+    left: Float64Array.from(wetAligned.left),
+    right: Float64Array.from(wetAligned.right),
+  };
+  for (let index = 0; index < dryAligned.left.length; index++) {
+    residual.left[index] -= dryAligned.left[index];
+    residual.right[index] -= dryAligned.right[index];
+  }
+  let tail = highPassRoomResidual(roomTail(residual));
   return {
     row,
     dryAligned,
@@ -656,24 +746,33 @@ for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
     roomTailTrimDb: tailTrimDb,
   });
 }
-// 对称化后重新对齐直达能量质心（双耳公共、dry/尾声同一整数 shift）
+// 对称化后重新对齐直达能量质心（双耳公共、dry/尾声同一整数 shift）。
+// 镜像方向的 v2 shift 可不同；若各自按边界硬门控会破坏数值镜像。每个镜像对使用
+// 两者中较晚的边界：仍满足各自 wet 直达前缀契约，同时保持两侧尾声逐样本镜像。
 for (const entry of prepared) {
   const centroid = directEnergyCentroid(entry.finalDry);
   entry.postSymmetryShiftSamples = Math.round(targetDirectEnergyCentroidSample - centroid);
   entry.finalDry = shiftStereo(entry.finalDry, entry.postSymmetryShiftSamples);
   entry.finalTail = shiftStereo(entry.finalTail, entry.postSymmetryShiftSamples);
-  // 镜像对两侧的 v2 质心 shift 不同，平均会把伙伴方向更早的门控淡入混进来，
-  // 让尾声在本方向记录的门控边界之前就有非零内容（wet 直达前缀契约失败）。
-  // 在本方向最终边界上重新硬门控：边界之前尾声必须为零，wet 直达前缀逐样本等于 dry。
-  const gateBoundary = COMMON_ARRIVAL_SAMPLE
+  entry.gateBoundary = COMMON_ARRIVAL_SAMPLE
     + Math.round(ROOM_GATE_START_MS * sampleRate / 1000)
     + entry.energyCentroidShiftSamples
     + entry.postSymmetryShiftSamples;
-  for (let index = 0; index <= gateBoundary && index < entry.finalTail.left.length; index++) {
-    entry.finalTail.left[index] = 0;
-    entry.finalTail.right[index] = 0;
+}
+function hardGateTail(stereo, boundary) {
+  for (let index = 0; index <= boundary && index < stereo.left.length; index++) {
+    stereo.left[index] = 0;
+    stereo.right[index] = 0;
   }
 }
+for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
+  const plus = finalByKey.get(`${azimuth}/${elevation}`);
+  const minus = finalByKey.get(`-${azimuth}/${elevation}`);
+  const sharedBoundary = Math.max(plus.gateBoundary, minus.gateBoundary);
+  hardGateTail(plus.finalTail, sharedBoundary);
+  hardGateTail(minus.finalTail, sharedBoundary);
+}
+hardGateTail(finalByKey.get("0/0").finalTail, finalByKey.get("0/0").gateBoundary);
 
 rmSync(outputDirectory, { recursive: true, force: true });
 mkdirSync(outputDirectory, { recursive: true });
@@ -694,6 +793,14 @@ for (const entry of prepared) {
   const baselineWetAnalysis = entry.baselineWetAnalysis;
   const dryAligned = entry.finalDry;
   const wetOutput = combineWet(entry.finalDry, entry.finalTail);
+  const residualBands = {
+    baselineV3BassEnergyDb: row.baselineResidualBassEnergyDb,
+    outputBassEnergyDb: energyDb(stereoBandEnergy(entry.finalTail, ...ROOM_RESIDUAL_BASS_BAND_HZ)),
+    baselineV3MidEnergyDb: row.baselineResidualMidEnergyDb,
+    outputMidEnergyDb: energyDb(stereoBandEnergy(entry.finalTail, 250, 4000)),
+  };
+  residualBands.bassReductionDb = residualBands.outputBassEnergyDb - residualBands.baselineV3BassEnergyDb;
+  residualBands.midDifferenceDb = residualBands.outputMidEnergyDb - residualBands.baselineV3MidEnergyDb;
   const preSymmetryWetAnalysis = analyze({ ...entry.preSymmetryWet, sampleRate }, "wet");
   const dryBytes = stereoBytes(dryAligned);
   const wetBytes = stereoBytes(wetOutput);
@@ -745,6 +852,7 @@ for (const entry of prepared) {
         calibrationGainDb: roomGainDb,
         roomEarlyEnergyDbBeforeGain: entry.roomEarlyEnergyDb,
         roomEarlyEnergyTargetDb: targetRoomEarlyEnergyDb,
+        residualBands,
         roomCorrectionBands: row.roomCorrectionBands,
         directPathSource: row.position.measurement.dry.sourcePath,
         roomTailSource: row.position.measurement.wet.sourcePath,
@@ -785,7 +893,7 @@ for (let index = 0; index < positions.length; index++) {
 
 const manifest = {
   ...sourceManifest,
-  calibrationVersion: 3,
+  calibrationVersion: 4,
   processing: {
     dryTapLimit: DRY_TAPS,
     wetTapLimit: WET_TAPS,
@@ -793,10 +901,10 @@ const manifest = {
     calibrated: true,
     runtimeEnergyNormalization: false,
     directPathModel: "target HRIR plus calibrated BRIR room tail",
-    note: "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ.",
+    note: "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ.",
   },
   calibration: {
-    algorithm: "sda-ku100-room-v3",
+    algorithm: "sda-ku100-room-v4",
     sampleRate,
     commonArrivalSample: COMMON_ARRIVAL_SAMPLE,
     bilateralSymmetry: {
@@ -844,6 +952,17 @@ const manifest = {
       bands: roomBandTargets,
     },
     roomTailGate: { startMs: ROOM_GATE_START_MS, endMs: ROOM_GATE_END_MS },
+    roomResidualHighPass: {
+      algorithm: "sda-ku100-room-residual-lr4-v1",
+      cutoffHz: ROOM_RESIDUAL_HIGHPASS_HZ,
+      order: ROOM_RESIDUAL_HIGHPASS_ORDER,
+      sectionQ: ROOM_RESIDUAL_HIGHPASS_Q,
+      commonLeftRightFilter: true,
+      applicationOrder: "wet minus aligned dry, room-tail gate, LR4 high-pass, 4-50ms residual calibration",
+      scope: "offline derived BRIR room residual only",
+      excludes: ["dry HRIR", "runtime LFE", "final headphone EQ", "physical multichannel output"],
+      acceptanceBandHz: ROOM_RESIDUAL_BASS_BAND_HZ,
+    },
     roomTailDecorrelation: {
       algorithm: ROOM_DECORRELATION_VERSION,
       scope: "only non-canonical virtual speakers that reuse the same measured BRIR source",

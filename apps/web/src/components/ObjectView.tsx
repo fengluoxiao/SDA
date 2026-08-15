@@ -44,11 +44,13 @@ function FlatObjectView({
   layout,
   theme,
   mutedIds,
+  soundingIds,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme: Theme;
   mutedIds?: ReadonlySet<number>;
+  soundingIds?: ReadonlySet<number>;
 }) {
   const background = theme === "light" ? "#e9edf4" : "#0c101c";
   return (
@@ -70,9 +72,10 @@ function FlatObjectView({
         })}
         {objects.map((object) => {
           const muted = mutedIds?.has(object.id) ?? false;
+          const sounding = !muted && (soundingIds?.has(object.id) ?? false);
           return (
             <span
-              className={`flat-object${muted ? " muted" : ""}`}
+              className={`flat-object${muted ? " muted" : ""}${sounding ? " sounding" : ""}`}
               key={object.id}
               title={`对象 #${object.id}`}
               style={{ left: `${clampPercent(object.pos[0])}%`, top: `${clampPercent(-object.pos[1])}%` }}
@@ -96,26 +99,29 @@ export const ObjectView = memo(function ObjectView({
   layout,
   theme = "dark",
   mutedIds,
+  soundingIds,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
   mutedIds?: ReadonlySet<number>;
+  soundingIds?: ReadonlySet<number>;
 }) {
   const desktop = window.sdaDesktop;
   if (desktop && desktop.electron3D !== true) {
-    return <FlatObjectView objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} />;
+    return <FlatObjectView objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />;
   }
 
   const rendererMode = desktop?.rendererMode ?? "browser";
   return (
     <WebglErrorBoundary mode={rendererMode}>
       <Suspense fallback={<div className="flat-view" aria-label="正在加载三维视图">正在加载三维视图…</div>}>
-        <ObjectView3D objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} />
+        <ObjectView3D objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />
       </Suspense>
     </WebglErrorBoundary>
   );
 }, (previous, next) => previous.objects === next.objects
   && previous.layout === next.layout
   && previous.theme === next.theme
-  && previous.mutedIds === next.mutedIds);
+  && previous.mutedIds === next.mutedIds
+  && previous.soundingIds === next.soundingIds);

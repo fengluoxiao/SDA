@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   onHeadTrackingPose: (callback) => subscribe("sda:head-tracking-pose", callback),
   onHeadTrackingRecenter: (callback) => subscribe("sda:head-tracking-recenter", callback),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
+  pickFolder: () => ipcRenderer.invoke("sda:pick-folder"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),
   close: (id) => ipcRenderer.invoke("sda:close", id),

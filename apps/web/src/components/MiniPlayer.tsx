@@ -34,7 +34,6 @@ interface MiniPlayerProps {
   objectCount: number;
   volume: number;
   onTogglePlay: () => void;
-  onStop: () => void;
   onReplay: () => void;
   onVolume: (v: number) => void;
 }
@@ -54,7 +53,6 @@ export const MiniPlayer = memo(function MiniPlayer({
   objectCount,
   volume,
   onTogglePlay,
-  onStop,
   onReplay,
   onVolume,
 }: MiniPlayerProps) {
@@ -80,11 +78,8 @@ export const MiniPlayer = memo(function MiniPlayer({
           {/* 中：传输控制 + 进度 */}
           <div className="mp-center">
             <div className="mp-transport">
-              <button className="mp-btn" onClick={onReplay} title="重新播放">
+              <button className="mp-btn" onClick={onReplay} title="从头重新播放">
                 ⟲
-              </button>
-              <button className="mp-btn" onClick={onStop} title="停止">
-                ■
               </button>
               <button
                 className="mp-btn mp-play"

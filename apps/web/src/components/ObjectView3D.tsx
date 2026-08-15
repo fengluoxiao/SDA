@@ -272,9 +272,11 @@ const Listener = memo(function Listener() {
 const ObjectDot = memo(function ObjectDot({
   obj,
   muted,
+  sounding,
 }: {
   obj: VisualObject;
   muted: boolean;
+  sounding: boolean;
 }) {
   const ref = useRef<THREE.Group>(null);
   const target = useMemo(() => new THREE.Vector3(), []);
@@ -299,8 +301,8 @@ const ObjectDot = memo(function ObjectDot({
     <group ref={ref} renderOrder={10}>
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
-        <sphereGeometry args={[0.09 + spread * 0.3, 12, 12]} />
-        <meshBasicMaterial color={color} transparent opacity={muted ? 0.03 : 0.1} depthTest={false} depthWrite={false} />
+        <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
+        <meshBasicMaterial color={color} transparent opacity={muted ? 0.03 : sounding ? 0.18 : 0.1} depthTest={false} depthWrite={false} />
       </mesh>
       <mesh renderOrder={11}>
         <sphereGeometry args={[0.06, 10, 10]} />
@@ -312,6 +314,7 @@ const ObjectDot = memo(function ObjectDot({
   const a = prev.obj;
   const b = next.obj;
   return prev.muted === next.muted
+    && prev.sounding === next.sounding
     && a.id === b.id
     && a.pos[0] === b.pos[0]
     && a.pos[1] === b.pos[1]
@@ -327,12 +330,15 @@ export function ObjectView({
   layout,
   theme = "dark",
   mutedIds,
+  soundingIds,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
   /** 被静音对象 id —— 在 3D 视图里调暗。 */
   mutedIds?: ReadonlySet<number>;
+  /** Worklet-confirmed post-gain/post-mute object signal IDs. */
+  soundingIds?: ReadonlySet<number>;
 }) {
   const p = PALETTE[theme];
   const rendererMode = window.sdaDesktop?.rendererMode;
@@ -347,12 +353,14 @@ export function ObjectView({
       dpr={isSwiftShader ? 1 : [1, 1.5]}
       gl={{ antialias: !isSwiftShader, powerPreference: isSwiftShader ? "low-power" : "high-performance" }}
     >
-      <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
+      {/* Keep the diagnostic scene below the audio renderer's real-time budget.
+          Object events remain sample-accurate in the worklet; this only caps paint. */}
+      <FrameScheduler maxFps={30}>
         <Room p={p} />
         <SpeakerRing layout={layout} />
         <Listener />
         {objects.map((o) => (
-          <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} />
+          <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
         <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
         {/* 听者半身像的光照 */}

@@ -8,6 +8,8 @@
 
 const WORKLET_BUILD = "object-batch-v1";
 const MAX_SOURCES = 64;
+const CALLBACK_GAP_TELEMETRY_MS = 12;
+const CALLBACK_GAP_ESCALATION_MS = 25;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
 const RING_MASK = RING_SIZE - 1;
 
@@ -31,10 +33,13 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     // 被延迟调度时这里会出现间隙——即便 PCM 环形缓冲充足也会听见卡顿。
     this.lastProcessAt = null;
     this.callbackGaps = 0;
+    this.callbackGapsOver25Ms = 0;
     this.callbackGapMaxMs = 0;
     this.processDurationTotalMs = 0;
     this.processDurationCount = 0;
     this.processDurationMaxMs = 0;
+    this.activityHoldSamples = Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.2);
+    this.lastActiveBankMask = 0;
     this.port.postMessage({ type: "ready", ringSize: RING_SIZE, maxSources: MAX_SOURCES, build: WORKLET_BUILD });
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
@@ -49,6 +54,8 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       target: new Float32Array(this.busCount),
       rampLeft: 0,
       rampStep: new Float32Array(this.busCount),
+      /** Sorted bus indices whose current/target ramp can produce non-zero output. */
+      routeBuses: [],
       gain: 1,
       targetGain: 1,
       gainStep: 0,
@@ -58,6 +65,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       muteStep: 0,
       scheduledGains: [],
       scheduledGainCursor: 0,
+      nextScheduledGainAt: Number.POSITIVE_INFINITY,
       lpA: 1,
       lpY: 0,
       binauralBank: 1,
@@ -67,11 +75,26 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       availabilityWasValid: false,
       hasReceivedPcm: false,
       lifecycleEvents: [],
+      lifecycleCursor: 0,
       lifecycleEventOrder: 0,
+      nextLifecycleAt: Number.POSITIVE_INFINITY,
+      futureResumeCount: 0,
       active: true,
       inactiveSince: null,
       inactiveToken: null,
+      activityUntil: 0,
     };
+  }
+
+  refreshRouteBuses(src, includeRampTargets = false) {
+    const routes = [];
+    for (let bus = 0; bus < this.busCount; bus++) {
+      if (
+        src.gains[bus] !== 0 ||
+        (includeRampTargets && (src.target[bus] !== 0 || src.rampStep[bus] !== 0))
+      ) routes.push(bus);
+    }
+    src.routeBuses = routes;
   }
 
   /** Advance an active metadata ramp by an exact number of sample intervals. */
@@ -86,6 +109,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     if (src.rampLeft === 0) {
       src.gains.set(src.target);
       src.gain = src.targetGain;
+      this.refreshRouteBuses(src);
     }
   }
 
@@ -101,6 +125,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     src.gainStep = (src.targetGain - src.gain) / ramp;
     src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
     src.rampLeft = ramp;
+    this.refreshRouteBuses(src, true);
     this.advanceGainRamp(src, currentTime - eventTime);
   }
 
@@ -119,7 +144,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     if (cursor >= 256 && cursor * 2 >= events.length) {
       events.splice(0, cursor);
       src.scheduledGainCursor = 0;
+      cursor = 0;
     }
+    src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   enqueueScheduledGain(src, msg) {
@@ -128,6 +155,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const last = events[events.length - 1];
     if (!last || last.at <= msg.at) {
       events.push(msg);
+      src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
       return;
     }
     let low = cursor;
@@ -138,21 +166,43 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       else high = middle;
     }
     events.splice(low, 0, msg);
+    src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   scheduleLifecycle(src, at, active, token = null) {
     if (!Number.isSafeInteger(at)) return;
-    src.lifecycleEvents.push({ at, active, token, order: src.lifecycleEventOrder++ });
-    src.lifecycleEvents.sort((left, right) => left.at - right.at || left.order - right.order);
+    const event = { at, active, token, order: src.lifecycleEventOrder++ };
+    const events = src.lifecycleEvents;
+    let low = src.lifecycleCursor;
+    let high = events.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const candidate = events[middle];
+      if (candidate.at < at || (candidate.at === at && candidate.order <= event.order)) low = middle + 1;
+      else high = middle;
+    }
+    events.splice(low, 0, event);
+    if (active) src.futureResumeCount++;
+    src.nextLifecycleAt = events[src.lifecycleCursor]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   applyLifecycleThrough(src, currentTime) {
-    while (src.lifecycleEvents.length > 0 && src.lifecycleEvents[0].at <= currentTime) {
-      const event = src.lifecycleEvents.shift();
+    const events = src.lifecycleEvents;
+    let cursor = src.lifecycleCursor;
+    while (cursor < events.length && events[cursor].at <= currentTime) {
+      const event = events[cursor++];
+      if (event.active) src.futureResumeCount--;
       src.active = event.active;
       src.inactiveSince = event.active ? null : event.at;
       src.inactiveToken = event.active ? null : event.token;
     }
+    src.lifecycleCursor = cursor;
+    if (cursor >= 64 && cursor * 2 >= events.length) {
+      events.splice(0, cursor);
+      src.lifecycleCursor = 0;
+      cursor = 0;
+    }
+    src.nextLifecycleAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   rejectBatch(sequence, reason) {
@@ -300,6 +350,8 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           src.valid.fill(0);
           src.scheduledGains.length = 0;
           src.scheduledGainCursor = 0;
+          src.nextScheduledGainAt = Number.POSITIVE_INFINITY;
+          this.refreshRouteBuses(src, src.rampLeft > 0);
           src.lpY = 0;
           src.availabilityFrom = 0;
           src.availabilityRampLeft = 0;
@@ -307,7 +359,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           src.availabilityWasValid = false;
           src.hasReceivedPcm = false;
           src.lifecycleEvents.length = 0;
+          src.lifecycleCursor = 0;
           src.lifecycleEventOrder = 0;
+          src.nextLifecycleAt = Number.POSITIVE_INFINITY;
+          src.futureResumeCount = 0;
           src.active = true;
           src.inactiveSince = null;
           src.inactiveToken = null;
@@ -322,11 +377,13 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         this.rejectedBatches = 0;
         this.rejectedSources = 0;
         this.callbackGaps = 0;
+        this.callbackGapsOver25Ms = 0;
         this.callbackGapMaxMs = 0;
         this.processDurationTotalMs = 0;
         this.processDurationCount = 0;
         this.processDurationMaxMs = 0;
         this.lastProcessAt = null;
+        this.lastActiveBankMask = 0;
         this.port.postMessage({ type: "resetAck", epoch: this.epoch });
         break;
       case "pause":
@@ -364,19 +421,32 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const processStartedAt = now;
     if (this.lastProcessAt !== null && this.timelineStarted && !this.paused) {
       const gapMs = now - this.lastProcessAt;
-      // 正常间隔约 2.67ms；>12ms 视为一次输出侧调度间隙（约 4.5 个 quantum）
-      if (gapMs > 12) {
+      // Normal spacing is about 2.67ms. Keep broad >12ms telemetry for
+      // diagnostics, while the adaptive output FIFO uses only >25ms evidence.
+      if (gapMs > CALLBACK_GAP_TELEMETRY_MS) {
         this.callbackGaps++;
         if (gapMs > this.callbackGapMaxMs) this.callbackGapMaxMs = gapMs;
       }
+      if (gapMs > CALLBACK_GAP_ESCALATION_MS) this.callbackGapsOver25Ms++;
     }
     this.lastProcessAt = now;
     const busesByBank = outputs;
     const primaryBuses = busesByBank[0] || [];
     const blockSize = primaryBuses[0] ? primaryBuses[0].length : 128;
-    for (const buses of busesByBank) {
+    let activeBankMask = 0;
+    for (const src of this.sources.values()) {
+      if (src.active) activeBankMask |= 1 << src.binauralBank;
+    }
+    // Explicitly clear active banks plus a just-retired bank for one final block.
+    // AudioWorklet outputs are normally zeroed by the host; this preserves that
+    // guarantee without filling all four 18-channel banks every quantum.
+    const banksToClear = activeBankMask | this.lastActiveBankMask;
+    for (let bank = 0; bank < busesByBank.length; bank++) {
+      if ((banksToClear & (1 << bank)) === 0) continue;
+      const buses = busesByBank[bank];
       for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) buses[bus].fill(0);
     }
+    this.lastActiveBankMask = activeBankMask;
     if (this.paused || !this.timelineStarted) {
       this.recordProcessDuration(processStartedAt);
       return true;
@@ -387,6 +457,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       let gain = src.gain;
       let muteGain = src.muteGain;
       let lpY = src.lpY;
+      let activityUntil = src.activityUntil;
 
       for (let i = 0; i < blockSize; i++) {
         const samplePosition = this.consumed + i;
@@ -394,12 +465,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         // Otherwise an event in the middle of a render quantum can jump back to
         // src.gain, which still holds the value from the block boundary.
         src.gain = gain;
-        this.applyScheduledGainsThrough(src, samplePosition);
+        if (samplePosition >= src.nextScheduledGainAt) this.applyScheduledGainsThrough(src, samplePosition);
         gain = src.gain;
 
         let sample = 0;
         const slot = samplePosition & RING_MASK;
-        this.applyLifecycleThrough(src, samplePosition);
+        if (samplePosition >= src.nextLifecycleAt) this.applyLifecycleThrough(src, samplePosition);
         const retired = !src.active;
         const available = src.active && samplePosition >= src.validStart && samplePosition < src.validEnd && src.valid[slot] === 1;
         if (available !== src.availabilityWasValid) {
@@ -422,10 +493,13 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           sample = lpY;
         }
         sample *= gain * muteGain;
+        // UI activity reflects the actual source sample after metadata gain and user mute.
+        // A short hold makes intermittent drum hits readable at the throttled visual cadence.
+        if (Math.abs(sample) >= 0.001) activityUntil = samplePosition + this.activityHoldSamples;
 
-        for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) {
-          const busGain = src.gains[bus];
-          if (busGain !== 0) buses[bus][i] += sample * busGain;
+        for (const bus of src.routeBuses) {
+          if (bus >= buses.length) break;
+          buses[bus][i] += sample * src.gains[bus];
         }
 
         if (src.rampLeft > 0) {
@@ -441,9 +515,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       src.gain = gain;
       src.muteGain = muteGain;
       src.lpY = lpY;
+      src.activityUntil = activityUntil;
       const blockEnd = this.consumed + blockSize;
-      const hasFutureResume = src.lifecycleEvents.some((event) => event.active);
-      if (!src.active && !hasFutureResume && src.inactiveSince !== null && blockEnd >= src.inactiveSince + 32) {
+      if (!src.active && src.futureResumeCount === 0 && src.inactiveSince !== null && blockEnd >= src.inactiveSince + 32) {
         this.sources.delete(sourceId);
         this.port.postMessage({ type: "sourceRetired", id: sourceId, token: src.inactiveToken });
       }
@@ -454,6 +528,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const tickEvery = (typeof sampleRate === "number" ? sampleRate : 48000) >> 3;
     if (this.consumed - this.lastTick >= tickEvery) {
       this.lastTick = this.consumed;
+      const activeObjectIds = [];
+      for (const [sourceId, src] of this.sources) {
+        if (sourceId.startsWith("obj:") && src.active && this.consumed <= src.activityUntil) {
+          activeObjectIds.push(sourceId.slice(4));
+        }
+      }
       this.port.postMessage({
         type: "tick",
         consumed: this.consumed,
@@ -462,16 +542,19 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         rejectedBatches: this.rejectedBatches,
         rejectedSources: this.rejectedSources,
         callbackGaps: this.callbackGaps,
+        callbackGapsOver25Ms: this.callbackGapsOver25Ms,
         callbackGapMaxMs: Math.round(this.callbackGapMaxMs * 10) / 10,
         processMeanMs: this.processDurationCount > 0
           ? Math.round(this.processDurationTotalMs / this.processDurationCount * 1000) / 1000
           : 0,
         processMaxMs: Math.round(this.processDurationMaxMs * 1000) / 1000,
+        activeObjectIds,
       });
       this.underrunSamples = 0;
       this.rejectedBatches = 0;
       this.rejectedSources = 0;
       this.callbackGaps = 0;
+      this.callbackGapsOver25Ms = 0;
       this.callbackGapMaxMs = 0;
       this.processDurationTotalMs = 0;
       this.processDurationCount = 0;

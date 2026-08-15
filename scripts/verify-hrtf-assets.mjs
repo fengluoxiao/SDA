@@ -20,6 +20,7 @@ const hex64 = /^[a-f0-9]{64}$/;
 const calibrated = manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true;
 const calibrationV2 = calibrated && manifest.calibrationVersion >= 2;
 const calibrationV3 = calibrated && manifest.calibrationVersion >= 3;
+const calibrationV4 = calibrated && manifest.calibrationVersion >= 4;
 
 function stereoEnergyDb(samples, length, start = 0, end = length) {
   let energy = 0;
@@ -54,6 +55,25 @@ function roomResidualEnergyDb(dry, dryLength, wet, wetLength, start, end) {
   return energy > 0 ? 10 * Math.log10(energy) : Number.NEGATIVE_INFINITY;
 }
 
+function roomResidualBandEnergyDb(dry, dryLength, wet, wetLength, minimumHz, maximumHz) {
+  let energy = 0;
+  for (let frequency = minimumHz; frequency <= maximumHz; frequency += 5) {
+    const phase = 2 * Math.PI * frequency / manifest.sampleRate;
+    for (const offset of [0, wetLength]) {
+      let real = 0;
+      let imaginary = 0;
+      for (let index = 0; index < wetLength; index++) {
+        const drySample = index < dryLength ? dry[(offset === 0 ? 0 : dryLength) + index] : 0;
+        const sample = wet[offset + index] - drySample;
+        real += sample * Math.cos(phase * index);
+        imaginary -= sample * Math.sin(phase * index);
+      }
+      energy += real ** 2 + imaginary ** 2;
+    }
+  }
+  return energy > 0 ? 10 * Math.log10(energy) : Number.NEGATIVE_INFINITY;
+}
+
 if (manifest.schemaVersion !== 2) errors.push("schemaVersion 必须为 2");
 if (!Number.isInteger(manifest.calibrationVersion) || manifest.calibrationVersion < 0) errors.push("calibrationVersion 无效");
 if (manifest.sampleRate !== 48000) errors.push("sampleRate 必须为 48000");
@@ -69,7 +89,7 @@ if (!Array.isArray(manifest.positions) || manifest.positions.length !== expected
 if (calibrated) {
   if (manifest.processing?.peakNormalized !== false) errors.push("校准资产不得峰值归一");
   if (manifest.processing?.runtimeEnergyNormalization !== false) errors.push("校准资产必须禁用运行时IR能量归一");
-  if (!["sda-ku100-room-v1", "sda-ku100-room-v2", "sda-ku100-room-v3"].includes(manifest.calibration?.algorithm)) {
+  if (!["sda-ku100-room-v1", "sda-ku100-room-v2", "sda-ku100-room-v3", "sda-ku100-room-v4"].includes(manifest.calibration?.algorithm)) {
     errors.push("校准算法版本无效");
   }
   if (!Number.isFinite(manifest.calibration?.commonArrivalSample)) errors.push("缺共同到达目标");
@@ -106,6 +126,23 @@ if (calibrated) {
       errors.push("v3缺对称化直达窗记录");
     }
     if (!(symmetry?.maxShiftSamples >= 0)) errors.push("v3缺对称化位移上限");
+  }
+  if (calibrationV4) {
+    const highPass = manifest.calibration?.roomResidualHighPass;
+    if (highPass?.algorithm !== "sda-ku100-room-residual-lr4-v1"
+      || highPass?.cutoffHz !== 150
+      || highPass?.order !== 4
+      || highPass?.commonLeftRightFilter !== true) {
+      errors.push("v4缺150Hz左右链接LR4 room residual高通记录");
+    }
+    if (highPass?.scope !== "offline derived BRIR room residual only"
+      || highPass?.applicationOrder !== "wet minus aligned dry, room-tail gate, LR4 high-pass, 4-50ms residual calibration") {
+      errors.push("v4 room residual高通范围或顺序无效");
+    }
+    const exclusions = highPass?.excludes;
+    if (!Array.isArray(exclusions) || !["dry HRIR", "runtime LFE", "final headphone EQ", "physical multichannel output"].every((item) => exclusions.includes(item))) {
+      errors.push("v4 room residual高通排除范围无效");
+    }
   }
 }
 
@@ -288,6 +325,28 @@ for (const position of manifest.positions ?? []) {
         if (Math.abs(recorded.afterSample - centroid) > 1e-4) errors.push(`${key}/dry: 质心provenance与资产不匹配`);
         if (Math.abs(position.processing.dry.fullHrirEnergyDbOutput - fullHrirEnergyDb) > 1e-4) {
           errors.push(`${key}/dry: full-HRIR能量provenance与资产不匹配`);
+        }
+        if (calibrationV4) {
+          const residualBands = position.processing.wet?.residualBands;
+          const bassEnergyDb = roomResidualBandEnergyDb(dry, dryLength, wet, wetLength, 20, 120);
+          const midEnergyDb = roomResidualBandEnergyDb(dry, dryLength, wet, wetLength, 250, 4000);
+          if (!Number.isFinite(residualBands?.baselineV3BassEnergyDb)
+            || !Number.isFinite(residualBands?.bassReductionDb)
+            || !Number.isFinite(residualBands?.baselineV3MidEnergyDb)
+            || !Number.isFinite(residualBands?.midDifferenceDb)) {
+            errors.push(`${key}/wet: v4缺residual频带基线provenance`);
+          } else {
+            if (Math.abs(residualBands.outputBassEnergyDb - bassEnergyDb) > 1e-4
+              || Math.abs(residualBands.outputMidEnergyDb - midEnergyDb) > 1e-4) {
+              errors.push(`${key}/wet: v4 residual频带provenance与资产不匹配`);
+            }
+            if (bassEnergyDb - residualBands.baselineV3BassEnergyDb > -6) {
+              errors.push(`${key}/wet: 20-120Hz room residual相对v3未降低至少6dB`);
+            }
+            if (Math.abs(midEnergyDb - residualBands.baselineV3MidEnergyDb) > 0.5) {
+              errors.push(`${key}/wet: 250Hz-4kHz room residual相对v3偏移超过0.5dB`);
+            }
+          }
         }
       }
     } catch (error) {

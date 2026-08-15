@@ -21,6 +21,7 @@ declare const self: {
 
 let decoder: SdaDecoder | null = null;
 let demuxer: Demuxer | null = null;
+let decoderConfigurationError: string | null = null;
 const lastObjectTargets = new Map<number, ObjectEvent>();
 
 function compactObjectEvents(frame: DecodedFrameData): void {
@@ -70,7 +71,11 @@ self.onmessage = async (e: MessageEvent) => {
     }
     case "open": {
       decoder?.free();
-      decoder = new SdaDecoder(msg.codec as CodecName);
+      // Keep the existing immediate decoder for raw and legacy MP4 streams.
+      // ALAC replaces it in onTrack before MP4Box starts delivering packets,
+      // because only the discovered track carries its required codec cookie.
+      decoder = new SdaDecoder(msg.codec as Exclude<CodecName, "alac">);
+      decoderConfigurationError = null;
       demuxer = null; // created on first push, after sniffing
       lastObjectTargets.clear();
       break;
@@ -82,17 +87,35 @@ self.onmessage = async (e: MessageEvent) => {
       break;
     }
     case "push": {
-      if (!decoder) break;
       const chunk = new Uint8Array(msg.chunk as ArrayBuffer);
       if (!demuxer) {
         const kind: ContainerKind = msg.kind ?? sniffContainer(chunk);
         demuxer = createDemuxer(kind, {
-          onTrack: (t) => self.postMessage(
-            { type: "track", track: t },
-            t.coverArt ? [t.coverArt.bytes.buffer] : [],
-          ),
+          onTrack: (t) => {
+            if (t.codec === "alac") {
+              try {
+                if (!t.decoderConfig) throw new Error("MP4 ALAC track is missing its decoder configuration");
+                decoder?.free();
+                decoder = SdaDecoder.withConfig("alac", t.decoderConfig);
+                decoderConfigurationError = null;
+              } catch (error) {
+                decoder?.free();
+                decoder = null;
+                decoderConfigurationError = error instanceof Error ? error.message : String(error);
+                self.postMessage({ type: "error", message: decoderConfigurationError });
+              }
+            }
+            self.postMessage(
+              { type: "track", track: t },
+              t.coverArt ? [t.coverArt.bytes.buffer] : [],
+            );
+          },
           onPacket: (p) => {
-            for (const au of p.frames) decoder!.push(au);
+            if (!decoder) {
+              if (!decoderConfigurationError) self.postMessage({ type: "error", message: "audio packets arrived before the decoder was configured" });
+              return;
+            }
+            for (const au of p.frames) decoder.push(au);
             drainFrames();
           },
           onError: (m) => self.postMessage({ type: "error", message: m }),
@@ -101,11 +124,14 @@ self.onmessage = async (e: MessageEvent) => {
       }
       demuxer.push(chunk);
       drainFrames();
+      self.postMessage({ type: "push-ack", sequence: msg.sequence });
       break;
     }
     }
   } catch (error) {
-    self.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    self.postMessage({ type: "error", message });
+    if (msg.type === "push") self.postMessage({ type: "push-ack", sequence: msg.sequence, error: message });
   }
 };
 

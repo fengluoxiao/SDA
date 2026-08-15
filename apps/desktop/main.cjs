@@ -70,6 +70,41 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
+const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".dts"]);
+const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
+const MAX_FOLDER_MEDIA_FILES = 2000;
+const MAX_FOLDER_ENTRIES = 20000;
+const MAX_SLICE_BYTES = 1 << 20;
+
+function isMediaFile(filePath) {
+  return MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function scanMediaFolder(root) {
+  const resolvedRoot = fs.realpathSync(root);
+  if (!fs.statSync(resolvedRoot).isDirectory()) throw new Error("选择的路径不是文件夹");
+  const paths = [];
+  let visitedEntries = 0;
+  const walk = (directory) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      console.warn("[SDA] 跳过不可读取目录:", directory, error);
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (++visitedEntries > MAX_FOLDER_ENTRIES || paths.length >= MAX_FOLDER_MEDIA_FILES) return;
+      if (entry.isSymbolicLink()) continue;
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(entryPath);
+      else if (entry.isFile() && isMediaFile(entryPath)) paths.push(entryPath);
+    }
+  };
+  walk(resolvedRoot);
+  return paths.sort((a, b) => path.relative(resolvedRoot, a).localeCompare(path.relative(resolvedRoot, b)));
+}
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
@@ -355,7 +390,7 @@ ipcMain.handle("sda:pick-file", async (event) => {
   const options = {
     ...(defaultPath ? { defaultPath } : {}),
     filters: [
-      { name: "Audio / Video", extensions: ["mkv", "mka", "mp4", "m4a", "wav", "bwf", "rf64", "thd", "mlp", "ec3", "eac3", "ac3", "dts"] },
+      { name: "Spatial audio", extensions: MEDIA_DIALOG_EXTENSIONS },
       { name: "All Files", extensions: ["*"] },
     ],
     properties: ["openFile"],
@@ -374,8 +409,27 @@ ipcMain.handle("sda:pick-file", async (event) => {
   return filePath;
 });
 
+ipcMain.handle("sda:pick-folder", async (event) => {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const defaultPath = readLastMediaDirectory();
+  const options = { ...(defaultPath ? { defaultPath } : {}), properties: ["openDirectory"] };
+  const { canceled, filePaths } = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options);
+  const folderPath = canceled ? null : filePaths[0] ?? null;
+  if (!folderPath) return { canceled: true, paths: [] };
+  try {
+    writeSettings({ lastMediaDirectory: folderPath });
+  } catch (error) {
+    console.warn("[SDA] 最近媒体目录未保存:", error);
+  }
+  return { canceled: false, paths: scanMediaFolder(folderPath) };
+});
+
 ipcMain.handle("sda:open-path", (_e, filePath) => {
+  if (typeof filePath !== "string" || !isMediaFile(filePath)) throw new Error("unsupported media path");
   const stat = fs.statSync(filePath);
+  if (!stat.isFile()) throw new Error("media path is not a regular file");
   const id = nextFileId++;
   openFiles.set(id, filePath);
   return { id, size: stat.size, name: path.basename(filePath) };
@@ -384,6 +438,9 @@ ipcMain.handle("sda:open-path", (_e, filePath) => {
 ipcMain.handle("sda:read-slice", (_e, id, offset, length) => {
   const filePath = openFiles.get(id);
   if (!filePath) throw new Error("unknown file id");
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > MAX_SLICE_BYTES) {
+    throw new Error("invalid file slice");
+  }
   const fd = fs.openSync(filePath, "r");
   try {
     const buf = Buffer.alloc(length);

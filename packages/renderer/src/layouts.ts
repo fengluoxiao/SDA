@@ -54,6 +54,13 @@ const TOP_MIDDLE: VirtualSpeaker[] = [
   { name: "TopMiddleRight", azimuth: -90, elevation: 45, distance: 1 },
 ];
 
+/** Stereo monitoring plus one bass-managed subwoofer. The `.1` is an output
+ * feed, not a claim that two-channel program material contains discrete LFE. */
+const BED_2_0: VirtualSpeaker[] = [
+  FRONT[0]!,
+  FRONT[1]!,
+];
+const BED_2_1: VirtualSpeaker[] = [...BED_2_0, FRONT[3]!];
 const BED_5_1 = [...FRONT, ...SURROUND_5];
 const BED_7_1 = [...FRONT, ...SURROUND_7];
 const BED_9_1 = [...FRONT, ...WIDE, ...SURROUND_7];
@@ -63,6 +70,8 @@ export const LAYOUT_7_1_4: VirtualSpeaker[] = [...BED_7_1, ...TOP_FRONT, ...TOP_
 
 /** 可选扬声器布局（床 + 顶箱组合）。 */
 export const LAYOUTS = {
+  "2.1": BED_2_1,
+  "2.0": BED_2_0,
   "5.1": BED_5_1,
   "5.1.2": [...BED_5_1, ...TOP_MIDDLE],
   "5.1.4": [...BED_5_1, ...TOP_FRONT, ...TOP_REAR],

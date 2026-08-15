@@ -12,6 +12,7 @@ import {
   type LayoutId,
   type OutputMode,
   type BinauralEqBands,
+  type BinauralLowFrequencyDiagnostic,
 } from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
@@ -36,8 +37,18 @@ function rendererHeadPose(pose: HeadTrackingPose): HeadPose {
   };
 }
 
-const FILE_CHUNK_SIZE = 1 << 20;
+interface PlaylistItem {
+  id: string;
+  source: PlaybackSource;
+  title: string;
+  identity: string;
+}
+
+// Keep each Electron worker decode turn short for object-heavy JOC streams.
+// push() now waits for a worker ACK, so this also bounds renderer message bursts.
+const FILE_CHUNK_SIZE = 1 << 18;
 const OUTPUT_LATENCY_STORAGE_KEY = "sda-output-latency-seconds";
+const BINAURAL_LOW_FREQUENCY_DIAGNOSTIC_STORAGE_KEY = "sda-binaural-low-frequency-diagnostic";
 type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 const DEFAULT_OUTPUT_LATENCY_SECONDS: OutputLatencySeconds = 0.1;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
@@ -90,6 +101,24 @@ function persistVolumeBalanceEnabled(enabled: boolean): void {
   }
 }
 
+function readBinauralLowFrequencyDiagnostic(): BinauralLowFrequencyDiagnostic {
+  try {
+    return localStorage.getItem(BINAURAL_LOW_FREQUENCY_DIAGNOSTIC_STORAGE_KEY) === "low-cut"
+      ? "low-cut"
+      : "reference";
+  } catch {
+    return "reference";
+  }
+}
+
+function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
+  try {
+    localStorage.setItem(BINAURAL_LOW_FREQUENCY_DIAGNOSTIC_STORAGE_KEY, mode);
+  } catch {
+    // Persistence failures must not prevent changing the active output graph.
+  }
+}
+
 try {
   localStorage.removeItem("sda-layout-level-compensation-enabled");
 } catch {
@@ -124,8 +153,11 @@ export function App() {
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [binauralMetadata, setBinauralMetadata] = useState<BinauralRenderMetadata | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
+  const [soundingObjectIds, setSoundingObjectIds] = useState<ReadonlySet<number>>(new Set());
   const [diagnosticObjects, setDiagnosticObjects] = useState<VisualObject[]>([]);
   const lastDiagnosticUpdateRef = useRef(0);
+  const lastHealthUiUpdateRef = useRef(0);
+  const lastHealthEscalationRef = useRef<PlayerHealthSnapshot["callbackGapEscalation"]>("none");
   /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
    *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
   const [mutedIds, setMutedIds] = useState<ReadonlySet<number>>(new Set());
@@ -153,10 +185,13 @@ export function App() {
     };
     return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
   });
+  const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
-  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "objects" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "objects" | "playlist" | null>(null);
+  const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
+  const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
   const [headphoneProfiles, setHeadphoneProfiles] = useState(() => availableHeadphoneCompensationProfiles());
@@ -170,14 +205,29 @@ export function App() {
   const fileNameRef = useRef<string | null>(null);
   /** A monotonically increasing token makes the most recent play request win. */
   const playRequestRef = useRef(0);
+  const playlistItemSerialRef = useRef(0);
+  const playlistRef = useRef<PlaylistItem[]>([]);
+  const playlistCurrentIdRef = useRef<string | null>(null);
+  /** Invalidates ended callbacks from an item removed/replaced mid-playback. */
+  const playlistRevisionRef = useRef(0);
+  const playingRef = useRef(false);
   const playRef = useRef<(source: PlaybackSource) => Promise<void>>(async () => {});
+  const playPlaylistItemRef = useRef<(id: string) => void>(() => {});
   const volumeBalanceRef = useRef(volumeBalanceEnabled);
   const binauralEqBandsRef = useRef(binauralEqBands);
   volumeBalanceRef.current = volumeBalanceEnabled;
   binauralEqBandsRef.current = binauralEqBands;
+  playlistRef.current = playlist;
+  playlistCurrentIdRef.current = playlistCurrentId;
+  playingRef.current = playing;
 
   const createPlayer = useCallback(
-    async (m: OutputMode, lid: LayoutId | "auto", isCurrent: () => boolean) => {
+    async (
+      m: OutputMode,
+      lid: LayoutId | "auto",
+      isCurrent: () => boolean,
+      playbackPlaylistRevision: number,
+    ) => {
       const player = new SdaPlayer({
         onOutputLatencyRecommendation: (seconds) => {
           if (!isCurrent()) return;
@@ -200,10 +250,11 @@ export function App() {
         onBinauralMetadata: (metadata) => {
           if (isCurrent()) setBinauralMetadata(metadata);
         },
-        onVisualState: (objs, t) => {
+        onVisualState: (objs, t, sounding) => {
           if (!isCurrent()) return;
           objectsRef.current = objs;
           setObjects(objs);
+          setSoundingObjectIds(sounding);
           if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
             lastDiagnosticUpdateRef.current = t;
             setDiagnosticObjects(objs);
@@ -215,7 +266,13 @@ export function App() {
           setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
         },
         onHealth: (snapshot) => {
-          if (isCurrent()) setHealth(snapshot);
+          if (!isCurrent()) return;
+          const now = performance.now();
+          const escalationChanged = snapshot.callbackGapEscalation !== lastHealthEscalationRef.current;
+          if (!escalationChanged && now - lastHealthUiUpdateRef.current < 250) return;
+          lastHealthUiUpdateRef.current = now;
+          lastHealthEscalationRef.current = snapshot.callbackGapEscalation;
+          setHealth(snapshot);
         },
         onError: (message) => {
           if (!isCurrent()) return;
@@ -223,7 +280,17 @@ export function App() {
           setErrors((prev) => [...prev.slice(-19), message]);
         },
         onEnded: () => {
-          if (isCurrent()) setPlaying(false);
+          // A queue edit or playback request invalidates the old item's
+          // completion so it cannot advance a replacement/cleared playlist.
+          if (!isCurrent() || playlistRevisionRef.current !== playbackPlaylistRevision) return;
+          const currentId = playlistCurrentIdRef.current;
+          const currentIndex = playlistRef.current.findIndex((item) => item.id === currentId);
+          const next = currentIndex >= 0 ? playlistRef.current[currentIndex + 1] : null;
+          if (next) playPlaylistItemRef.current(next.id);
+          else {
+            playingRef.current = false;
+            setPlaying(false);
+          }
         },
       }, { initialOutputLatencySeconds: outputLatencySecondsRef.current });
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
@@ -433,6 +500,7 @@ export function App() {
   const play = useCallback(
     async (source: PlaybackSource) => {
       const request = ++playRequestRef.current;
+      const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
       // A new request invalidates and tears down the audible player immediately.
       // Its async reader may still unwind, but its callbacks are token-gated and it
@@ -447,6 +515,7 @@ export function App() {
       setBinauralMetadata(null);
       objectsRef.current = [];
       setObjects([]);
+      setSoundingObjectIds(new Set());
       setDiagnosticObjects([]);
       lastDiagnosticUpdateRef.current = 0;
       setPosition(0);
@@ -464,7 +533,7 @@ export function App() {
       try {
         // Build privately first. A stale request never gets to replace or dispose
         // the active player published by a newer request.
-        const player = await createPlayer(mode, layoutId, isCurrent);
+        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision);
         if (!player || !isCurrent()) return;
         playerRef.current = player;
         setPlayerReady(player);
@@ -475,6 +544,8 @@ export function App() {
         }
         player.setVolume(volume);
         player.setVolumeBalance(volumeBalanceEnabled);
+        player.setBinauralEqBands(binauralEqBandsRef.current);
+        player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnostic);
         player.setHeadphoneCompensation(headphoneProfileId);
         applyMutes(effectiveMutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         // 建 player 期间用户已按暂停：补发暂停意图
@@ -507,22 +578,56 @@ export function App() {
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, headphoneProfileId, applyMutes, effectiveMutedIds],
+    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, binauralLowFrequencyDiagnostic, headphoneProfileId, applyMutes, effectiveMutedIds],
   );
   playRef.current = play;
 
+  const playPlaylistItem = useCallback((id: string) => {
+    const item = playlistRef.current.find((candidate) => candidate.id === id);
+    if (!item) return;
+    playlistCurrentIdRef.current = id;
+    setPlaylistCurrentId(id);
+    void play(item.source);
+  }, [play]);
+  playPlaylistItemRef.current = playPlaylistItem;
+
+  const appendToPlaylist = useCallback((sources: readonly PlaybackSource[]) => {
+    const existing = playlistRef.current;
+    const identities = new Set(existing.map((item) => item.identity));
+    const additions: PlaylistItem[] = [];
+    for (const source of sources) {
+      const identity = source.kind === "path"
+        ? `path:${source.path.toLowerCase()}`
+        : `file:${source.file.name}:${source.file.size}:${source.file.lastModified}`;
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      const title = source.kind === "path"
+        ? source.path.split(/[\\/]/).pop() ?? source.path
+        : source.file.name;
+      additions.push({ id: `playlist-${++playlistItemSerialRef.current}`, source, title, identity });
+    }
+    if (additions.length === 0) return;
+    const next = [...existing, ...additions];
+    playlistRef.current = next;
+    setPlaylist(next);
+    const firstAddition = additions[0];
+    if (
+      firstAddition &&
+      (!playlistCurrentIdRef.current || (!playingRef.current && !pausedRef.current))
+    ) playPlaylistItemRef.current(firstAddition.id);
+  }, []);
+
   useEffect(() => window.sdaDesktop?.onOpenFile?.((path) => {
-    void playRef.current({ kind: "path", path });
-  }), []);
+    appendToPlaylist([{ kind: "path", path }]);
+  }), [appendToPlaylist]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file) void play({ kind: "file", file });
+      appendToPlaylist([...e.dataTransfer.files].map((file) => ({ kind: "file", file })));
     },
-    [play],
+    [appendToPlaylist],
   );
 
   /** 播放中 → 暂停；暂停中 → 继续；已播完 → 重播（macOS 播放键行为）。
@@ -545,8 +650,13 @@ export function App() {
 
   const changeOutputMode = useCallback((next: OutputMode) => {
     playerRef.current?.setOutputMode(next);
+    if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
+      setLayoutId("2.0");
+      setDetectedLayout(null);
+      playerRef.current?.setLayout(LAYOUTS["2.0"]);
+    }
     setMode(next);
-  }, []);
+  }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
     setLayoutId(next);
@@ -587,11 +697,35 @@ export function App() {
     playerRef.current?.setHeadphoneCompensation(next);
   }, []);
 
-  const selectedHeadphoneProfile = headphoneProfiles.find((profile) => profile.id === headphoneProfileId) ?? null;
-
-  const stopPlayback = useCallback(() => {
-    playerRef.current?.stop();
+  const changeBinauralLowFrequencyDiagnostic = useCallback((next: BinauralLowFrequencyDiagnostic) => {
+    persistBinauralLowFrequencyDiagnostic(next);
+    setBinauralLowFrequencyDiagnostic(next);
+    playerRef.current?.setBinauralLowFrequencyDiagnostic(next);
   }, []);
+
+  const resetBinauralEq = useCallback(() => {
+    for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
+    const next = { low: 0, mid: 0, high: 0 };
+    setBinauralEqBands(next);
+    playerRef.current?.setBinauralEqBands(next);
+  }, []);
+
+  const selectedHeadphoneProfile = headphoneProfiles.find((profile) => profile.id === headphoneProfileId) ?? null;
+  const stereoProgram = track?.objectChannels === 0
+    && track.bedLabels?.length === 2
+    && new Set(track.bedLabels).size === 2
+    && track.bedLabels.some((label) => label === "L" || label === "FrontLeft")
+    && track.bedLabels.some((label) => label === "R" || label === "FrontRight");
+
+  // A decoded fixed L/R programme has no meaningful immersive speaker layout.
+  // Lock it to 2.0 initially; users may then opt into the only other applicable
+  // physical topology, 2.1 bass management.
+  useEffect(() => {
+    if (!stereoProgram || layoutId === "2.0" || layoutId === "2.1") return;
+    setLayoutId("2.0");
+    setDetectedLayout(null);
+    playerRef.current?.setLayout(LAYOUTS["2.0"]);
+  }, [stereoProgram, layoutId]);
 
   const replay = useCallback(() => {
     const source = lastSourceRef.current;
@@ -602,18 +736,71 @@ export function App() {
     const desktop = window.sdaDesktop;
     if (desktop?.pickFile) {
       const path = await desktop.pickFile();
-      if (path) void play({ kind: "path", path });
+      if (path) appendToPlaylist([{ kind: "path", path }]);
       return;
     }
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".mkv,.mka,.mp4,.m4a,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) void play({ kind: "file", file });
-    };
+    input.multiple = true;
+    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
+    input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
-  }, [play]);
+  }, [appendToPlaylist]);
+
+  const openFolder = useCallback(async () => {
+    const result = await window.sdaDesktop?.pickFolder?.();
+    if (!result || result.canceled) return;
+    appendToPlaylist(result.paths.map((path) => ({ kind: "path", path })));
+  }, [appendToPlaylist]);
+
+  const removePlaylistItem = useCallback((id: string) => {
+    const current = playlistRef.current;
+    const index = current.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const next = current.filter((item) => item.id !== id);
+    const replacingCurrent = playlistCurrentIdRef.current === id;
+    // Removing an upcoming/non-current item must still let the current item's
+    // end callback choose the new next item. Only invalidate when its identity
+    // is being replaced or removed.
+    if (replacingCurrent) playlistRevisionRef.current++;
+    playlistRef.current = next;
+    setPlaylist(next);
+    if (!replacingCurrent) return;
+    const replacement = next[index] ?? next[index - 1] ?? null;
+    playlistCurrentIdRef.current = replacement?.id ?? null;
+    setPlaylistCurrentId(replacement?.id ?? null);
+    if (replacement) playPlaylistItemRef.current(replacement.id);
+    else {
+      // Invalidate the active reader and dispose it; SdaPlayer intentionally has
+      // no public stop because file/session disposal is the safe stop boundary.
+      playRequestRef.current++;
+      const active = playerRef.current;
+      playerRef.current = null;
+      setPlayerReady(null);
+      void active?.dispose();
+      playingRef.current = false;
+      pausedRef.current = false;
+      setPlaying(false);
+      setPaused(false);
+    }
+  }, []);
+
+  const clearPlaylist = useCallback(() => {
+    playlistRevisionRef.current++;
+    playlistRef.current = [];
+    playlistCurrentIdRef.current = null;
+    setPlaylist([]);
+    setPlaylistCurrentId(null);
+    playRequestRef.current++;
+    const active = playerRef.current;
+    playerRef.current = null;
+    setPlayerReady(null);
+    void active?.dispose();
+    playingRef.current = false;
+    pausedRef.current = false;
+    setPlaying(false);
+    setPaused(false);
+  }, []);
 
   return (
     <div
@@ -634,12 +821,16 @@ export function App() {
             <option value="multichannel">多声道</option>
           </select>
           <select value={layoutId} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
-            <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>
-            {(Object.keys(LAYOUTS) as LayoutId[]).map((id) => (
-              <option key={id} value={id}>
-                Dolby {id}
-              </option>
-            ))}
+            {!stereoProgram && mode !== "stereo" && <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>}
+            {(Object.keys(LAYOUTS) as LayoutId[])
+              .filter((id) => (stereoProgram || mode === "stereo")
+                ? id === "2.0" || id === "2.1"
+                : id !== "2.0" && id !== "2.1")
+              .map((id) => (
+                <option key={id} value={id}>
+                  {id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
+                </option>
+              ))}
           </select>
           <select
             value={headphoneProfileId ?? ""}
@@ -666,9 +857,11 @@ export function App() {
           <button onClick={() => void openFile()}>
             打开文件
           </button>
-          <button disabled={!playing} onClick={() => playerRef.current?.stop()}>
-            停止
-          </button>
+          {window.sdaDesktop?.pickFolder && (
+            <button onClick={() => void openFolder()}>
+              添加文件夹
+            </button>
+          )}
           <button className="settings-toggle" onClick={() => setSettingsOpen((open) => !open)} title="系统设置" aria-expanded={settingsOpen}>
             ⚙
           </button>
@@ -699,6 +892,20 @@ export function App() {
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
               <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机补偿档案。</p>
+              <label className="settings-switch" title="将最终双耳低/中/高三段 EQ 全部恢复为 0 dB；不改变 HRTF、LFE 或耳机补偿档案。">
+                <span>耳机 EQ 归零</span>
+                <button type="button" onClick={resetBinauralEq}>归零</button>
+              </label>
+              <label className="settings-switch" title="仅用于鼓声 A/B：在最终双耳输出应用左右链接的 180 Hz、-3 dB low shelf。选择会在重启后恢复；不会改动 HRTF、LFE、主声道路由、物理多声道或耳机补偿 FIR。">
+                <span>双耳低频诊断 <small>{binauralLowFrequencyDiagnostic === "low-cut" ? "180 Hz / -3 dB" : "参考（旁路）"}</small></span>
+                <select
+                  value={binauralLowFrequencyDiagnostic}
+                  onChange={(event) => changeBinauralLowFrequencyDiagnostic(event.target.value as "reference" | "low-cut")}
+                >
+                  <option value="reference">参考</option>
+                  <option value="low-cut">低频诊断</option>
+                </select>
+              </label>
               {([
                 ["low", "低频", "120 Hz"],
                 ["mid", "中频", "1.2 kHz"],
@@ -756,7 +963,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={effectiveMutedIds} />
+          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} />
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
@@ -767,26 +974,10 @@ export function App() {
             objectCount={objects.length}
             volume={volume}
             onTogglePlay={togglePlay}
-            onStop={stopPlayback}
             onReplay={replay}
             onVolume={changeVolume}
           />
         </section>
-        {selectedHeadphoneProfile && (
-        <aside>
-          <div className="panel">
-            <h2>耳机补偿</h2>
-            <dl>
-              <dt>模式</dt>
-              <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
-              <dt>来源</dt>
-              <dd>{selectedHeadphoneProfile.source}</dd>
-              {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
-              {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
-            </dl>
-          </div>
-        </aside>
-        )}
       </main>
 
       <div className="float-dock">
@@ -807,7 +998,7 @@ export function App() {
                 <dd>{track.objectChannels === undefined ? "等待首帧" : `${track.objectChannels} 路动态对象`}</dd>
                 <dt>渲染</dt>
                 <dd>{mode === "multichannel"
-                  ? `物理 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 系统声卡`
+                  ? `${(layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId) === "2.1" ? "物理 2.1：L/R + 85 Hz 低音管理 sub（离散 LFE 另经 120 Hz 低通）" : `物理 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 系统声卡`}`
                   : `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → ${mode === "binaural" ? "耳机 L/R" : "立体声 L/R"}`}</dd>
                 <dt>容器</dt>
                 <dd>{track.container}</dd>
@@ -825,7 +1016,7 @@ export function App() {
                   : "等待图"}</dd>
                 <dt>请求输出延迟</dt>
                 <dd>{health
-                  ? `当前 ${Math.round(health.requestedOutputLatencySeconds * 1000)} ms / 下次 ${Math.round(health.nextRecommendedOutputLatencySeconds * 1000)} ms${health.nextRecommendedOutputLatencySeconds !== health.requestedOutputLatencySeconds ? "（下次生效）" : ""}`
+                  ? `请求 ${Math.round(health.requestedOutputLatencySeconds * 1000)} ms / 实际 base ${Math.round(health.baseLatencySeconds * 1000)} ms${health.outputLatencySeconds !== null ? ` / output ${Math.round(health.outputLatencySeconds * 1000)} ms` : ""} / ${health.audioContextSampleRate} Hz${health.outputLatencyHintLimited ? "（latency hint 未充分采纳）" : ""}；下次 ${Math.round(health.nextRecommendedOutputLatencySeconds * 1000)} ms`
                   : "等待数据"}</dd>
                 <dt>解码实时倍率</dt>
                 <dd>{health ? `${health.decodeRealtimeMultiplier.toFixed(2)}×（5 秒滑窗，前瞻填满后会被节流）` : "等待数据"}</dd>
@@ -833,7 +1024,7 @@ export function App() {
                 <dd>{health ? `均值 ${health.tick.processMeanMs.toFixed(3)} ms / 最大 ${health.tick.processMaxMs.toFixed(3)} ms` : "等待 tick"}</dd>
                 <dt>回调间隙</dt>
                 <dd>{health
-                  ? `累计 ${health.callbackGaps} 次；当前 ${health.tick.callbackGaps} 次 / 最大 ${health.tick.callbackGapMaxMs.toFixed(1)} ms`
+                  ? `累计 ${health.callbackGaps} 次；当前 ${health.tick.callbackGaps} 次（>25 ms ${health.tick.callbackGapsOver25Ms}）/ 最大 ${health.tick.callbackGapMaxMs.toFixed(1)} ms；2.5 秒 burst ${health.callbackGapWindowEvents} 次 / ${health.callbackGapWindowTicks} tick；5 秒持续 ${health.callbackGapDistributedEvents} 次 / ${health.callbackGapDistributedTicks} tick；升级 ${health.callbackGapEscalation}`
                   : "等待 tick"}</dd>
                 <dt>断供样本</dt>
                 <dd>{health
@@ -863,11 +1054,46 @@ export function App() {
             </dl>
           </div>
         )}
+        {floatPanel === "headphone" && selectedHeadphoneProfile && (
+          <div className="panel float-panel">
+            <h2>耳机补偿</h2>
+            <dl>
+              <dt>模式</dt>
+              <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
+              <dt>来源</dt>
+              <dd>{selectedHeadphoneProfile.source}</dd>
+              {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
+              {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
+            </dl>
+          </div>
+        )}
+        {floatPanel === "playlist" && (
+          <div className="panel float-panel playlist-panel" aria-label="播放列表">
+            <div className="playlist-head">
+              <h2>播放列表 <span>{playlistCurrentId ? `${Math.max(1, playlist.findIndex((item) => item.id === playlistCurrentId) + 1)}/${playlist.length}` : `${playlist.length}`}</span></h2>
+              <button disabled={playlist.length === 0} onClick={clearPlaylist}>清空</button>
+            </div>
+            {playlist.length === 0 ? <p className="dim">打开文件或添加文件夹后，曲目会出现在这里。</p> : (
+              <ol className="playlist-items">
+                {playlist.map((item) => {
+                  const current = item.id === playlistCurrentId;
+                  return <li key={item.id} className={current ? "current" : ""} aria-current={current ? "true" : undefined}>
+                    <button className="playlist-select" onClick={() => playPlaylistItem(item.id)} title={`播放 ${item.title}`}>
+                      <span>{current ? (paused ? "暂停" : "播放") : ""}</span><b>{item.title}</b>
+                    </button>
+                    <button className="playlist-remove" onClick={() => removePlaylistItem(item.id)} title={`移除 ${item.title}`}>×</button>
+                  </li>;
+                })}
+              </ol>
+            )}
+          </div>
+        )}
         {floatPanel === "objects" && (
           <ObjectPanel
             className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}
+            soundingIds={soundingObjectIds}
             soloIds={soloIds}
             binauralMetadata={binauralMetadata}
             onToggleMute={toggleMute}
@@ -885,6 +1111,18 @@ export function App() {
             title="双耳元数据"
             onClick={() => setFloatPanel(floatPanel === "binaural" ? null : "binaural")}
           >双耳</button>
+          {selectedHeadphoneProfile && (
+            <button
+              className={floatPanel === "headphone" ? "active" : ""}
+              title="耳机补偿详情"
+              onClick={() => setFloatPanel(floatPanel === "headphone" ? null : "headphone")}
+            >耳机</button>
+          )}
+          <button
+            className={floatPanel === "playlist" ? "active" : ""}
+            title={`播放列表 (${playlist.length})`}
+            onClick={() => setFloatPanel(floatPanel === "playlist" ? null : "playlist")}
+          >列表</button>
           <button
             className={floatPanel === "objects" ? "active" : ""}
             title={`对象 (${diagnosticObjects.length})`}

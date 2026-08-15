@@ -44,12 +44,21 @@ function player() {
     initialRendererRate: null,
     requestedOutputLatencySeconds: 0.1,
     pendingOutputLatencySeconds: 0.1,
-    sustainedCallbackGapTicks: 0,
+    callbackGapEvidence: [],
     health: {
       requestedOutputLatencySeconds: 0.1,
       nextRecommendedOutputLatencySeconds: 0.1,
+      baseLatencySeconds: 0.1,
+      outputLatencySeconds: null,
+      audioContextSampleRate: 48_000,
+      outputLatencyHintLimited: false,
       callbackGaps: 0,
       underrunSamples: 0,
+      callbackGapWindowEvents: 0,
+      callbackGapWindowTicks: 0,
+      callbackGapDistributedEvents: 0,
+      callbackGapDistributedTicks: 0,
+      callbackGapEscalation: "none",
       tick: {},
       decodeRealtimeMultiplier: 0,
       fedBufferedSeconds: 0,
@@ -135,8 +144,9 @@ function player() {
   assert.equal(p.startupAcceptedEnd, 15);
 }
 
-// Sustained callback gaps only recommend a future-session latency. They must
-// never replace the active renderer or disturb its sample clock.
+// The actual Electron pattern is distributed roughly once per second. It must
+// upgrade an active session without treating a single 49/62ms outlier as cause
+// to rebuild. A separate two-tick, severe burst path remains fast.
 {
   const p = player();
   let recreateCalls = 0;
@@ -145,16 +155,74 @@ function player() {
   p.cb.onOutputLatencyRecommendation = (seconds) => recommendations.push(seconds);
   p.renderer = { ctx: { sampleRate: 48_000 } };
   p.initArgs = {};
-  p.scheduleRecreate = () => { recreateCalls++; };
+  p.initialRendererReady = true;
+  p.playbackStarted = true;
+  p.aheadSeconds = () => 1;
+  p.scheduleRecreate = (rate) => { recreateCalls++; assert.equal(rate, 48_000); };
   p.emitHealth = () => { healthEmits++; };
-  for (let i = 0; i < 8; i++) p.observeCallbackGaps(1);
 
+  // One 49/62ms event and broad-only 13–25ms telemetry never qualify.
+  p.observeCallbackGaps(1, 49, 0);
+  p.observeCallbackGaps(1, 62, 5_100);
+  p.observeCallbackGaps(0, 24, 5_200);
   assert.equal(recreateCalls, 0);
-  assert.equal(p.requestedOutputLatencySeconds, 0.1);
+
+  // Four non-contiguous eligible events across at least three ticks in five
+  // seconds match the real Electron pattern and upgrade 100 → 200ms.
+  p.resetOutputLatencyProtection();
+  p.observeCallbackGaps(1, 62, 6_000);
+  p.observeCallbackGaps(1, 28, 7_100);
+  p.observeCallbackGaps(1, 34, 8_000);
+  assert.equal(recreateCalls, 0);
+  p.observeCallbackGaps(1, 26, 9_200);
+  assert.equal(recreateCalls, 1);
+  assert.equal(p.requestedOutputLatencySeconds, 0.2);
   assert.equal(p.pendingOutputLatencySeconds, 0.2);
-  assert.equal(p.health.nextRecommendedOutputLatencySeconds, 0.2);
+  assert.equal(p.health.callbackGapEscalation, "distributed");
   assert.deepEqual(recommendations, [0.2]);
   assert.equal(healthEmits, 1);
+
+  // A fresh two-tick burst reaches 100ms cumulative maxima and upgrades 200 → 300ms.
+  p.observeCallbackGaps(2, 62, 10_000);
+  p.observeCallbackGaps(2, 40, 10_125);
+  assert.equal(recreateCalls, 2);
+  assert.equal(p.requestedOutputLatencySeconds, 0.3);
+  assert.equal(p.health.callbackGapEscalation, "burst");
+  assert.deepEqual(recommendations, [0.2, 0.3]);
+
+  p.observeCallbackGaps(2, 62, 11_000);
+  p.observeCallbackGaps(2, 40, 11_125);
+  assert.equal(recreateCalls, 2, "300ms cap must not schedule another recreation");
+
+  // Evidence during an unsafe low-buffer moment persists only as a next-session
+  // recommendation and leaves the current output context unchanged.
+  const lowAhead = player();
+  let lowRecreateCalls = 0;
+  lowAhead.renderer = { ctx: { sampleRate: 48_000 } };
+  lowAhead.initArgs = {};
+  lowAhead.initialRendererReady = true;
+  lowAhead.playbackStarted = true;
+  lowAhead.aheadSeconds = () => 0.25;
+  lowAhead.scheduleRecreate = () => { lowRecreateCalls++; };
+  lowAhead.emitHealth = () => {};
+  lowAhead.observeCallbackGaps(1, 62, 0);
+  lowAhead.observeCallbackGaps(1, 31, 1_000);
+  lowAhead.observeCallbackGaps(1, 34, 2_000);
+  lowAhead.observeCallbackGaps(1, 28, 3_000);
+  assert.equal(lowRecreateCalls, 0);
+  assert.equal(lowAhead.requestedOutputLatencySeconds, 0.1);
+  assert.equal(lowAhead.pendingOutputLatencySeconds, 0.2);
+  assert.equal(lowAhead.health.callbackGapEscalation, "deferred-low-buffer");
+
+  p.requestedOutputLatencySeconds = 0.1;
+  p.pendingOutputLatencySeconds = 0.1;
+  p.recreatePending = 1;
+  p.observeCallbackGaps(1, 62, 12_000);
+  p.observeCallbackGaps(1, 31, 13_000);
+  p.observeCallbackGaps(1, 34, 14_000);
+  p.observeCallbackGaps(1, 28, 15_000);
+  assert.equal(recreateCalls, 2, "an in-progress recreation prevents stacking another one");
+  assert.equal(p.callbackGapEvidence.length, 0, "recreation clears stale evidence");
 }
 
 // PCM and startAt remain blocked until the stream-rate renderer is known ready.

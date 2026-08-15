@@ -14,6 +14,7 @@ use js_sys::Float32Array;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+pub mod alac_pipeline;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
@@ -169,7 +170,8 @@ impl DecodedFrame {
 
 /// Stateful streaming decoder. Construct with a codec name
 /// (`"auto" | "truehd" | "eac3" | "dts"`), `push()` raw bytes, then drain
-/// with `next_frame()` until it returns `undefined`.
+/// with `next_frame()` until it returns `undefined`. ALAC is constructed with
+/// `with_config()` because its MP4 codec cookie is required before decoding.
 #[wasm_bindgen]
 pub struct SdaDecoder {
     pipeline: Box<dyn Pipeline>,
@@ -196,6 +198,25 @@ impl SdaDecoder {
                 errors: Vec::new(),
             }),
         }
+    }
+
+    /// Construct a decoder whose container codec requires initialization bytes.
+    /// Currently this is used by ALAC MP4 tracks and expects the full `alac` atom.
+    #[wasm_bindgen(js_name = withConfig)]
+    pub fn with_config(codec: &str, config: &[u8]) -> Result<SdaDecoder, JsValue> {
+        let pipeline: Box<dyn Pipeline> = match codec {
+            "alac" => Box::new(
+                alac_pipeline::AlacPipeline::from_cookie(config)
+                    .map_err(|error| JsValue::from_str(&format!("invalid ALAC configuration: {error}")))?,
+            ),
+            other => return Err(JsValue::from_str(&format!("codec does not accept container configuration: {other}"))),
+        };
+        Ok(SdaDecoder {
+            pipeline,
+            sniff: None,
+            queue: VecDeque::new(),
+            errors: Vec::new(),
+        })
     }
 
     /// Feed raw bitstream bytes (any chunking — the extractors re-frame).

@@ -5,6 +5,8 @@ interface ObjectPanelProps {
   objects: readonly VisualObject[];
   mutedIds: ReadonlySet<number>;
   soloIds: ReadonlySet<number>;
+  /** Worklet-confirmed post-gain/post-mute object signal IDs. */
+  soundingIds: ReadonlySet<number>;
   binauralMetadata: BinauralRenderMetadata | null;
   onToggleMute: (id: number) => void;
   /** clearAll = Ctrl/Cmd+点击：取消全部独奏。 */
@@ -25,6 +27,7 @@ export const ObjectPanel = memo(function ObjectPanel({
   objects,
   mutedIds,
   soloIds,
+  soundingIds,
   binauralMetadata,
   onToggleMute,
   onToggleSolo,
@@ -54,11 +57,12 @@ export const ObjectPanel = memo(function ObjectPanel({
           const muted = mutedIds.has(object.id);
           const soloed = soloIds.has(object.id);
           const silenced = soloIds.size > 0 ? !soloed || muted : muted;
+          const sounding = !silenced && soundingIds.has(object.id);
           const distance = formatDistance(object);
           return (
             <li
               key={object.id}
-              className={`obj-row${soloed ? " obj-solo" : ""}${silenced ? " obj-muted" : ""}`}
+              className={`obj-row${soloed ? " obj-solo" : ""}${silenced ? " obj-muted" : ""}${sounding ? " obj-sounding" : ""}`}
             >
               <span className="obj-id">#{object.id}</span>
               <span className="obj-info">

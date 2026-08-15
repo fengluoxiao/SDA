@@ -50,6 +50,9 @@ export interface BinauralEqBands {
   high: number;
 }
 
+/** Reversible final-output A/B used to isolate excess low-frequency perception. */
+export type BinauralLowFrequencyDiagnostic = "reference" | "low-cut";
+
 interface BinauralEqFilter {
   type: BiquadFilterType;
   frequency: number;
@@ -62,8 +65,12 @@ const BINAURAL_EQ_BANDS: ReadonlyArray<Omit<BinauralEqFilter, "gain"> & { band: 
   { band: "mid", type: "peaking", frequency: 1200, q: 0.8 },
   { band: "high", type: "highshelf", frequency: 6000, q: 0.7 },
 ];
+/** Final binaural A/B only: tests perceived low-frequency excess without touching HRTF or LFE routing. */
+const BINAURAL_LOW_DIAGNOSTIC_FILTER = { type: "lowshelf" as const, frequency: 180, q: 0.7, gain: -3 };
 
-/** LFE 低通：ITU-R BS.775 / 杜比规范 120Hz。 */
+/** Genelec 7000-series stereo bass-management crossover default. */
+const BASS_MANAGEMENT_CROSSOVER_HZ = 85;
+/** Dedicated LFE low-pass: distinct from the stereo bass-management crossover. */
 const LFE_LOWPASS_HZ = 120;
 /** 双耳耳机路径不套用影院/音箱的 LFE +10dB 回放补偿，避免底鼓过量。 */
 const BINAURAL_LFE_INBAND_GAIN = 1;
@@ -171,8 +178,10 @@ export interface RendererStats {
   underrunSamples: number;
   rejectedBatches: number;
   rejectedSources: number;
-  /** 输出侧：process() 回调间隔超过阈值（12ms）的次数与最大间隙。 */
+  /** Output-side process() gaps above the broad 12ms diagnostic threshold. */
   callbackGaps?: number;
+  /** Subset of callbackGaps strictly above 25ms, eligible for FIFO escalation. */
+  callbackGapsOver25Ms?: number;
   callbackGapMaxMs?: number;
 }
 
@@ -201,6 +210,8 @@ export interface RendererOptions {
   headPose?: HeadPoseOptions;
   /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
   onConsumedTick?: (stats: RendererStats) => void;
+  /** Throttled post-gain/post-mute object activity from the render worklet. */
+  onObjectActivity?: (ids: readonly number[]) => void;
   onBatchResult?: (result: { sequence: number; accepted: boolean; samples: number; reason?: string }) => void;
 }
 
@@ -302,8 +313,12 @@ export class SpatialRenderer {
   private headphoneProfileId: string | null = null;
   /** User-controlled final 3-band EQ. Never affects stereo or physical multichannel output. */
   private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
+  /** Reversible final-output A/B; default reference is a literal bypass. */
+  private binauralLowFrequencyDiagnosticMode: BinauralLowFrequencyDiagnostic = "reference";
   /** 常驻最终双耳 EQ；实时滑动只改这些 AudioParam，不重建输出图。 */
   private binauralEqNodes = new Map<keyof BinauralEqBands, [BiquadFilterNode, BiquadFilterNode]>();
+  /** Persistent linked L/R low-shelf used only for the final-output diagnostic A/B. */
+  private binauralLowDiagnosticNodes: [BiquadFilterNode, BiquadFilterNode] | null = null;
   private binauralEqHeadroom: GainNode | null = null;
   /** 当前输出图 revision；迟到的 FIR 请求不得接回已重建的图。 */
   private outputGraphRevision = 0;
@@ -317,6 +332,7 @@ export class SpatialRenderer {
   private headphonePreamp: [GainNode, GainNode] | null = null;
   private headphoneConvolvers: [ConvolverNode, ConvolverNode] | null = null;
   private onConsumedTick?: (stats: RendererStats) => void;
+  private onObjectActivity?: (ids: readonly number[]) => void;
   private onBatchResult?: (result: { sequence: number; accepted: boolean; samples: number; reason?: string }) => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -334,6 +350,7 @@ export class SpatialRenderer {
     this.headPose = new HeadPoseTracker(options.headPose);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
+    this.onObjectActivity = options.onObjectActivity;
     this.onBatchResult = options.onBatchResult;
     this.buildExpansion();
   }
@@ -382,7 +399,64 @@ export class SpatialRenderer {
     }, delayMs);
   }
 
+  /** True 2.1 monitoring: a subwoofer feed is derived from the low-frequency
+   * main program content. It is separate from a discrete source LFE channel,
+   * which receives its own 120 Hz low-pass before both feeds meet at the sub. */
+  private createBassManaged21Projector(layout: readonly VirtualSpeaker[], initialGain: number) {
+    const output = this.multichannelOutput;
+    if (!this.node || !output) return null;
+    const left = layout.findIndex((speaker) => speaker.name === "FrontLeft");
+    const right = layout.findIndex((speaker) => speaker.name === "FrontRight");
+    const lfe = layout.findIndex((speaker) => speaker.isLfe);
+    if (left < 0 || right < 0 || lfe < 0) return null;
+    const topologyBus = (layoutBus: number) => this.topology.findIndex(
+      (speaker) => speakerBusKey(speaker) === speakerBusKey(layout[layoutBus]!),
+    );
+    const leftBus = topologyBus(left);
+    const rightBus = topologyBus(right);
+    const lfeBus = topologyBus(lfe);
+    if (leftBus < 0 || rightBus < 0 || lfeBus < 0) return null;
+
+    const nodes: AudioNode[] = [];
+    const merger = this.ctx.createChannelMerger(3);
+    BINAURAL_BANKS.forEach((_bank, outputIndex) => {
+      const splitter = this.ctx.createChannelSplitter(this.topology.length);
+      this.node!.connect(splitter, outputIndex);
+      for (const [bus, outputChannel] of [[leftBus, 0], [rightBus, 1]] as const) {
+        const [hpIn, hpOut] = this.lr4("highpass", BASS_MANAGEMENT_CROSSOVER_HZ);
+        splitter.connect(hpIn, bus);
+        hpOut.connect(merger, 0, outputChannel);
+        nodes.push(hpIn, hpOut);
+      }
+      const subSum = this.ctx.createGain();
+      // Equal-power summing prevents correlated mono bass from clipping before
+      // the user-controlled master stage.
+      subSum.gain.value = Math.SQRT1_2;
+      for (const bus of [leftBus, rightBus]) {
+        const [lpIn, lpOut] = this.lr4("lowpass", BASS_MANAGEMENT_CROSSOVER_HZ);
+        splitter.connect(lpIn, bus);
+        lpOut.connect(subSum);
+        nodes.push(lpIn, lpOut);
+      }
+      const [lfeIn, lfeOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
+      splitter.connect(lfeIn, lfeBus);
+      lfeOut.connect(subSum);
+      subSum.connect(merger, 0, 2);
+      nodes.push(splitter, subSum, lfeIn, lfeOut);
+    });
+    const gain = this.ctx.createGain();
+    gain.gain.value = initialGain;
+    merger.connect(gain);
+    gain.connect(output);
+    nodes.push(merger, gain);
+    this.postNodes.push(...nodes);
+    return { id: this.layoutId(layout), gain, nodes };
+  }
+
   private createMultichannelProjector(layout: readonly VirtualSpeaker[], initialGain: number) {
+    if (this.layoutId(layout) === this.layoutId(LAYOUTS["2.1"])) {
+      return this.createBassManaged21Projector(layout, initialGain);
+    }
     const output = this.multichannelOutput;
     if (!this.node || !output) return null;
     const nodes: AudioNode[] = [];
@@ -480,8 +554,13 @@ export class SpatialRenderer {
           rejectedBatches: Number(e.data.rejectedBatches) || 0,
           rejectedSources: Number(e.data.rejectedSources) || 0,
           callbackGaps: Number(e.data.callbackGaps) || 0,
+          callbackGapsOver25Ms: Number(e.data.callbackGapsOver25Ms) || 0,
           callbackGapMaxMs: Number(e.data.callbackGapMaxMs) || 0,
         });
+        const activeObjectIds = Array.isArray(e.data.activeObjectIds)
+          ? e.data.activeObjectIds.map(Number).filter(Number.isSafeInteger)
+          : [];
+        this.onObjectActivity?.(activeObjectIds);
       } else if (e.data?.type === "sourceRetired") {
         const id = String(e.data.id ?? "");
         const token = Number(e.data.token);
@@ -612,6 +691,23 @@ export class SpatialRenderer {
     return this.binauralEqBands;
   }
 
+  /** 切换最终双耳低频诊断；只自动化左右链接的最终 shelf，不重建空间图或播放头。 */
+  setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
+    if (mode === this.binauralLowFrequencyDiagnosticMode) return;
+    this.binauralLowFrequencyDiagnosticMode = mode;
+    const targetDb = mode === "low-cut" ? BINAURAL_LOW_DIAGNOSTIC_FILTER.gain : 0;
+    const now = this.ctx.currentTime;
+    for (const node of this.binauralLowDiagnosticNodes ?? []) {
+      node.gain.cancelScheduledValues(now);
+      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.linearRampToValueAtTime(targetDb, now + 0.04);
+    }
+  }
+
+  get binauralLowFrequencyDiagnostic(): BinauralLowFrequencyDiagnostic {
+    return this.binauralLowFrequencyDiagnosticMode;
+  }
+
   /** 实时切换最终输出模式。三条后级图保持常驻，worklet/PCM/播放头不重建。 */
   setOutputMode(mode: OutputMode): void {
     if (mode === this.mode) return;
@@ -724,6 +820,7 @@ export class SpatialRenderer {
     this.headphonePreamp = null;
     this.headphoneConvolvers = null;
     this.binauralEqNodes.clear();
+    this.binauralLowDiagnosticNodes = null;
     this.binauralEqHeadroom = null;
     this.modeGains.clear();
     this.modeVolumeGains.clear();
@@ -1119,7 +1216,27 @@ export class SpatialRenderer {
     mid[1].connect(high[1]);
     high[1].connect(eqMerge, 0, 1);
     this.postNodes.push(eqHeadroom, eqSplit, eqMerge);
-    eqMerge.connect(makeup);
+    const diagnosticSplit = this.ctx.createChannelSplitter(2);
+    const diagnosticMerge = this.ctx.createChannelMerger(2);
+    const diagnosticLeft = this.ctx.createBiquadFilter();
+    const diagnosticRight = this.ctx.createBiquadFilter();
+    const diagnosticGain = this.binauralLowFrequencyDiagnosticMode === "low-cut"
+      ? BINAURAL_LOW_DIAGNOSTIC_FILTER.gain
+      : 0;
+    for (const node of [diagnosticLeft, diagnosticRight]) {
+      node.type = BINAURAL_LOW_DIAGNOSTIC_FILTER.type;
+      node.frequency.value = BINAURAL_LOW_DIAGNOSTIC_FILTER.frequency;
+      node.Q.value = BINAURAL_LOW_DIAGNOSTIC_FILTER.q;
+      node.gain.value = diagnosticGain;
+    }
+    this.binauralLowDiagnosticNodes = [diagnosticLeft, diagnosticRight];
+    eqMerge.connect(diagnosticSplit);
+    diagnosticSplit.connect(diagnosticLeft, 0);
+    diagnosticLeft.connect(diagnosticMerge, 0, 0);
+    diagnosticSplit.connect(diagnosticRight, 1);
+    diagnosticRight.connect(diagnosticMerge, 0, 1);
+    this.postNodes.push(eqHeadroom, eqSplit, eqMerge, diagnosticSplit, diagnosticLeft, diagnosticRight, diagnosticMerge);
+    diagnosticMerge.connect(makeup);
     makeup.connect(output);
     this.postNodes.push(merger, makeup);
   }

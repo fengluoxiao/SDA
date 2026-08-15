@@ -22,6 +22,7 @@ import {
   type LocalHeadphoneCompensationData,
   type BinauralMode,
   type BinauralEqBands,
+  type BinauralLowFrequencyDiagnostic,
   type BinauralHealthTelemetry,
   type HeadPose,
   type HeadPoseOptions,
@@ -46,15 +47,31 @@ export interface VisualObject {
 export interface PlayerHealthSnapshot {
   /** AudioContext output FIFO requested by the active playback session. */
   requestedOutputLatencySeconds: number;
-  /** Recommended output FIFO for the next playback session. The active context
-   * is deliberately never rebuilt merely to apply this recommendation. */
+  /** Recommended output FIFO retained for future playback sessions. A sustained
+   * callback-gap pattern also upgrades the active context through safe replay. */
   nextRecommendedOutputLatencySeconds: number;
+  /** Chromium/device-selected latency values for the active AudioContext. */
+  baseLatencySeconds: number;
+  outputLatencySeconds: number | null;
+  audioContextSampleRate: number;
+  /** True when Chromium selected substantially less base latency than requested. */
+  outputLatencyHintLimited: boolean;
   /** Cumulative within the active playback session. */
   callbackGaps: number;
   underrunSamples: number;
+  /** Rolling 2.5-second burst evidence eligible for active output-FIFO escalation. */
+  callbackGapWindowEvents: number;
+  callbackGapWindowTicks: number;
+  /** Rolling five-second distributed-stall evidence. */
+  callbackGapDistributedEvents: number;
+  callbackGapDistributedTicks: number;
+  /** Most recent escalation decision for operator-facing Electron diagnostics. */
+  callbackGapEscalation: "none" | "distributed" | "burst" | "deferred-low-buffer";
   /** Current worklet reporting window (about 1/8 second). */
   tick: {
     callbackGaps: number;
+    /** Callback gaps strictly above 25ms, eligible for adaptive FIFO evidence. */
+    callbackGapsOver25Ms: number;
     callbackGapMaxMs: number;
     underrunSamples: number;
     rejectedBatches: number;
@@ -81,14 +98,14 @@ export interface PlayerCallbacks {
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
   onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number }) => void;
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
-  onVisualState?: (objects: VisualObject[], streamTimeSec: number) => void;
+  onVisualState?: (objects: VisualObject[], streamTimeSec: number, soundingIds: ReadonlySet<number>) => void;
   onError?: (message: string) => void;
   /** Fired when the input ended and the renderer drained. */
   onEnded?: () => void;
   /** Throttled worklet and decoder health snapshot for the active playback session. */
   onHealth?: (health: PlayerHealthSnapshot) => void;
-  /** A sustained callback-gap pattern recommends this latency for a future
-   * playback session. The active AudioContext is never recreated for it. */
+  /** A sustained callback-gap pattern upgrades the active AudioContext and
+   * persists this latency for the next playback session. */
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
 }
 
@@ -123,10 +140,17 @@ function validatedOutputLatencySeconds(value: number | undefined): OutputLatency
     : INITIAL_OUTPUT_LATENCY_SECONDS;
 }
 
-/** A tick is about 125ms. Escalate the next-session recommendation only after
- * 8 gap-bearing ticks (~1s). This ignores isolated scheduler hiccups without
- * rebuilding the active AudioContext. */
-const SUSTAINED_CALLBACK_GAP_TICKS = 8;
+/** Broad gap telemetry begins at 12ms; only repeated >25ms gaps justify
+ * rebuilding the active output FIFO. The rolling window accepts non-contiguous
+ * scheduling stalls while ignoring isolated/low-amplitude jitter. */
+const CALLBACK_GAP_BURST_WINDOW_MS = 2_500;
+const CALLBACK_GAP_BURST_EVENT_THRESHOLD = 4;
+const CALLBACK_GAP_BURST_TICK_THRESHOLD = 2;
+const CALLBACK_GAP_BURST_MAX_SUM_MS = 100;
+const CALLBACK_GAP_DISTRIBUTED_WINDOW_MS = 5_000;
+const CALLBACK_GAP_DISTRIBUTED_EVENT_THRESHOLD = 4;
+const CALLBACK_GAP_DISTRIBUTED_TICK_THRESHOLD = 3;
+const ACTIVE_RECREATE_MIN_AHEAD_SECONDS = 0.5;
 const MAX_IN_FLIGHT_BATCHES = 32;
 const MAX_IN_FLIGHT_SECONDS = 0.25;
 const CHUNK_SIZE = 1 << 20; // 1 MiB reads
@@ -179,6 +203,10 @@ export class SdaPlayer {
   private pendingVisualCursor = 0;
   private pendingVisualTargets = new Map<number, ObjectEvent>();
   private visualObjectsSnapshot: VisualObject[] = [];
+  /** Latest worklet-confirmed object sources with post-gain/post-mute signal. */
+  private soundingObjectIds = new Set<number>();
+  private soundingObjectIdsSnapshot: ReadonlySet<number> = new Set();
+  private soundingObjectIdsDirty = false;
   private visualSnapshotDirty = true;
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
@@ -194,6 +222,8 @@ export class SdaPlayer {
   private layoutChecked = false;
   /** 用户选择的最终双耳三段 EQ；renderer 重建后恢复。 */
   private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
+  /** Reversible final-output low-frequency A/B; renderer rebuilds retain its selection. */
+  private binauralLowFrequencyDiagnosticMode: BinauralLowFrequencyDiagnostic = "reference";
   /** 上次布局检测时是否已有动态对象（对象迟到的码流允许再检测一次）。 */
   private layoutHadDynamics = false;
   /** renderer 重建串行链：采样率对齐与布局自动检测可能在同一帧同时
@@ -225,13 +255,14 @@ export class SdaPlayer {
   private lastUnderrunReport = 0;
   /** Requested output FIFO of the active AudioContext. */
   private requestedOutputLatencySeconds: OutputLatencySeconds = INITIAL_OUTPUT_LATENCY_SECONDS;
-  /** Recommendation accumulated from callback-gap telemetry, applied only when
-   * the next playback session creates its initial AudioContext. */
+  /** Latest callback-gap-derived latency, retained for future player creation. */
   private pendingOutputLatencySeconds: OutputLatencySeconds = INITIAL_OUTPUT_LATENCY_SECONDS;
-  /** Consecutive worklet reporting windows containing at least one callback gap. */
-  private sustainedCallbackGapTicks = 0;
+  /** Recent worklet ticks with one or more callback gaps strictly above 25ms. */
+  private callbackGapEvidence: { at: number; events: number; maxMs: number }[] = [];
   private health: PlayerHealthSnapshot = this.createHealthSnapshot();
   private decodeSamples: { at: number; seconds: number }[] = [];
+  private nextWorkerPushSequence = 1;
+  private pendingWorkerPushes = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   private disposed = false;
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
@@ -266,6 +297,7 @@ export class SdaPlayer {
         mode,
         layout,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
+        onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
         headPose: this.headPoseOptions,
       });
@@ -274,6 +306,7 @@ export class SdaPlayer {
       this.observeWorkletHealth(this.renderer, generation);
       this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
       this.renderer.setBinauralEqBands(this.binauralEqBands);
+      this.renderer.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
       await this.attachBinauralIrs(this.renderer);
       this.worker.postMessage({ type: "init" });
       await this.ready;
@@ -387,6 +420,16 @@ export class SdaPlayer {
     return this.binauralEqBands;
   }
 
+  /** 切换最终双耳低频诊断，不改变 HRTF、LFE 或物理多声道输出。 */
+  setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
+    this.binauralLowFrequencyDiagnosticMode = mode;
+    this.renderer?.setBinauralLowFrequencyDiagnostic(mode);
+  }
+
+  get binauralLowFrequencyDiagnostic(): BinauralLowFrequencyDiagnostic {
+    return this.binauralLowFrequencyDiagnosticMode;
+  }
+
   /** 静音/取消静音一个对象（Omniphony 式 per-object mute 原语；
    * solo 由 UI 层用“mute 其他全部”组合实现）。对象尚未声明时只记录状态，
    * 声源声明到达/renderer 重建时自动应用。 */
@@ -480,6 +523,7 @@ export class SdaPlayer {
         mode,
         layout,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
+        onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
         headPose: this.headPoseOptions,
       });
@@ -496,6 +540,7 @@ export class SdaPlayer {
       r.setVolumeBalance(this.volumeBalanceEnabled);
       r.setHeadphoneCompensation(this.headphoneProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
+      r.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
       r.setLfeMuted(this.lfeMuted);
       this.renderer = r;
       this.requestedOutputLatencySeconds = outputLatencySeconds;
@@ -534,6 +579,7 @@ export class SdaPlayer {
         this.submittedFrames.clear();
         this.batchResults.clear();
         this.resetStartupGate();
+        this.resetOutputLatencyProtection();
         this.initialRendererReady = this.initialRendererRate === null || Math.abs(this.renderer.ctx.sampleRate - this.initialRendererRate) < 1;
         this.pumpPcm();
       }
@@ -554,14 +600,16 @@ export class SdaPlayer {
     this.resetHealth();
     this.worker.postMessage({ type: "open", codec });
 
-    this.visualTimer = setInterval(() => this.emitVisual(), 66);
+    // Audio/object events stay sample-accurate; diagnostics redraw at 10 Hz so
+    // the React/Three scene cannot contend with object-heavy Atmos playback.
+    this.visualTimer = setInterval(() => this.emitVisual(), 100);
 
     const stream = file.stream();
     const reader = stream.getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done || this.disposed) break;
-      this.worker.postMessage({ type: "push", chunk: value.buffer }, [value.buffer]);
+      await this.pushWorkerChunk(value.buffer);
       await this.pace();
     }
     if (!this.disposed) this.worker.postMessage({ type: "flush" });
@@ -572,12 +620,21 @@ export class SdaPlayer {
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
     this.worker.postMessage({ type: "open", codec });
-    this.visualTimer ??= setInterval(() => this.emitVisual(), 66);
+    this.visualTimer ??= setInterval(() => this.emitVisual(), 100);
+  }
+
+  private pushWorkerChunk(chunk: ArrayBuffer): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    const sequence = this.nextWorkerPushSequence++;
+    return new Promise<void>((resolve, reject) => {
+      this.pendingWorkerPushes.set(sequence, { resolve, reject });
+      this.worker.postMessage({ type: "push", chunk, sequence }, [chunk]);
+    });
   }
 
   async push(chunk: Uint8Array): Promise<void> {
-    const copy = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
-    this.worker.postMessage({ type: "push", chunk: copy }, [copy]);
+    const copy = Uint8Array.from(chunk).buffer;
+    await this.pushWorkerChunk(copy);
     await this.pace();
   }
 
@@ -598,6 +655,8 @@ export class SdaPlayer {
     });
     for (const id of this.objectChannels.keys()) this.renderer?.removeSource(`obj:${id}`);
     this.knownBedLabels = [];
+    this.soundingObjectIds.clear();
+    this.soundingObjectIdsDirty = true;
     // 若暂停中停止，同时解除 worklet 静音和时钟挂起，避免卡死
     this.pausedState = false;
     this.renderer?.setPaused(false);
@@ -644,6 +703,8 @@ export class SdaPlayer {
 
   async pause(): Promise<void> {
     this.pausedState = true;
+    this.soundingObjectIds.clear();
+    this.soundingObjectIdsDirty = true;
     if (!this.renderer) return;
     console.log(`[SDA] player#${this.id} pause @${this.renderer.consumedSeconds().toFixed(2)}s`);
     this.renderer.setPaused(true);
@@ -684,6 +745,7 @@ export class SdaPlayer {
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
     this.disposed = true;
+    this.rejectPendingWorkerPushes("player disposed");
     this.stop();
     this.worker.terminate();
     await this.renderer?.close();
@@ -698,7 +760,7 @@ export class SdaPlayer {
   positionSeconds(): number {
     if (!this.renderer) return 0;
     // 听觉位置补偿：worklet 已渲染的样本还要经过 peak guard lookahead（5ms）
-    // 和输出级 FIFO（baseLatency，本应用固定请求 100ms）才到达 DAC。
+    // 和输出级 FIFO（baseLatency，100–300ms 自适应请求）才到达 DAC。
     // 进度条与 3D 对象可视化应对齐用户实际听到的位置，而不是渲染时钟。
     const outputLatency = (this.renderer.ctx.baseLatency || 0) + 0.005;
     const audible = Math.max(0, this.renderer.consumedSeconds() - outputLatency);
@@ -715,10 +777,20 @@ export class SdaPlayer {
     return {
       requestedOutputLatencySeconds: this.requestedOutputLatencySeconds,
       nextRecommendedOutputLatencySeconds: this.pendingOutputLatencySeconds,
+      baseLatencySeconds: this.renderer?.ctx.baseLatency ?? 0,
+      outputLatencySeconds: typeof this.renderer?.ctx.outputLatency === "number" ? this.renderer.ctx.outputLatency : null,
+      audioContextSampleRate: this.renderer?.ctx.sampleRate ?? 0,
+      outputLatencyHintLimited: false,
       callbackGaps: 0,
       underrunSamples: 0,
+      callbackGapWindowEvents: 0,
+      callbackGapWindowTicks: 0,
+      callbackGapDistributedEvents: 0,
+      callbackGapDistributedTicks: 0,
+      callbackGapEscalation: "none",
       tick: {
         callbackGaps: 0,
+        callbackGapsOver25Ms: 0,
         callbackGapMaxMs: 0,
         underrunSamples: 0,
         rejectedBatches: 0,
@@ -738,7 +810,21 @@ export class SdaPlayer {
     };
   }
 
+  private refreshAudioContextHealth(): void {
+    const ctx = this.renderer?.ctx;
+    if (!ctx) return;
+    this.health.baseLatencySeconds = Number(ctx.baseLatency) || 0;
+    this.health.outputLatencySeconds = typeof ctx.outputLatency === "number" && Number.isFinite(ctx.outputLatency)
+      ? ctx.outputLatency
+      : null;
+    this.health.audioContextSampleRate = ctx.sampleRate;
+    // baseLatency is not guaranteed to equal latencyHint, but a value below half
+    // the request proves Chromium/device did not provide the expected FIFO depth.
+    this.health.outputLatencyHintLimited = this.health.baseLatencySeconds < this.requestedOutputLatencySeconds * 0.5;
+  }
+
   private emitHealth(): void {
+    this.refreshAudioContextHealth();
     this.health.fedBufferedSeconds = this.fedBufferedSeconds();
     this.health.queuedSeconds = this.queuedSamples / this.sampleRate;
     this.health.binaural = this.renderer?.binauralHealth ?? {
@@ -760,39 +846,97 @@ export class SdaPlayer {
     this.emitHealth();
   }
 
-  /** Clear only the active session's callback-gap evidence. The recommendation
-   * survives and is applied when a newly created player opens the next track. */
+  /** Clear only the active session's callback-gap evidence. The upgraded
+   * latency remains selected for subsequently created players. */
   private resetOutputLatencyProtection(_forNewPlayback = false): void {
-    this.sustainedCallbackGapTicks = 0;
+    this.callbackGapEvidence = [];
+    this.health.callbackGapWindowEvents = 0;
+    this.health.callbackGapWindowTicks = 0;
+    this.health.callbackGapDistributedEvents = 0;
+    this.health.callbackGapDistributedTicks = 0;
   }
 
-  private observeCallbackGaps(callbackGaps: number): void {
-    if (callbackGaps === 0 || this.recreatePending > 0) {
-      this.sustainedCallbackGapTicks = 0;
+  private observeCallbackGaps(
+    callbackGapsOver25Ms: number,
+    callbackGapMaxMs: number,
+    now = performance.now(),
+  ): void {
+    if (this.recreatePending > 0) {
+      this.resetOutputLatencyProtection();
       return;
     }
-    this.sustainedCallbackGapTicks++;
-    if (this.sustainedCallbackGapTicks < SUSTAINED_CALLBACK_GAP_TICKS) return;
+    this.callbackGapEvidence = this.callbackGapEvidence.filter(
+      (entry) => entry.at >= now - CALLBACK_GAP_DISTRIBUTED_WINDOW_MS,
+    );
+    if (callbackGapsOver25Ms > 0) {
+      this.callbackGapEvidence.push({ at: now, events: callbackGapsOver25Ms, maxMs: callbackGapMaxMs });
+    }
+    const summarize = (windowMs: number) => {
+      const entries = this.callbackGapEvidence.filter((entry) => entry.at >= now - windowMs);
+      return {
+        entries,
+        events: entries.reduce((total, entry) => total + entry.events, 0),
+        maxSumMs: entries.reduce((total, entry) => total + entry.maxMs, 0),
+      };
+    };
+    const burst = summarize(CALLBACK_GAP_BURST_WINDOW_MS);
+    const distributed = summarize(CALLBACK_GAP_DISTRIBUTED_WINDOW_MS);
+    this.health.callbackGapWindowEvents = burst.events;
+    this.health.callbackGapWindowTicks = burst.entries.length;
+    this.health.callbackGapDistributedEvents = distributed.events;
+    this.health.callbackGapDistributedTicks = distributed.entries.length;
+    const trigger = (
+      distributed.events >= CALLBACK_GAP_DISTRIBUTED_EVENT_THRESHOLD &&
+      distributed.entries.length >= CALLBACK_GAP_DISTRIBUTED_TICK_THRESHOLD
+    )
+      ? "distributed"
+      : (
+        burst.events >= CALLBACK_GAP_BURST_EVENT_THRESHOLD &&
+        burst.entries.length >= CALLBACK_GAP_BURST_TICK_THRESHOLD &&
+        burst.maxSumMs >= CALLBACK_GAP_BURST_MAX_SUM_MS
+      )
+        ? "burst"
+        : null;
+    if (!trigger) return;
 
     const currentStep = OUTPUT_LATENCY_STEPS_SECONDS.indexOf(
-      this.pendingOutputLatencySeconds as (typeof OUTPUT_LATENCY_STEPS_SECONDS)[number],
+      this.requestedOutputLatencySeconds as (typeof OUTPUT_LATENCY_STEPS_SECONDS)[number],
     );
     const nextLatency = OUTPUT_LATENCY_STEPS_SECONDS[currentStep + 1];
-    // At 300ms we keep observing but do not disrupt the active AudioContext.
-    if (nextLatency === undefined) return;
+    if (
+      nextLatency === undefined ||
+      !this.renderer ||
+      !this.initArgs ||
+      !this.initialRendererReady ||
+      !this.playbackStarted ||
+      !Number.isFinite(this.sampleRate) ||
+      this.sampleRate <= 0
+    ) return;
 
     this.pendingOutputLatencySeconds = nextLatency;
     this.health.nextRecommendedOutputLatencySeconds = nextLatency;
+    const activeRecreateSafe = this.aheadSeconds() >= ACTIVE_RECREATE_MIN_AHEAD_SECONDS;
+    this.health.callbackGapEscalation = activeRecreateSafe ? trigger : "deferred-low-buffer";
     try {
       this.cb.onOutputLatencyRecommendation?.(nextLatency);
     } catch (error) {
       console.warn(`[SDA] player#${this.id} failed to persist output latency recommendation`, error);
     }
-    this.sustainedCallbackGapTicks = 0;
+    if (!activeRecreateSafe) {
+      console.warn(`[SDA] player#${this.id} ${trigger} callback-gap evidence; deferring ${Math.round(nextLatency * 1000)}ms output latency to next playback because ahead PCM is below ${ACTIVE_RECREATE_MIN_AHEAD_SECONDS}s`);
+      this.resetOutputLatencyProtection();
+      this.emitHealth();
+      return;
+    }
+
+    this.requestedOutputLatencySeconds = nextLatency;
+    this.health.requestedOutputLatencySeconds = nextLatency;
     console.warn(
-      `[SDA] player#${this.id} sustained callback gaps for ${SUSTAINED_CALLBACK_GAP_TICKS} ticks; ` +
-      `recommending ${Math.round(nextLatency * 1000)}ms requested latency for next playback`,
+      `[SDA] player#${this.id} ${trigger} callback-gap evidence; recreating active output ` +
+      `at ${Math.round(nextLatency * 1000)}ms requested latency`,
     );
+    this.resetOutputLatencyProtection();
+    this.scheduleRecreate(this.sampleRate);
     this.emitHealth();
   }
 
@@ -915,6 +1059,17 @@ export class SdaPlayer {
     this.pumpPcm();
   }
 
+  private handleObjectActivity(generation: number, ids: readonly number[]): void {
+    if (generation !== this.rendererGeneration) return;
+    const next = new Set(ids.filter((id) => this.objectChannels.has(id) && !this.mutedObjects.has(id)));
+    if (
+      next.size === this.soundingObjectIds.size &&
+      [...next].every((id) => this.soundingObjectIds.has(id))
+    ) return;
+    this.soundingObjectIds = next;
+    this.soundingObjectIdsDirty = true;
+  }
+
   private handleBatchResult(generation: number, result: { sequence: number; accepted: boolean; samples: number; reason?: string }): void {
     if (generation !== this.rendererGeneration) return;
     const pending = this.inFlight.get(result.sequence);
@@ -939,11 +1094,13 @@ export class SdaPlayer {
       const tick = event.data;
       if (generation !== this.rendererGeneration || this.renderer !== renderer || tick?.type !== "tick") return;
       const callbackGaps = Number(tick.callbackGaps) || 0;
+      const callbackGapsOver25Ms = Number(tick.callbackGapsOver25Ms) || 0;
       const underrunSamples = Number(tick.underrunSamples) || 0;
       this.health.callbackGaps += callbackGaps;
       this.health.underrunSamples += underrunSamples;
       this.health.tick = {
         callbackGaps,
+        callbackGapsOver25Ms,
         callbackGapMaxMs: Number(tick.callbackGapMaxMs) || 0,
         underrunSamples,
         rejectedBatches: Number(tick.rejectedBatches) || 0,
@@ -951,7 +1108,10 @@ export class SdaPlayer {
         processMeanMs: Number(tick.processMeanMs) || 0,
         processMaxMs: Number(tick.processMaxMs) || 0,
       };
-      this.observeCallbackGaps(callbackGaps);
+      this.observeCallbackGaps(
+        callbackGapsOver25Ms,
+        Number(tick.callbackGapMaxMs) || 0,
+      );
       this.refreshDecodeRealtimeMultiplier(performance.now());
       this.emitHealth();
     });
@@ -988,7 +1148,14 @@ export class SdaPlayer {
     return this.queuedSamples / this.sampleRate + this.fedBufferedSeconds();
   }
 
+  private rejectPendingWorkerPushes(message: string): void {
+    const error = new Error(message);
+    for (const pending of this.pendingWorkerPushes.values()) pending.reject(error);
+    this.pendingWorkerPushes.clear();
+  }
+
   private handleWorkerFailure(message: string): void {
+    this.rejectPendingWorkerPushes(message);
     if (this.disposed) return;
     this.cb.onError?.(message);
     this.ended = true;
@@ -1024,6 +1191,15 @@ export class SdaPlayer {
       case "frame":
         this.handleFrame(msg.frame as DecodedFrameData);
         break;
+      case "push-ack": {
+        const sequence = Number(msg.sequence);
+        const pending = this.pendingWorkerPushes.get(sequence);
+        if (!pending) break;
+        this.pendingWorkerPushes.delete(sequence);
+        if (msg.error) pending.reject(new Error(String(msg.error)));
+        else pending.resolve();
+        break;
+      }
       case "flushed":
         this.ended = true;
         this.startPlaybackIfReady(true);
@@ -1290,6 +1466,10 @@ export class SdaPlayer {
     }
     // The timeline remains independent from object snapshots. React receives the
     // same array identity while objects are static, so the 3D view can memoise.
-    this.cb.onVisualState?.(this.visualObjectsSnapshot, streamTimeSec);
+    if (this.soundingObjectIdsDirty) {
+      this.soundingObjectIdsSnapshot = new Set(this.soundingObjectIds);
+      this.soundingObjectIdsDirty = false;
+    }
+    this.cb.onVisualState?.(this.visualObjectsSnapshot, streamTimeSec, this.soundingObjectIdsSnapshot);
   }
 }

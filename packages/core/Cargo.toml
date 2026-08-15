@@ -16,6 +16,7 @@ serde_json = "1.0"
 truehd = "0.6.3"
 eac3 = { version = "0.7.3", path = "../../harletty-bridge/eac3" }
 dca = { version = "0.7.3", path = "../../harletty-bridge/dca" }
+alac = { version = "0.5.0", default-features = false }
 
 [profile.release]
 opt-level = 3

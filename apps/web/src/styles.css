@@ -35,24 +35,18 @@
   --mp-track: rgba(255, 255, 255, 0.16);
   --mp-shimmer: rgba(230, 240, 255, 0.85);
   --mp-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  /* A stable navy tint stops the animated 3D backdrop from colouring the player. */
   --mp-glass-bg: linear-gradient(
-    165deg,
-    rgba(255, 255, 255, 0.13),
-    rgba(255, 255, 255, 0.04) 42%,
-    rgba(130, 160, 230, 0.07)
+    135deg,
+    rgba(20, 24, 35, 0.8),
+    rgba(10, 13, 21, 0.74)
   );
+  --mp-glass-line: rgba(235, 242, 255, 0.12);
   --mp-glass-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.4),
-    inset 0 -1px 2px rgba(180, 200, 255, 0.12),
-    inset 1px 0 1px rgba(255, 255, 255, 0.14),
-    inset -1px 0 1px rgba(255, 255, 255, 0.08),
-    0 14px 44px rgba(0, 0, 0, 0.55);
-  --mp-sheen: linear-gradient(
-    115deg,
-    rgba(255, 255, 255, 0.16),
-    rgba(255, 255, 255, 0.02) 30%,
-    transparent 55%
-  );
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 12px 30px rgba(0, 0, 0, 0.38),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  --mp-sheen: none;
 }
 
 :root[data-theme="light"] {
@@ -88,22 +82,16 @@
   --mp-shimmer: rgba(60, 90, 160, 0.55);
   --mp-text-shadow: none;
   --mp-glass-bg: linear-gradient(
-    165deg,
-    rgba(255, 255, 255, 0.75),
-    rgba(255, 255, 255, 0.45) 45%,
-    rgba(235, 240, 250, 0.5)
+    135deg,
+    rgba(255, 255, 255, 0.88),
+    rgba(238, 243, 252, 0.8)
   );
+  --mp-glass-line: rgba(55, 75, 115, 0.14);
   --mp-glass-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.9),
-    inset 0 -1px 2px rgba(20, 40, 90, 0.08),
-    inset 1px 0 1px rgba(255, 255, 255, 0.55),
-    0 14px 44px rgba(30, 45, 80, 0.18);
-  --mp-sheen: linear-gradient(
-    115deg,
-    rgba(255, 255, 255, 0.6),
-    rgba(255, 255, 255, 0.1) 30%,
-    transparent 55%
-  );
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 12px 30px rgba(30, 45, 80, 0.14),
+    0 2px 8px rgba(30, 45, 80, 0.08);
+  --mp-sheen: none;
 }
 
 html,
@@ -212,7 +200,8 @@ h1 {
 
 .settings-layer {
   position: fixed;
-  z-index: 20;
+  /* Settings is modal and must cover the right-side floating diagnostic dock. */
+  z-index: 50;
   inset: 0;
   background: color-mix(in srgb, #000 28%, transparent);
 }
@@ -292,6 +281,17 @@ h1 {
   height: 20px;
   margin: 0;
   accent-color: #4a7fd4;
+}
+
+.settings-switch small {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.settings-switch button,
+.settings-switch select {
+  padding: 4px 9px;
 }
 
 .settings-subgroup {
@@ -537,10 +537,91 @@ aside {
 }
 
 .float-panel {
-  width: 320px;
+  width: min(320px, calc(100vw - 28px));
   max-height: 72vh;
   overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.playlist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.playlist-head h2 {
+  margin: 0;
+}
+
+.playlist-head h2 span {
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.playlist-head button,
+.playlist-remove {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.playlist-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.playlist-items li {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.playlist-items li.current {
+  box-shadow: inset 2px 0 0 #82b5ff;
+  background: rgba(90, 155, 255, 0.1);
+}
+
+.playlist-select {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.playlist-select span {
+  width: 24px;
+  color: #82b5ff;
+  font-size: 11px;
+}
+
+.playlist-select b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.playlist-remove {
+  margin: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+}
+
+.playlist-remove:hover {
+  color: var(--error);
 }
 
 /* ── 对象面板 ─────────────────────────────────────────── */
@@ -617,6 +698,12 @@ aside {
 
 .obj-row.obj-muted {
   opacity: 0.45;
+}
+
+/* Blue accent means this object currently has post-gain/post-mute source signal. */
+.obj-row.obj-sounding:not(.obj-muted) {
+  box-shadow: inset 2px 0 0 #82b5ff;
+  background: rgba(90, 155, 255, 0.1);
 }
 
 .obj-id {
@@ -717,14 +804,15 @@ aside {
   }
 }
 
-/* 液态玻璃本体：backdrop 磨砂 + 顶部镜面高光描边 + 淡色内透渐变 + 外阴影 */
+/* 中性深色 tint 先稳定动态背景，再以轻度磨砂保留玻璃层次。 */
 .mp-glass {
   position: relative;
+  border: 1px solid var(--mp-glass-line);
   border-radius: 22px;
   overflow: hidden;
   background: var(--mp-glass-bg);
-  backdrop-filter: blur(18px) saturate(165%);
-  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  backdrop-filter: blur(16px) saturate(80%) contrast(92%);
+  -webkit-backdrop-filter: blur(16px) saturate(80%) contrast(92%);
   box-shadow: var(--mp-glass-shadow);
 }
 
@@ -734,15 +822,6 @@ aside {
   -webkit-backdrop-filter: none;
 }
 
-/* 顶部一抹斜向光泽，模拟液态玻璃的镜面反射 */
-.mp-glass::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--mp-sheen);
-  pointer-events: none;
-}
 
 /* 三段式布局：左封面 / 中控制 / 右功能 */
 .mp-bar {
@@ -1132,6 +1211,11 @@ aside {
 .flat-object.muted {
   opacity: 0.3;
   box-shadow: none;
+}
+
+/* Worklet-confirmed post-gain/post-mute signal: static, legible activity ring. */
+.flat-object.sounding:not(.muted) {
+  box-shadow: 0 0 0 4px rgba(124, 189, 255, 0.22), 0 0 18px rgba(90, 155, 255, 0.82);
 }
 
 .flat-object i {

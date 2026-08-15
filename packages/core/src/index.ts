@@ -11,7 +11,7 @@ import init, { SdaDecoder as WasmDecoder } from "../pkg-web/sda_core.js";
 // @ts-ignore
 import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 
-export type CodecName = "auto" | "truehd" | "eac3" | "dts";
+export type CodecName = "auto" | "truehd" | "eac3" | "dts" | "alac";
 
 export type ObjectAnchor = "room" | "screen" | "speaker";
 
@@ -76,8 +76,16 @@ export function initCore(): Promise<unknown> {
 export class SdaDecoder {
   private inner: WasmDecoder;
 
-  constructor(codec: CodecName = "auto") {
+  constructor(codec: Exclude<CodecName, "alac"> = "auto") {
     this.inner = new WasmDecoder(codec);
+  }
+
+  /** Create a decoder that requires container initialization data. ALAC needs
+   * the complete MP4 `alac` codec atom before its first access unit. */
+  static withConfig(codec: "alac", config: Uint8Array): SdaDecoder {
+    const decoder = Object.create(SdaDecoder.prototype) as SdaDecoder;
+    decoder.inner = WasmDecoder.withConfig(codec, config);
+    return decoder;
   }
 
   get codec(): string {

@@ -19,6 +19,18 @@ for (const [layoutId, expectedConvolutions] of [["9.1.2", 11], ["9.1.4", 13], ["
   assert.deepEqual(health.banks, [{ bank: "near", spatialConvolutions: expectedConvolutions, directPaths: 0 }]);
 }
 
+// 2.1 retains only two spatial main paths. Its LFE is a dedicated direct
+// low-frequency path, never a third spatial convolution.
+{
+  const renderer = Object.create(SpatialRenderer.prototype);
+  renderer.convs = new Map([["near", convolutionMap(LAYOUTS["2.1"])]]);
+  renderer.topology = LAYOUTS["2.1"];
+  const health = renderer.binauralHealth;
+  assert.equal(health.totalSpatialConvolutions, 2);
+  assert.equal(health.totalDirectPaths, 0);
+  assert.deepEqual(health.banks, [{ bank: "near", spatialConvolutions: 2, directPaths: 0 }]);
+}
+
 // The off bank has direct stereo paths for non-LFE buses, but none of these are
 // presented as spatial convolutions.
 {
