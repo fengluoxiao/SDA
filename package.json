@@ -1,6 +1,6 @@
 {
   "name": "sda",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Spatial Decoder App — Dolby TrueHD/E-AC-3(Atmos)/DTS:X object audio decoder & 3D renderer for web, desktop and mobile. Rust decoder core from harletty-bridge compiled to WASM/native.",
   "scripts": {

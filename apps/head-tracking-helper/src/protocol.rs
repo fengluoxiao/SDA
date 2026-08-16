@@ -18,6 +18,7 @@ pub enum CommandType {
     Start,
     Stop,
     Recenter,
+    Takeover,
 }
 
 impl Command {
@@ -116,6 +117,12 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(command.kind, CommandType::Start);
+
+        let takeover = Command::parse(&format!(
+            r#"{{"type":"takeover","protocol":1,"session":"{SESSION}"}}"#
+        ))
+        .unwrap();
+        assert_eq!(takeover.kind, CommandType::Takeover);
     }
 
     #[test]

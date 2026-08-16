@@ -392,11 +392,14 @@ function startHeadTracking() {
   if (headTrackingTimer || headTrackingHelper) {
     headTrackingEnabled = true;
     writeHeadTrackingEnabled(true);
+    const takeoverSent = takeoverHeadTracking();
     const hasRecentPose = Date.now() - headTrackingLastPoseAt < 1000;
     return setHeadTrackingStatus(
       true,
       headTrackingHelperSource,
-      hasRecentPose
+      takeoverSent
+        ? "Windows 正在强制接管整个 AirPods 连接"
+        : hasRecentPose
         ? headTrackingHelperSource === "bundled-helper" ? "追踪中（内置 Windows helper）" : "追踪中（外部 helper）"
         : "正在恢复 AirPods motion",
     );
@@ -434,7 +437,12 @@ function startHeadTracking() {
     if (headTrackingHelper) stopHeadTracking(true, `helper 已退出${code === null ? "" : ` (${code})`}`);
   });
   helperCommand("start");
-  return setHeadTrackingStatus(true, headTrackingHelperSource, "正在连接 AirPods motion 通道");
+  const takeoverSent = takeoverHeadTracking();
+  return setHeadTrackingStatus(
+    true,
+    headTrackingHelperSource,
+    takeoverSent ? "Windows 正在强制接管整个 AirPods 连接" : "正在连接 AirPods motion 通道",
+  );
 }
 
 function stopHeadTracking(persist = true, detail = "已停止") {
@@ -521,6 +529,17 @@ function recenterHeadTracking() {
   // Renderer-side recenter remains available even for helpers without a command API.
   sendHeadTracking("sda:head-tracking-recenter", null);
   return null;
+}
+
+function takeoverHeadTracking() {
+  if (
+    !headTrackingEnabled ||
+    !headTrackingHelper ||
+    headTrackingHelperSource !== "bundled-helper"
+  ) return false;
+  const sent = helperCommand("takeover");
+  if (sent) setHeadTrackingStatus(true, headTrackingHelperSource, "Windows 正在强制接管整个 AirPods 连接");
+  return sent;
 }
 
 const webAssetRoots = () => [

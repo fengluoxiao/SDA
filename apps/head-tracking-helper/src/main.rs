@@ -47,11 +47,13 @@ const STOP_HEAD_TRACKING_PACKETS: [&[u8]; 2] =
     [STOP_HEAD_TRACKING_ALTERNATE, STOP_HEAD_TRACKING_STANDARD];
 const MOTION_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 const MOTION_RECOVERY_ATTEMPTS: u8 = 3;
+const TAKEOVER_SOURCE_GRACE: Duration = Duration::from_secs(10);
 const LOCAL_AUDIO_SOURCE_TYPE: u8 = 2;
 
 enum Control {
     Stop,
     Recenter,
+    Takeover,
     Fatal(String),
 }
 
@@ -95,6 +97,7 @@ fn run() -> Result<(), String> {
                 }) {
                     Ok(CommandType::Stop) => Control::Stop,
                     Ok(CommandType::Recenter) => Control::Recenter,
+                    Ok(CommandType::Takeover) => Control::Takeover,
                     Ok(CommandType::Start) => continue,
                     Err(error) => Control::Fatal(error),
                 },
@@ -114,10 +117,12 @@ fn run() -> Result<(), String> {
 fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), String> {
     let mut orientation = HeadOrientation::default();
     let mut sequence = 0_u64;
+    let mut takeover_pending = false;
 
     loop {
         match poll_control(&controls, &mut orientation, session)? {
             ControlAction::Stop => return Ok(()),
+            ControlAction::Takeover => takeover_pending = true,
             ControlAction::Continue => {}
         }
         emit_status(session, "disconnected", "正在连接已配对的 AirPods")?;
@@ -127,7 +132,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             Err(error) => {
                 eprintln!("AirPods transport: {error}");
                 emit_status(session, "unavailable", public_connection_error(&error))?;
-                if wait_for_retry(&controls, &mut orientation, session)? {
+                if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                     return Ok(());
                 }
                 continue;
@@ -137,7 +142,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         if let Err(error) = initialize_aacp(&socket) {
             eprintln!("AirPods transport: {error}");
             emit_status(session, "disconnected", public_connection_error(&error))?;
-            if wait_for_retry(&controls, &mut orientation, session)? {
+            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                 return Ok(());
             }
             continue;
@@ -146,7 +151,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         if let Err(error) = recover_motion_stream(&socket, head_tracking_packet_index) {
             eprintln!("AirPods transport: initial motion claim failed: {error}");
             emit_status(session, "disconnected", public_connection_error(&error))?;
-            if wait_for_retry(&controls, &mut orientation, session)? {
+            if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
                 return Ok(());
             }
             continue;
@@ -170,6 +175,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
         let mut local_media_confirmed = false;
         let mut connected_devices = Vec::new();
         let mut force_takeover_attempted = false;
+        let mut takeover_grace_until = None;
         let mut motion_was_active = false;
         let disconnected = loop {
             match poll_control(&controls, &mut orientation, session)? {
@@ -177,7 +183,38 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     let _ = stop_motion_stream(&socket);
                     return Ok(());
                 }
+                ControlAction::Takeover => {
+                    takeover_pending = true;
+                    emit_status(
+                        session,
+                        "connected",
+                        "Windows 正在强制接管整个 AirPods 连接",
+                    )?;
+                }
                 ControlAction::Continue => {}
+            }
+            if takeover_pending && !connected_devices.is_empty() {
+                if let Err(error) = force_reclaim_entire_connection(
+                    &socket,
+                    head_tracking_packet_index,
+                    &connected_devices,
+                ) {
+                    break format!("AirPods full connection takeover failed: {error}");
+                }
+                takeover_pending = false;
+                emit_status(
+                    session,
+                    "connected",
+                    "Windows 已接管 AirPods，正在启动 motion",
+                )?;
+                takeover_grace_until = Some(Instant::now() + TAKEOVER_SOURCE_GRACE);
+                audio_source = Some(inferred_local_audio_source(socket.local_address()));
+                local_media_confirmed = true;
+                force_takeover_attempted = true;
+                motion_was_active = false;
+                recovery_attempts = 0;
+                orientation.reset();
+                last_motion_at = Instant::now();
             }
             match socket.receive_packet(&mut packet) {
                 Ok(Some(length)) => {
@@ -221,12 +258,22 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             is_local_media_source(audio_source, socket.local_address());
                         let is_remote_media =
                             is_remote_media_source(audio_source, socket.local_address());
-                        local_media_confirmed = is_local_media;
+                        let ignore_stale_remote = is_remote_media
+                            && takeover_grace_until.is_some_and(|until| Instant::now() < until);
+                        if !ignore_stale_remote {
+                            local_media_confirmed = is_local_media;
+                        }
                         eprintln!(
                             "AirPods transport: audio source is {:012x} (type={})",
                             next_audio_source.0, next_audio_source.1
                         );
-                        if is_local_media && !was_local_media_confirmed {
+                        if ignore_stale_remote {
+                            audio_source =
+                                Some(inferred_local_audio_source(socket.local_address()));
+                            eprintln!(
+                                "AirPods transport: ignoring stale remote source during Windows takeover"
+                            );
+                        } else if is_local_media && !was_local_media_confirmed {
                             orientation.reset();
                             motion_was_active = false;
                             recovery_attempts = 0;
@@ -235,7 +282,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                                 "connected",
                                 "Windows 媒体已接管 AirPods，正在启动头追",
                             )?;
-                            if let Err(error) = force_reclaim_motion_stream(
+                            if let Err(error) = force_reclaim_entire_connection(
                                 &socket,
                                 head_tracking_packet_index,
                                 &connected_devices,
@@ -243,6 +290,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                                 break format!("AirPods motion recovery failed: {error}");
                             }
                             force_takeover_attempted = true;
+                            takeover_grace_until = Some(Instant::now() + TAKEOVER_SOURCE_GRACE);
                             last_motion_at = Instant::now();
                         } else if is_remote_media {
                             orientation.reset();
@@ -336,9 +384,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     last_motion_at = Instant::now();
                     continue;
                 }
-                if (motion_was_active || local_media_confirmed)
-                    && recovery_attempts >= MOTION_RECOVERY_ATTEMPTS
-                {
+                if motion_was_active && recovery_attempts >= MOTION_RECOVERY_ATTEMPTS {
                     break "AirPods motion stream stalled after recovery".into();
                 }
                 recovery_attempts = recovery_attempts.saturating_add(1);
@@ -361,7 +407,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     },
                 )?;
                 let recovery = if force_reclaim {
-                    force_reclaim_motion_stream(
+                    force_reclaim_entire_connection(
                         &socket,
                         head_tracking_packet_index,
                         &connected_devices,
@@ -383,7 +429,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             "disconnected",
             public_connection_error(&disconnected),
         )?;
-        if wait_for_retry(&controls, &mut orientation, session)? {
+        if wait_for_retry(&controls, &mut orientation, session, &mut takeover_pending)? {
             return Ok(());
         }
     }
@@ -409,7 +455,7 @@ fn recover_motion_stream(socket: &L2capSocket, packet_index: usize) -> Result<()
     socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
 }
 
-fn force_reclaim_motion_stream(
+fn force_reclaim_entire_connection(
     socket: &L2capSocket,
     packet_index: usize,
     connected_devices: &[u64],
@@ -423,6 +469,13 @@ fn force_reclaim_motion_stream(
         if *address == socket.local_address() {
             continue;
         }
+        socket.send_packet(&smart_routing_media_information_packet(
+            socket.local_address(),
+            *address,
+        ))?;
+        thread::sleep(Duration::from_millis(50));
+        socket.send_packet(&smart_routing_show_ui_packet(*address))?;
+        thread::sleep(Duration::from_millis(50));
         socket.send_packet(&smart_routing_hijack_packet(*address))?;
         thread::sleep(Duration::from_millis(50));
     }
@@ -484,6 +537,50 @@ fn smart_routing_hijack_packet(target_address: u64) -> Vec<u8> {
     packet
 }
 
+fn smart_routing_media_information_packet(local_address: u64, target_address: u64) -> Vec<u8> {
+    let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
+    packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
+    packet.extend_from_slice(&[0x82, 0x00, 0x01, 0xe5, 0x4a]);
+    packet.extend_from_slice(b"PlayingApp");
+    packet.push(0x56);
+    packet.extend_from_slice(b"com.google.ios.youtube");
+    packet.push(0x52);
+    packet.extend_from_slice(b"HostStreamingState");
+    packet.extend_from_slice(&[0x42, b'Y', b'E', b'S', 0x49]);
+    packet.extend_from_slice(b"btAddress");
+    packet.push(0x51);
+    packet.extend_from_slice(format_bluetooth_address(local_address).as_bytes());
+    packet.extend_from_slice(b"btName");
+    packet.push(0x47);
+    packet.extend_from_slice(b"Windows");
+    packet.push(0x58);
+    packet.extend_from_slice(b"otherDevice");
+    packet.extend_from_slice(b"AudioCategory");
+    packet.extend_from_slice(&[0x31, 0x2d, 0x01]);
+    packet.resize(144, 0);
+    packet
+}
+
+fn smart_routing_show_ui_packet(target_address: u64) -> Vec<u8> {
+    let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
+    packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
+    packet.extend_from_slice(&[0x7e, 0x00, 0x01, 0xe6, 0x5b]);
+    packet.extend_from_slice(b"SmartRoutingKeyShowNearbyUI");
+    packet.extend_from_slice(&[0x01, 0x4a]);
+    packet.extend_from_slice(b"localscore");
+    packet.extend_from_slice(&[0x31, 0x2d, 0x01, 0x46]);
+    packet.extend_from_slice(b"reasonHhijackv2");
+    packet.push(0x51);
+    packet.extend_from_slice(b"audioRoutingScore");
+    packet.extend_from_slice(&[0xa2, 0x5f]);
+    packet.extend_from_slice(b"audioRoutingSetOwnershipToFalse");
+    packet.extend_from_slice(&[0x01, 0x4b]);
+    packet.extend_from_slice(b"remotescore");
+    packet.push(0xa2);
+    packet.resize(140, 0);
+    packet
+}
+
 fn format_bluetooth_address(address: u64) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -522,6 +619,7 @@ fn is_remote_media_source(source: Option<(u64, u8)>, local_address: u64) -> bool
 enum ControlAction {
     Continue,
     Stop,
+    Takeover,
 }
 
 fn poll_control(
@@ -532,6 +630,7 @@ fn poll_control(
     loop {
         match controls.try_recv() {
             Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return Ok(ControlAction::Stop),
+            Ok(Control::Takeover) => return Ok(ControlAction::Takeover),
             Ok(Control::Recenter) => {
                 orientation.reset();
                 emit_status(session, "connected", "正在重新校准，请保持面向前方")?;
@@ -555,13 +654,13 @@ fn wait_for_retry(
     controls: &Receiver<Control>,
     orientation: &mut HeadOrientation,
     session: &str,
+    takeover_pending: &mut bool,
 ) -> Result<bool, String> {
     for _ in 0..15 {
-        if matches!(
-            poll_control(controls, orientation, session)?,
-            ControlAction::Stop
-        ) {
-            return Ok(true);
+        match poll_control(controls, orientation, session)? {
+            ControlAction::Stop => return Ok(true),
+            ControlAction::Takeover => *takeover_pending = true,
+            ControlAction::Continue => {}
         }
         thread::sleep(Duration::from_millis(200));
     }
@@ -710,6 +809,20 @@ mod tests {
             packet
                 .windows(31)
                 .any(|value| value == b"audioRoutingSetOwnershipToFalse")
+        );
+
+        let media = smart_routing_media_information_packet(0xe45e_373b_6ec3, 0x90ec_ea16_dcee);
+        assert_eq!(media.len(), 144);
+        assert_eq!(&media[6..12], &[0xee, 0xdc, 0x16, 0xea, 0xec, 0x90]);
+        assert!(media.windows(17).any(|value| value == b"e4:5e:37:3b:6e:c3"));
+        assert!(media.windows(3).any(|value| value == b"YES"));
+
+        let show_ui = smart_routing_show_ui_packet(0x90ec_ea16_dcee);
+        assert_eq!(show_ui.len(), 140);
+        assert!(
+            show_ui
+                .windows(27)
+                .any(|value| value == b"SmartRoutingKeyShowNearbyUI")
         );
     }
 }

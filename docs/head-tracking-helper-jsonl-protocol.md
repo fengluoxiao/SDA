@@ -25,10 +25,12 @@ SDA may later write these stdin commands:
 
 ```json
 {"type":"recenter","protocol":1,"session":"<token>"}
+{"type":"takeover","protocol":1,"session":"<token>"}
 {"type":"stop","protocol":1,"session":"<token>"}
 ```
 
 Helpers that cannot recenter internally may ignore `recenter`; SDA also recenters its renderer at the current accepted pose.
+The bundled Windows helper treats `takeover` as an explicit head-tracking start intent: it may reclaim AirPods Smart Routing and motion ownership from another connected device. SDA sends it immediately after `start`, or when tracking is re-enabled while the bundled helper remains alive.
 
 ## Required handshake
 
