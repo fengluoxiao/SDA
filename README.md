@@ -33,6 +33,8 @@ Omniphony Studio 的 3D 视图）。
 | `packages/player` | 解码 worker + 播放调度 + 可视化状态 |
 | `apps/web` | 网页版（Vite + React + TS + three.js） |
 | `apps/desktop` | 桌面版（Electron，复用 web 构建产物） |
+| `apps/head-tracking-helper` | Windows AirPods AACP 头部追踪 helper（独立 GPL-3.0-or-later 进程） |
+| `apps/head-tracking-driver` | Windows KMDF Bluetooth L2CAP profile 驱动、INF 与测试签名包 |
 | `apps/mobile` | 手机版（Expo；解码走原生模块，见 docs） |
 | `harletty-bridge` | 上游解码器仓库（clone/submodule） |
 | `Omniphony` | 上游渲染器仓库（参考实现，含 BINAURAL.md） |
@@ -156,6 +158,151 @@ TestSigning 和安装测试签名驱动。只有用户勾选后才会请求管�
 （代价：exe 用 Electron 默认图标、无数字签名）。要加图标/签名时，需开启
 Windows「开发者模式」后去掉该选项再配 `win.icon` / 证书。
 
+## Windows AirPods 头部追踪（0.2.x）
+
+Windows 版通过一个独立 Rust helper 和一个实验性 KMDF Bluetooth profile 驱动，
+从 AirPods 的 AACP L2CAP 通道读取 motion 姿态。Electron 只负责 helper 生命周期和
+JSON Lines IPC；渲染器接收设备无关的 `head-to-world-quaternion` 四元数。协议定义见
+[`docs/head-tracking-helper-jsonl-protocol.md`](docs/head-tracking-helper-jsonl-protocol.md)。
+
+### LibrePods 来源与许可
+
+AirPods AACP 握手、motion stream 请求包、Smart Routing 接管、接近配对型号/PID
+映射以及实测姿态轴映射，基于
+[LibrePods](https://github.com/librepods-org/librepods) 的研究成果，
+Copyright (C) 2025 LibrePods contributors。
+
+- LibrePods 使用 `GPL-3.0-or-later`；`apps/head-tracking-helper` 同样作为
+  `GPL-3.0-or-later` 的独立可执行程序分发，并随包附带完整许可证。
+- SDA 主程序不链接 helper；两者只通过已文档化的 stdin/stdout JSONL 协议通信。
+- `apps/head-tracking-driver` 基于 Microsoft Bluetooth Echo L2CAP Profile Driver
+  sample（commit `717778a20ba4dd2440fe609f69153a1f8a64f597`），保留 Microsoft
+  Public License 和原始版权声明；其 AirPods 硬件白名单来自 LibrePods 型号映射。
+- 重新分发或拆出独立项目时，必须保留 LibrePods 的归属、helper 的 GPL 源码与许可，
+  以及驱动中的 [`LICENSE.microsoft.txt`](apps/head-tracking-driver/LICENSE.microsoft.txt)。
+
+本功能不是 Apple 官方实现。AirPods、Dolby 等商标归各自权利人所有。
+
+### 支持范围与运行要求
+
+已在 Windows 11 x64 上验证。AirPods 必须先在 Windows 设置中完成配对并连接媒体音频。
+驱动只匹配 Apple Bluetooth VID、AACP UUID 和以下明确 PID 的组合，不会接管普通
+Bluetooth、A2DP、HFP 或 AVRCP 驱动：
+
+| 型号 | PID |
+|---|---|
+| AirPods Pro | `200E` |
+| AirPods Pro 2（Lightning / USB-C） | `2014` / `2024` |
+| AirPods 3 | `2013` |
+| AirPods 4（标准 / ANC） | `2019` / `201B` |
+| AirPods Max（Lightning / USB-C） | `200A` / `201F` |
+
+AirPods 1/2 没有受支持的 motion 数据，未知型号也不会猜测匹配。使用当前测试签名驱动
+需要管理员权限、将测试证书加入本机 `Root` 与 `TrustedPublisher`、开启 Windows
+TestSigning 并重启。Secure Boot 策略可能阻止开启 TestSigning；不要仅为头追盲目
+关闭 Secure Boot。安装、恢复与日志位置见
+[`docs/windows-head-tracking-install.md`](docs/windows-head-tracking-install.md)。
+
+### 构建依赖
+
+| 部分 | 依赖 |
+|---|---|
+| 整体工作区 | Git（克隆时带 submodule）、Node.js >= 20（CI 使用 24）、pnpm 9 |
+| Rust helper | stable Rust；推荐 `x86_64-pc-windows-msvc`，GNU 工具链需 MSYS2 MinGW64 的 `as.exe` / `dlltool.exe` |
+| 解码核心 | `wasm32-unknown-unknown`、与锁文件一致的 `wasm-bindgen-cli 0.2.127` |
+| KMDF 驱动 | Visual Studio 2022 或 Build Tools、MSVC x64 C++ 工具、Windows SDK + WDK `10.0.26100.0` |
+| 安装包 | PowerShell 5.1、Electron/electron-builder；NSIS 由 electron-builder 获取 |
+
+只修改 helper 时不需要安装 WDK；使用仓库中已签名的
+`apps/head-tracking-driver/package` 打包时也不需要重新编译驱动。
+
+### 构建与测试 helper
+
+在仓库根目录运行：
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm head-tracking:test
+pnpm head-tracking:test-js
+pnpm head-tracking:build
+```
+
+最后一条命令生成 release helper，并暂存到
+`apps/desktop/head-tracking-helper/SdaAirPodsHeadTracking.exe`。若使用 GNU Rust，
+构建脚本会自动查找 Rust 自带工具和 `C:\msys64\mingw64\bin`。
+
+### 从源码构建并测试签名驱动
+
+仓库已经提交可安装的 `.inf/.sys/.cat/.cer` 测试签名包，普通应用打包直接使用即可。
+只有修改 `apps/head-tracking-driver/src`、INF 或硬件白名单时才需要执行本节。建议在
+“Developer PowerShell for VS 2022”中运行，并在构建前更新
+`SdaAirPodsL2cap.inx` 的 `DriverVer`：
+
+```powershell
+msbuild apps\head-tracking-driver\SdaAirPodsL2cap.vcxproj `
+  /p:Configuration=Release /p:Platform=x64
+```
+
+主要输出位于 `apps\head-tracking-driver\build\x64\Release`。项目设置为
+`DriverSign=Off`，仓库不保存任何私钥；自行构建者必须创建自己的代码签名证书，
+先签 `.sys`，再重新生成并签 `.cat`。下面命令需在包含 WDK `Inf2Cat` 和
+`SignTool` 的 VS 开发终端中执行：
+
+```powershell
+$DriverRoot = Resolve-Path 'apps\head-tracking-driver'
+$BuildRoot = Join-Path $DriverRoot 'build\x64\Release'
+$Package = Join-Path $env:TEMP 'SdaAirPodsDriverPackage'
+New-Item -ItemType Directory -Path $Package -Force | Out-Null
+
+Copy-Item (Join-Path $BuildRoot 'SdaAirPodsL2cap.inf') $Package -Force
+Copy-Item (Join-Path $BuildRoot 'SdaAirPodsL2cap.sys') $Package -Force
+
+$Cert = New-SelfSignedCertificate `
+  -Type CodeSigningCert `
+  -Subject 'CN=SDA AirPods Test Driver' `
+  -CertStoreLocation 'Cert:\CurrentUser\My' `
+  -KeyExportPolicy Exportable `
+  -HashAlgorithm SHA256 `
+  -NotAfter (Get-Date).AddYears(10)
+
+SignTool sign /v /fd SHA256 /sha1 $Cert.Thumbprint `
+  (Join-Path $Package 'SdaAirPodsL2cap.sys')
+Inf2Cat /driver:$Package /os:10_X64 /uselocaltime
+SignTool sign /v /fd SHA256 /sha1 $Cert.Thumbprint `
+  (Join-Path $Package 'SdaAirPodsL2cap.cat')
+Export-Certificate -Cert $Cert `
+  -FilePath (Join-Path $Package 'SdaAirPodsL2cap.cer') | Out-Null
+```
+
+不要用仓库中的 `.cer` 给新驱动签名：它只有公钥，没有私钥。发布自行构建的驱动时，
+把四个新文件放入 `apps/head-tracking-driver/package/`，然后同步更新以下三处，否则
+安装包会因完整性校验失败而停止：
+
+1. `scripts/stage-head-tracking-driver.mjs` 中证书及四个包文件的 SHA-256。
+2. `apps/desktop/test/head-tracking-installer-contract.test.mjs` 中相同的 SHA-256。
+3. `apps/desktop/installer/install-head-tracking-driver.ps1` 中证书 SHA-256。
+
+可用 `Get-FileHash -Algorithm SHA256 <文件>` 取得新哈希。驱动包校验和安装器契约测试：
+
+```powershell
+node scripts/stage-head-tracking-driver.mjs
+pnpm head-tracking:test-js
+```
+
+### 打包完整 Windows 预览版
+
+```powershell
+$env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/' # 国内网络可选
+pnpm --filter @sda/desktop build -- --win nsis --x64 --publish never
+```
+
+该命令依次构建 helper、校验并暂存驱动、构建 web，然后生成
+`apps/desktop/dist/SDA Setup <version>-x64.exe`。安装向导中的 TestSigning 和驱动安装
+复选框默认都不勾选，只有用户选择后才会提权执行 PowerShell，也不会自动重启。
+
+`.github/workflows/windows-preview.yml` 在推送 `feat/airpods-head-tracking` 时执行同一套
+测试和打包，并上传保留 14 天的 Windows x64 artifact。
+
 用法：拖入含 TrueHD/Atmos 或 E-AC-3 JOC 音轨的 `.mkv`（或裸 `.thd`/`.ec3`/`.dts`），
 主视图是实时 3D 对象位置，底栏是迷你播放器（暂停/重播/音量），
 顶栏可切换输出模式（双耳/立体声/多声道）、音箱布局（默认"自动"，按码流
@@ -226,7 +373,14 @@ pnpm mobile:start
 
 ## 许可
 
-解码 crate 上游为 Apache-2.0（truehdd 项目及 harletty-bridge），
-本仓库代码同 Apache-2.0。Dolby/DTS 商标与相关专利归各自所有者；
-本项目是解码与渲染技术研究，不提供任何受版权保护的测试内容。
-MIT KEMAR HRTF 数据集 "free with no restrictions on use"（需引用）。
+除下列明确标注的组件外，SDA 与解码 crate 使用 Apache-2.0
+（包括 truehdd 项目及 harletty-bridge）：
+
+- `apps/head-tracking-helper`：GPL-3.0-or-later，协议研究与姿态映射归属 LibrePods。
+- `apps/head-tracking-driver`：基于 Microsoft Bluetooth Echo L2CAP sample，适用
+  Microsoft Public License；详见组件内许可证与版权声明。
+- HRTF/BRIR 与耳机校正资产按各自目录中记录的来源和许可分发。
+
+Dolby/DTS/Apple/AirPods 商标与相关专利归各自所有者；本项目是解码、渲染与设备
+互操作技术研究，不提供任何受版权保护的测试内容。MIT KEMAR HRTF 数据集声明为
+"free with no restrictions on use"（使用时仍应引用）。
