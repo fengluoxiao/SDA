@@ -1,0 +1,70 @@
+; SDA AirPods AACP L2CAP profile driver
+; Derived from Microsoft's Bluetooth Echo L2CAP Profile Driver sample (MS-PL).
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Bluetooth
+ClassGuid={e0cbf06c-cd8b-4647-bb8a-263b43f0f974}
+Provider=%ProviderString%
+DriverVer = 08/16/2026,13.15.47.257
+CatalogFile=SdaAirPodsL2cap.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[SourceDisksNames]
+1=%DiskId%,,,""
+
+[SourceDisksFiles]
+SdaAirPodsL2cap.sys=1,,
+
+[Manufacturer]
+%ManufacturerString%=SDA,NTamd64.10.0...16299
+
+[SDA.NTamd64.10.0...16299]
+%AirPodsPro.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&200E
+%AirPodsPro2Lightning.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&2014
+%AirPodsPro2UsbC.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&2024
+%AirPods3.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&2013
+%AirPods4.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&2019
+%AirPods4Anc.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&201B
+%AirPodsMax.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&200A
+%AirPodsMaxUsbC.DeviceDesc%=SdaAirPodsL2cap_Install,BTHENUM\{74ec2172-0bad-4d01-8f77-997b2be0722a}_VID&0001004C_PID&201F
+
+[SdaAirPodsL2cap_Install.NT]
+CopyFiles=DriverCopy
+
+[DriverCopy]
+SdaAirPodsL2cap.sys
+
+[SdaAirPodsL2cap_Install.NT.Services]
+AddService=SdaAirPodsL2cap,%SPSVCINST_ASSOCSERVICE%,ServiceInstall
+
+[ServiceInstall]
+DisplayName=%ServiceDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\SdaAirPodsL2cap.sys
+
+[SdaAirPodsL2cap_Install.NT.Wdf]
+KmdfService=SdaAirPodsL2cap,KmdfInstall
+
+[KmdfInstall]
+KmdfLibraryVersion=1.15
+
+[Strings]
+SPSVCINST_ASSOCSERVICE=0x00000002
+ProviderString="SDA contributors"
+ManufacturerString="SDA"
+DiskId="SDA AirPods L2CAP driver"
+AirPodsPro.DeviceDesc="SDA AirPods Pro AACP Motion Channel"
+AirPodsPro2Lightning.DeviceDesc="SDA AirPods Pro 2 (Lightning) AACP Motion Channel"
+AirPodsPro2UsbC.DeviceDesc="SDA AirPods Pro 2 (USB-C) AACP Motion Channel"
+AirPods3.DeviceDesc="SDA AirPods 3 AACP Motion Channel"
+AirPods4.DeviceDesc="SDA AirPods 4 AACP Motion Channel"
+AirPods4Anc.DeviceDesc="SDA AirPods 4 (ANC) AACP Motion Channel"
+AirPodsMax.DeviceDesc="SDA AirPods Max AACP Motion Channel"
+AirPodsMaxUsbC.DeviceDesc="SDA AirPods Max (USB-C) AACP Motion Channel"
+ServiceDesc="SDA AirPods L2CAP Profile Driver"

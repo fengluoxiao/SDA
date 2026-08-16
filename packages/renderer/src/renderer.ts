@@ -228,6 +228,10 @@ interface ScheduledGainMessage {
   gain: number;
   lp: number;
   ramp: number;
+  /** A scheduled object route that live head tracking must not overwrite. */
+  poseControlled?: boolean;
+  /** A live pose refresh changes only the spatial route, not metadata gain. */
+  poseUpdate?: boolean;
 }
 
 interface SourceState {
@@ -250,9 +254,9 @@ interface SourceState {
   binauralMode?: BinauralRenderMode;
   lifecycleEvents: { at: number; active: boolean; order: number }[];
   lifecycleEventOrder: number;
-  /** Canonical object targets keyed to codec time, used only for wall-clock pose
-   * refreshes so future scheduled metadata is never pulled into the present. */
-  objectPoseTimeline: { at: number; position: Spherical; spread: number; gainDb: number }[];
+  /** Canonical object targets keyed to codec time. Pose refreshes update both
+   * the currently audible route and already-buffered future route changes. */
+  objectPoseTimeline: { at: number; position: Spherical; spread: number; gainDb: number; rampSamples: number }[];
 }
 
 export class SpatialRenderer {
@@ -282,6 +286,7 @@ export class SpatialRenderer {
   private poseUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private poseStaleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPoseGainUpdateMs = Number.NEGATIVE_INFINITY;
+  private poseControlEnabled = false;
   private node: AudioWorkletNode | null = null;
   /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
   private peakGuard: AudioWorkletNode | null = null;
@@ -544,6 +549,7 @@ export class SpatialRenderer {
       outputChannelCount: BINAURAL_BANKS.map(() => this.topology.length),
       processorOptions: { busCount: this.topology.length, epoch: this.epoch },
     });
+    if (this.poseControlEnabled) this.node.port.postMessage({ type: "headTracking", enabled: true });
     this.node.port.onmessage = (e: MessageEvent) => {
       if (e.data?.type === "ready") {
         console.log(`[SDA] audio worklet ${String(e.data.build ?? "unknown")} ring=${e.data.ringSize}`);
@@ -727,6 +733,7 @@ export class SpatialRenderer {
     // A mode can select a different logical layout even when its speaker count
     // is unchanged. Rebuild only if the fixed bus identity sequence changed.
     this.rebuildBinauralBusGraph();
+    this.syncPoseControl(this.mode === "binaural" && this.headPose.isActive(performance.now()));
     // 床层扩展只属于物理多声道。输出模式切换后必须重推 gains，不能沿用
     // 旧模式的前宽/后环派生馈送。
     for (const state of this.sources.values()) this.applyGains(state, 2048);
@@ -742,6 +749,7 @@ export class SpatialRenderer {
   setHeadPose(pose: HeadPose): boolean {
     const now = performance.now();
     if (!this.headPose.set(pose, now)) return false;
+    this.syncPoseControl(this.mode === "binaural");
     this.schedulePoseGainUpdate(now);
     if (this.poseStaleTimer !== null) globalThis.clearTimeout(this.poseStaleTimer);
     this.poseStaleTimer = globalThis.setTimeout(() => {
@@ -759,6 +767,7 @@ export class SpatialRenderer {
       this.poseStaleTimer = null;
     }
     if (!this.headPose.clear()) return;
+    this.syncPoseControl(false);
     this.schedulePoseGainUpdate(performance.now(), true);
   }
 
@@ -779,6 +788,8 @@ export class SpatialRenderer {
       // Stale input automatically disables tracking here as well, so a provider
       // disappearing returns to the unrotated world rather than freezing pose.
       const trackingActive = this.mode === "binaural" && this.headPose.isActive(this.lastPoseGainUpdateMs);
+      this.syncPoseControl(trackingActive);
+      const futurePoseMessages: ScheduledGainMessage[] = [];
       for (const state of this.sources.values()) {
         if (state.isLfe) continue;
         // Object events are often prebuffered seconds ahead. Select the last
@@ -786,20 +797,50 @@ export class SpatialRenderer {
         // newest (possibly future) scheduled metadata.
         let immediate = state;
         if (!state.bedLabel && state.objectPoseTimeline.length > 0) {
-          let due: (typeof state.objectPoseTimeline)[number] | undefined;
-          for (const target of state.objectPoseTimeline) {
-            if (target.at > this.consumedSamples) break;
-            due = target;
+          let dueIndex = -1;
+          for (let index = 0; index < state.objectPoseTimeline.length; index++) {
+            if (state.objectPoseTimeline[index]!.at > this.consumedSamples) break;
+            dueIndex = index;
           }
-          if (!due) continue;
-          immediate = { ...state, position: due.position, spread: due.spread, gainDb: due.gainDb };
+          if (dueIndex >= 0) {
+            if (dueIndex >= 64) {
+              state.objectPoseTimeline.splice(0, dueIndex);
+              dueIndex = 0;
+            }
+            const due = state.objectPoseTimeline[dueIndex]!;
+            immediate = { ...state, position: due.position, spread: due.spread, gainDb: due.gainDb };
+          }
+          if (trackingActive) {
+            // Audio continues if Electron's main thread is briefly descheduled.
+            // Keep every already-buffered metadata boundary paired with a
+            // head-relative route so the worklet never waits on the next timer.
+            for (let index = dueIndex + 1; index < state.objectPoseTimeline.length; index++) {
+              const target = state.objectPoseTimeline[index]!;
+              const future = { ...state, position: target.position, spread: target.spread, gainDb: target.gainDb };
+              futurePoseMessages.push(this.gainMessage(future, target.rampSamples, target.at, true));
+            }
+          }
+          if (dueIndex < 0) continue;
         }
-        this.applyGains(immediate, 256);
+        // At 120 Hz, 512 samples span slightly more than one update at 48 kHz.
+        // Overlapping ramps keep large, fast turns continuous instead of making
+        // adjacent HRTF/VBAP directions sound like discrete switches.
+        this.applyGains(immediate, 512, undefined, true);
+      }
+      if (futurePoseMessages.length === 1) this.node?.port.postMessage(futurePoseMessages[0]);
+      else if (futurePoseMessages.length > 1) {
+        this.node?.port.postMessage({ type: "scheduleGainsBatch", entries: futurePoseMessages });
       }
       // Continue convergence after a smoothed pose update even if the provider
       // sends a lower-rate sample stream; staleness cancels this naturally.
       if (trackingActive) this.schedulePoseGainUpdate(this.lastPoseGainUpdateMs);
     }, wait);
+  }
+
+  private syncPoseControl(enabled: boolean): void {
+    if (enabled === this.poseControlEnabled) return;
+    this.poseControlEnabled = enabled;
+    this.node?.port.postMessage({ type: "headTracking", enabled });
   }
 
   private teardownPostNodes(): void {
@@ -1437,6 +1478,7 @@ export class SpatialRenderer {
   applyEvents(events: readonly ObjectEvent[]): number {
     if (!this.node || events.length === 0) return 0;
     const messages: ScheduledGainMessage[] = [];
+    let accepted = 0;
     for (const ev of events) {
       const state = this.sources.get(`obj:${ev.id}`);
       if (!state) continue;
@@ -1457,12 +1499,25 @@ export class SpatialRenderer {
       state.gainDb = ev.gainDb;
       state.hasObjectMetadata = true;
       state.objectRampEndSample = at + Math.max(1, ramp);
-      state.objectPoseTimeline.push({ at, position: nextPosition, spread: nextSpread, gainDb: ev.gainDb });
+      state.objectPoseTimeline.push({
+        at,
+        position: nextPosition,
+        spread: nextSpread,
+        gainDb: ev.gainDb,
+        rampSamples: Math.max(1, ramp),
+      });
       messages.push(this.gainMessage(state, ramp, at));
+      // Prebuffer a head-relative route at the same codec boundary. Later pose
+      // ticks replace it in-place; this first copy covers a main-thread stall
+      // immediately after the decoder queues the frame.
+      if (this.mode === "binaural" && this.headPose.isActive(performance.now())) {
+        messages.push(this.gainMessage(state, ramp, at, true));
+      }
+      accepted++;
     }
     if (messages.length === 1) this.node.port.postMessage(messages[0]);
     else if (messages.length > 1) this.node.port.postMessage({ type: "scheduleGainsBatch", entries: messages });
-    return messages.length;
+    return accepted;
   }
 
   /** Queue one object event. Kept for control surfaces and focused tests. */
@@ -1475,6 +1530,7 @@ export class SpatialRenderer {
     state: SourceState,
     rampSamples: number,
     atSample?: number,
+    poseUpdate = false,
   ): ScheduledGainMessage {
     // Codec metadata remains canonical world-space. Only immediate gain updates
     // use the live wall-clock pose; scheduled events must retain their original
@@ -1483,7 +1539,9 @@ export class SpatialRenderer {
     // Physical speaker and plain stereo outputs stay room-locked. The UI exposes
     // tracking only for binaural playback, and this guard preserves that rule for
     // programmatic callers as well.
-    const headTrackingActive = this.mode === "binaural" && atSample === undefined && this.headPose.isActive(poseNow);
+    const headTrackingActive = this.mode === "binaural"
+      && (atSample === undefined || poseUpdate)
+      && this.headPose.isActive(poseNow);
     const spatialPosition = headTrackingActive
       ? this.headPose.headRelative(state.position, poseNow)
       : state.position;
@@ -1549,6 +1607,8 @@ export class SpatialRenderer {
       gain: scalar,
       lp,
       ramp: Math.max(1, rampSamples),
+      poseControlled: !state.bedLabel && !state.isLfe,
+      poseUpdate,
     };
   }
 
@@ -1557,8 +1617,9 @@ export class SpatialRenderer {
     state: SourceState,
     rampSamples: number,
     atSample?: number,
+    poseUpdate = false,
   ): void {
-    this.node?.port.postMessage(this.gainMessage(state, rampSamples, atSample));
+    this.node?.port.postMessage(this.gainMessage(state, rampSamples, atSample, poseUpdate));
   }
 
   /** Reset the codec timeline. MessagePort FIFO guarantees a following feed is

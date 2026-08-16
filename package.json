@@ -5,6 +5,10 @@
   "description": "Spatial Decoder App — Dolby TrueHD/E-AC-3(Atmos)/DTS:X object audio decoder & 3D renderer for web, desktop and mobile. Rust decoder core from harletty-bridge compiled to WASM/native.",
   "scripts": {
     "core:build": "node scripts/build-core.mjs",
+    "head-tracking:build": "node scripts/build-head-tracking-helper.mjs",
+    "head-tracking:stage-driver": "node scripts/stage-head-tracking-driver.mjs",
+    "head-tracking:test": "cargo test --manifest-path apps/head-tracking-helper/Cargo.toml --locked --offline",
+    "head-tracking:test-js": "node scripts/test-head-tracking.mjs",
     "hrtf:build": "node scripts/build-hrtf.mjs",
     "hrtf:calibrate": "node scripts/build-calibrated-hrtf.mjs",
     "hrtf:analyze": "node scripts/analyze-hrtf-calibration.mjs",
@@ -17,6 +21,7 @@
     "mobile:start": "pnpm --filter @sda/mobile start"
   },
   "devDependencies": {
+    "esbuild": "0.25.12",
     "typescript": "^5.6.0"
   },
   "engines": {

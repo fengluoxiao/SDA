@@ -536,11 +536,157 @@ aside {
   border-color: var(--drag-border);
 }
 
+.float-buttons .head-tracking-toggle {
+  border-color: color-mix(in srgb, #27a86b 55%, var(--border));
+  color: #42c982;
+  font-weight: 600;
+}
+
 .float-panel {
   width: min(320px, calc(100vw - 28px));
   max-height: 72vh;
   overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.head-tracking-panel {
+  width: min(340px, calc(100vw - 28px));
+}
+
+.telemetry-heading,
+.telemetry-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.telemetry-heading h2 {
+  margin: 0;
+}
+
+.telemetry-heading > span {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.telemetry-heading .telemetry-live {
+  color: #42c982;
+}
+
+.telemetry-heading .telemetry-live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.telemetry-note {
+  margin: 8px 0 11px;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.telemetry-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.telemetry-value {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px 6px;
+  min-width: 0;
+  padding: 8px;
+  background: var(--panel);
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-value span {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.telemetry-value strong {
+  overflow: hidden;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.telemetry-value small {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.axis-x { color: #e15b64; }
+.axis-y { color: #42b878; }
+.axis-z { color: #4f8fe8; }
+
+.telemetry-chart {
+  display: block;
+  width: 100%;
+  height: 116px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 68%, var(--panel));
+}
+
+.telemetry-zero,
+.telemetry-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.telemetry-grid {
+  opacity: 0.55;
+}
+
+.telemetry-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.telemetry-scale {
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.telemetry-orientation {
+  display: grid;
+  grid-template-columns: repeat(6, auto);
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-orientation dt {
+  color: var(--dim);
+}
+
+.telemetry-orientation dd {
+  margin: 0;
+  color: var(--text);
 }
 
 .playlist-head {

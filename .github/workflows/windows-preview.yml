@@ -1,0 +1,68 @@
+name: Windows head-tracking preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/airpods-head-tracking
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-preview:
+    name: Windows x64 preview installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            packages/core
+            apps/head-tracking-helper
+
+      - name: Install wasm-bindgen-cli (must match Cargo.lock)
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test head-tracking components
+        shell: pwsh
+        run: |
+          pnpm head-tracking:test
+          pnpm head-tracking:test-js
+
+      - name: Build WASM decoder core
+        run: pnpm core:build
+
+      - name: Build Windows x64 preview installer
+        shell: pwsh
+        run: |
+          pnpm --filter @sda/desktop build -- --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload Windows preview installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SDA-Windows-Head-Tracking-Preview-${{ github.run_number }}
+          path: apps/desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

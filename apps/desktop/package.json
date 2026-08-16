@@ -5,9 +5,9 @@
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
   "scripts": {
-    "dev": "electron . --dev",
-    "build": "pnpm --filter @sda/web build && electron-builder",
-    "pack": "electron-builder --dir"
+    "dev": "node ../../scripts/build-head-tracking-helper.mjs && electron . --dev",
+    "build": "node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/stage-head-tracking-driver.mjs && pnpm --filter @sda/web build && electron-builder",
+    "pack": "node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/stage-head-tracking-driver.mjs && electron-builder --dir"
   },
   "devDependencies": {
     "@sda/web": "workspace:*",
@@ -28,7 +28,22 @@
     "win": {
       "target": "nsis",
       "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "extraResources": [
+        {
+          "from": "head-tracking-helper",
+          "to": "head-tracking-helper"
+        },
+        {
+          "from": "head-tracking-driver",
+          "to": "head-tracking-driver"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer/installer.nsh"
     },
     "mac": {
       "target": "dmg",

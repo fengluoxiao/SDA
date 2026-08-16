@@ -9,6 +9,11 @@ apps/desktop/dist/
 packages/core/target/
 packages/core/pkg-web/
 packages/core/pkg-node/
+apps/head-tracking-helper/target/
+apps/desktop/head-tracking-helper/
+apps/desktop/head-tracking-driver/
+apps/head-tracking-driver/build/
+apps/head-tracking-driver/cert/
 
 # 参考资料（上游渲染器仓库，仅文档参考，不参与构建）
 /Omniphony/

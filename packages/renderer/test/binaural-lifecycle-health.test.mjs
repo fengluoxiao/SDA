@@ -103,6 +103,8 @@ function lifecycleGraph(keys) {
     modeGains: new Map(),
     updateRenderLayout: () => { graph.updated = true; },
     rebuildBinauralBusGraph: () => { graph.rebuilt = true; },
+    headPose: { isActive: () => false },
+    syncPoseControl: () => {},
     sources: new Map(),
     applyGains: () => { graph.gainsApplied = true; },
   };

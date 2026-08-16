@@ -135,15 +135,19 @@ cd apps/desktop
 # 国内网络先设 Electron 下载镜像（否则 GitHub 下不动）
 export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# 先构建 web 产物再打包
-pnpm --filter @sda/web build
-npx electron-builder --win nsis
+# 构建 helper、校验/暂存驱动、构建 web 并打包
+pnpm --filter @sda/desktop build -- --win nsis
 ```
 
 产物在 `apps/desktop/dist/`：
 
 - `SDA Setup x.y.z.exe` —— NSIS 安装包（推荐分发）
 - `win-unpacked/` —— 免安装绿色版，直接运行里面的 `SDA.exe`
+
+Windows assisted installer 提供两个默认不勾选的 AirPods 头追选项：开启
+TestSigning 和安装测试签名驱动。只有用户勾选后才会请求管理员权限；安装器不会
+自动重启。完整安全说明、日志位置和恢复步骤见
+[`docs/windows-head-tracking-install.md`](docs/windows-head-tracking-install.md)。
 
 **注意：不要设 `ELECTRON_BUILDER_BINARIES_MIRROR`**。electron-builder 每次运行都会
 重新下载 winCodeSign 工具包，其中包含 macOS 的 `.dylib` 符号链接，Windows 无

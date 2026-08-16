@@ -37,4 +37,38 @@ const rotated = rotateAdmVector(yaw(90), [0, 1, 0]);
 close(rotated[0], -1, "ADM yaw rotates front toward left");
 close(rotated[1], 0, "ADM yaw front y");
 
+const sensitive = new HeadPoseTracker({
+  yawMode: "yaw",
+  sensitivity: 1.25,
+  smoothingMs: 0,
+  maxDegreesPerSecond: 1e9,
+});
+assert.equal(sensitive.set({ orientation: yaw(20) }, 0), true);
+assert.equal(sensitive.recenter(), true);
+assert.equal(sensitive.set({ orientation: yaw(60) }, 1), true);
+const sensitiveFront = sensitive.headRelative({ azimuth: 0, elevation: 0, distance: 2.5 }, 1);
+close(sensitiveFront.azimuth, -50, "sensitivity scales rotation after recentering");
+close(sensitiveFront.distance, 2.5, "centered head rotation preserves source radius");
+
+const continuous = new HeadPoseTracker({
+  yawMode: "yaw",
+  sensitivity: 1.5,
+  smoothingMs: 10,
+  maxDegreesPerSecond: 1080,
+  updateHz: 120,
+});
+assert.equal(continuous.set({ orientation: yaw(0) }, 0), true);
+assert.equal(continuous.set({ orientation: yaw(100) }, 1000 / 120), true);
+const firstFastTurnFrame = continuous.headRelative(
+  { azimuth: 0, elevation: 0, distance: 1 },
+  1000 / 120,
+);
+close(firstFastTurnFrame.azimuth, -13.5, "fast 100-degree turn advances continuously on its first frame");
+assert.ok(Math.abs(firstFastTurnFrame.azimuth) < 150, "fast turn must not reach the amplified target in one frame");
+const secondFastTurnFrame = continuous.headRelative(
+  { azimuth: 0, elevation: 0, distance: 1 },
+  2000 / 120,
+);
+close(secondFastTurnFrame.azimuth, -27, "render ticks keep interpolating without another provider sample");
+
 console.log("head pose tests: OK");

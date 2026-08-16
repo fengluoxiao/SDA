@@ -13,7 +13,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { exec } = require("node:child_process");
+const { exec, spawn } = require("node:child_process");
 
 /**
  * Windows 会把窗口被遮挡/最小化的进程打进 EcoQoS 效率模式，alt+tab、
@@ -160,6 +160,44 @@ function writeHeadTrackingEnabled(enabled) {
   writeSettings({ experimentalHeadTrackingEnabled: enabled });
 }
 
+function isHeadTrackingHelperFile(helperPath) {
+  try {
+    return typeof helperPath === "string" &&
+      path.extname(helperPath).toLowerCase() === ".exe" &&
+      !fs.lstatSync(helperPath).isSymbolicLink() &&
+      fs.statSync(helperPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function readHeadTrackingHelperPath() {
+  const helperPath = readSettings().experimentalHeadTrackingHelperPath;
+  return isHeadTrackingHelperFile(helperPath) ? helperPath : null;
+}
+
+function bundledHeadTrackingHelperPath() {
+  if (process.platform !== "win32") return null;
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "head-tracking-helper", "SdaAirPodsHeadTracking.exe")]
+    : [path.join(__dirname, "head-tracking-helper", "SdaAirPodsHeadTracking.exe")];
+  return candidates.find(isHeadTrackingHelperFile) ?? null;
+}
+
+function resolvedHeadTrackingHelper() {
+  const externalPath = readHeadTrackingHelperPath();
+  if (externalPath) return { helperPath: externalPath, source: "external-helper" };
+  const bundledPath = bundledHeadTrackingHelperPath();
+  return bundledPath ? { helperPath: bundledPath, source: "bundled-helper" } : null;
+}
+
+function writeHeadTrackingHelperPath(helperPath) {
+  if (helperPath !== null && !isHeadTrackingHelperFile(helperPath)) {
+    throw new Error("head tracking helper must be a selected .exe regular file");
+  }
+  writeSettings({ experimentalHeadTrackingHelperPath: helperPath });
+}
+
 function readLastMediaDirectory() {
   const directory = readSettings().lastMediaDirectory;
   try {
@@ -169,13 +207,25 @@ function readLastMediaDirectory() {
   }
 }
 
-// Phase 2 experimental provider. This is deliberately a calibrated mock only:
-// Windows AirPods transport remains an external user-mode helper defined in docs,
-// not a bundled Bluetooth implementation or driver.
+// AirPods orientation is supplied by a separate GPL helper process. Keeping the
+// device transport behind JSONL also prevents Bluetooth access from reaching the renderer.
+const HEAD_TRACKING_PROTOCOL = 1;
+const HEAD_TRACKING_MAX_LINE_BYTES = 4096;
+const HEAD_TRACKING_MAX_BUFFER_BYTES = HEAD_TRACKING_MAX_LINE_BYTES * 2;
+const HEAD_TRACKING_MAX_RATE_HZ = 120;
+const HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS = 240;
 const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 let headTrackingTimer = null;
 let headTrackingStartedAt = 0;
-let headTrackingStatus = { running: false, source: "mock", detail: "未启动" };
+let headTrackingHelper = null;
+let headTrackingSession = null;
+let headTrackingBuffer = "";
+let headTrackingHelloReceived = false;
+let headTrackingLastSequence = -1;
+let headTrackingLastPoseAt = 0;
+let headTrackingHelperSource = "bundled-helper";
+let headTrackingEnabled = false;
+let headTrackingStatus = { running: false, source: "bundled-helper", detail: "未启动" };
 
 function sendHeadTracking(channel, payload) {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -188,10 +238,141 @@ function publishHeadTrackingStatus() {
   return headTrackingStatus;
 }
 
+function helperConfiguration() {
+  const externalPath = readHeadTrackingHelperPath();
+  const bundledPath = bundledHeadTrackingHelperPath();
+  const helperPath = externalPath ?? bundledPath;
+  return {
+    configured: Boolean(helperPath),
+    fileName: helperPath ? path.basename(helperPath) : null,
+    bundledAvailable: Boolean(bundledPath),
+    usingBundled: Boolean(bundledPath && !externalPath),
+    externalSelected: Boolean(externalPath),
+    mockAvailable: isDev && process.env.SDA_HEAD_TRACKING_MOCK === "1",
+  };
+}
+
+function safeDiagnosticText(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  return text ? text.slice(0, HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS) : fallback;
+}
+
+function setHeadTrackingStatus(running, source, detail) {
+  headTrackingStatus = { running, source, detail: safeDiagnosticText(detail, "状态未知") };
+  return publishHeadTrackingStatus();
+}
+
+function helperCommand(type) {
+  if (!headTrackingHelper?.stdin || !headTrackingSession) return false;
+  try {
+    headTrackingHelper.stdin.write(`${JSON.stringify({ type, protocol: HEAD_TRACKING_PROTOCOL, session: headTrackingSession })}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validQuaternion(orientation) {
+  if (!orientation || typeof orientation !== "object") return null;
+  const values = [orientation.x, orientation.y, orientation.z, orientation.w];
+  if (!values.every(Number.isFinite)) return null;
+  const norm = Math.hypot(...values);
+  if (norm < 0.99 || norm > 1.01) return null;
+  return { x: values[0] / norm, y: values[1] / norm, z: values[2] / norm, w: values[3] / norm };
+}
+
+function processHeadTrackingMessage(message) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    stopHeadTracking(true, "helper 消息无效");
+    return;
+  }
+  const knownTypes = ["hello", "pose", "status", "error"];
+  if (!knownTypes.includes(message.type)) return;
+  if (message.protocol !== HEAD_TRACKING_PROTOCOL || message.session !== headTrackingSession) {
+    stopHeadTracking(true, "helper 协议或会话无效");
+    return;
+  }
+  if (!headTrackingHelloReceived) {
+    if (
+      message.type !== "hello" ||
+      message.source !== "windows-airpods-experimental" ||
+      message.coordinateSystem !== "sda-adm-right-forward-up" ||
+      message.orientation !== "head-to-world-quaternion"
+    ) {
+      stopHeadTracking(true, "helper 握手无效");
+      return;
+    }
+    headTrackingHelloReceived = true;
+    setHeadTrackingStatus(true, headTrackingHelperSource, "已连接 helper，等待姿态");
+    return;
+  }
+  if (message.type === "hello") {
+    stopHeadTracking(true, "helper 重复握手");
+    return;
+  }
+  if (message.type === "pose") {
+    const orientation = validQuaternion(message.orientation);
+    const sequence = message.seq;
+    const timestampMs = message.timestampMs;
+    const now = Date.now();
+    if (
+      !orientation ||
+      !Number.isSafeInteger(sequence) || sequence <= headTrackingLastSequence ||
+      !Number.isFinite(timestampMs) || Math.abs(timestampMs - now) > 60_000
+    ) {
+      stopHeadTracking(true, "helper 姿态无效");
+      return;
+    }
+    if (now - headTrackingLastPoseAt < 1000 / HEAD_TRACKING_MAX_RATE_HZ) return;
+    headTrackingLastSequence = sequence;
+    headTrackingLastPoseAt = now;
+    if (!headTrackingEnabled) return;
+    setHeadTrackingStatus(true, headTrackingHelperSource, headTrackingHelperSource === "bundled-helper" ? "追踪中（内置 Windows helper）" : "追踪中（外部 helper）");
+    sendHeadTracking("sda:head-tracking-pose", { timestampMs, orientation });
+    return;
+  }
+  if (message.type === "status") {
+    if (!["connected", "disconnected", "unavailable"].includes(message.state)) {
+      stopHeadTracking(true, "helper 状态无效");
+      return;
+    }
+    if (headTrackingEnabled) {
+      setHeadTrackingStatus(true, headTrackingHelperSource, safeDiagnosticText(message.detail, message.state));
+    }
+    return;
+  }
+  const detail = safeDiagnosticText(message.message, safeDiagnosticText(message.code, "helper 错误"));
+  setHeadTrackingStatus(true, headTrackingHelperSource, detail);
+}
+
+function consumeHeadTrackingOutput(chunk) {
+  headTrackingBuffer += chunk;
+  if (Buffer.byteLength(headTrackingBuffer, "utf8") > HEAD_TRACKING_MAX_BUFFER_BYTES) {
+    stopHeadTracking(true, "helper 输出超出限制");
+    return;
+  }
+  for (;;) {
+    const newline = headTrackingBuffer.indexOf("\n");
+    if (newline < 0) return;
+    const line = headTrackingBuffer.slice(0, newline).replace(/\r$/, "");
+    headTrackingBuffer = headTrackingBuffer.slice(newline + 1);
+    if (!line) continue;
+    if (Buffer.byteLength(line, "utf8") > HEAD_TRACKING_MAX_LINE_BYTES) {
+      stopHeadTracking(true, "helper 消息过长");
+      return;
+    }
+    try {
+      processHeadTrackingMessage(JSON.parse(line));
+    } catch {
+      stopHeadTracking(true, "helper JSON 无效");
+      return;
+    }
+  }
+}
+
 function mockHeadPose() {
   const elapsedSeconds = (Date.now() - headTrackingStartedAt) / 1000;
-  // Gentle yaw-only motion. The quaternion is normalized and uses SDA's
-  // world-coordinate convention; it exercises renderer APIs without hardware.
   const yawRadians = Math.sin(elapsedSeconds * 0.7) * (Math.PI / 6);
   return {
     timestampMs: Date.now(),
@@ -199,30 +380,147 @@ function mockHeadPose() {
   };
 }
 
-function startHeadTracking() {
-  if (headTrackingTimer) return publishHeadTrackingStatus();
-  writeHeadTrackingEnabled(true);
+function startHeadTrackingMock() {
   headTrackingStartedAt = Date.now();
-  headTrackingStatus = { running: true, source: "mock", detail: "模拟 yaw 姿态（仅实验）" };
+  setHeadTrackingStatus(true, "mock", "模拟 yaw 姿态（仅开发验证）");
   headTrackingTimer = setInterval(() => sendHeadTracking("sda:head-tracking-pose", mockHeadPose()), HEAD_TRACKING_MOCK_INTERVAL_MS);
   headTrackingTimer.unref();
-  return publishHeadTrackingStatus();
+  return headTrackingStatus;
 }
 
-function stopHeadTracking(persist = true) {
+function startHeadTracking() {
+  if (headTrackingTimer || headTrackingHelper) {
+    headTrackingEnabled = true;
+    writeHeadTrackingEnabled(true);
+    const hasRecentPose = Date.now() - headTrackingLastPoseAt < 1000;
+    return setHeadTrackingStatus(
+      true,
+      headTrackingHelperSource,
+      hasRecentPose
+        ? headTrackingHelperSource === "bundled-helper" ? "追踪中（内置 Windows helper）" : "追踪中（外部 helper）"
+        : "正在恢复 AirPods motion",
+    );
+  }
+  const resolvedHelper = resolvedHeadTrackingHelper();
+  if (!resolvedHelper) {
+    if (isDev && process.env.SDA_HEAD_TRACKING_MOCK === "1") return startHeadTrackingMock();
+    throw new Error("内置 AirPods 头追 helper 不存在，请重新安装或选择外部 helper");
+  }
+  const { helperPath, source } = resolvedHelper;
+  headTrackingHelperSource = source;
+  headTrackingEnabled = true;
+  writeHeadTrackingEnabled(true);
+  headTrackingSession = crypto.randomBytes(32).toString("hex");
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  headTrackingLastSequence = -1;
+  headTrackingLastPoseAt = 0;
+  try {
+    headTrackingHelper = spawn(helperPath, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  } catch (error) {
+    headTrackingHelper = null;
+    headTrackingSession = null;
+    writeHeadTrackingEnabled(false);
+    throw error;
+  }
+  headTrackingHelper.stdout.setEncoding("utf8");
+  headTrackingHelper.stdout.on("data", consumeHeadTrackingOutput);
+  headTrackingHelper.stderr.on("data", () => {});
+  headTrackingHelper.stdin.once("error", () => {
+    if (headTrackingHelper) stopHeadTracking(true, "helper 命令通道失败");
+  });
+  headTrackingHelper.once("error", (error) => stopHeadTracking(true, `helper 启动失败: ${error.message}`));
+  headTrackingHelper.once("exit", (code) => {
+    if (headTrackingHelper) stopHeadTracking(true, `helper 已退出${code === null ? "" : ` (${code})`}`);
+  });
+  helperCommand("start");
+  return setHeadTrackingStatus(true, headTrackingHelperSource, "正在连接 AirPods motion 通道");
+}
+
+function stopHeadTracking(persist = true, detail = "已停止") {
   if (headTrackingTimer) clearInterval(headTrackingTimer);
   headTrackingTimer = null;
+  const helper = headTrackingHelper;
+  if (helper) {
+    helperCommand("stop");
+    headTrackingHelper = null;
+    helper.removeAllListeners();
+    helper.stdout?.removeAllListeners();
+    helper.stderr?.removeAllListeners();
+    try { helper.kill(); } catch {}
+  }
+  headTrackingSession = null;
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  headTrackingEnabled = false;
   if (persist) writeHeadTrackingEnabled(false);
-  headTrackingStatus = { running: false, source: "mock", detail: "已停止" };
-  return publishHeadTrackingStatus();
+  return setHeadTrackingStatus(false, headTrackingHelperSource, detail);
+}
+
+async function stopHeadTrackingGracefully(persist = true, detail = "已停止") {
+  if (headTrackingTimer) return stopHeadTracking(persist, detail);
+  const helper = headTrackingHelper;
+  if (!helper) return stopHeadTracking(persist, detail);
+
+  // Let the helper send both AirPods stop packets and close L2CAP before a new
+  // helper is allowed to connect. Killing it immediately leaves the buds in a
+  // stale motion session and the next start waits forever for motion packets.
+  helperCommand("stop");
+  headTrackingHelper = null;
+  headTrackingEnabled = false;
+  headTrackingSession = null;
+  headTrackingBuffer = "";
+  headTrackingHelloReceived = false;
+  helper.stdout?.removeAllListeners("data");
+  helper.stderr?.removeAllListeners("data");
+  helper.stdin?.removeAllListeners("error");
+  helper.removeAllListeners("error");
+  helper.removeAllListeners("exit");
+
+  await new Promise((resolve) => {
+    let finished = false;
+    let killTimer;
+    let forceTimer;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(killTimer);
+      clearTimeout(forceTimer);
+      resolve();
+    };
+    helper.once("exit", finish);
+    helper.once("error", finish);
+    killTimer = setTimeout(() => {
+      try { helper.kill(); } catch { finish(); }
+    }, 750);
+    forceTimer = setTimeout(finish, 1500);
+    killTimer.unref();
+    forceTimer.unref();
+  });
+
+  if (persist) writeHeadTrackingEnabled(false);
+  return setHeadTrackingStatus(false, headTrackingHelperSource, detail);
+}
+
+function suspendHeadTracking() {
+  if (headTrackingTimer || !headTrackingHelper) return stopHeadTracking(true, "已停止");
+  headTrackingEnabled = false;
+  writeHeadTrackingEnabled(false);
+  return setHeadTrackingStatus(false, headTrackingHelperSource, "已关闭（保持 AirPods motion 连接）");
 }
 
 function recenterHeadTracking() {
-  if (!headTrackingTimer) throw new Error("head tracking is not running");
-  headTrackingStartedAt = Date.now();
-  const pose = mockHeadPose();
-  sendHeadTracking("sda:head-tracking-recenter", pose);
-  return pose;
+  if (!headTrackingTimer && !headTrackingHelper) throw new Error("head tracking is not running");
+  if (headTrackingTimer) {
+    headTrackingStartedAt = Date.now();
+    const pose = mockHeadPose();
+    sendHeadTracking("sda:head-tracking-recenter", pose);
+    return pose;
+  }
+  helperCommand("recenter");
+  // Renderer-side recenter remains available even for helpers without a command API.
+  sendHeadTracking("sda:head-tracking-recenter", null);
+  return null;
 }
 
 const webAssetRoots = () => [
@@ -378,8 +676,37 @@ ipcMain.on("sda:set-volume-balance-enabled", (event, enabled) => {
 });
 
 ipcMain.handle("sda:head-tracking-status", () => headTrackingStatus);
+ipcMain.handle("sda:head-tracking-helper", () => helperConfiguration());
+ipcMain.handle("sda:head-tracking-select-helper", async (event) => {
+  if (headTrackingStatus.running) throw new Error("stop head tracking before selecting a helper");
+  if (headTrackingTimer || headTrackingHelper) await stopHeadTrackingGracefully(false);
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options = {
+    title: "选择独立 AirPods 头追 helper",
+    filters: [{ name: "Windows helper", extensions: ["exe"] }],
+    properties: ["openFile"],
+  };
+  const { canceled, filePaths } = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options);
+  if (canceled) return helperConfiguration();
+  const helperPath = path.resolve(filePaths[0]);
+  writeHeadTrackingHelperPath(helperPath);
+  if (!headTrackingStatus.running) setHeadTrackingStatus(false, "external-helper", `已配置 ${path.basename(helperPath)}`);
+  return helperConfiguration();
+});
+ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
+  if (headTrackingStatus.running) throw new Error("stop head tracking before changing helper");
+  if (headTrackingTimer || headTrackingHelper) await stopHeadTrackingGracefully(false);
+  writeHeadTrackingHelperPath(null);
+  const configuration = helperConfiguration();
+  if (!configuration.bundledAvailable) throw new Error("bundled head tracking helper is unavailable");
+  headTrackingHelperSource = "bundled-helper";
+  setHeadTrackingStatus(false, "bundled-helper", "已选择内置 Windows helper");
+  return configuration;
+});
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
-ipcMain.handle("sda:head-tracking-stop", () => stopHeadTracking());
+ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
 ipcMain.handle("sda:head-tracking-recenter", () => recenterHeadTracking());
 
 ipcMain.handle("sda:pick-file", async (event) => {
@@ -537,13 +864,15 @@ app.whenReady().then(() => {
   boostProcessTreePriority();
   setInterval(boostProcessTreePriority, 30_000).unref();
   createWindow();
-  if (readHeadTrackingEnabled()) startHeadTracking();
+  if (readHeadTrackingEnabled() && resolvedHeadTrackingHelper()) {
+    try { startHeadTracking(); } catch (error) { console.warn("[SDA] 头部追踪自动启动失败:", error); }
+  }
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-app.on("window-all-closed", () => {
-  stopHeadTracking(false);
+app.on("window-all-closed", async () => {
+  await stopHeadTrackingGracefully(false);
   if (process.platform !== "darwin") app.quit();
 });

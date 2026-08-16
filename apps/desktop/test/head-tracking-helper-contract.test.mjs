@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const main = readFileSync(join(import.meta.dirname, "..", "main.cjs"), "utf8");
+const preload = readFileSync(join(import.meta.dirname, "..", "preload.cjs"), "utf8");
+const protocol = readFileSync(join(import.meta.dirname, "..", "..", "..", "docs", "head-tracking-helper-jsonl-protocol.md"), "utf8");
+
+assert.match(main, /const HEAD_TRACKING_PROTOCOL = 1/);
+assert.match(main, /const HEAD_TRACKING_MAX_LINE_BYTES = 4096/);
+assert.match(main, /crypto\.randomBytes\(32\)\.toString\("hex"\)/);
+assert.match(main, /path\.extname\(helperPath\)\.toLowerCase\(\) === ".exe"/);
+assert.match(main, /!fs\.lstatSync\(helperPath\)\.isSymbolicLink\(\)/);
+assert.match(main, /spawn\(helperPath, \[\], \{ stdio: \["pipe", "pipe", "pipe"\], windowsHide: true \}\)/);
+assert.match(main, /process\.resourcesPath, "head-tracking-helper", "SdaAirPodsHeadTracking\.exe"/);
+assert.match(main, /source: "bundled-helper"/);
+assert.match(main, /message\.source !== "windows-airpods-experimental"/);
+assert.match(main, /message\.coordinateSystem !== "sda-adm-right-forward-up"/);
+assert.match(main, /message\.orientation !== "head-to-world-quaternion"/);
+assert.match(main, /message\.protocol !== HEAD_TRACKING_PROTOCOL \|\| message\.session !== headTrackingSession/);
+assert.match(main, /const knownTypes = \["hello", "pose", "status", "error"\]/);
+assert.match(main, /Number\.isSafeInteger\(sequence\) \|\| sequence <= headTrackingLastSequence/);
+assert.match(main, /now - headTrackingLastPoseAt < 1000 \/ HEAD_TRACKING_MAX_RATE_HZ/);
+assert.match(main, /const HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS = 240/);
+assert.match(main, /replace\(\/\[\\u0000-\\u001f\\u007f\]\/g, " "\)/);
+assert.match(main, /ipcMain\.handle\("sda:head-tracking-select-helper"/);
+assert.match(main, /ipcMain\.handle\("sda:head-tracking-use-bundled-helper"/);
+assert.match(main, /ipcMain\.handle\("sda:head-tracking-stop", \(\) => suspendHeadTracking\(\)\)/);
+assert.match(main, /helperCommand\("stop"\)/);
+assert.match(main, /killTimer = setTimeout/);
+assert.match(main, /已关闭（保持 AirPods motion 连接）/);
+assert.match(main, /extensions: \["exe"\]/);
+assert.match(preload, /selectHeadTrackingHelper/);
+assert.match(preload, /useBundledHeadTrackingHelper/);
+assert.match(preload, /getHeadTrackingHelper/);
+assert.match(protocol, /"type":"hello"/);
+assert.match(protocol, /"type":"start"/);
+assert.match(protocol, /64-lowercase-hex-characters/);
+assert.match(protocol, /Every known stdout message/);
+assert.match(protocol, /240 characters/);
+
+console.log("head tracking helper contract tests passed");

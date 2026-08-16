@@ -49,11 +49,22 @@ pose provider (mock / external helper)
 1. 作为独立实验程序研究标准用户态 L2CAP 是否能持续获得 AACP head-tracking packet stream。
 2. 以标准化 pose JSON/pipe 接入 SDA，不将蓝牙协议和 renderer 混合。
 3. 先验证多适配器、不同固件、长时间流、A2DP 并发、时钟/轴/漂移。
-4. 不复制 GPL LibrePods 源码；不捆绑 KMDF driver。只有 transport 可靠且许可/安全评审通过后，才考虑分发更深集成。
+4. 不复制 GPL LibrePods 源码；KMDF driver 只在 Windows 预览安装器中作为明确选择的实验功能分发。
 
 ## 非目标
 
 - 不声称与 Apple 系统 Spatial Audio 等价。
-- 不将实验性 kernel driver 加入 SDA installer。
+- 不默认安装实验性 kernel driver，也不在未经用户勾选和管理员确认时修改 TestSigning。
 - 不在 pose 更新时重建双耳卷积图。
 - 不使用 raw AirPods 私有 packet 作为未经校准的音频四元数。
+
+## 2026-08-15 Windows 11 实机结论
+
+- 已完成 LibrePods AACP 握手、通知、motion stream 启停包、10 帧校准和姿态映射的独立 Rust helper 移植；JSONL 接口已接入 Electron，renderer 姿态链路可测试。
+- 实机已配对并连接 AirPods Pro，Windows 同时显示麦克风和音频已连接；Winsock catalog 也存在 `MSAFD L2CAP [Bluetooth]`。
+- 对 PSM `0x1001` 直接连接以及 AACP UUID service lookup 均返回 `WSAENETDOWN (10050)`。这不是 A2DP 未连接。
+- 微软官方 `Bluetooth and socket` 文档明确列出应用支持的 Bluetooth Winsock protocol 为 `BTHPROTO_RFCOMM`，未支持 `BTHPROTO_L2CAP`。catalog 中的 L2CAP provider 不能据此视为普通桌面应用可用接口。
+- 因此当前用户态 Winsock transport 只能保留为研究原型，不能声称已在原生 Windows 蓝牙栈上完成硬件可用性验证。若要纯 Windows 落地，需要实现、签名并安装 Bluetooth profile kernel driver；SDA 的 JSONL、校准和 renderer 部分可以复用。
+- 已实现白名单 KMDF profile driver，并在独立 Windows 预览安装器中提供两个默认关闭的选项：开启 TestSigning、安装驱动。两者互不隐式触发，均通过管理员 PowerShell 执行，且不会自动重启。
+
+官方依据：https://learn.microsoft.com/windows/win32/bluetooth/bluetooth-and-socket

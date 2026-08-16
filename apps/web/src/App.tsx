@@ -19,6 +19,12 @@ import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
+import {
+  quaternionAngularVelocity,
+  quaternionEulerAngles,
+  type HeadTrackingTelemetrySample,
+  type Quaternion,
+} from "./head-tracking-telemetry";
 
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
 type HeadTrackingPlayer = {
@@ -51,6 +57,8 @@ const OUTPUT_LATENCY_STORAGE_KEY = "sda-output-latency-seconds";
 const BINAURAL_LOW_FREQUENCY_DIAGNOSTIC_STORAGE_KEY = "sda-binaural-low-frequency-diagnostic";
 type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 const DEFAULT_OUTPUT_LATENCY_SECONDS: OutputLatencySeconds = 0.1;
+const HEAD_TRACKING_TELEMETRY_INTERVAL_MS = 1000 / 30;
+const HEAD_TRACKING_TELEMETRY_HISTORY_MS = 6_000;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
 const ownedArrayBuffer = (bytes: Uint8Array): ArrayBuffer => Uint8Array.from(bytes).buffer;
 
@@ -117,6 +125,63 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   } catch {
     // Persistence failures must not prevent changing the active output graph.
   }
+}
+
+function telemetryPolyline(
+  samples: readonly HeadTrackingTelemetrySample[],
+  axis: "x" | "y" | "z",
+  scale: number,
+): string {
+  if (samples.length === 0) return "";
+  const end = samples[samples.length - 1].timestampMs;
+  const start = end - HEAD_TRACKING_TELEMETRY_HISTORY_MS;
+  return samples.map((sample) => {
+    const x = Math.max(0, Math.min(288, ((sample.timestampMs - start) / HEAD_TRACKING_TELEMETRY_HISTORY_MS) * 288));
+    const y = 58 - Math.max(-scale, Math.min(scale, sample[axis])) / scale * 50;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function HeadTrackingTelemetryPanel({ samples }: { samples: readonly HeadTrackingTelemetrySample[] }) {
+  const latest = samples[samples.length - 1];
+  const scale = Math.max(90, Math.min(1080, Math.ceil(Math.max(
+    ...samples.flatMap((sample) => [Math.abs(sample.x), Math.abs(sample.y), Math.abs(sample.z)]),
+    0,
+  ) / 30) * 30));
+
+  return (
+    <div className="panel float-panel head-tracking-panel" aria-label="头部追踪实时数据">
+      <div className="telemetry-heading">
+        <h2>头部追踪</h2>
+        <span className={latest ? "telemetry-live" : ""}>{latest ? "实时" : "等待数据"}</span>
+      </div>
+      <p className="telemetry-note">角速度由连续姿态差分计算，并非 AirPods 未公开的原始 IMU 字段。</p>
+      <div className="telemetry-values" aria-live="off">
+        {(["x", "y", "z"] as const).map((axis) => (
+          <div key={axis} className={`telemetry-value axis-${axis}`}>
+            <span>{axis.toUpperCase()}</span>
+            <strong>{latest ? latest[axis].toFixed(1) : "--"}</strong>
+            <small>°/s</small>
+          </div>
+        ))}
+      </div>
+      <svg className="telemetry-chart" viewBox="0 0 288 116" role="img" aria-label="最近六秒三轴角速度曲线">
+        <line x1="0" y1="58" x2="288" y2="58" className="telemetry-zero" />
+        <line x1="72" y1="0" x2="72" y2="116" className="telemetry-grid" />
+        <line x1="144" y1="0" x2="144" y2="116" className="telemetry-grid" />
+        <line x1="216" y1="0" x2="216" y2="116" className="telemetry-grid" />
+        {(["x", "y", "z"] as const).map((axis) => (
+          <polyline key={axis} points={telemetryPolyline(samples, axis, scale)} className={`telemetry-line axis-${axis}`} />
+        ))}
+      </svg>
+      <div className="telemetry-scale"><span>±{scale} °/s</span><span>最近 6 秒</span></div>
+      <dl className="telemetry-orientation">
+        <dt>Yaw</dt><dd>{latest ? `${latest.yaw.toFixed(1)}°` : "--"}</dd>
+        <dt>Pitch</dt><dd>{latest ? `${latest.pitch.toFixed(1)}°` : "--"}</dd>
+        <dt>Roll</dt><dd>{latest ? `${latest.roll.toFixed(1)}°` : "--"}</dd>
+      </dl>
+    </div>
+  );
 }
 
 try {
@@ -188,8 +253,12 @@ export function App() {
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
+  const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
-  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "objects" | "playlist" | null>(null);
+  const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
+  const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
+  const lastTelemetryUiUpdateRef = useRef(0);
+  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | null>(null);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -292,7 +361,19 @@ export function App() {
             setPlaying(false);
           }
         },
-      }, { initialOutputLatencySeconds: outputLatencySecondsRef.current });
+      }, {
+        initialOutputLatencySeconds: outputLatencySecondsRef.current,
+        // KU100 stays at the room origin while world-locked sources are viewed
+        // through the inverse head rotation. AirPods benefit from a slightly
+        // stronger, lower-latency yaw response than the device-neutral default.
+        headPose: {
+          yawMode: "yaw",
+          sensitivity: 1.5,
+          smoothingMs: 10,
+          maxDegreesPerSecond: 1080,
+          updateHz: 120,
+        },
+      });
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = lid === "auto"
         ? (labels: readonly string[], hasDynamics: boolean) => {
@@ -327,20 +408,44 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (headTrackingStatus?.running) return;
+    previousTelemetryPoseRef.current = null;
+    lastTelemetryUiUpdateRef.current = 0;
+    setHeadTrackingTelemetry([]);
+    setFloatPanel((panel) => panel === "head-tracking" ? null : panel);
+  }, [headTrackingStatus?.running]);
+
+  useEffect(() => {
     const desktop = window.sdaDesktop;
     if (!desktop?.getHeadTrackingStatus) return;
     void desktop.getHeadTrackingStatus().then(setHeadTrackingStatus).catch((error) => {
       console.warn("[SDA] 读取头部追踪状态失败:", error);
     });
+    void desktop.getHeadTrackingHelper?.().then(setHeadTrackingHelper).catch((error) => {
+      console.warn("[SDA] 读取头追 helper 配置失败:", error);
+    });
     const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
     const applyPose = (pose: HeadTrackingPose) => {
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
       player?.setHeadPose?.(rendererHeadPose(pose));
+      const timestampMs = performance.now();
+      const orientation: Quaternion = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w];
+      const previous = previousTelemetryPoseRef.current;
+      previousTelemetryPoseRef.current = { orientation, timestampMs };
+      if (!previous || timestampMs - lastTelemetryUiUpdateRef.current < HEAD_TRACKING_TELEMETRY_INTERVAL_MS) return;
+      lastTelemetryUiUpdateRef.current = timestampMs;
+      const angularVelocity = quaternionAngularVelocity(previous.orientation, orientation, timestampMs - previous.timestampMs);
+      const angles = quaternionEulerAngles(orientation);
+      const sample: HeadTrackingTelemetrySample = { timestampMs, ...angularVelocity, ...angles };
+      setHeadTrackingTelemetry((history) => [
+        ...history.filter((entry) => timestampMs - entry.timestampMs <= HEAD_TRACKING_TELEMETRY_HISTORY_MS),
+        sample,
+      ]);
     };
     const stopPose = desktop.onHeadTrackingPose?.(applyPose);
     const stopRecenter = desktop.onHeadTrackingRecenter?.((pose) => {
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
-      player?.setHeadPose?.(rendererHeadPose(pose));
+      if (pose) player?.setHeadPose?.(rendererHeadPose(pose));
       player?.recenterHeadPose?.();
     });
     return () => {
@@ -370,6 +475,36 @@ export function App() {
       .catch((error) => setErrors((prev) => [...prev, `加载本地耳机档案失败: ${String(error)}`]));
   }, []);
 
+  const selectHeadTrackingHelper = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.selectHeadTrackingHelper) return;
+    setHeadTrackingBusy(true);
+    try {
+      setHeadTrackingHelper(await desktop.selectHeadTrackingHelper());
+      if (desktop.getHeadTrackingStatus) setHeadTrackingStatus(await desktop.getHeadTrackingStatus());
+    } catch (error) {
+      console.warn("[SDA] 选择头追 helper 失败:", error);
+      setErrors((prev) => [...prev, `选择头追 helper 失败: ${String(error)}`]);
+    } finally {
+      setHeadTrackingBusy(false);
+    }
+  }, []);
+
+  const useBundledHeadTrackingHelper = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.useBundledHeadTrackingHelper) return;
+    setHeadTrackingBusy(true);
+    try {
+      setHeadTrackingHelper(await desktop.useBundledHeadTrackingHelper());
+      if (desktop.getHeadTrackingStatus) setHeadTrackingStatus(await desktop.getHeadTrackingStatus());
+    } catch (error) {
+      console.warn("[SDA] 切换内置头追 helper 失败:", error);
+      setErrors((prev) => [...prev, `切换内置头追 helper 失败: ${String(error)}`]);
+    } finally {
+      setHeadTrackingBusy(false);
+    }
+  }, []);
+
   const setHeadTrackingRunning = useCallback(async (running: boolean) => {
     const desktop = window.sdaDesktop;
     const operation = running ? desktop?.startHeadTracking : desktop?.stopHeadTracking;
@@ -380,6 +515,10 @@ export function App() {
       if (!running) {
         const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
         player?.clearHeadPose?.();
+        previousTelemetryPoseRef.current = null;
+        lastTelemetryUiUpdateRef.current = 0;
+        setHeadTrackingTelemetry([]);
+        setFloatPanel((panel) => panel === "head-tracking" ? null : panel);
       }
     } catch (error) {
       console.warn("[SDA] 头部追踪切换失败:", error);
@@ -929,30 +1068,44 @@ export function App() {
             </fieldset>
             {window.sdaDesktop?.getHeadTrackingStatus && (
               <fieldset className="settings-group settings-section" disabled={mode !== "binaural" || headTrackingBusy}>
-                <legend>实验性头部追踪</legend>
+                <legend>实验性 AirPods 头部追踪</legend>
                 <p className="settings-description">
-                  仅用于验证 SDA 双耳渲染接口。目前使用内置模拟姿态；未来 Windows AirPods 将通过外部 helper 接入，不包含驱动或蓝牙协议实现。
+                  通过独立 helper 进程读取已配对 AirPods 的 motion data；不是 Apple Personalized Spatial Audio，不读取配对密钥。
+                </p>
+                <p className="settings-description">
+                  Helper：{headTrackingHelper?.usingBundled ? "内置 Windows helper" : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
                 </p>
                 <p className="settings-description">
                   状态：{headTrackingStatus?.running ? `运行中（${headTrackingStatus.source}；${headTrackingStatus.detail}）` : headTrackingStatus?.detail ?? "正在读取"}
                 </p>
                 <div className="settings-switch">
-                  <span>启用模拟追踪</span>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    checked={headTrackingStatus?.running ?? false}
-                    onChange={(event) => void setHeadTrackingRunning(event.target.checked)}
-                  />
+                  <span>Helper 来源</span>
+                  <div>
+                    <button onClick={() => void selectHeadTrackingHelper()} title="选择其它 Windows AirPods 头追 helper (.exe)">选择外部</button>
+                    {headTrackingHelper?.bundledAvailable && headTrackingHelper.externalSelected && (
+                      <button onClick={() => void useBundledHeadTrackingHelper()} title="恢复使用 SDA 随附的 helper">使用内置</button>
+                    )}
+                  </div>
+                </div>
+                <div className="settings-switch">
+                  <span>追踪控制</span>
+                  <button
+                    disabled={!headTrackingStatus?.running && !headTrackingHelper?.configured && !headTrackingHelper?.mockAvailable}
+                    onClick={() => void setHeadTrackingRunning(!(headTrackingStatus?.running ?? false))}
+                  >{headTrackingStatus?.running ? "停止" : "启动"}</button>
                 </div>
                 <div className="settings-switch">
                   <span>面向前方</span>
                   <button
                     disabled={!headTrackingStatus?.running}
                     onClick={() => void recenterHeadTracking()}
-                    title="将当前实验性姿态设为前方"
+                    title="将当前头部朝向设为前方"
                   >重置</button>
                 </div>
+                {headTrackingHelper?.mockAvailable && !headTrackingHelper.configured && (
+                  <p className="settings-description">开发模式已启用模拟 yaw 追踪；它不访问 AirPods 或蓝牙硬件。</p>
+                )}
+                <p className="settings-description">请先在 Windows 设置中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
               </fieldset>
             )}
             {mode === "multichannel" && <p className="settings-disabled">音量平衡仅用于双耳和立体声输出。</p>}
@@ -981,6 +1134,9 @@ export function App() {
       </main>
 
       <div className="float-dock">
+        {floatPanel === "head-tracking" && headTrackingStatus?.running && (
+          <HeadTrackingTelemetryPanel samples={headTrackingTelemetry} />
+        )}
         {floatPanel === "stream" && (
           <div className="panel float-panel">
             <h2>码流</h2>
@@ -1101,6 +1257,15 @@ export function App() {
           />
         )}
         <div className="float-buttons">
+          {headTrackingStatus?.running && (
+            <button
+              className={`head-tracking-toggle ${floatPanel === "head-tracking" ? "active" : ""}`}
+              title="查看头部追踪实时数据"
+              aria-label="查看头部追踪实时数据"
+              aria-expanded={floatPanel === "head-tracking"}
+              onClick={() => setFloatPanel(floatPanel === "head-tracking" ? null : "head-tracking")}
+            >头追</button>
+          )}
           <button
             className={floatPanel === "stream" ? "active" : ""}
             title="码流信息"

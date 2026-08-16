@@ -37,8 +37,17 @@ interface LocalHeadphoneProfileManifest {
 declare global {
   interface HeadTrackingStatus {
     running: boolean;
-    source: "mock" | "external-helper";
+    source: "mock" | "bundled-helper" | "external-helper";
     detail: string;
+  }
+
+  interface HeadTrackingHelperConfiguration {
+    configured: boolean;
+    fileName: string | null;
+    bundledAvailable: boolean;
+    usingBundled: boolean;
+    externalSelected: boolean;
+    mockAvailable: boolean;
   }
 
   interface HeadTrackingPose {
@@ -55,9 +64,12 @@ declare global {
       getVolumeBalanceEnabled?: () => boolean;
       setVolumeBalanceEnabled?: (enabled: boolean) => boolean;
       getHeadTrackingStatus?: () => Promise<HeadTrackingStatus>;
+      getHeadTrackingHelper?: () => Promise<HeadTrackingHelperConfiguration>;
+      selectHeadTrackingHelper?: () => Promise<HeadTrackingHelperConfiguration>;
+      useBundledHeadTrackingHelper?: () => Promise<HeadTrackingHelperConfiguration>;
       startHeadTracking?: () => Promise<HeadTrackingStatus>;
       stopHeadTracking?: () => Promise<HeadTrackingStatus>;
-      recenterHeadTracking?: () => Promise<HeadTrackingPose>;
+      recenterHeadTracking?: () => Promise<HeadTrackingPose | null>;
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;

@@ -6,7 +6,7 @@
  * those stale samples later and drift away from the other object channels.
  */
 
-const WORKLET_BUILD = "object-batch-v1";
+const WORKLET_BUILD = "head-pose-route-v3";
 const MAX_SOURCES = 64;
 const CALLBACK_GAP_TELEMETRY_MS = 12;
 const CALLBACK_GAP_ESCALATION_MS = 25;
@@ -24,6 +24,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     this.epoch = Number.isSafeInteger(opts.epoch) ? opts.epoch : 0;
     this.timelineStarted = false;
     this.timelineOrigin = null;
+    // While true, object metadata keeps sample-accurate scalar gain but its
+    // canonical world-space route cannot overwrite the live head-relative route.
+    this.headTracking = false;
     this.sources = new Map();
     this.underrunSamples = 0;
     this.rejectedBatches = 0;
@@ -59,6 +62,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       gain: 1,
       targetGain: 1,
       gainStep: 0,
+      gainRampLeft: 0,
       muteGain: 1,
       targetMuteGain: 1,
       muteRampLeft: 0,
@@ -97,36 +101,62 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     src.routeBuses = routes;
   }
 
-  /** Advance an active metadata ramp by an exact number of sample intervals. */
-  advanceGainRamp(src, samples) {
-    const advance = Math.min(Math.max(0, Math.trunc(samples)), src.rampLeft);
-    if (advance === 0) return;
-    for (let bus = 0; bus < this.busCount; bus++) {
-      src.gains[bus] += src.rampStep[bus] * advance;
+  /** Advance spatial and scalar ramps independently by exact sample intervals. */
+  advanceGainRamps(src, samples, advanceSpatial = true, advanceScalar = true) {
+    const count = Math.max(0, Math.trunc(samples));
+    if (advanceSpatial) {
+      const spatialAdvance = Math.min(count, src.rampLeft);
+      if (spatialAdvance > 0) {
+        for (let bus = 0; bus < this.busCount; bus++) {
+          src.gains[bus] += src.rampStep[bus] * spatialAdvance;
+        }
+        src.rampLeft -= spatialAdvance;
+        if (src.rampLeft === 0) {
+          src.gains.set(src.target);
+          this.refreshRouteBuses(src);
+        }
+      }
     }
-    src.gain += src.gainStep * advance;
-    src.rampLeft -= advance;
-    if (src.rampLeft === 0) {
-      src.gains.set(src.target);
-      src.gain = src.targetGain;
-      this.refreshRouteBuses(src);
+    if (advanceScalar) {
+      const scalarAdvance = Math.min(count, src.gainRampLeft);
+      if (scalarAdvance > 0) {
+        src.gain += src.gainStep * scalarAdvance;
+        src.gainRampLeft -= scalarAdvance;
+        if (src.gainRampLeft === 0) src.gain = src.targetGain;
+      }
     }
   }
 
   /** Start an event at eventTime and fast-forward it to currentTime. */
   startGainRampAtTime(src, msg, eventTime, currentTime) {
-    const target = msg.gains;
+    if (msg.type === "scheduleGains" && msg.poseUpdate === true && !this.headTracking) return;
     const ramp = Math.max(1, msg.ramp | 0);
-    for (let bus = 0; bus < this.busCount; bus++) {
-      src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
-      src.rampStep[bus] = (src.target[bus] - src.gains[bus]) / ramp;
+    const preserveSpatial = this.headTracking
+      && msg.type === "scheduleGains"
+      && msg.poseControlled === true
+      && msg.poseUpdate !== true;
+    const preserveScalar = msg.poseUpdate === true;
+    if (!preserveSpatial) {
+      const target = msg.gains;
+      for (let bus = 0; bus < this.busCount; bus++) {
+        src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
+        src.rampStep[bus] = (src.target[bus] - src.gains[bus]) / ramp;
+      }
+      src.rampLeft = ramp;
+      this.refreshRouteBuses(src, true);
     }
-    src.targetGain = msg.gain ?? 1;
-    src.gainStep = (src.targetGain - src.gain) / ramp;
-    src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
-    src.rampLeft = ramp;
-    this.refreshRouteBuses(src, true);
-    this.advanceGainRamp(src, currentTime - eventTime);
+    if (!preserveScalar) {
+      src.targetGain = msg.gain ?? 1;
+      src.gainStep = (src.targetGain - src.gain) / ramp;
+      src.gainRampLeft = ramp;
+      src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
+    }
+    this.advanceGainRamps(
+      src,
+      currentTime - eventTime,
+      !preserveSpatial,
+      !preserveScalar,
+    );
   }
 
   /** Replay every overdue event chronologically to currentTime. Each event is
@@ -152,6 +182,19 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   enqueueScheduledGain(src, msg) {
     const events = src.scheduledGains;
     const cursor = src.scheduledGainCursor;
+    if (msg.poseUpdate === true) {
+      // Pose refreshes repeatedly update already-buffered object boundaries.
+      // Replace the pending route instead of growing the queue at 120 Hz.
+      for (let index = cursor; index < events.length; index++) {
+        const candidate = events[index];
+        if (candidate.at > msg.at) break;
+        if (candidate.at === msg.at && candidate.poseUpdate === true) {
+          events[index] = msg;
+          src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
+          return;
+        }
+      }
+    }
     const last = events[events.length - 1];
     if (!last || last.at <= msg.at) {
       events.push(msg);
@@ -167,6 +210,14 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
     events.splice(low, 0, msg);
     src.nextScheduledGainAt = events[cursor]?.at ?? Number.POSITIVE_INFINITY;
+  }
+
+  discardScheduledPoseUpdates(src) {
+    src.scheduledGains = src.scheduledGains
+      .slice(src.scheduledGainCursor)
+      .filter((event) => event.poseUpdate !== true);
+    src.scheduledGainCursor = 0;
+    src.nextScheduledGainAt = src.scheduledGains[0]?.at ?? Number.POSITIVE_INFINITY;
   }
 
   scheduleLifecycle(src, at, active, token = null) {
@@ -319,6 +370,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         for (const entry of msg.entries || []) {
           const src = this.sources.get(entry.id);
           if (src && Number.isSafeInteger(entry.at)) this.enqueueScheduledGain(src, entry);
+        }
+        break;
+      case "headTracking":
+        if (this.headTracking !== (msg.enabled === true)) {
+          this.headTracking = msg.enabled === true;
+          for (const src of this.sources.values()) this.discardScheduledPoseUpdates(src);
         }
         break;
       case "mute": {
@@ -502,8 +559,8 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           buses[bus][i] += sample * src.gains[bus];
         }
 
-        if (src.rampLeft > 0) {
-          this.advanceGainRamp(src, 1);
+        if (src.rampLeft > 0 || src.gainRampLeft > 0) {
+          this.advanceGainRamps(src, 1);
           gain = src.gain;
         }
         if (src.muteRampLeft > 0) {
