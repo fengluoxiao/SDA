@@ -22,7 +22,7 @@
  * +10dB LFE 补偿，也不包含主声道的低频重定向。
  */
 
-import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
+import { admToSpherical, sphericalToAdm, sphericalToWebAudio, type Spherical } from "./coords.js";
 import { HeadPoseTracker, type HeadPose, type HeadPoseOptions } from "./head-pose.js";
 import {
   LAYOUT_7_1_4,
@@ -256,7 +256,28 @@ interface SourceState {
   lifecycleEventOrder: number;
   /** Canonical object targets keyed to codec time. Pose refreshes update both
    * the currently audible route and already-buffered future route changes. */
-  objectPoseTimeline: { at: number; position: Spherical; spread: number; gainDb: number; rampSamples: number }[];
+  objectPoseTimeline: {
+    at: number;
+    fromPosition: Spherical;
+    position: Spherical;
+    fromSpread: number;
+    spread: number;
+    gainDb: number;
+    rampSamples: number;
+  }[];
+}
+
+export function interpolateObjectPosition(from: Spherical, to: Spherical, progress: number): Spherical {
+  const amount = Math.min(1, Math.max(0, progress));
+  if (amount <= 0) return from;
+  if (amount >= 1) return to;
+  const start = sphericalToAdm(from);
+  const end = sphericalToAdm(to);
+  return admToSpherical([
+    start[0] + (end[0] - start[0]) * amount,
+    start[1] + (end[1] - start[1]) * amount,
+    start[2] + (end[2] - start[2]) * amount,
+  ]);
 }
 
 export class SpatialRenderer {
@@ -808,7 +829,16 @@ export class SpatialRenderer {
               dueIndex = 0;
             }
             const due = state.objectPoseTimeline[dueIndex]!;
-            immediate = { ...state, position: due.position, spread: due.spread, gainDb: due.gainDb };
+            const progress = Math.min(1, Math.max(
+              0,
+              (this.consumedSamples - due.at) / due.rampSamples,
+            ));
+            immediate = {
+              ...state,
+              position: interpolateObjectPosition(due.fromPosition, due.position, progress),
+              spread: due.fromSpread + (due.spread - due.fromSpread) * progress,
+              gainDb: due.gainDb,
+            };
           }
           if (trackingActive) {
             // Audio continues if Electron's main thread is briefly descheduled.
@@ -1495,6 +1525,16 @@ export class SpatialRenderer {
         && state.spread === nextSpread
         && state.gainDb === ev.gainDb;
       if (unchanged) continue;
+      const previousPose = state.objectPoseTimeline.at(-1);
+      const previousProgress = previousPose
+        ? Math.min(1, Math.max(0, (at - previousPose.at) / previousPose.rampSamples))
+        : 1;
+      const fromPosition = previousPose
+        ? interpolateObjectPosition(previousPose.fromPosition, previousPose.position, previousProgress)
+        : state.position;
+      const fromSpread = previousPose
+        ? previousPose.fromSpread + (previousPose.spread - previousPose.fromSpread) * previousProgress
+        : state.spread;
       state.position = nextPosition;
       state.spread = nextSpread;
       state.gainDb = ev.gainDb;
@@ -1502,7 +1542,9 @@ export class SpatialRenderer {
       state.objectRampEndSample = at + Math.max(1, ramp);
       state.objectPoseTimeline.push({
         at,
+        fromPosition,
         position: nextPosition,
+        fromSpread,
         spread: nextSpread,
         gainDb: ev.gainDb,
         rampSamples: Math.max(1, ramp),

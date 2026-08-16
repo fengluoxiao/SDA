@@ -22,6 +22,9 @@ const REQUEST_NOTIFICATIONS: &[u8] = &[0x04, 0x00, 0x04, 0x00, 0x0f, 0x00, 0xff,
 const CLAIM_OWNERSHIP: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x06, 0x01, 0x00, 0x00, 0x00,
 ];
+const RELEASE_OWNERSHIP: &[u8] = &[
+    0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00,
+];
 const START_HEAD_TRACKING_ALTERNATE: &[u8] = &[
     0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00, 0x0f, 0x00, 0x08, 0x73, 0x42, 0x0b,
     0x08, 0x10, 0x10, 0x02, 0x1a, 0x05, 0x01, 0x40, 0x9c, 0x00, 0x00,
@@ -44,6 +47,7 @@ const STOP_HEAD_TRACKING_PACKETS: [&[u8]; 2] =
     [STOP_HEAD_TRACKING_ALTERNATE, STOP_HEAD_TRACKING_STANDARD];
 const MOTION_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 const MOTION_RECOVERY_ATTEMPTS: u8 = 3;
+const LOCAL_AUDIO_SOURCE_TYPE: u8 = 2;
 
 enum Control {
     Stop,
@@ -138,24 +142,39 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             }
             continue;
         }
+        let mut head_tracking_packet_index = 0_usize;
+        if let Err(error) = recover_motion_stream(&socket, head_tracking_packet_index) {
+            eprintln!("AirPods transport: initial motion claim failed: {error}");
+            emit_status(session, "disconnected", public_connection_error(&error))?;
+            if wait_for_retry(&controls, &mut orientation, session)? {
+                return Ok(());
+            }
+            continue;
+        }
         orientation.reset();
         emit_status(
             session,
             "connected",
-            "AirPods 已连接，等待 Windows 媒体播放",
+            "Windows 媒体已连接，正在启动 AirPods motion",
         )?;
 
         let mut packet = [0_u8; 4096];
         let mut received_packets = 0_u64;
         let mut last_motion_at = Instant::now();
         let mut recovery_attempts = 0_u8;
-        let mut head_tracking_packet_index = 0_usize;
-        let mut audio_source = None;
+        // AirPods only reports audio-source changes, not necessarily the current
+        // source when AACP reconnects. Treat the local endpoint as current until
+        // a real notification says otherwise so an Electron restart can reclaim
+        // motion without requiring an audio handoff first.
+        let mut audio_source = Some(inferred_local_audio_source(socket.local_address()));
+        let mut local_media_confirmed = false;
+        let mut connected_devices = Vec::new();
+        let mut force_takeover_attempted = false;
         let mut motion_was_active = false;
         let disconnected = loop {
             match poll_control(&controls, &mut orientation, session)? {
                 ControlAction::Stop => {
-                    let _ = stop_motion_stream(&socket, head_tracking_packet_index);
+                    let _ = stop_motion_stream(&socket);
                     return Ok(());
                 }
                 ControlAction::Continue => {}
@@ -167,6 +186,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     if orientation::is_head_tracking_packet(data) {
                         last_motion_at = Instant::now();
                         recovery_attempts = 0;
+                        force_takeover_attempted = false;
                         motion_was_active = true;
                     }
                     if data.len() >= 8 && data[..7] == [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x06] {
@@ -178,37 +198,35 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             data[6], data[7]
                         );
                     }
-                    if data.len() >= 9 && data[..6] == [0x04, 0x00, 0x04, 0x00, 0x2e, 0x00] {
-                        eprintln!("AirPods transport: connected-device count is {}", data[8]);
-                        for index in 0..data[8] as usize {
-                            let offset = 9 + index * 8;
-                            if let Some(device) = data.get(offset..offset + 8) {
-                                eprintln!(
-                                    "AirPods transport: connected device {} is {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ({:02x}/{:02x})",
-                                    index + 1,
-                                    device[0],
-                                    device[1],
-                                    device[2],
-                                    device[3],
-                                    device[4],
-                                    device[5],
-                                    device[6],
-                                    device[7]
-                                );
-                            }
+                    if let Some(next_connected_devices) = parse_connected_devices(data) {
+                        connected_devices = next_connected_devices;
+                        eprintln!(
+                            "AirPods transport: connected-device count is {}",
+                            connected_devices.len()
+                        );
+                        for (index, device) in connected_devices.iter().enumerate() {
+                            eprintln!(
+                                "AirPods transport: connected device {} is {}",
+                                index + 1,
+                                format_bluetooth_address(*device)
+                            );
                         }
                     }
                     if let Some(next_audio_source) = parse_audio_source(data) {
+                        let was_local_media_confirmed = local_media_confirmed;
                         let was_local_media =
                             is_local_media_source(audio_source, socket.local_address());
                         audio_source = Some(next_audio_source);
                         let is_local_media =
                             is_local_media_source(audio_source, socket.local_address());
+                        let is_remote_media =
+                            is_remote_media_source(audio_source, socket.local_address());
+                        local_media_confirmed = is_local_media;
                         eprintln!(
                             "AirPods transport: audio source is {:012x} (type={})",
                             next_audio_source.0, next_audio_source.1
                         );
-                        if is_local_media && !was_local_media {
+                        if is_local_media && !was_local_media_confirmed {
                             orientation.reset();
                             motion_was_active = false;
                             recovery_attempts = 0;
@@ -217,22 +235,33 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                                 "connected",
                                 "Windows 媒体已接管 AirPods，正在启动头追",
                             )?;
-                            if let Err(error) =
-                                recover_motion_stream(&socket, head_tracking_packet_index)
-                            {
+                            if let Err(error) = force_reclaim_motion_stream(
+                                &socket,
+                                head_tracking_packet_index,
+                                &connected_devices,
+                            ) {
                                 break format!("AirPods motion recovery failed: {error}");
                             }
+                            force_takeover_attempted = true;
                             last_motion_at = Instant::now();
-                        } else if !is_local_media && was_local_media {
+                        } else if is_remote_media {
                             orientation.reset();
                             motion_was_active = false;
                             recovery_attempts = 0;
+                            force_takeover_attempted = false;
                             emit_status(
                                 session,
                                 "connected",
                                 "AirPods 媒体已切换，等待切回 Windows",
                             )?;
                             last_motion_at = Instant::now();
+                        } else if was_local_media {
+                            force_takeover_attempted = false;
+                            emit_status(
+                                session,
+                                "connected",
+                                "AirPods 已连接，等待 Windows 媒体播放",
+                            )?;
                         }
                     }
                     if data.len() >= 8 && data[..6] == [0x04, 0x00, 0x04, 0x00, 0x06, 0x00] {
@@ -292,7 +321,11 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             orientation: value,
                         })?;
                     } else if !was_calibrated && orientation.calibrated() {
-                        emit_status(session, "connected", "AirPods motion stream active")?;
+                        emit_status(
+                            session,
+                            "connected",
+                            "AirPods motion stream active (fixed-PC drift lock)",
+                        )?;
                     }
                 }
                 Ok(None) => {}
@@ -303,7 +336,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     last_motion_at = Instant::now();
                     continue;
                 }
-                if motion_was_active && recovery_attempts >= MOTION_RECOVERY_ATTEMPTS {
+                if (motion_was_active || local_media_confirmed)
+                    && recovery_attempts >= MOTION_RECOVERY_ATTEMPTS
+                {
                     break "AirPods motion stream stalled after recovery".into();
                 }
                 recovery_attempts = recovery_attempts.saturating_add(1);
@@ -313,22 +348,35 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     "AirPods transport: motion idle on local media; soft recovery {recovery_attempts} (head-tracking packet {})",
                     head_tracking_packet_index + 1
                 );
+                let force_reclaim = local_media_confirmed && !force_takeover_attempted;
                 emit_status(
                     session,
                     "connected",
-                    if motion_was_active {
+                    if force_reclaim {
+                        "Windows 正在强制接管 AirPods motion"
+                    } else if motion_was_active {
                         "AirPods motion 暂停，正在自动恢复"
                     } else {
                         "Windows 媒体已连接，正在等待 AirPods motion"
                     },
                 )?;
-                if let Err(error) = recover_motion_stream(&socket, head_tracking_packet_index) {
+                let recovery = if force_reclaim {
+                    force_reclaim_motion_stream(
+                        &socket,
+                        head_tracking_packet_index,
+                        &connected_devices,
+                    )
+                } else {
+                    recover_motion_stream(&socket, head_tracking_packet_index)
+                };
+                if let Err(error) = recovery {
                     break format!("AirPods motion recovery failed: {error}");
                 }
+                force_takeover_attempted |= force_reclaim;
                 last_motion_at = Instant::now();
             }
         };
-        let _ = stop_motion_stream(&socket, head_tracking_packet_index);
+        let _ = stop_motion_stream(&socket);
         eprintln!("AirPods transport: {disconnected}");
         emit_status(
             session,
@@ -361,8 +409,91 @@ fn recover_motion_stream(socket: &L2capSocket, packet_index: usize) -> Result<()
     socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
 }
 
-fn stop_motion_stream(socket: &L2capSocket, packet_index: usize) -> Result<(), String> {
-    socket.send_packet(STOP_HEAD_TRACKING_PACKETS[packet_index])
+fn force_reclaim_motion_stream(
+    socket: &L2capSocket,
+    packet_index: usize,
+    connected_devices: &[u64],
+) -> Result<(), String> {
+    stop_motion_stream(socket)?;
+    socket.send_packet(RELEASE_OWNERSHIP)?;
+    thread::sleep(Duration::from_millis(100));
+    socket.send_packet(CLAIM_OWNERSHIP)?;
+
+    for address in connected_devices {
+        if *address == socket.local_address() {
+            continue;
+        }
+        socket.send_packet(&smart_routing_hijack_packet(*address))?;
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    thread::sleep(Duration::from_millis(500));
+    socket.send_packet(REQUEST_NOTIFICATIONS)?;
+    socket.send_packet(CLAIM_OWNERSHIP)?;
+    thread::sleep(Duration::from_millis(150));
+    socket.send_packet(START_HEAD_TRACKING_PACKETS[packet_index])
+}
+
+fn stop_motion_stream(socket: &L2capSocket) -> Result<(), String> {
+    for packet in STOP_HEAD_TRACKING_PACKETS {
+        socket.send_packet(packet)?;
+        thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+fn inferred_local_audio_source(local_address: u64) -> (u64, u8) {
+    (local_address, LOCAL_AUDIO_SOURCE_TYPE)
+}
+
+fn parse_connected_devices(packet: &[u8]) -> Option<Vec<u64>> {
+    let start = packet
+        .windows(9)
+        .position(|frame| frame[..6] == [0x04, 0x00, 0x04, 0x00, 0x2e, 0x00])?;
+    let count = packet[start + 8] as usize;
+    let devices = packet.get(start + 9..start + 9 + count * 8)?;
+    Some(
+        devices
+            .chunks_exact(8)
+            .map(|device| {
+                device[..6]
+                    .iter()
+                    .fold(0_u64, |address, byte| (address << 8) | *byte as u64)
+            })
+            .collect(),
+    )
+}
+
+fn smart_routing_hijack_packet(target_address: u64) -> Vec<u8> {
+    let mut packet = vec![0x04, 0x00, 0x04, 0x00, 0x10, 0x00];
+    packet.extend_from_slice(&target_address.to_le_bytes()[..6]);
+    packet.extend_from_slice(&[0x62, 0x00, 0x01, 0xe5, 0x4a]);
+    packet.extend_from_slice(b"localscore");
+    packet.extend_from_slice(&[0x30, 0x64, 0x46]);
+    packet.extend_from_slice(b"reason");
+    packet.push(0x48);
+    packet.extend_from_slice(b"Hijackv2");
+    packet.push(0x51);
+    packet.extend_from_slice(b"audioRoutingScore");
+    packet.extend_from_slice(&[0x31, 0x2d, 0x01, 0x5f]);
+    packet.extend_from_slice(b"audioRoutingSetOwnershipToFalse");
+    packet.extend_from_slice(&[0x01, 0x4b]);
+    packet.extend_from_slice(b"remotescore");
+    packet.push(0xa5);
+    packet.resize(112, 0);
+    packet
+}
+
+fn format_bluetooth_address(address: u64) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        (address >> 40) & 0xff,
+        (address >> 32) & 0xff,
+        (address >> 24) & 0xff,
+        (address >> 16) & 0xff,
+        (address >> 8) & 0xff,
+        address & 0xff
+    )
 }
 
 fn parse_audio_source(packet: &[u8]) -> Option<(u64, u8)> {
@@ -382,6 +513,10 @@ fn parse_audio_source(packet: &[u8]) -> Option<(u64, u8)> {
 
 fn is_local_media_source(source: Option<(u64, u8)>, local_address: u64) -> bool {
     matches!(source, Some((address, 0x02)) if address == local_address)
+}
+
+fn is_remote_media_source(source: Option<(u64, u8)>, local_address: u64) -> bool {
+    matches!(source, Some((address, 0x01 | 0x02)) if address != local_address)
 }
 
 enum ControlAction {
@@ -526,5 +661,55 @@ mod tests {
             Some((0xe45e_373b_6ec3, 0x00)),
             0xe45e_373b_6ec3
         ));
+        assert!(!is_remote_media_source(
+            Some((0xe45e_373b_6ec3, 0x00)),
+            0xe45e_373b_6ec3
+        ));
+        assert!(is_remote_media_source(
+            Some((0x90ec_ea16_dcee, 0x02)),
+            0xe45e_373b_6ec3
+        ));
+    }
+
+    #[test]
+    fn reconnect_bootstraps_motion_without_an_audio_source_notification() {
+        let local_address = 0xe45e_373b_6ec3;
+        let mut source = Some(inferred_local_audio_source(local_address));
+        assert!(is_local_media_source(source, local_address));
+
+        source = Some((0x90ec_ea16_dcee, LOCAL_AUDIO_SOURCE_TYPE));
+        assert!(!is_local_media_source(source, local_address));
+    }
+
+    #[test]
+    fn parses_connected_devices_for_smart_routing_takeover() {
+        let mut packet = vec![0xaa, 0xbb];
+        packet.extend([
+            0x04, 0x00, 0x04, 0x00, 0x2e, 0x00, 0x00, 0x00, 0x03, 0x90, 0xec, 0xea, 0x16, 0xdc,
+            0xee, 0x00, 0x05, 0x54, 0x62, 0xe2, 0xbe, 0xe4, 0x05, 0x00, 0x01, 0xe4, 0x5e, 0x37,
+            0x3b, 0x6e, 0xc3, 0x02, 0x02,
+        ]);
+        assert_eq!(
+            parse_connected_devices(&packet),
+            Some(vec![0x90ec_ea16_dcee, 0x5462_e2be_e405, 0xe45e_373b_6ec3])
+        );
+        assert_eq!(
+            format_bluetooth_address(0x90ec_ea16_dcee),
+            "90:ec:ea:16:dc:ee"
+        );
+    }
+
+    #[test]
+    fn builds_librepods_hijack_v2_packet_for_remote_device() {
+        let packet = smart_routing_hijack_packet(0x90ec_ea16_dcee);
+        assert_eq!(packet.len(), 112);
+        assert_eq!(&packet[..6], &[0x04, 0x00, 0x04, 0x00, 0x10, 0x00]);
+        assert_eq!(&packet[6..12], &[0xee, 0xdc, 0x16, 0xea, 0xec, 0x90]);
+        assert!(packet.windows(8).any(|value| value == b"Hijackv2"));
+        assert!(
+            packet
+                .windows(31)
+                .any(|value| value == b"audioRoutingSetOwnershipToFalse")
+        );
     }
 }

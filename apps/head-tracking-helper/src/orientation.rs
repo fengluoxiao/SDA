@@ -4,6 +4,9 @@ const HEAD_TRACKING_PREFIX: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00
 const CALIBRATION_SAMPLES: usize = 10;
 const ORIENTATION_MEDIAN_SAMPLES: usize = 3;
 const ORIENTATION_DEAD_ZONE_RADIANS: f64 = 0.6 * std::f64::consts::PI / 180.0;
+const STATIONARY_WINDOW_SAMPLES: usize = 12;
+const STATIONARY_WINDOW_RADIANS: f64 = 0.25 * std::f64::consts::PI / 180.0;
+const STATIONARY_RELEASE_RADIANS: f64 = 1.5 * std::f64::consts::PI / 180.0;
 
 #[derive(Default)]
 pub struct HeadOrientation {
@@ -13,6 +16,8 @@ pub struct HeadOrientation {
     unwrapped: [i64; 3],
     orientation_samples: Vec<[f64; 2]>,
     last_orientation: Option<[f64; 2]>,
+    stationary_samples: Vec<[f64; 2]>,
+    locked_orientation: Option<[f64; 2]>,
 }
 
 impl HeadOrientation {
@@ -23,6 +28,8 @@ impl HeadOrientation {
         self.unwrapped = [0; 3];
         self.orientation_samples.clear();
         self.last_orientation = None;
+        self.stationary_samples.clear();
+        self.locked_orientation = None;
     }
 
     pub fn calibrated(&self) -> bool {
@@ -54,6 +61,8 @@ impl HeadOrientation {
                     // direction, avoiding an unfiltered first motion frame.
                     self.orientation_samples = vec![[0.0, 0.0]; ORIENTATION_MEDIAN_SAMPLES - 1];
                     self.last_orientation = Some([0.0, 0.0]);
+                    self.stationary_samples = vec![[0.0, 0.0]; STATIONARY_WINDOW_SAMPLES];
+                    self.locked_orientation = Some([0.0, 0.0]);
                 }
                 return None;
             }
@@ -113,6 +122,26 @@ impl HeadOrientation {
             filtered[axis] = values[values.len() / 2];
         }
 
+        // A fixed Windows PC has no second IMU to cancel headphone drift. Hold
+        // a proven-stationary pose until displacement exceeds a deliberate
+        // release threshold. A real turn then remains unlocked until a complete
+        // low-excursion window confirms that the head has stopped again.
+        if let Some(locked) = self.locked_orientation {
+            let displacement = (0..2)
+                .map(|axis| angle_delta(locked[axis], filtered[axis]).abs())
+                .fold(0.0, f64::max);
+            if displacement < STATIONARY_RELEASE_RADIANS {
+                return locked;
+            }
+            self.locked_orientation = None;
+            self.stationary_samples.clear();
+        }
+
+        self.stationary_samples.push(filtered);
+        if self.stationary_samples.len() > STATIONARY_WINDOW_SAMPLES {
+            self.stationary_samples.remove(0);
+        }
+
         if let Some(last) = self.last_orientation {
             for axis in 0..2 {
                 if (filtered[axis] - last[axis]).abs() < ORIENTATION_DEAD_ZONE_RADIANS {
@@ -121,8 +150,29 @@ impl HeadOrientation {
             }
         }
         self.last_orientation = Some(filtered);
+        if self.stationary_samples.len() == STATIONARY_WINDOW_SAMPLES {
+            let stable = (0..2).all(|axis| {
+                let reference = self.stationary_samples[0][axis];
+                let (minimum, maximum) = self
+                    .stationary_samples
+                    .iter()
+                    .map(|sample| angle_delta(reference, sample[axis]))
+                    .fold(
+                        (f64::INFINITY, f64::NEG_INFINITY),
+                        |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+                    );
+                maximum - minimum <= STATIONARY_WINDOW_RADIANS
+            });
+            if stable {
+                self.locked_orientation = Some(filtered);
+            }
+        }
         filtered
     }
+}
+
+fn angle_delta(from: f64, to: f64) -> f64 {
+    (to - from).sin().atan2((to - from).cos())
 }
 
 pub(crate) fn is_head_tracking_packet(packet: &[u8]) -> bool {
@@ -184,7 +234,9 @@ mod tests {
         assert!(identity.z.abs() < 1e-12 && (identity.w - 1.0).abs() < 1e-12);
 
         tracker.process_packet(&packet(19_000, 17_000, -15_000));
-        let turned = tracker.process_packet(&packet(19_000, 17_000, -15_000)).unwrap();
+        let turned = tracker
+            .process_packet(&packet(19_000, 17_000, -15_000))
+            .unwrap();
         let expected = (std::f64::consts::FRAC_PI_2 * 0.5).sin();
         assert!((turned.z + expected).abs() < 1e-12);
     }
@@ -196,8 +248,13 @@ mod tests {
             tracker.process_packet(&packet(19_000, 32_760, 1_000));
         }
         tracker.process_packet(&packet(19_000, -32_760, 1_000));
-        let crossed = tracker.process_packet(&packet(19_000, -32_760, 1_000)).unwrap();
-        assert!(crossed.z.abs() < 0.001, "boundary crossing became a large yaw: {crossed:?}");
+        let crossed = tracker
+            .process_packet(&packet(19_000, -32_760, 1_000))
+            .unwrap();
+        assert!(
+            crossed.z.abs() < 0.001,
+            "boundary crossing became a large yaw: {crossed:?}"
+        );
         assert!(crossed.w > 0.999);
     }
 
@@ -211,10 +268,41 @@ mod tests {
             let jitter = tracker.process_packet(&packet(19_000, 1_080, 920)).unwrap();
             assert!(jitter.z.abs() < 1e-12);
         }
-        let spike = tracker.process_packet(&packet(19_000, 17_000, -15_000)).unwrap();
+        let spike = tracker
+            .process_packet(&packet(19_000, 17_000, -15_000))
+            .unwrap();
         assert!(spike.z.abs() < 1e-12);
-        let recovered = tracker.process_packet(&packet(19_000, 1_000, 1_000)).unwrap();
+        let recovered = tracker
+            .process_packet(&packet(19_000, 1_000, 1_000))
+            .unwrap();
         assert!(recovered.z.abs() < 1e-12);
+    }
+
+    #[test]
+    fn holds_slow_stationary_drift_but_releases_an_intentional_turn() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+
+        for step in 1..=20 {
+            let drift = tracker
+                .process_packet(&packet(19_000, 1_000 + step * 10, 1_000 - step * 10))
+                .unwrap();
+            assert!(
+                drift.z.abs() < 1e-12,
+                "stationary drift escaped at step {step}"
+            );
+        }
+
+        let mut turned = None;
+        for step in 21..=40 {
+            turned = tracker.process_packet(&packet(19_000, 1_000 + step * 10, 1_000 - step * 10));
+        }
+        assert!(
+            turned.unwrap().z.abs() > 0.01,
+            "intentional slow turn stayed locked"
+        );
     }
 
     #[test]
