@@ -156,7 +156,7 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
             }
             continue;
         }
-        orientation.reset();
+        orientation.begin_transport_session();
         emit_status(
             session,
             "connected",
@@ -213,7 +213,6 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                 force_takeover_attempted = true;
                 motion_was_active = false;
                 recovery_attempts = 0;
-                orientation.reset();
                 last_motion_at = Instant::now();
             }
             match socket.receive_packet(&mut packet) {
@@ -274,7 +273,6 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                                 "AirPods transport: ignoring stale remote source during Windows takeover"
                             );
                         } else if is_local_media && !was_local_media_confirmed {
-                            orientation.reset();
                             motion_was_active = false;
                             recovery_attempts = 0;
                             emit_status(
@@ -293,7 +291,6 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                             takeover_grace_until = Some(Instant::now() + TAKEOVER_SOURCE_GRACE);
                             last_motion_at = Instant::now();
                         } else if is_remote_media {
-                            orientation.reset();
                             motion_was_active = false;
                             recovery_attempts = 0;
                             force_takeover_attempted = false;
@@ -624,7 +621,7 @@ enum ControlAction {
 
 fn poll_control(
     controls: &Receiver<Control>,
-    orientation: &mut HeadOrientation,
+    _orientation: &mut HeadOrientation,
     session: &str,
 ) -> Result<ControlAction, String> {
     loop {
@@ -632,8 +629,7 @@ fn poll_control(
             Ok(Control::Stop) | Err(TryRecvError::Disconnected) => return Ok(ControlAction::Stop),
             Ok(Control::Takeover) => return Ok(ControlAction::Takeover),
             Ok(Control::Recenter) => {
-                orientation.reset();
-                emit_status(session, "connected", "正在重新校准，请保持面向前方")?;
+                emit_status(session, "connected", "当前朝向已设为正前方")?;
             }
             Ok(Control::Fatal(message)) => {
                 emit(&ErrorMessage {

@@ -7,6 +7,19 @@ const ORIENTATION_DEAD_ZONE_RADIANS: f64 = 0.6 * std::f64::consts::PI / 180.0;
 const STATIONARY_WINDOW_SAMPLES: usize = 12;
 const STATIONARY_WINDOW_RADIANS: f64 = 0.25 * std::f64::consts::PI / 180.0;
 const STATIONARY_RELEASE_RADIANS: f64 = 1.5 * std::f64::consts::PI / 180.0;
+const DISCONTINUITY_RADIANS: f64 = 2.5 * std::f64::consts::PI / 180.0;
+const DISCONTINUITY_MAX_CANDIDATE_STEP_RADIANS: f64 = 20.0 * std::f64::consts::PI / 180.0;
+const DISCONTINUITY_MIN_PROGRESS_RADIANS: f64 = 0.15 * std::f64::consts::PI / 180.0;
+const DISCONTINUITY_MOTION_CONFIRM_SAMPLES: usize = 2;
+const DISCONTINUITY_STEADY_CONFIRM_SAMPLES: usize = 5;
+const DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS: f64 = 6.0 * std::f64::consts::PI / 180.0;
+
+#[derive(Clone, Copy)]
+struct PendingDiscontinuity {
+    last: [f64; 2],
+    samples: usize,
+    motion_samples: usize,
+}
 
 #[derive(Default)]
 pub struct HeadOrientation {
@@ -18,10 +31,17 @@ pub struct HeadOrientation {
     last_orientation: Option<[f64; 2]>,
     stationary_samples: Vec<[f64; 2]>,
     locked_orientation: Option<[f64; 2]>,
+    pending_discontinuity: Option<PendingDiscontinuity>,
+    slewing_discontinuity: bool,
+    continuity_origin: [f64; 2],
 }
 
 impl HeadOrientation {
-    pub fn reset(&mut self) {
+    pub fn begin_transport_session(&mut self) {
+        self.continuity_origin = self
+            .last_orientation
+            .or(self.locked_orientation)
+            .unwrap_or(self.continuity_origin);
         self.samples.clear();
         self.neutral = None;
         self.previous_raw = None;
@@ -30,6 +50,8 @@ impl HeadOrientation {
         self.last_orientation = None;
         self.stationary_samples.clear();
         self.locked_orientation = None;
+        self.pending_discontinuity = None;
+        self.slewing_discontinuity = false;
     }
 
     pub fn calibrated(&self) -> bool {
@@ -59,10 +81,12 @@ impl HeadOrientation {
                     self.neutral = Some(average);
                     // Seed the median filter with the newly calibrated forward
                     // direction, avoiding an unfiltered first motion frame.
-                    self.orientation_samples = vec![[0.0, 0.0]; ORIENTATION_MEDIAN_SAMPLES - 1];
-                    self.last_orientation = Some([0.0, 0.0]);
-                    self.stationary_samples = vec![[0.0, 0.0]; STATIONARY_WINDOW_SAMPLES];
-                    self.locked_orientation = Some([0.0, 0.0]);
+                    self.orientation_samples =
+                        vec![self.continuity_origin; ORIENTATION_MEDIAN_SAMPLES - 1];
+                    self.last_orientation = Some(self.continuity_origin);
+                    self.stationary_samples =
+                        vec![self.continuity_origin; STATIONARY_WINDOW_SAMPLES];
+                    self.locked_orientation = Some(self.continuity_origin);
                 }
                 return None;
             }
@@ -70,13 +94,15 @@ impl HeadOrientation {
 
         // LibrePods' measured AirPods sensor mapping. SDA currently renders yaw
         // only, but retaining pitch makes the helper protocol future-proof.
-        let pitch = ((values[1] - neutral[1]) + (values[2] - neutral[2])) * 0.5 / 32_000.0
-            * std::f64::consts::PI;
+        let pitch = self.continuity_origin[0]
+            + ((values[1] - neutral[1]) + (values[2] - neutral[2])) * 0.5 / 32_000.0
+                * std::f64::consts::PI;
         // AirPods' sensor difference increases in the opposite direction from
         // SDA/ADM positive yaw. Negate it here so a physical left turn makes a
         // fixed frontal source move toward the listener's right ear.
-        let yaw = ((values[2] - neutral[2]) - (values[1] - neutral[1])) * 0.5 / 32_000.0
-            * std::f64::consts::PI;
+        let yaw = self.continuity_origin[1]
+            + ((values[2] - neutral[2]) - (values[1] - neutral[1])) * 0.5 / 32_000.0
+                * std::f64::consts::PI;
         let [pitch, yaw] = self.filter_orientation([pitch, yaw]);
 
         // Head-local -> ADM world: yaw around +Z, then pitch around +X.
@@ -120,6 +146,80 @@ impl HeadOrientation {
                 .collect();
             values.sort_by(f64::total_cmp);
             filtered[axis] = values[values.len() / 2];
+        }
+
+        // AACP transport recovery and occasional malformed sensor bursts can
+        // produce several consecutive but impossible attitude samples. Hold a
+        // new distant target briefly, but confirm a continuously moving target
+        // sooner than a stationary step. Once confirmed, approach it with a
+        // bounded per-frame step so neither a fast turn nor recovery can jump.
+        if let Some(previous) = self.last_orientation.or(self.locked_orientation) {
+            let displacement = (0..2)
+                .map(|axis| angle_delta(previous[axis], filtered[axis]).abs())
+                .fold(0.0, f64::max);
+
+            if self.slewing_discontinuity {
+                filtered = limit_orientation_step(
+                    previous,
+                    filtered,
+                    DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS,
+                );
+                if displacement <= DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS {
+                    self.slewing_discontinuity = false;
+                }
+            } else if displacement >= DISCONTINUITY_RADIANS {
+                let pending = match self.pending_discontinuity {
+                    Some(mut pending) => {
+                        let step = [
+                            angle_delta(pending.last[0], filtered[0]),
+                            angle_delta(pending.last[1], filtered[1]),
+                        ];
+                        let step_size = step.iter().map(|value| value.abs()).fold(0.0, f64::max);
+                        let target_direction = [
+                            angle_delta(previous[0], filtered[0]),
+                            angle_delta(previous[1], filtered[1]),
+                        ];
+                        let follows_target =
+                            step[0] * target_direction[0] + step[1] * target_direction[1] > 0.0;
+                        if step_size <= DISCONTINUITY_MAX_CANDIDATE_STEP_RADIANS {
+                            pending.samples += 1;
+                            if step_size >= DISCONTINUITY_MIN_PROGRESS_RADIANS && follows_target {
+                                pending.motion_samples += 1;
+                            } else if step_size >= DISCONTINUITY_MIN_PROGRESS_RADIANS {
+                                pending.motion_samples = 0;
+                            }
+                            pending.last = filtered;
+                            pending
+                        } else {
+                            PendingDiscontinuity {
+                                last: filtered,
+                                samples: 1,
+                                motion_samples: 0,
+                            }
+                        }
+                    }
+                    None => PendingDiscontinuity {
+                        last: filtered,
+                        samples: 1,
+                        motion_samples: 0,
+                    },
+                };
+                let confirmed = pending.motion_samples >= DISCONTINUITY_MOTION_CONFIRM_SAMPLES
+                    || pending.samples >= DISCONTINUITY_STEADY_CONFIRM_SAMPLES;
+                if !confirmed {
+                    self.pending_discontinuity = Some(pending);
+                    return previous;
+                }
+                self.pending_discontinuity = None;
+                self.slewing_discontinuity = true;
+                filtered = limit_orientation_step(
+                    previous,
+                    filtered,
+                    DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS,
+                );
+            } else {
+                self.pending_discontinuity = None;
+            }
         }
 
         // A fixed Windows PC has no second IMU to cancel headphone drift. Hold
@@ -175,6 +275,16 @@ fn angle_delta(from: f64, to: f64) -> f64 {
     (to - from).sin().atan2((to - from).cos())
 }
 
+fn limit_orientation_step(from: [f64; 2], to: [f64; 2], maximum: f64) -> [f64; 2] {
+    let delta = [angle_delta(from[0], to[0]), angle_delta(from[1], to[1])];
+    let largest = delta.iter().map(|value| value.abs()).fold(0.0, f64::max);
+    if largest <= maximum {
+        return to;
+    }
+    let scale = maximum / largest;
+    [from[0] + delta[0] * scale, from[1] + delta[1] * scale]
+}
+
 pub(crate) fn is_head_tracking_packet(packet: &[u8]) -> bool {
     head_tracking_frame(packet).is_some()
 }
@@ -215,15 +325,22 @@ mod tests {
         packet
     }
 
+    fn yaw_packet(degrees: i16) -> Vec<u8> {
+        let half_difference = i32::from(degrees) * 32_000 / 180;
+        packet(
+            19_000,
+            (1_000 - half_difference) as i16,
+            (1_000 + half_difference) as i16,
+        )
+    }
+
     #[test]
     fn calibrates_to_identity_and_maps_yaw() {
         let mut tracker = HeadOrientation::default();
         for _ in 0..CALIBRATION_SAMPLES {
-            assert!(
-                tracker
-                    .process_packet(&packet(19_000, 1_000, 1_000))
-                    .is_none()
-            );
+            assert!(tracker
+                .process_packet(&packet(19_000, 1_000, 1_000))
+                .is_none());
         }
         assert!(tracker.calibrated());
 
@@ -233,10 +350,11 @@ mod tests {
         assert!(identity.x.abs() < 1e-12 && identity.y.abs() < 1e-12);
         assert!(identity.z.abs() < 1e-12 && (identity.w - 1.0).abs() < 1e-12);
 
-        tracker.process_packet(&packet(19_000, 17_000, -15_000));
-        let turned = tracker
-            .process_packet(&packet(19_000, 17_000, -15_000))
-            .unwrap();
+        let mut turned = None;
+        for _ in 0..24 {
+            turned = tracker.process_packet(&packet(19_000, 17_000, -15_000));
+        }
+        let turned = turned.unwrap();
         let expected = (std::f64::consts::FRAC_PI_2 * 0.5).sin();
         assert!((turned.z + expected).abs() < 1e-12);
     }
@@ -259,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn suppresses_stationary_jitter_and_an_isolated_spike() {
+    fn suppresses_stationary_jitter_and_a_short_sensor_burst() {
         let mut tracker = HeadOrientation::default();
         for _ in 0..CALIBRATION_SAMPLES {
             tracker.process_packet(&packet(19_000, 1_000, 1_000));
@@ -268,14 +386,82 @@ mod tests {
             let jitter = tracker.process_packet(&packet(19_000, 1_080, 920)).unwrap();
             assert!(jitter.z.abs() < 1e-12);
         }
-        let spike = tracker
-            .process_packet(&packet(19_000, 17_000, -15_000))
+        for _ in 0..3 {
+            let spike = tracker
+                .process_packet(&packet(19_000, 17_000, -15_000))
+                .unwrap();
+            assert!(spike.z.abs() < 1e-12);
+        }
+        for _ in 0..3 {
+            let recovered = tracker
+                .process_packet(&packet(19_000, 1_000, 1_000))
+                .unwrap();
+            assert!(recovered.z.abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn accepts_a_confirmed_fast_turn_after_rejecting_transient_targets() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+
+        let mut turned = None;
+        for sample in 0..=DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
+            turned = tracker.process_packet(&packet(19_000, 17_000, -15_000));
+            if sample < DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
+                assert!(turned.unwrap().z.abs() < 1e-12);
+            }
+        }
+        assert!(turned.unwrap().z.abs() > 0.04);
+    }
+
+    #[test]
+    fn accepts_fast_continuous_turns_in_both_directions() {
+        for direction in [-1, 1] {
+            let mut tracker = HeadOrientation::default();
+            for _ in 0..CALIBRATION_SAMPLES {
+                tracker.process_packet(&yaw_packet(0));
+            }
+
+            let mut turned = None;
+            for degrees in [10, 20, 30, 40] {
+                turned = tracker.process_packet(&yaw_packet(direction * degrees));
+            }
+            let turned = turned.unwrap();
+            assert!(
+                turned.z * f64::from(direction) > 0.04,
+                "fast turn remained locked for direction {direction}: {turned:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_the_last_pose_when_transport_recalibrates_to_a_new_raw_origin() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+        let mut before = None;
+        for _ in 0..=DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
+            before = tracker.process_packet(&packet(19_000, 9_000, -7_000));
+        }
+        let before = before.unwrap();
+
+        tracker.begin_transport_session();
+        for _ in 0..CALIBRATION_SAMPLES {
+            assert!(tracker
+                .process_packet(&packet(-4_000, -12_000, 20_000))
+                .is_none());
+        }
+        let after = tracker
+            .process_packet(&packet(-4_000, -12_000, 20_000))
             .unwrap();
-        assert!(spike.z.abs() < 1e-12);
-        let recovered = tracker
-            .process_packet(&packet(19_000, 1_000, 1_000))
-            .unwrap();
-        assert!(recovered.z.abs() < 1e-12);
+        assert!((after.x - before.x).abs() < 1e-12);
+        assert!((after.y - before.y).abs() < 1e-12);
+        assert!((after.z - before.z).abs() < 1e-12);
+        assert!((after.w - before.w).abs() < 1e-12);
     }
 
     #[test]
