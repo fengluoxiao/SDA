@@ -77,6 +77,24 @@ processor.onMessage({
 processor.applyScheduledGainsThrough(object, 1000);
 assert.equal(object.rampLeft, 512, "overdue scalar event cannot fast-forward a live pose ramp");
 
+// Retargeting a rapid turn must continue from the gain reached at that exact
+// sample, rather than jumping to either the old or new HRTF direction.
+processor.advanceGainRamps(object, 256);
+const beforeRetarget = [...object.gains];
+processor.onMessage({
+  type: "gains",
+  id: "obj:19",
+  gains: new Float32Array([0.1, 0.9]),
+  gain: 0.9,
+  ramp: 1152,
+  poseControlled: true,
+  poseUpdate: true,
+});
+assert.deepEqual([...object.gains], beforeRetarget, "pose retarget is continuous at the message boundary");
+processor.advanceGainRamps(object, 400);
+assert.ok(object.gains[0] < beforeRetarget[0] && object.gains[0] > 0.1, "left gain moves continuously toward the new direction");
+assert.ok(object.gains[1] > beforeRetarget[1] && object.gains[1] < 0.9, "right gain moves continuously toward the new direction");
+
 processor.onMessage({ type: "headTracking", enabled: false });
 processor.onMessage({
   type: "scheduleGains",

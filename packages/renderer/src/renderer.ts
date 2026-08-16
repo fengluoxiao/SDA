@@ -822,10 +822,11 @@ export class SpatialRenderer {
           }
           if (dueIndex < 0) continue;
         }
-        // At 120 Hz, 512 samples span slightly more than one update at 48 kHz.
-        // Overlapping ramps keep large, fast turns continuous instead of making
-        // adjacent HRTF/VBAP directions sound like discrete switches.
-        this.applyGains(immediate, 512, undefined, true);
+        // Keep a pose route ramp alive across several 120 Hz updates. Retargeting
+        // starts from the current sample-accurate gain, so even a 100-degree turn
+        // traverses the HRTF/VBAP field instead of switching between directions.
+        const poseRampSamples = Math.max(1, Math.round(this.ctx.sampleRate * 0.024));
+        this.applyGains(immediate, poseRampSamples, undefined, true);
       }
       if (futurePoseMessages.length === 1) this.node?.port.postMessage(futurePoseMessages[0]);
       else if (futurePoseMessages.length > 1) {

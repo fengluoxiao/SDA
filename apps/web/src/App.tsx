@@ -373,8 +373,9 @@ export function App() {
         headPose: {
           yawMode: "yaw",
           sensitivity: 1.5,
-          smoothingMs: 10,
-          maxDegreesPerSecond: 1080,
+          smoothingMs: 18,
+          deadZoneDegrees: 0.6,
+          maxDegreesPerSecond: 480,
           updateHz: 120,
         },
       });

@@ -53,8 +53,9 @@ close(sensitiveFront.distance, 2.5, "centered head rotation preserves source rad
 const continuous = new HeadPoseTracker({
   yawMode: "yaw",
   sensitivity: 1.5,
-  smoothingMs: 10,
-  maxDegreesPerSecond: 1080,
+  smoothingMs: 18,
+  deadZoneDegrees: 0.6,
+  maxDegreesPerSecond: 480,
   updateHz: 120,
 });
 assert.equal(continuous.set({ orientation: yaw(0) }, 0), true);
@@ -63,12 +64,63 @@ const firstFastTurnFrame = continuous.headRelative(
   { azimuth: 0, elevation: 0, distance: 1 },
   1000 / 120,
 );
-close(firstFastTurnFrame.azimuth, -13.5, "fast 100-degree turn advances continuously on its first frame");
+close(firstFastTurnFrame.azimuth, -6, "fast 100-degree turn advances continuously on its first frame");
 assert.ok(Math.abs(firstFastTurnFrame.azimuth) < 150, "fast turn must not reach the amplified target in one frame");
 const secondFastTurnFrame = continuous.headRelative(
   { azimuth: 0, elevation: 0, distance: 1 },
   2000 / 120,
 );
-close(secondFastTurnFrame.azimuth, -27, "render ticks keep interpolating without another provider sample");
+close(secondFastTurnFrame.azimuth, -12, "render ticks keep interpolating without another provider sample");
+
+const continuousLeft = new HeadPoseTracker({
+  yawMode: "yaw",
+  sensitivity: 1.5,
+  smoothingMs: 18,
+  deadZoneDegrees: 0.6,
+  maxDegreesPerSecond: 480,
+  updateHz: 120,
+});
+assert.equal(continuousLeft.set({ orientation: yaw(0) }, 0), true);
+assert.equal(continuousLeft.set({ orientation: yaw(-100) }, 1000 / 120), true);
+close(
+  continuousLeft.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1000 / 120).azimuth,
+  6,
+  "fast negative turn follows the same continuous first-frame limit",
+);
+
+const signContinuous = new HeadPoseTracker({
+  yawMode: "full",
+  smoothingMs: 0,
+  deadZoneDegrees: 0,
+  maxDegreesPerSecond: 1e9,
+});
+const tenDegrees = yaw(10);
+assert.equal(signContinuous.set({ orientation: tenDegrees }, 0), true);
+assert.equal(signContinuous.set({ orientation: tenDegrees.map((value) => -value) }, 1), true);
+close(
+  signContinuous.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1).azimuth,
+  -10,
+  "equivalent q/-q samples cannot create a full-turn jump",
+);
+
+const stable = new HeadPoseTracker({
+  yawMode: "yaw",
+  smoothingMs: 0,
+  deadZoneDegrees: 0.6,
+  maxDegreesPerSecond: 1e9,
+});
+assert.equal(stable.set({ orientation: yaw(0) }, 0), true);
+assert.equal(stable.set({ orientation: yaw(0.4) }, 1), true);
+close(
+  stable.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1).azimuth,
+  0,
+  "stationary sub-degree sensor noise stays centered",
+);
+assert.equal(stable.set({ orientation: yaw(2) }, 2), true);
+close(
+  stable.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 2).azimuth,
+  -2,
+  "intentional movement outside the dead zone remains responsive",
+);
 
 console.log("head pose tests: OK");

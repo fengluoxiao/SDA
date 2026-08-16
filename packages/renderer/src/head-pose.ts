@@ -27,6 +27,8 @@ export interface HeadPoseOptions {
   sensitivity?: number;
   /** Exponential smoothing time constant in milliseconds. Zero disables it. */
   smoothingMs?: number;
+  /** Ignore measured orientation changes smaller than this many degrees. */
+  deadZoneDegrees?: number;
   /** Maximum accepted turn speed in degrees per second. */
   maxDegreesPerSecond?: number;
   /** A pose older than this is treated as unavailable. */
@@ -39,6 +41,7 @@ export const DEFAULT_HEAD_POSE_OPTIONS: Required<HeadPoseOptions> = {
   yawMode: "yaw",
   sensitivity: 1,
   smoothingMs: 45,
+  deadZoneDegrees: 0.35,
   maxDegreesPerSecond: 360,
   staleAfterMs: 750,
   updateHz: 60,
@@ -127,6 +130,7 @@ export class HeadPoseTracker {
       yawMode: options.yawMode ?? DEFAULT_HEAD_POSE_OPTIONS.yawMode,
       sensitivity: Math.min(4, Math.max(0.1, Number.isFinite(options.sensitivity) ? options.sensitivity! : DEFAULT_HEAD_POSE_OPTIONS.sensitivity)),
       smoothingMs: Math.max(0, Number.isFinite(options.smoothingMs) ? options.smoothingMs! : DEFAULT_HEAD_POSE_OPTIONS.smoothingMs),
+      deadZoneDegrees: Math.max(0, Number.isFinite(options.deadZoneDegrees) ? options.deadZoneDegrees! : DEFAULT_HEAD_POSE_OPTIONS.deadZoneDegrees),
       maxDegreesPerSecond: Math.max(0, Number.isFinite(options.maxDegreesPerSecond) ? options.maxDegreesPerSecond! : DEFAULT_HEAD_POSE_OPTIONS.maxDegreesPerSecond),
       staleAfterMs: Math.max(1, Number.isFinite(options.staleAfterMs) ? options.staleAfterMs! : DEFAULT_HEAD_POSE_OPTIONS.staleAfterMs),
       updateHz: Math.max(1, Number.isFinite(options.updateHz) ? options.updateHz! : DEFAULT_HEAD_POSE_OPTIONS.updateHz),
@@ -144,7 +148,16 @@ export class HeadPoseTracker {
       this.active = true;
       this.lastUpdateMs = nowMs;
     } else {
-      this.targetOrientation = target;
+      const targetDot = Math.min(1, Math.abs(
+        this.targetOrientation[0] * target[0]
+        + this.targetOrientation[1] * target[1]
+        + this.targetOrientation[2] * target[2]
+        + this.targetOrientation[3] * target[3],
+      ));
+      const targetDelta = 2 * Math.acos(targetDot);
+      if (targetDelta >= this.options.deadZoneDegrees * Math.PI / 180) {
+        this.targetOrientation = target;
+      }
       this.advance(nowMs);
     }
     this.receivedAtMs = nowMs;

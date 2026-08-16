@@ -2,17 +2,27 @@ use crate::protocol::Orientation;
 
 const HEAD_TRACKING_PREFIX: [u8; 10] = [0x04, 0x00, 0x04, 0x00, 0x17, 0x00, 0x00, 0x00, 0x10, 0x00];
 const CALIBRATION_SAMPLES: usize = 10;
+const ORIENTATION_MEDIAN_SAMPLES: usize = 3;
+const ORIENTATION_DEAD_ZONE_RADIANS: f64 = 0.6 * std::f64::consts::PI / 180.0;
 
 #[derive(Default)]
 pub struct HeadOrientation {
     samples: Vec<[f64; 3]>,
     neutral: Option<[f64; 3]>,
+    previous_raw: Option<[i16; 3]>,
+    unwrapped: [i64; 3],
+    orientation_samples: Vec<[f64; 2]>,
+    last_orientation: Option<[f64; 2]>,
 }
 
 impl HeadOrientation {
     pub fn reset(&mut self) {
         self.samples.clear();
         self.neutral = None;
+        self.previous_raw = None;
+        self.unwrapped = [0; 3];
+        self.orientation_samples.clear();
+        self.last_orientation = None;
     }
 
     pub fn calibrated(&self) -> bool {
@@ -22,11 +32,12 @@ impl HeadOrientation {
     pub fn process_packet(&mut self, packet: &[u8]) -> Option<Orientation> {
         let packet = head_tracking_frame(packet)?;
 
-        let values = [
-            read_i16(packet, 43)? as f64,
-            read_i16(packet, 45)? as f64,
-            read_i16(packet, 47)? as f64,
+        let raw = [
+            read_i16(packet, 43)?,
+            read_i16(packet, 45)?,
+            read_i16(packet, 47)?,
         ];
+        let values = self.unwrap_values(raw);
         let neutral = match self.neutral {
             Some(neutral) => neutral,
             None => {
@@ -39,6 +50,10 @@ impl HeadOrientation {
                         }
                     }
                     self.neutral = Some(average);
+                    // Seed the median filter with the newly calibrated forward
+                    // direction, avoiding an unfiltered first motion frame.
+                    self.orientation_samples = vec![[0.0, 0.0]; ORIENTATION_MEDIAN_SAMPLES - 1];
+                    self.last_orientation = Some([0.0, 0.0]);
                 }
                 return None;
             }
@@ -53,6 +68,7 @@ impl HeadOrientation {
         // fixed frontal source move toward the listener's right ear.
         let yaw = ((values[2] - neutral[2]) - (values[1] - neutral[1])) * 0.5 / 32_000.0
             * std::f64::consts::PI;
+        let [pitch, yaw] = self.filter_orientation([pitch, yaw]);
 
         // Head-local -> ADM world: yaw around +Z, then pitch around +X.
         let (sin_pitch, cos_pitch) = (pitch * 0.5).sin_cos();
@@ -63,6 +79,49 @@ impl HeadOrientation {
             z: sin_yaw * cos_pitch,
             w: cos_yaw * cos_pitch,
         })
+    }
+
+    fn unwrap_values(&mut self, raw: [i16; 3]) -> [f64; 3] {
+        if let Some(previous) = self.previous_raw {
+            for index in 0..3 {
+                // AirPods exposes cyclic signed 16-bit angles. A normal move
+                // across +32767/-32768 must be a small delta, not a 180-degree
+                // pose jump.
+                self.unwrapped[index] += raw[index].wrapping_sub(previous[index]) as i64;
+            }
+        } else {
+            self.unwrapped = raw.map(i64::from);
+        }
+        self.previous_raw = Some(raw);
+        self.unwrapped.map(|value| value as f64)
+    }
+
+    fn filter_orientation(&mut self, orientation: [f64; 2]) -> [f64; 2] {
+        self.orientation_samples.push(orientation);
+        if self.orientation_samples.len() > ORIENTATION_MEDIAN_SAMPLES {
+            self.orientation_samples.remove(0);
+        }
+
+        let mut filtered = [0.0; 2];
+        for axis in 0..2 {
+            let mut values: Vec<f64> = self
+                .orientation_samples
+                .iter()
+                .map(|sample| sample[axis])
+                .collect();
+            values.sort_by(f64::total_cmp);
+            filtered[axis] = values[values.len() / 2];
+        }
+
+        if let Some(last) = self.last_orientation {
+            for axis in 0..2 {
+                if (filtered[axis] - last[axis]).abs() < ORIENTATION_DEAD_ZONE_RADIANS {
+                    filtered[axis] = last[axis];
+                }
+            }
+        }
+        self.last_orientation = Some(filtered);
+        filtered
     }
 }
 
@@ -124,11 +183,38 @@ mod tests {
         assert!(identity.x.abs() < 1e-12 && identity.y.abs() < 1e-12);
         assert!(identity.z.abs() < 1e-12 && (identity.w - 1.0).abs() < 1e-12);
 
-        let turned = tracker
-            .process_packet(&packet(19_000, 17_000, -15_000))
-            .unwrap();
+        tracker.process_packet(&packet(19_000, 17_000, -15_000));
+        let turned = tracker.process_packet(&packet(19_000, 17_000, -15_000)).unwrap();
         let expected = (std::f64::consts::FRAC_PI_2 * 0.5).sin();
         assert!((turned.z + expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unwraps_signed_sensor_boundary_without_a_pose_jump() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 32_760, 1_000));
+        }
+        tracker.process_packet(&packet(19_000, -32_760, 1_000));
+        let crossed = tracker.process_packet(&packet(19_000, -32_760, 1_000)).unwrap();
+        assert!(crossed.z.abs() < 0.001, "boundary crossing became a large yaw: {crossed:?}");
+        assert!(crossed.w > 0.999);
+    }
+
+    #[test]
+    fn suppresses_stationary_jitter_and_an_isolated_spike() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+        for _ in 0..2 {
+            let jitter = tracker.process_packet(&packet(19_000, 1_080, 920)).unwrap();
+            assert!(jitter.z.abs() < 1e-12);
+        }
+        let spike = tracker.process_packet(&packet(19_000, 17_000, -15_000)).unwrap();
+        assert!(spike.z.abs() < 1e-12);
+        let recovered = tracker.process_packet(&packet(19_000, 1_000, 1_000)).unwrap();
+        assert!(recovered.z.abs() < 1e-12);
     }
 
     #[test]
