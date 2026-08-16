@@ -68,3 +68,4 @@ AirPods4Anc.DeviceDesc="SDA AirPods 4 (ANC) AACP Motion Channel"
 AirPodsMax.DeviceDesc="SDA AirPods Max AACP Motion Channel"
 AirPodsMaxUsbC.DeviceDesc="SDA AirPods Max (USB-C) AACP Motion Channel"
 ServiceDesc="SDA AirPods L2CAP Profile Driver"
+

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -41,13 +41,20 @@ assert.match(
 );
 assert.doesNotMatch(setupScript, /Restart-Computer|shutdown\.exe/i);
 
-for (const name of [
-  "SdaAirPodsL2cap.cer",
-  "SdaAirPodsL2cap.inf",
-  "SdaAirPodsL2cap.cat",
-  "SdaAirPodsL2cap.sys",
-]) {
+const expectedPackageSha256 = new Map([
+  ["SdaAirPodsL2cap.cat", "C83FD956F79553F0ADDB91E17875FA515B421821C2638D8AEA85208A7B38AA11"],
+  ["SdaAirPodsL2cap.cer", "887FBB9BFF2D202DA0E0D828FEF7C0CA8B422193424F8C658E6ADB50A37EBFB5"],
+  ["SdaAirPodsL2cap.inf", "572F9A62B7D99E7A13DFC867EE24E8A6B084A51F6D5CEA92153196A8E0416401"],
+  ["SdaAirPodsL2cap.sys", "C85FA809E0FE0B2250748214F154F559EAAB81798381BA1F1CDE254A463172AE"],
+]);
+for (const [name, expectedSha256] of expectedPackageSha256) {
+  const packagePath = join(driverPackageDir, name);
   assert.ok(existsSync(join(driverPackageDir, name)), `${name} is missing from the driver package`);
+  assert.equal(
+    createHash("sha256").update(readFileSync(packagePath)).digest("hex").toUpperCase(),
+    expectedSha256,
+    `${name} must remain byte-for-byte identical to the signed driver package`,
+  );
 }
 
 const certificate = new X509Certificate(
