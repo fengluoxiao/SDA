@@ -208,6 +208,9 @@ setHeadphoneCompensationAssetLoader(bundledFirReader
 
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
+  /** Keeps the Windows audio endpoint open while its replacement initializes.
+   *  Closing the only AudioContext makes AirPods relinquish the motion stream. */
+  const retiringPlayerRef = useRef<SdaPlayer | null>(null);
   const [playerReady, setPlayerReady] = useState<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
   /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
@@ -256,6 +259,7 @@ export function App() {
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
+  const latestHeadPoseRef = useRef<HeadPose | null>(null);
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
   const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | null>(null);
@@ -387,6 +391,7 @@ export function App() {
         await player.dispose();
         return null;
       }
+      if (latestHeadPoseRef.current) player.setHeadPose(latestHeadPoseRef.current);
       player.setVolumeBalance(volumeBalanceRef.current);
       player.setBinauralEqBands(binauralEqBandsRef.current);
       return player;
@@ -398,6 +403,7 @@ export function App() {
     () => () => {
       if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
       void playerRef.current?.dispose();
+      if (retiringPlayerRef.current !== playerRef.current) void retiringPlayerRef.current?.dispose();
       setPlayerReady(null);
     },
     [],
@@ -409,6 +415,7 @@ export function App() {
 
   useEffect(() => {
     if (headTrackingStatus?.running) return;
+    latestHeadPoseRef.current = null;
     previousTelemetryPoseRef.current = null;
     lastTelemetryUiUpdateRef.current = 0;
     setHeadTrackingTelemetry([]);
@@ -426,8 +433,10 @@ export function App() {
     });
     const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
     const applyPose = (pose: HeadTrackingPose) => {
+      const headPose = rendererHeadPose(pose);
+      latestHeadPoseRef.current = headPose;
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
-      player?.setHeadPose?.(rendererHeadPose(pose));
+      player?.setHeadPose?.(headPose);
       const timestampMs = performance.now();
       const orientation: Quaternion = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w];
       const previous = previousTelemetryPoseRef.current;
@@ -445,7 +454,11 @@ export function App() {
     const stopPose = desktop.onHeadTrackingPose?.(applyPose);
     const stopRecenter = desktop.onHeadTrackingRecenter?.((pose) => {
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
-      if (pose) player?.setHeadPose?.(rendererHeadPose(pose));
+      if (pose) {
+        const headPose = rendererHeadPose(pose);
+        latestHeadPoseRef.current = headPose;
+        player?.setHeadPose?.(headPose);
+      }
       player?.recenterHeadPose?.();
     });
     return () => {
@@ -515,6 +528,7 @@ export function App() {
       if (!running) {
         const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
         player?.clearHeadPose?.();
+        latestHeadPoseRef.current = null;
         previousTelemetryPoseRef.current = null;
         lastTelemetryUiUpdateRef.current = 0;
         setHeadTrackingTelemetry([]);
@@ -641,13 +655,15 @@ export function App() {
       const request = ++playRequestRef.current;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
-      // A new request invalidates and tears down the audible player immediately.
-      // Its async reader may still unwind, but its callbacks are token-gated and it
-      // cannot overlap the incoming session while that session initializes.
+      // Keep one running AudioContext connected until its replacement is ready.
+      // Breaking the Windows media route even briefly makes AirPods drop motion.
       const previous = playerRef.current;
-      playerRef.current = null;
+      if (previous) {
+        previous.setVolume(0);
+        retiringPlayerRef.current = previous;
+        playerRef.current = null;
+      }
       setPlayerReady(null);
-      if (previous) await previous.dispose();
       if (!isCurrent()) return;
       setErrors([]);
       setTrack(null);
@@ -687,6 +703,14 @@ export function App() {
         player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnostic);
         player.setHeadphoneCompensation(headphoneProfileId);
         applyMutes(effectiveMutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
+        const outgoing = retiringPlayerRef.current;
+        if (outgoing && outgoing !== player) {
+          retiringPlayerRef.current = null;
+          await outgoing.dispose();
+          // A newer request now owns this player as its outgoing context.
+          if (!isCurrent()) return;
+        }
+        if (!isCurrent() || playerRef.current !== player) return;
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
         if (source.kind === "file") {
@@ -713,6 +737,9 @@ export function App() {
         }
       } catch (e) {
         if (!isCurrent()) return;
+        const outgoing = retiringPlayerRef.current;
+        retiringPlayerRef.current = null;
+        if (outgoing) await outgoing.dispose().catch(() => {});
         setErrors((prev) => [...prev, String(e)]);
         setPlaying(false);
       }
@@ -914,9 +941,12 @@ export function App() {
       // no public stop because file/session disposal is the safe stop boundary.
       playRequestRef.current++;
       const active = playerRef.current;
+      const retiring = retiringPlayerRef.current;
       playerRef.current = null;
+      retiringPlayerRef.current = null;
       setPlayerReady(null);
       void active?.dispose();
+      if (retiring !== active) void retiring?.dispose();
       playingRef.current = false;
       pausedRef.current = false;
       setPlaying(false);
@@ -932,9 +962,12 @@ export function App() {
     setPlaylistCurrentId(null);
     playRequestRef.current++;
     const active = playerRef.current;
+    const retiring = retiringPlayerRef.current;
     playerRef.current = null;
+    retiringPlayerRef.current = null;
     setPlayerReady(null);
     void active?.dispose();
+    if (retiring !== active) void retiring?.dispose();
     playingRef.current = false;
     pausedRef.current = false;
     setPlaying(false);
