@@ -25,12 +25,12 @@ import {
   type HeadTrackingTelemetrySample,
   type Quaternion,
 } from "./head-tracking-telemetry";
+import { HeadTrackingSession } from "./head-tracking-session";
 
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
 type HeadTrackingPlayer = {
   setHeadPose?: (pose: HeadPose) => void;
   clearHeadPose?: () => void;
-  recenterHeadPose?: () => void;
 };
 
 function rendererHeadPose(pose: HeadTrackingPose): HeadPose {
@@ -133,7 +133,7 @@ function telemetryPolyline(
   scale: number,
 ): string {
   if (samples.length === 0) return "";
-  const end = samples[samples.length - 1].timestampMs;
+  const end = samples[samples.length - 1]!.timestampMs;
   const start = end - HEAD_TRACKING_TELEMETRY_HISTORY_MS;
   return samples.map((sample) => {
     const x = Math.max(0, Math.min(288, ((sample.timestampMs - start) / HEAD_TRACKING_TELEMETRY_HISTORY_MS) * 288));
@@ -259,7 +259,7 @@ export function App() {
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
-  const latestHeadPoseRef = useRef<HeadPose | null>(null);
+  const headTrackingSessionRef = useRef(new HeadTrackingSession());
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
   const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | null>(null);
@@ -392,7 +392,8 @@ export function App() {
         await player.dispose();
         return null;
       }
-      if (latestHeadPoseRef.current) player.setHeadPose(latestHeadPoseRef.current);
+      const latestHeadPose = headTrackingSessionRef.current.latestPose;
+      if (latestHeadPose) player.setHeadPose(latestHeadPose);
       player.setVolumeBalance(volumeBalanceRef.current);
       player.setBinauralEqBands(binauralEqBandsRef.current);
       return player;
@@ -416,7 +417,7 @@ export function App() {
 
   useEffect(() => {
     if (headTrackingStatus?.running) return;
-    latestHeadPoseRef.current = null;
+    headTrackingSessionRef.current.clear();
     previousTelemetryPoseRef.current = null;
     lastTelemetryUiUpdateRef.current = 0;
     setHeadTrackingTelemetry([]);
@@ -434,8 +435,7 @@ export function App() {
     });
     const stopStatus = desktop.onHeadTrackingStatus?.(setHeadTrackingStatus);
     const applyPose = (pose: HeadTrackingPose) => {
-      const headPose = rendererHeadPose(pose);
-      latestHeadPoseRef.current = headPose;
+      const headPose = headTrackingSessionRef.current.update(rendererHeadPose(pose));
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
       player?.setHeadPose?.(headPose);
       const timestampMs = performance.now();
@@ -455,12 +455,15 @@ export function App() {
     const stopPose = desktop.onHeadTrackingPose?.(applyPose);
     const stopRecenter = desktop.onHeadTrackingRecenter?.((pose) => {
       const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
-      if (pose) {
-        const headPose = rendererHeadPose(pose);
-        latestHeadPoseRef.current = headPose;
+      const headPose = pose
+        ? headTrackingSessionRef.current.recenter(rendererHeadPose(pose))
+        : headTrackingSessionRef.current.recenter();
+      if (headPose) {
+        // Drop the renderer-local reference before installing the session-level
+        // identity; otherwise a previous per-renderer recenter is applied twice.
+        player?.clearHeadPose?.();
         player?.setHeadPose?.(headPose);
       }
-      player?.recenterHeadPose?.();
     });
     return () => {
       stopStatus?.();
@@ -529,7 +532,7 @@ export function App() {
       if (!running) {
         const player = playerRef.current as (SdaPlayer & HeadTrackingPlayer) | null;
         player?.clearHeadPose?.();
-        latestHeadPoseRef.current = null;
+        headTrackingSessionRef.current.clear();
         previousTelemetryPoseRef.current = null;
         lastTelemetryUiUpdateRef.current = 0;
         setHeadTrackingTelemetry([]);

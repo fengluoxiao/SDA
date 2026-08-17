@@ -73,6 +73,17 @@ function multiplyQuaternion(a: Quaternion, b: Quaternion): [number, number, numb
   ];
 }
 
+/** Orientation of `current` relative to a persistent head-to-world origin. */
+export function relativeQuaternion(
+  origin: Quaternion,
+  current: Quaternion,
+): [number, number, number, number] | null {
+  const normalizedOrigin = normalizeQuaternion(origin);
+  const normalizedCurrent = normalizeQuaternion(current);
+  if (!normalizedOrigin || !normalizedCurrent) return null;
+  return normalizeQuaternion(multiplyQuaternion(invertQuaternion(normalizedOrigin), normalizedCurrent));
+}
+
 export function rotateAdmVector(q: Quaternion, vector: Vec3): [number, number, number] {
   const rotated = multiplyQuaternion(multiplyQuaternion(q, [vector[0], vector[1], vector[2], 0]), invertQuaternion(q));
   return [rotated[0], rotated[1], rotated[2]];

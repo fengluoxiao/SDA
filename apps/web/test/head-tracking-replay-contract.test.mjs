@@ -21,7 +21,11 @@ assert.ok(
 );
 assert.match(play, /if \(!isCurrent\(\) \|\| playerRef\.current !== player\) return/);
 
-assert.match(source, /latestHeadPoseRef\.current = headPose/);
-assert.match(source, /if \(latestHeadPoseRef\.current\) player\.setHeadPose\(latestHeadPoseRef\.current\)/);
+assert.match(source, /const headTrackingSessionRef = useRef\(new HeadTrackingSession\(\)\)/);
+assert.match(source, /headTrackingSessionRef\.current\.update\(rendererHeadPose\(pose\)\)/);
+assert.match(source, /const latestHeadPose = headTrackingSessionRef\.current\.latestPose/);
+assert.match(source, /if \(latestHeadPose\) player\.setHeadPose\(latestHeadPose\)/);
+assert.match(source, /player\?\.clearHeadPose\?\.\(\);\s*player\?\.setHeadPose\?\.\(headPose\)/);
+assert.doesNotMatch(source, /player\?\.recenterHeadPose\?\.\(\)/);
 
 console.log("head-tracking replay handoff contract tests passed");

@@ -11,14 +11,16 @@ const DISCONTINUITY_RADIANS: f64 = 2.5 * std::f64::consts::PI / 180.0;
 const DISCONTINUITY_MAX_CANDIDATE_STEP_RADIANS: f64 = 20.0 * std::f64::consts::PI / 180.0;
 const DISCONTINUITY_MIN_PROGRESS_RADIANS: f64 = 0.15 * std::f64::consts::PI / 180.0;
 const DISCONTINUITY_MOTION_CONFIRM_SAMPLES: usize = 2;
-const DISCONTINUITY_STEADY_CONFIRM_SAMPLES: usize = 5;
+const DISCONTINUITY_STEADY_CONFIRM_SAMPLES: usize = 12;
 const DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS: f64 = 6.0 * std::f64::consts::PI / 180.0;
+const STATIONARY_RELEASE_CONFIRM_SAMPLES: usize = 2;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
     last: [f64; 2],
-    samples: usize,
+    direction: [f64; 2],
     motion_samples: usize,
+    steady_samples: usize,
 }
 
 #[derive(Default)]
@@ -32,6 +34,7 @@ pub struct HeadOrientation {
     stationary_samples: Vec<[f64; 2]>,
     locked_orientation: Option<[f64; 2]>,
     pending_discontinuity: Option<PendingDiscontinuity>,
+    pending_stationary_release: Option<PendingDiscontinuity>,
     slewing_discontinuity: bool,
     continuity_origin: [f64; 2],
 }
@@ -51,6 +54,7 @@ impl HeadOrientation {
         self.stationary_samples.clear();
         self.locked_orientation = None;
         self.pending_discontinuity = None;
+        self.pending_stationary_release = None;
         self.slewing_discontinuity = false;
     }
 
@@ -168,49 +172,18 @@ impl HeadOrientation {
                     self.slewing_discontinuity = false;
                 }
             } else if displacement >= DISCONTINUITY_RADIANS {
-                let pending = match self.pending_discontinuity {
-                    Some(mut pending) => {
-                        let step = [
-                            angle_delta(pending.last[0], filtered[0]),
-                            angle_delta(pending.last[1], filtered[1]),
-                        ];
-                        let step_size = step.iter().map(|value| value.abs()).fold(0.0, f64::max);
-                        let target_direction = [
-                            angle_delta(previous[0], filtered[0]),
-                            angle_delta(previous[1], filtered[1]),
-                        ];
-                        let follows_target =
-                            step[0] * target_direction[0] + step[1] * target_direction[1] > 0.0;
-                        if step_size <= DISCONTINUITY_MAX_CANDIDATE_STEP_RADIANS {
-                            pending.samples += 1;
-                            if step_size >= DISCONTINUITY_MIN_PROGRESS_RADIANS && follows_target {
-                                pending.motion_samples += 1;
-                            } else if step_size >= DISCONTINUITY_MIN_PROGRESS_RADIANS {
-                                pending.motion_samples = 0;
-                            }
-                            pending.last = filtered;
-                            pending
-                        } else {
-                            PendingDiscontinuity {
-                                last: filtered,
-                                samples: 1,
-                                motion_samples: 0,
-                            }
-                        }
-                    }
-                    None => PendingDiscontinuity {
-                        last: filtered,
-                        samples: 1,
-                        motion_samples: 0,
-                    },
-                };
+                let pending =
+                    update_motion_candidate(previous, filtered, self.pending_discontinuity);
                 let confirmed = pending.motion_samples >= DISCONTINUITY_MOTION_CONFIRM_SAMPLES
-                    || pending.samples >= DISCONTINUITY_STEADY_CONFIRM_SAMPLES;
+                    || pending.steady_samples >= DISCONTINUITY_STEADY_CONFIRM_SAMPLES;
                 if !confirmed {
                     self.pending_discontinuity = Some(pending);
                     return previous;
                 }
                 self.pending_discontinuity = None;
+                self.pending_stationary_release = None;
+                self.locked_orientation = None;
+                self.stationary_samples.clear();
                 self.slewing_discontinuity = true;
                 filtered = limit_orientation_step(
                     previous,
@@ -231,8 +204,19 @@ impl HeadOrientation {
                 .map(|axis| angle_delta(locked[axis], filtered[axis]).abs())
                 .fold(0.0, f64::max);
             if displacement < STATIONARY_RELEASE_RADIANS {
+                self.pending_stationary_release = None;
                 return locked;
             }
+
+            let pending =
+                update_motion_candidate(locked, filtered, self.pending_stationary_release);
+            let confirmed = pending.motion_samples >= STATIONARY_RELEASE_CONFIRM_SAMPLES
+                || pending.steady_samples >= DISCONTINUITY_STEADY_CONFIRM_SAMPLES;
+            if !confirmed {
+                self.pending_stationary_release = Some(pending);
+                return locked;
+            }
+            self.pending_stationary_release = None;
             self.locked_orientation = None;
             self.stationary_samples.clear();
         }
@@ -265,6 +249,7 @@ impl HeadOrientation {
             });
             if stable {
                 self.locked_orientation = Some(filtered);
+                self.pending_stationary_release = None;
             }
         }
         filtered
@@ -273,6 +258,52 @@ impl HeadOrientation {
 
 fn angle_delta(from: f64, to: f64) -> f64 {
     (to - from).sin().atan2((to - from).cos())
+}
+
+fn update_motion_candidate(
+    origin: [f64; 2],
+    target: [f64; 2],
+    pending: Option<PendingDiscontinuity>,
+) -> PendingDiscontinuity {
+    let offset = [
+        angle_delta(origin[0], target[0]),
+        angle_delta(origin[1], target[1]),
+    ];
+    let fresh = || PendingDiscontinuity {
+        last: target,
+        direction: offset,
+        motion_samples: 0,
+        steady_samples: 1,
+    };
+    let Some(mut pending) = pending else {
+        return fresh();
+    };
+
+    let step = [
+        angle_delta(pending.last[0], target[0]),
+        angle_delta(pending.last[1], target[1]),
+    ];
+    let step_size = step.iter().map(|value| value.abs()).fold(0.0, f64::max);
+    let remains_on_same_side = dot2(pending.direction, offset) > 0.0;
+    let advances_in_original_direction = dot2(pending.direction, step) > 0.0;
+    if step_size > DISCONTINUITY_MAX_CANDIDATE_STEP_RADIANS || !remains_on_same_side {
+        return fresh();
+    }
+
+    pending.last = target;
+    if step_size < DISCONTINUITY_MIN_PROGRESS_RADIANS {
+        pending.steady_samples += 1;
+    } else if advances_in_original_direction {
+        pending.motion_samples += 1;
+        pending.steady_samples = 0;
+    } else {
+        return fresh();
+    }
+    pending
+}
+
+fn dot2(left: [f64; 2], right: [f64; 2]) -> f64 {
+    left[0] * right[0] + left[1] * right[1]
 }
 
 fn limit_orientation_step(from: [f64; 2], to: [f64; 2], maximum: f64) -> [f64; 2] {
@@ -351,7 +382,7 @@ mod tests {
         assert!(identity.z.abs() < 1e-12 && (identity.w - 1.0).abs() < 1e-12);
 
         let mut turned = None;
-        for _ in 0..24 {
+        for _ in 0..40 {
             turned = tracker.process_packet(&packet(19_000, 17_000, -15_000));
         }
         let turned = turned.unwrap();
@@ -433,6 +464,38 @@ mod tests {
             assert!(
                 turned.z * f64::from(direction) > 0.04,
                 "fast turn remained locked for direction {direction}: {turned:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_stationary_lock_during_an_alternating_small_angle_burst() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&yaw_packet(0));
+        }
+
+        for degrees in [2, -2].into_iter().cycle().take(24) {
+            let pose = tracker.process_packet(&yaw_packet(degrees)).unwrap();
+            assert!(
+                pose.z.abs() < 1e-12,
+                "alternating small-angle burst escaped the stationary lock: {pose:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_alternating_large_discontinuity_burst() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&yaw_packet(0));
+        }
+
+        for degrees in [10, -10].into_iter().cycle().take(24) {
+            let pose = tracker.process_packet(&yaw_packet(degrees)).unwrap();
+            assert!(
+                pose.z.abs() < 1e-12,
+                "alternating large-angle burst passed discontinuity confirmation: {pose:?}"
             );
         }
     }

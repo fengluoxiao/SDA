@@ -11,6 +11,7 @@ const bundledTests = [
   "packages/renderer/test/head-tracking-message.test.mjs",
   "packages/renderer/test/binaural-lifecycle-health.test.mjs",
   "apps/web/test/head-tracking-telemetry.test.ts",
+  "apps/web/test/head-tracking-session.test.ts",
 ];
 const directTests = [
   "packages/renderer/test/head-tracking-object-schedule.test.mjs",
