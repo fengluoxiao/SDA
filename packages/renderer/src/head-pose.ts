@@ -47,6 +47,17 @@ export const DEFAULT_HEAD_POSE_OPTIONS: Required<HeadPoseOptions> = {
   updateHz: 60,
 };
 
+/** Drift-anchor easing. Providers without a second inertial reference wander
+ *  with the sensor's integrated bias (observed up to ±2°/s during playback),
+ *  so once no real motion has been confirmed for a while the attitude eases
+ *  back toward the most recently recentered front. The rate dominates every
+ *  drift seen in the field while staying far below deliberate head turns. */
+const ANCHOR_EASE_DEGREES_PER_SECOND = 2.5;
+/** Real turns keep the anchor paused for this long before the ease resumes. */
+const REAL_MOTION_HOLD_MS = 8000;
+/** Angular speed above which a pose change counts as a deliberate turn. */
+const REAL_MOTION_SPEED_DEG_PER_S = 30;
+
 type Vec3 = readonly [number, number, number];
 
 function finite(value: number): boolean {
@@ -132,6 +143,16 @@ export class HeadPoseTracker {
   private orientation: [number, number, number, number] = [0, 0, 0, 1];
   private targetOrientation: [number, number, number, number] = [0, 0, 0, 1];
   private recenterOrientation: [number, number, number, number] = [0, 0, 0, 1];
+  /** The attitude the ease-back anchor pulls toward: the most recent
+   *  recentered front, or the first pose before any recenter happened. */
+  private anchorOrientation: [number, number, number, number] = [0, 0, 0, 1];
+  private lastRealMotionMs = Number.NEGATIVE_INFINITY;
+  /** Previous raw provider attitude: deliberate-turn detection must compare
+   *  device samples to each other, never to the eased target — the ease's own
+   *  pull would otherwise register as real motion and pause itself forever. */
+  private providerOrientation: [number, number, number, number] = [0, 0, 0, 1];
+  private acceptedProviderOrientation: [number, number, number, number] = [0, 0, 0, 1];
+  private providerMs = Number.NEGATIVE_INFINITY;
   private receivedAtMs = Number.NEGATIVE_INFINITY;
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private active = false;
@@ -156,19 +177,35 @@ export class HeadPoseTracker {
     if (!this.active) {
       this.orientation = target;
       this.targetOrientation = target;
+      this.anchorOrientation = target;
+      this.providerOrientation = target;
+      this.acceptedProviderOrientation = target;
+      this.providerMs = nowMs;
       this.active = true;
       this.lastUpdateMs = nowMs;
+      this.lastRealMotionMs = nowMs;
     } else {
-      const targetDot = Math.min(1, Math.abs(
-        this.targetOrientation[0] * target[0]
-        + this.targetOrientation[1] * target[1]
-        + this.targetOrientation[2] * target[2]
-        + this.targetOrientation[3] * target[3],
-      ));
-      const targetDelta = 2 * Math.acos(targetDot);
-      if (targetDelta >= this.options.deadZoneDegrees * Math.PI / 180) {
-        this.targetOrientation = target;
+      // Integrate the provider-relative step into the target instead of
+      // overwriting it: the anchor ease then compounds across samples rather
+      // than being wiped by every absolute provider attitude. Sub-dead-zone
+      // motion stays pending against the last accepted attitude, so slow
+      // deliberate turns still accumulate past the dead zone.
+      const stepQuat = multiplyQuaternion(invertQuaternion(this.acceptedProviderOrientation), target);
+      // The step's angle lives in the quaternion's real part: |q| is always 1.
+      const stepAngle = 2 * Math.acos(Math.min(1, Math.abs(stepQuat[3])));
+      const providerS = Math.max(1, nowMs - this.providerMs) / 1000;
+      if (stepAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S) {
+        this.lastRealMotionMs = nowMs;
       }
+      const candidateQuat = multiplyQuaternion(invertQuaternion(this.targetOrientation), target);
+      const candidateAngle = 2 * Math.acos(Math.min(1, Math.abs(candidateQuat[3])));
+      if (candidateAngle >= this.options.deadZoneDegrees * Math.PI / 180) {
+        const integrated = normalizeQuaternion(multiplyQuaternion(this.targetOrientation, stepQuat));
+        if (integrated) this.targetOrientation = integrated;
+        this.acceptedProviderOrientation = target;
+      }
+      this.providerOrientation = target;
+      this.providerMs = nowMs;
       this.advance(nowMs);
     }
     this.receivedAtMs = nowMs;
@@ -186,6 +223,21 @@ export class HeadPoseTracker {
     const rateT = angle < 1e-8 ? 1 : Math.min(1, rateLimit / angle);
     const smoothT = this.options.smoothingMs <= 0 ? 1 : 1 - Math.exp(-elapsedMs / this.options.smoothingMs);
     this.orientation = slerp(this.orientation, target, Math.min(rateT, smoothT));
+    // Ease the target back toward the anchored front once no deliberate turn
+    // has been seen for a while, so provider drift cannot walk the image away.
+    if (nowMs - this.lastRealMotionMs > REAL_MOTION_HOLD_MS && this.targetOrientation !== this.anchorOrientation) {
+      const anchorDot = Math.min(1, Math.abs(
+        this.targetOrientation[0] * this.anchorOrientation[0]
+        + this.targetOrientation[1] * this.anchorOrientation[1]
+        + this.targetOrientation[2] * this.anchorOrientation[2]
+        + this.targetOrientation[3] * this.anchorOrientation[3],
+      ));
+      const anchorAngle = 2 * Math.acos(anchorDot);
+      if (anchorAngle > 1e-8) {
+        const easeT = Math.min(1, ANCHOR_EASE_DEGREES_PER_SECOND * Math.PI / 180 * elapsedMs / 1000 / anchorAngle);
+        this.targetOrientation = slerp(this.targetOrientation, this.anchorOrientation, easeT);
+      }
+    }
   }
 
   clear(): boolean {
@@ -194,6 +246,10 @@ export class HeadPoseTracker {
     this.orientation = [0, 0, 0, 1];
     this.targetOrientation = [0, 0, 0, 1];
     this.recenterOrientation = [0, 0, 0, 1];
+    this.anchorOrientation = [0, 0, 0, 1];
+    this.providerOrientation = [0, 0, 0, 1];
+    this.acceptedProviderOrientation = [0, 0, 0, 1];
+    this.providerMs = Number.NEGATIVE_INFINITY;
     this.lastUpdateMs = Number.NEGATIVE_INFINITY;
     return changed;
   }
@@ -204,6 +260,11 @@ export class HeadPoseTracker {
     // lagging render orientation, then snap the render state to exact neutral.
     this.orientation = this.targetOrientation;
     this.recenterOrientation = invertQuaternion(this.targetOrientation);
+    // The anchor follows: the eased-back "front" is whatever the user most
+    // recently confirmed with an explicit recenter. Hold from the last sample
+    // so the ease cannot eat idle time the listener spent facing forward.
+    this.anchorOrientation = this.targetOrientation;
+    this.lastRealMotionMs = this.receivedAtMs;
     return true;
   }
 

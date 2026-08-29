@@ -123,4 +123,53 @@ close(
   "intentional movement outside the dead zone remains responsive",
 );
 
+// Drift anchor: a provider whose relative stream wanders (slow ramp plus
+// jitter that crosses the dead zone) must not walk the image away — the
+// ease-back pulls the attitude toward the recentered front.
+const anchored = new HeadPoseTracker({ smoothingMs: 0, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.35 });
+assert.equal(anchored.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+assert.equal(anchored.recenter(), true);
+let wandered = 0;
+for (let frame = 0; frame < 900; frame++) {
+  const nowMs = 100 + frame * 33;
+  wandered += 0.067;
+  const jitter = frame % 2 === 0 ? 0.4 : -0.4;
+  assert.equal(
+    anchored.set({ orientation: yaw(wandered + jitter), timestampMs: nowMs }, nowMs),
+    true,
+    `drift frame ${frame} rejected`,
+  );
+}
+const eased = anchored.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 100 + 900 * 33);
+assert.ok(
+  Math.abs(eased.azimuth) < 25,
+  `jittery drift should stay anchored, got ${eased.azimuth.toFixed(1)}° azimuth (raw wander ${wandered.toFixed(1)}°)`,
+);
+
+// A deliberate fast turn pauses the ease-back: the image holds where the
+// user turned, then eases back only after the hold expires.
+const held = new HeadPoseTracker({ smoothingMs: 0, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.1 });
+assert.equal(held.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+assert.equal(held.recenter(), true);
+assert.equal(held.set({ orientation: yaw(90), timestampMs: 500 }, 500), true);
+close(held.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 510).azimuth, -90, "fast turn tracked immediately");
+for (let frame = 0; frame <= 139; frame++) {
+  const nowMs = 1000 + frame * 50;
+  assert.equal(held.set({ orientation: yaw(90), timestampMs: nowMs }, nowMs), true, `hold frame ${frame} rejected`);
+}
+const duringHold = held.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1000 + 139 * 50);
+assert.ok(
+  Math.abs(duringHold.azimuth + 90) < 8,
+  `ease-back should stay paused during the hold, got ${duringHold.azimuth.toFixed(1)}°`,
+);
+for (let frame = 140; frame <= 360; frame++) {
+  const nowMs = 1000 + frame * 50;
+  assert.equal(held.set({ orientation: yaw(90), timestampMs: nowMs }, nowMs), true, `post-hold frame ${frame} rejected`);
+}
+const afterHold = held.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1000 + 360 * 50);
+assert.ok(
+  Math.abs(afterHold.azimuth + 90) > 8,
+  `ease-back should resume after the hold, got ${afterHold.azimuth.toFixed(1)}°`,
+);
+
 console.log("head pose tests: OK");

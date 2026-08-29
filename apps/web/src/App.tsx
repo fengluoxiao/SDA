@@ -1148,7 +1148,7 @@ export function App() {
               <fieldset className="settings-group settings-section" disabled={mode !== "binaural" || headTrackingBusy}>
                 <legend>实验性 AirPods 头部追踪</legend>
                 <p className="settings-description">
-                  通过独立 helper 进程读取已配对 AirPods 的 motion data；不是 Apple Personalized Spatial Audio，不读取配对密钥。
+                  通过独立 helper 进程读取已配对 AirPods 的 motion data；不是 Apple Personalized Spatial Audio，不读取配对密钥。相对姿态流存在时变漂移，静止数秒后声像会缓慢回到最近一次重置的朝向（锚定回正）。
                 </p>
                 <p className="settings-description">
                   Helper：{headTrackingHelper?.usingBundled ? "内置 Windows helper" : headTrackingHelper?.configured ? `外部 ${headTrackingHelper.fileName}` : "未配置"}
