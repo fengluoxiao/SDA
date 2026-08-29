@@ -361,7 +361,13 @@ pub(crate) fn is_head_tracking_packet(packet: &[u8]) -> bool {
 fn head_tracking_frame(packet: &[u8]) -> Option<&[u8]> {
     // A single overlapped driver read can contain a control notification
     // followed by a motion frame. Search the complete L2CAP payload instead of
-    // requiring motion to begin at byte zero.
+    // requiring motion to begin at byte zero, but hold motion frames to the
+    // full length the reference implementation requires (>= 70 bytes: values
+    // at 43..49 plus acceleration at 51..55). A shorter fragment — or a
+    // control notification whose payload happens to embed the header — would
+    // otherwise parse as a deterministic garbage pose, observed as a sudden
+    // ~±100° float while stationary, repeating while playback drives control
+    // traffic (ear detection, battery, audio-source ownership).
     packet
         .windows(HEAD_TRACKING_PREFIX.len())
         .enumerate()
@@ -370,7 +376,7 @@ fn head_tracking_frame(packet: &[u8]) -> Option<&[u8]> {
                 return None;
             }
             let frame = packet.get(offset..)?;
-            (frame.len() > 60 && matches!(frame[10], 0x44 | 0x45) && frame[11] == 0)
+            (frame.len() >= 70 && matches!(frame[10], 0x44 | 0x45) && frame[11] == 0)
                 .then_some(frame)
         })
 }
@@ -385,7 +391,7 @@ mod tests {
     use super::*;
 
     fn packet(o1: i16, o2: i16, o3: i16) -> Vec<u8> {
-        let mut packet = vec![0; 64];
+        let mut packet = vec![0; 72];
         packet[..HEAD_TRACKING_PREFIX.len()].copy_from_slice(&HEAD_TRACKING_PREFIX);
         packet[10] = 0x44;
         for (offset, value) in [(43, o1), (45, o2), (47, o3)] {
@@ -596,6 +602,17 @@ mod tests {
     fn rejects_non_tracking_packets() {
         let mut tracker = HeadOrientation::default();
         assert!(tracker.process_packet(&[0; 64]).is_none());
+    }
+
+    #[test]
+    fn rejects_a_short_fragment_that_embeds_a_valid_header() {
+        // 61..69-byte tails (a split read or a control notification whose
+        // payload embeds the header) must not parse as motion.
+        let mut full = packet(19_000, 1_000, 1_000);
+        full.truncate(69);
+        assert!(!is_head_tracking_packet(&full));
+        full.truncate(64);
+        assert!(!is_head_tracking_packet(&full));
     }
 
     #[test]
