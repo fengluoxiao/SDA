@@ -53,21 +53,30 @@ const RequestFrameContext = createContext<RequestFrame>(() => {});
 
 function FrameScheduler({ children, maxFps }: { children: ReactNode; maxFps: number | null }) {
   const invalidate = useThree((state) => state.invalidate);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handle = useRef(0);
+  const lastPaintAt = useRef(0);
   const requestFrame = useCallback(() => {
     if (maxFps === null) {
       invalidate();
       return;
     }
-    if (timer.current !== null) return;
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      invalidate();
-    }, 1000 / maxFps);
+    if (handle.current !== 0) return;
+    // requestAnimationFrame fires on vsync boundaries; the previous
+    // setTimeout cap painted between vsyncs (33/50 ms alternation), which
+    // read as judder on slow-moving objects. Overshoot waits for the next
+    // vsync instead of a timer remainder, so paints stay display-aligned.
+    const tick = (now: number) => {
+      handle.current = 0;
+      if (now - lastPaintAt.current >= 1000 / maxFps) {
+        lastPaintAt.current = now;
+        invalidate();
+        return;
+      }
+      handle.current = requestAnimationFrame(tick);
+    };
+    handle.current = requestAnimationFrame(tick);
   }, [invalidate, maxFps]);
-  useEffect(() => () => {
-    if (timer.current !== null) clearTimeout(timer.current);
-  }, []);
+  useEffect(() => () => cancelAnimationFrame(handle.current), []);
   return <RequestFrameContext.Provider value={requestFrame}>{children}</RequestFrameContext.Provider>;
 }
 
@@ -283,9 +292,12 @@ const ObjectDot = memo(function ObjectDot({
   const requestFrame = useContext(RequestFrameContext);
   useFrame((_, dt) => {
     if (!ref.current) return;
-    // Smooth toward the latest event position (renderer ramps audio; we ease the view).
+    // Smooth toward the latest event position (renderer ramps audio; we ease
+    // the view). The exponential factor is frame-rate independent — the old
+    // clamped linear factor reached 1 after frame gaps and snapped the dot to
+    // the target instead of easing.
     target.set(...admToScene(obj.pos));
-    ref.current.position.lerp(target, Math.min(1, dt * 20));
+    ref.current.position.lerp(target, 1 - Math.exp(-dt * 20));
     if (ref.current.position.distanceToSquared(target) > 1e-8) requestFrame();
   });
   const height = obj.pos[2]; // ADM z = up
@@ -353,9 +365,11 @@ export function ObjectView({
       dpr={isSwiftShader ? 1 : [1, 1.5]}
       gl={{ antialias: !isSwiftShader, powerPreference: isSwiftShader ? "low-power" : "high-performance" }}
     >
-      {/* Keep the diagnostic scene below the audio renderer's real-time budget.
-          Object events remain sample-accurate in the worklet; this only caps paint. */}
-      <FrameScheduler maxFps={30}>
+      {/* Object motion paints on the same vsync path as camera drags (drei's
+          controls invalidate at full rate regardless). Only SwiftShader —
+          software rasterization competing with the audio renderer for CPU —
+          keeps a 30 fps display-aligned cap. */}
+      <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <Room p={p} />
         <SpeakerRing layout={layout} />
         <Listener />

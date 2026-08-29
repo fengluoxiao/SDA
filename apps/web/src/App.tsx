@@ -224,6 +224,7 @@ export function App() {
   const [soundingObjectIds, setSoundingObjectIds] = useState<ReadonlySet<number>>(new Set());
   const [diagnosticObjects, setDiagnosticObjects] = useState<VisualObject[]>([]);
   const lastDiagnosticUpdateRef = useRef(0);
+  const lastVisualUiUpdateRef = useRef(0);
   const lastHealthUiUpdateRef = useRef(0);
   const lastHealthEscalationRef = useRef<PlayerHealthSnapshot["callbackGapEscalation"]>("none");
   /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
@@ -326,17 +327,28 @@ export function App() {
         onVisualState: (objs, t, sounding) => {
           if (!isCurrent()) return;
           objectsRef.current = objs;
-          setObjects(objs);
-          setSoundingObjectIds(sounding);
-          if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
-            lastDiagnosticUpdateRef.current = t;
-            setDiagnosticObjects(objs);
-            setProgramLoudness(playerRef.current?.programLoudnessInfo() ?? null);
+          // Visual events can fire per decoded frame while objects move, and
+          // every state write here re-renders the whole app in competition with
+          // the 3D paint. Flush at ~15 Hz (10 Hz baseline from the player
+          // timer is untouched); ObjectDot eases toward targets at full frame
+          // rate, so this only caps target delivery, not motion smoothness.
+          // Paused or seek emissions flush immediately — no further ticks may
+          // follow them.
+          const now = performance.now();
+          if (!playingRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 66) {
+            lastVisualUiUpdateRef.current = now;
+            setObjects(objs);
+            setSoundingObjectIds(sounding);
+            if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
+              lastDiagnosticUpdateRef.current = t;
+              setDiagnosticObjects(objs);
+              setProgramLoudness(playerRef.current?.programLoudnessInfo() ?? null);
+            }
+            setPosition(t);
+            const p = playerRef.current;
+            setDuration(p?.durationSeconds() ?? 0);
+            setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
           }
-          setPosition(t);
-          const p = playerRef.current;
-          setDuration(p?.durationSeconds() ?? 0);
-          setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
         },
         onHealth: (snapshot) => {
           if (!isCurrent()) return;
@@ -677,6 +689,7 @@ export function App() {
       setSoundingObjectIds(new Set());
       setDiagnosticObjects([]);
       lastDiagnosticUpdateRef.current = 0;
+      lastVisualUiUpdateRef.current = 0;
       setPosition(0);
       setDuration(0);
       setHealth(null);
