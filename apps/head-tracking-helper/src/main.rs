@@ -361,7 +361,23 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     if let Some(value) = orientation.process_packet(&packet[..length]) {
                         sequence = sequence.saturating_add(1);
                         if debug_frames {
-                            eprintln!("{}", orientation.debug_state());
+                            // Every 10th frame also dumps the raw motion frame
+                            // so the field layout can be verified against the
+                            // parsed values during a calibration gesture.
+                            let dump_hex = sequence % 10 == 0;
+                            let mut hex = String::new();
+                            if dump_hex {
+                                use std::fmt::Write as _;
+                                for byte in &packet[..length.min(72)] {
+                                    let _ = write!(hex, "{:02x}", byte);
+                                }
+                            }
+                            eprintln!(
+                                "{}{} {}",
+                                if dump_hex { "hex=" } else { "" },
+                                hex,
+                                orientation.debug_state(),
+                            );
                         }
                         emit(&Pose {
                             kind: "pose",
