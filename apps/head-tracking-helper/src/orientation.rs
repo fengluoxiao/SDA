@@ -153,7 +153,7 @@ impl HeadOrientation {
                         .filter(|(_, subtype)| **subtype == dominant)
                         .map(|(values, _)| *values)
                         .collect();
-                    let source: &[([f64; 3])] = if dominant_samples.len() >= 3 {
+                    let source: &[[f64; 3]] = if dominant_samples.len() >= 3 {
                         &dominant_samples
                     } else {
                         &self.samples
