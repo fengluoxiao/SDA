@@ -14,6 +14,13 @@ const DISCONTINUITY_MOTION_CONFIRM_SAMPLES: usize = 2;
 const DISCONTINUITY_STEADY_CONFIRM_SAMPLES: usize = 12;
 const DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS: f64 = 6.0 * std::f64::consts::PI / 180.0;
 const STATIONARY_RELEASE_CONFIRM_SAMPLES: usize = 2;
+/// One full turn is 64000 counts. A real head cannot move more than ±90° in
+/// one frame; a misparsed AACP control packet can claim ±180°. Anything above
+/// the gate is dropped instead of re-anchoring the attitude accumulator.
+const MAX_FRAME_DELTA_COUNTS: i64 = 16_000;
+/// Sustained rejection means the stream re-referenced or moved during a gap:
+/// realign the unwrap reference without accumulating, keeping the attitude.
+const UNWRAP_RESYNC_REJECTS: usize = 10;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
@@ -37,6 +44,7 @@ pub struct HeadOrientation {
     pending_stationary_release: Option<PendingDiscontinuity>,
     slewing_discontinuity: bool,
     continuity_origin: [f64; 2],
+    unwrap_rejects: usize,
 }
 
 impl HeadOrientation {
@@ -49,6 +57,7 @@ impl HeadOrientation {
         self.neutral = None;
         self.previous_raw = None;
         self.unwrapped = [0; 3];
+        self.unwrap_rejects = 0;
         self.orientation_samples.clear();
         self.last_orientation = None;
         self.stationary_samples.clear();
@@ -70,7 +79,10 @@ impl HeadOrientation {
             read_i16(packet, 45)?,
             read_i16(packet, 47)?,
         ];
-        let values = self.unwrap_values(raw);
+        let values = match self.unwrap_values(raw) {
+            Some(values) => values,
+            None => return None,
+        };
         let neutral = match self.neutral {
             Some(neutral) => neutral,
             None => {
@@ -120,19 +132,45 @@ impl HeadOrientation {
         })
     }
 
-    fn unwrap_values(&mut self, raw: [i16; 3]) -> [f64; 3] {
-        if let Some(previous) = self.previous_raw {
-            for index in 0..3 {
-                // AirPods exposes cyclic signed 16-bit angles. A normal move
-                // across +32767/-32768 must be a small delta, not a 180-degree
-                // pose jump.
-                self.unwrapped[index] += raw[index].wrapping_sub(previous[index]) as i64;
-            }
-        } else {
+    fn unwrap_values(&mut self, raw: [i16; 3]) -> Option<[f64; 3]> {
+        let Some(previous) = self.previous_raw else {
             self.unwrapped = raw.map(i64::from);
+            self.previous_raw = Some(raw);
+            return Some(raw.map(|value| value as f64));
+        };
+
+        // Fold each cyclic delta into (−32000, 32000] so a move across the
+        // ±32768 boundary stays a small step. AACP transport recovery and
+        // coalesced control notifications can surface samples that are not
+        // real motion; accumulating one would permanently re-anchor the
+        // attitude by tens of degrees (observed as a sudden ~±100° float
+        // while stationary), so implausible steps are dropped outright.
+        let mut folded = [0i64; 3];
+        let mut plausible = true;
+        for index in 1..3 {
+            let delta = i64::from(raw[index].wrapping_sub(previous[index]));
+            folded[index] = ((delta + 32_000).rem_euclid(64_000)) - 32_000;
+            if folded[index].abs() > MAX_FRAME_DELTA_COUNTS {
+                plausible = false;
+            }
         }
+        if !plausible {
+            self.unwrap_rejects += 1;
+            if self.unwrap_rejects >= UNWRAP_RESYNC_REJECTS {
+                // Sustained rejection: the stream re-referenced or the listener
+                // moved during a gap. Realign the reference without adding the
+                // untrusted delta so the attitude stays continuous.
+                self.previous_raw = Some(raw);
+                self.unwrap_rejects = 0;
+            }
+            return None;
+        }
+        self.unwrap_rejects = 0;
         self.previous_raw = Some(raw);
-        self.unwrapped.map(|value| value as f64)
+        for index in 0..3 {
+            self.unwrapped[index] += folded[index];
+        }
+        Some(self.unwrapped.map(|value| value as f64))
     }
 
     fn filter_orientation(&mut self, orientation: [f64; 2]) -> [f64; 2] {
@@ -558,6 +596,58 @@ mod tests {
     fn rejects_non_tracking_packets() {
         let mut tracker = HeadOrientation::default();
         assert!(tracker.process_packet(&[0; 64]).is_none());
+    }
+
+    #[test]
+    fn drops_an_implausible_sample_instead_of_reanchoring_the_attitude() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&yaw_packet(0));
+        }
+
+        // One misparsed coalesced control packet claims a ~+117° step on axis
+        // 2 while the head is still. It must vanish, not shift the pose.
+        assert!(tracker.process_packet(&packet(19_000, 1_000, 21_000)).is_none());
+        let recovered = tracker
+            .process_packet(&packet(19_000, 1_000, 1_000))
+            .unwrap();
+        assert!(
+            recovered.z.abs() < 1e-12,
+            "garbage sample re-anchored the attitude: {recovered:?}"
+        );
+
+        // Tracking must still work afterwards.
+        let mut turned = None;
+        for _ in 0..=DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
+            turned = tracker.process_packet(&yaw_packet(20));
+        }
+        assert!(
+            turned.unwrap().z.abs() > 0.017,
+            "tracking went dead after a rejected sample"
+        );
+    }
+
+    #[test]
+    fn realigns_after_sustained_implausible_samples_without_a_pose_jump() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&yaw_packet(0));
+        }
+        let before = tracker.process_packet(&yaw_packet(0)).unwrap();
+
+        // A device-side re-reference steps the raw branch ~+117° and stays
+        // there. After the resync window the stream is adopted while the
+        // reported attitude stays where it was.
+        for _ in 0..UNWRAP_RESYNC_REJECTS {
+            assert!(tracker.process_packet(&packet(19_000, 1_000, 21_000)).is_none());
+        }
+        let after = tracker
+            .process_packet(&packet(19_000, 1_000, 21_000))
+            .unwrap();
+        assert!(
+            (after.z - before.z).abs() < 1e-9 && (after.w - before.w).abs() < 1e-9,
+            "re-reference leaked into the attitude: {after:?}"
+        );
     }
 
     #[test]
