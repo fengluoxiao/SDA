@@ -21,13 +21,20 @@ const MAX_FRAME_DELTA_COUNTS: i64 = 16_000;
 /// Sustained rejection means the stream re-referenced or moved during a gap:
 /// realign the unwrap reference without accumulating, keeping the attitude.
 const UNWRAP_RESYNC_REJECTS: usize = 10;
-/// Rate of the stationary drift-bias estimate (counts/frame EMA while the
-/// stationary lock holds; ~10 frame time constant at 30 Hz). The AirPods
+/// Rate of the stationary drift-bias estimate while the stationary lock
+/// holds (counts/frame EMA; ~10 frame time constant at 30 Hz). The AirPods
 /// report gyro-integrated relative angles, so a fixed PC must estimate and
 /// cancel the per-frame bias or the attitude random-walks away while sitting
 /// still. The rate must outrun the stationary-release threshold: uncancelled
 /// drift reaches the 1.5° release in ~27 frames, so 0.1 converges to <0.3°.
 const BIAS_LEARN_RATE: f64 = 0.1;
+/// While unlocked (real motion), keep learning the drift rate at a much
+/// slower pace so bias stays current across head-movement episodes.
+const BIAS_UNLOCKED_LEARN_RATE: f64 = 0.004;
+/// Per-frame innovation clamp: real head motion moves hundreds of counts per
+/// frame while drift sits below ~10, so a clamped update lets the estimate
+/// follow drift during unlocked periods without chasing actual turns.
+const BIAS_LEARN_INNOVATION_LIMIT: f64 = 40.0;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
@@ -243,13 +250,16 @@ impl HeadOrientation {
         }
         self.unwrap_rejects = 0;
         self.previous_raw = Some(raw);
-        // While the stationary lock holds, learn the per-frame gyro bias and
-        // cancel it from the accumulated angle so the attitude does not
-        // random-walk away with the sensor's integrated drift.
-        if self.bias_learning {
-            for axis in 0..2 {
-                self.bias[axis] += BIAS_LEARN_RATE * (folded[axis + 1] as f64 - self.bias[axis]);
-            }
+        // Always learn the per-frame gyro bias: fast while the stationary
+        // lock holds, slow and innovation-clamped while unlocked so real
+        // head motion cannot drag the estimate around. Without continuous
+        // cancellation every head-movement episode leaks its own drift and
+        // the pose ends up left or right of where the listener faces.
+        let learn_rate = if self.bias_learning { BIAS_LEARN_RATE } else { BIAS_UNLOCKED_LEARN_RATE };
+        for axis in 0..2 {
+            let innovation = (folded[axis + 1] as f64 - self.bias[axis])
+                .clamp(-BIAS_LEARN_INNOVATION_LIMIT, BIAS_LEARN_INNOVATION_LIMIT);
+            self.bias[axis] += learn_rate * innovation;
         }
         for index in 0..3 {
             let bias = if (1..3).contains(&index) { self.bias[index - 1] } else { 0.0 };
