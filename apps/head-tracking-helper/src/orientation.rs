@@ -21,6 +21,13 @@ const MAX_FRAME_DELTA_COUNTS: i64 = 16_000;
 /// Sustained rejection means the stream re-referenced or moved during a gap:
 /// realign the unwrap reference without accumulating, keeping the attitude.
 const UNWRAP_RESYNC_REJECTS: usize = 10;
+/// Rate of the stationary drift-bias estimate (counts/frame EMA while the
+/// stationary lock holds; ~10 frame time constant at 30 Hz). The AirPods
+/// report gyro-integrated relative angles, so a fixed PC must estimate and
+/// cancel the per-frame bias or the attitude random-walks away while sitting
+/// still. The rate must outrun the stationary-release threshold: uncancelled
+/// drift reaches the 1.5° release in ~27 frames, so 0.1 converges to <0.3°.
+const BIAS_LEARN_RATE: f64 = 0.1;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
@@ -33,9 +40,18 @@ struct PendingDiscontinuity {
 #[derive(Default)]
 pub struct HeadOrientation {
     samples: Vec<[f64; 3]>,
+    calibration_subtypes: Vec<u8>,
+    subtype_tally: [u32; 2],
+    stream_subtype: Option<u8>,
     neutral: Option<[f64; 3]>,
     previous_raw: Option<[i16; 3]>,
-    unwrapped: [i64; 3],
+    unwrapped: [f64; 3],
+    /// Counts/frame drift estimate per pose axis, learned while locked.
+    bias: [f64; 2],
+    bias_learning: bool,
+    /// Total bias subtracted since the last reset, so a suspected-motion
+    /// reset can give the untracked amount back to the accumulator.
+    bias_applied_total: [f64; 2],
     orientation_samples: Vec<[f64; 2]>,
     last_orientation: Option<[f64; 2]>,
     stationary_samples: Vec<[f64; 2]>,
@@ -45,6 +61,7 @@ pub struct HeadOrientation {
     slewing_discontinuity: bool,
     continuity_origin: [f64; 2],
     unwrap_rejects: usize,
+    last_subtype: u8,
 }
 
 impl HeadOrientation {
@@ -54,9 +71,15 @@ impl HeadOrientation {
             .or(self.locked_orientation)
             .unwrap_or(self.continuity_origin);
         self.samples.clear();
+        self.calibration_subtypes.clear();
+        self.subtype_tally = [0; 2];
+        self.stream_subtype = None;
         self.neutral = None;
         self.previous_raw = None;
-        self.unwrapped = [0; 3];
+        self.unwrapped = [0.0; 3];
+        self.bias = [0.0; 2];
+        self.bias_learning = false;
+        self.bias_applied_total = [0.0; 2];
         self.unwrap_rejects = 0;
         self.orientation_samples.clear();
         self.last_orientation = None;
@@ -71,8 +94,31 @@ impl HeadOrientation {
         self.neutral.is_some()
     }
 
+    /// One-line diagnostic state for env-gated field logging.
+    pub fn debug_state(&self) -> String {
+        let (pitch, yaw) = match self.last_orientation {
+            Some(values) => (values[0], values[1]),
+            None => (0.0, 0.0),
+        };
+        let to_degrees = |radians: f64| radians * 180.0 / std::f64::consts::PI;
+        format!(
+            "sub=0x{:02X} raw={:?} unwrapped={:?} yaw={:+.2}deg pitch={:+.2}deg rejects={} lock={} slew={} cal={} bias={:?}",
+            self.last_subtype,
+            self.previous_raw,
+            self.unwrapped,
+            to_degrees(yaw),
+            to_degrees(pitch),
+            self.unwrap_rejects,
+            self.locked_orientation.is_some() as u8,
+            self.slewing_discontinuity as u8,
+            self.neutral.is_some() as u8,
+            self.bias,
+        )
+    }
+
     pub fn process_packet(&mut self, packet: &[u8]) -> Option<Orientation> {
         let packet = head_tracking_frame(packet)?;
+        self.last_subtype = packet[10];
 
         let raw = [
             read_i16(packet, 43)?,
@@ -86,12 +132,36 @@ impl HeadOrientation {
         let neutral = match self.neutral {
             Some(neutral) => neutral,
             None => {
+                match self.last_subtype {
+                    0x44 => self.subtype_tally[0] += 1,
+                    0x45 => self.subtype_tally[1] += 1,
+                    _ => {}
+                }
+                self.calibration_subtypes.push(self.last_subtype);
                 self.samples.push(values);
                 if self.samples.len() == CALIBRATION_SAMPLES {
+                    // Both buds notify motion with their own sub-type and
+                    // independent reference frames; lock onto whichever
+                    // dominated calibration, average only that stream's
+                    // samples, and ignore the other stream afterwards.
+                    let dominant = if self.subtype_tally[1] > self.subtype_tally[0] { 0x45 } else { 0x44 };
+                    self.stream_subtype = Some(dominant);
+                    let dominant_samples: Vec<[f64; 3]> = self
+                        .samples
+                        .iter()
+                        .zip(self.calibration_subtypes.iter())
+                        .filter(|(_, subtype)| **subtype == dominant)
+                        .map(|(values, _)| *values)
+                        .collect();
+                    let source: &[([f64; 3])] = if dominant_samples.len() >= 3 {
+                        &dominant_samples
+                    } else {
+                        &self.samples
+                    };
                     let mut average = [0.0; 3];
-                    for sample in &self.samples {
+                    for sample in source {
                         for index in 0..3 {
-                            average[index] += sample[index] / CALIBRATION_SAMPLES as f64;
+                            average[index] += sample[index] / source.len() as f64;
                         }
                     }
                     self.neutral = Some(average);
@@ -107,6 +177,12 @@ impl HeadOrientation {
                 return None;
             }
         };
+        // Foreign-bud frames carry a different, independently drifting
+        // reference; accepting one would jump the attitude by tens of degrees
+        // and back on the next frame of the locked stream.
+        if self.stream_subtype != Some(self.last_subtype) {
+            return None;
+        }
 
         // LibrePods' measured AirPods sensor mapping. SDA currently renders yaw
         // only, but retaining pitch makes the helper protocol future-proof.
@@ -134,9 +210,9 @@ impl HeadOrientation {
 
     fn unwrap_values(&mut self, raw: [i16; 3]) -> Option<[f64; 3]> {
         let Some(previous) = self.previous_raw else {
-            self.unwrapped = raw.map(i64::from);
+            self.unwrapped = raw.map(|value| value as f64);
             self.previous_raw = Some(raw);
-            return Some(raw.map(|value| value as f64));
+            return Some(self.unwrapped);
         };
 
         // Fold each cyclic delta into (−32000, 32000] so a move across the
@@ -167,10 +243,36 @@ impl HeadOrientation {
         }
         self.unwrap_rejects = 0;
         self.previous_raw = Some(raw);
-        for index in 0..3 {
-            self.unwrapped[index] += folded[index];
+        // While the stationary lock holds, learn the per-frame gyro bias and
+        // cancel it from the accumulated angle so the attitude does not
+        // random-walk away with the sensor's integrated drift.
+        if self.bias_learning {
+            for axis in 0..2 {
+                self.bias[axis] += BIAS_LEARN_RATE * (folded[axis + 1] as f64 - self.bias[axis]);
+            }
         }
-        Some(self.unwrapped.map(|value| value as f64))
+        for index in 0..3 {
+            let bias = if (1..3).contains(&index) { self.bias[index - 1] } else { 0.0 };
+            // Only what was eaten while the lock firmly held counts as owed:
+            // during unlocked motion the subtraction is legitimate drift
+            // cancellation, not something a motion confirmation should undo.
+            if index >= 1 && self.bias_learning {
+                self.bias_applied_total[index - 1] += bias;
+            }
+            self.unwrapped[index] += folded[index] as f64 - bias;
+        }
+        Some(self.unwrapped)
+    }
+
+    /// Discard the drift estimate and give everything it subtracted back to
+    /// the accumulator, so a suspected real motion resumes from where the
+    /// attitude truly is.
+    fn reset_bias_owing(&mut self) {
+        for axis in 0..2 {
+            self.unwrapped[axis + 1] += self.bias_applied_total[axis];
+        }
+        self.bias_applied_total = [0.0; 2];
+        self.bias = [0.0; 2];
     }
 
     fn filter_orientation(&mut self, orientation: [f64; 2]) -> [f64; 2] {
@@ -210,6 +312,12 @@ impl HeadOrientation {
                     self.slewing_discontinuity = false;
                 }
             } else if displacement >= DISCONTINUITY_RADIANS {
+                if self.pending_discontinuity.is_none() {
+                    // Real motion is suspected: give back everything the bias
+                    // estimate ate since it was last reset and relearn from
+                    // zero once the movement is confirmed.
+                    self.reset_bias_owing();
+                }
                 let pending =
                     update_motion_candidate(previous, filtered, self.pending_discontinuity);
                 let confirmed = pending.motion_samples >= DISCONTINUITY_MOTION_CONFIRM_SAMPLES
@@ -222,6 +330,10 @@ impl HeadOrientation {
                 self.pending_stationary_release = None;
                 self.locked_orientation = None;
                 self.stationary_samples.clear();
+                // The attitude just jumped: relearn from zero (the owed bias
+                // was already given back when the suspicion first arose).
+                self.bias = [0.0; 2];
+                self.bias_applied_total = [0.0; 2];
                 self.slewing_discontinuity = true;
                 filtered = limit_orientation_step(
                     previous,
@@ -232,6 +344,14 @@ impl HeadOrientation {
                 self.pending_discontinuity = None;
             }
         }
+
+        // While the stationary lock holds, learn the per-frame gyro bias; the
+        // flag must be set before the lock-hold early returns below. Learning
+        // pauses while any motion is pending: until the discontinuity logic
+        // confirms the movement is real, chasing it would corrupt the bias.
+        self.bias_learning = self.locked_orientation.is_some()
+            && self.pending_discontinuity.is_none()
+            && self.pending_stationary_release.is_none();
 
         // A fixed Windows PC has no second IMU to cancel headphone drift. Hold
         // a proven-stationary pose until displacement exceeds a deliberate
@@ -391,9 +511,13 @@ mod tests {
     use super::*;
 
     fn packet(o1: i16, o2: i16, o3: i16) -> Vec<u8> {
+        packet_with_subtype(0x44, o1, o2, o3)
+    }
+
+    fn packet_with_subtype(subtype: u8, o1: i16, o2: i16, o3: i16) -> Vec<u8> {
         let mut packet = vec![0; 72];
         packet[..HEAD_TRACKING_PREFIX.len()].copy_from_slice(&HEAD_TRACKING_PREFIX);
-        packet[10] = 0x44;
+        packet[10] = subtype;
         for (offset, value) in [(43, o1), (45, o2), (47, o3)] {
             packet[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
         }
@@ -572,29 +696,54 @@ mod tests {
     }
 
     #[test]
-    fn holds_slow_stationary_drift_but_releases_an_intentional_turn() {
+    fn estimates_and_cancels_slow_stationary_drift() {
+        // The AirPods report gyro-integrated relative angles: sitting still,
+        // the raw value creeps in one direction. The stationary lock used to
+        // follow that drift once it crossed the release threshold, which
+        // random-walked the attitude away over minutes. The learned per-frame
+        // bias must cancel it instead.
         let mut tracker = HeadOrientation::default();
         for _ in 0..CALIBRATION_SAMPLES {
             tracker.process_packet(&packet(19_000, 1_000, 1_000));
         }
 
-        for step in 1..=20 {
+        for step in 1..=60 {
             let drift = tracker
                 .process_packet(&packet(19_000, 1_000 + step * 10, 1_000 - step * 10))
                 .unwrap();
             assert!(
-                drift.z.abs() < 1e-12,
-                "stationary drift escaped at step {step}"
+                drift.z.abs() < 0.01,
+                "slow drift escaped at step {step}: z={}",
+                drift.z
             );
         }
+    }
 
-        let mut turned = None;
-        for step in 21..=40 {
-            turned = tracker.process_packet(&packet(19_000, 1_000 + step * 10, 1_000 - step * 10));
+    #[test]
+    fn ignores_the_other_bud_stream_after_calibration() {
+        // Both buds notify motion with independent reference frames; frames
+        // from the non-calibration stream must vanish entirely.
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..8 {
+            tracker.process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000));
         }
+        for _ in 0..2 {
+            tracker.process_packet(&packet_with_subtype(0x44, 19_000, 9_000, -7_000));
+        }
+        assert!(tracker.calibrated());
+
+        let baseline = tracker
+            .process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000))
+            .unwrap();
+        assert!(tracker
+            .process_packet(&packet_with_subtype(0x44, 19_000, 30_000, -30_000))
+            .is_none());
+        let after = tracker
+            .process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000))
+            .unwrap();
         assert!(
-            turned.unwrap().z.abs() > 0.01,
-            "intentional slow turn stayed locked"
+            (after.z - baseline.z).abs() < 1e-12 && (after.w - baseline.w).abs() < 1e-12,
+            "foreign-bud frame moved the attitude: {after:?}"
         );
     }
 

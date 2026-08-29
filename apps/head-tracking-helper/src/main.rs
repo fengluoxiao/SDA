@@ -118,6 +118,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
     let mut orientation = HeadOrientation::default();
     let mut sequence = 0_u64;
     let mut takeover_pending = false;
+    // SDA_HEAD_TRACKING_DEBUG=1: per-frame raw sensor state on stderr,
+    // forwarded to the Electron console by the desktop shell in dev.
+    let debug_frames = std::env::var("SDA_HEAD_TRACKING_DEBUG").map(|v| v == "1").unwrap_or(false);
 
     loop {
         match poll_control(&controls, &mut orientation, session)? {
@@ -357,6 +360,9 @@ fn tracking_loop(session: &str, controls: Receiver<Control>) -> Result<(), Strin
                     let was_calibrated = orientation.calibrated();
                     if let Some(value) = orientation.process_packet(&packet[..length]) {
                         sequence = sequence.saturating_add(1);
+                        if debug_frames {
+                            eprintln!("{}", orientation.debug_state());
+                        }
                         emit(&Pose {
                             kind: "pose",
                             protocol: PROTOCOL_VERSION,

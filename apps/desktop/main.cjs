@@ -428,7 +428,15 @@ function startHeadTracking() {
   }
   headTrackingHelper.stdout.setEncoding("utf8");
   headTrackingHelper.stdout.on("data", consumeHeadTrackingOutput);
-  headTrackingHelper.stderr.on("data", () => {});
+  headTrackingHelper.stderr.setEncoding("utf8");
+  headTrackingHelper.stderr.on("data", (chunk) => {
+    // Helper diagnostics are env-gated (SDA_HEAD_TRACKING_DEBUG=1); forward
+    // them to the Electron console in dev so reproduction logs are readable.
+    if (!isDev) return;
+    for (const line of chunk.split(/\r?\n/)) {
+      if (line) console.log("[SDA helper]", line);
+    }
+  });
   headTrackingHelper.stdin.once("error", () => {
     if (headTrackingHelper) stopHeadTracking(true, "helper 命令通道失败");
   });
