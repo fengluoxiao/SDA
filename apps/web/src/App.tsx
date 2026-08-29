@@ -127,8 +127,7 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
-function telemetryPolyline(
-  samples: readonly HeadTrackingTelemetrySample[],
+function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
   axis: "x" | "y" | "z",
   scale: number,
 ): string {
@@ -182,6 +181,12 @@ function HeadTrackingTelemetryPanel({ samples }: { samples: readonly HeadTrackin
       </dl>
     </div>
   );
+}
+
+/** Cache key for a track's measured BS.1770-4 loudness (volume balance for
+ *  metadata-less content such as ALAC). */
+function measuredLoudnessStorageKey(info: { title?: string; channels: number; sampleRate: number }): string {
+  return `sda-measured-lufs:${info.title ?? "track"}:${info.channels}:${info.sampleRate}`;
 }
 
 try {
@@ -277,6 +282,8 @@ export function App() {
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
   const fileNameRef = useRef<string | null>(null);
+  /** 当前曲目的实测响度缓存键（音量平衡用于无元数据内容）。 */
+  const measuredLoudnessKeyRef = useRef<string | null>(null);
   /** A monotonically increasing token makes the most recent play request win. */
   const playRequestRef = useRef(0);
   const playlistItemSerialRef = useRef(0);
@@ -302,6 +309,8 @@ export function App() {
       isCurrent: () => boolean,
       playbackPlaylistRevision: number,
     ) => {
+      // Assigned right after construction; worker callbacks fire later (async).
+      let createdPlayer: SdaPlayer | null = null;
       const player = new SdaPlayer({
         onOutputLatencyRecommendation: (seconds) => {
           if (!isCurrent()) return;
@@ -317,6 +326,24 @@ export function App() {
           coverUrlRef.current = coverUrl ?? null;
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
+          // Feed the persisted measurement so balance applies from sample 0.
+          const key = measuredLoudnessStorageKey(t);
+          measuredLoudnessKeyRef.current = key;
+          try {
+            const cached = Number(localStorage.getItem(key));
+            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached) ? cached : null);
+          } catch {
+            createdPlayer?.setMeasuredLoudness(null);
+          }
+        },
+        onMeasuredLoudness: (integratedLufs) => {
+          const key = measuredLoudnessKeyRef.current;
+          if (!isCurrent() || !key) return;
+          try {
+            localStorage.setItem(key, String(integratedLufs));
+          } catch {
+            // Persistence failures must not affect playback.
+          }
         },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => {
           if (isCurrent()) setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels });
@@ -391,6 +418,7 @@ export function App() {
           updateHz: 120,
         },
       });
+      createdPlayer = player;
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = lid === "auto"
         ? (labels: readonly string[], hasDynamics: boolean) => {
@@ -1068,7 +1096,7 @@ export function App() {
             </div>
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
-              <label className="settings-switch" title="Dolby 对话归一化（dialnorm，ETSI TS 102 366 / ATSC A/52）：把节目对白响度对齐到 -31 LUFS 参考，只衰减过响的节目（dialnorm ≤ 31 故增益恒 ≤ 0 dB），不启用 DRC 动态范围压缩。作用于双耳与立体声输出；无响度元数据的码流不受影响。">
+              <label className="settings-switch" title="Dolby 对话归一化（dialnorm，ETSI TS 102 366 / ATSC A/52）：把节目对白响度对齐到 -31 LUFS 参考，只衰减过响的节目（dialnorm ≤ 31 故增益恒 ≤ 0 dB），不启用 DRC 动态范围压缩。作用于双耳与立体声输出。无响度元数据的节目（ALAC/立体声 PCM 等）按 BS.1770-4 实测综合响度平衡到 -18 LKFS（杜比 Atmos 音乐交付目标），同样只衰减。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"

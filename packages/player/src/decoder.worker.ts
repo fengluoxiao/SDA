@@ -12,6 +12,7 @@
 import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
 import { createDemuxer, sniffContainer, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
 import { canCoalesceObjectEvent } from "./control.js";
+import { LoudnessMeter } from "./bs1770.js";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -22,6 +23,8 @@ declare const self: {
 let decoder: SdaDecoder | null = null;
 let demuxer: Demuxer | null = null;
 let decoderConfigurationError: string | null = null;
+let loudnessMeter: LoudnessMeter | null = null;
+let loudnessPostCounter = 0;
 const lastObjectTargets = new Map<number, ObjectEvent>();
 
 function compactObjectEvents(frame: DecodedFrameData): void {
@@ -42,6 +45,13 @@ function compactObjectEvents(frame: DecodedFrameData): void {
 
 function postFrame(frame: DecodedFrameData): void {
   compactObjectEvents(frame);
+  // BS.1770-4 measurement for content without codec loudness metadata (e.g.
+  // ALAC/stereo). Attached on a subset of frames to bound message overhead.
+  if (frame.channels[0]?.length) {
+    loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
+    loudnessMeter.push(frame.channels);
+    if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
+  }
   self.postMessage(
     { type: "frame", frame },
     frame.channels.map((c) => c.buffer),
@@ -71,6 +81,8 @@ self.onmessage = async (e: MessageEvent) => {
     }
     case "open": {
       decoder?.free();
+      loudnessMeter = null;
+      loudnessPostCounter = 0;
       // Keep the existing immediate decoder for raw and legacy MP4 streams.
       // ALAC replaces it in onTrack before MP4Box starts delivering packets,
       // because only the discovered track carries its required codec cookie.
@@ -98,6 +110,8 @@ self.onmessage = async (e: MessageEvent) => {
                 decoder?.free();
                 decoder = SdaDecoder.withConfig("alac", t.decoderConfig);
                 decoderConfigurationError = null;
+                loudnessMeter = null;
+                loudnessPostCounter = 0;
               } catch (error) {
                 decoder?.free();
                 decoder = null;

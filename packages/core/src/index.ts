@@ -48,6 +48,14 @@ export interface ProgramLoudnessMetadata {
   gainDb: number;
 }
 
+/** Incremental BS.1770-4 measurement attached to frames by the decoder worker. */
+export interface FrameLoudness {
+  /** Gated integrated loudness in LUFS, or null while nothing passes the absolute gate. */
+  integratedLufs: number | null;
+  /** Completed 400 ms blocks above the absolute gate. */
+  blocks: number;
+}
+
 export interface DecodedFrameData {
   codec: string;
   sampleRate: number;
@@ -60,6 +68,8 @@ export interface DecodedFrameData {
   objectChannels: ObjectChannelDecl[];
   programLoudness: ProgramLoudnessMetadata | null;
   rampDuration: number;
+  /** Running BS.1770-4 measurement; present on a subset of frames. */
+  loudness?: FrameLoudness;
 }
 
 let initPromise: Promise<unknown> | null = null;
