@@ -156,10 +156,29 @@ export function binauralEqHeadroomDb(bands: BinauralEqBands, sampleRate = 48000)
   return maxBoostDb > 1e-6 ? -maxBoostDb - 0.2 : 0;
 }
 
+/**
+ * Stereo (Lo/Ro) downmix per Dolby's documented coefficients:
+ *   Lo = L + (−3 dB × C) + (−3 dB × Ls), mirrored for Ro.
+ * Direct L/R stay at unity; wides, surrounds, rears and height speakers fold
+ * at −3 dB into their ear-level side; LFE enters both channels at −10 dB (the
+ * reciprocal of bass management's +10 dB). Coincident-channel peaks are left
+ * to the shared output peak guard instead of a blanket trim, so stereo keeps
+ * the program's native level.
+ */
+const STEREO_DOWNMIX_DB = -3;
+const STEREO_DOWNMIX_LFE_DB = -10;
+const STEREO_DOWNMIX_SIDE = Math.pow(10, STEREO_DOWNMIX_DB / 20);
+const STEREO_DOWNMIX_LFE = Math.pow(10, STEREO_DOWNMIX_LFE_DB / 20);
+
 export function stereoDownmixGains(speaker: Pick<VirtualSpeaker, "azimuth" | "isLfe">): [number, number] {
-  if (speaker.isLfe) return [0.25 * 0.7, 0.25 * 0.7];
-  const pan = Math.sin((speaker.azimuth * Math.PI) / 180);
-  return [Math.sqrt((1 + pan) / 2) * 0.7, Math.sqrt((1 - pan) / 2) * 0.7];
+  if (speaker.isLfe) return [STEREO_DOWNMIX_LFE, STEREO_DOWNMIX_LFE];
+  const azimuth = speaker.azimuth;
+  // Center and rear/top-center speakers feed both channels at −3 dB.
+  if (Math.abs(azimuth) < 1 || Math.abs(azimuth) >= 179) return [STEREO_DOWNMIX_SIDE, STEREO_DOWNMIX_SIDE];
+  // Main L/R pairs (±30) are the downmix carriers and stay at unity.
+  if (Math.abs(azimuth) <= 40) return azimuth > 0 ? [1, 0] : [0, 1];
+  // Wides, surrounds, rears and heights fold at −3 dB into their own side.
+  return azimuth > 0 ? [STEREO_DOWNMIX_SIDE, 0] : [0, STEREO_DOWNMIX_SIDE];
 }
 
 export function virtualLayoutForOutput(
