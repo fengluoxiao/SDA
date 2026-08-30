@@ -1,7 +1,8 @@
 //! Offline field replay: feeds a captured raw sensor stream (sub-type + three
 //! i16 values per frame, extracted from SDA_HEAD_TRACKING_DEBUG=1 logs) through
-//! the production HeadOrientation pipeline and reports per-session wander.
-//! Data lives outside the repo; run with SDA_REPLAY_STREAM=<path>.
+//! the production HeadOrientation pipeline and measures the output excursion
+//! inside device-still windows. Data lives outside the repo; run with
+//! SDA_REPLAY_STREAM=<path>.
 
 use std::env;
 use std::fs;
@@ -31,10 +32,9 @@ fn frame(subtype: u8, o1: i16, o2: i16, o3: i16) -> Vec<u8> {
     packet
 }
 
-fn attitude_degrees(o: &Orientation) -> (f64, f64) {
-    let yaw = (o.z.atan2(o.w) * 2.0).to_degrees();
-    let pitch = (o.x.atan2(o.w) * 2.0).to_degrees();
-    (yaw, pitch)
+fn attitude_angle(from: &Orientation, to: &Orientation) -> f64 {
+    let dot = (from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w).abs().min(1.0);
+    2.0 * dot.acos().to_degrees()
 }
 
 #[test]
@@ -47,69 +47,64 @@ fn replay_captured_stream() {
         }
     };
     assert!(Path::new(&path).exists(), "replay stream missing: {path}");
+
+    // raw_log[session] = [(local_frame, v2, v3)]
+    let mut raw_log: Vec<Vec<(usize, i16, i16)>> = vec![Vec::new()];
+    let mut poses: Vec<Vec<(usize, Orientation)>> = vec![Vec::new()];
     let mut tracker = HeadOrientation::default();
-    let mut session = 0usize;
-    let mut frames = 0usize;
-    let mut poses: Vec<(usize, usize, f64, f64)> = Vec::new();
     for line in fs::read_to_string(&path).unwrap().lines() {
         if line == "S" {
             tracker.begin_transport_session();
-            session += 1;
-            frames = 0;
+            raw_log.push(Vec::new());
+            poses.push(Vec::new());
             continue;
         }
         let mut parts = line.split_whitespace();
         assert_eq!(parts.next(), Some("F"));
         let subtype = u8::from_str_radix(parts.next().unwrap().trim_start_matches("0x"), 16).unwrap();
         let raw: Vec<i16> = parts.map(|p| p.parse().unwrap()).collect();
-        let attitude = tracker.process_packet(&frame(subtype, raw[0], raw[1], raw[2]));
-        frames += 1;
-        if let Some(o) = attitude {
-            let (yaw, pitch) = attitude_degrees(&o);
-            poses.push((session, frames, yaw, pitch));
+        let session = raw_log.len() - 1;
+        let local = raw_log[session].len();
+        raw_log[session].push((local, raw[1], raw[2]));
+        if let Some(o) = tracker.process_packet(&frame(subtype, raw[0], raw[1], raw[2])) {
+            poses[session].push((local, o));
         }
     }
 
-    // Per-session wander report plus the worst still-window excursion.
-    let mut sessions: Vec<usize> = poses.iter().map(|p| p.0).collect();
-    sessions.dedup();
-    for session in sessions {
-        let rows: Vec<&(usize, usize, f64, f64)> = poses.iter().filter(|p| p.0 == session).collect();
-        let (mut yaw_min, mut yaw_max) = (f64::INFINITY, f64::NEG_INFINITY);
-        let (mut pitch_min, mut pitch_max) = (f64::INFINITY, f64::NEG_INFINITY);
-        for row in &rows {
-            yaw_min = yaw_min.min(row.2);
-            yaw_max = yaw_max.max(row.2);
-            pitch_min = pitch_min.min(row.3);
-            pitch_max = pitch_max.max(row.3);
+    for (session, raws) in raw_log.iter().enumerate() {
+        if raws.len() < 10 {
+            continue;
         }
-        println!(
-            "session {session}: {} frames, yaw range {:.2}..{:.2} (span {:.2}), pitch range {:.2}..{:.2} (span {:.2})",
-            rows.len(),
-            yaw_min, yaw_max, yaw_max - yaw_min,
-            pitch_min, pitch_max, pitch_max - pitch_min,
-        );
-
-        // Still windows: >= 300 frames where consecutive pose steps are all
-        // below 0.5 deg. Report the worst total excursion inside one.
-        let mut worst: f64 = 0.0;
-        let mut window_start = 0;
-        for i in 1..rows.len() {
-            let step = ((rows[i].2 - rows[i - 1].2).abs()).max((rows[i].3 - rows[i - 1].3).abs());
-            if step >= 0.5 || i == rows.len() - 1 {
-                let length = i - window_start;
-                if length >= 300 {
-                    let seg = &rows[window_start..i];
-                    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-                    for row in seg {
-                        lo = lo.min(row.2);
-                        hi = hi.max(row.2);
-                    }
-                    worst = worst.max(hi - lo);
+        // Device-still windows: |Δv2| and |Δv3| < 30 counts for >= 900 frames.
+        let mut windows: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0usize;
+        for i in 1..raws.len() {
+            let still = (raws[i].1 as i32 - raws[i - 1].1 as i32).abs() < 30
+                && (raws[i].2 as i32 - raws[i - 1].2 as i32).abs() < 30;
+            if !still {
+                if i - start >= 900 {
+                    windows.push((raws[start].0, raws[i - 1].0));
                 }
-                window_start = i;
+                start = i;
             }
         }
-        println!("session {session}: worst still-window yaw excursion {worst:.2} deg");
+        let mut worst: f64 = 0.0;
+        let session_poses = &poses[session];
+        for (begin, end) in &windows {
+            let begin_pose = session_poses.iter().position(|(local, _)| local >= begin);
+            let end_pose = session_poses.iter().rposition(|(local, _)| local <= end);
+            if let (Some(b), Some(e)) = (begin_pose, end_pose) {
+                if e > b {
+                    worst = worst.max(attitude_angle(&session_poses[b].1, &session_poses[e].1));
+                }
+            }
+        }
+        println!(
+            "session {session}: {} frames, {} poses, {} still windows (>=30s), worst still excursion {:.2} deg",
+            raws.len(),
+            session_poses.len(),
+            windows.len(),
+            worst,
+        );
     }
 }
