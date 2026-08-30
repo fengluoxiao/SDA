@@ -62,6 +62,11 @@ const REAL_MOTION_SPEED_DEG_PER_S = 30;
  *  target is clamped and real-motion marking stops so the anchor ease can
  *  pull the image home instead of holding an impossible turn. */
 const ANATOMICAL_LIMIT_DEGREES = 120;
+/** The front "safe zone": within this of the recentered anchor and with no
+ *  recent deliberate turn, the target snaps to the exact anchor — small
+ *  wiggles, jaw motion and sensor tremor do not move the image at all, the
+ *  same guarded feel Apple's fused implementation has. */
+const ANCHOR_ZONE_DEGREES = 15;
 
 type Vec3 = readonly [number, number, number];
 
@@ -198,12 +203,17 @@ export class HeadPoseTracker {
       const stepQuat = multiplyQuaternion(invertQuaternion(this.acceptedProviderOrientation), target);
       // The step's angle lives in the quaternion's real part: |q| is always 1.
       const stepAngle = 2 * Math.acos(Math.min(1, Math.abs(stepQuat[3])));
+      // Deliberate-turn speed is measured between consecutive provider
+      // samples. The accepted reference goes stale while the ease pulls the
+      // target away, and the gap then reads as phantom fast motion.
+      const speedQuat = multiplyQuaternion(invertQuaternion(this.providerOrientation), target);
+      const speedAngle = 2 * Math.acos(Math.min(1, Math.abs(speedQuat[3])));
       const providerS = Math.max(1, nowMs - this.providerMs) / 1000;
       // Real turns mark motion only while the attitude stays within the
       // anatomical limit (with hysteresis so a clamped target cannot flip-flop
       // the hold); an artifact pinned at the limit must not keep refreshing
       // the hold, or the anchor ease could never resume.
-      if (stepAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S
+      if (speedAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S
         && this.anchorAngleOf(this.targetOrientation) < (ANATOMICAL_LIMIT_DEGREES - 2) * Math.PI / 180) {
         this.lastRealMotionMs = nowMs;
       }
@@ -243,7 +253,11 @@ export class HeadPoseTracker {
         + this.targetOrientation[3] * this.anchorOrientation[3],
       ));
       const anchorAngle = 2 * Math.acos(anchorDot);
-      if (anchorAngle > 1e-8) {
+      // Inside the front safe zone, hold the exact anchor: small wiggles and
+      // jaw-driven bud rotation never move the image at all.
+      if (anchorAngle < ANCHOR_ZONE_DEGREES * Math.PI / 180) {
+        this.targetOrientation = this.anchorOrientation;
+      } else if (anchorAngle > 1e-8) {
         const easeT = Math.min(1, ANCHOR_EASE_DEGREES_PER_SECOND * Math.PI / 180 * elapsedMs / 1000 / anchorAngle);
         this.targetOrientation = slerp(this.targetOrientation, this.anchorOrientation, easeT);
       }

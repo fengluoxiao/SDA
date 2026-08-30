@@ -201,4 +201,28 @@ assert.ok(
   `pinned artifact should ease back after the hold, got ${afterCapHold.azimuth.toFixed(1)}°`,
 );
 
+// Front safe zone: within 15° of the anchor and no recent deliberate turn,
+// small wiggles hold the exact anchor; a deliberate turn still breaks out
+// and tracks immediately.
+const zoned = new HeadPoseTracker({ smoothingMs: 0, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.1 });
+assert.equal(zoned.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+assert.equal(zoned.recenter(), true);
+for (let frame = 0; frame < 300; frame++) {
+  const nowMs = 100 + frame * 33;
+  // Slow wobble: ±8° sinusoid — provider rate stays below the real-turn bar.
+  const wobble = 8 * Math.sin((2 * Math.PI * frame) / 60);
+  assert.equal(zoned.set({ orientation: yaw(wobble), timestampMs: nowMs }, nowMs), true, `wobble frame ${frame} rejected`);
+}
+close(
+  zoned.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 100 + 300 * 33).azimuth,
+  0,
+  "front safe zone holds the anchor through small wiggles",
+);
+assert.equal(zoned.set({ orientation: yaw(40), timestampMs: 11000 }, 11000), true);
+const breakout = zoned.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 11001);
+assert.ok(
+  Math.abs(breakout.azimuth + 40) < 6,
+  `deliberate turn breaks out of the zone immediately, got ${breakout.azimuth.toFixed(1)}°`,
+);
+
 console.log("head pose tests: OK");
