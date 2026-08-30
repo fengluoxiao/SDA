@@ -172,4 +172,33 @@ assert.ok(
   `ease-back should resume after the hold, got ${afterHold.azimuth.toFixed(1)}°`,
 );
 
+// Anatomical cap: a sustained ramp past the neck's range must clamp at the
+// limit instead of winding to an impossible attitude, and once pinned the
+// hold expires so the anchor ease can pull the image home.
+const capped = new HeadPoseTracker({ smoothingMs: 0, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.1 });
+assert.equal(capped.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+assert.equal(capped.recenter(), true);
+for (let frame = 0; frame <= 60; frame++) {
+  const nowMs = 100 + frame * 33;
+  assert.equal(
+    capped.set({ orientation: yaw(frame * 5), timestampMs: nowMs }, nowMs),
+    true,
+    `ramp frame ${frame} rejected`,
+  );
+}
+const atLimit = capped.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 100 + 60 * 33);
+assert.ok(
+  Math.abs(atLimit.azimuth + 120) < 6,
+  `attitude beyond the neck limit should clamp at 120°, got ${atLimit.azimuth.toFixed(1)}°`,
+);
+for (let frame = 61; frame <= 400; frame++) {
+  const nowMs = 100 + frame * 33;
+  assert.equal(capped.set({ orientation: yaw(300), timestampMs: nowMs }, nowMs), true, `pinned frame ${frame} rejected`);
+}
+const afterCapHold = capped.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 100 + 400 * 33);
+assert.ok(
+  Math.abs(afterCapHold.azimuth) < 112,
+  `pinned artifact should ease back after the hold, got ${afterCapHold.azimuth.toFixed(1)}°`,
+);
+
 console.log("head pose tests: OK");

@@ -57,6 +57,11 @@ const ANCHOR_EASE_DEGREES_PER_SECOND = 2.5;
 const REAL_MOTION_HOLD_MS = 8000;
 /** Angular speed above which a pose change counts as a deliberate turn. */
 const REAL_MOTION_SPEED_DEG_PER_S = 30;
+/** The neck cannot yaw past ~±90°; any attitude beyond this from the
+ *  recentered front is a device/fit artifact, not a head pose. Beyond it the
+ *  target is clamped and real-motion marking stops so the anchor ease can
+ *  pull the image home instead of holding an impossible turn. */
+const ANATOMICAL_LIMIT_DEGREES = 120;
 
 type Vec3 = readonly [number, number, number];
 
@@ -194,7 +199,12 @@ export class HeadPoseTracker {
       // The step's angle lives in the quaternion's real part: |q| is always 1.
       const stepAngle = 2 * Math.acos(Math.min(1, Math.abs(stepQuat[3])));
       const providerS = Math.max(1, nowMs - this.providerMs) / 1000;
-      if (stepAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S) {
+      // Real turns mark motion only while the attitude stays within the
+      // anatomical limit (with hysteresis so a clamped target cannot flip-flop
+      // the hold); an artifact pinned at the limit must not keep refreshing
+      // the hold, or the anchor ease could never resume.
+      if (stepAngle / providerS * 180 / Math.PI > REAL_MOTION_SPEED_DEG_PER_S
+        && this.anchorAngleOf(this.targetOrientation) < (ANATOMICAL_LIMIT_DEGREES - 2) * Math.PI / 180) {
         this.lastRealMotionMs = nowMs;
       }
       const candidateQuat = multiplyQuaternion(invertQuaternion(this.targetOrientation), target);
@@ -238,6 +248,31 @@ export class HeadPoseTracker {
         this.targetOrientation = slerp(this.targetOrientation, this.anchorOrientation, easeT);
       }
     }
+    // Anatomical cap: the neck cannot yaw past ~±90°, so any attitude beyond
+    // the limit from the recentered front is a device/fit artifact, not a
+    // head pose. Clamp the target to the boundary.
+    const limitRad = ANATOMICAL_LIMIT_DEGREES * Math.PI / 180;
+    const limitDot = Math.min(1, Math.abs(
+      this.targetOrientation[0] * this.anchorOrientation[0]
+      + this.targetOrientation[1] * this.anchorOrientation[1]
+      + this.targetOrientation[2] * this.anchorOrientation[2]
+      + this.targetOrientation[3] * this.anchorOrientation[3],
+    ));
+    const limitAngle = 2 * Math.acos(limitDot);
+    if (limitAngle > limitRad) {
+      this.targetOrientation = slerp(this.anchorOrientation, this.targetOrientation, limitRad / limitAngle);
+    }
+  }
+
+  /** Angle of a quaternion from the anchor, in radians. */
+  private anchorAngleOf(q: Quaternion): number {
+    const dot = Math.min(1, Math.abs(
+      q[0] * this.anchorOrientation[0]
+      + q[1] * this.anchorOrientation[1]
+      + q[2] * this.anchorOrientation[2]
+      + q[3] * this.anchorOrientation[3],
+    ));
+    return 2 * Math.acos(dot);
   }
 
   clear(): boolean {
