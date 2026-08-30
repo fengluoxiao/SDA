@@ -225,4 +225,32 @@ assert.ok(
   `deliberate turn breaks out of the zone immediately, got ${breakout.azimuth.toFixed(1)}°`,
 );
 
+// Kalman yaw filter (engaged when smoothing is on): provider noise is
+// down-weighted while a real step is tracked quickly.
+const kalmanSmooth = new HeadPoseTracker({ smoothingMs: 220, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.1 });
+assert.equal(kalmanSmooth.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+for (let frame = 0; frame < 30; frame++) {
+  const nowMs = 100 + frame * 33;
+  const noisy = 30 + (frame % 2 === 0 ? 2 : -2);
+  assert.equal(kalmanSmooth.set({ orientation: yaw(noisy), timestampMs: nowMs }, nowMs), true, `noise frame ${frame} rejected`);
+}
+const smoothed = kalmanSmooth.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 100 + 30 * 33);
+assert.ok(
+  Math.abs(smoothed.azimuth + 30) < 1.5,
+  `Kalman should suppress ±2° provider noise, got ${smoothed.azimuth.toFixed(2)}°`,
+);
+
+const kalmanFast = new HeadPoseTracker({ smoothingMs: 220, maxDegreesPerSecond: 1e9, deadZoneDegrees: 0.1 });
+assert.equal(kalmanFast.set({ orientation: yaw(0), timestampMs: 0 }, 0), true);
+assert.equal(kalmanFast.set({ orientation: yaw(90), timestampMs: 500 }, 500), true);
+for (let frame = 0; frame < 18; frame++) {
+  const nowMs = 533 + frame * 33;
+  assert.equal(kalmanFast.set({ orientation: yaw(90), timestampMs: nowMs }, nowMs), true, `turn frame ${frame} rejected`);
+}
+const tracked = kalmanFast.headRelative({ azimuth: 0, elevation: 0, distance: 1 }, 1100);
+assert.ok(
+  Math.abs(tracked.azimuth + 90) < 10,
+  `Kalman should track a 90° step within ~0.6 s, got ${tracked.azimuth.toFixed(1)}°`,
+);
+
 console.log("head pose tests: OK");

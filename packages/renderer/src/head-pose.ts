@@ -137,6 +137,63 @@ function scaleQuaternionAngle(q: Quaternion, scale: number): [number, number, nu
   return [x * axisScale, y * axisScale, z * axisScale, Math.cos(scaledHalfAngle)];
 }
 
+/**
+ * Scalar constant-velocity Kalman filter for the yaw channel (yaw angle +
+ * yaw rate, with a full covariance update). It replaces a fixed exponential
+ * smoother: provider samples get weighted by their estimated noise while the
+ * process model carries fast turns through the rate state, so tracking is
+ * both quicker on real turns and steadier at rest. Outlier samples inflate
+ * the measurement variance instead of kicking the estimate.
+ */
+class YawKalmanFilter {
+  private theta = 0;
+  private omega = 0;
+  private p00 = 1;
+  private p01 = 0;
+  private p11 = 1;
+  /** Rate random-walk intensity. With R below, the steady-state bandwidth is
+   *  ~(qRate/R)^(1/3) ≈ 1 Hz: provider sample noise averages out, while the
+   *  initial covariance spike still snaps onto real step turns. */
+  private readonly qRate = 0.5;
+  /** One provider sample's angular noise (~2.5°). */
+  private readonly rMeas = (2.5 * Math.PI / 180) ** 2;
+
+  reset(yawRadians: number): void {
+    this.theta = yawRadians;
+    this.omega = 0;
+    this.p00 = 1;
+    this.p01 = 0;
+    this.p11 = 1;
+  }
+
+  /** Filtered yaw in the continuous (unwrapped) domain. */
+  update(measurement: number, dtSeconds: number): number {
+    const dt = Math.min(0.1, Math.max(0.001, dtSeconds));
+    this.theta += this.omega * dt;
+    this.p00 += 2 * dt * this.p01 + dt * dt * this.p11 + (dt ** 3 / 3) * this.qRate;
+    this.p01 += dt * this.p11 + (dt * dt / 2) * this.qRate;
+    this.p11 += dt * this.qRate;
+
+    let innovation = measurement - this.theta;
+    innovation = Math.atan2(Math.sin(innovation), Math.cos(innovation));
+    // Outlier gating: a >4 sigma innovation is a burst, not a turn — measure
+    // it at 16x variance so it barely moves the estimate.
+    const variance = this.p00 + this.rMeas;
+    const r = innovation * innovation > 16 * variance ? this.rMeas * 16 : this.rMeas;
+    const s = this.p00 + r;
+    const k0 = this.p00 / s;
+    const k1 = this.p01 / s;
+    this.theta += k0 * innovation;
+    this.omega += k1 * innovation;
+    const p00 = this.p00;
+    const p01 = this.p01;
+    this.p00 = p00 - k0 * p00;
+    this.p01 = p01 - k0 * p01;
+    this.p11 = this.p11 - k1 * p01;
+    return this.theta;
+  }
+}
+
 /** Extract an ADM-up yaw quaternion. Positive yaw turns the head toward ADM left. */
 export function yawQuaternion(q: Quaternion): [number, number, number, number] {
   const forward = rotateAdmVector(q, [0, 1, 0]);
@@ -145,6 +202,11 @@ export function yawQuaternion(q: Quaternion): [number, number, number, number] {
   const yaw = Math.atan2(-forward[0], forward[1]);
   const z = Math.sin(yaw / 2);
   return [0, 0, z === 0 ? 0 : z, Math.cos(yaw / 2)];
+}
+
+/** Yaw angle of a yaw-only quaternion `[0, 0, z, w]`, in radians. */
+function quaternionYaw(q: Quaternion): number {
+  return 2 * Math.atan2(q[2], q[3]);
 }
 
 /** Pure pose state machine, intentionally usable in deterministic tests. */
@@ -163,6 +225,7 @@ export class HeadPoseTracker {
   private providerOrientation: [number, number, number, number] = [0, 0, 0, 1];
   private acceptedProviderOrientation: [number, number, number, number] = [0, 0, 0, 1];
   private providerMs = Number.NEGATIVE_INFINITY;
+  private readonly kalman = new YawKalmanFilter();
   private receivedAtMs = Number.NEGATIVE_INFINITY;
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private active = false;
@@ -191,6 +254,7 @@ export class HeadPoseTracker {
       this.providerOrientation = target;
       this.acceptedProviderOrientation = target;
       this.providerMs = nowMs;
+      this.kalman.reset(quaternionYaw(target));
       this.active = true;
       this.lastUpdateMs = nowMs;
       this.lastRealMotionMs = nowMs;
@@ -236,13 +300,27 @@ export class HeadPoseTracker {
     const elapsedMs = Math.max(0, nowMs - this.lastUpdateMs);
     this.lastUpdateMs = nowMs;
     if (elapsedMs <= 0) return;
-    const target = this.targetOrientation;
-    const dot = Math.min(1, Math.abs(this.orientation[0] * target[0] + this.orientation[1] * target[1] + this.orientation[2] * target[2] + this.orientation[3] * target[3]));
-    const angle = 2 * Math.acos(dot);
-    const rateLimit = this.options.maxDegreesPerSecond * Math.PI / 180 * elapsedMs / 1000;
-    const rateT = angle < 1e-8 ? 1 : Math.min(1, rateLimit / angle);
-    const smoothT = this.options.smoothingMs <= 0 ? 1 : 1 - Math.exp(-elapsedMs / this.options.smoothingMs);
-    this.orientation = slerp(this.orientation, target, Math.min(rateT, smoothT));
+    if (this.options.yawMode === "yaw" && this.options.smoothingMs > 0) {
+      // Kalman-filtered yaw chase: the filter carries a rate state through
+      // real turns and down-weights noisy samples; the rate limit still caps
+      // the applied step per advance.
+      const currentYaw = quaternionYaw(this.orientation);
+      const filteredYaw = this.kalman.update(quaternionYaw(this.targetOrientation), elapsedMs / 1000);
+      const maxStep = this.options.maxDegreesPerSecond * Math.PI / 180 * elapsedMs / 1000;
+      let step = filteredYaw - currentYaw;
+      step = Math.atan2(Math.sin(step), Math.cos(step));
+      const clamped = Math.abs(step) > maxStep ? Math.sign(step) * maxStep : step;
+      const nextYaw = currentYaw + clamped;
+      this.orientation = [0, 0, Math.sin(nextYaw / 2), Math.cos(nextYaw / 2)];
+    } else {
+      const target = this.targetOrientation;
+      const dot = Math.min(1, Math.abs(this.orientation[0] * target[0] + this.orientation[1] * target[1] + this.orientation[2] * target[2] + this.orientation[3] * target[3]));
+      const angle = 2 * Math.acos(dot);
+      const rateLimit = this.options.maxDegreesPerSecond * Math.PI / 180 * elapsedMs / 1000;
+      const rateT = angle < 1e-8 ? 1 : Math.min(1, rateLimit / angle);
+      const smoothT = this.options.smoothingMs <= 0 ? 1 : 1 - Math.exp(-elapsedMs / this.options.smoothingMs);
+      this.orientation = slerp(this.orientation, target, Math.min(rateT, smoothT));
+    }
     // Ease the target back toward the anchored front once no deliberate turn
     // has been seen for a while, so provider drift cannot walk the image away.
     if (nowMs - this.lastRealMotionMs > REAL_MOTION_HOLD_MS && this.targetOrientation !== this.anchorOrientation) {
@@ -299,6 +377,7 @@ export class HeadPoseTracker {
     this.providerOrientation = [0, 0, 0, 1];
     this.acceptedProviderOrientation = [0, 0, 0, 1];
     this.providerMs = Number.NEGATIVE_INFINITY;
+    this.kalman.reset(0);
     this.lastUpdateMs = Number.NEGATIVE_INFINITY;
     return changed;
   }
@@ -314,6 +393,7 @@ export class HeadPoseTracker {
     // so the ease cannot eat idle time the listener spent facing forward.
     this.anchorOrientation = this.targetOrientation;
     this.lastRealMotionMs = this.receivedAtMs;
+    this.kalman.reset(quaternionYaw(this.targetOrientation));
     return true;
   }
 
