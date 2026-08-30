@@ -22,6 +22,13 @@ const MAX_FRAME_DELTA_COUNTS: i64 = 6_000;
 /// Sustained rejection means the stream re-referenced or moved during a gap:
 /// realign the unwrap reference without accumulating, keeping the attitude.
 const UNWRAP_RESYNC_REJECTS: usize = 10;
+/// Calibration must measure one stable posture. A reference jump (playback
+/// start / A2DP reconfigure) inside the 10-sample window otherwise averages
+/// two different frames of reference and anchors the whole session wrongly —
+/// the observed "offset right from the first second". Restart the window when
+/// consecutive calibration samples jump by more than this (≈2°; still-head
+/// jitter is ~±20 counts).
+const CALIBRATION_MAX_STEP_COUNTS: f64 = 355.0;
 /// Rate of the stationary drift-bias estimate (counts/frame EMA while the
 /// stationary lock holds and no motion is pending; ~10 frame time constant at
 /// 30 Hz). The AirPods report gyro-integrated relative angles, so a fixed PC
@@ -54,8 +61,7 @@ struct PendingDiscontinuity {
 #[derive(Default)]
 pub struct HeadOrientation {
     samples: Vec<[f64; 3]>,
-    calibration_subtypes: Vec<u8>,
-    subtype_tally: [u32; 2],
+    calibration_subtype: Option<u8>,
     stream_subtype: Option<u8>,
     neutral: Option<[f64; 3]>,
     previous_raw: Option<[i16; 3]>,
@@ -85,8 +91,7 @@ impl HeadOrientation {
             .or(self.locked_orientation)
             .unwrap_or(self.continuity_origin);
         self.samples.clear();
-        self.calibration_subtypes.clear();
-        self.subtype_tally = [0; 2];
+        self.calibration_subtype = None;
         self.stream_subtype = None;
         self.neutral = None;
         self.previous_raw = None;
@@ -146,36 +151,30 @@ impl HeadOrientation {
         let neutral = match self.neutral {
             Some(neutral) => neutral,
             None => {
-                match self.last_subtype {
-                    0x44 => self.subtype_tally[0] += 1,
-                    0x45 => self.subtype_tally[1] += 1,
-                    _ => {}
+                // The window only ever holds one sub-type's samples: both
+                // buds notify with independent references, and mixing two
+                // streams' samples into one neutral poisons the anchor.
+                let window_subtype = *self.calibration_subtype.get_or_insert(self.last_subtype);
+                if self.last_subtype != window_subtype {
+                    return None;
                 }
-                self.calibration_subtypes.push(self.last_subtype);
+                // A reference jump inside the window would mix two frames of
+                // reference into the neutral average; restart the window until
+                // ten consecutive samples form one stable posture.
+                if let Some(previous) = self.samples.last() {
+                    let jumped = (1..3)
+                        .any(|index| (values[index] - previous[index]).abs() > CALIBRATION_MAX_STEP_COUNTS);
+                    if jumped {
+                        self.samples.clear();
+                    }
+                }
                 self.samples.push(values);
                 if self.samples.len() == CALIBRATION_SAMPLES {
-                    // Both buds notify motion with their own sub-type and
-                    // independent reference frames; lock onto whichever
-                    // dominated calibration, average only that stream's
-                    // samples, and ignore the other stream afterwards.
-                    let dominant = if self.subtype_tally[1] > self.subtype_tally[0] { 0x45 } else { 0x44 };
-                    self.stream_subtype = Some(dominant);
-                    let dominant_samples: Vec<[f64; 3]> = self
-                        .samples
-                        .iter()
-                        .zip(self.calibration_subtypes.iter())
-                        .filter(|(_, subtype)| **subtype == dominant)
-                        .map(|(values, _)| *values)
-                        .collect();
-                    let source: &[[f64; 3]] = if dominant_samples.len() >= 3 {
-                        &dominant_samples
-                    } else {
-                        &self.samples
-                    };
+                    self.stream_subtype = Some(window_subtype);
                     let mut average = [0.0; 3];
-                    for sample in source {
+                    for sample in &self.samples {
                         for index in 0..3 {
-                            average[index] += sample[index] / source.len() as f64;
+                            average[index] += sample[index] / CALIBRATION_SAMPLES as f64;
                         }
                     }
                     self.neutral = Some(average);
@@ -747,11 +746,16 @@ mod tests {
         // Both buds notify motion with independent reference frames; frames
         // from the non-calibration stream must vanish entirely.
         let mut tracker = HeadOrientation::default();
+        // Foreign-bud frames are skipped during calibration as well, so the
+        // window needs ten same-stream samples.
         for _ in 0..8 {
             tracker.process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000));
         }
         for _ in 0..2 {
             tracker.process_packet(&packet_with_subtype(0x44, 19_000, 3_000, -1_000));
+        }
+        for _ in 0..2 {
+            tracker.process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000));
         }
         assert!(tracker.calibrated());
 
@@ -786,6 +790,28 @@ mod tests {
             tracker.bias[0].abs() <= BIAS_MAX_COUNTS && tracker.bias[1].abs() <= BIAS_MAX_COUNTS,
             "bias escaped the physical bound: {:?}",
             tracker.bias
+        );
+    }
+
+    #[test]
+    fn restarts_calibration_when_a_reference_jump_splits_the_window() {
+        let mut tracker = HeadOrientation::default();
+        // Six stable frames, then a reference jump under the unwrap gate,
+        // then ten stable frames on the new reference. The neutral must come
+        // from the post-jump posture, not a mixture of both.
+        for _ in 0..6 {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 6_000, 5_000));
+        }
+        assert!(tracker.calibrated());
+        let pose = tracker
+            .process_packet(&packet(19_000, 6_000, 5_000))
+            .unwrap();
+        assert!(
+            pose.z.abs() < 1e-12 && (pose.w - 1.0).abs() < 1e-12,
+            "jumped calibration mixed two reference frames: {pose:?}"
         );
     }
 
