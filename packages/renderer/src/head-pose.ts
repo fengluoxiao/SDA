@@ -48,11 +48,12 @@ export const DEFAULT_HEAD_POSE_OPTIONS: Required<HeadPoseOptions> = {
 };
 
 /** Drift-anchor easing. Providers without a second inertial reference wander
- *  with the sensor's integrated bias (observed up to ±2°/s during playback),
- *  so once no real motion has been confirmed for a while the attitude eases
- *  back toward the most recently recentered front. The rate dominates every
- *  drift seen in the field while staying far below deliberate head turns. */
-const ANCHOR_EASE_DEGREES_PER_SECOND = 2.5;
+ *  with the sensor's integrated bias and with the bud slowly settling in the
+ *  ear canal (field-measured yaw projection up to ~3.4 deg/s), so once no
+ *  real motion has been confirmed for a while the attitude eases back toward
+ *  the most recently recentered front. The rate must dominate those ramps
+ *  while staying far below deliberate head turns. */
+const ANCHOR_EASE_DEGREES_PER_SECOND = 5;
 /** Real turns keep the anchor paused for this long before the ease resumes. */
 const REAL_MOTION_HOLD_MS = 8000;
 /** Angular speed above which a pose change counts as a deliberate turn. */
