@@ -36,6 +36,12 @@ const BIAS_LEARN_RATE: f64 = 0.1;
 /// unlocked head motion absorbed turn rates and then pumped the attitude
 /// away once the motion ended (measured −135° over ~40 s in the field).
 const BIAS_LEARN_INNOVATION_LIMIT: f64 = 40.0;
+/// Hard bound on the estimate itself. True gyro drift on this stream stays
+/// below ~10 counts/frame (~1.7°/s); release-window episodes used to compound
+/// the estimate to the ±40 innovation clamp, and the frozen value then pumped
+/// the attitude at ~7°/s. A wrong estimate can now never out-correct the
+/// renderer's 5°/s anchor ease.
+const BIAS_MAX_COUNTS: f64 = 12.0;
 
 #[derive(Clone, Copy)]
 struct PendingDiscontinuity {
@@ -263,7 +269,8 @@ impl HeadOrientation {
             for axis in 0..2 {
                 let innovation = (folded[axis + 1] as f64 - self.bias[axis])
                     .clamp(-BIAS_LEARN_INNOVATION_LIMIT, BIAS_LEARN_INNOVATION_LIMIT);
-                self.bias[axis] += BIAS_LEARN_RATE * innovation;
+                self.bias[axis] = (self.bias[axis] + BIAS_LEARN_RATE * innovation)
+                    .clamp(-BIAS_MAX_COUNTS, BIAS_MAX_COUNTS);
             }
         }
         for index in 0..3 {
@@ -760,6 +767,25 @@ mod tests {
         assert!(
             (after.z - baseline.z).abs() < 1e-12 && (after.w - baseline.w).abs() < 1e-12,
             "foreign-bud frame moved the attitude: {after:?}"
+        );
+    }
+
+    #[test]
+    fn bias_estimate_stays_below_the_physical_drift_bound() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..CALIBRATION_SAMPLES {
+            tracker.process_packet(&packet(19_000, 1_000, 1_000));
+        }
+        // A fast ramp that stays under the release displacement would otherwise
+        // compound the estimate toward the innovation clamp; it must stop at
+        // the physical drift bound instead.
+        for step in 1..=6 {
+            tracker.process_packet(&packet(19_000, 1_000 + step * 40, 1_000 - step * 40));
+        }
+        assert!(
+            tracker.bias[0].abs() <= BIAS_MAX_COUNTS && tracker.bias[1].abs() <= BIAS_MAX_COUNTS,
+            "bias escaped the physical bound: {:?}",
+            tracker.bias
         );
     }
 
