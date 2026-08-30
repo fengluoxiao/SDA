@@ -14,10 +14,11 @@ const DISCONTINUITY_MOTION_CONFIRM_SAMPLES: usize = 2;
 const DISCONTINUITY_STEADY_CONFIRM_SAMPLES: usize = 12;
 const DISCONTINUITY_MAX_OUTPUT_STEP_RADIANS: f64 = 6.0 * std::f64::consts::PI / 180.0;
 const STATIONARY_RELEASE_CONFIRM_SAMPLES: usize = 2;
-/// One full turn is 64000 counts. A real head cannot move more than ±90° in
-/// one frame; a misparsed AACP control packet can claim ±180°. Anything above
-/// the gate is dropped instead of re-anchoring the attitude accumulator.
-const MAX_FRAME_DELTA_COUNTS: i64 = 16_000;
+/// One full turn is 64000 counts. A real head cannot move more than ~34° in
+/// one frame (1000°/s at 30 Hz is already a violent snap); misparsed control
+/// packets and reference resets claim ±60-115°. Anything above the gate is
+/// dropped instead of re-anchoring the attitude accumulator.
+const MAX_FRAME_DELTA_COUNTS: i64 = 6_000;
 /// Sustained rejection means the stream re-referenced or moved during a gap:
 /// realign the unwrap reference without accumulating, keeping the attitude.
 const UNWRAP_RESYNC_REJECTS: usize = 10;
@@ -565,12 +566,11 @@ mod tests {
 
         let mut turned = None;
         for _ in 0..40 {
-            turned = tracker.process_packet(&packet(19_000, 17_000, -15_000));
+            turned = tracker.process_packet(&packet(19_000, 6_000, -4_000));
         }
         let turned = turned.unwrap();
-        // The gesture-calibrated axis reads the symmetric ±16000-count turn at
-        // ~89.6° instead of the ideal 90°, so assert within calibration error.
-        let expected = (std::f64::consts::FRAC_PI_2 * 0.5).sin();
+        // A ±5000-count symmetric turn lands at -28.125 deg on the yaw channel.
+        let expected = (28.125_f64.to_radians() * 0.5).sin();
         assert!((turned.z + expected).abs() < 5e-3, "z={}", turned.z);
     }
 
@@ -603,7 +603,7 @@ mod tests {
         }
         for _ in 0..3 {
             let spike = tracker
-                .process_packet(&packet(19_000, 17_000, -15_000))
+                .process_packet(&packet(19_000, 6_000, -4_000))
                 .unwrap();
             assert!(spike.z.abs() < 1e-12);
         }
@@ -624,7 +624,7 @@ mod tests {
 
         let mut turned = None;
         for sample in 0..=DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
-            turned = tracker.process_packet(&packet(19_000, 17_000, -15_000));
+            turned = tracker.process_packet(&packet(19_000, 6_000, -4_000));
             if sample < DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
                 assert!(turned.unwrap().z.abs() < 1e-12);
             }
@@ -692,7 +692,7 @@ mod tests {
         }
         let mut before = None;
         for _ in 0..=DISCONTINUITY_STEADY_CONFIRM_SAMPLES {
-            before = tracker.process_packet(&packet(19_000, 9_000, -7_000));
+            before = tracker.process_packet(&packet(19_000, 5_000, -3_000));
         }
         let before = before.unwrap();
 
@@ -744,7 +744,7 @@ mod tests {
             tracker.process_packet(&packet_with_subtype(0x45, 19_000, 1_000, 1_000));
         }
         for _ in 0..2 {
-            tracker.process_packet(&packet_with_subtype(0x44, 19_000, 9_000, -7_000));
+            tracker.process_packet(&packet_with_subtype(0x44, 19_000, 3_000, -1_000));
         }
         assert!(tracker.calibrated());
 
