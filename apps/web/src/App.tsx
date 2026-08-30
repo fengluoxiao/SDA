@@ -407,13 +407,14 @@ export function App() {
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         // KU100 stays at the room origin while world-locked sources are viewed
-        // through the inverse head rotation. AirPods benefit from a slightly
-        // stronger, lower-latency yaw response than the device-neutral default.
+        // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
+        // few hundred ms of damping, and a dead zone that swallows tremor — the
+        // drift fixes made the old 1.5x amplification read as hypersensitive.
         headPose: {
           yawMode: "yaw",
-          sensitivity: 1.5,
-          smoothingMs: 18,
-          deadZoneDegrees: 0.6,
+          sensitivity: 1,
+          smoothingMs: 220,
+          deadZoneDegrees: 1,
           maxDegreesPerSecond: 480,
           updateHz: 120,
         },
