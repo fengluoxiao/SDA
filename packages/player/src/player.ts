@@ -407,6 +407,18 @@ export class SdaPlayer {
     this.emitHealth();
   }
 
+  /** 切换人头麦档案（播放中实时生效，不重建解码器/worklet/缓冲）。 */
+  async setBinauralHead(baseUrl: string): Promise<void> {
+    if (this.initArgs) this.initArgs.binauralBaseUrl = baseUrl;
+    const r = this.renderer;
+    if (!r) return;
+    const set = await getBinauralIrSet(baseUrl);
+    if (this.disposed || this.renderer !== r) return;
+    r.setBinauralData(set);
+    r.setBinauralMode(this.binauralMode);
+    this.emitHealth();
+  }
+
   /** 注册主进程已校验的本地左右 FIR。选中该 profile 时只切最终双耳 EQ，
    * 不重建 decoder/worklet/PCM。 */
   registerLocalHeadphoneCompensation(data: LocalHeadphoneCompensationData): void {

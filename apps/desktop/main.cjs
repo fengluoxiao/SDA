@@ -108,7 +108,7 @@ function scanMediaFolder(root) {
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
-const BUNDLED_HRTF_PATTERN = /^hrtf\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
+const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)?\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 
 const OUTPUT_LATENCY_SECONDS = [0.1, 0.2, 0.3];
@@ -829,7 +829,8 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
   }
   const root = webAssetRoot();
   if (!root) throw new Error("找不到内置 HRTF 资产目录");
-  const hrtfRoot = path.resolve(root, "hrtf");
+  const setDir = assetPath.split("/")[0];
+  const hrtfRoot = path.resolve(root, setDir);
   const filePath = path.resolve(root, ...assetPath.split("/"));
   if (path.dirname(filePath) !== hrtfRoot) throw new Error("内置 HRTF 路径越界");
   if (assetPath.endsWith("hrtf-set.json")) console.log("[SDA] 从 Electron 内置资源加载 HRTF");

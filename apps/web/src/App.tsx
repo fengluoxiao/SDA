@@ -127,6 +127,20 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
+/** 人头麦档案读写。KU100 为默认校准资产；d2 为 SADIE II D2（真实耳廓假人头）。 */
+type BinauralHead = "ku100" | "d2";
+const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
+function readBinauralHead(): BinauralHead {
+  try {
+    return localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY) === "d2" ? "d2" : "ku100";
+  } catch {
+    return "ku100";
+  }
+}
+function binauralHeadBaseUrl(head: BinauralHead): string {
+  return assetUrl(head === "d2" ? "hrtf-d2" : "hrtf");
+}
+
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
   axis: "x" | "y" | "z",
   scale: number,
@@ -260,6 +274,8 @@ export function App() {
     return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
   });
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
+  /** 人头麦档案：KU100（校准默认）或 D2（真实耳廓备选）。 */
+  const [binauralHead, setBinauralHead] = useState<"ku100" | "d2">(readBinauralHead);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
@@ -428,7 +444,7 @@ export function App() {
             return LAYOUTS[id];
           }
         : undefined;
-      await player.init(m, workletUrl, fallbackLayout, assetUrl("hrtf"), resolver);
+      await player.init(m, workletUrl, fallbackLayout, binauralHeadBaseUrl(readBinauralHead()), resolver);
       if (!isCurrent()) {
         await player.dispose();
         return null;
@@ -915,6 +931,16 @@ export function App() {
     playerRef.current?.setBinauralLowFrequencyDiagnostic(next);
   }, []);
 
+  const changeBinauralHead = useCallback((next: BinauralHead) => {
+    try {
+      localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY, next);
+    } catch {
+      // 持久化失败不影响本次切换。
+    }
+    setBinauralHead(next);
+    void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
+  }, []);
+
   const resetBinauralEq = useCallback(() => {
     for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
     const next = { low: 0, mid: 0, high: 0 };
@@ -1049,6 +1075,15 @@ export function App() {
                   {id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
                 </option>
               ))}
+          </select>
+          <select
+            value={binauralHead}
+            disabled={mode !== "binaural"}
+            title={mode === "binaural" ? "人头麦（HRTF）档案：KU100 为校准默认；D2 是 SADIE II 里带真实耳廓的另一颗假人头，音色/定位取向不同，播放中可实时切换对比" : "人头麦仅用于双耳输出"}
+            onChange={(e) => changeBinauralHead(e.target.value as BinauralHead)}
+          >
+            <option value="ku100">人头麦：KU100</option>
+            <option value="d2">人头麦：D2（真实耳廓）</option>
           </select>
           <select
             value={headphoneProfileId ?? ""}
