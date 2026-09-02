@@ -40,6 +40,7 @@ try {
       bundle: true,
       format: "esm",
       platform: "node",
+      loader: { ".wasm": "file" },
       sourcemap: "inline",
     });
     await runNode(outputPath);

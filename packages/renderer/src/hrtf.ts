@@ -123,8 +123,15 @@ export function setBinauralAssetLoader(loader: BinauralAssetLoader | null): void
   setCache.clear();
 }
 
+function assetSetDirectory(baseUrl: string): string {
+  const url = new URL(baseUrl, "http://sda.local");
+  const setDir = url.pathname.split("/").filter(Boolean).at(-1);
+  if (!setDir) throw new Error(`Invalid binaural asset URL: ${baseUrl}`);
+  return setDir;
+}
+
 async function loadAsset(baseUrl: string, fileName: string): Promise<ArrayBuffer> {
-  if (assetLoader) return assetLoader(`hrtf/${fileName}`);
+  if (assetLoader) return assetLoader(`${assetSetDirectory(baseUrl)}/${fileName}`);
   const response = await fetch(`${baseUrl}/${fileName}`);
   if (!response.ok) throw new Error(`${fileName} HTTP ${response.status}`);
   return response.arrayBuffer();

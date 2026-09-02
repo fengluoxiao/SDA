@@ -26,6 +26,10 @@ assert.ok(
   RENDER_TOPOLOGY.every((s) => !s.binauralOnly),
   "the physical topology itself stays free of binaural-only buses",
 );
+assert.ok(
+  topology.length <= 32,
+  `dense worklet output stays within Web Audio's 32-channel limit (${topology.length})`,
+);
 
 // --- dense binaural render layout -------------------------------------------
 const denseLayout = SpatialRenderer.prototype.denseBinauralLayout.call({ layout: layout714 });
@@ -50,14 +54,13 @@ for (const fill of activeFills) {
     );
   }
 }
-// LFE sits at az45/el0 but has no direction: it must not evict the h40 fill.
+// LFE sits at az45/el0 but has no direction: it must not evict the h60 fill.
 assert.ok(
-  activeFills.some((f) => f.azimuth === 40 && f.elevation === 0),
+  activeFills.some((f) => f.azimuth === 60 && f.elevation === 0),
   "LFE position does not evict a horizontal fill",
 );
-// Bed directions (Centre 0/0, Surround ±100/0, Top ±45/45) are not duplicated.
+// Bed directions (Centre 0/0 and Top ±45/45) are not duplicated.
 assert.ok(!activeFills.some((f) => f.azimuth === 0 && f.elevation === 0));
-assert.ok(!activeFills.some((f) => f.azimuth === 100 && f.elevation === 0));
 assert.ok(!activeFills.some((f) => f.azimuth === 45 && f.elevation === 45));
 
 // --- VBAP lands objects on their true direction ------------------------------

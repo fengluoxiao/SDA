@@ -97,13 +97,13 @@ export const RENDER_TOPOLOGY: readonly VirtualSpeaker[] = [
 /** Dense fill directions for the opt-in precise-object binaural sphere. These
  * are binauralOnly: they must never leak into the stereo downmix or the
  * physical multichannel mapping, only the dense object VBAP sphere uses them.
- * Horizontal ring every 20° + an elevated (+45°) ring every 45° + zenith. */
-const DENSE_HORIZONTAL = Array.from({ length: 18 }, (_, i) => i * 20 - 180);
-const DENSE_ELEVATED = Array.from({ length: 8 }, (_, i) => i * 45 - 180);
+ * The 18 physical buses plus these 14 fills stay within Web Audio's 32-channel
+ * per-output limit: horizontal 30° grid plus upper-side ±90° directions. */
+const DENSE_HORIZONTAL = Array.from({ length: 12 }, (_, i) => i * 30 - 180);
+const DENSE_ELEVATED = [-90, 90];
 export const DENSE_BINAURAL_FILLS: VirtualSpeaker[] = [
   ...DENSE_HORIZONTAL.map((azimuth) => ({ name: `Dense_h${azimuth}`, azimuth, elevation: 0, distance: 1, binauralOnly: true as const })),
   ...DENSE_ELEVATED.map((azimuth) => ({ name: `Dense_t${azimuth}`, azimuth, elevation: 45, distance: 1, binauralOnly: true as const })),
-  { name: "Dense_top", azimuth: 0, elevation: 90, distance: 1, binauralOnly: true },
 ];
 
 export function speakerBusKey(speaker: Pick<VirtualSpeaker, "name" | "bus">): string {

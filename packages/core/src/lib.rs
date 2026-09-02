@@ -18,6 +18,7 @@ pub mod alac_pipeline;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
+pub mod vbap;
 
 /// One dynamic-object spatial event (port of `bridge_api::REvent`).
 #[derive(Serialize, Clone, Debug)]

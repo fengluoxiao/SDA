@@ -147,7 +147,7 @@ function binauralHeadBaseUrl(head: BinauralHead): string {
 }
 
 /** 逐对象精确方向渲染（实验性）：对象按精确方位 VBAP 到密集球面，而不是吸附到
- *  床层扬声器环。密集 IR 集固定为 KU100（D1 校准数据，61 方向）。 */
+ *  床层扬声器环。密集 IR 集固定为 KU100（D1 校准数据，61 个测量方向）。 */
 const DENSE_BINAURAL_STORAGE_KEY = "sda-dense-binaural-objects";
 function readDenseBinauralObjects(): boolean {
   try {
@@ -1391,7 +1391,7 @@ export function App() {
                 </button>
               ))}
             </div>
-            <label className="settings-switch" title="对象不再吸附到床层扬声器方向，而是按精确方位落到 61 向密集球面（KU100 实测 HRTF）直接卷积。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。">
+            <label className="settings-switch" title="对象不再吸附到床层扬声器方向，而是在 32 路实时双耳总线中按精确方位落到 KU100 的 61 个测量方向 HRTF。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。">
               <span>高解析对象渲染（实验性）</span>
               <input
                 type="checkbox"

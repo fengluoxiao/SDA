@@ -41,7 +41,7 @@ import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 
 type BinauralRenderMode = "off" | "near" | "mid" | "far" | "not-indicated";
 import { headphoneProfileById, getHeadphoneCompensationBuffers, type HeadphoneCompensationBuffers, type HeadphoneCompensationProfile } from "./headphone-compensation.js";
-import type { ObjectEvent } from "@sda/core";
+import { initCore, VbapBatchSolver, type ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
 
@@ -89,6 +89,8 @@ const BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
 
 const BINAURAL_BANKS = ["off", "near", "mid", "far"] as const;
 export type BinauralBank = (typeof BINAURAL_BANKS)[number];
+/** Chromium/Electron caps a single AudioWorklet output at 32 channels. */
+const MAX_WORKLET_OUTPUT_CHANNELS = 32;
 const BINAURAL_NOT_INDICATED_DEFAULT: BinauralBank = "mid";
 const PCM_RING_SAMPLES = 1 << 18;
 
@@ -327,9 +329,13 @@ export class SpatialRenderer {
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
+  /** Optional Rust/WASM batch solver. The TypeScript solver remains the
+   * correctness fallback until the WASM core is loaded and for unsupported calls. */
+  private wasmVbap: VbapBatchSolver | null = null;
+  private wasmVbapLayoutRevision = 0;
   /** 开启后对象在密集球面按精确方向落位（仅双耳输出）。 */
   private denseBinauralObjects = false;
-  /** 密集球面 IR 集（hrtf-dense，61 方向），仅密集模式挂载。 */
+  /** 密集球面 IR 集（hrtf-dense，61 个测量方向），仅密集模式挂载。 */
   private denseIrSet: BinauralIrSet | null = null;
   /** Pose changes only recompute source gain vectors; they never touch the graph. */
   private readonly headPose: HeadPoseTracker;
@@ -405,6 +411,7 @@ export class SpatialRenderer {
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
     this.headPose = new HeadPoseTracker(options.headPose);
+    this.refreshWasmVbap();
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
     this.onObjectActivity = options.onObjectActivity;
@@ -578,12 +585,62 @@ export class SpatialRenderer {
     return [...base, ...fills];
   }
 
+  /** Build the optional Rust/WASM geometry solver for the active logical layout.
+   * Layout revision guards keep a slow async core initialization from replacing a
+   * newer layout's solver. Any failure deliberately preserves the JS fallback. */
+  private refreshWasmVbap(): void {
+    const revision = ++this.wasmVbapLayoutRevision;
+    this.wasmVbap?.free();
+    this.wasmVbap = null;
+    const directions = new Float64Array(this.renderLayout.length * 3);
+    const lfeMask = new Uint8Array(this.renderLayout.length);
+    const azimuths = new Float64Array(this.renderLayout.length);
+    this.renderLayout.forEach((speaker, index) => {
+      const [x, y, z] = sphericalToAdm(speaker);
+      directions.set([x, y, z], index * 3);
+      lfeMask[index] = speaker.isLfe ? 1 : 0;
+      azimuths[index] = speaker.azimuth;
+    });
+    void initCore()
+      .then(() => {
+        if (revision !== this.wasmVbapLayoutRevision) return;
+        this.wasmVbap = new VbapBatchSolver(directions, lfeMask, azimuths);
+      })
+      .catch((error) => console.warn("[SDA] Rust VBAP 不可用，保持 TypeScript 回退:", error));
+  }
+
+  /** Batch spatial gain vectors for same-layout object metadata. Pose updates
+   * intentionally stay on the direct JS path because they are wall-clock live. */
+  private panObjectBatch(states: readonly SourceState[]): readonly Float32Array[] | null {
+    const solver = this.wasmVbap;
+    if (!solver || states.length === 0) return null;
+    try {
+      const positions = new Float64Array(states.length * 3);
+      const spreads = new Float64Array(states.length);
+      states.forEach((state, index) => {
+        const [x, y, z] = sphericalToAdm(state.position);
+        positions.set([x, y, z], index * 3);
+        spreads[index] = state.spread;
+      });
+      const packed = solver.panBatch(positions, spreads);
+      if (packed.length !== states.length * this.renderLayout.length) return null;
+      return states.map((_, index) => packed.subarray(
+        index * this.renderLayout.length,
+        (index + 1) * this.renderLayout.length,
+      ));
+    } catch (error) {
+      console.warn("[SDA] Rust VBAP 批处理失败，保持 TypeScript 回退:", error);
+      return null;
+    }
+  }
+
   private updateRenderLayout(): void {
     this.renderLayout = this.mode === "binaural" && this.denseBinauralObjects
       ? this.denseBinauralLayout()
       : virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
+    this.refreshWasmVbap();
     for (const state of this.sources.values()) {
       if (state.bedLabel && !state.isLfe) {
         state.snapBus = this.renderLayout.findIndex((speaker) => speaker.name === state.bedLabel);
@@ -607,6 +664,9 @@ export class SpatialRenderer {
   }
 
   async init(workletModuleUrl: string | URL): Promise<void> {
+    if (this.topology.length > MAX_WORKLET_OUTPUT_CHANNELS) {
+      throw new Error(`双耳 worklet 总线数 ${this.topology.length} 超出 ${MAX_WORKLET_OUTPUT_CHANNELS} 路平台上限`);
+    }
     await this.ctx.audioWorklet.addModule(workletModuleUrl);
     this.master = this.ctx.createGain();
     this.master.connect(this.ctx.destination);
@@ -1590,6 +1650,7 @@ export class SpatialRenderer {
   applyEvents(events: readonly ObjectEvent[]): number {
     if (!this.node || events.length === 0) return 0;
     const messages: ScheduledGainMessage[] = [];
+    const pending: { state: SourceState; ramp: number; at: number }[] = [];
     let accepted = 0;
     for (const ev of events) {
       const state = this.sources.get(`obj:${ev.id}`);
@@ -1630,15 +1691,24 @@ export class SpatialRenderer {
         gainDb: ev.gainDb,
         rampSamples: Math.max(1, ramp),
       });
-      messages.push(this.gainMessage(state, ramp, at));
+      pending.push({ state, ramp, at });
+      accepted++;
+    }
+    // Prototype-level renderer tests and narrow control surfaces may provide only
+    // the legacy gainMessage surface; in that case keep the existing JS path.
+    const batchGains = typeof this.panObjectBatch === "function"
+      ? this.panObjectBatch(pending.map(({ state }) => state))
+      : null;
+    pending.forEach(({ state, ramp, at }, index) => {
+      messages.push(this.gainMessage(state, ramp, at, false, batchGains?.[index]));
       // Prebuffer a head-relative route at the same codec boundary. Later pose
       // ticks replace it in-place; this first copy covers a main-thread stall
-      // immediately after the decoder queues the frame.
+      // immediately after the decoder queues the frame. Head-relative routes
+      // remain on the direct JS solver because their pose is wall-clock live.
       if (this.mode === "binaural" && this.headPose.isActive(performance.now())) {
         messages.push(this.gainMessage(state, ramp, at, true));
       }
-      accepted++;
-    }
+    });
     if (messages.length === 1) this.node.port.postMessage(messages[0]);
     else if (messages.length > 1) this.node.port.postMessage({ type: "scheduleGainsBatch", entries: messages });
     return accepted;
@@ -1655,6 +1725,7 @@ export class SpatialRenderer {
     rampSamples: number,
     atSample?: number,
     poseUpdate = false,
+    precomputedSpatialGains?: Float32Array,
   ): ScheduledGainMessage {
     // Codec metadata remains canonical world-space. Only immediate gain updates
     // use the live wall-clock pose; scheduled events must retain their original
@@ -1669,7 +1740,11 @@ export class SpatialRenderer {
     const spatialPosition = headTrackingActive
       ? this.headPose.headRelative(state.position, poseNow)
       : state.position;
-    const gains = this.vbap.pan(spatialPosition, state.spread);
+    // A codec-clock event may use the same-layout Rust batch result. Any live
+    // head-relative update keeps the direct JS calculation to avoid pose lag.
+    const gains = precomputedSpatialGains && !headTrackingActive
+      ? new Float32Array(precomputedSpatialGains)
+      : this.vbap.pan(spatialPosition, state.spread);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
     // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径
@@ -1816,6 +1891,9 @@ export class SpatialRenderer {
       globalThis.clearTimeout(this.poseStaleTimer);
       this.poseStaleTimer = null;
     }
+    this.wasmVbapLayoutRevision++;
+    this.wasmVbap?.free();
+    this.wasmVbap = null;
     this.teardownPostNodes();
     this.peakGuard?.disconnect();
     this.peakGuard = null;
