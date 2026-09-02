@@ -127,19 +127,21 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
-/** 人头麦档案读写。KU100 为默认校准资产；d2/h3 为 SADIE II 备选。 */
-type BinauralHead = "ku100" | "d2" | "h3" | "h13";
+/** 人头麦/耳廓档案读写。KU100 为默认校准资产；d2 为 SADIE II D2（真实耳廓假人头）；h* 为真人受试者。 */
+type BinauralHead = string;
 const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
+/** 所有可用的 HRTF 集（id → baseUrl 目录名）。 */
+const BINAURAL_HEAD_IDS = ["ku100", "d2", ...Array.from({ length: 18 }, (_, i) => `h${i + 3}`)] as const;
 function readBinauralHead(): BinauralHead {
   try {
     const v = localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY);
-    return v === "d2" || v === "h3" || v === "h13" ? v : "ku100";
+    return v && (BINAURAL_HEAD_IDS as readonly string[]).includes(v) ? v : "ku100";
   } catch {
     return "ku100";
   }
 }
 function binauralHeadBaseUrl(head: BinauralHead): string {
-  return assetUrl(head === "d2" ? "hrtf-d2" : head === "h3" ? "hrtf-h3" : head === "h13" ? "hrtf-h13" : "hrtf");
+  return assetUrl(head === "ku100" ? "hrtf" : `hrtf-${head}`);
 }
 
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
@@ -208,8 +210,11 @@ function measuredLoudnessStorageKey(info: { title?: string; channels: number; sa
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
   { id: "ku100", label: "Neumann KU100", description: "参考级人头麦（校准默认）" },
   { id: "d2", label: "SADIE D2", description: "真实耳廓假人头（同协议，取向不同）" },
-  { id: "h3", label: "SADIE H3", description: "真人受试者耳廓（真实人耳解剖）" },
-  { id: "h13", label: "SADIE H13", description: "真人受试者耳廓（真实人耳解剖）" },
+  ...Array.from({ length: 18 }, (_, i) => ({
+    id: `h${i + 3}` as BinauralHead,
+    label: `SADIE H${i + 3}`,
+    description: "真人受试者耳廓（真实人耳解剖）",
+  })),
 ];
 
 try {

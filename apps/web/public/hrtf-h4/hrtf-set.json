@@ -1,0 +1,937 @@
+{
+  "schemaVersion": 2,
+  "calibrationVersion": 0,
+  "sampleRate": 48000,
+  "source": {
+    "name": "SADIE II Database V2.2, H4",
+    "doi": "10.5281/zenodo.12092466",
+    "recordUrl": "https://zenodo.org/records/12092466",
+    "license": "Apache-2.0",
+    "archiveUrl": null,
+    "archiveMd5": null,
+    "archiveSha256": "3b265771eb11bdc6c25277ec6722cddc157a58b7e166baa6f68b8f36591bd638",
+    "hrPath": "H4/H4_HRIR_WAV/48K_24bit",
+    "brPath": "H4/H4_BRIR_WAV/48K_24bit",
+    "hrirMeasurement": {
+      "monitor": "Genelec 8010",
+      "radiusMeters": 1.2
+    },
+    "brirMeasurement": {
+      "monitor": "Genelec 8030/40",
+      "radiusMeters": 1.5,
+      "grid": "50-point Lebedev"
+    }
+  },
+  "azimuthConvention": "target and source positive azimuth = left (counter-clockwise, ADM/ITU)",
+  "processing": {
+    "dryTapLimit": 512,
+    "wetTapLimit": 8192,
+    "peakNormalized": true,
+    "calibrated": false,
+    "note": "Provenance staging only; absolute SPL/TOF and direct-to-reverberant ratio are not calibrated."
+  },
+  "positions": [
+    {
+      "azimuth": 0,
+      "elevation": 0,
+      "dry": "az0_el0_dry.f32",
+      "wet": "az0_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_0,0_ele_0,0.wav",
+          "azimuth": 0,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_0,0_ele_0,0.wav",
+          "azimuth": 0,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 104,
+          "peakSample": 120,
+          "originalPeak": 0.3002363443374634,
+          "peakNormalizationGain": 3.330709352349453
+        },
+        "wet": {
+          "trimStartSample": 16,
+          "peakSample": 48,
+          "originalPeak": 0.40836167335510254,
+          "peakNormalizationGain": 2.4488096343224197
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 152,
+          "sha256": "9661d19d85cfbe365a28702dba54ab737e61232d281a3f474122f26f6958753a"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "36d5dc0d24650439f1414b6d63daa2d813b67ef00e12b1b98e92785e9b1ac99c"
+        }
+      }
+    },
+    {
+      "azimuth": 30,
+      "elevation": 0,
+      "dry": "az30_el0_dry.f32",
+      "wet": "az30_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_30,0_ele_0,0.wav",
+          "azimuth": 30,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_45,0_ele_0,0.wav",
+          "azimuth": 45,
+          "elevation": 0,
+          "angularErrorDegrees": 15.000000000000018,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 96,
+          "peakSample": 112,
+          "originalPeak": 0.4595177173614502,
+          "peakNormalizationGain": 2.1761946541299824
+        },
+        "wet": {
+          "trimStartSample": 7,
+          "peakSample": 39,
+          "originalPeak": 0.5569225549697876,
+          "peakNormalizationGain": 1.7955817933325555
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 160,
+          "sha256": "3b2217883348713d29a80d3d9abfddd8ef7b2d3e451b6580e85e27f68e59a9fb"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "5a4213bd1e7c41682e932ceda6d24435e4123ef3ed16a180c7cfdb2f40ce715a"
+        }
+      }
+    },
+    {
+      "azimuth": -30,
+      "elevation": 0,
+      "dry": "azm30_el0_dry.f32",
+      "wet": "azm30_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_330,0_ele_0,0.wav",
+          "azimuth": 330,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_315,0_ele_0,0.wav",
+          "azimuth": 315,
+          "elevation": 0,
+          "angularErrorDegrees": 14.999999999999996,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 83,
+          "peakSample": 99,
+          "originalPeak": 0.5698398351669312,
+          "peakNormalizationGain": 1.7548790700233443
+        },
+        "wet": {
+          "trimStartSample": 3,
+          "peakSample": 35,
+          "originalPeak": 0.6212291717529297,
+          "peakNormalizationGain": 1.6097119154567199
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 173,
+          "sha256": "8f5f76f681207c2d7f00fb9028fd671a3d55f788db7235ceed3dac3a157724bc"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "24863105a9cb8ac223c8a8317c296e4b8f40c98d0cbc26ac1490ef65906d7126"
+        }
+      }
+    },
+    {
+      "azimuth": 60,
+      "elevation": 0,
+      "dry": "az60_el0_dry.f32",
+      "wet": "az60_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_60,0_ele_0,0.wav",
+          "azimuth": 60,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_45,0_ele_0,0.wav",
+          "azimuth": 45,
+          "elevation": 0,
+          "angularErrorDegrees": 14.999999999999996,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 89,
+          "peakSample": 105,
+          "originalPeak": 0.6170594692230225,
+          "peakNormalizationGain": 1.620589343291598
+        },
+        "wet": {
+          "trimStartSample": 7,
+          "peakSample": 39,
+          "originalPeak": 0.5569225549697876,
+          "peakNormalizationGain": 1.7955817933325555
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 167,
+          "sha256": "7cba18db46ad55ce0ec3ad12257a07a9549d427bb243e8b8c1e3aaebed2d91a3"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "5a4213bd1e7c41682e932ceda6d24435e4123ef3ed16a180c7cfdb2f40ce715a"
+        }
+      }
+    },
+    {
+      "azimuth": -60,
+      "elevation": 0,
+      "dry": "azm60_el0_dry.f32",
+      "wet": "azm60_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_300,0_ele_0,0.wav",
+          "azimuth": 300,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_315,0_ele_0,0.wav",
+          "azimuth": 315,
+          "elevation": 0,
+          "angularErrorDegrees": 14.999999999999996,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 91,
+          "peakSample": 107,
+          "originalPeak": 0.6186938285827637,
+          "peakNormalizationGain": 1.616308348009048
+        },
+        "wet": {
+          "trimStartSample": 3,
+          "peakSample": 35,
+          "originalPeak": 0.6212291717529297,
+          "peakNormalizationGain": 1.6097119154567199
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 165,
+          "sha256": "3321c9ae2a2c2f987a2d142fc16785972cae835597727292961b77fc75644f40"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "24863105a9cb8ac223c8a8317c296e4b8f40c98d0cbc26ac1490ef65906d7126"
+        }
+      }
+    },
+    {
+      "azimuth": 100,
+      "elevation": 0,
+      "dry": "az100_el0_dry.f32",
+      "wet": "az100_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_100,0_ele_0,0.wav",
+          "azimuth": 100,
+          "elevation": 0,
+          "angularErrorDegrees": 8.537736462515939e-7,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_90,0_ele_0,0.wav",
+          "azimuth": 90,
+          "elevation": 0,
+          "angularErrorDegrees": 10.000000000000012,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 81,
+          "peakSample": 97,
+          "originalPeak": 0.6752241849899292,
+          "peakNormalizationGain": 1.4809896064592454
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 31,
+          "originalPeak": 0.8407326936721802,
+          "peakNormalizationGain": 1.1894386973726059
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 175,
+          "sha256": "dca795d3322c00207c69f0a2a66fb0f905b0560d61e184556900c3f36683eb90"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "3d9a55e23bef0c6fc1d4254d29926b6cf89f4aa80bcb9d8fc1962d0402b54953"
+        }
+      }
+    },
+    {
+      "azimuth": -100,
+      "elevation": 0,
+      "dry": "azm100_el0_dry.f32",
+      "wet": "azm100_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_260,0_ele_0,0.wav",
+          "azimuth": 260,
+          "elevation": 0,
+          "angularErrorDegrees": 8.537736462515939e-7,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_270,0_ele_0,0.wav",
+          "azimuth": 270,
+          "elevation": 0,
+          "angularErrorDegrees": 10.000000000000012,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 85,
+          "peakSample": 101,
+          "originalPeak": 0.8070875406265259,
+          "peakNormalizationGain": 1.239022967971628
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 29,
+          "originalPeak": 0.9999998807907104,
+          "peakNormalizationGain": 1.0000001192093038
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 171,
+          "sha256": "ce7ffca0935adedb8c07f1d9ad634617e53b8219830b1876c0f95570d93aed4a"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "d0de2581b42313edec733c829ab34f5adb1f8ab87eab7e6510ec80b36264936f"
+        }
+      }
+    },
+    {
+      "azimuth": 110,
+      "elevation": 0,
+      "dry": "az110_el0_dry.f32",
+      "wet": "az110_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_110,0_ele_0,0.wav",
+          "azimuth": 110,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_108,4_ele_17,5.wav",
+          "azimuth": 108.4,
+          "elevation": 17.5,
+          "angularErrorDegrees": 17.570711132875722,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 73,
+          "peakSample": 89,
+          "originalPeak": 0.5988483428955078,
+          "peakNormalizationGain": 1.6698718663307524
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 29,
+          "originalPeak": 0.7249482870101929,
+          "peakNormalizationGain": 1.3794087356550162
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 183,
+          "sha256": "ae5150df98468952301a28a4200b471933a830842823f5a4980d318a0b000907"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "11b18b07e0135067e6ceea35566917341c16cb9705d589c2e22005e69de68d90"
+        }
+      }
+    },
+    {
+      "azimuth": -110,
+      "elevation": 0,
+      "dry": "azm110_el0_dry.f32",
+      "wet": "azm110_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_250,0_ele_0,0.wav",
+          "azimuth": 250,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_251,6_ele_17,5.wav",
+          "azimuth": 251.6,
+          "elevation": 17.5,
+          "angularErrorDegrees": 17.570711132875722,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 85,
+          "peakSample": 101,
+          "originalPeak": 0.7565466165542603,
+          "peakNormalizationGain": 1.3217956145975032
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 29,
+          "originalPeak": 0.8081986904144287,
+          "peakNormalizationGain": 1.2373195005886723
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 171,
+          "sha256": "ddafa5858428995d3e3fa104f882fab1a940dc4207866f945714e709145aef04"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "c61b28cbe6b72133e51bd377f66f851d9f980fb61a49fd30c8b4f33cb954925c"
+        }
+      }
+    },
+    {
+      "azimuth": 140,
+      "elevation": 0,
+      "dry": "az140_el0_dry.f32",
+      "wet": "az140_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_140,0_ele_0,0.wav",
+          "azimuth": 140,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_135,0_ele_0,0.wav",
+          "azimuth": 135,
+          "elevation": 0,
+          "angularErrorDegrees": 4.999999999999992,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 84,
+          "peakSample": 100,
+          "originalPeak": 0.5478529930114746,
+          "peakNormalizationGain": 1.8253071768452587
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 32,
+          "originalPeak": 0.43922901153564453,
+          "peakNormalizationGain": 2.276716641516398
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 172,
+          "sha256": "88159291d1accbc1bee9ea02faefef8af336aa205553414a82e90dca63bcb557"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "0244a35fc2049e5b8a97931e3e3d4e5c9e6a7e7cfdc9ae78f0be06693100c7dd"
+        }
+      }
+    },
+    {
+      "azimuth": -140,
+      "elevation": 0,
+      "dry": "azm140_el0_dry.f32",
+      "wet": "azm140_el0_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_220,0_ele_0,0.wav",
+          "azimuth": 220,
+          "elevation": 0,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_225,0_ele_0,0.wav",
+          "azimuth": 225,
+          "elevation": 0,
+          "angularErrorDegrees": 4.999999999999918,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 87,
+          "peakSample": 103,
+          "originalPeak": 0.5179729461669922,
+          "peakNormalizationGain": 1.930602761012936
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 32,
+          "originalPeak": 0.5478980541229248,
+          "peakNormalizationGain": 1.825157057001781
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 169,
+          "sha256": "c241fc6760268ffc05a3c042ecf9a13a15d423abcf32a693cd1a240564880feb"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "8231cbade65d6e9402927b14927470c99fcc34c203333c6548afc41aba9b5c64"
+        }
+      }
+    },
+    {
+      "azimuth": 45,
+      "elevation": 45,
+      "dry": "az45_el45_dry.f32",
+      "wet": "az45_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_45,0_ele_45,0.wav",
+          "azimuth": 45,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_45,0_ele_35,3.wav",
+          "azimuth": 45,
+          "elevation": 35.3,
+          "angularErrorDegrees": 9.700000000000008,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 90,
+          "peakSample": 106,
+          "originalPeak": 0.5992155075073242,
+          "peakNormalizationGain": 1.6688486654157177
+        },
+        "wet": {
+          "trimStartSample": 6,
+          "peakSample": 38,
+          "originalPeak": 0.7180513143539429,
+          "peakNormalizationGain": 1.392658129035996
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 166,
+          "sha256": "d8886e9e0a07c9de030404b25d1794f1323114c21d5ce83ebe3c29c87116bf83"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "92911651c5ffcb32f68557dc10056930f804cd618ae53f7af991e2162499ccae"
+        }
+      }
+    },
+    {
+      "azimuth": -45,
+      "elevation": 45,
+      "dry": "azm45_el45_dry.f32",
+      "wet": "azm45_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_315,0_ele_45,0.wav",
+          "azimuth": 315,
+          "elevation": 45,
+          "angularErrorDegrees": 8.537736462515939e-7,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_315,0_ele_35,3.wav",
+          "azimuth": 315,
+          "elevation": 35.3,
+          "angularErrorDegrees": 9.700000000000008,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 88,
+          "peakSample": 104,
+          "originalPeak": 0.6104356050491333,
+          "peakNormalizationGain": 1.6381744310597857
+        },
+        "wet": {
+          "trimStartSample": 2,
+          "peakSample": 34,
+          "originalPeak": 0.9080512523651123,
+          "peakNormalizationGain": 1.10125942494479
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 168,
+          "sha256": "859490382667a41a3909e03adb95db0f277084d157f583c6e18f621f533082ba"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "8fb9a65ea9d6a19e7270b7ba1ff47e578e7de900b7babe22e2c58ac0811ff000"
+        }
+      }
+    },
+    {
+      "azimuth": 90,
+      "elevation": 45,
+      "dry": "az90_el45_dry.f32",
+      "wet": "az90_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_90,0_ele_45,0.wav",
+          "azimuth": 90,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_90,0_ele_45,0.wav",
+          "azimuth": 90,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 80,
+          "peakSample": 96,
+          "originalPeak": 0.5807136297225952,
+          "peakNormalizationGain": 1.7220191654149677
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 27,
+          "originalPeak": 0.842013955116272,
+          "peakNormalizationGain": 1.1876287725681602
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 176,
+          "sha256": "2392e019b36052e4719afad269217f908e81f37d5a3ad8486681d51fe7ea9454"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "18297ed1eac8fb64e4e67f3fd538383255a9c041e77b855564da6dcff46f1052"
+        }
+      }
+    },
+    {
+      "azimuth": -90,
+      "elevation": 45,
+      "dry": "azm90_el45_dry.f32",
+      "wet": "azm90_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_270,0_ele_45,0.wav",
+          "azimuth": 270,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_270,0_ele_45,0.wav",
+          "azimuth": 270,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 82,
+          "peakSample": 98,
+          "originalPeak": 0.566714882850647,
+          "peakNormalizationGain": 1.7645557409219157
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 32,
+          "originalPeak": 0.9297821521759033,
+          "peakNormalizationGain": 1.0755207525330217
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 174,
+          "sha256": "48ef491c3f282a2a401f24e7e61c9ef44ad3a15a958bef878b8674ac1fe19423"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "9874c3a42f745cb243bad425178f0f49d06ac39a730048dc17bc0fbd9eb7114c"
+        }
+      }
+    },
+    {
+      "azimuth": 135,
+      "elevation": 45,
+      "dry": "az135_el45_dry.f32",
+      "wet": "az135_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_135,0_ele_45,0.wav",
+          "azimuth": 135,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_135,0_ele_35,3.wav",
+          "azimuth": 135,
+          "elevation": 35.3,
+          "angularErrorDegrees": 9.700000000000008,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 87,
+          "peakSample": 103,
+          "originalPeak": 0.4071075916290283,
+          "peakNormalizationGain": 2.4563531129413017
+        },
+        "wet": {
+          "trimStartSample": 0,
+          "peakSample": 29,
+          "originalPeak": 0.6049821376800537,
+          "peakNormalizationGain": 1.6529413642438027
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 169,
+          "sha256": "4331377b45e6437515275430ab69292872f02f15e2cc2f8b46eccced53122327"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "d0b928f6cffd54f5f37ef9bd3ef86ec250410fcc7cf00c06b8aeba44587ea9de"
+        }
+      }
+    },
+    {
+      "azimuth": -135,
+      "elevation": 45,
+      "dry": "azm135_el45_dry.f32",
+      "wet": "azm135_el45_wet.f32",
+      "measurement": {
+        "dry": {
+          "sourcePath": "H4/H4_HRIR_WAV/48K_24bit/azi_225,0_ele_45,0.wav",
+          "azimuth": 225,
+          "elevation": 45,
+          "angularErrorDegrees": 0,
+          "sourceDistanceMeters": 1.2,
+          "monitor": "Genelec 8010",
+          "originalFrames": 256,
+          "originalBitsPerSample": 24
+        },
+        "wet": {
+          "sourcePath": "H4/H4_BRIR_WAV/48K_24bit/azi_225,0_ele_35,3.wav",
+          "azimuth": 225,
+          "elevation": 35.3,
+          "angularErrorDegrees": 9.700000000000008,
+          "sourceDistanceMeters": 1.5,
+          "monitor": "Genelec 8030/40",
+          "originalFrames": 14400,
+          "originalBitsPerSample": 24
+        },
+        "flipAzimuth": false
+      },
+      "processing": {
+        "dry": {
+          "trimStartSample": 89,
+          "peakSample": 105,
+          "originalPeak": 0.31858956813812256,
+          "peakNormalizationGain": 3.1388347265860763
+        },
+        "wet": {
+          "trimStartSample": 2,
+          "peakSample": 34,
+          "originalPeak": 0.5861749649047852,
+          "peakNormalizationGain": 1.7059752802005697
+        }
+      },
+      "assets": {
+        "dry": {
+          "tapCountPerEar": 167,
+          "sha256": "58d0aa701ff4f035a0e8940cf016fdfd91f32f58f0c2b672277b5b245e852fd3"
+        },
+        "wet": {
+          "tapCountPerEar": 8192,
+          "sha256": "87dab04c108cea1498ad1a022b0c14253faac672eebc808fcab5bd369e413d28"
+        }
+      }
+    }
+  ],
+  "levelMatchDb": -15.36
+}

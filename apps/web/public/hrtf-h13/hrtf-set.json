@@ -3,7 +3,7 @@
   "calibrationVersion": 0,
   "sampleRate": 48000,
   "source": {
-    "name": "SADIE II Database V2.2, H13 (real human pinnae)",
+    "name": "SADIE II Database V2.2, H13",
     "doi": "10.5281/zenodo.12092466",
     "recordUrl": "https://zenodo.org/records/12092466",
     "license": "Apache-2.0",
@@ -933,5 +933,5 @@
       }
     }
   ],
-  "levelMatchDb": -5.34
+  "levelMatchDb": -13.34
 }
