@@ -108,7 +108,7 @@ function scanMediaFolder(root) {
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
-const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)?\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
+const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)*\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 
 const OUTPUT_LATENCY_SECONDS = [0.1, 0.2, 0.3];

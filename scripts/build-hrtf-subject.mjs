@@ -52,10 +52,11 @@ const gain = Math.pow(10, gainDb / 20);
 mkdirSync(outDir, { recursive: true });
 for (const f of readdirSync(staging)) {
   if (!f.endsWith(".f32")) continue;
-  const a = new Float32Array(readFileSync(resolve(staging, f)).buffer.slice(0));
+  const buf = readFileSync(resolve(staging, f));
+  const a = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
   const out = new Float32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = a[i] * gain;
-  writeFileSync(resolve(outDir, f), Buffer.from(out.buffer));
+  writeFileSync(resolve(outDir, f), Buffer.from(out.buffer, out.byteOffset, out.byteLength));
 }
 const manifest = JSON.parse(readFileSync(resolve(staging, "hrtf-set.json"), "utf8"));
 manifest.source = { ...manifest.source, name: `SADIE II Database V2.2, ${subject}` };
