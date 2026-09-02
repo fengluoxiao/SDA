@@ -127,30 +127,23 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
-/** 人头麦/耳廓档案读写。KU100 为默认校准资产；d2 为 SADIE II D2（真实耳廓假人头）；h* 为真人受试者。 */
+/** 耳廓档案读写。基座固定为 KU100（物理人头麦）；耳廓 = 装到 KU100 上的耳朵，
+ *  d2 为 SADIE II D2 假人头的耳廓，h* 为真人受试者的耳廓。原装 = KU100 自己的。 */
 type BinauralHead = string;
 const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
-const BINAURAL_PINNA_STORAGE_KEY = "sda-binaural-pinna";
-/** 所有可用的完整头/耳廓测量集 id（非 ku100/d2 的均为真人受试者 H3–H20）。 */
+/** 所有可换的耳廓 id（ku100 = 原装，其余装到 KU100 上）。 */
 const BINAURAL_HEAD_IDS = ["ku100", "d2", ...Array.from({ length: 18 }, (_, i) => `h${i + 3}`)] as const;
-function readStored(key: string, allowed: readonly string[], fallback: string): string {
+function readBinauralHead(): BinauralHead {
   try {
-    const v = localStorage.getItem(key);
-    return v && allowed.includes(v) ? v : fallback;
+    const v = localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY);
+    return v && (BINAURAL_HEAD_IDS as readonly string[]).includes(v) ? v : "ku100";
   } catch {
-    return fallback;
+    return "ku100";
   }
 }
-function readBinauralHead(): BinauralHead {
-  return readStored(BINAURAL_HEAD_STORAGE_KEY, BINAURAL_HEAD_IDS, "ku100");
-}
-function readBinauralPinna(): string {
-  return readStored(BINAURAL_PINNA_STORAGE_KEY, BINAURAL_HEAD_IDS, "");
-}
-/** 实际加载的 HRTF 目录：完整头用其自身资产；KU100 基座换耳用混合集。 */
-function binauralHeadBaseUrl(head: BinauralHead, pinna: string): string {
-  if (head === "ku100") return assetUrl(pinna ? `hrtf-ku100-${pinna}` : "hrtf");
-  return assetUrl(`hrtf-${head}`);
+/** KU100 基座 + 所选耳廓对应的 HRTF 目录（原装 = 纯 KU100，其余 = LR4 混合）。 */
+function binauralHeadBaseUrl(head: BinauralHead): string {
+  return assetUrl(head === "ku100" ? "hrtf" : `hrtf-ku100-${head}`);
 }
 
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
@@ -215,13 +208,13 @@ function measuredLoudnessStorageKey(info: { title?: string; channels: number; sa
   return `sda-measured-lufs:${info.title ?? "track"}:${info.channels}:${info.sampleRate}`;
 }
 
-/** 可选人头麦/耳廓档案（HRTF 集）。baseUrl 相对 web 根。 */
+/** 可选耳廓档案（装到 KU100 上的耳朵）。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
-  { id: "ku100", label: "Neumann KU100", description: "参考级人头麦（校准默认）" },
-  { id: "d2", label: "SADIE D2", description: "真实耳廓假人头（同协议，取向不同）" },
+  { id: "ku100", label: "KU100 原装耳", description: "KU100 出厂耳廓（校准默认）" },
+  { id: "d2", label: "D2 的耳朵", description: "SADIE II D2 假人头的耳廓（真实耳廓模具）" },
   ...Array.from({ length: 18 }, (_, i) => ({
     id: `h${i + 3}` as BinauralHead,
-    label: `SADIE H${i + 3}`,
+    label: `H${i + 3} 的耳朵`,
     description: "真人受试者耳廓（真实人耳解剖）",
   })),
 ];
@@ -299,8 +292,6 @@ export function App() {
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   /** 人头麦档案：KU100（校准默认）或 D2（真实耳廓备选）。 */
   const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
-  /** KU100 基座上换的耳廓 id（""=KU100 原装耳）。仅在 head=ku100 时有意义。 */
-  const [binauralPinna, setBinauralPinna] = useState<string>(readBinauralPinna);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
@@ -469,7 +460,7 @@ export function App() {
             return LAYOUTS[id];
           }
         : undefined;
-      await player.init(m, workletUrl, fallbackLayout, binauralHeadBaseUrl(readBinauralHead(), readBinauralPinna()), resolver);
+      await player.init(m, workletUrl, fallbackLayout, binauralHeadBaseUrl(readBinauralHead()), resolver);
       if (!isCurrent()) {
         await player.dispose();
         return null;
@@ -963,19 +954,7 @@ export function App() {
       // 持久化失败不影响本次切换。
     }
     setBinauralHead(next);
-    // 切到非 KU100 基座时耳廓选择不再适用；切回 KU100 时恢复记忆。
-    const pinna = next === "ku100" ? readBinauralPinna() : "";
-    void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next, pinna));
-  }, []);
-
-  const changeBinauralPinna = useCallback((next: string) => {
-    try {
-      localStorage.setItem(BINAURAL_PINNA_STORAGE_KEY, next);
-    } catch {
-      // 持久化失败不影响本次切换。
-    }
-    setBinauralPinna(next);
-    void playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100", next));
+    void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
   }, []);
 
   const resetBinauralEq = useCallback(() => {
@@ -1367,9 +1346,9 @@ export function App() {
         )}
         {floatPanel === "pinna" && (
           <div className="panel float-panel">
-            <h2>耳廓 / 人头麦</h2>
+            <h2>耳廓</h2>
             <p className="settings-description">
-              双耳渲染用的 HRTF 来自哪颗头/哪对耳朵。耳廓形状决定高频定位解析度——和你自己耳朵越像，空间感越准。播放中切换实时生效。
+              基座是 KU100 人头麦；这里换的是装到它上面的耳朵（耳廓）。耳廓形状决定高频定位解析度——和你自己耳朵越像，空间感越准。播放中切换实时生效。
             </p>
             <div className="pinna-list">
               {BINAURAL_HEADS.map((head) => (
@@ -1384,35 +1363,6 @@ export function App() {
                 </button>
               ))}
             </div>
-            {binauralHead === "ku100" && (
-              <>
-                <h2 className="pinna-section-title">KU100 换耳廓</h2>
-                <p className="settings-description">
-                  把 KU100 的头/躯干响应保留，只把高频的耳廓共振换成别人的（LR4 分频拼接）。原装耳是校准默认。
-                </p>
-                <div className="pinna-list">
-                  <button
-                    className={`pinna-option ${binauralPinna === "" ? "active" : ""}`}
-                    onClick={() => changeBinauralPinna("")}
-                  >
-                    <b>KU100 原装耳</b>
-                    <small>原厂耳廓（校准默认）</small>
-                    {binauralPinna === "" && <span className="pinna-current">使用中</span>}
-                  </button>
-                  {BINAURAL_HEADS.filter((head) => head.id !== "ku100").map((head) => (
-                    <button
-                      key={head.id}
-                      className={`pinna-option ${binauralPinna === head.id ? "active" : ""}`}
-                      onClick={() => changeBinauralPinna(head.id)}
-                    >
-                      <b>{head.label} 的耳朵</b>
-                      <small>KU100 头 + 这对耳廓</small>
-                      {binauralPinna === head.id && <span className="pinna-current">使用中</span>}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
           </div>
         )}
         {floatPanel === "playlist" && (          <div className="panel float-panel playlist-panel" aria-label="播放列表">
