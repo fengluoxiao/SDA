@@ -127,18 +127,19 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
-/** 人头麦档案读写。KU100 为默认校准资产；d2 为 SADIE II D2（真实耳廓假人头）。 */
-type BinauralHead = "ku100" | "d2";
+/** 人头麦档案读写。KU100 为默认校准资产；d2/h3 为 SADIE II 备选。 */
+type BinauralHead = "ku100" | "d2" | "h3" | "h13";
 const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
 function readBinauralHead(): BinauralHead {
   try {
-    return localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY) === "d2" ? "d2" : "ku100";
+    const v = localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY);
+    return v === "d2" || v === "h3" || v === "h13" ? v : "ku100";
   } catch {
     return "ku100";
   }
 }
 function binauralHeadBaseUrl(head: BinauralHead): string {
-  return assetUrl(head === "d2" ? "hrtf-d2" : "hrtf");
+  return assetUrl(head === "d2" ? "hrtf-d2" : head === "h3" ? "hrtf-h3" : head === "h13" ? "hrtf-h13" : "hrtf");
 }
 
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
@@ -206,7 +207,9 @@ function measuredLoudnessStorageKey(info: { title?: string; channels: number; sa
 /** 可选人头麦/耳廓档案（HRTF 集）。baseUrl 相对 web 根。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
   { id: "ku100", label: "Neumann KU100", description: "参考级人头麦（校准默认）" },
-  { id: "d2", label: "SADIE D2", description: "真实耳廓假人头（同协议，音色/定位取向不同）" },
+  { id: "d2", label: "SADIE D2", description: "真实耳廓假人头（同协议，取向不同）" },
+  { id: "h3", label: "SADIE H3", description: "真人受试者耳廓（真实人耳解剖）" },
+  { id: "h13", label: "SADIE H13", description: "真人受试者耳廓（真实人耳解剖）" },
 ];
 
 try {
@@ -281,7 +284,7 @@ export function App() {
   });
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   /** 人头麦档案：KU100（校准默认）或 D2（真实耳廓备选）。 */
-  const [binauralHead, setBinauralHead] = useState<"ku100" | "d2">(readBinauralHead);
+  const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
