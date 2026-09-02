@@ -735,6 +735,15 @@ export class SpatialRenderer {
   /** 注入密集球面 IR 集（逐对象精确方向渲染）。密集模式已开启时强制重建双耳总线，
    * 让填充方向从"最近床层方向"切到密集集里的精确方向。 */
   setDenseBinauralIrSet(set: BinauralIrSet | null): void {
+    // Dense directions share the same final L/R merger as calibrated bed buses.
+    // Reject an uncalibrated set instead of mixing two incompatible direct/tail
+    // reference systems, which is especially destructive with many objects.
+    if (set && !set.calibrated) {
+      console.warn("[SDA] 拒绝未校准 dense HRTF：保持标准 KU100 双耳路径");
+      this.denseIrSet = null;
+      if (this.denseBinauralObjects) this.setDenseBinauralObjects(false);
+      return;
+    }
     this.denseIrSet = set;
     if (this.node && this.denseBinauralObjects) this.rebuildBinauralBusGraph(true);
   }

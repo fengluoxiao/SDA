@@ -27,6 +27,8 @@ const FRAME_JSON: u8 = b'J';
 const FRAME_PCM: u8 = b'P';
 const NATIVE_RENDERER_MAX_JSON_BYTES: usize = 16 * 1024;
 
+#[allow(dead_code)]
+mod hrtf;
 mod protocol;
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +237,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibrated_dense_assets_select_nearest_measured_direction() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = hrtf::NativeHrtfSet::load_calibrated(&root).unwrap();
+        assert_eq!(set.sample_rate, 48_000);
+        let ir = set.nearest(22.0, 0.0).unwrap();
+        assert_eq!((ir.azimuth, ir.elevation), (20.0, 0.0));
+        assert_eq!(ir.dry.len() % 2, 0);
+        assert_eq!(ir.wet.len() % 2, 0);
+    }
 
     #[test]
     fn sources_mix_on_the_absolute_codec_clock() {

@@ -31,6 +31,7 @@ try {
   assert.equal(normal.positions.length, 17, "normal KU100 set stays 17 directions");
   assert.equal(pinna.positions.length, 17, "KU100 + D2 pinna set stays 17 directions");
   assert.equal(dense.positions.length, 61, "dense KU100 set loads all 61 directions");
+  assert.equal(dense.calibrated, true, "dense KU100 set shares the calibrated bed reference");
   assert.ok(loaded.includes("hrtf/hrtf-set.json"), "normal set keeps hrtf directory");
   assert.ok(loaded.includes("hrtf-ku100-d2/hrtf-set.json"), "pinna set keeps its own directory");
   assert.ok(loaded.includes("hrtf-dense/hrtf-set.json"), "dense set keeps hrtf-dense directory");

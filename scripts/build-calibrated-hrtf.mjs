@@ -30,7 +30,7 @@ const ROOM_DECORRELATION_MAXIMUM_HZ = 16000;
 /** Four sections preserve C80 of the high-passed residual while separating reused BRIR variants. */
 const ROOM_DECORRELATION_SECTIONS = 4;
 const ROOM_DECORRELATION_MAX_ENERGY_TRIM_DB = 0.25;
-const MAX_SPEAKER_LEVEL_GAIN_DB = 3;
+const DEFAULT_MAX_SPEAKER_LEVEL_GAIN_DB = 3;
 /** v3 双侧对称化：KU100 头模左右耳/测量摆放的反对称偏差会让同一对象在 +θ 与 -θ
  *  经 VBAP 相干叠加后同侧耳能量差最高达 4.4dB（±80°），听感就是 7.1.x/9.1.x
  *  左右不平衡。物理上正前方的头对 ±θ 应有镜像响应，所以每个镜像对按
@@ -50,14 +50,21 @@ function option(name, fallback = null) {
 
 const manifestPath = resolve(option("manifest", "apps/web/public/hrtf/hrtf-set.json"));
 const archivePath = resolve(option("archive", "tmp/sadie-source/D1.zip"));
+const maxSpeakerLevelGainDb = Number(option("max-speaker-level-gain-db", String(DEFAULT_MAX_SPEAKER_LEVEL_GAIN_DB)));
+if (!Number.isFinite(maxSpeakerLevelGainDb) || maxSpeakerLevelGainDb <= 0 || maxSpeakerLevelGainDb > 12) {
+  throw new Error("max-speaker-level-gain-db 必须在 (0, 12] dB");
+}
 const outputDirectory = resolve(option("out", "tmp/hrtf-calibrated"));
 const sourceManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (sourceManifest.schemaVersion !== 2) throw new Error("校准构建要求schema v2 provenance manifest");
 const sourceAssetDirectory = dirname(manifestPath);
-if (sourceManifest.calibrationVersion !== 3) {
-  throw new Error("v4校准要求以已验证的calibration v3资产作为低频residual基线");
+if (![0, 3].includes(sourceManifest.calibrationVersion ?? 0)) {
+  throw new Error("v4校准要求schema v2且具有原始测量 provenance 的资产基线");
 }
-if (sourceManifest.positions?.length !== 17) throw new Error("校准构建要求17个虚拟音箱方向");
+if (!Array.isArray(sourceManifest.positions) || sourceManifest.positions.length < 2) {
+  throw new Error("校准构建要求至少两个具有 provenance 的方向");
+}
+const calibrationBaseline = sourceManifest.calibrationVersion === 3 ? "v3" : "raw-provenance";
 
 const archiveBytes = readFileSync(archivePath);
 const archiveSha256 = createHash("sha256").update(archiveBytes).digest("hex");
@@ -422,8 +429,8 @@ const directEnergyMinimumDb = Math.min(...directEnergyValuesDb);
 const directEnergyMaximumDb = Math.max(...directEnergyValuesDb);
 const targetDirectEnergyDb = clamp(
   targetDirectEnergyDbUnbounded,
-  directEnergyMaximumDb - MAX_SPEAKER_LEVEL_GAIN_DB,
-  directEnergyMinimumDb + MAX_SPEAKER_LEVEL_GAIN_DB,
+  directEnergyMaximumDb - maxSpeakerLevelGainDb,
+  directEnergyMinimumDb + maxSpeakerLevelGainDb,
 );
 const roomBandTargets = rows[0].wetAnalysis.fullBands.map((band, bandIndex) => {
   const ratioDb = median(rows.map((row) => (
@@ -545,8 +552,8 @@ const prepared = rows.map((row) => {
   const dryBeforeGain = analyze({ ...dryAligned, sampleRate }, "dry");
   const dryEnergyDbBeforeGain = energyDb(stereoEnergy(dryAligned));
   const dryGainDb = targetDirectEnergyDb - dryEnergyDbBeforeGain;
-  if (Math.abs(dryGainDb) > MAX_SPEAKER_LEVEL_GAIN_DB + 1e-9) {
-    throw new Error(`宽带直达校准超过±3dB ${row.position.azimuth}/${row.position.elevation}: ${dryGainDb.toFixed(2)}dB`);
+  if (Math.abs(dryGainDb) > maxSpeakerLevelGainDb + 1e-9) {
+    throw new Error(`宽带直达校准超过±${maxSpeakerLevelGainDb}dB ${row.position.azimuth}/${row.position.elevation}: ${dryGainDb.toFixed(2)}dB`);
   }
   scaleStereo(dryAligned, gainFromDb(dryGainDb));
 
@@ -607,8 +614,8 @@ for (const entry of prepared) {
   const { dryAligned, tail } = entry;
   const { row, dryGainDb } = entry;
   const roomGainDb = targetRoomEarlyEnergyDb - entry.roomEarlyEnergyDb;
-  if (Math.abs(roomGainDb) > MAX_SPEAKER_LEVEL_GAIN_DB + 1e-9) {
-    throw new Error(`房间residual校准超过±3dB ${row.position.azimuth}/${row.position.elevation}: ${roomGainDb.toFixed(2)}dB`);
+  if (Math.abs(roomGainDb) > maxSpeakerLevelGainDb + 1e-9) {
+    throw new Error(`房间residual校准超过±${maxSpeakerLevelGainDb}dB ${row.position.azimuth}/${row.position.elevation}: ${roomGainDb.toFixed(2)}dB`);
   }
   scaleStereo(tail, gainFromDb(roomGainDb));
   const sourcePath = row.position.measurement.wet.sourcePath;
@@ -671,11 +678,17 @@ function symmetrizedPairOutputs(plus, minus, sign, shift, perEarLen) {
 }
 const finalByKey = new Map(prepared.map((entry) => [`${entry.row.position.azimuth}/${entry.row.position.elevation}`, entry]));
 const symmetryByKey = new Map();
-const SYMMETRY_PAIRS = [[30, 0], [60, 0], [100, 0], [110, 0], [140, 0], [45, 45], [90, 45], [135, 45]];
-for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
+// Calibrate every actual ±azimuth pair in the target manifest. Dense targets can
+// include one-sided/reused BRIR directions; those must retain their calibrated
+// original direction rather than being forced into a non-existent mirror pair.
+const symmetryPairs = [...finalByKey.values()]
+  .map((entry) => [entry.row.position.azimuth, entry.row.position.elevation])
+  .filter(([azimuth]) => azimuth > 0)
+  .filter(([azimuth, elevation]) => finalByKey.has(`-${azimuth}/${elevation}`));
+for (const [azimuth, elevation] of symmetryPairs) {
   const plus = finalByKey.get(`${azimuth}/${elevation}`);
   const minus = finalByKey.get(`-${azimuth}/${elevation}`);
-  if (!plus || !minus) throw new Error(`镜像对缺失 ±${azimuth}/${elevation}`);
+  if (!plus || !minus) continue;
   const perEarLen = plus.finalDry.left.length;
   const alignment = symmetrizePair(interleave(plus.finalDry), interleave(minus.finalDry), perEarLen, SYMMETRY_MAX_SHIFT_SAMPLES);
   const dryOutputs = symmetrizedPairOutputs(plus.finalDry, minus.finalDry, alignment.sign, alignment.shift, perEarLen);
@@ -765,9 +778,10 @@ function hardGateTail(stereo, boundary) {
     stereo.right[index] = 0;
   }
 }
-for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
+for (const [azimuth, elevation] of symmetryPairs) {
   const plus = finalByKey.get(`${azimuth}/${elevation}`);
   const minus = finalByKey.get(`-${azimuth}/${elevation}`);
+  if (!plus || !minus) continue;
   const sharedBoundary = Math.max(plus.gateBoundary, minus.gateBoundary);
   hardGateTail(plus.finalTail, sharedBoundary);
   hardGateTail(minus.finalTail, sharedBoundary);
@@ -905,6 +919,7 @@ const manifest = {
   },
   calibration: {
     algorithm: "sda-ku100-room-v4",
+    baseline: calibrationBaseline,
     sampleRate,
     commonArrivalSample: COMMON_ARRIVAL_SAMPLE,
     bilateralSymmetry: {
