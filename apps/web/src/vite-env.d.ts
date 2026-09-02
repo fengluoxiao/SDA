@@ -55,6 +55,12 @@ declare global {
     orientation: { x: number; y: number; z: number; w: number };
   }
 
+  interface NativeRendererStatus {
+    running: boolean;
+    referenceMix: boolean;
+    detail: string;
+  }
+
   interface Window {
     sdaDesktop?: {
       electron3D: boolean;
@@ -70,6 +76,13 @@ declare global {
       startHeadTracking?: () => Promise<HeadTrackingStatus>;
       stopHeadTracking?: () => Promise<HeadTrackingStatus>;
       recenterHeadTracking?: () => Promise<HeadTrackingPose | null>;
+      getNativeRendererStatus?: () => Promise<NativeRendererStatus>;
+      startNativeRenderer?: () => Promise<NativeRendererStatus>;
+      stopNativeRenderer?: () => Promise<NativeRendererStatus>;
+      getNativeRendererHealth?: () => Promise<NativeRendererStatus>;
+      nativeRendererSource?: (id: string, atSample: number) => Promise<boolean>;
+      nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[]) => Promise<boolean>;
+      onNativeRendererStatus?: (callback: (status: NativeRendererStatus) => void) => () => void;
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;

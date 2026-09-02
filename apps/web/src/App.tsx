@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SdaPlayer, type BinauralRenderMetadata, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
+import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -310,6 +310,12 @@ export function App() {
   const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(readDenseBinauralObjects);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
+  /** Native renderer is a staged WASAPI sidecar. Until object HRTF transport is
+   * complete it reports reference-mix health only and never replaces Web Audio. */
+  const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
+  const nativeRendererRunningRef = useRef(false);
+  nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
+  const [nativeRendererBusy, setNativeRendererBusy] = useState(false);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
@@ -359,6 +365,23 @@ export function App() {
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
+      const desktop = window.sdaDesktop;
+      // Stage one mirrors independent PCM sources to the native sidecar only
+      // when it has been started from settings. These calls never await and the
+      // Web Audio renderer remains the sole audible path until native HRTF lands.
+      const nativeRendererSink: NativeRendererSink | undefined = desktop?.nativeRendererSource && desktop.nativeRendererFrame
+        ? {
+            addSource: (id, atSample) => {
+              if (nativeRendererRunningRef.current) void desktop.nativeRendererSource!(id, atSample);
+            },
+            removeSource: () => {},
+            events: () => {},
+            frame: (samplePos, entries) => {
+              if (nativeRendererRunningRef.current) void desktop.nativeRendererFrame!(samplePos, entries);
+            },
+            reset: () => {},
+          }
+        : undefined;
       const player = new SdaPlayer({
         onOutputLatencyRecommendation: (seconds) => {
           if (!isCurrent()) return;
@@ -456,6 +479,7 @@ export function App() {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: readDenseBinauralObjects(),
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
+        nativeRendererSink,
         // KU100 stays at the room origin while world-locked sources are viewed
         // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
         // few hundred ms of damping, and a dead zone that swallows tremor — the
@@ -565,6 +589,15 @@ export function App() {
 
   useEffect(() => {
     const desktop = window.sdaDesktop;
+    if (!desktop?.getNativeRendererStatus) return;
+    void desktop.getNativeRendererStatus().then(setNativeRendererStatus).catch((error) => {
+      console.warn("[SDA] 读取 native renderer 状态失败:", error);
+    });
+    return desktop.onNativeRendererStatus?.(setNativeRendererStatus);
+  }, []);
+
+  useEffect(() => {
+    const desktop = window.sdaDesktop;
     if (!desktop?.listHeadphoneProfiles || !desktop.readHeadphoneProfile) return;
     void desktop.listHeadphoneProfiles()
       .then(async (manifests) => {
@@ -636,6 +669,23 @@ export function App() {
       setHeadTrackingBusy(false);
     }
   }, []);
+
+  const toggleNativeRenderer = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.startNativeRenderer || !desktop.stopNativeRenderer) return;
+    setNativeRendererBusy(true);
+    try {
+      const next = nativeRendererStatus?.running
+        ? await desktop.stopNativeRenderer()
+        : await desktop.startNativeRenderer();
+      setNativeRendererStatus(next);
+    } catch (error) {
+      console.warn("[SDA] native renderer 切换失败:", error);
+      setErrors((prev) => [...prev, `native renderer 切换失败: ${String(error)}`]);
+    } finally {
+      setNativeRendererBusy(false);
+    }
+  }, [nativeRendererStatus?.running]);
 
   const recenterHeadTracking = useCallback(async () => {
     const desktop = window.sdaDesktop;
@@ -1177,6 +1227,20 @@ export function App() {
                 />
               </label>
             </fieldset>
+            {window.sdaDesktop?.startNativeRenderer && (
+              <fieldset className="settings-group settings-section">
+                <legend>原生渲染器（实验基础）</legend>
+                <p className="settings-description">
+                  Rust/WASAPI sidecar 当前只验证独立 source、codec sample clock 与设备输出；对象级 HRTF 尚未接管播放，因此 Web Audio 仍是唯一可听输出路径。
+                </p>
+                <label className="settings-switch" title="启动或停止 Rust/WASAPI reference-mix sidecar。它不会抢占当前播放，也不会改变当前双耳音色。">
+                  <span>WASAPI 时钟侧车 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（Web Audio 输出）"}</small></span>
+                  <button type="button" disabled={nativeRendererBusy} onClick={() => void toggleNativeRenderer()}>
+                    {nativeRendererBusy ? "处理中" : nativeRendererStatus?.running ? "停止" : "启动"}
+                  </button>
+                </label>
+              </fieldset>
+            )}
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
               <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机补偿档案。</p>

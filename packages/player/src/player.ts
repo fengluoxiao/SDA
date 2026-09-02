@@ -112,6 +112,16 @@ export interface PlayerCallbacks {
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
 }
 
+/** Optional mirror transport to the native Rust sidecar. The player continues
+ * feeding Web Audio until a later native-output mode explicitly takes ownership. */
+export interface NativeRendererSink {
+  addSource(id: string, atSample: number): void;
+  removeSource(id: string, atSample: number): void;
+  events(events: readonly ObjectEvent[]): void;
+  frame(samplePos: number, entries: readonly { id: string; samples: Float32Array }[]): void;
+  reset(origin: number): void;
+}
+
 export interface SdaPlayerOptions {
   /** Validated output FIFO setting to use when this player creates its first
    * AudioContext. Invalid values safely fall back to 100ms. */
@@ -122,6 +132,9 @@ export interface SdaPlayerOptions {
   denseBinauralObjects?: boolean;
   /** 密集球面 IR 集地址（hrtf-dense）；开启 denseBinauralObjects 时必填。 */
   denseBinauralBaseUrl?: string;
+  /** Stage-one reference mirror for the native renderer. No audio ownership is
+   * transferred, so errors in this sink must never interrupt Web Audio playback. */
+  nativeRendererSink?: NativeRendererSink;
 }
 
 /** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
@@ -185,6 +198,8 @@ export class SdaPlayer {
   private worker: Worker;
   private renderer: SpatialRenderer | null = null;
   private readonly headPoseOptions: HeadPoseOptions | undefined;
+  /** Non-audible stage-one mirror into the native renderer sidecar. */
+  private readonly nativeRendererSink: NativeRendererSink | undefined;
   /** 逐对象精确方向双耳渲染开关与密集 IR 集地址；renderer 重建时恢复。 */
   private denseBinauralObjects: boolean;
   private denseBinauralBaseUrl: string | undefined;
@@ -297,6 +312,7 @@ export class SdaPlayer {
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
     this.headPoseOptions = options.headPose;
+    this.nativeRendererSink = options.nativeRendererSink;
     this.denseBinauralObjects = options.denseBinauralObjects === true;
     this.denseBinauralBaseUrl = options.denseBinauralBaseUrl;
     this.pendingOutputLatencySeconds = validatedOutputLatencySeconds(options.initialOutputLatencySeconds);
@@ -1494,6 +1510,9 @@ export class SdaPlayer {
       // or stale object position merely because the player prebuffers ~2 s.
       const events = frame.events as ObjectEvent[];
       this.renderer.applyEvents(events);
+      try { this.nativeRendererSink?.events(events); } catch (error) {
+        console.warn(`[SDA] player#${this.id} native renderer event mirror failed:`, error);
+      }
       this.queueVisualEvents(events);
 
       // Enqueue every channel of the decoded frame atomically on the codec's
@@ -1507,6 +1526,12 @@ export class SdaPlayer {
         }
         return { id, samples };
       });
+      try {
+        for (const entry of entries) this.nativeRendererSink?.addSource(entry.id, frame.samplePos);
+        this.nativeRendererSink?.frame(frame.samplePos, entries);
+      } catch (error) {
+        console.warn(`[SDA] player#${this.id} native renderer frame mirror failed:`, error);
+      }
       const sequence = this.nextBatchSequence++;
       const pending = { sequence, frame, samples: frameSamples };
       this.inFlight.set(sequence, pending);

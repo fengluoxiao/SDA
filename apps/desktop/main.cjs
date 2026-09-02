@@ -215,6 +215,144 @@ const HEAD_TRACKING_MAX_BUFFER_BYTES = HEAD_TRACKING_MAX_LINE_BYTES * 2;
 const HEAD_TRACKING_MAX_RATE_HZ = 120;
 const HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS = 240;
 const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
+
+// Native object renderer foundation. It is opt-in and starts in reference-mix
+// mode only; Web Audio remains the audible fallback until object HRTF delivery.
+const NATIVE_RENDERER_PROTOCOL = 1;
+const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
+let nativeRenderer = null;
+let nativeRendererWritable = true;
+let nativeRendererBuffer = "";
+let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动" };
+
+function bundledNativeRendererPath() {
+  const executable = "SdaNativeRenderer.exe";
+  const candidates = isDev
+    ? [path.join(__dirname, "native-renderer", executable)]
+    : [path.join(process.resourcesPath, "native-renderer", executable)];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function publishNativeRendererStatus() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("sda:native-renderer-status", nativeRendererStatus);
+  }
+  return nativeRendererStatus;
+}
+
+function setNativeRendererStatus(running, detail, referenceMix = true) {
+  nativeRendererStatus = { running, referenceMix, detail: safeDiagnosticText(detail, "状态未知") };
+  return publishNativeRendererStatus();
+}
+
+function nativeRendererCommand(command) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || !command || typeof command !== "object") return false;
+  try {
+    const json = Buffer.from(JSON.stringify(command), "utf8");
+    if (json.length > NATIVE_RENDERER_MAX_LINE_BYTES) return false;
+    const header = Buffer.allocUnsafe(5);
+    header.writeUInt8("J".charCodeAt(0), 0);
+    header.writeUInt32LE(json.length, 1);
+    const accepted = nativeRenderer.stdin.write(Buffer.concat([header, json]));
+    if (!accepted) nativeRendererWritable = false;
+    return accepted;
+  } catch {
+    return false;
+  }
+}
+
+function nativeRendererPcm(id, start, samples) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || typeof id !== "string" || !/^((obj:\d+)|(bed:\d+))$/.test(id)) return false;
+  if (!Number.isSafeInteger(start) || start < 0 || !ArrayBuffer.isView(samples) || samples.BYTES_PER_ELEMENT !== 4) return false;
+  const float = samples instanceof Float32Array
+    ? samples
+    : new Float32Array(samples.buffer, samples.byteOffset, Math.floor(samples.byteLength / 4));
+  if (float.length === 0 || float.length > 480_000) return false;
+  try {
+    const idBytes = Buffer.from(id, "utf8");
+    const header = Buffer.allocUnsafe(1 + 2 + 8 + 4);
+    header.writeUInt8("P".charCodeAt(0), 0);
+    header.writeUInt16LE(idBytes.length, 1);
+    header.writeBigUInt64LE(BigInt(start), 3);
+    header.writeUInt32LE(float.length, 11);
+    const accepted = nativeRenderer.stdin.write(Buffer.concat([
+      header,
+      idBytes,
+      Buffer.from(float.buffer, float.byteOffset, float.byteLength),
+    ]));
+    if (!accepted) nativeRendererWritable = false;
+    return accepted;
+  } catch {
+    return false;
+  }
+}
+
+function consumeNativeRendererOutput(chunk) {
+  nativeRendererBuffer += chunk;
+  if (nativeRendererBuffer.length > NATIVE_RENDERER_MAX_LINE_BYTES * 2) {
+    nativeRendererBuffer = "";
+    setNativeRendererStatus(false, "native renderer 输出超限，Web Audio 回退");
+    return;
+  }
+  for (;;) {
+    const newline = nativeRendererBuffer.indexOf("\n");
+    if (newline < 0) break;
+    const line = nativeRendererBuffer.slice(0, newline);
+    nativeRendererBuffer = nativeRendererBuffer.slice(newline + 1);
+    if (!line || line.length > NATIVE_RENDERER_MAX_LINE_BYTES) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
+        setNativeRendererStatus(true, `WASAPI ${message.sampleRate}Hz / ${message.outputChannels}ch（参考混音）`, true);
+      } else if (message?.type === "error") {
+        setNativeRendererStatus(false, `native renderer: ${safeDiagnosticText(message.detail, "错误")}`);
+      } else if (message?.type === "health") {
+        setNativeRendererStatus(true, `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun`, Boolean(message.referenceMix));
+      }
+    } catch { /* malformed helper output is ignored; stderr still records it */ }
+  }
+}
+
+function startNativeRenderer() {
+  if (nativeRenderer) return nativeRendererStatus;
+  const executable = bundledNativeRendererPath();
+  if (!executable) return setNativeRendererStatus(false, "native renderer 未构建，Web Audio 回退");
+  try {
+    nativeRenderer = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  } catch (error) {
+    nativeRenderer = null;
+    return setNativeRendererStatus(false, `native renderer 启动失败: ${error.message}`);
+  }
+  nativeRendererWritable = true;
+  nativeRenderer.stdout.setEncoding("utf8");
+  nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
+  nativeRenderer.stdin.on("drain", () => { nativeRendererWritable = true; });
+  nativeRenderer.stderr.setEncoding("utf8");
+  nativeRenderer.stderr.on("data", (chunk) => console.warn(`[SDA native renderer] ${String(chunk).trim()}`));
+  nativeRenderer.once("error", (error) => {
+    nativeRenderer = null;
+    setNativeRendererStatus(false, `native renderer 异常: ${error.message}`);
+  });
+  nativeRenderer.once("exit", (code) => {
+    nativeRenderer = null;
+    setNativeRendererStatus(false, `native renderer 已退出${code === null ? "" : ` (${code})`}，Web Audio 回退`);
+  });
+  nativeRendererCommand({ type: "hello", protocol: NATIVE_RENDERER_PROTOCOL });
+  return setNativeRendererStatus(false, "native renderer 启动中，Web Audio 回退");
+}
+
+function stopNativeRenderer() {
+  const renderer = nativeRenderer;
+  nativeRenderer = null;
+  nativeRendererWritable = true;
+  nativeRendererBuffer = "";
+  if (renderer) {
+    try { renderer.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch {}
+    setTimeout(() => { if (!renderer.killed) renderer.kill(); }, 500).unref();
+  }
+  return setNativeRendererStatus(false, "已停止，Web Audio 回退");
+}
+
 let headTrackingTimer = null;
 let headTrackingStartedAt = 0;
 let headTrackingHelper = null;
@@ -734,6 +872,21 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
 });
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
+ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
+ipcMain.handle("sda:native-renderer-start", () => startNativeRenderer());
+ipcMain.handle("sda:native-renderer-stop", () => stopNativeRenderer());
+ipcMain.handle("sda:native-renderer-health", () => {
+  nativeRendererCommand({ type: "health" });
+  return nativeRendererStatus;
+});
+ipcMain.handle("sda:native-renderer-source", (_event, id, atSample) => {
+  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || !Number.isSafeInteger(atSample) || atSample < 0) return false;
+  return nativeRendererCommand({ type: "addSource", id });
+});
+ipcMain.handle("sda:native-renderer-frame", (_event, samplePos, entries) => {
+  if (!Number.isSafeInteger(samplePos) || samplePos < 0 || !Array.isArray(entries) || entries.length > 64) return false;
+  return entries.every((entry) => nativeRendererPcm(entry?.id, samplePos, entry?.samples));
+});
 ipcMain.handle("sda:head-tracking-recenter", () => recenterHeadTracking());
 
 ipcMain.handle("sda:pick-file", async (event) => {
@@ -902,5 +1055,6 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", async () => {
   await stopHeadTrackingGracefully(false);
+  stopNativeRenderer();
   if (process.platform !== "darwin") app.quit();
 });
