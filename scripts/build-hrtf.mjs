@@ -14,6 +14,14 @@ const TARGETS = [
   [100, 0], [-100, 0], [110, 0], [-110, 0], [140, 0], [-140, 0],
   [45, 45], [-45, 45], [90, 45], [-90, 45], [135, 45], [-135, 45],
 ];
+/** Dense object-render sphere: fine azimuth ring + elevated rows + zenith,
+ *  for the opt-in precise-object binaural path (VBAP snaps to a fine grid). */
+const TARGETS_DENSE = [
+  ...Array.from({ length: 36 }, (_, i) => [i * 10 - 180, 0]),
+  ...Array.from({ length: 12 }, (_, i) => [i * 30 - 180, 45]),
+  ...Array.from({ length: 12 }, (_, i) => [i * 30 - 180, -30]),
+  [0, 90],
+];
 const DRY_TAPS = 512;
 const WET_TAPS = 8192;
 const SADIE_RECORD_URL = "https://zenodo.org/records/12092466";
@@ -33,6 +41,7 @@ const SOURCE_ARCHIVE_URL = option("source-url", null);
 const SOURCE_ARCHIVE_MD5 = option("source-md5", null);
 const SOURCE_ARCHIVE_SHA256 = option("source-sha256", null);
 const FLIP_AZIMUTH = args.includes("--flip-az");
+const DENSE = args.includes("--dense");
 
 if (!HR_SOURCE || !BR_SOURCE) {
   console.error("用法: node scripts/build-hrtf.mjs --hr <HRIR zip/目录/URL> --br <BRIR zip/目录/URL> [--out 目录]");
@@ -89,7 +98,8 @@ if (wetCollection.impulses[0].sampleRate !== sampleRate) {
 mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
 
 const positions = [];
-for (const [azimuth, elevation] of TARGETS) {
+const TARGET_LIST = DENSE ? TARGETS_DENSE : TARGETS;
+for (const [azimuth, elevation] of TARGET_LIST) {
   const sourceAzimuth = ((FLIP_AZIMUTH ? -azimuth : azimuth) + 360) % 360;
   const dryMatch = nearestImpulse(dryCollection.impulses, sourceAzimuth, elevation);
   const wetMatch = nearestImpulse(wetCollection.impulses, sourceAzimuth, elevation);

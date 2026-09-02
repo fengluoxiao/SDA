@@ -146,6 +146,20 @@ function binauralHeadBaseUrl(head: BinauralHead): string {
   return assetUrl(head === "ku100" ? "hrtf" : `hrtf-ku100-${head}`);
 }
 
+/** 逐对象精确方向渲染（实验性）：对象按精确方位 VBAP 到密集球面，而不是吸附到
+ *  床层扬声器环。密集 IR 集固定为 KU100（D1 校准数据，61 方向）。 */
+const DENSE_BINAURAL_STORAGE_KEY = "sda-dense-binaural-objects";
+function readDenseBinauralObjects(): boolean {
+  try {
+    return localStorage.getItem(DENSE_BINAURAL_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function denseBinauralBaseUrl(): string {
+  return assetUrl("hrtf-dense");
+}
+
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
   axis: "x" | "y" | "z",
   scale: number,
@@ -292,6 +306,8 @@ export function App() {
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   /** 人头麦档案：KU100（校准默认）或 D2（真实耳廓备选）。 */
   const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
+  /** 逐对象精确方向双耳渲染（实验性）。 */
+  const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(readDenseBinauralObjects);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
@@ -438,6 +454,8 @@ export function App() {
         },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
+        denseBinauralObjects: readDenseBinauralObjects(),
+        denseBinauralBaseUrl: denseBinauralBaseUrl(),
         // KU100 stays at the room origin while world-locked sources are viewed
         // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
         // few hundred ms of damping, and a dead zone that swallows tremor — the
@@ -957,6 +975,16 @@ export function App() {
     void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
   }, []);
 
+  const changeDenseBinauralObjects = useCallback((on: boolean) => {
+    try {
+      localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, on ? "1" : "0");
+    } catch {
+      // 持久化失败不影响本次切换。
+    }
+    setDenseBinauralObjects(on);
+    void playerRef.current?.setDenseBinauralObjects(on, denseBinauralBaseUrl());
+  }, []);
+
   const resetBinauralEq = useCallback(() => {
     for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
     const next = { low: 0, mid: 0, high: 0 };
@@ -1363,6 +1391,15 @@ export function App() {
                 </button>
               ))}
             </div>
+            <label className="settings-switch" title="对象不再吸附到床层扬声器方向，而是按精确方位落到 61 向密集球面（KU100 实测 HRTF）直接卷积。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。">
+              <span>高解析对象渲染（实验性）</span>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={denseBinauralObjects}
+                onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
+              />
+            </label>
           </div>
         )}
         {floatPanel === "playlist" && (          <div className="panel float-panel playlist-panel" aria-label="播放列表">

@@ -28,6 +28,7 @@ import {
   LAYOUT_7_1_4,
   LAYOUTS,
   RENDER_TOPOLOGY,
+  DENSE_BINAURAL_FILLS,
   positionForLabel,
   isLfeLabel,
   aliasLabel,
@@ -225,6 +226,10 @@ export interface RendererOptions {
   /** 预加载的双耳 IR 集（SADIE II KU100 派生）；也可 init 后 setBinauralData。
    *  缺省时双耳模式回退到浏览器内置 PannerNode HRTF。 */
   binauralIrSet?: BinauralIrSet;
+  /** 密集球面 IR 集（逐对象精确方向渲染用，可选开启）。 */
+  denseBinauralIrSet?: BinauralIrSet;
+  /** 开启后对象在密集球面上按精确方向落位（实验性，CPU 更高）。 */
+  denseBinauralObjects?: boolean;
   /** Device-neutral ADM head-to-world pose processing policy. */
   headPose?: HeadPoseOptions;
   /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
@@ -308,7 +313,8 @@ export class SpatialRenderer {
   /** Current logical-layout bus -> fixed worklet topology bus. Rebuilt only when
    * the layout changes, never while processing object motion. */
   private renderToTopology: Int16Array;
-  /** 固定的最大总线拓扑。AudioWorklet 保持存活；双耳后级只接当前布局使用的 bus。 */
+  /** 固定的最大总线拓扑。AudioWorklet 保持存活；双耳后级只接当前布局使用的 bus。
+   *  末尾追加的密集"双耳专用"总线仅服务逐对象精确方向渲染，立体声/多声道不映射它们。 */
   private readonly topology: readonly VirtualSpeaker[];
   mode: OutputMode;
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
@@ -321,6 +327,10 @@ export class SpatialRenderer {
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
+  /** 开启后对象在密集球面按精确方向落位（仅双耳输出）。 */
+  private denseBinauralObjects = false;
+  /** 密集球面 IR 集（hrtf-dense，61 方向），仅密集模式挂载。 */
+  private denseIrSet: BinauralIrSet | null = null;
   /** Pose changes only recompute source gain vectors; they never touch the graph. */
   private readonly headPose: HeadPoseTracker;
   private poseUpdateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -388,7 +398,9 @@ export class SpatialRenderer {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
-    this.topology = RENDER_TOPOLOGY;
+    this.denseBinauralObjects = options.denseBinauralObjects === true;
+    this.denseIrSet = options.denseBinauralIrSet ?? null;
+    this.topology = [...RENDER_TOPOLOGY, ...DENSE_BINAURAL_FILLS];
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
@@ -553,8 +565,23 @@ export class SpatialRenderer {
     );
   }
 
+  /** Dense binaural render layout: logical layout speakers plus dense fills that
+   * are not already within ~10° of a layout speaker (so bed channels keep their
+   * exact buses while objects gain precise directions). Only used for binaural. */
+  private denseBinauralLayout(): readonly VirtualSpeaker[] {
+    const base = virtualLayoutForOutput(this.layout, "binaural");
+    const fills = DENSE_BINAURAL_FILLS.filter((fill) => !base.some((speaker) => {
+      if (speaker.isLfe) return false; // LFE has no direction; never evicts a fill.
+      const dAz = Math.abs(((speaker.azimuth - fill.azimuth + 540) % 360) - 180);
+      return dAz < 10 && Math.abs(speaker.elevation - fill.elevation) < 10;
+    }));
+    return [...base, ...fills];
+  }
+
   private updateRenderLayout(): void {
-    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.renderLayout = this.mode === "binaural" && this.denseBinauralObjects
+      ? this.denseBinauralLayout()
+      : virtualLayoutForOutput(this.layout, this.mode);
     this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
     for (const state of this.sources.values()) {
@@ -643,6 +670,33 @@ export class SpatialRenderer {
   /** True only after the measured binaural IR set has replaced browser Panner fallback. */
   get hasBinauralData(): boolean {
     return this.irSet !== null;
+  }
+
+  /** 注入密集球面 IR 集（逐对象精确方向渲染）。密集模式已开启时强制重建双耳总线，
+   * 让填充方向从"最近床层方向"切到密集集里的精确方向。 */
+  setDenseBinauralIrSet(set: BinauralIrSet | null): void {
+    this.denseIrSet = set;
+    if (this.node && this.denseBinauralObjects) this.rebuildBinauralBusGraph(true);
+  }
+
+  get hasDenseBinauralData(): boolean {
+    return this.denseIrSet !== null;
+  }
+
+  /** 逐对象精确方向渲染开关（仅双耳输出生效）。开启后对象 VBAP 到密集球面：
+   * 落点不再吸附到床层扬声器方向，填充总线用密集 IR 集卷积；床层声道不变。 */
+  setDenseBinauralObjects(enabled: boolean): void {
+    if (enabled === this.denseBinauralObjects) return;
+    this.denseBinauralObjects = enabled;
+    this.updateRenderLayout();
+    this.rebuildBinauralBusGraph();
+    for (const state of this.sources.values()) {
+      this.applyGains(state, 2048);
+    }
+  }
+
+  get denseBinauralObjectsEnabled(): boolean {
+    return this.denseBinauralObjects;
   }
 
   /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
@@ -1063,7 +1117,7 @@ export class SpatialRenderer {
       .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }
 
-  /** Physical output keeps the 18-bus worklet topology internal, then compacts
+  /** Physical output keeps the worklet's full topology internal, then compacts
    * the selected layout into contiguous WASAPI-mask order. */
   private buildMultichannelPath(_n: number, output: GainNode): void {
     this.multichannelOutput = output;
@@ -1078,6 +1132,9 @@ export class SpatialRenderer {
       this.node!.connect(splitter, outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus]!;
+        // Dense binaural-only fills are not real speakers; they must never feed
+        // the stereo downmix.
+        if (spk.binauralOnly) continue;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
         const [left, right] = stereoDownmixGains(spk);
@@ -1115,10 +1172,10 @@ export class SpatialRenderer {
   /** Disconnect only the replaceable bus branches. The worklet, source rings, and
    * final binaural processing remain connected, so a layout change cannot reset
    * the codec timeline or leak obsolete ConvolverNodes. */
-  private rebuildBinauralBusGraph(): void {
+  private rebuildBinauralBusGraph(force = false): void {
     if (!this.binauralMerger) return;
     const nextBusKeySequence = this.currentBinauralBusKeySequence();
-    if (nextBusKeySequence === this.binauralBusKeySequence) return;
+    if (!force && nextBusKeySequence === this.binauralBusKeySequence) return;
     for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
     for (const node of this.binauralBusNodes) node.disconnect();
     const retired = new Set(this.binauralBusNodes);
@@ -1168,7 +1225,12 @@ export class SpatialRenderer {
     const mode: BinauralMode = bank === "far" ? "far" : bank === "mid" ? "mid" : "near";
     // Build measured buffers from logical speaker geometry, then connect them to
     // their fixed worklet bus. This retains calibrated per-layout IR selection.
+    // Dense binaural-only fills take their IRs from the dense sphere set (exact
+    // 20°/45° grid directions); named bed speakers keep the calibrated set.
     const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.renderLayout, mode) : null;
+    const denseBusIrs = this.denseIrSet && bank !== "off" && this.denseBinauralObjects
+      ? buildBusIrs(this.ctx, this.denseIrSet, this.renderLayout, mode)
+      : null;
     for (const { topologyBus, speaker, layoutBus } of this.activeBinauralBuses()) {
       if (speaker.isLfe) {
         const lfeGain = this.ctx.createGain();
@@ -1191,7 +1253,7 @@ export class SpatialRenderer {
         convs.set(topologyBus, null);
         continue;
       }
-      const ir = busIrs?.get(layoutBus);
+      const ir = (speaker.binauralOnly ? denseBusIrs?.get(layoutBus) ?? busIrs?.get(layoutBus) : busIrs?.get(layoutBus));
       if (ir) {
         const conv = this.ctx.createConvolver();
         conv.normalize = false;
@@ -1227,7 +1289,7 @@ export class SpatialRenderer {
     this.trackBinauralBusNodes(splitter);
   }
 
-  /** Per-mode double-ear rendering. The worklet exposes four 18-channel
+  /** Per-mode double-ear rendering. The worklet exposes four topology-channel
    * outputs, avoiding the browser's single-node channel limit. */
   private buildBinauralPath(output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);

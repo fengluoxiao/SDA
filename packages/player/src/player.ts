@@ -118,6 +118,10 @@ export interface SdaPlayerOptions {
   initialOutputLatencySeconds?: number;
   /** Device-neutral head-pose filtering policy passed to the renderer. */
   headPose?: HeadPoseOptions;
+  /** 逐对象精确方向双耳渲染（实验性）：对象 VBAP 到密集球面而非床层环。 */
+  denseBinauralObjects?: boolean;
+  /** 密集球面 IR 集地址（hrtf-dense）；开启 denseBinauralObjects 时必填。 */
+  denseBinauralBaseUrl?: string;
 }
 
 /** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
@@ -181,6 +185,9 @@ export class SdaPlayer {
   private worker: Worker;
   private renderer: SpatialRenderer | null = null;
   private readonly headPoseOptions: HeadPoseOptions | undefined;
+  /** 逐对象精确方向双耳渲染开关与密集 IR 集地址；renderer 重建时恢复。 */
+  private denseBinauralObjects: boolean;
+  private denseBinauralBaseUrl: string | undefined;
   private latestHeadPose: HeadPose | null = null;
   private cb: PlayerCallbacks;
   private readyResolve!: () => void;
@@ -290,6 +297,8 @@ export class SdaPlayer {
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
     this.headPoseOptions = options.headPose;
+    this.denseBinauralObjects = options.denseBinauralObjects === true;
+    this.denseBinauralBaseUrl = options.denseBinauralBaseUrl;
     this.pendingOutputLatencySeconds = validatedOutputLatencySeconds(options.initialOutputLatencySeconds);
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health = this.createHealthSnapshot();
@@ -318,6 +327,7 @@ export class SdaPlayer {
       this.renderer = new SpatialRenderer(ctx, {
         mode,
         layout,
+        denseBinauralObjects: this.denseBinauralObjects,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
@@ -343,8 +353,15 @@ export class SdaPlayer {
   private async attachBinauralIrs(r: SpatialRenderer): Promise<void> {
     const baseUrl = this.initArgs?.binauralBaseUrl;
     if (!baseUrl) throw new Error("双耳 IR 资产地址缺失");
-    const set = await getBinauralIrSet(baseUrl);
+    const wantDense = this.denseBinauralObjects && this.denseBinauralBaseUrl;
+    const [set, dense] = await Promise.all([
+      getBinauralIrSet(baseUrl),
+      wantDense ? getBinauralIrSet(this.denseBinauralBaseUrl!) : Promise.resolve(null),
+    ]);
     if (this.disposed || this.renderer !== r) return;
+    // Inject the dense set first so the graph build below mounts dense fill IRs
+    // directly instead of building the snapped fallback convolvers first.
+    if (dense) r.setDenseBinauralIrSet(dense);
     r.setBinauralData(set);
     if (!r.hasBinauralData) throw new Error("双耳 IR 图未就绪");
     r.setBinauralMode(this.binauralMode);
@@ -416,6 +433,23 @@ export class SdaPlayer {
     if (this.disposed || this.renderer !== r) return;
     r.setBinauralData(set);
     r.setBinauralMode(this.binauralMode);
+    this.emitHealth();
+  }
+
+  /** 逐对象精确方向双耳渲染开关（播放中实时生效）。
+   *  首次开启时按需加载密集球面 IR 集；renderer 重建后由 attachBinauralIrs 恢复。 */
+  async setDenseBinauralObjects(enabled: boolean, denseBaseUrl?: string): Promise<void> {
+    if (denseBaseUrl) this.denseBinauralBaseUrl = denseBaseUrl;
+    this.denseBinauralObjects = enabled;
+    const r = this.renderer;
+    if (!r) return;
+    if (enabled && !r.hasDenseBinauralData) {
+      if (!this.denseBinauralBaseUrl) throw new Error("密集双耳 IR 资产地址缺失");
+      const dense = await getBinauralIrSet(this.denseBinauralBaseUrl);
+      if (this.disposed || this.renderer !== r) return;
+      r.setDenseBinauralIrSet(dense);
+    }
+    r.setDenseBinauralObjects(enabled);
     this.emitHealth();
   }
 
@@ -556,6 +590,7 @@ export class SdaPlayer {
       const r = new SpatialRenderer(ctx, {
         mode,
         layout,
+        denseBinauralObjects: this.denseBinauralObjects,
         onConsumedTick: (stats) => this.handleConsumedTick(generation, stats),
         onObjectActivity: (ids) => this.handleObjectActivity(generation, ids),
         onBatchResult: (result) => this.handleBatchResult(generation, result),
