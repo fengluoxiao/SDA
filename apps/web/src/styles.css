@@ -1411,3 +1411,52 @@ aside {
     gap: 3px;
   }
 }
+
+/* 耳廓/人头麦选择面板 */
+.pinna-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pinna-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel, #141a2b) 60%, transparent);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pinna-option:hover {
+  border-color: color-mix(in srgb, #4d7cfe 55%, var(--border));
+}
+
+.pinna-option.active {
+  border-color: #4d7cfe;
+  background: color-mix(in srgb, #4d7cfe 16%, var(--panel, #141a2b));
+}
+
+.pinna-option b {
+  font-size: 13px;
+}
+
+.pinna-option small {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pinna-current {
+  align-self: flex-end;
+  color: #42c982;
+  font-size: 11px;
+  font-weight: 600;
+}

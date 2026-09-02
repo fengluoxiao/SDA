@@ -203,6 +203,12 @@ function measuredLoudnessStorageKey(info: { title?: string; channels: number; sa
   return `sda-measured-lufs:${info.title ?? "track"}:${info.channels}:${info.sampleRate}`;
 }
 
+/** 可选人头麦/耳廓档案（HRTF 集）。baseUrl 相对 web 根。 */
+const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
+  { id: "ku100", label: "Neumann KU100", description: "参考级人头麦（校准默认）" },
+  { id: "d2", label: "SADIE D2", description: "真实耳廓假人头（同协议，音色/定位取向不同）" },
+];
+
 try {
   localStorage.removeItem("sda-layout-level-compensation-enabled");
 } catch {
@@ -284,7 +290,7 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession());
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | "pinna" | null>(null);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -1077,15 +1083,6 @@ export function App() {
               ))}
           </select>
           <select
-            value={binauralHead}
-            disabled={mode !== "binaural"}
-            title={mode === "binaural" ? "人头麦（HRTF）档案：KU100 为校准默认；D2 是 SADIE II 里带真实耳廓的另一颗假人头，音色/定位取向不同，播放中可实时切换对比" : "人头麦仅用于双耳输出"}
-            onChange={(e) => changeBinauralHead(e.target.value as BinauralHead)}
-          >
-            <option value="ku100">人头麦：KU100</option>
-            <option value="d2">人头麦：D2（真实耳廓）</option>
-          </select>
-          <select
             value={headphoneProfileId ?? ""}
             disabled={mode !== "binaural"}
             title={mode === "binaural" ? "应用经完整性校验的最终双耳 EQ；平均测量档案会明确标注其限制" : "耳机补偿仅用于双耳输出"}
@@ -1337,8 +1334,28 @@ export function App() {
             </dl>
           </div>
         )}
-        {floatPanel === "playlist" && (
-          <div className="panel float-panel playlist-panel" aria-label="播放列表">
+        {floatPanel === "pinna" && (
+          <div className="panel float-panel">
+            <h2>耳廓 / 人头麦</h2>
+            <p className="settings-description">
+              双耳渲染用的 HRTF 来自哪颗头/哪对耳朵。耳廓形状决定高频定位解析度——和你自己耳朵越像，空间感越准。播放中切换实时生效。
+            </p>
+            <div className="pinna-list">
+              {BINAURAL_HEADS.map((head) => (
+                <button
+                  key={head.id}
+                  className={`pinna-option ${binauralHead === head.id ? "active" : ""}`}
+                  onClick={() => changeBinauralHead(head.id)}
+                >
+                  <b>{head.label}</b>
+                  <small>{head.description}</small>
+                  {binauralHead === head.id && <span className="pinna-current">使用中</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {floatPanel === "playlist" && (          <div className="panel float-panel playlist-panel" aria-label="播放列表">
             <div className="playlist-head">
               <h2>播放列表 <span>{playlistCurrentId ? `${Math.max(1, playlist.findIndex((item) => item.id === playlistCurrentId) + 1)}/${playlist.length}` : `${playlist.length}`}</span></h2>
               <button disabled={playlist.length === 0} onClick={clearPlaylist}>清空</button>
@@ -1407,6 +1424,13 @@ export function App() {
             title={`对象 (${diagnosticObjects.length})`}
             onClick={() => setFloatPanel(floatPanel === "objects" ? null : "objects")}
           >对象</button>
+          {mode === "binaural" && (
+            <button
+              className={floatPanel === "pinna" ? "active" : ""}
+              title="选择人头麦/耳廓（HRTF）"
+              onClick={() => setFloatPanel(floatPanel === "pinna" ? null : "pinna")}
+            >耳廓</button>
+          )}
         </div>
       </div>
     </div>
