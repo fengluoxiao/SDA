@@ -3,7 +3,9 @@
 //! This is intentionally evaluated only when object metadata or head pose
 //! changes. The render hot path only interpolates the prepared bus gains.
 
-const EPSILON: f32 = 1e-4;
+const DET_EPSILON: f32 = 1e-9;
+const HULL_EPSILON: f32 = 1e-7;
+const GAIN_EPSILON: f32 = 1e-4;
 
 #[derive(Clone, Copy)]
 struct Speaker {
@@ -80,20 +82,33 @@ impl VbapSolver {
         for a in 0..BUS_COUNT {
             for b in a + 1..BUS_COUNT {
                 for c in b + 1..BUS_COUNT {
-                    let basis = [dirs[a], dirs[b], dirs[c]];
+                    // Master stores speaker directions as basis columns and solves
+                    // g = inverse(basis) * source_direction. Keeping this exact
+                    // orientation is essential: treating directions as rows sends
+                    // a moving object through unrelated faces.
+                    let basis = [
+                        [dirs[a][0], dirs[b][0], dirs[c][0]],
+                        [dirs[a][1], dirs[b][1], dirs[c][1]],
+                        [dirs[a][2], dirs[b][2], dirs[c][2]],
+                    ];
                     let Some(inverse) = inverse3(basis) else {
                         continue;
                     };
                     let normal = cross(sub(dirs[b], dirs[a]), sub(dirs[c], dirs[a]));
+                    let plane = dot(normal, dirs[a]);
+                    // The horizontal floor ring is not a usable 3D VBAP face.
+                    if plane.abs() < DET_EPSILON {
+                        continue;
+                    }
                     let mut positive = false;
                     let mut negative = false;
                     for (index, direction) in dirs.iter().enumerate() {
                         if index == a || index == b || index == c {
                             continue;
                         }
-                        let side = dot(normal, sub(*direction, dirs[a]));
-                        positive |= side > EPSILON;
-                        negative |= side < -EPSILON;
+                        let side = dot(normal, *direction) - plane;
+                        positive |= side > HULL_EPSILON;
+                        negative |= side < -HULL_EPSILON;
                     }
                     if !(positive && negative) {
                         faces.push(Face {
@@ -114,7 +129,7 @@ impl VbapSolver {
         for face in &self.faces {
             let gain = multiply(face.inverse, direction);
             let minimum = gain[0].min(gain[1]).min(gain[2]);
-            if minimum >= -EPSILON
+            if minimum >= -GAIN_EPSILON
                 && best
                     .as_ref()
                     .is_none_or(|(_, _, previous)| minimum > *previous)
@@ -174,7 +189,9 @@ fn unit(azimuth: f32, elevation: f32) -> [f32; 3] {
     let azimuth = azimuth.to_radians();
     let elevation = elevation.to_radians();
     [
-        elevation.cos() * azimuth.sin(),
+        // Match master `sphericalToAdm`: +azimuth means left, while ADM
+        // cartesian +x means right. The negative sign is therefore required.
+        -elevation.cos() * azimuth.sin(),
         elevation.cos() * azimuth.cos(),
         elevation.sin(),
     ]
@@ -194,7 +211,7 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 }
 fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
     let length = dot(value, value).sqrt();
-    (length > EPSILON).then(|| [value[0] / length, value[1] / length, value[2] / length])
+    (length > DET_EPSILON).then(|| [value[0] / length, value[1] / length, value[2] / length])
 }
 fn normalize_power(gains: &mut [f32]) {
     let power = gains.iter().map(|gain| gain * gain).sum::<f32>();
@@ -216,7 +233,7 @@ fn inverse3(rows: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     let determinant = rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
         - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
         + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]);
-    if determinant.abs() < EPSILON {
+    if determinant.abs() < DET_EPSILON {
         return None;
     }
     let inverse = determinant.recip();
@@ -249,6 +266,60 @@ mod tests {
         assert!((gains.iter().map(|gain| gain * gain).sum::<f32>() - 1.0).abs() < 1e-4);
         assert!(gains.iter().any(|gain| *gain > 0.0));
     }
+    #[test]
+    fn continuous_horizontal_orbit_changes_gains_without_unrelated_jumps() {
+        let solver = VbapSolver::new();
+        let mut previous = solver.pan([0.0, 1.0, 0.0], 0.0);
+        for degrees in 1..=360 {
+            let radians = (degrees as f32).to_radians();
+            let next = solver.pan([radians.sin(), radians.cos(), 0.0], 0.0);
+            let delta = previous
+                .iter()
+                .zip(next)
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f32>();
+            assert!(
+                delta < 0.15,
+                "orbit discontinuity at {degrees} degrees: {delta}"
+            );
+            previous = next;
+        }
+    }
+
+    #[test]
+    fn adm_left_right_axes_match_master_bus_hemispheres() {
+        let solver = VbapSolver::new();
+        let right = solver.pan([1.0, 0.0, 0.0], 0.0);
+        let left = solver.pan([-1.0, 0.0, 0.0], 0.0);
+        let left_buses = [0, 3, 5, 7, 9];
+        let right_buses = [1, 4, 6, 8, 10];
+        let energy = |gains: [f32; BUS_COUNT], buses: &[usize]| {
+            buses
+                .iter()
+                .map(|index| gains[*index] * gains[*index])
+                .sum::<f32>()
+        };
+        assert!(energy(right, &right_buses) > energy(right, &left_buses));
+        assert!(energy(left, &left_buses) > energy(left, &right_buses));
+    }
+
+    #[test]
+    fn elevated_orbit_targets_remain_power_normalized() {
+        let solver = VbapSolver::new();
+        for degrees in 0..=360 {
+            let radians = (degrees as f32).to_radians();
+            let gains = solver.pan(
+                [radians.sin(), radians.cos(), 0.25 + 0.25 * radians.sin()],
+                0.0,
+            );
+            let power = gains.iter().map(|gain| gain * gain).sum::<f32>();
+            assert!(
+                (power - 1.0).abs() < 1e-4,
+                "invalid elevated target at {degrees}"
+            );
+        }
+    }
+
     #[test]
     fn spread_remains_power_normalized() {
         let gains = VbapSolver::new().pan([1.0, 1.0, 0.5], 1.0);

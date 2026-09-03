@@ -61,12 +61,25 @@ fn handle_command(
                 let id = format!("obj:{}", event.id);
                 if state.sources.contains_key(&id) {
                     let applies_now = event.sample_pos <= state.sample_pos;
+                    let elapsed = state.sample_pos.saturating_sub(event.sample_pos);
+                    let ramp = if event.ramp_duration == 0 {
+                        DEFAULT_OBJECT_RAMP
+                    } else {
+                        event.ramp_duration
+                    };
                     {
                         let source = state.sources.get_mut(&id).expect("checked above");
                         apply_object_event(source, state.sample_pos, event);
                     }
                     if applies_now {
-                        let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+                        let _ = state.route_source_now(&id, ramp);
+                        if elapsed > 0 {
+                            let source = state.sources.get_mut(&id).expect("source still exists");
+                            Engine::advance_source_envelopes(
+                                source,
+                                elapsed.min(u32::MAX as u64) as u32,
+                            );
+                        }
                     }
                 } else {
                     // Decoders can emit OAMD before the matching PCM declaration.
@@ -287,6 +300,11 @@ fn handle_command(
         Command::Reset { origin } => {
             state.sample_pos = origin;
             state.block_offset = 0;
+            // A replacement player can queue PCM before startAt reaches the
+            // worker. Stop the old transport so it cannot consume the new
+            // origin and leave startAt waiting for an already-taken sample.
+            state.output_active = false;
+            state.paused = true;
             state.render_epoch = state.render_epoch.wrapping_add(1);
             state.pending_object_events.clear();
             if let Some(bus_renderer) = &mut state.bus_renderer {
@@ -352,10 +370,16 @@ pub(super) fn apply_render_command(
 }
 
 fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectEvent) {
+    let ramp = if event.ramp_duration == 0 {
+        DEFAULT_OBJECT_RAMP
+    } else {
+        event.ramp_duration
+    };
     if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
         let spatial = SpatialEvent {
             position: event.pos,
             spread: spatial::spread_from_size(event.size),
+            ramp,
         };
         if event.sample_pos > sample_pos {
             source.spatial_events.insert(event.sample_pos, spatial);
@@ -366,7 +390,6 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
     }
     if event.gain_db.is_finite() {
         let gain = 10.0_f32.powf(event.gain_db / 20.0);
-        let ramp = event.ramp_duration.max(1);
         if event.sample_pos > sample_pos {
             source
                 .gain_events

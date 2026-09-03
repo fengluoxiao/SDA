@@ -318,6 +318,8 @@ export function App() {
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
   const nativeRendererRunningRef = useRef(false);
   const nativeRendererSampleRef = useRef(0);
+  /** Invalidates every native sink owned by a replaced player immediately. */
+  const nativeSessionEpochRef = useRef(0);
   nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
   nativeRendererSampleRef.current = nativeRendererStatus?.samplePos ?? nativeRendererSampleRef.current;
   const [nativeRendererBusy, setNativeRendererBusy] = useState(false);
@@ -371,30 +373,38 @@ export function App() {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
       let nativeSessionReady = false;
+      const nativeSessionEpoch = nativeSessionEpochRef.current;
+      const isNativeSessionCurrent = () => nativeSessionEpochRef.current === nativeSessionEpoch && isCurrent();
+      const ownsNativeSession = () => nativeSessionReady && isNativeSessionCurrent();
       const desktop = window.sdaDesktop;
       if (!desktop?.startNativeRenderer || !desktop.getNativeRendererStatus || !desktop.nativeRendererHrtf) {
         throw new Error("SDA Desktop native renderer is required for audio playback");
       }
       let nativeStatus = await desktop.getNativeRendererStatus();
       if (!nativeStatus.running) await desktop.startNativeRenderer();
+      if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.2);
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
+      if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       // A replacement session owns the sidecar from this exact point. Reset it
       // before any new source declaration; an outgoing player must never reset
       // or remove sources later, after this session starts submitting PCM.
       const resetQueued = await desktop.nativeRendererReset?.(0);
       if (resetQueued === false) throw new Error("native renderer could not reset the replacement session");
+      if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       nativeSessionReady = true;
       nativeRendererRunningRef.current = true;
-      nativeRendererSampleRef.current = nativeStatus.samplePos ?? nativeRendererSampleRef.current;
-      setNativeRendererStatus({ ...nativeStatus, running: true, hrtfReady: true });
+      nativeRendererSampleRef.current = 0;
+      setNativeRendererStatus({ ...nativeStatus, running: true, hrtfReady: true, samplePos: 0 });
       // All desktop PCM, source lifecycle, object events, and pose updates are
       // serialized through the WASAPI sidecar. A frame resolves only after its
       // full codec batch was accepted by the native ring.
       let nativeCommandChain: Promise<void> = Promise.resolve();
       const enqueueNative = (label: string, operation: () => void | Promise<unknown>) => {
         const result = nativeCommandChain.then(async () => {
+          if (!ownsNativeSession()) throw new Error(`native sidecar session expired before ${label}`);
           const accepted = await operation();
+          if (!ownsNativeSession()) throw new Error(`native sidecar session expired during ${label}`);
           if (accepted === false) throw new Error(`native sidecar rejected ${label}`);
         });
         // A failed command rejects its caller but must not permanently poison the
@@ -406,7 +416,7 @@ export function App() {
       const nativeRendererSink: NativeRendererSink | undefined = desktop?.nativeRendererSource && desktop.nativeRendererFrame
         ? {
             addSource: async (id, atSample) => {
-              if (!nativeSessionReady) throw new Error("native renderer session unavailable");
+              if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
               const known = nativeSourceAcks.get(id);
               if (known) return known;
               const declared = enqueueNative(`addSource ${id}@${atSample}`, () => desktop.nativeRendererSource!(id, atSample));
@@ -419,21 +429,22 @@ export function App() {
               }
             },
             removeSource: async (id, atSample) => {
-              if (!nativeSessionReady) return;
+              if (!ownsNativeSession()) return;
               nativeSourceAcks.delete(id);
               await enqueueNative(`removeSource ${id}@${atSample}`, () => desktop.nativeRendererRemoveSource?.(id, atSample));
             },
             setMuted: async (id, muted, atSample) => {
-              if (!nativeSessionReady) return;
+              if (!ownsNativeSession()) return;
               await enqueueNative(`setMuted ${id}=${muted}`, () => desktop.nativeRendererMuted?.(id, muted, atSample));
             },
             events: async (events) => {
-              if (!nativeSessionReady) throw new Error("native renderer session unavailable");
+              if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
               await enqueueNative(`objectEvents (${events.length})`, () => desktop.nativeRendererEvents?.(events));
             },
             frame: async (samplePos, entries) => {
-              if (!nativeSessionReady) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
+              if (!ownsNativeSession()) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
               await nativeCommandChain;
+              if (!ownsNativeSession()) return { accepted: false, samples: 0, reason: "native renderer session expired" };
               let result = await desktop.nativeRendererFrame!(samplePos, entries);
               // A stale player cleanup or sidecar reset can remove sources after
               // their declaration promise was cached. Re-declare and retry this
@@ -447,31 +458,31 @@ export function App() {
               return result;
             },
             reset: async (origin) => {
-              if (!nativeSessionReady) return;
+              if (!ownsNativeSession()) return;
               await enqueueNative(`reset ${origin}`, () => desktop.nativeRendererReset?.(origin));
             },
             setHeadPose: (pose) => {
-              if (nativeSessionReady) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
+              if (ownsNativeSession()) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
                 console.warn("[SDA] native head pose rejected:", error);
               });
             },
             clearHeadPose: () => {
-              if (nativeSessionReady) void enqueueNative("clearHeadPose", () => desktop.nativeRendererClearPose?.()).catch((error) => {
+              if (ownsNativeSession()) void enqueueNative("clearHeadPose", () => desktop.nativeRendererClearPose?.()).catch((error) => {
                 console.warn("[SDA] native clear head pose rejected:", error);
               });
             },
             startAt: async (origin) => {
-              if (!nativeSessionReady) return false;
+              if (!ownsNativeSession()) return false;
               await nativeCommandChain;
               return desktop.nativeRendererStartAt?.(origin) ?? false;
             },
-            pause: (paused) => nativeSessionReady
+            pause: (paused) => ownsNativeSession()
               ? desktop.nativeRendererPause?.(paused) ?? Promise.resolve(false)
               : Promise.resolve(false),
             getConsumedSamples: () => nativeRendererSampleRef.current,
             onConsumedSamples: (callback) => desktop.onNativeRendererStatus?.((status) => {
               const samplePos = status.samplePos;
-              if (!nativeSessionReady || !status.running || typeof samplePos !== "number" || !Number.isSafeInteger(samplePos)) return;
+              if (!ownsNativeSession() || !status.running || typeof samplePos !== "number" || !Number.isSafeInteger(samplePos)) return;
               nativeRendererSampleRef.current = samplePos;
               callback(samplePos);
             }),
@@ -902,15 +913,17 @@ export function App() {
   const play = useCallback(
     async (source: PlaybackSource) => {
       const request = ++playRequestRef.current;
+      nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
-      // Keep the outgoing native session alive until its replacement is ready so
-      // the codec/source transition never leaves an unowned playback interval.
+      // The old decoder must stop before the new native session resets to clock
+      // zero. Its sink is already invalidated above, but terminating it here also
+      // prevents stale decoded frames from consuming queue/pump capacity.
       const previous = playerRef.current;
       if (previous) {
-        previous.setVolume(0);
-        retiringPlayerRef.current = previous;
         playerRef.current = null;
+        retiringPlayerRef.current = null;
+        await previous.dispose();
       }
       setPlayerReady(null);
       if (!isCurrent()) return;

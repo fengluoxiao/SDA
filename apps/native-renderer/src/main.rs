@@ -32,6 +32,7 @@ const FRAME_PCM: u8 = b'P';
 /// Atomic collection of all mono source blocks for one decoded codec frame.
 const FRAME_PCM_BATCH: u8 = b'B';
 const NATIVE_RENDERER_MAX_JSON_BYTES: usize = 16 * 1024;
+const DEFAULT_OBJECT_RAMP: u32 = 128;
 const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
 
@@ -158,6 +159,7 @@ struct Health {
     reference_mix: bool,
     output_active: bool,
     hrtf_ready: bool,
+    route_update_count: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -182,6 +184,7 @@ struct GainEvent {
 struct SpatialEvent {
     position: [f32; 3],
     spread: f32,
+    ramp: u32,
 }
 
 struct Source {
@@ -273,6 +276,7 @@ struct Engine {
     block_offset: usize,
     output_active: bool,
     render_epoch: u64,
+    route_update_count: u64,
 }
 
 impl Engine {
@@ -293,6 +297,7 @@ impl Engine {
             block_offset: 0,
             output_active: false,
             render_epoch: 0,
+            route_update_count: 0,
         }
     }
 
@@ -321,6 +326,27 @@ impl Engine {
         source.bus_ramp_remaining = ramp;
         for index in 0..vbap::BUS_COUNT {
             source.bus_steps[index] = (gains[index] - source.bus_gains[index]) / ramp as f32;
+        }
+    }
+
+    fn advance_source_envelopes(source: &mut Source, samples: u32) {
+        let scalar = samples.min(source.ramp_remaining);
+        if scalar > 0 {
+            source.gain += source.ramp_step * scalar as f32;
+            source.ramp_remaining -= scalar;
+            if source.ramp_remaining == 0 {
+                source.gain = source.target_gain;
+            }
+        }
+        let route = samples.min(source.bus_ramp_remaining);
+        if route > 0 {
+            for bus in 0..vbap::BUS_COUNT {
+                source.bus_gains[bus] += source.bus_steps[bus] * route as f32;
+            }
+            source.bus_ramp_remaining -= route;
+            if source.bus_ramp_remaining == 0 {
+                source.bus_gains = source.bus_targets;
+            }
         }
     }
 
@@ -367,6 +393,7 @@ impl Engine {
             reference_mix: self.active_hrtf_set.is_none(),
             output_active: self.output_active,
             hrtf_ready: self.active_hrtf_set.is_some(),
+            route_update_count: self.route_update_count,
         }
     }
 
@@ -413,8 +440,9 @@ impl Engine {
                     Self::set_source_route(
                         source,
                         bus_renderer::route(vbap, event.position, head_pose, event.spread),
-                        convolution::DEFAULT_PARTITION as u32,
+                        event.ramp,
                     );
+                    self.route_update_count = self.route_update_count.saturating_add(1);
                 }
                 if let Some(muted) = source.mute_events.remove(&at) {
                     source.muted = muted;
@@ -424,22 +452,10 @@ impl Engine {
                     source.ramp_remaining = event.ramp.max(1);
                     source.ramp_step = (event.gain - source.gain) / source.ramp_remaining as f32;
                 }
-                if source.ramp_remaining > 0 {
-                    source.gain += source.ramp_step;
-                    source.ramp_remaining -= 1;
-                    if source.ramp_remaining == 0 {
-                        source.gain = source.target_gain;
-                    }
-                }
-                if source.bus_ramp_remaining > 0 {
-                    for bus in 0..vbap::BUS_COUNT {
-                        source.bus_gains[bus] += source.bus_steps[bus];
-                    }
-                    source.bus_ramp_remaining -= 1;
-                    if source.bus_ramp_remaining == 0 {
-                        source.bus_gains = source.bus_targets;
-                    }
-                }
+                // Match master worklet timing: the event boundary emits the
+                // current vector/scalar first, then advances its envelopes for
+                // the following sample. Advancing here would make every moving
+                // object start one step ahead of its scheduled codec sample.
                 let raw = source.samples.take(at);
                 let target = if raw.is_some() { 1.0 } else { 0.0 };
                 if target != source.availability_target {
@@ -470,6 +486,7 @@ impl Engine {
                 } else {
                     direct += sample;
                 }
+                Self::advance_source_envelopes(source, 1);
             }
             let binaural = self
                 .bus_renderer
@@ -846,6 +863,23 @@ mod tests {
         );
         assert!(!engine.has_any_pcm_at(0));
         assert_eq!(engine.sample_pos, 0);
+    }
+
+    #[test]
+    fn object_route_ramp_emits_event_sample_before_advancing() {
+        let mut source = Source {
+            gain: 1.0,
+            target_gain: 1.0,
+            ..Source::default()
+        };
+        source.bus_gains[0] = 1.0;
+        let target = [0.0; vbap::BUS_COUNT];
+        Engine::set_source_route(&mut source, target, 4);
+        assert_eq!(source.bus_gains[0], 1.0);
+        Engine::advance_source_envelopes(&mut source, 1);
+        assert!((source.bus_gains[0] - 0.75).abs() < 1e-6);
+        Engine::advance_source_envelopes(&mut source, 3);
+        assert_eq!(source.bus_gains, target);
     }
 
     #[test]

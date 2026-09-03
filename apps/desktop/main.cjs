@@ -404,7 +404,7 @@ function consumeNativeRendererOutput(chunk) {
           `health sample=${message.samplePos} sources=${message.activeSources} objectConvolvers=${message.activeObjectConvolvers ?? 0} ` +
           `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
           `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
-          `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} ` +
+          `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
           `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
           `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}`,
