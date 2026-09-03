@@ -119,6 +119,7 @@ export interface NativeRendererSink {
   /** Resolves only after the sidecar has created the source. */
   addSource(id: string, atSample: number): void | Promise<void>;
   removeSource(id: string, atSample: number): void | Promise<void>;
+  setMuted(id: string, muted: boolean, atSample?: number): void | Promise<void>;
   events(events: readonly ObjectEvent[]): void | Promise<void>;
   /** Resolves only once the sidecar accepted or rejected the entire codec batch. */
   frame(samplePos: number, entries: readonly { id: string; samples: Float32Array }[]): void | Promise<{ accepted: boolean; samples: number; reason?: string }>;
@@ -571,9 +572,18 @@ export class SdaPlayer {
   setObjectMuted(objectId: number, muted: boolean): void {
     if (muted) this.mutedObjects.add(objectId);
     else this.mutedObjects.delete(objectId);
-    if (!this.renderer || !this.objectChannels.has(objectId)) return;
-    if (!this.renderer.setSourceMuted(`obj:${objectId}`, muted)) {
-      this.cb.onError?.(`静音未命中：obj:${objectId} 已声明但渲染器无此声源`);
+    if (!this.objectChannels.has(objectId)) return;
+    const sourceId = `obj:${objectId}`;
+    if (this.renderer && !this.renderer.setSourceMuted(sourceId, muted)) {
+      this.cb.onError?.(`静音未命中：${sourceId} 已声明但渲染器无此声源`);
+    }
+    try {
+      const result = this.nativeRendererSink?.setMuted(sourceId, muted);
+      if (result instanceof Promise) {
+        void result.catch((error) => console.warn(`[SDA] player#${this.id} native object mute failed:`, error));
+      }
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native object mute failed:`, error);
     }
   }
 
@@ -582,7 +592,16 @@ export class SdaPlayer {
   syncObjectMutes(mutedIds: ReadonlySet<number>): void {
     this.mutedObjects = new Set(mutedIds);
     for (const id of this.objectChannels.keys()) {
-      if (this.renderer) this.renderer.setSourceMuted(`obj:${id}`, mutedIds.has(id));
+      const sourceId = `obj:${id}`;
+      this.renderer?.setSourceMuted(sourceId, mutedIds.has(id));
+      try {
+        const result = this.nativeRendererSink?.setMuted(sourceId, mutedIds.has(id));
+        if (result instanceof Promise) void result.catch((error) => {
+          console.warn(`[SDA] player#${this.id} native object mute sync failed:`, error);
+        });
+      } catch (error) {
+        console.warn(`[SDA] player#${this.id} native object mute sync failed:`, error);
+      }
     }
   }
 
@@ -791,28 +810,15 @@ export class SdaPlayer {
     if (this.visualTimer) clearInterval(this.visualTimer);
     this.visualTimer = null;
     this.renderer?.resetBuffers();
-    // The sidecar is shared while a replacement player is being prepared. An
-    // outgoing instance must never reset/remove native sources after ownership
-    // has moved to the replacement, or it can erase the replacement's prebuffer.
-    const ownsNativeSession = SdaPlayer.active === this;
-    if (ownsNativeSession) {
-      try { void this.nativeRendererSink?.reset(this.acceptedEndSample); } catch (error) {
-        console.warn(`[SDA] player#${this.id} native renderer reset mirror failed:`, error);
-      }
-    }
-    // addSource 对同一曲目内的稀疏重声明必须幂等；曲目边界则显式删除源，
-    // 避免下一首复用相同 bed:ch/obj:id 时继承上一首的位置、增益或床标签。
+    // The sidecar is a process-wide shared output. A player instance never
+    // clears it during stop/dispose: delayed cleanup from an old player can
+    // otherwise erase a still-playing or newly-prebuffered session. The next
+    // createPlayer() owns the sole reset boundary before declaring its sources.
     this.knownBedLabels.forEach((label, channel) => {
-      if (!label.startsWith("Obj_")) {
-        const sourceId = `bed:${channel}`;
-        this.renderer?.removeSource(sourceId);
-        if (ownsNativeSession) try { void this.nativeRendererSink?.removeSource(sourceId, this.acceptedEndSample); } catch {}
-      }
+      if (!label.startsWith("Obj_")) this.renderer?.removeSource(`bed:${channel}`);
     });
     for (const id of this.objectChannels.keys()) {
-      const sourceId = `obj:${id}`;
-      this.renderer?.removeSource(sourceId);
-      if (ownsNativeSession) try { void this.nativeRendererSink?.removeSource(sourceId, this.acceptedEndSample); } catch {}
+      this.renderer?.removeSource(`obj:${id}`);
     }
     this.knownBedLabels = [];
     this.soundingObjectIds.clear();
@@ -820,7 +826,11 @@ export class SdaPlayer {
     // 若暂停中停止，同时解除 worklet 静音和时钟挂起，避免卡死
     this.pausedState = false;
     this.renderer?.setPaused(false);
-    try { void this.nativeRendererSink?.pause(false); } catch {}
+    // Do not resume the shared native sidecar from an outgoing instance; the
+    // owning replacement session establishes its own start/pause state.
+    if (this.outputBackend !== "native-sidecar") {
+      try { void this.nativeRendererSink?.pause(false); } catch {}
+    }
     void this.renderer?.ctx.resume();
     this.objects.clear();
     this.visualSnapshotDirty = true;
@@ -1633,7 +1643,11 @@ export class SdaPlayer {
         const nextIds = new Set(declarations.map((declaration) => declaration.id));
         for (const id of this.objectChannels.keys()) {
           if (!nextIds.has(id)) {
-            renderer?.retireSourceAt(`obj:${id}`, frame.samplePos);
+            const sourceId = `obj:${id}`;
+            renderer?.retireSourceAt(sourceId, frame.samplePos);
+            try { this.nativeRendererSink?.removeSource(sourceId, frame.samplePos); } catch (error) {
+              console.warn(`[SDA] player#${this.id} native renderer object retirement mirror failed:`, error);
+            }
             this.discardPendingVisualEvents(id);
           }
         }
@@ -1645,7 +1659,8 @@ export class SdaPlayer {
           renderer?.addSource(`obj:${decl.id}`, { atSample: frame.samplePos });
           // 声明可能是整组重放；addSource 对已有 id 幂等，此处只同步独立
           // mute 包络，不触碰该源已经排队/生效的位置、增益等元数据。
-          renderer?.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
+          const objectSourceId = `obj:${decl.id}`;
+          renderer?.setSourceMuted(objectSourceId, this.mutedObjects.has(decl.id));
           if (!this.objects.has(decl.id)) {
             // OAMD events may arrive in a later frame. Expose the object now so
             // the first opened file does not appear to have no objects.
@@ -1709,10 +1724,11 @@ export class SdaPlayer {
       outstandingSamples += frameSamples;
       if (this.outputBackend === "native-sidecar") {
         const submit = async () => {
-          // Source and OAMD commands must reach Rust before the batch. The native
-          // sidecar ACK is the ordering barrier; a successful IPC pipe write is not.
-          await Promise.all(entries.map((entry) => this.nativeRendererSink!.addSource(entry.id, frame.samplePos)));
+          // OAMD must arrive before its object source declaration. Rust preserves
+          // unknown-object metadata and applies it during addSource, so each decoded
+          // Obj_* PCM route creates its own convolver at its first true direction.
           if (events.length > 0) await this.nativeRendererSink!.events(events);
+          await Promise.all(entries.map((entry) => this.nativeRendererSink!.addSource(entry.id, frame.samplePos)));
           const result = await this.nativeRendererSink!.frame(frame.samplePos, entries);
           this.handleBatchResult(this.rendererGeneration, result
             ? { sequence, ...result }

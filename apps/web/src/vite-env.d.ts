@@ -87,6 +87,7 @@ declare global {
       nativeRendererRemoveSource?: (id: string, atSample: number) => Promise<boolean>;
       nativeRendererEvents?: (events: readonly import("@sda/core").ObjectEvent[]) => Promise<boolean>;
       nativeRendererReset?: (origin: number) => Promise<boolean>;
+      nativeRendererMuted?: (id: string, muted: boolean, atSample?: number) => Promise<boolean>;
       nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;

@@ -379,6 +379,11 @@ export function App() {
       if (!nativeStatus.running) await desktop.startNativeRenderer();
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.2);
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
+      // A replacement session owns the sidecar from this exact point. Reset it
+      // before any new source declaration; an outgoing player must never reset
+      // or remove sources later, after this session starts submitting PCM.
+      const resetQueued = await desktop.nativeRendererReset?.(0);
+      if (resetQueued === false) throw new Error("native renderer could not reset the replacement session");
       nativeSessionReady = true;
       nativeRendererRunningRef.current = true;
       nativeRendererSampleRef.current = nativeStatus.samplePos ?? nativeRendererSampleRef.current;
@@ -418,6 +423,10 @@ export function App() {
               nativeSourceAcks.delete(id);
               await enqueueNative(`removeSource ${id}@${atSample}`, () => desktop.nativeRendererRemoveSource?.(id, atSample));
             },
+            setMuted: async (id, muted, atSample) => {
+              if (!nativeSessionReady) return;
+              await enqueueNative(`setMuted ${id}=${muted}`, () => desktop.nativeRendererMuted?.(id, muted, atSample));
+            },
             events: async (events) => {
               if (!nativeSessionReady) throw new Error("native renderer session unavailable");
               await enqueueNative(`objectEvents (${events.length})`, () => desktop.nativeRendererEvents?.(events));
@@ -425,7 +434,17 @@ export function App() {
             frame: async (samplePos, entries) => {
               if (!nativeSessionReady) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
               await nativeCommandChain;
-              return desktop.nativeRendererFrame!(samplePos, entries);
+              let result = await desktop.nativeRendererFrame!(samplePos, entries);
+              // A stale player cleanup or sidecar reset can remove sources after
+              // their declaration promise was cached. Re-declare and retry this
+              // exact codec batch once instead of dropping the current track.
+              if (!result.accepted && /unknown source/i.test(result.reason ?? "")) {
+                for (const entry of entries) nativeSourceAcks.delete(entry.id);
+                for (const entry of entries) await nativeRendererSink!.addSource(entry.id, samplePos);
+                await nativeCommandChain;
+                result = await desktop.nativeRendererFrame!(samplePos, entries);
+              }
+              return result;
             },
             reset: async (origin) => {
               if (!nativeSessionReady) return;

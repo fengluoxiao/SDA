@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use rustfft::{num_complex::Complex32, Fft, FftPlanner};
+use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
 pub const DEFAULT_PARTITION: usize = 128;
 

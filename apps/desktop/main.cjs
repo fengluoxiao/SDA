@@ -401,11 +401,12 @@ function consumeNativeRendererOutput(chunk) {
         }
       } else if (message?.type === "health") {
         writeStartupLog(
-          `health sample=${message.samplePos} sources=${message.activeSources} ` +
+          `health sample=${message.samplePos} sources=${message.activeSources} objectConvolvers=${message.activeObjectConvolvers ?? 0} ` +
           `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
           `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
           `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} ` +
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
+          `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
           `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}`,
         );
         const hrtf = message.hrtfReady ? "HRTF ready" : "等待 HRTF";
@@ -1051,6 +1052,13 @@ ipcMain.handle("sda:native-renderer-reset", async (_event, origin) => {
   if (!Number.isSafeInteger(origin) || origin < 0) return false;
   const accepted = await nativeRendererCommandAck({ type: "reset", origin }, "reset");
   writeStartupLog(`reset ${origin} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-muted", async (_event, id, muted, atSample) => {
+  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || typeof muted !== "boolean") return false;
+  if (atSample !== undefined && (!Number.isSafeInteger(atSample) || atSample < 0)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setMuted", id, muted, at: atSample }, "setMuted");
+  writeStartupLog(`setMuted ${id}=${muted}@${atSample ?? "now"} ACK -> ${accepted}`);
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {

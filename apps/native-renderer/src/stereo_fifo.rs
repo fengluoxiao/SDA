@@ -48,15 +48,19 @@ impl StereoFifo {
     pub fn push(&self, interleaved: &[f32]) -> usize {
         let requested = interleaved.len() / 2;
         let count = requested.min(self.available_write());
-        if count == 0 { return 0; }
+        if count == 0 {
+            return 0;
+        }
         let write = self.write.load(Ordering::Relaxed);
         for offset in 0..count {
             let index = (write.wrapping_add(offset)) % self.capacity;
             unsafe {
-                *self.frames[index].0.get() = [interleaved[offset * 2], interleaved[offset * 2 + 1]];
+                *self.frames[index].0.get() =
+                    [interleaved[offset * 2], interleaved[offset * 2 + 1]];
             }
         }
-        self.write.store(write.wrapping_add(count), Ordering::Release);
+        self.write
+            .store(write.wrapping_add(count), Ordering::Release);
         count
     }
 
@@ -78,9 +82,13 @@ impl StereoFifo {
             let target = &mut output[offset * channels..(offset + 1) * channels];
             target.fill(0.0);
             target[0] = frame[0];
-            if channels > 1 { target[1] = frame[1]; }
+            if channels > 1 {
+                target[1] = frame[1];
+            }
         });
-        for target in output[count * channels..].chunks_exact_mut(channels) { target.fill(0.0); }
+        for target in output[count * channels..].chunks_exact_mut(channels) {
+            target.fill(0.0);
+        }
         count
     }
 
@@ -90,9 +98,13 @@ impl StereoFifo {
             let target = &mut output[offset * channels..(offset + 1) * channels];
             target.fill(0);
             target[0] = (frame[0].clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            if channels > 1 { target[1] = (frame[1].clamp(-1.0, 1.0) * i16::MAX as f32) as i16; }
+            if channels > 1 {
+                target[1] = (frame[1].clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            }
         });
-        for target in output[count * channels..].chunks_exact_mut(channels) { target.fill(0); }
+        for target in output[count * channels..].chunks_exact_mut(channels) {
+            target.fill(0);
+        }
         count
     }
 
@@ -102,9 +114,13 @@ impl StereoFifo {
             let target = &mut output[offset * channels..(offset + 1) * channels];
             target.fill(u16::MAX / 2);
             target[0] = ((frame[0].clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32) as u16;
-            if channels > 1 { target[1] = ((frame[1].clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16; }
+            if channels > 1 {
+                target[1] = ((frame[1].clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
+            }
         });
-        for target in output[count * channels..].chunks_exact_mut(channels) { target.fill(u16::MAX / 2); }
+        for target in output[count * channels..].chunks_exact_mut(channels) {
+            target.fill(u16::MAX / 2);
+        }
         count
     }
 

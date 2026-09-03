@@ -44,26 +44,30 @@ fn handle_command(
                 for event in pending {
                     apply_object_event(source, sample_pos, event);
                 }
-                let refreshed = if source_id.starts_with("obj:") && state.active_hrtf_set.is_some()
-                {
-                    state.refresh_source_hrtf(&source_id)
+                let routed = if source_id.starts_with("obj:") {
+                    state.route_source_now(&source_id, 0)
                 } else {
                     Ok(())
                 };
                 write_event(&Event::Ack {
                     command: "addSource",
-                    accepted: refreshed.is_ok(),
-                    detail: refreshed.err().as_deref(),
+                    accepted: routed.is_ok(),
+                    detail: routed.err().as_deref(),
                 });
             }
         }
         Command::ObjectEvents { events } => {
             for event in events {
                 let id = format!("obj:{}", event.id);
-                if let Some(source) = state.sources.get_mut(&id) {
-                    // Future events are applied on the audio timeline. Do not build
-                    // filters while holding the engine lock on every decoded frame.
-                    apply_object_event(source, state.sample_pos, event);
+                if state.sources.contains_key(&id) {
+                    let applies_now = event.sample_pos <= state.sample_pos;
+                    {
+                        let source = state.sources.get_mut(&id).expect("checked above");
+                        apply_object_event(source, state.sample_pos, event);
+                    }
+                    if applies_now {
+                        let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+                    }
                 } else {
                     // Decoders can emit OAMD before the matching PCM declaration.
                     // Preserve the codec timestamp and apply it when addSource arrives.
@@ -99,6 +103,17 @@ fn handle_command(
             // Keep the newest pose; filter transitions are prepared separately.
             state.head_pose = spatial::normalize_quaternion(orientation);
             let accepted = state.head_pose.is_some();
+            if accepted {
+                let ids: Vec<String> = state
+                    .sources
+                    .keys()
+                    .filter(|id| id.starts_with("obj:"))
+                    .cloned()
+                    .collect();
+                for id in ids {
+                    let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+                }
+            }
             write_event(&Event::Ack {
                 command: "headPose",
                 accepted,
@@ -142,10 +157,11 @@ fn handle_command(
                     Ok(loaded) if loaded.sample_rate == 48_000 => {
                         state.active_hrtf_set = Some(loaded);
                         state.hrtf_wet_weight = wet_weight.clamp(0.0, 1.0);
+                        let prepared = state.rebuild_bus_renderer();
                         write_event(&Event::Ack {
                             command: "setHrtf",
-                            accepted: true,
-                            detail: None,
+                            accepted: prepared.is_ok(),
+                            detail: prepared.err().as_deref(),
                         });
                     }
                     Ok(_) => write_event(&Event::Ack {
@@ -170,23 +186,25 @@ fn handle_command(
             write_event(&Event::Ack {
                 command: "setOutputActive",
                 accepted,
-                detail: (!accepted).then_some("configure a calibrated HRTF before enabling native output"),
+                detail: (!accepted)
+                    .then_some("configure a calibrated HRTF before enabling native output"),
             });
         }
         Command::StartAt { origin } => {
-            let accepted = state.active_hrtf_set.is_some()
-                && !state.sources.is_empty();
+            let accepted = state.active_hrtf_set.is_some() && !state.sources.is_empty();
             if accepted {
                 state.sample_pos = origin;
                 state.block_offset = 0;
                 state.output_active = true;
                 state.paused = false;
                 state.render_epoch = state.render_epoch.wrapping_add(1);
+                if let Some(bus_renderer) = &mut state.bus_renderer {
+                    bus_renderer.reset();
+                }
                 for source in state.sources.values_mut() {
-                    if let Some(convolver) = &mut source.convolver { convolver.reset(); }
-                    source.input_block.fill(0.0);
-                    source.output_left.fill(0.0);
-                    source.output_right.fill(0.0);
+                    source.availability = 0.0;
+                    source.availability_target = 0.0;
+                    source.availability_ramp_remaining = 0;
                 }
             }
             write_event(&Event::Ack {
@@ -197,11 +215,10 @@ fn handle_command(
         }
         Command::ClearHeadPose => {
             state.head_pose = None;
-            let refreshed = state.refresh_all_hrtf();
             write_event(&Event::Ack {
                 command: "clearHeadPose",
-                accepted: refreshed.is_ok(),
-                detail: refreshed.err().as_deref(),
+                accepted: true,
+                detail: None,
             });
         }
         Command::SetGain { id, gain, ramp, at } => {
@@ -234,6 +251,28 @@ fn handle_command(
                 });
             }
         }
+        Command::SetMuted { id, muted, at } => {
+            let sample_pos = state.sample_pos;
+            if let Some(source) = state.sources.get_mut(&id) {
+                let at = at.unwrap_or(sample_pos);
+                if at > sample_pos {
+                    source.mute_events.insert(at, muted);
+                } else {
+                    source.muted = muted;
+                }
+                write_event(&Event::Ack {
+                    command: "setMuted",
+                    accepted: true,
+                    detail: None,
+                });
+            } else {
+                write_event(&Event::Ack {
+                    command: "setMuted",
+                    accepted: false,
+                    detail: Some("unknown source"),
+                });
+            }
+        }
         Command::Pause { paused } => {
             if state.paused != paused {
                 state.paused = paused;
@@ -250,6 +289,9 @@ fn handle_command(
             state.block_offset = 0;
             state.render_epoch = state.render_epoch.wrapping_add(1);
             state.pending_object_events.clear();
+            if let Some(bus_renderer) = &mut state.bus_renderer {
+                bus_renderer.reset();
+            }
             for source in state.sources.values_mut() {
                 source.samples.clear();
                 source.gain_events.clear();
@@ -259,10 +301,15 @@ fn handle_command(
                 source.target_gain = 1.0;
                 source.ramp_remaining = 0;
                 source.ramp_step = 0.0;
-                source.input_block.fill(0.0);
-                source.output_left.fill(0.0);
-                source.output_right.fill(0.0);
-                if let Some(convolver) = &mut source.convolver { convolver.reset(); }
+                source.muted = false;
+                source.mute_events.clear();
+                source.availability = 0.0;
+                source.availability_target = 0.0;
+                source.availability_ramp_remaining = 0;
+                source.bus_gains = [0.0; vbap::BUS_COUNT];
+                source.bus_targets = [0.0; vbap::BUS_COUNT];
+                source.bus_steps = [0.0; vbap::BUS_COUNT];
+                source.bus_ramp_remaining = 0;
             }
             write_event(&Event::Ack {
                 command: "reset",
@@ -283,11 +330,39 @@ fn handle_command(
     true
 }
 
+pub(super) fn apply_render_command(
+    state: &mut Engine,
+    command: render_command::RenderCommand,
+    fifo: &stereo_fifo::StereoFifo,
+    telemetry: &RuntimeTelemetry,
+) -> bool {
+    match command {
+        render_command::RenderCommand::Command(command) => {
+            handle_command(state, command, fifo, telemetry)
+        }
+        render_command::RenderCommand::Pcm { id, start, samples } => {
+            ingest_pcm(state, &id, start, samples);
+            true
+        }
+        render_command::RenderCommand::PcmBatch { start, entries } => {
+            ingest_pcm_batch(state, start, entries);
+            true
+        }
+    }
+}
+
 fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectEvent) {
     if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
-        let spatial = SpatialEvent { position: event.pos, spread: spatial::spread_from_size(event.size) };
-        if event.sample_pos > sample_pos { source.spatial_events.insert(event.sample_pos, spatial); }
-        else { source.position = spatial.position; source.spread = spatial.spread; }
+        let spatial = SpatialEvent {
+            position: event.pos,
+            spread: spatial::spread_from_size(event.size),
+        };
+        if event.sample_pos > sample_pos {
+            source.spatial_events.insert(event.sample_pos, spatial);
+        } else {
+            source.position = spatial.position;
+            source.spread = spatial.spread;
+        }
     }
     if event.gain_db.is_finite() {
         let gain = 10.0_f32.powf(event.gain_db / 20.0);
@@ -307,23 +382,48 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
 fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f32>)>) {
     let samples = entries.first().map_or(0, |(_, pcm)| pcm.len());
     let batch_samples = u32::try_from(samples).unwrap_or(u32::MAX);
-    if entries.is_empty() || entries.len() > MAX_SOURCES || samples == 0 || entries.iter().any(|(_, pcm)| pcm.len() != samples) {
-        write_event(&Event::BatchAck { start, samples: batch_samples, accepted: false, detail: Some("invalid batch") });
+    if entries.is_empty()
+        || entries.len() > MAX_SOURCES
+        || samples == 0
+        || entries.iter().any(|(_, pcm)| pcm.len() != samples)
+    {
+        write_event(&Event::BatchAck {
+            start,
+            samples: batch_samples,
+            accepted: false,
+            detail: Some("invalid batch"),
+        });
         return;
     }
     let valid = entries.iter().all(|(id, pcm)| {
         pcm.len() <= MAX_PENDING_SAMPLES
-            && state.sources.get(id).is_some_and(|source| source.samples.can_write(state.sample_pos, start, pcm.len()))
+            && state
+                .sources
+                .get(id)
+                .is_some_and(|source| source.samples.can_write(state.sample_pos, start, pcm.len()))
     });
     if !valid {
-        write_event(&Event::BatchAck { start, samples: batch_samples, accepted: false, detail: Some("unknown source or source ring capacity") });
+        write_event(&Event::BatchAck {
+            start,
+            samples: batch_samples,
+            accepted: false,
+            detail: Some("unknown source or source ring capacity"),
+        });
         return;
     }
     for (id, pcm) in entries {
-        let source = state.sources.get_mut(&id).expect("batch pre-validation retains source");
+        let source = state
+            .sources
+            .get_mut(&id)
+            .expect("batch pre-validation retains source");
         source.samples.write(state.sample_pos, start, &pcm);
     }
-    write_event(&Event::BatchAck { start, samples: batch_samples, accepted: true, detail: None });
+    write_event(&Event::BatchAck {
+        start,
+        samples: batch_samples,
+        accepted: true,
+        detail: None,
+    });
 }
 
 fn ingest_pcm(state: &mut Engine, id: &str, start: u64, samples: Vec<f32>) {
@@ -386,10 +486,14 @@ fn read_u64(input: &mut impl Read) -> io::Result<u64> {
 
 pub(super) fn read_frames(
     input: &mut impl Read,
-    engine: &Arc<Mutex<Engine>>,
-    fifo: &Arc<stereo_fifo::StereoFifo>,
-    telemetry: &Arc<RuntimeTelemetry>,
+    commands: &Arc<render_command::RenderCommandQueue>,
 ) -> io::Result<()> {
+    fn enqueue(
+        queue: &render_command::RenderCommandQueue,
+        command: render_command::RenderCommand,
+    ) -> bool {
+        queue.push(command).is_ok()
+    }
     loop {
         let mut kind = [0_u8; 1];
         if read_exact_or_eof(input, &mut kind)? {
@@ -408,10 +512,23 @@ pub(super) fn read_frames(
                 input.read_exact(&mut bytes)?;
                 let command = serde_json::from_slice::<Command>(&bytes)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                let mut state = engine
-                    .lock()
-                    .map_err(|_| io::Error::other("engine lock poisoned"))?;
-                if !handle_command(&mut state, command, fifo, telemetry) {
+                if let Command::Hello { protocol } = command {
+                    write_event(&Event::Ack {
+                        command: "hello",
+                        accepted: protocol == PROTOCOL,
+                        detail: (protocol != PROTOCOL).then_some("protocol mismatch"),
+                    });
+                    continue;
+                }
+                let name = command_name(&command);
+                let shutdown = matches!(command, Command::Shutdown);
+                if !enqueue(commands, render_command::RenderCommand::Command(command)) {
+                    write_event(&Event::Ack {
+                        command: name,
+                        accepted: false,
+                        detail: Some("render command queue is full"),
+                    });
+                } else if shutdown {
                     return Ok(());
                 }
             }
@@ -425,20 +542,26 @@ pub(super) fn read_frames(
                         "invalid PCM frame header",
                     ));
                 }
-                let mut id = vec![0; id_length];
-                input.read_exact(&mut id)?;
-                let id = String::from_utf8(id)
+                let mut raw_id = vec![0; id_length];
+                input.read_exact(&mut raw_id)?;
+                let id = String::from_utf8(raw_id)
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid source id"))?;
                 let mut raw = vec![0; count * 4];
                 input.read_exact(&mut raw)?;
-                let samples = raw
+                let samples: Vec<f32> = raw
                     .chunks_exact(4)
                     .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
                     .collect();
-                let mut state = engine
-                    .lock()
-                    .map_err(|_| io::Error::other("engine lock poisoned"))?;
-                ingest_pcm(&mut state, &id, start, samples);
+                if !enqueue(
+                    commands,
+                    render_command::RenderCommand::Pcm { id, start, samples },
+                ) {
+                    write_event(&Event::Ack {
+                        command: "feed",
+                        accepted: false,
+                        detail: Some("render command queue is full"),
+                    });
+                }
             }
             FRAME_PCM_BATCH => {
                 let start = read_u64(input)?;
@@ -463,31 +586,62 @@ pub(super) fn read_frames(
                             "invalid PCM batch entry header",
                         ));
                     }
-                    let mut id = vec![0; id_length];
-                    input.read_exact(&mut id)?;
-                    let id = String::from_utf8(id).map_err(|_| {
+                    let mut raw_id = vec![0; id_length];
+                    input.read_exact(&mut raw_id)?;
+                    let id = String::from_utf8(raw_id).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "invalid source id")
                     })?;
                     let mut raw = vec![0; count * 4];
                     input.read_exact(&mut raw)?;
-                    let samples = raw
+                    let samples: Vec<f32> = raw
                         .chunks_exact(4)
                         .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
                         .collect();
                     entries.push((id, samples));
                 }
-                let mut state = engine
-                    .lock()
-                    .map_err(|_| io::Error::other("engine lock poisoned"))?;
-                ingest_pcm_batch(&mut state, start, entries);
+                let samples = u32::try_from(entries.first().map_or(0, |(_, pcm)| pcm.len()))
+                    .unwrap_or(u32::MAX);
+                if !enqueue(
+                    commands,
+                    render_command::RenderCommand::PcmBatch { start, entries },
+                ) {
+                    write_event(&Event::BatchAck {
+                        start,
+                        samples,
+                        accepted: false,
+                        detail: Some("render command queue is full"),
+                    });
+                }
             }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "unknown frame kind",
-                ))
+                ));
             }
         }
+    }
+}
+
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Hello { .. } => "hello",
+        Command::Configure { .. } => "configure",
+        Command::AddSource { .. } => "addSource",
+        Command::RemoveSource { .. } => "removeSource",
+        Command::Feed { .. } => "feed",
+        Command::SetGain { .. } => "setGain",
+        Command::SetMuted { .. } => "setMuted",
+        Command::ObjectEvents { .. } => "objectEvents",
+        Command::HeadPose { .. } => "headPose",
+        Command::SetHrtf { .. } => "setHrtf",
+        Command::SetOutputActive { .. } => "setOutputActive",
+        Command::StartAt { .. } => "startAt",
+        Command::ClearHeadPose => "clearHeadPose",
+        Command::Pause { .. } => "pause",
+        Command::Reset { .. } => "reset",
+        Command::Health => "health",
+        Command::Shutdown => "shutdown",
     }
 }
 

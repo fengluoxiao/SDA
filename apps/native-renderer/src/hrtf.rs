@@ -51,7 +51,10 @@ pub struct StereoIr {
 
 impl NativeHrtfSet {
     fn direction_key(azimuth: f64, elevation: f64) -> (i32, i32) {
-        ((azimuth * 1000.0).round() as i32, (elevation * 1000.0).round() as i32)
+        (
+            (azimuth * 1000.0).round() as i32,
+            (elevation * 1000.0).round() as i32,
+        )
     }
 
     pub fn load_calibrated(manifest_path: &Path) -> Result<Self, String> {
@@ -106,23 +109,52 @@ impl NativeHrtfSet {
                     .total_cmp(&dot(unit(b.azimuth, b.elevation), target))
             })
             .ok_or("HRTF set is empty")?;
-        let mut cached = self.cache.get(index).ok_or("HRTF cache is missing a manifest position")?.clone();
+        let mut cached = self
+            .cache
+            .get(index)
+            .ok_or("HRTF cache is missing a manifest position")?
+            .clone();
         cached.azimuth = position.azimuth;
         cached.elevation = position.elevation;
         Ok(cached)
     }
 
     pub fn nearest_direction(&self, azimuth: f64, elevation: f64) -> Result<(f64, f64), String> {
+        Ok(*self
+            .nearest_directions(azimuth, elevation, 1)?
+            .first()
+            .expect("non-empty direction result"))
+    }
+
+    /// Returns the closest distinct measured directions in descending angular
+    /// proximity. Native object spread uses these local HRTF taps rather than
+    /// smearing energy across the entire measurement set.
+    pub fn nearest_directions(
+        &self,
+        azimuth: f64,
+        elevation: f64,
+        count: usize,
+    ) -> Result<Vec<(f64, f64)>, String> {
+        if count == 0 || self.positions.is_empty() {
+            return Err("HRTF set is empty".into());
+        }
         let target = unit(azimuth, elevation);
-        let position = self
+        let mut directions: Vec<_> = self
             .positions
             .iter()
-            .max_by(|a, b| {
-                dot(unit(a.azimuth, a.elevation), target)
-                    .total_cmp(&dot(unit(b.azimuth, b.elevation), target))
+            .map(|position| {
+                (
+                    dot(unit(position.azimuth, position.elevation), target),
+                    (position.azimuth, position.elevation),
+                )
             })
-            .ok_or("HRTF set is empty")?;
-        Ok((position.azimuth, position.elevation))
+            .collect();
+        directions.sort_by(|left, right| right.0.total_cmp(&left.0));
+        Ok(directions
+            .into_iter()
+            .take(count.min(self.positions.len()))
+            .map(|(_, direction)| direction)
+            .collect())
     }
 
     /// Builds the calibrated runtime filter `dry + wet_weight * (wet - dry)`.
@@ -164,24 +196,44 @@ impl NativeHrtfSet {
         measured_elevation: f64,
         wet_weight: f32,
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
-        let position = self.positions.iter()
-            .find(|position| position.azimuth == measured_azimuth && position.elevation == measured_elevation)
+        let position = self
+            .positions
+            .iter()
+            .find(|position| {
+                position.azimuth == measured_azimuth && position.elevation == measured_elevation
+            })
             .ok_or("measured HRTF direction is not in this set")?;
-        let index = self.positions.iter().position(|entry| std::ptr::eq(entry, position))
+        let index = self
+            .positions
+            .iter()
+            .position(|entry| std::ptr::eq(entry, position))
             .expect("position iterator and find refer to the same set");
-        let ir = self.cache.get(index).ok_or("HRTF cache is missing a manifest position")?;
+        let ir = self
+            .cache
+            .get(index)
+            .ok_or("HRTF cache is missing a manifest position")?;
         if ir.dry.len() % 2 != 0 || ir.wet.len() % 2 != 0 {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
         let wet_len = ir.wet.len() / 2;
-        if wet_len < dry_len { return Err("wet HRTF is shorter than dry HRTF".into()); }
+        if wet_len < dry_len {
+            return Err("wet HRTF is shorter than dry HRTF".into());
+        }
         let weight = wet_weight.clamp(0.0, 1.0);
         let mut left = vec![0.0; wet_len];
         let mut right = vec![0.0; wet_len];
         for sample in 0..wet_len {
-            let dry_left = if sample < dry_len { ir.dry[sample] } else { 0.0 };
-            let dry_right = if sample < dry_len { ir.dry[sample + dry_len] } else { 0.0 };
+            let dry_left = if sample < dry_len {
+                ir.dry[sample]
+            } else {
+                0.0
+            };
+            let dry_right = if sample < dry_len {
+                ir.dry[sample + dry_len]
+            } else {
+                0.0
+            };
             left[sample] = dry_left + weight * (ir.wet[sample] - dry_left);
             right[sample] = dry_right + weight * (ir.wet[sample + wet_len] - dry_right);
         }
@@ -197,7 +249,9 @@ impl NativeHrtfSet {
         wet_weight: f32,
     ) -> Result<crate::convolution::PreparedStereoFilter, String> {
         let key = Self::direction_key(azimuth, elevation);
-        if let Some(filter) = self.prepared.get(&key) { return Ok(filter.clone()); }
+        if let Some(filter) = self.prepared.get(&key) {
+            return Ok(filter.clone());
+        }
         let (left, right) = self.mixed_direction(azimuth, elevation, wet_weight)?;
         let convolver = crate::convolution::StereoPartitionedConvolver::new(
             &left,

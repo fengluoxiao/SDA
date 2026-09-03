@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   nativeRendererRemoveSource: (id, atSample) => ipcRenderer.invoke("sda:native-renderer-remove-source", id, atSample),
   nativeRendererEvents: (events) => ipcRenderer.invoke("sda:native-renderer-events", events),
   nativeRendererReset: (origin) => ipcRenderer.invoke("sda:native-renderer-reset", origin),
+  nativeRendererMuted: (id, muted, atSample) => ipcRenderer.invoke("sda:native-renderer-muted", id, muted, atSample),
   nativeRendererPose: (orientation) => ipcRenderer.invoke("sda:native-renderer-pose", orientation),
   nativeRendererClearPose: () => ipcRenderer.invoke("sda:native-renderer-clear-pose"),
   nativeRendererHrtf: (set, wetWeight) => ipcRenderer.invoke("sda:native-renderer-hrtf", set, wetWeight),
