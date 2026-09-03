@@ -127,11 +127,11 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
   }
 }
 
-/** 耳廓档案读写。基座固定为 KU100（物理人头麦）；耳廓 = 装到 KU100 上的耳朵，
- *  d2 为 SADIE II D2 假人头的耳廓，h* 为真人受试者的耳廓。原装 = KU100 自己的。 */
+/** 完整 HRTF 测量档案。每个选择只使用一个人头/受试者的完整 HRIR/BRIR 系统；
+ * 不把 KU100 与 D2/Hx 的头部、耳道或房间响应做频段拼接。 */
 type BinauralHead = string;
 const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
-/** 所有可换的耳廓 id（ku100 = 原装，其余装到 KU100 上）。 */
+/** 完整 HRTF 档案 id（KU100、D2 或 H3–H20 受试者）。 */
 const BINAURAL_HEAD_IDS = ["ku100", "d2", ...Array.from({ length: 18 }, (_, i) => `h${i + 3}`)] as const;
 function readBinauralHead(): BinauralHead {
   try {
@@ -141,9 +141,12 @@ function readBinauralHead(): BinauralHead {
     return "ku100";
   }
 }
-/** KU100 基座 + 所选耳廓对应的 HRTF 目录（原装 = 纯 KU100，其余 = LR4 混合）。 */
+/** 每个完整测量 subject 直接选择自己的 HRTF 集；禁止加载旧的 KU100+耳廓 hybrid。 */
 function binauralHeadBaseUrl(head: BinauralHead): string {
-  return assetUrl(head === "ku100" ? "hrtf" : `hrtf-ku100-${head}`);
+  return assetUrl(head === "ku100" ? "hrtf" : `hrtf-${head}`);
+}
+function nativeHrtfSetName(head: BinauralHead): string {
+  return head === "ku100" ? "hrtf" : `hrtf-${head}`;
 }
 
 /** 逐对象精确方向渲染（实验性）：对象按精确方位 VBAP 到密集球面，而不是吸附到
@@ -222,14 +225,14 @@ function measuredLoudnessStorageKey(info: { title?: string; channels: number; sa
   return `sda-measured-lufs:${info.title ?? "track"}:${info.channels}:${info.sampleRate}`;
 }
 
-/** 可选耳廓档案（装到 KU100 上的耳朵）。 */
+/** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
-  { id: "ku100", label: "KU100 原装耳", description: "KU100 出厂耳廓（校准默认）" },
-  { id: "d2", label: "D2 的耳朵", description: "SADIE II D2 假人头的耳廓（真实耳廓模具）" },
+  { id: "ku100", label: "KU100", description: "Neumann KU100 完整校准 HRTF/BRIR（默认）" },
+  { id: "d2", label: "D2 假人头", description: "SADIE II D2 完整单一测量 HRTF/BRIR" },
   ...Array.from({ length: 18 }, (_, i) => ({
     id: `h${i + 3}` as BinauralHead,
-    label: `H${i + 3} 的耳朵`,
-    description: "真人受试者耳廓（真实人耳解剖）",
+    label: `H${i + 3} 受试者`,
+    description: "SADIE II 真人受试者完整单一测量 HRTF/BRIR",
   })),
 ];
 
@@ -257,8 +260,7 @@ setHeadphoneCompensationAssetLoader(bundledFirReader
 
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
-  /** Keeps the Windows audio endpoint open while its replacement initializes.
-   *  Closing the only AudioContext makes AirPods relinquish the motion stream. */
+  /** Retains the outgoing decoder/player until the replacement native session is ready. */
   const retiringPlayerRef = useRef<SdaPlayer | null>(null);
   const [playerReady, setPlayerReady] = useState<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
@@ -304,17 +306,20 @@ export function App() {
     return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
   });
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
-  /** 人头麦档案：KU100（校准默认）或 D2（真实耳廓备选）。 */
+  /** 完整人头/受试者 HRTF 档案。 */
   const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
-  /** 逐对象精确方向双耳渲染（实验性）。 */
-  const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(readDenseBinauralObjects);
+  /** 逐对象精确方向双耳渲染（实验性，仅完整 KU100 资产族）。 */
+  const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(
+    () => readBinauralHead() === "ku100" && readDenseBinauralObjects(),
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
-  /** Native renderer is a staged WASAPI sidecar. Until object HRTF transport is
-   * complete it reports reference-mix health only and never replaces Web Audio. */
+  /** Desktop playback is owned by the WASAPI native object renderer. */
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
   const nativeRendererRunningRef = useRef(false);
+  const nativeRendererSampleRef = useRef(0);
   nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
+  nativeRendererSampleRef.current = nativeRendererStatus?.samplePos ?? nativeRendererSampleRef.current;
   const [nativeRendererBusy, setNativeRendererBusy] = useState(false);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
@@ -365,21 +370,92 @@ export function App() {
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
+      let nativeSessionReady = false;
       const desktop = window.sdaDesktop;
-      // Stage one mirrors independent PCM sources to the native sidecar only
-      // when it has been started from settings. These calls never await and the
-      // Web Audio renderer remains the sole audible path until native HRTF lands.
+      if (!desktop?.startNativeRenderer || !desktop.getNativeRendererStatus || !desktop.nativeRendererHrtf) {
+        throw new Error("SDA Desktop native renderer is required for audio playback");
+      }
+      let nativeStatus = await desktop.getNativeRendererStatus();
+      if (!nativeStatus.running) await desktop.startNativeRenderer();
+      const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.2);
+      if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
+      nativeSessionReady = true;
+      nativeRendererRunningRef.current = true;
+      nativeRendererSampleRef.current = nativeStatus.samplePos ?? nativeRendererSampleRef.current;
+      setNativeRendererStatus({ ...nativeStatus, running: true, hrtfReady: true });
+      // All desktop PCM, source lifecycle, object events, and pose updates are
+      // serialized through the WASAPI sidecar. A frame resolves only after its
+      // full codec batch was accepted by the native ring.
+      let nativeCommandChain: Promise<void> = Promise.resolve();
+      const enqueueNative = (label: string, operation: () => void | Promise<unknown>) => {
+        const result = nativeCommandChain.then(async () => {
+          const accepted = await operation();
+          if (accepted === false) throw new Error(`native sidecar rejected ${label}`);
+        });
+        // A failed command rejects its caller but must not permanently poison the
+        // serial transport: the caller may declare a replacement source later.
+        nativeCommandChain = result.catch(() => {});
+        return result;
+      };
+      const nativeSourceAcks = new Map<string, Promise<void>>();
       const nativeRendererSink: NativeRendererSink | undefined = desktop?.nativeRendererSource && desktop.nativeRendererFrame
         ? {
-            addSource: (id, atSample) => {
-              if (nativeRendererRunningRef.current) void desktop.nativeRendererSource!(id, atSample);
+            addSource: async (id, atSample) => {
+              if (!nativeSessionReady) throw new Error("native renderer session unavailable");
+              const known = nativeSourceAcks.get(id);
+              if (known) return known;
+              const declared = enqueueNative(`addSource ${id}@${atSample}`, () => desktop.nativeRendererSource!(id, atSample));
+              nativeSourceAcks.set(id, declared);
+              try {
+                await declared;
+              } catch (error) {
+                if (nativeSourceAcks.get(id) === declared) nativeSourceAcks.delete(id);
+                throw error;
+              }
             },
-            removeSource: () => {},
-            events: () => {},
-            frame: (samplePos, entries) => {
-              if (nativeRendererRunningRef.current) void desktop.nativeRendererFrame!(samplePos, entries);
+            removeSource: async (id, atSample) => {
+              if (!nativeSessionReady) return;
+              nativeSourceAcks.delete(id);
+              await enqueueNative(`removeSource ${id}@${atSample}`, () => desktop.nativeRendererRemoveSource?.(id, atSample));
             },
-            reset: () => {},
+            events: async (events) => {
+              if (!nativeSessionReady) throw new Error("native renderer session unavailable");
+              await enqueueNative(`objectEvents (${events.length})`, () => desktop.nativeRendererEvents?.(events));
+            },
+            frame: async (samplePos, entries) => {
+              if (!nativeSessionReady) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
+              await nativeCommandChain;
+              return desktop.nativeRendererFrame!(samplePos, entries);
+            },
+            reset: async (origin) => {
+              if (!nativeSessionReady) return;
+              await enqueueNative(`reset ${origin}`, () => desktop.nativeRendererReset?.(origin));
+            },
+            setHeadPose: (pose) => {
+              if (nativeSessionReady) void enqueueNative("headPose", () => desktop.nativeRendererPose?.(pose.orientation)).catch((error) => {
+                console.warn("[SDA] native head pose rejected:", error);
+              });
+            },
+            clearHeadPose: () => {
+              if (nativeSessionReady) void enqueueNative("clearHeadPose", () => desktop.nativeRendererClearPose?.()).catch((error) => {
+                console.warn("[SDA] native clear head pose rejected:", error);
+              });
+            },
+            startAt: async (origin) => {
+              if (!nativeSessionReady) return false;
+              await nativeCommandChain;
+              return desktop.nativeRendererStartAt?.(origin) ?? false;
+            },
+            pause: (paused) => nativeSessionReady
+              ? desktop.nativeRendererPause?.(paused) ?? Promise.resolve(false)
+              : Promise.resolve(false),
+            getConsumedSamples: () => nativeRendererSampleRef.current,
+            onConsumedSamples: (callback) => desktop.onNativeRendererStatus?.((status) => {
+              const samplePos = status.samplePos;
+              if (!nativeSessionReady || !status.running || typeof samplePos !== "number" || !Number.isSafeInteger(samplePos)) return;
+              nativeRendererSampleRef.current = samplePos;
+              callback(samplePos);
+            }),
           }
         : undefined;
       const player = new SdaPlayer({
@@ -477,9 +553,10 @@ export function App() {
         },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
-        denseBinauralObjects: readDenseBinauralObjects(),
+        denseBinauralObjects: readBinauralHead() === "ku100" && readDenseBinauralObjects(),
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
-        nativeRendererSink,
+        outputBackend: "native-sidecar",
+        nativeRendererSink: nativeRendererSink!,
         // KU100 stays at the room origin while world-locked sources are viewed
         // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
         // few hundred ms of damping, and a dead zone that swallows tremor — the
@@ -596,6 +673,13 @@ export function App() {
     return desktop.onNativeRendererStatus?.(setNativeRendererStatus);
   }, []);
 
+  // A native process is intentionally silent until it has loaded the same
+  // complete-subject v4 HRTF selected by the UI.
+  useEffect(() => {
+    if (!nativeRendererStatus?.running) return;
+    void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.2);
+  }, [nativeRendererStatus?.running, binauralHead]);
+
   useEffect(() => {
     const desktop = window.sdaDesktop;
     if (!desktop?.listHeadphoneProfiles || !desktop.readHeadphoneProfile) return;
@@ -678,6 +762,7 @@ export function App() {
       const next = nativeRendererStatus?.running
         ? await desktop.stopNativeRenderer()
         : await desktop.startNativeRenderer();
+      if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.5);
       setNativeRendererStatus(next);
     } catch (error) {
       console.warn("[SDA] native renderer 切换失败:", error);
@@ -800,8 +885,8 @@ export function App() {
       const request = ++playRequestRef.current;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
-      // Keep one running AudioContext connected until its replacement is ready.
-      // Breaking the Windows media route even briefly makes AirPods drop motion.
+      // Keep the outgoing native session alive until its replacement is ready so
+      // the codec/source transition never leaves an unowned playback interval.
       const previous = playerRef.current;
       if (previous) {
         previous.setVolume(0);
@@ -1022,18 +1107,28 @@ export function App() {
       // 持久化失败不影响本次切换。
     }
     setBinauralHead(next);
+    // The 61-direction dense object set is KU100-only. Keeping it active with a
+    // complete D2/Hx subject set would recreate a cross-subject HRTF hybrid.
+    if (next !== "ku100") {
+      try { localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, "0"); } catch {}
+      setDenseBinauralObjects(false);
+      void playerRef.current?.setDenseBinauralObjects(false);
+    }
     void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
+    if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.5);
   }, []);
 
   const changeDenseBinauralObjects = useCallback((on: boolean) => {
+    const allowed = binauralHead === "ku100";
+    const next = allowed && on;
     try {
-      localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, on ? "1" : "0");
+      localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, next ? "1" : "0");
     } catch {
       // 持久化失败不影响本次切换。
     }
-    setDenseBinauralObjects(on);
-    void playerRef.current?.setDenseBinauralObjects(on, denseBinauralBaseUrl());
-  }, []);
+    setDenseBinauralObjects(next);
+    void playerRef.current?.setDenseBinauralObjects(next, denseBinauralBaseUrl());
+  }, [binauralHead]);
 
   const resetBinauralEq = useCallback(() => {
     for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
@@ -1229,12 +1324,12 @@ export function App() {
             </fieldset>
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
-                <legend>原生渲染器（实验基础）</legend>
+                <legend>原生空间渲染器</legend>
                 <p className="settings-description">
-                  Rust/WASAPI sidecar 当前只验证独立 source、codec sample clock 与设备输出；对象级 HRTF 尚未接管播放，因此 Web Audio 仍是唯一可听输出路径。
+                  Rust/WASAPI 是桌面版唯一可听输出：对象 PCM 在 native sidecar 中按完整 subject HRTF/BRIR 分区卷积后直接送入 WASAPI。启动前会校验 48 kHz、完整 v4 HRTF 与原子 codec-clock 预缓冲。
                 </p>
-                <label className="settings-switch" title="启动或停止 Rust/WASAPI reference-mix sidecar。它不会抢占当前播放，也不会改变当前双耳音色。">
-                  <span>WASAPI 时钟侧车 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（Web Audio 输出）"}</small></span>
+                <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
+                  <span>WASAPI 空间输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <button type="button" disabled={nativeRendererBusy} onClick={() => void toggleNativeRenderer()}>
                     {nativeRendererBusy ? "处理中" : nativeRendererStatus?.running ? "停止" : "启动"}
                   </button>
@@ -1438,9 +1533,9 @@ export function App() {
         )}
         {floatPanel === "pinna" && (
           <div className="panel float-panel">
-            <h2>耳廓</h2>
+            <h2>完整 HRTF 测量</h2>
             <p className="settings-description">
-              基座是 KU100 人头麦；这里换的是装到它上面的耳朵（耳廓）。耳廓形状决定高频定位解析度——和你自己耳朵越像，空间感越准。播放中切换实时生效。
+              每个档案使用单一人头或受试者的完整 HRIR/BRIR（头部、耳道、耳廓与房间响应来自同一测量系统）。不再将 KU100 与另一套耳廓做频段拼接。播放中切换实时生效。
             </p>
             <div className="pinna-list">
               {BINAURAL_HEADS.map((head) => (
@@ -1455,11 +1550,14 @@ export function App() {
                 </button>
               ))}
             </div>
-            <label className="settings-switch" title="对象不再吸附到床层扬声器方向，而是在 32 路实时双耳总线中按精确方位落到 KU100 的 61 个测量方向 HRTF。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。">
-              <span>高解析对象渲染（实验性）</span>
+            <label className="settings-switch" title={binauralHead === "ku100"
+              ? "对象不再吸附到床层扬声器方向，而是在 32 路实时双耳总线中按精确方位落到 KU100 的 61 个测量方向 HRTF。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。"
+              : "高解析对象集目前仅有完整 KU100 的 61 向测量。为避免将 KU100 对象 HRTF 混入当前完整 subject HRTF，此模式已关闭。"}>
+              <span>高解析对象渲染（仅 KU100）</span>
               <input
                 type="checkbox"
                 role="switch"
+                disabled={binauralHead !== "ku100"}
                 checked={denseBinauralObjects}
                 onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
               />

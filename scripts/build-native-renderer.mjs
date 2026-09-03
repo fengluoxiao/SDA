@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, cp, mkdir, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,4 +26,10 @@ await mkdir(destination, { recursive: true });
 const source = join(renderer, "target", "release", "sda-native-renderer.exe");
 const target = join(destination, "SdaNativeRenderer.exe");
 await copyFile(source, target);
-console.log(`Native renderer: ${target}`);
+const hrtfDestination = join(destination, "hrtf-assets");
+await rm(hrtfDestination, { recursive: true, force: true });
+await mkdir(hrtfDestination, { recursive: true });
+for (const set of ["hrtf", "hrtf-dense", "hrtf-d2", ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`)]) {
+  await cp(join(root, "apps", "web", "public", set), join(hrtfDestination, set), { recursive: true });
+}
+console.log(`Native renderer: ${target} (bundled calibrated HRTF assets)`);

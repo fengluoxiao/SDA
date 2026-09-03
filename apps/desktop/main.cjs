@@ -14,6 +14,15 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { exec, spawn } = require("node:child_process");
+const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
+function writeStartupLog(line) {
+  try {
+    fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
+    fs.appendFileSync(startupLogPath, `[${new Date().toISOString()}] ${line}\n`, "utf8");
+  } catch (error) {
+    console.warn("[SDA] startup diagnostic write failed:", error);
+  }
+}
 
 /**
  * Windows 会把窗口被遮挡/最小化的进程打进 EcoQoS 效率模式，alt+tab、
@@ -216,14 +225,19 @@ const HEAD_TRACKING_MAX_RATE_HZ = 120;
 const HEAD_TRACKING_MAX_DIAGNOSTIC_CHARS = 240;
 const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 
-// Native object renderer foundation. It is opt-in and starts in reference-mix
-// mode only; Web Audio remains the audible fallback until object HRTF delivery.
+// Native object renderer owns desktop audible output. It remains muted until a
+// complete calibrated HRTF is prepared and the player issues startAt().
 const NATIVE_RENDERER_PROTOCOL = 1;
 const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
 let nativeRenderer = null;
 let nativeRendererWritable = true;
 let nativeRendererBuffer = "";
-let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动" };
+let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
+let nativeRendererHealthTimer = null;
+const nativeRendererPendingBatches = new Map();
+const nativeRendererPendingCommands = new Map();
+const NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS = 1500;
+const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
 
 function bundledNativeRendererPath() {
   const executable = "SdaNativeRenderer.exe";
@@ -240,25 +254,53 @@ function publishNativeRendererStatus() {
   return nativeRendererStatus;
 }
 
-function setNativeRendererStatus(running, detail, referenceMix = true) {
-  nativeRendererStatus = { running, referenceMix, detail: safeDiagnosticText(detail, "状态未知") };
+function setNativeRendererStatus(running, detail, referenceMix = true, telemetry = {}) {
+  nativeRendererStatus = {
+    running,
+    referenceMix,
+    detail: safeDiagnosticText(detail, "状态未知"),
+    samplePos: Number.isSafeInteger(telemetry.samplePos) ? telemetry.samplePos : nativeRendererStatus.samplePos ?? 0,
+    outputActive: telemetry.outputActive === true,
+    hrtfReady: telemetry.hrtfReady === true,
+  };
   return publishNativeRendererStatus();
 }
 
 function nativeRendererCommand(command) {
-  if (!nativeRenderer?.stdin || !nativeRendererWritable || !command || typeof command !== "object") return false;
+  if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || !nativeRendererWritable || !command || typeof command !== "object") return false;
   try {
     const json = Buffer.from(JSON.stringify(command), "utf8");
     if (json.length > NATIVE_RENDERER_MAX_LINE_BYTES) return false;
     const header = Buffer.allocUnsafe(5);
     header.writeUInt8("J".charCodeAt(0), 0);
     header.writeUInt32LE(json.length, 1);
-    const accepted = nativeRenderer.stdin.write(Buffer.concat([header, json]));
-    if (!accepted) nativeRendererWritable = false;
-    return accepted;
+    const queued = nativeRenderer.stdin.write(Buffer.concat([header, json]));
+    // Node returns false for normal pipe backpressure, not a failed write. The
+    // frame remains queued and must still receive its sidecar ACK; only stdin
+    // error/close transitions the renderer to unavailable.
+    if (!queued) writeStartupLog(`sidecar control pipe backpressure: ${command.type ?? "unknown"}`);
+    return true;
   } catch {
     return false;
   }
+}
+
+function nativeRendererCommandAck(command, ackCommand) {
+  if (nativeRendererPendingCommands.has(ackCommand)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      nativeRendererPendingCommands.delete(ackCommand);
+      writeStartupLog(`${ackCommand} ACK timeout`);
+      resolve(false);
+    }, NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
+    nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
+    if (!nativeRendererCommand(command)) {
+      nativeRendererPendingCommands.delete(ackCommand);
+      clearTimeout(timeout);
+      writeStartupLog(`${ackCommand} pipe write rejected`);
+      resolve(false);
+    }
+  });
 }
 
 function nativeRendererPcm(id, start, samples) {
@@ -287,11 +329,44 @@ function nativeRendererPcm(id, start, samples) {
   }
 }
 
+function nativeRendererBatch(start, entries) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 64) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
+  if (nativeRendererPendingBatches.has(start)) return Promise.resolve({ accepted: false, samples: 0, reason: "duplicate codec batch clock" });
+  try {
+    const prepared = entries.map((entry) => {
+      if (!/^((obj:\d+)|(bed:\d+))$/.test(entry?.id ?? "") || !ArrayBuffer.isView(entry?.samples) || entry.samples.BYTES_PER_ELEMENT !== 4) throw new Error("invalid source entry");
+      const samples = entry.samples instanceof Float32Array ? entry.samples : new Float32Array(entry.samples.buffer, entry.samples.byteOffset, Math.floor(entry.samples.byteLength / 4));
+      if (samples.length === 0 || samples.length > 480_000) throw new Error("invalid source PCM length");
+      const id = Buffer.from(entry.id, "utf8");
+      if (id.length === 0 || id.length > 128) throw new Error("invalid source id length");
+      const entryHeader = Buffer.allocUnsafe(6);
+      entryHeader.writeUInt16LE(id.length, 0);
+      entryHeader.writeUInt32LE(samples.length, 2);
+      return [entryHeader, id, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)];
+    });
+    const header = Buffer.allocUnsafe(11);
+    header.writeUInt8("B".charCodeAt(0), 0);
+    header.writeBigUInt64LE(BigInt(start), 1);
+    header.writeUInt16LE(prepared.length, 9);
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        nativeRendererPendingBatches.delete(start);
+        resolve({ accepted: false, samples: 0, reason: "native batch ACK timeout" });
+      }, NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS);
+      nativeRendererPendingBatches.set(start, { resolve, timeout });
+      const queued = nativeRenderer.stdin.write(Buffer.concat([header, ...prepared.flat()]));
+      if (!queued) writeStartupLog(`sidecar PCM pipe backpressure: start=${start}`);
+    });
+  } catch (error) {
+    return Promise.resolve({ accepted: false, samples: 0, reason: error instanceof Error ? error.message : "invalid native PCM batch" });
+  }
+}
+
 function consumeNativeRendererOutput(chunk) {
   nativeRendererBuffer += chunk;
   if (nativeRendererBuffer.length > NATIVE_RENDERER_MAX_LINE_BYTES * 2) {
     nativeRendererBuffer = "";
-    setNativeRendererStatus(false, "native renderer 输出超限，Web Audio 回退");
+    setNativeRendererStatus(false, "native renderer 输出超限，播放已停止");
     return;
   }
   for (;;) {
@@ -303,22 +378,77 @@ function consumeNativeRendererOutput(chunk) {
     try {
       const message = JSON.parse(line);
       if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
-        setNativeRendererStatus(true, `WASAPI ${message.sampleRate}Hz / ${message.outputChannels}ch（参考混音）`, true);
+        setNativeRendererStatus(true, `WASAPI ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true);
       } else if (message?.type === "error") {
         setNativeRendererStatus(false, `native renderer: ${safeDiagnosticText(message.detail, "错误")}`);
+      } else if (message?.type === "ack") {
+        const pending = nativeRendererPendingCommands.get(message.command);
+        writeStartupLog(`sidecar ACK ${message.command} accepted=${message.accepted === true} detail=${message.detail ?? ""}`);
+        if (pending) {
+          nativeRendererPendingCommands.delete(message.command);
+          clearTimeout(pending.timeout);
+          pending.resolve(message.accepted === true);
+        }
+      } else if (message?.type === "batchAck") {
+        const start = Number(message.start);
+        const pending = nativeRendererPendingBatches.get(start);
+        if (pending) {
+          nativeRendererPendingBatches.delete(start);
+          clearTimeout(pending.timeout);
+          const result = { accepted: message.accepted === true, samples: Number(message.samples) || 0, reason: message.detail ?? undefined };
+          if (!result.accepted) console.warn(`[SDA native renderer] batch ${start} rejected: ${result.reason ?? "unknown"}`);
+          pending.resolve(result);
+        }
       } else if (message?.type === "health") {
-        setNativeRendererStatus(true, `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun`, Boolean(message.referenceMix));
+        writeStartupLog(
+          `health sample=${message.samplePos} sources=${message.activeSources} ` +
+          `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
+          `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
+          `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} ` +
+          `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
+          `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}`,
+        );
+        const hrtf = message.hrtfReady ? "HRTF ready" : "等待 HRTF";
+        const ownership = message.outputActive ? "native output" : "静音预热";
+        setNativeRendererStatus(
+          true,
+          `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun · ${hrtf} · ${ownership}`,
+          Boolean(message.referenceMix),
+          { samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true },
+        );
       }
     } catch { /* malformed helper output is ignored; stderr still records it */ }
   }
 }
 
+function clearNativeRendererSession(reason) {
+  if (nativeRendererHealthTimer) clearInterval(nativeRendererHealthTimer);
+  nativeRendererHealthTimer = null;
+  nativeRendererWritable = false;
+  nativeRendererBuffer = "";
+  for (const pending of nativeRendererPendingBatches.values()) {
+    clearTimeout(pending.timeout);
+    pending.resolve({ accepted: false, samples: 0, reason });
+  }
+  nativeRendererPendingBatches.clear();
+  for (const pending of nativeRendererPendingCommands.values()) {
+    clearTimeout(pending.timeout);
+    pending.resolve(false);
+  }
+  nativeRendererPendingCommands.clear();
+}
+
 function startNativeRenderer() {
+  writeStartupLog(`startNativeRenderer() called; executable=${bundledNativeRendererPath() ?? "missing"}`);
   if (nativeRenderer) return nativeRendererStatus;
   const executable = bundledNativeRendererPath();
-  if (!executable) return setNativeRendererStatus(false, "native renderer 未构建，Web Audio 回退");
+  if (!executable) return setNativeRendererStatus(false, "native renderer 未构建，无法播放");
   try {
-    nativeRenderer = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    nativeRenderer = spawn(executable, [], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets") },
+    });
   } catch (error) {
     nativeRenderer = null;
     return setNativeRendererStatus(false, `native renderer 启动失败: ${error.message}`);
@@ -327,30 +457,44 @@ function startNativeRenderer() {
   nativeRenderer.stdout.setEncoding("utf8");
   nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
   nativeRenderer.stdin.on("drain", () => { nativeRendererWritable = true; });
+  // A pipe can close between a writable check and write(); swallow EPIPE here
+  // and transition the renderer into the explicit stopped state instead of
+  // letting Node surface an uncaught main-process exception.
+  nativeRenderer.stdin.on("error", (error) => {
+    if (nativeRenderer) nativeRenderer = null;
+    clearNativeRendererSession(`native renderer pipe error: ${error.code ?? error.message}`);
+    setNativeRendererStatus(false, `native renderer 管道已关闭: ${error.code ?? error.message}`);
+  });
+  nativeRendererHealthTimer = setInterval(() => {
+    if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed) return;
+    nativeRendererCommand({ type: "health" });
+  }, 100).unref();
   nativeRenderer.stderr.setEncoding("utf8");
   nativeRenderer.stderr.on("data", (chunk) => console.warn(`[SDA native renderer] ${String(chunk).trim()}`));
   nativeRenderer.once("error", (error) => {
     nativeRenderer = null;
+    clearNativeRendererSession(`native renderer error: ${error.message}`);
     setNativeRendererStatus(false, `native renderer 异常: ${error.message}`);
   });
   nativeRenderer.once("exit", (code) => {
     nativeRenderer = null;
-    setNativeRendererStatus(false, `native renderer 已退出${code === null ? "" : ` (${code})`}，Web Audio 回退`);
+    clearNativeRendererSession("native renderer exited");
+    setNativeRendererStatus(false, `native renderer 已退出${code === null ? "" : ` (${code})`}，播放已停止`);
   });
   nativeRendererCommand({ type: "hello", protocol: NATIVE_RENDERER_PROTOCOL });
-  return setNativeRendererStatus(false, "native renderer 启动中，Web Audio 回退");
+  writeStartupLog("native renderer hello sent");
+  return setNativeRendererStatus(false, "native renderer 启动中，等待 HRTF");
 }
 
 function stopNativeRenderer() {
   const renderer = nativeRenderer;
-  nativeRenderer = null;
-  nativeRendererWritable = true;
-  nativeRendererBuffer = "";
   if (renderer) {
-    try { renderer.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch {}
+    try { nativeRendererCommand({ type: "shutdown" }); } catch {}
+    nativeRenderer = null;
     setTimeout(() => { if (!renderer.killed) renderer.kill(); }, 500).unref();
   }
-  return setNativeRendererStatus(false, "已停止，Web Audio 回退");
+  clearNativeRendererSession("native renderer stopped");
+  return setNativeRendererStatus(false, "已停止，桌面播放不可用");
 }
 
 let headTrackingTimer = null;
@@ -873,19 +1017,73 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
 ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
-ipcMain.handle("sda:native-renderer-start", () => startNativeRenderer());
+ipcMain.handle("sda:native-renderer-start", () => {
+  const status = startNativeRenderer();
+  writeStartupLog(`ipc startNativeRenderer -> ${JSON.stringify(status)}`);
+  return status;
+});
 ipcMain.handle("sda:native-renderer-stop", () => stopNativeRenderer());
 ipcMain.handle("sda:native-renderer-health", () => {
   nativeRendererCommand({ type: "health" });
+  writeStartupLog(`health -> ${JSON.stringify(nativeRendererStatus)}`);
   return nativeRendererStatus;
 });
-ipcMain.handle("sda:native-renderer-source", (_event, id, atSample) => {
-  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || !Number.isSafeInteger(atSample) || atSample < 0) return false;
-  return nativeRendererCommand({ type: "addSource", id });
+ipcMain.handle("sda:native-renderer-source", async (_event, id, atSample) => {
+  const ok = /^((obj:\d+)|(bed:\d+))$/.test(id ?? "") && Number.isSafeInteger(atSample) && atSample >= 0;
+  if (!ok) return false;
+  const accepted = await nativeRendererCommandAck({ type: "addSource", id, at: atSample }, "addSource");
+  writeStartupLog(`addSource ${id}@${atSample} ACK -> ${accepted}`);
+  return accepted;
 });
-ipcMain.handle("sda:native-renderer-frame", (_event, samplePos, entries) => {
-  if (!Number.isSafeInteger(samplePos) || samplePos < 0 || !Array.isArray(entries) || entries.length > 64) return false;
-  return entries.every((entry) => nativeRendererPcm(entry?.id, samplePos, entry?.samples));
+ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample) => {
+  if (!/^((obj:\d+)|(bed:\d+))$/.test(id ?? "") || !Number.isSafeInteger(atSample) || atSample < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "removeSource", id, at: atSample }, "removeSource");
+  writeStartupLog(`removeSource ${id}@${atSample} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
+  if (!Array.isArray(events) || events.length > 256) return false;
+  const accepted = await nativeRendererCommandAck({ type: "objectEvents", events }, "objectEvents");
+  writeStartupLog(`objectEvents count=${events.length} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-reset", async (_event, origin) => {
+  if (!Number.isSafeInteger(origin) || origin < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "reset", origin }, "reset");
+  writeStartupLog(`reset ${origin} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
+  if (!Array.isArray(orientation) || orientation.length !== 4 || !orientation.every(Number.isFinite)) return false;
+  return nativeRendererCommand({ type: "headPose", orientation });
+});
+ipcMain.handle("sda:native-renderer-clear-pose", () => nativeRendererCommand({ type: "clearHeadPose" }));
+ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
+  if (!/^hrtf(?:-dense|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") || !Number.isFinite(wetWeight)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf");
+  writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-output-active", (_event, active) => {
+  return typeof active === "boolean" && nativeRendererCommand({ type: "setOutputActive", active });
+});
+ipcMain.handle("sda:native-renderer-start-at", async (_event, origin) => {
+  if (!Number.isSafeInteger(origin) || origin < 0) return false;
+  const accepted = await nativeRendererCommandAck({ type: "startAt", origin }, "startAt");
+  writeStartupLog(`startAt ${origin} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-pause", (_event, paused) => {
+  return typeof paused === "boolean" && nativeRendererCommand({ type: "pause", paused });
+});
+ipcMain.handle("sda:native-renderer-frame", async (_event, samplePos, entries) => {
+  let result = await nativeRendererBatch(samplePos, entries);
+  if (!result.accepted && /unknown source|duplicate codec batch clock/i.test(result.reason ?? "")) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    result = await nativeRendererBatch(samplePos, entries);
+  }
+  writeStartupLog(`frame ${samplePos} entries=${entries?.length ?? 0} -> accepted=${result.accepted} samples=${result.samples} reason=${result.reason ?? ""}`);
+  return result;
 });
 ipcMain.handle("sda:head-tracking-recenter", () => recenterHeadTracking());
 

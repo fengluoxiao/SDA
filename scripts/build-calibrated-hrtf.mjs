@@ -2,7 +2,7 @@
 /** Build level-, arrival-, and room-response-calibrated KU100 assets into staging. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { analyzeStereoImpulse, median } from "./lib/impulse-metrics.mjs";
 import { collectIrs, nearestImpulse } from "./lib/hrtf-source.mjs";
 
@@ -58,6 +58,12 @@ const outputDirectory = resolve(option("out", "tmp/hrtf-calibrated"));
 const sourceManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (sourceManifest.schemaVersion !== 2) throw new Error("校准构建要求schema v2 provenance manifest");
 const sourceAssetDirectory = dirname(manifestPath);
+const sourceDirectoryName = basename(sourceAssetDirectory);
+const subjectId = sourceDirectoryName === "hrtf"
+  ? "ku100"
+  : sourceDirectoryName.match(/^hrtf-(d2|h(?:[3-9]|1[0-9]|20))(?:-|$)/i)?.[1]?.toLowerCase()
+    ?? sourceDirectoryName.replace(/^hrtf-/, "");
+const completeSubject = sourceManifest.positions.length === 17;
 if (![0, 3].includes(sourceManifest.calibrationVersion ?? 0)) {
   throw new Error("v4校准要求schema v2且具有原始测量 provenance 的资产基线");
 }
@@ -908,6 +914,8 @@ for (let index = 0; index < positions.length; index++) {
 const manifest = {
   ...sourceManifest,
   calibrationVersion: 4,
+  completeSubject,
+  subjectId,
   processing: {
     dryTapLimit: DRY_TAPS,
     wetTapLimit: WET_TAPS,
@@ -915,10 +923,10 @@ const manifest = {
     calibrated: true,
     runtimeEnergyNormalization: false,
     directPathModel: "target HRIR plus calibrated BRIR room tail",
-    note: "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ.",
+    note: "One complete subject room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, an offline 150Hz LR4 high-pass only on the derived BRIR room residual, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization only where both measured directions exist; no layout- or programme-specific EQ.",
   },
   calibration: {
-    algorithm: "sda-ku100-room-v4",
+    algorithm: "sda-subject-room-v4",
     baseline: calibrationBaseline,
     sampleRate,
     commonArrivalSample: COMMON_ARRIVAL_SAMPLE,

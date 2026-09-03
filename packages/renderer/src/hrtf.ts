@@ -88,6 +88,8 @@ export interface HrtfManifestEntry {
 export interface HrtfManifest {
   schemaVersion?: number;
   calibrationVersion?: number;
+  completeSubject?: boolean;
+  subjectId?: string;
   sampleRate: number;
   source?: Record<string, unknown>;
   azimuthConvention?: string;
@@ -109,6 +111,9 @@ export interface RawBinauralIr {
 export interface BinauralIrSet {
   sampleRate: number;
   calibrated: boolean;
+  /** True only for a complete single-subject HRTF/BRIR measurement system. */
+  completeSubject: boolean;
+  subjectId: string | null;
   positions: RawBinauralIr[];
 }
 
@@ -173,6 +178,8 @@ async function loadSet(baseUrl: string): Promise<BinauralIrSet> {
   return {
     sampleRate: manifest.sampleRate,
     calibrated: manifest.calibrationVersion !== undefined && manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true,
+    completeSubject: manifest.completeSubject === true,
+    subjectId: typeof manifest.subjectId === "string" ? manifest.subjectId : null,
     positions,
   };
 }

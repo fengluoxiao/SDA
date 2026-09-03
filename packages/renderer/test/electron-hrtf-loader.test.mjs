@@ -22,18 +22,27 @@ setBinauralAssetLoader(async (assetPath) => {
 });
 
 try {
-  const [normal, pinna, dense] = await Promise.all([
+  const [normal, d2, h3, dense] = await Promise.all([
     getBinauralIrSet("file:///ignored/hrtf"),
-    getBinauralIrSet("file:///ignored/hrtf-ku100-d2"),
+    getBinauralIrSet("file:///ignored/hrtf-d2"),
+    getBinauralIrSet("file:///ignored/hrtf-h3"),
     getBinauralIrSet("file:///ignored/hrtf-dense"),
   ]);
 
   assert.equal(normal.positions.length, 17, "normal KU100 set stays 17 directions");
-  assert.equal(pinna.positions.length, 17, "KU100 + D2 pinna set stays 17 directions");
+  for (const [name, subject] of [["D2", d2], ["H3", h3]]) {
+    assert.equal(subject.positions.length, 17, `${name} complete set stays 17 directions`);
+    assert.equal(subject.calibrated, true, `${name} complete set is calibrated`);
+    assert.equal(subject.completeSubject, true, `${name} declares one complete subject system`);
+  }
+  assert.equal(d2.subjectId, "d2", "D2 manifest identifies its source subject");
+  assert.equal(h3.subjectId, "h3", "H3 manifest identifies its source subject");
   assert.equal(dense.positions.length, 61, "dense KU100 set loads all 61 directions");
   assert.equal(dense.calibrated, true, "dense KU100 set shares the calibrated bed reference");
   assert.ok(loaded.includes("hrtf/hrtf-set.json"), "normal set keeps hrtf directory");
-  assert.ok(loaded.includes("hrtf-ku100-d2/hrtf-set.json"), "pinna set keeps its own directory");
+  assert.ok(loaded.includes("hrtf-d2/hrtf-set.json"), "D2 uses its complete subject directory");
+  assert.ok(loaded.includes("hrtf-h3/hrtf-set.json"), "H3 uses its complete subject directory");
+  assert.ok(!loaded.some((assetPath) => assetPath.startsWith("hrtf-ku100-")), "no KU100 hybrid asset can be loaded");
   assert.ok(loaded.includes("hrtf-dense/hrtf-set.json"), "dense set keeps hrtf-dense directory");
   assert.ok(
     loaded.some((assetPath) => assetPath.startsWith("hrtf-dense/") && assetPath.endsWith(".f32")),
@@ -54,4 +63,4 @@ try {
   globalThis.fetch = originalFetch;
 }
 
-console.log("electron HRTF loader: normal, pinna, and dense asset paths passed");
+console.log("electron HRTF loader: complete KU100/D2/H3 and dense asset paths passed");

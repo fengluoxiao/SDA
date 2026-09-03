@@ -9,6 +9,14 @@ assert.match(source, /this\.nativeRendererSink = options\.nativeRendererSink/);
 assert.match(source, /this\.nativeRendererSink\?\.events\(events\)/);
 assert.match(source, /this\.nativeRendererSink\?\.addSource\(entry\.id, frame\.samplePos\)/);
 assert.match(source, /this\.nativeRendererSink\?\.frame\(frame\.samplePos, entries\)/);
+assert.match(source, /sidecar accepted or rejected the entire codec batch/);
+assert.match(source, /this\.nativeRendererSink\?\.setHeadPose\(pose\)/);
+assert.match(source, /this\.nativeRendererSink\?\.clearHeadPose\(\)/);
+assert.match(source, /this\.nativeRendererSink\?\.startAt\(this\.startupOrigin\)/);
+assert.match(source, /this\.nativeRendererSink\?\.pause\(true\)/);
+assert.match(source, /this\.nativeRendererSink\?\.pause\(false\)/);
+assert.match(source, /this\.nativeRendererSink\?\.reset\(this\.acceptedEndSample\)/);
+assert.match(source, /this\.nativeRendererSink\?\.removeSource\(sourceId, this\.acceptedEndSample\)/);
 assert.match(source, /native renderer frame mirror failed/);
 assert.match(source, /this\.renderer\.feedBatch\(sequence, frame\.samplePos, entries\)/);
 

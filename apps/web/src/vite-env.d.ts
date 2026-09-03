@@ -59,6 +59,9 @@ declare global {
     running: boolean;
     referenceMix: boolean;
     detail: string;
+    samplePos?: number;
+    outputActive?: boolean;
+    hrtfReady?: boolean;
   }
 
   interface Window {
@@ -81,7 +84,16 @@ declare global {
       stopNativeRenderer?: () => Promise<NativeRendererStatus>;
       getNativeRendererHealth?: () => Promise<NativeRendererStatus>;
       nativeRendererSource?: (id: string, atSample: number) => Promise<boolean>;
-      nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[]) => Promise<boolean>;
+      nativeRendererRemoveSource?: (id: string, atSample: number) => Promise<boolean>;
+      nativeRendererEvents?: (events: readonly import("@sda/core").ObjectEvent[]) => Promise<boolean>;
+      nativeRendererReset?: (origin: number) => Promise<boolean>;
+      nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
+      nativeRendererClearPose?: () => Promise<boolean>;
+      nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;
+      nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
+      nativeRendererStartAt?: (origin: number) => Promise<boolean>;
+      nativeRendererPause?: (paused: boolean) => Promise<boolean>;
+      nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[]) => Promise<{ accepted: boolean; samples: number; reason?: string }>;
       onNativeRendererStatus?: (callback: (status: NativeRendererStatus) => void) => () => void;
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
