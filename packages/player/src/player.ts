@@ -1527,7 +1527,7 @@ export class SdaPlayer {
     } else if (
       !result.accepted &&
       this.outputBackend === "native-sidecar" &&
-      /unknown source or source ring capacity/i.test(result.reason ?? "") &&
+      /unknown source|source ring capacity/i.test(result.reason ?? "") &&
       pending.frame.samplePos + pending.samples <= this.consumedSamples()
     ) {
       // The sidecar already consumed an earlier copy of this frame and the ACK

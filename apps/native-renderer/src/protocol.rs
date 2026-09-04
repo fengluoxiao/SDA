@@ -635,13 +635,20 @@ fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f3
         });
         return;
     }
-    let valid = entries.iter().all(|(id, pcm)| {
-        pcm.len() <= MAX_PENDING_SAMPLES
-            && state
+    let known_sources = entries.iter().all(|(id, pcm)| {
+        pcm.len() <= MAX_PENDING_SAMPLES && state.sources.contains_key(id)
+    });
+    // A batch straddling the codec clock can still commit its future part. A
+    // batch that is wholly unwritable ahead of the clock is a capacity error;
+    // anything else unknown remains a source error.
+    let valid = known_sources
+        && entries.iter().all(|(id, pcm)| {
+            state
                 .sources
                 .get(id)
                 .is_some_and(|source| source.samples.can_write(state.sample_pos, start, pcm.len()))
-    });
+                || state.sample_pos >= start + pcm.len() as u64
+        });
     if !valid {
         write_event(&Event::BatchAck {
             start,
