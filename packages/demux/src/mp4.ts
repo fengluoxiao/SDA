@@ -165,6 +165,9 @@ export class Mp4Demuxer {
     };
     this.file.onSamples = (trackId: number, _user: unknown, samples: Array<{ cts: number; timescale: number; data: Uint8Array }>) => {
       for (const s of samples) {
+        // MP4Box hands us a complete access unit per sample. Feed the decoder
+        // exactly that payload — not the surrounding MP4 container bytes —
+        // because the E-AC-3/JOC pipeline expects raw syncframes.
         this.cb.onPacket?.({
           trackId: this.wantedTrackId ?? 0,
           timestampMs: (s.cts / s.timescale) * 1000,

@@ -8,7 +8,7 @@
 //! IPC clock or the WASAPI output lifecycle.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     io::{self, Read, Write},
     sync::{
         Arc,
@@ -24,21 +24,29 @@ use cpal::{
 };
 use serde::{Deserialize, Serialize};
 
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 6;
 const MAX_SOURCES: usize = 64;
 const MAX_PENDING_SAMPLES: usize = 480_000; // 10 s @ 48 kHz per source.
 const FRAME_JSON: u8 = b'J';
 const FRAME_PCM: u8 = b'P';
 /// Atomic collection of all mono source blocks for one decoded codec frame.
 const FRAME_PCM_BATCH: u8 = b'B';
+/// Validated final-output headphone FIR payload: preamp + independent L/R taps.
+const FRAME_HEADPHONE_FIR: u8 = b'H';
 const NATIVE_RENDERER_MAX_JSON_BYTES: usize = 16 * 1024;
+const MAX_HEADPHONE_FIR_TAPS: usize = 32_768;
 const DEFAULT_OBJECT_RAMP: u32 = 128;
 const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
+/// Keep browser object-activity semantics: −60 dBFS source signal held for 200 ms.
+const OBJECT_ACTIVITY_THRESHOLD: f32 = 0.001;
+const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 16;
 
 mod bus_renderer;
 mod convolution;
+mod dsp;
 #[allow(dead_code)]
+mod headphone;
 mod hrtf;
 mod pcm_ring;
 mod protocol;
@@ -59,7 +67,31 @@ enum Command {
     },
     AddSource {
         id: String,
+        at: Option<u64>,
+        #[serde(rename = "bedLabel")]
+        bed_label: Option<String>,
     },
+    SetLfeMuted {
+        muted: bool,
+    },
+    SetVolume {
+        volume: f32,
+    },
+    SetProgramEnabled {
+        enabled: bool,
+    },
+    SetProgramGain {
+        gain: f32,
+        at: Option<u64>,
+    },
+    SetBinauralEq {
+        low: f32,
+        mid: f32,
+        high: f32,
+        #[serde(rename = "lowCut")]
+        low_cut: bool,
+    },
+    ClearHeadphoneCompensation,
     RemoveSource {
         id: String,
         at: u64,
@@ -94,6 +126,11 @@ enum Command {
         set: String,
         #[serde(rename = "wetWeight")]
         wet_weight: f32,
+    },
+    /// Changes the virtual physical speaker layout used for VBAP, bed snapping,
+    /// and HRTF buses. The sidecar remains a stereo binaural output device.
+    SetLayout {
+        layout: String,
     },
     /// Explicit exclusive output ownership. Defaults to muted while transport
     /// and HRTF preparation are being validated beside Web Audio.
@@ -134,6 +171,11 @@ enum Event<'a> {
         accepted: bool,
         detail: Option<&'a str>,
     },
+    /// DAC-aligned post-source-gain/post-mute object activity for visual feedback.
+    ObjectActivity {
+        sample_pos: u64,
+        ids: &'a [u32],
+    },
     Health(Health),
     Error {
         detail: String,
@@ -144,6 +186,7 @@ enum Event<'a> {
 #[serde(rename_all = "camelCase")]
 struct Health {
     sample_pos: u64,
+    render_sample_pos: u64,
     active_sources: usize,
     underrun_samples: u64,
     callback_count: u64,
@@ -160,6 +203,8 @@ struct Health {
     output_active: bool,
     hrtf_ready: bool,
     route_update_count: u64,
+    layout: &'static str,
+    spatial_bus_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -181,14 +226,114 @@ struct GainEvent {
 }
 
 #[derive(Clone, Copy)]
+struct ProgramGainEvent {
+    gain: f32,
+}
+
+#[derive(Clone, Copy)]
 struct SpatialEvent {
     position: [f32; 3],
     spread: f32,
     ramp: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceKind {
+    Object,
+    Bed,
+}
+
+#[derive(Clone, Copy)]
+struct RouteGains {
+    buses: [f32; vbap::MAX_BUS_COUNT],
+    lfe: f32,
+}
+
+struct StereoEq {
+    left: [dsp::Biquad; 4],
+    right: [dsp::Biquad; 4],
+    headroom_gain: f32,
+}
+
+impl StereoEq {
+    fn new(sample_rate: u32, bands: [f32; 3], low_cut: bool) -> Result<Self, String> {
+        let low = bands[0].clamp(-12.0, 12.0);
+        let mid = bands[1].clamp(-12.0, 12.0);
+        let high = bands[2].clamp(-12.0, 12.0);
+        // Conservative equivalent of the browser's sampled headroom scan.
+        let max_boost = low.max(0.0) + mid.max(0.0) + high.max(0.0);
+        let headroom_gain = if max_boost > 1e-6 {
+            10.0_f32.powf((-max_boost - 0.2) / 20.0)
+        } else {
+            1.0
+        };
+        let filters = [
+            dsp::Biquad::lowshelf(sample_rate, 120.0, 0.7, low)?,
+            dsp::Biquad::peaking(sample_rate, 1200.0, 0.8, mid)?,
+            dsp::Biquad::highshelf(sample_rate, 6000.0, 0.7, high)?,
+            dsp::Biquad::lowshelf(sample_rate, 180.0, 0.7, if low_cut { -3.0 } else { 0.0 })?,
+        ];
+        Ok(Self {
+            left: filters,
+            right: filters,
+            headroom_gain,
+        })
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> [f32; 2] {
+        let mut left = left * self.headroom_gain;
+        let mut right = right * self.headroom_gain;
+        for filter in &mut self.left {
+            left = filter.process(left);
+        }
+        for filter in &mut self.right {
+            right = filter.process(right);
+        }
+        [left, right]
+    }
+}
+
+struct LfePath {
+    lowpass: dsp::Lr4Lowpass,
+    compressor: dsp::MonoCompressor,
+    delay: [f32; convolution::DEFAULT_PARTITION],
+    cursor: usize,
+}
+
+impl LfePath {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            lowpass: dsp::Lr4Lowpass::new(sample_rate, 120.0)
+                .expect("output sample rate must support the 120 Hz LFE filter"),
+            compressor: dsp::MonoCompressor::lfe(sample_rate),
+            delay: [0.0; convolution::DEFAULT_PARTITION],
+            cursor: 0,
+        }
+    }
+
+    fn process(&mut self, input: f32) -> f32 {
+        let output = self.delay[self.cursor];
+        self.delay[self.cursor] = self.compressor.process(self.lowpass.process(input));
+        self.cursor = (self.cursor + 1) % self.delay.len();
+        output
+    }
+
+    fn reset(&mut self) {
+        self.lowpass.reset();
+        self.compressor.reset();
+        self.delay.fill(0.0);
+        self.cursor = 0;
+    }
+}
+
 struct Source {
     samples: pcm_ring::AbsolutePcmRing,
+    kind: SourceKind,
+    /// Canonical decoder bed label retained so a layout change can re-resolve it.
+    bed_label: Option<String>,
+    /// Parsed once at declaration; avoids source-ID parsing in the mix loop.
+    object_id: Option<u32>,
+    activity_until: u64,
     gain_events: BTreeMap<u64, GainEvent>,
     gain: f32,
     target_gain: f32,
@@ -198,9 +343,12 @@ struct Source {
     position: [f32; 3],
     spread: f32,
     spatial_events: BTreeMap<u64, SpatialEvent>,
-    bus_gains: [f32; vbap::BUS_COUNT],
-    bus_targets: [f32; vbap::BUS_COUNT],
-    bus_steps: [f32; vbap::BUS_COUNT],
+    bus_gains: [f32; vbap::MAX_BUS_COUNT],
+    bus_targets: [f32; vbap::MAX_BUS_COUNT],
+    bus_steps: [f32; vbap::MAX_BUS_COUNT],
+    lfe_gain: f32,
+    lfe_target: f32,
+    lfe_step: f32,
     bus_ramp_remaining: u32,
     availability: f32,
     availability_target: f32,
@@ -214,6 +362,10 @@ impl Default for Source {
     fn default() -> Self {
         Self {
             samples: pcm_ring::AbsolutePcmRing::new(MAX_PENDING_SAMPLES),
+            kind: SourceKind::Bed,
+            bed_label: None,
+            object_id: None,
+            activity_until: 0,
             gain_events: BTreeMap::new(),
             gain: 0.0,
             target_gain: 0.0,
@@ -223,9 +375,12 @@ impl Default for Source {
             position: [0.0, 1.0, 0.0],
             spread: 0.0,
             spatial_events: BTreeMap::new(),
-            bus_gains: [0.0; vbap::BUS_COUNT],
-            bus_targets: [0.0; vbap::BUS_COUNT],
-            bus_steps: [0.0; vbap::BUS_COUNT],
+            bus_gains: [0.0; vbap::MAX_BUS_COUNT],
+            bus_targets: [0.0; vbap::MAX_BUS_COUNT],
+            bus_steps: [0.0; vbap::MAX_BUS_COUNT],
+            lfe_gain: 0.0,
+            lfe_target: 0.0,
+            lfe_step: 0.0,
             bus_ramp_remaining: 0,
             availability: 0.0,
             availability_target: 0.0,
@@ -237,8 +392,35 @@ impl Default for Source {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObjectActivitySnapshot {
+    sample_pos: u64,
+    ids: [u32; MAX_SOURCES],
+    count: usize,
+}
+
+impl ObjectActivitySnapshot {
+    fn empty(sample_pos: u64) -> Self {
+        Self {
+            sample_pos,
+            ids: [0; MAX_SOURCES],
+            count: 0,
+        }
+    }
+
+    fn active_ids(&self) -> &[u32] {
+        &self.ids[..self.count]
+    }
+
+    fn has_same_ids(&self, other: &Self) -> bool {
+        self.active_ids() == other.active_ids()
+    }
+}
+
 struct RuntimeTelemetry {
     callback_output_enabled: AtomicBool,
+    /// Codec timeline consumed by WASAPI, never the worker's render-ahead clock.
+    callback_consumed_sample_pos: AtomicU64,
     callback_count: AtomicU64,
     callback_max_micros: AtomicU64,
     callback_fifo_underrun_frames: AtomicU64,
@@ -271,12 +453,34 @@ struct Engine {
     pending_object_events: HashMap<String, Vec<NativeObjectEvent>>,
     active_hrtf_set: Option<hrtf::NativeHrtfSet>,
     hrtf_wet_weight: f32,
+    layout: vbap::LayoutId,
     vbap: vbap::VbapSolver,
     bus_renderer: Option<bus_renderer::BusRenderer>,
+    lfe_path: LfePath,
+    lfe_muted: bool,
+    output_gain: f32,
+    output_target_gain: f32,
+    output_gain_step: f32,
+    output_gain_ramp_remaining: u32,
+    program_enabled: bool,
+    program_metadata_gain: f32,
+    program_gain: f32,
+    program_target_gain: f32,
+    program_gain_step: f32,
+    program_gain_ramp_remaining: u32,
+    program_events: BTreeMap<u64, ProgramGainEvent>,
+    peak_guard: dsp::StereoPeakGuard,
+    binaural_eq: StereoEq,
+    headphone: headphone::HeadphoneCompensation,
     block_offset: usize,
     output_active: bool,
     render_epoch: u64,
     route_update_count: u64,
+    activity_tick_every: u64,
+    next_activity_tick: u64,
+    activity_snapshots: VecDeque<ObjectActivitySnapshot>,
+    last_queued_activity: ObjectActivitySnapshot,
+    last_emitted_activity: ObjectActivitySnapshot,
 }
 
 impl Engine {
@@ -291,13 +495,37 @@ impl Engine {
             head_pose: None,
             pending_object_events: HashMap::new(),
             active_hrtf_set: None,
-            hrtf_wet_weight: 0.5,
+            hrtf_wet_weight: 0.04,
+            layout: vbap::LayoutId::Dolby7_1_4,
             vbap: vbap::VbapSolver::new(),
             bus_renderer: None,
+            lfe_path: LfePath::new(sample_rate),
+            lfe_muted: false,
+            output_gain: 1.0,
+            output_target_gain: 1.0,
+            output_gain_step: 0.0,
+            output_gain_ramp_remaining: 0,
+            program_enabled: false,
+            program_metadata_gain: 1.0,
+            program_gain: 1.0,
+            program_target_gain: 1.0,
+            program_gain_step: 0.0,
+            program_gain_ramp_remaining: 0,
+            program_events: BTreeMap::new(),
+            peak_guard: dsp::StereoPeakGuard::new(sample_rate),
+            binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
+                .expect("48 kHz must support final binaural EQ"),
+            headphone: headphone::HeadphoneCompensation::bypass()
+                .expect("bypass headphone FIR must be valid"),
             block_offset: 0,
             output_active: false,
             render_epoch: 0,
             route_update_count: 0,
+            activity_tick_every: (sample_rate >> 3).max(1) as u64,
+            next_activity_tick: 0,
+            activity_snapshots: VecDeque::with_capacity(OBJECT_ACTIVITY_QUEUE_CAPACITY),
+            last_queued_activity: ObjectActivitySnapshot::empty(0),
+            last_emitted_activity: ObjectActivitySnapshot::empty(0),
         }
     }
 
@@ -320,13 +548,54 @@ impl Engine {
         Ok(())
     }
 
-    fn set_source_route(source: &mut Source, gains: [f32; vbap::BUS_COUNT], ramp: u32) {
-        let ramp = ramp.max(1);
-        source.bus_targets = gains;
-        source.bus_ramp_remaining = ramp;
-        for index in 0..vbap::BUS_COUNT {
-            source.bus_steps[index] = (gains[index] - source.bus_gains[index]) / ramp as f32;
+    /// Rebuilds the worker-owned physical virtual speaker graph, then routes
+    /// every retained source into the selected room layout without clearing PCM
+    /// rings, object state, output gain, or the codec clock.
+    fn set_layout(&mut self, layout: vbap::LayoutId) -> Result<(), String> {
+        if layout == self.layout {
+            return Ok(());
         }
+        self.layout = layout;
+        self.vbap = vbap::VbapSolver::with_layout(layout);
+        if self.active_hrtf_set.is_some() {
+            self.rebuild_bus_renderer()?;
+        }
+        let ids: Vec<String> = self.sources.keys().cloned().collect();
+        for id in ids {
+            let (kind, label) = self
+                .sources
+                .get(&id)
+                .map(|source| (source.kind, source.bed_label.clone()))
+                .ok_or("source vanished during layout update")?;
+            if kind == SourceKind::Object {
+                self.route_source_now(&id, 0)?;
+            } else if let Some(label) = label {
+                let route = bed_route(&label, &self.vbap);
+                let source = self.sources.get_mut(&id).expect("source still exists");
+                Self::set_source_route(source, route, 0);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_source_route(source: &mut Source, route: RouteGains, ramp: u32) {
+        if ramp == 0 {
+            source.bus_gains = route.buses;
+            source.bus_targets = route.buses;
+            source.bus_steps = [0.0; vbap::MAX_BUS_COUNT];
+            source.lfe_gain = route.lfe;
+            source.lfe_target = route.lfe;
+            source.lfe_step = 0.0;
+            source.bus_ramp_remaining = 0;
+            return;
+        }
+        source.bus_targets = route.buses;
+        source.lfe_target = route.lfe;
+        source.bus_ramp_remaining = ramp;
+        for index in 0..vbap::MAX_BUS_COUNT {
+            source.bus_steps[index] = (route.buses[index] - source.bus_gains[index]) / ramp as f32;
+        }
+        source.lfe_step = (route.lfe - source.lfe_gain) / ramp as f32;
     }
 
     fn advance_source_envelopes(source: &mut Source, samples: u32) {
@@ -340,38 +609,193 @@ impl Engine {
         }
         let route = samples.min(source.bus_ramp_remaining);
         if route > 0 {
-            for bus in 0..vbap::BUS_COUNT {
+            for bus in 0..vbap::MAX_BUS_COUNT {
                 source.bus_gains[bus] += source.bus_steps[bus] * route as f32;
             }
+            source.lfe_gain += source.lfe_step * route as f32;
             source.bus_ramp_remaining -= route;
             if source.bus_ramp_remaining == 0 {
                 source.bus_gains = source.bus_targets;
+                source.lfe_gain = source.lfe_target;
             }
         }
     }
 
     fn route_source_now(&mut self, id: &str, ramp: u32) -> Result<(), String> {
-        let (position, spread) = self
+        let (position, spread, kind) = self
             .sources
             .get(id)
-            .map(|source| (source.position, source.spread))
+            .map(|source| (source.position, source.spread, source.kind))
             .ok_or("unknown source")?;
-        let gains = bus_renderer::route(&self.vbap, position, self.head_pose, spread);
-        let source = self.sources.get_mut(id).expect("source was checked above");
-        Self::set_source_route(source, gains, ramp);
-        if ramp == 0 {
-            source.bus_gains = gains;
-            source.bus_targets = gains;
-            source.bus_ramp_remaining = 0;
+        if kind != SourceKind::Object {
+            return Ok(());
         }
+        let route = RouteGains {
+            buses: bus_renderer::route(&self.vbap, position, self.head_pose, spread),
+            lfe: 0.0,
+        };
+        let source = self.sources.get_mut(id).expect("source was checked above");
+        Self::set_source_route(source, route, ramp);
         Ok(())
+    }
+
+    fn set_output_volume(&mut self, volume: f32, immediate: bool) {
+        let target = volume.clamp(0.0, 1.0).powi(2);
+        if immediate {
+            self.output_gain = target;
+            self.output_target_gain = target;
+            self.output_gain_step = 0.0;
+            self.output_gain_ramp_remaining = 0;
+            return;
+        }
+        let ramp = (self.output_sample_rate as f32 * 0.02).round().max(1.0) as u32;
+        self.output_target_gain = target;
+        self.output_gain_ramp_remaining = ramp;
+        self.output_gain_step = (target - self.output_gain) / ramp as f32;
+    }
+
+    fn set_program_target(&mut self, gain: f32, immediate: bool) {
+        let target = if self.program_enabled {
+            gain.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if immediate {
+            self.program_gain = target;
+            self.program_target_gain = target;
+            self.program_gain_step = 0.0;
+            self.program_gain_ramp_remaining = 0;
+            return;
+        }
+        let ramp = (self.output_sample_rate as f32 * 0.05).round().max(1.0) as u32;
+        self.program_target_gain = target;
+        self.program_gain_ramp_remaining = ramp;
+        self.program_gain_step = (target - self.program_gain) / ramp as f32;
+    }
+
+    fn fast_forward_program_envelope(&mut self, samples: u64) {
+        let elapsed = samples.min(self.program_gain_ramp_remaining as u64) as u32;
+        if elapsed == 0 {
+            return;
+        }
+        self.program_gain += self.program_gain_step * elapsed as f32;
+        self.program_gain_ramp_remaining -= elapsed;
+        if self.program_gain_ramp_remaining == 0 {
+            self.program_gain = self.program_target_gain;
+        }
+    }
+
+    fn advance_output_envelopes(&mut self) {
+        if self.output_gain_ramp_remaining > 0 {
+            self.output_gain += self.output_gain_step;
+            self.output_gain_ramp_remaining -= 1;
+            if self.output_gain_ramp_remaining == 0 {
+                self.output_gain = self.output_target_gain;
+            }
+        }
+        if self.program_gain_ramp_remaining > 0 {
+            self.program_gain += self.program_gain_step;
+            self.program_gain_ramp_remaining -= 1;
+            if self.program_gain_ramp_remaining == 0 {
+                self.program_gain = self.program_target_gain;
+            }
+        }
+    }
+
+    fn clear_object_activity(&mut self, sample_pos: u64) {
+        self.next_activity_tick = sample_pos;
+        self.activity_snapshots.clear();
+        self.last_queued_activity = ObjectActivitySnapshot::empty(sample_pos);
+        self.last_emitted_activity = ObjectActivitySnapshot::empty(sample_pos);
+        for source in self.sources.values_mut() {
+            source.activity_until = 0;
+        }
+    }
+
+    fn queue_object_activity_snapshot(&mut self, sample_pos: u64) {
+        if sample_pos < self.next_activity_tick {
+            return;
+        }
+        self.next_activity_tick = sample_pos.saturating_add(self.activity_tick_every);
+        let mut snapshot = ObjectActivitySnapshot::empty(sample_pos);
+        for source in self.sources.values() {
+            let Some(object_id) = source.object_id else {
+                continue;
+            };
+            if !source
+                .remove_at
+                .is_some_and(|remove_at| sample_pos >= remove_at)
+                && !source.muted
+                && sample_pos <= source.activity_until
+                && snapshot.count < MAX_SOURCES
+            {
+                snapshot.ids[snapshot.count] = object_id;
+                snapshot.count += 1;
+            }
+        }
+        snapshot.ids[..snapshot.count].sort_unstable();
+        if snapshot.has_same_ids(&self.last_queued_activity) {
+            return;
+        }
+        self.last_queued_activity = snapshot;
+        if self.activity_snapshots.len() == OBJECT_ACTIVITY_QUEUE_CAPACITY {
+            self.activity_snapshots.pop_front();
+        }
+        self.activity_snapshots.push_back(snapshot);
+    }
+
+    fn emit_consumed_object_activity(&mut self, consumed_sample_pos: u64) {
+        while self
+            .activity_snapshots
+            .front()
+            .is_some_and(|snapshot| snapshot.sample_pos <= consumed_sample_pos)
+        {
+            let snapshot = self.activity_snapshots.pop_front().expect("checked front");
+            if !snapshot.has_same_ids(&self.last_emitted_activity) {
+                write_event(&Event::ObjectActivity {
+                    sample_pos: snapshot.sample_pos,
+                    ids: snapshot.active_ids(),
+                });
+                self.last_emitted_activity = snapshot;
+            }
+        }
+    }
+
+    fn reset_session(&mut self, origin: u64) {
+        self.sample_pos = origin;
+        self.block_offset = 0;
+        // A replacement player can queue PCM before startAt reaches the worker.
+        // Stop the old transport so it cannot consume the new origin first.
+        self.output_active = false;
+        self.paused = true;
+        self.render_epoch = self.render_epoch.wrapping_add(1);
+        self.pending_object_events.clear();
+        self.sources.clear();
+        self.clear_object_activity(origin);
+        self.head_pose = None;
+        self.lfe_muted = false;
+        self.lfe_path.reset();
+        self.program_metadata_gain = 1.0;
+        self.program_gain = 1.0;
+        self.program_target_gain = 1.0;
+        self.program_gain_step = 0.0;
+        self.program_gain_ramp_remaining = 0;
+        self.program_events.clear();
+        self.peak_guard.reset();
+        self.headphone.reset();
+        if let Some(bus_renderer) = &mut self.bus_renderer {
+            bus_renderer.reset();
+        }
     }
 
     fn health(&self, fifo: &stereo_fifo::StereoFifo, telemetry: &RuntimeTelemetry) -> Health {
         let render_blocks = telemetry.render_block_count.load(Ordering::Relaxed);
         let render_total = telemetry.render_block_total_micros.load(Ordering::Relaxed);
         Health {
-            sample_pos: self.sample_pos,
+            sample_pos: telemetry
+                .callback_consumed_sample_pos
+                .load(Ordering::Relaxed),
+            render_sample_pos: self.sample_pos,
             active_sources: self.sources.len(),
             underrun_samples: self.underrun_samples,
             callback_count: telemetry.callback_count.load(Ordering::Relaxed),
@@ -394,6 +818,8 @@ impl Engine {
             output_active: self.output_active,
             hrtf_ready: self.active_hrtf_set.is_some(),
             route_update_count: self.route_update_count,
+            layout: self.layout.as_str(),
+            spatial_bus_count: self.vbap.bus_count(),
         }
     }
 
@@ -418,7 +844,7 @@ impl Engine {
             return;
         }
         let mut underruns = 0_u64;
-        let vbap = &self.vbap;
+        let vbap = self.vbap.clone();
         let head_pose = self.head_pose;
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
@@ -428,21 +854,32 @@ impl Engine {
                     .as_mut()
                     .expect("checked above")
                     .begin_block();
+                self.headphone.begin_block();
             }
-            let mut direct = 0.0_f32;
-            for (id, source) in &mut self.sources {
+            let mut lfe_sum = 0.0_f32;
+            for source in self.sources.values_mut() {
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
                     continue;
                 }
-                if let Some(event) = source.spatial_events.remove(&at) {
-                    source.position = event.position;
-                    source.spread = event.spread;
-                    Self::set_source_route(
-                        source,
-                        bus_renderer::route(vbap, event.position, head_pose, event.spread),
-                        event.ramp,
-                    );
-                    self.route_update_count = self.route_update_count.saturating_add(1);
+                if source.kind == SourceKind::Object {
+                    if let Some(event) = source.spatial_events.remove(&at) {
+                        source.position = event.position;
+                        source.spread = event.spread;
+                        Self::set_source_route(
+                            source,
+                            RouteGains {
+                                buses: bus_renderer::route(
+                                    &vbap,
+                                    event.position,
+                                    head_pose,
+                                    event.spread,
+                                ),
+                                lfe: 0.0,
+                            },
+                            event.ramp,
+                        );
+                        self.route_update_count = self.route_update_count.saturating_add(1);
+                    }
                 }
                 if let Some(muted) = source.mute_events.remove(&at) {
                     source.muted = muted;
@@ -474,41 +911,64 @@ impl Engine {
                     * source.availability
                     * source.gain
                     * if source.muted { 0.0 } else { 1.0 };
+                if source.object_id.is_some() && sample.abs() >= OBJECT_ACTIVITY_THRESHOLD {
+                    source.activity_until =
+                        at.saturating_add((self.output_sample_rate as f32 * 0.2).round() as u64);
+                }
                 if raw.is_none() && source.gain != 0.0 {
                     underruns += 1;
                 }
-                if id.starts_with("obj:") {
-                    self.bus_renderer.as_mut().expect("checked above").add(
-                        sample,
-                        &source.bus_gains,
-                        block_index,
-                    );
-                } else {
-                    direct += sample;
+                self.bus_renderer.as_mut().expect("checked above").add(
+                    sample,
+                    &source.bus_gains,
+                    block_index,
+                );
+                if !self.lfe_muted {
+                    lfe_sum += sample * source.lfe_gain;
                 }
                 Self::advance_source_envelopes(source, 1);
+            }
+            if let Some(event) = self.program_events.remove(&at) {
+                self.program_metadata_gain = event.gain;
+                self.set_program_target(event.gain, false);
             }
             let binaural = self
                 .bus_renderer
                 .as_ref()
                 .expect("checked above")
                 .output_at(block_index);
-            let left = direct + binaural[0];
-            let right = direct + binaural[1];
+            let lfe = self.lfe_path.process(lfe_sum) * 0.5;
+            let compensated = self.headphone.output_at(block_index);
+            self.headphone
+                .add(block_index, [lfe + binaural[0], lfe + binaural[1]]);
+            // Match master binaural ordering: summed HRTF/LFE -> headphone FIR
+            // -> EQ -> +6 dB makeup -> volume/program -> linked guard.
+            let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
+            let pre_guard = [
+                equalized[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
+                equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
+            ];
+            let guarded = self.peak_guard.process(
+                pre_guard[0] * self.program_gain,
+                pre_guard[1] * self.program_gain,
+            );
             if channels >= 2 {
-                frame[0] = left;
-                frame[1] = right;
+                frame[0] = guarded[0];
+                frame[1] = guarded[1];
             } else if channels == 1 {
-                frame[0] = 0.5 * (left + right);
+                frame[0] = 0.5 * (guarded[0] + guarded[1]);
             }
+            self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
                 let _ = self
                     .bus_renderer
                     .as_mut()
                     .expect("checked above")
                     .finish_block();
+                let _ = self.headphone.finish_block();
             }
             self.sample_pos += 1;
+            self.queue_object_activity_snapshot(self.sample_pos);
             self.block_offset = (self.block_offset + 1) % convolution::DEFAULT_PARTITION;
         }
         self.underrun_samples += underruns;
@@ -522,6 +982,58 @@ impl Engine {
     #[cfg(test)]
     fn mix(&mut self, output: &mut [f32], channels: usize) {
         self.render_into(output, channels);
+    }
+}
+
+fn one_hot_route(bus: usize) -> RouteGains {
+    let mut buses = [0.0; vbap::MAX_BUS_COUNT];
+    if bus < buses.len() {
+        buses[bus] = 1.0;
+    }
+    RouteGains { buses, lfe: 0.0 }
+}
+
+fn static_bed_position(azimuth: f32, elevation: f32) -> [f32; 3] {
+    let azimuth = azimuth.to_radians();
+    let elevation = elevation.to_radians();
+    [
+        -elevation.cos() * azimuth.sin(),
+        elevation.cos() * azimuth.cos(),
+        elevation.sin(),
+    ]
+}
+
+/// Mirrors master label aliases, snapping a bed to the selected room's exact
+/// physical speaker when it exists and VBAP-folding only labels absent there.
+fn bed_route(label: &str, solver: &vbap::VbapSolver) -> RouteGains {
+    let (name, position) = match label {
+        "LFE" | "LFE2" | "Lfe" | "LowFrequencyEffects" | "LowFrequencyEffects2" => {
+            return RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 1.0 };
+        }
+        "FrontLeft" | "L" | "Left" => ("FrontLeft", static_bed_position(30.0, 0.0)),
+        "FrontRight" | "R" | "Right" => ("FrontRight", static_bed_position(-30.0, 0.0)),
+        "Center" | "C" => ("Center", static_bed_position(0.0, 0.0)),
+        "SurroundLeft" | "Ls" | "Lsc" | "Lsd" => ("SurroundLeft", static_bed_position(100.0, 0.0)),
+        "SurroundRight" | "Rs" | "Rsc" | "Rsd" => ("SurroundRight", static_bed_position(-100.0, 0.0)),
+        "RearLeft" | "Lb" | "Lrs" | "SurroundLeftRear" | "RearLeftSurround" => ("RearLeft", static_bed_position(140.0, 0.0)),
+        "RearRight" | "Rb" | "Rrs" | "SurroundRightRear" | "RearRightSurround" => ("RearRight", static_bed_position(-140.0, 0.0)),
+        "TopFrontLeft" | "Tfl" | "Ltf" | "TopLeft" => ("TopFrontLeft", static_bed_position(45.0, 45.0)),
+        "TopFrontRight" | "Tfr" | "Rtf" | "TopRight" => ("TopFrontRight", static_bed_position(-45.0, 45.0)),
+        "TopRearLeft" | "Tbl" | "Ltr" | "Trl" => ("TopRearLeft", static_bed_position(135.0, 45.0)),
+        "TopRearRight" | "Tbr" | "Rtr" | "Trr" => ("TopRearRight", static_bed_position(-135.0, 45.0)),
+        "TopMiddleLeft" | "Tsl" | "TopSideLeft" | "Lts" | "Ltm" | "TopSurroundLeft" => ("TopMiddleLeft", static_bed_position(90.0, 45.0)),
+        "TopMiddleRight" | "Tsr" | "TopSideRight" | "Rts" | "Rtm" | "TopSurroundRight" => ("TopMiddleRight", static_bed_position(-90.0, 45.0)),
+        "WideLeft" | "Lw" => ("WideLeft", static_bed_position(60.0, 0.0)),
+        "WideRight" | "Rw" => ("WideRight", static_bed_position(-60.0, 0.0)),
+        "RearCenter" | "Cb" | "CenterSurround" => ("RearCenter", static_bed_position(180.0, 0.0)),
+        "TopCenter" | "Tc" => ("TopCenter", static_bed_position(0.0, 90.0)),
+        "TopFrontCenter" | "Tfc" => ("TopFrontCenter", static_bed_position(0.0, 45.0)),
+        _ => ("Center", static_bed_position(0.0, 0.0)),
+    };
+    if let Some(bus) = solver.speaker_index(name) {
+        one_hot_route(bus)
+    } else {
+        RouteGains { buses: solver.pan(position, 0.0), lfe: 0.0 }
     }
 }
 
@@ -545,6 +1057,7 @@ fn spawn_render_worker(
         .spawn(move || {
             let mut block = vec![0.0_f32; convolution::DEFAULT_PARTITION * 2];
             let mut observed_epoch = 0_u64;
+            let mut pending_fifo_flush = None;
             loop {
                 for _ in 0..16 {
                     let Some(command) = commands.pop() else {
@@ -555,12 +1068,26 @@ fn spawn_render_worker(
                     }
                 }
                 if engine.render_epoch != observed_epoch {
-                    fifo.clear_from_producer();
+                    engine.clear_object_activity(engine.sample_pos);
+                    pending_fifo_flush = Some(fifo.clear_from_producer());
                     telemetry
                         .callback_output_enabled
                         .store(false, Ordering::Release);
+                    telemetry
+                        .callback_consumed_sample_pos
+                        .store(engine.sample_pos, Ordering::Release);
                     observed_epoch = engine.render_epoch;
                 }
+                if pending_fifo_flush.is_some_and(|epoch| !fifo.flush_acknowledged(epoch)) {
+                    commands.wait(Duration::from_micros(500));
+                    continue;
+                }
+                pending_fifo_flush = None;
+                engine.emit_consumed_object_activity(
+                    telemetry
+                        .callback_consumed_sample_pos
+                        .load(Ordering::Acquire),
+                );
                 if fifo.available_read() >= STEREO_FIFO_TARGET_FRAMES
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
                     || !engine.output_active
@@ -599,6 +1126,11 @@ fn record_callback(
     output_enabled: bool,
 ) {
     telemetry.callback_count.fetch_add(1, Ordering::Relaxed);
+    if output_enabled && popped > 0 {
+        telemetry
+            .callback_consumed_sample_pos
+            .fetch_add(popped as u64, Ordering::Release);
+    }
     if output_enabled {
         telemetry
             .callback_fifo_underrun_frames
@@ -625,6 +1157,7 @@ fn build_stream(
             move |data: &mut [f32], _| {
                 let started = Instant::now();
                 let requested = data.len() / channels;
+                fifo.apply_flush_from_consumer();
                 let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
                 let popped = if output_enabled {
                     fifo.pop_into_f32(data, channels)
@@ -642,6 +1175,7 @@ fn build_stream(
             move |data: &mut [i16], _| {
                 let started = Instant::now();
                 let requested = data.len() / channels;
+                fifo.apply_flush_from_consumer();
                 let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
                 let popped = if output_enabled {
                     fifo.pop_into_i16(data, channels)
@@ -659,6 +1193,7 @@ fn build_stream(
             move |data: &mut [u16], _| {
                 let started = Instant::now();
                 let requested = data.len() / channels;
+                fifo.apply_flush_from_consumer();
                 let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
                 let popped = if output_enabled {
                     fifo.pop_into_u16(data, channels)
@@ -723,6 +1258,7 @@ fn main() {
     let fifo = Arc::new(stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES));
     let telemetry = Arc::new(RuntimeTelemetry {
         callback_output_enabled: AtomicBool::new(false),
+        callback_consumed_sample_pos: AtomicU64::new(0),
         callback_count: AtomicU64::new(0),
         callback_max_micros: AtomicU64::new(0),
         callback_fifo_underrun_frames: AtomicU64::new(0),
@@ -802,12 +1338,10 @@ mod tests {
     }
 
     #[test]
-    fn fixed_bus_graph_is_independent_of_source_count() {
+    fn layout_bus_graph_is_independent_of_source_count() {
         let mut engine = calibrated_engine();
-        assert_eq!(
-            engine.bus_renderer.as_ref().unwrap().bus_count(),
-            vbap::BUS_COUNT
-        );
+        let expected = engine.vbap.bus_count();
+        assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), expected);
         for object in 0..MAX_SOURCES {
             engine.sources.insert(
                 format!("obj:{object}"),
@@ -818,10 +1352,50 @@ mod tests {
                 },
             );
         }
-        assert_eq!(
-            engine.bus_renderer.as_ref().unwrap().bus_count(),
-            vbap::BUS_COUNT
-        );
+        assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), expected);
+    }
+
+    #[test]
+    fn layout_switch_rebuilds_physical_bus_graph_and_reroutes_beds() {
+        let mut engine = calibrated_engine();
+        let mut bed = Source {
+            kind: SourceKind::Bed,
+            bed_label: Some("TopMiddleLeft".into()),
+            gain: 1.0,
+            target_gain: 1.0,
+            ..Source::default()
+        };
+        // A source may be declared long before its first codec block arrives.
+        // Keep only its semantic label so a room change cannot later restore a
+        // numeric gain vector that was computed for a different bus topology.
+        Engine::set_source_route(&mut bed, bed_route("TopMiddleLeft", &engine.vbap), 0);
+        engine.sources.insert("bed:0".into(), bed);
+
+        engine.set_layout(vbap::LayoutId::Dolby5_1_2).unwrap();
+        assert_eq!(engine.layout, vbap::LayoutId::Dolby5_1_2);
+        assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), 7);
+        assert_eq!(engine.sources["bed:0"].bus_gains[5], 1.0);
+        assert_eq!(engine.sources["bed:0"].bus_gains[11], 0.0);
+
+        engine.set_layout(vbap::LayoutId::Dolby9_1_6).unwrap();
+        assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), 15);
+        assert_eq!(engine.sources["bed:0"].bus_gains[5], 0.0);
+        assert_eq!(engine.sources["bed:0"].bus_gains[11], 1.0);
+    }
+
+    #[test]
+    fn stereo_21_is_two_hrtf_buses_plus_a_separate_lfe_path() {
+        let mut engine = calibrated_engine();
+        engine.set_layout(vbap::LayoutId::Stereo2_1).unwrap();
+        assert_eq!(engine.bus_renderer.as_ref().unwrap().bus_count(), 2);
+
+        let front_left = bed_route("FrontLeft", &engine.vbap);
+        assert_eq!(front_left.buses, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(front_left.lfe, 0.0);
+
+        let lfe = bed_route("LFE", &engine.vbap);
+        assert_eq!(lfe.buses, [0.0; vbap::MAX_BUS_COUNT]);
+        assert_eq!(lfe.lfe, 1.0);
     }
 
     #[test]
@@ -833,7 +1407,8 @@ mod tests {
             ..Source::default()
         };
         bed.samples
-            .write(0, 0, &[0.25; convolution::DEFAULT_PARTITION]);
+            .write(0, 0, &[0.25; convolution::DEFAULT_PARTITION * 4]);
+        Engine::set_source_route(&mut bed, one_hot_route(0), 0);
         engine.sources.insert("bed:0".into(), bed);
         engine.sources.insert(
             "obj:late".into(),
@@ -843,10 +1418,21 @@ mod tests {
                 ..Source::default()
             },
         );
-        let mut output = vec![0.0; convolution::DEFAULT_PARTITION * 2];
+        let total_frames = convolution::DEFAULT_PARTITION * 4;
+        let mut output = vec![0.0; total_frames * 2];
         engine.mix(&mut output, 2);
-        assert_eq!(engine.sample_pos, convolution::DEFAULT_PARTITION as u64);
-        assert!(output.iter().any(|sample| *sample != 0.0));
+        assert_eq!(engine.sample_pos, total_frames as u64);
+        let delay_frames = convolution::DEFAULT_PARTITION + 240;
+        assert!(
+            output[..delay_frames * 2]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert!(
+            output[delay_frames * 2..]
+                .iter()
+                .any(|sample| *sample != 0.0)
+        );
         assert!(engine.underrun_samples >= convolution::DEFAULT_PARTITION as u64);
     }
 
@@ -873,13 +1459,122 @@ mod tests {
             ..Source::default()
         };
         source.bus_gains[0] = 1.0;
-        let target = [0.0; vbap::BUS_COUNT];
-        Engine::set_source_route(&mut source, target, 4);
+        let target = [0.0; vbap::MAX_BUS_COUNT];
+        Engine::set_source_route(
+            &mut source,
+            RouteGains {
+                buses: target,
+                lfe: 0.0,
+            },
+            4,
+        );
         assert_eq!(source.bus_gains[0], 1.0);
         Engine::advance_source_envelopes(&mut source, 1);
         assert!((source.bus_gains[0] - 0.75).abs() < 1e-6);
         Engine::advance_source_envelopes(&mut source, 3);
         assert_eq!(source.bus_gains, target);
+    }
+
+    #[test]
+    fn object_activity_uses_post_source_gain_and_waits_for_dac_consumption() {
+        let mut engine = calibrated_engine();
+        let mut object = Source {
+            kind: SourceKind::Object,
+            object_id: Some(7),
+            gain: 1.0,
+            target_gain: 1.0,
+            availability: 1.0,
+            availability_target: 1.0,
+            ..Source::default()
+        };
+        object.samples.write(0, 0, &[OBJECT_ACTIVITY_THRESHOLD]);
+        engine.sources.insert("obj:7".into(), object);
+
+        let mut bed = Source {
+            kind: SourceKind::Bed,
+            gain: 1.0,
+            target_gain: 1.0,
+            availability: 1.0,
+            availability_target: 1.0,
+            ..Source::default()
+        };
+        bed.samples.write(0, 0, &[1.0]);
+        engine.sources.insert("bed:0".into(), bed);
+
+        engine.mix(&mut [0.0; 2], 2);
+        let snapshot = engine
+            .activity_snapshots
+            .front()
+            .expect("object snapshot queued");
+        assert_eq!(snapshot.sample_pos, 1);
+        assert_eq!(snapshot.active_ids(), &[7]);
+        assert_eq!(engine.last_emitted_activity.active_ids(), &[] as &[u32]);
+
+        engine.clear_object_activity(engine.sample_pos);
+        assert!(engine.activity_snapshots.is_empty());
+        assert_eq!(engine.last_emitted_activity.active_ids(), &[] as &[u32]);
+    }
+
+    #[test]
+    fn object_activity_holds_for_200ms_and_excludes_muted_sources() {
+        let mut engine = calibrated_engine();
+        let hold = (engine.output_sample_rate as f32 * 0.2).round() as u64;
+        let source = Source {
+            kind: SourceKind::Object,
+            object_id: Some(9),
+            gain: 1.0,
+            target_gain: 1.0,
+            activity_until: hold,
+            ..Source::default()
+        };
+        engine.sources.insert("obj:9".into(), source);
+
+        engine.queue_object_activity_snapshot(hold);
+        assert_eq!(
+            engine.activity_snapshots.front().unwrap().active_ids(),
+            &[9]
+        );
+
+        engine.activity_snapshots.clear();
+        engine.next_activity_tick = hold + 1;
+        engine.queue_object_activity_snapshot(hold + 1);
+        assert_eq!(
+            engine.activity_snapshots.front().unwrap().active_ids(),
+            &[] as &[u32]
+        );
+
+        let source = engine.sources.get_mut("obj:9").unwrap();
+        source.activity_until = hold * 2;
+        source.muted = true;
+        engine.next_activity_tick = hold * 2;
+        engine.queue_object_activity_snapshot(hold * 2);
+        assert_eq!(
+            engine.activity_snapshots.back().unwrap().active_ids(),
+            &[] as &[u32]
+        );
+    }
+
+    #[test]
+    fn reset_discards_old_sources_pose_and_lfe_tail() {
+        let mut engine = calibrated_engine();
+        engine.head_pose = Some([0.0, 0.0, 0.5, 0.5]);
+        engine.lfe_muted = true;
+        let _ = engine.lfe_path.process(1.0);
+        engine.sources.insert(
+            "bed:0".into(),
+            Source {
+                gain: 1.0,
+                target_gain: 1.0,
+                ..Source::default()
+            },
+        );
+        engine.reset_session(0);
+        assert!(engine.sources.is_empty());
+        assert!(engine.head_pose.is_none());
+        assert!(!engine.lfe_muted);
+        assert_eq!(engine.lfe_path.process(0.0), 0.0);
+        assert!(!engine.output_active);
+        assert!(engine.paused);
     }
 
     #[test]
@@ -900,20 +1595,78 @@ mod tests {
     }
 
     #[test]
-    fn remove_boundary_is_sample_accurate_for_direct_bed() {
-        let mut engine = calibrated_engine();
+    fn bed_labels_select_fixed_buses_and_lfe_bypasses_them() {
+        let solver = vbap::VbapSolver::new();
+        let front_left = bed_route("FrontLeft", &solver);
+        assert_eq!(front_left.buses[0], 1.0);
+        assert_eq!(front_left.buses.iter().skip(1).sum::<f32>(), 0.0);
+        assert_eq!(front_left.lfe, 0.0);
+
+        let rear_right = bed_route("Rrs", &solver);
+        assert_eq!(rear_right.buses[6], 1.0);
+        assert_eq!(rear_right.lfe, 0.0);
+
+        for label in [
+            "LFE",
+            "LFE2",
+            "Lfe",
+            "LowFrequencyEffects",
+            "LowFrequencyEffects2",
+        ] {
+            let route = bed_route(label, &solver);
+            assert_eq!(route.buses, [0.0; vbap::MAX_BUS_COUNT], "{label}");
+            assert_eq!(route.lfe, 1.0, "{label}");
+        }
+    }
+
+    #[test]
+    fn lfe_path_is_lowpassed_and_partition_aligned() {
+        let mut lfe = LfePath::new(48_000);
+        for _ in 0..convolution::DEFAULT_PARTITION {
+            assert_eq!(lfe.process(1.0), 0.0);
+        }
+        let delayed = lfe.process(1.0);
+        assert!(delayed > 0.0 && delayed < 1.0);
+
+        let mut high = LfePath::new(48_000);
+        let mut low = LfePath::new(48_000);
+        let mut high_square = 0.0;
+        let mut low_square = 0.0;
+        for sample in 0..(48_000 + convolution::DEFAULT_PARTITION) {
+            let low_input = (std::f32::consts::TAU * 60.0 * sample as f32 / 48_000.0).sin();
+            let high_input = (std::f32::consts::TAU * 240.0 * sample as f32 / 48_000.0).sin();
+            let low_output = low.process(low_input);
+            let high_output = high.process(high_input);
+            if sample >= 24_000 {
+                low_square += low_output * low_output;
+                high_square += high_output * high_output;
+            }
+        }
+        assert!(high_square < low_square * 0.02);
+    }
+
+    #[test]
+    fn lfe_mute_leaves_non_lfe_bus_routing_unchanged() {
         let mut source = Source {
             gain: 1.0,
             target_gain: 1.0,
-            remove_at: Some(1),
             ..Source::default()
         };
-        source.samples.write(0, 0, &[1.0, 1.0]);
-        engine.sources.insert("bed:0".into(), source);
-        let mut output = vec![0.0; 34 * 2];
-        engine.mix(&mut output, 2);
-        assert!(output[0] > 0.0);
-        assert_eq!(output[2], 0.0);
-        assert!(!engine.sources.contains_key("bed:0"));
+        Engine::set_source_route(
+            &mut source,
+            RouteGains {
+                buses: [0.0; vbap::MAX_BUS_COUNT],
+                lfe: 1.0,
+            },
+            0,
+        );
+        let sample = 0.75;
+        let unmuted_lfe = sample * source.lfe_gain;
+        let muted_lfe = 0.0_f32;
+        assert_eq!(unmuted_lfe, sample);
+        assert_eq!(muted_lfe, 0.0);
+        Engine::set_source_route(&mut source, one_hot_route(2), 0);
+        assert_eq!(source.lfe_gain, 0.0);
+        assert_eq!(source.bus_gains[2], 1.0);
     }
 }

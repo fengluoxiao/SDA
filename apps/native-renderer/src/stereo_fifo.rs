@@ -17,6 +17,10 @@ pub struct StereoFifo {
     capacity: usize,
     read: AtomicUsize,
     write: AtomicUsize,
+    /// Producer requests an empty boundary; only the consumer advances `read`.
+    flush_before: AtomicUsize,
+    flush_epoch: AtomicUsize,
+    flush_ack_epoch: AtomicUsize,
 }
 
 impl StereoFifo {
@@ -31,12 +35,26 @@ impl StereoFifo {
             capacity: capacity_frames,
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
+            flush_before: AtomicUsize::new(0),
+            flush_epoch: AtomicUsize::new(0),
+            flush_ack_epoch: AtomicUsize::new(0),
+        }
+    }
+
+    fn effective_read(&self, read: usize, write: usize) -> usize {
+        let flush_before = self.flush_before.load(Ordering::Acquire);
+        if flush_before.wrapping_sub(read) <= self.capacity
+            && write.wrapping_sub(flush_before) <= self.capacity
+        {
+            flush_before
+        } else {
+            read
         }
     }
 
     pub fn available_read(&self) -> usize {
         let write = self.write.load(Ordering::Acquire);
-        let read = self.read.load(Ordering::Acquire);
+        let read = self.effective_read(self.read.load(Ordering::Acquire), write);
         write.wrapping_sub(read).min(self.capacity)
     }
 
@@ -64,9 +82,20 @@ impl StereoFifo {
         count
     }
 
+    /// Consumer-owned application of a pending producer flush request.
+    pub fn apply_flush_from_consumer(&self) {
+        let write = self.write.load(Ordering::Acquire);
+        let read = self.effective_read(self.read.load(Ordering::Relaxed), write);
+        self.read.store(read, Ordering::Release);
+        self.flush_ack_epoch
+            .store(self.flush_epoch.load(Ordering::Acquire), Ordering::Release);
+    }
+
     fn pop_frames(&self, requested: usize, mut write: impl FnMut(usize, [f32; 2])) -> usize {
-        let count = requested.min(self.available_read());
+        self.apply_flush_from_consumer();
         let read = self.read.load(Ordering::Relaxed);
+        let write_cursor = self.write.load(Ordering::Acquire);
+        let count = requested.min(write_cursor.wrapping_sub(read).min(self.capacity));
         for offset in 0..count {
             let index = (read.wrapping_add(offset)) % self.capacity;
             write(offset, unsafe { *self.frames[index].0.get() });
@@ -124,11 +153,19 @@ impl StereoFifo {
         count
     }
 
-    /// Producer-side flush. A concurrently executing callback may consume at most
-    /// one already-loaded frame; all later reads observe the new empty boundary.
-    pub fn clear_from_producer(&self) {
+    /// Producer-side flush request. The callback owns the read cursor and moves
+    /// it to this boundary before its next pop, so reset/start cannot race a stale
+    /// callback store and resurrect pre-reset frames.
+    pub fn clear_from_producer(&self) -> usize {
         let write = self.write.load(Ordering::Acquire);
-        self.read.store(write, Ordering::Release);
+        self.flush_before.store(write, Ordering::Release);
+        self.flush_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    pub fn flush_acknowledged(&self, epoch: usize) -> bool {
+        self.flush_ack_epoch.load(Ordering::Acquire) >= epoch
     }
 }
 
@@ -156,5 +193,19 @@ mod tests {
         let mut output = [9.0; 6];
         assert_eq!(fifo.pop_into_f32(&mut output, 2), 2);
         assert_eq!(output, [1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn producer_flush_is_applied_only_by_consumer() {
+        let fifo = StereoFifo::new(4);
+        assert_eq!(fifo.push(&[1.0, 10.0, 2.0, 20.0]), 2);
+        let flush = fifo.clear_from_producer();
+        assert!(!fifo.flush_acknowledged(flush));
+        assert_eq!(fifo.read.load(Ordering::Acquire), 0);
+        let mut output = [9.0; 4];
+        assert_eq!(fifo.pop_into_f32(&mut output, 2), 0);
+        assert_eq!(output, [0.0; 4]);
+        assert_eq!(fifo.read.load(Ordering::Acquire), 2);
+        assert!(fifo.flush_acknowledged(flush));
     }
 }

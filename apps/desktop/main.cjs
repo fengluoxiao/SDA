@@ -19,9 +19,13 @@ function writeStartupLog(line) {
   try {
     fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
     fs.appendFileSync(startupLogPath, `[${new Date().toISOString()}] ${line}\n`, "utf8");
-  } catch (error) {
-    console.warn("[SDA] startup diagnostic write failed:", error);
+  } catch {
+    // Never let a broken log sink bring down the main process or surface as a
+    // system error dialog. Startup diagnostics are best-effort only.
   }
+}
+function logRenderer(_level, sourceId, line, message) {
+  writeStartupLog(`[SDA renderer] ${sourceId}:${line} ${message}`);
 }
 
 /**
@@ -117,6 +121,12 @@ function scanMediaFolder(root) {
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
+const BUNDLED_HEADPHONE_PROFILES = new Map([
+  ["sennheiser-hd-820-average-autoeq", { preampDb: -8.3, left: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32", right: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32" }],
+  ["beyerdynamic-xelento-2nd-gen-average-autoeq", { preampDb: -6.3, left: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32" }],
+  ["beyerdynamic-xelento-wired-average-autoeq", { preampDb: -5.2, left: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32" }],
+  ["sony-mdr-7506-average-autoeq", { preampDb: -6.1, left: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32", right: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32" }],
+]);
 const BUNDLED_HRTF_PATTERN = /^hrtf(?:-[a-z0-9]+)*\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 
@@ -227,15 +237,17 @@ const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 
 // Native object renderer owns desktop audible output. It remains muted until a
 // complete calibrated HRTF is prepared and the player issues startAt().
-const NATIVE_RENDERER_PROTOCOL = 1;
+const NATIVE_RENDERER_PROTOCOL = 6;
 const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
 let nativeRenderer = null;
 let nativeRendererWritable = true;
 let nativeRendererBuffer = "";
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
+let nativeRendererObjectActivity = [];
 let nativeRendererHealthTimer = null;
 const nativeRendererPendingBatches = new Map();
 const nativeRendererPendingCommands = new Map();
+let nativeRendererControlChain = Promise.resolve();
 const NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS = 1500;
 const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
 
@@ -266,6 +278,21 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
   return publishNativeRendererStatus();
 }
 
+function publishNativeRendererObjectActivity(ids) {
+  const normalized = [...new Set(ids)]
+    .filter((id) => Number.isSafeInteger(id) && id >= 0)
+    .sort((left, right) => left - right)
+    .slice(0, 64);
+  if (
+    normalized.length === nativeRendererObjectActivity.length &&
+    normalized.every((id, index) => id === nativeRendererObjectActivity[index])
+  ) return;
+  nativeRendererObjectActivity = normalized;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("sda:native-renderer-object-activity", { ids: normalized });
+  }
+}
+
 function nativeRendererCommand(command) {
   if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || !nativeRendererWritable || !command || typeof command !== "object") return false;
   try {
@@ -286,8 +313,7 @@ function nativeRendererCommand(command) {
 }
 
 function nativeRendererCommandAck(command, ackCommand) {
-  if (nativeRendererPendingCommands.has(ackCommand)) return Promise.resolve(false);
-  return new Promise((resolve) => {
+  const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
     const timeout = setTimeout(() => {
       nativeRendererPendingCommands.delete(ackCommand);
       writeStartupLog(`${ackCommand} ACK timeout`);
@@ -300,7 +326,10 @@ function nativeRendererCommandAck(command, ackCommand) {
       writeStartupLog(`${ackCommand} pipe write rejected`);
       resolve(false);
     }
-  });
+  }));
+  // A rejected sidecar command must not poison later transport work.
+  nativeRendererControlChain = task.catch(() => {});
+  return task;
 }
 
 function nativeRendererPcm(id, start, samples) {
@@ -327,6 +356,42 @@ function nativeRendererPcm(id, start, samples) {
   } catch {
     return false;
   }
+}
+
+function nativeRendererHeadphoneFir(preamp, left, right) {
+  if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isFinite(preamp) || preamp <= 0) return Promise.resolve(false);
+  if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right) || left.BYTES_PER_ELEMENT !== 4 || right.BYTES_PER_ELEMENT !== 4) return Promise.resolve(false);
+  const leftTaps = left instanceof Float32Array ? left : new Float32Array(left.buffer, left.byteOffset, Math.floor(left.byteLength / 4));
+  const rightTaps = right instanceof Float32Array ? right : new Float32Array(right.buffer, right.byteOffset, Math.floor(right.byteLength / 4));
+  if (leftTaps.length < 2 || rightTaps.length < 2 || leftTaps.length > 32768 || rightTaps.length > 32768 || !leftTaps.every(Number.isFinite) || !rightTaps.every(Number.isFinite)) return Promise.resolve(false);
+  const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
+    const ackCommand = "setHeadphoneFir";
+    const timeout = setTimeout(() => {
+      nativeRendererPendingCommands.delete(ackCommand);
+      writeStartupLog(`${ackCommand} ACK timeout`);
+      resolve(false);
+    }, NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
+    nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
+    const header = Buffer.allocUnsafe(13);
+    header.writeUInt8("H".charCodeAt(0), 0);
+    header.writeFloatLE(preamp, 1);
+    header.writeUInt32LE(leftTaps.length, 5);
+    header.writeUInt32LE(rightTaps.length, 9);
+    try {
+      const queued = nativeRenderer.stdin.write(Buffer.concat([
+        header,
+        Buffer.from(leftTaps.buffer, leftTaps.byteOffset, leftTaps.byteLength),
+        Buffer.from(rightTaps.buffer, rightTaps.byteOffset, rightTaps.byteLength),
+      ]));
+      if (!queued) writeStartupLog(`sidecar headphone FIR pipe backpressure: ${leftTaps.length}/${rightTaps.length}`);
+    } catch {
+      nativeRendererPendingCommands.delete(ackCommand);
+      clearTimeout(timeout);
+      resolve(false);
+    }
+  }));
+  nativeRendererControlChain = task.catch(() => {});
+  return task;
 }
 
 function nativeRendererBatch(start, entries) {
@@ -396,12 +461,17 @@ function consumeNativeRendererOutput(chunk) {
           nativeRendererPendingBatches.delete(start);
           clearTimeout(pending.timeout);
           const result = { accepted: message.accepted === true, samples: Number(message.samples) || 0, reason: message.detail ?? undefined };
-          if (!result.accepted) console.warn(`[SDA native renderer] batch ${start} rejected: ${result.reason ?? "unknown"}`);
+          if (!result.accepted) {
+            writeStartupLog(`[SDA native renderer] batch ${start} rejected: ${result.reason ?? "unknown"}`);
+          }
           pending.resolve(result);
         }
+      } else if (message?.type === "objectActivity") {
+        if (Array.isArray(message.ids)) publishNativeRendererObjectActivity(message.ids);
       } else if (message?.type === "health") {
         writeStartupLog(
-          `health sample=${message.samplePos} sources=${message.activeSources} objectConvolvers=${message.activeObjectConvolvers ?? 0} ` +
+          `health sample=${message.samplePos} sources=${message.activeSources} layout=${message.layout ?? "unknown"} ` +
+          `spatialBuses=${message.spatialBusCount ?? 0} ` +
           `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
           `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
           `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
@@ -423,6 +493,7 @@ function consumeNativeRendererOutput(chunk) {
 }
 
 function clearNativeRendererSession(reason) {
+  publishNativeRendererObjectActivity([]);
   if (nativeRendererHealthTimer) clearInterval(nativeRendererHealthTimer);
   nativeRendererHealthTimer = null;
   nativeRendererWritable = false;
@@ -471,7 +542,7 @@ function startNativeRenderer() {
     nativeRendererCommand({ type: "health" });
   }, 100).unref();
   nativeRenderer.stderr.setEncoding("utf8");
-  nativeRenderer.stderr.on("data", (chunk) => console.warn(`[SDA native renderer] ${String(chunk).trim()}`));
+  nativeRenderer.stderr.on("data", (chunk) => writeStartupLog(`[SDA native renderer] ${String(chunk).trim()}`));
   nativeRenderer.once("error", (error) => {
     nativeRenderer = null;
     clearNativeRendererSession(`native renderer error: ${error.message}`);
@@ -717,7 +788,7 @@ function startHeadTracking() {
     // them to the Electron console in dev so reproduction logs are readable.
     if (!isDev) return;
     for (const line of chunk.split(/\r?\n/)) {
-      if (line) console.log("[SDA helper]", line);
+      if (line) writeStartupLog(`[SDA helper] ${line}`);
     }
   });
   headTrackingHelper.stdin.once("error", () => {
@@ -912,11 +983,11 @@ function createWindow() {
   });
 
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
-    console.error(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
+    writeStartupLog(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
     dialog.showErrorBox("SDA 页面加载失败", `${errorDescription}\n${validatedURL}`);
   });
   win.webContents.on("render-process-gone", (_event, details) => {
-    console.error(`[SDA] renderer 退出: ${details.reason}${details.exitCode ? ` (${details.exitCode})` : ""}`);
+    writeStartupLog(`[SDA] renderer 退出: ${details.reason}${details.exitCode ? ` (${details.exitCode})` : ""}`);
     if (details.reason !== "clean-exit") {
       dialog.showErrorBox(
         "SDA 3D 渲染进程失败",
@@ -925,8 +996,7 @@ function createWindow() {
     }
   });
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    if (level >= 2) console.warn(`[SDA renderer] ${sourceId}:${line} ${message}`);
-    else if (message.startsWith("[SDA]")) console.log(message);
+    logRenderer(level, sourceId, line, message);
   });
 
   if (isDev) {
@@ -1029,11 +1099,20 @@ ipcMain.handle("sda:native-renderer-health", () => {
   writeStartupLog(`health -> ${JSON.stringify(nativeRendererStatus)}`);
   return nativeRendererStatus;
 });
-ipcMain.handle("sda:native-renderer-source", async (_event, id, atSample) => {
-  const ok = /^((obj:\d+)|(bed:\d+))$/.test(id ?? "") && Number.isSafeInteger(atSample) && atSample >= 0;
-  if (!ok) return false;
-  const accepted = await nativeRendererCommandAck({ type: "addSource", id, at: atSample }, "addSource");
-  writeStartupLog(`addSource ${id}@${atSample} ACK -> ${accepted}`);
+ipcMain.handle("sda:native-renderer-source", async (_event, source) => {
+  const id = source?.id;
+  const atSample = source?.atSample;
+  const bedLabel = source?.bedLabel;
+  const validId = /^((obj:\d+)|(bed:\d+))$/.test(id ?? "");
+  const validClock = Number.isSafeInteger(atSample) && atSample >= 0;
+  const validLabel = bedLabel === undefined || (typeof bedLabel === "string" && bedLabel.length > 0 && bedLabel.length <= 128);
+  const isObject = /^obj:\d+$/.test(id ?? "");
+  if (!validId || !validClock || !validLabel || (isObject && bedLabel !== undefined)) return false;
+  const accepted = await nativeRendererCommandAck(
+    { type: "addSource", id, at: atSample, bedLabel },
+    "addSource",
+  );
+  writeStartupLog(`addSource ${id}@${atSample}${bedLabel ? ` label=${bedLabel}` : ""} ACK -> ${accepted}`);
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample) => {
@@ -1051,6 +1130,7 @@ ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
 ipcMain.handle("sda:native-renderer-reset", async (_event, origin) => {
   if (!Number.isSafeInteger(origin) || origin < 0) return false;
   const accepted = await nativeRendererCommandAck({ type: "reset", origin }, "reset");
+  if (accepted) publishNativeRendererObjectActivity([]);
   writeStartupLog(`reset ${origin} ACK -> ${accepted}`);
   return accepted;
 });
@@ -1060,6 +1140,73 @@ ipcMain.handle("sda:native-renderer-muted", async (_event, id, muted, atSample) 
   const accepted = await nativeRendererCommandAck({ type: "setMuted", id, muted, at: atSample }, "setMuted");
   writeStartupLog(`setMuted ${id}=${muted}@${atSample ?? "now"} ACK -> ${accepted}`);
   return accepted;
+});
+ipcMain.handle("sda:native-renderer-lfe-muted", async (_event, muted) => {
+  if (typeof muted !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setLfeMuted", muted }, "setLfeMuted");
+  writeStartupLog(`setLfeMuted=${muted} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-volume", async (_event, volume) => {
+  if (!Number.isFinite(volume)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setVolume", volume }, "setVolume");
+  writeStartupLog(`setVolume=${volume} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-program-enabled", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setProgramEnabled", enabled }, "setProgramEnabled");
+  writeStartupLog(`setProgramEnabled=${enabled} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-program-gain", async (_event, gain, atSample) => {
+  if (!Number.isFinite(gain)) return false;
+  if (atSample !== undefined && (!Number.isSafeInteger(atSample) || atSample < 0)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setProgramGain", gain, at: atSample }, "setProgramGain");
+  writeStartupLog(`setProgramGain=${gain}@${atSample ?? "now"} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-binaural-eq", async (_event, bands, lowCut) => {
+  if (!bands || !Number.isFinite(bands.low) || !Number.isFinite(bands.mid) || !Number.isFinite(bands.high) || typeof lowCut !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck(
+    { type: "setBinauralEq", low: bands.low, mid: bands.mid, high: bands.high, lowCut },
+    "setBinauralEq",
+  );
+  writeStartupLog(`setBinauralEq low=${bands.low} mid=${bands.mid} high=${bands.high} lowCut=${lowCut} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id) => {
+  if (id !== null && typeof id !== "string") return false;
+  if (id === null) {
+    const accepted = await nativeRendererCommandAck({ type: "clearHeadphoneCompensation" }, "clearHeadphoneCompensation");
+    writeStartupLog(`clearHeadphoneCompensation ACK -> ${accepted}`);
+    return accepted;
+  }
+  try {
+    let profile;
+    let left;
+    let right;
+    const bundled = BUNDLED_HEADPHONE_PROFILES.get(id);
+    if (bundled) {
+      const root = webAssetRoot();
+      if (!root) throw new Error("bundled headphone asset root missing");
+      left = fs.readFileSync(path.join(root, ...bundled.left.split("/")));
+      right = fs.readFileSync(path.join(root, ...bundled.right.split("/")));
+      profile = bundled;
+    } else {
+      const stored = readStoredProfile(id);
+      left = stored.leftFir;
+      right = stored.rightFir;
+      profile = { preampDb: stored.manifest.preampDb };
+    }
+    const preamp = Math.pow(10, profile.preampDb / 20);
+    const accepted = await nativeRendererHeadphoneFir(preamp, left, right);
+    writeStartupLog(`setHeadphoneFir profile=${id} taps=${left.byteLength / 4}/${right.byteLength / 4} ACK -> ${accepted}`);
+    return accepted;
+  } catch (error) {
+    writeStartupLog(`setHeadphoneFir profile=${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
 });
 ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
   if (!Array.isArray(orientation) || orientation.length !== 4 || !orientation.every(Number.isFinite)) return false;
@@ -1072,6 +1219,12 @@ ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
 });
+ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => {
+  if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6"]).has(layout)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
+  writeStartupLog(`setLayout ${layout} ACK -> ${accepted}`);
+  return accepted;
+});
 ipcMain.handle("sda:native-renderer-output-active", (_event, active) => {
   return typeof active === "boolean" && nativeRendererCommand({ type: "setOutputActive", active });
 });
@@ -1082,7 +1235,9 @@ ipcMain.handle("sda:native-renderer-start-at", async (_event, origin) => {
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-pause", (_event, paused) => {
-  return typeof paused === "boolean" && nativeRendererCommand({ type: "pause", paused });
+  if (typeof paused !== "boolean") return false;
+  if (paused) publishNativeRendererObjectActivity([]);
+  return nativeRendererCommand({ type: "pause", paused });
 });
 ipcMain.handle("sda:native-renderer-frame", async (_event, samplePos, entries) => {
   let result = await nativeRendererBatch(samplePos, entries);
@@ -1192,7 +1347,7 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
   const hrtfRoot = path.resolve(root, setDir);
   const filePath = path.resolve(root, ...assetPath.split("/"));
   if (path.dirname(filePath) !== hrtfRoot) throw new Error("内置 HRTF 路径越界");
-  if (assetPath.endsWith("hrtf-set.json")) console.log("[SDA] 从 Electron 内置资源加载 HRTF");
+  if (assetPath.endsWith("hrtf-set.json")) writeStartupLog("[SDA] 从 Electron 内置资源加载 HRTF");
   return fs.readFileSync(filePath);
 });
 

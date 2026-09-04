@@ -1,7 +1,8 @@
-//! Fixed virtual-speaker bus renderer.
+//! Layout-specific virtual-speaker bus renderer.
 //!
-//! Sources are mixed into a stable 7.1.4 virtual layout before HRTF filtering,
-//! so the number of FFT convolvers is fixed and independent of object count.
+//! Sources are mixed into the currently selected room's physical virtual
+//! speakers before HRTF filtering. The graph is owned by the render worker;
+//! each layout therefore changes both physical geometry and convolution count.
 
 use crate::{convolution, hrtf, spatial, vbap};
 
@@ -22,8 +23,8 @@ impl BusRenderer {
         solver: &vbap::VbapSolver,
         wet_weight: f32,
     ) -> Result<Self, String> {
-        let mut buses = Vec::with_capacity(vbap::BUS_COUNT);
-        for index in 0..vbap::BUS_COUNT {
+        let mut buses = Vec::with_capacity(solver.bus_count());
+        for index in 0..solver.bus_count() {
             let (azimuth, elevation) = solver.speaker_direction(index);
             let (_, _, left, right) =
                 set.mixed_nearest(azimuth as f64, elevation as f64, wet_weight)?;
@@ -51,7 +52,7 @@ impl BusRenderer {
         }
     }
 
-    pub(super) fn add(&mut self, sample: f32, gains: &[f32; vbap::BUS_COUNT], frame: usize) {
+    pub(super) fn add(&mut self, sample: f32, gains: &[f32; vbap::MAX_BUS_COUNT], frame: usize) {
         for (bus, gain) in self.buses.iter_mut().zip(gains) {
             bus.input[frame] += sample * gain;
         }
@@ -90,6 +91,6 @@ pub(super) fn route(
     position: [f32; 3],
     head_pose: Option<[f32; 4]>,
     spread: f32,
-) -> [f32; vbap::BUS_COUNT] {
+) -> [f32; vbap::MAX_BUS_COUNT] {
     solver.pan(spatial::head_relative_adm(position, head_pose), spread)
 }

@@ -31,6 +31,18 @@ const pcmFrame = (id, start, samples) => {
   header.writeUInt32LE(samples.length, 11);
   return Buffer.concat([header, idBytes, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)]);
 };
+const headphoneFirFrame = (preamp, left, right) => {
+  const header = Buffer.allocUnsafe(13);
+  header.writeUInt8("H".charCodeAt(0), 0);
+  header.writeFloatLE(preamp, 1);
+  header.writeUInt32LE(left.length, 5);
+  header.writeUInt32LE(right.length, 9);
+  return Buffer.concat([
+    header,
+    Buffer.from(left.buffer, left.byteOffset, left.byteLength),
+    Buffer.from(right.buffer, right.byteOffset, right.byteLength),
+  ]);
+};
 const batchFrame = (start, entries) => {
   const header = Buffer.allocUnsafe(11);
   header.writeUInt8("B".charCodeAt(0), 0);
@@ -47,20 +59,76 @@ const batchFrame = (start, entries) => {
   return Buffer.concat(parts);
 };
 
-child.stdin.write(jsonFrame({ type: "hello", protocol: 1 }));
-child.stdin.write(jsonFrame({ type: "addSource", id: "obj:7" }));
-child.stdin.write(jsonFrame({ type: "addSource", id: "bed:0" }));
+const observedEvents = () => stdout
+  .split("\n")
+  .filter(Boolean)
+  .flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+const waitFor = async (predicate, detail) => {
+  const deadline = Date.now() + 5_000;
+  while (!predicate(observedEvents())) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${detail}: ${stdout}`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+  }
+};
+const send = (command) => child.stdin.write(jsonFrame(command));
+const acceptedAck = (command) => (events) => events.some(
+  (event) => event.type === "ack" && event.command === command && event.accepted,
+);
+
+const activityPcm = new Float32Array(20_000).fill(0.25);
+
+send({ type: "hello", protocol: 6 });
+await waitFor(acceptedAck("hello"), "hello ACK");
+send({ type: "addSource", id: "obj:7", at: 48_000 });
+await waitFor(acceptedAck("addSource"), "object source ACK");
+send({ type: "addSource", id: "bed:0", at: 48_000, bedLabel: "LFE" });
+await waitFor((events) => events.filter((event) => event.type === "ack" && event.command === "addSource" && event.accepted).length >= 2, "bed source ACK");
 child.stdin.write(batchFrame(48_000, [
-  { id: "obj:7", samples: new Float32Array([0.25, -0.5, 0.75]) },
-  { id: "bed:0", samples: new Float32Array([0.1, 0.2, 0.3]) },
+  { id: "obj:7", samples: activityPcm },
+  { id: "bed:0", samples: new Float32Array(20_000).fill(0.1) },
 ]));
-child.stdin.write(jsonFrame({ type: "objectEvents", events: [{ id: 7, samplePos: 48_000, hasPos: true, pos: [0, 1, 0], gainDb: 0, size: [0, 0, 0], rampDuration: 1 }] }));
-child.stdin.write(jsonFrame({ type: "headPose", orientation: [0, 0, 0, 1] }));
-child.stdin.write(jsonFrame({ type: "setHrtf", set: "hrtf", wetWeight: 0.2 }));
-child.stdin.write(jsonFrame({ type: "setOutputActive", active: true }));
-child.stdin.write(jsonFrame({ type: "startAt", origin: 48_000 }));
-child.stdin.write(jsonFrame({ type: "health" }));
-child.stdin.write(jsonFrame({ type: "shutdown" }));
+await waitFor((events) => events.some((event) => event.type === "batchAck" && event.accepted), "batch ACK");
+send({ type: "objectEvents", events: [{ id: 7, samplePos: 48_000, hasPos: true, pos: [0, 1, 0], gainDb: 0, size: [0, 0, 0], rampDuration: 1 }] });
+await waitFor(acceptedAck("objectEvents"), "object events ACK");
+send({ type: "headPose", orientation: [0, 0, 0, 1] });
+await waitFor(acceptedAck("headPose"), "head pose ACK");
+send({ type: "setLfeMuted", muted: true });
+await waitFor(acceptedAck("setLfeMuted"), "LFE mute ACK");
+send({ type: "setVolume", volume: 0.5 });
+await waitFor(acceptedAck("setVolume"), "volume ACK");
+send({ type: "setProgramEnabled", enabled: true });
+await waitFor(acceptedAck("setProgramEnabled"), "program enable ACK");
+send({ type: "setProgramGain", gain: 0.5, at: 48_000 });
+await waitFor(acceptedAck("setProgramGain"), "program gain ACK");
+send({ type: "setBinauralEq", low: 1.5, mid: -2, high: 0.5, lowCut: true });
+await waitFor(acceptedAck("setBinauralEq"), "binaural EQ ACK");
+child.stdin.write(headphoneFirFrame(0.5, new Float32Array([1, 0]), new Float32Array([0.5, 0])));
+await waitFor(acceptedAck("setHeadphoneFir"), "headphone FIR ACK");
+send({ type: "setHrtf", set: "hrtf", wetWeight: 0.04 });
+await waitFor(acceptedAck("setHrtf"), "HRTF ACK");
+send({ type: "setLayout", layout: "5.1" });
+await waitFor(acceptedAck("setLayout"), "5.1 layout ACK");
+send({ type: "health" });
+await waitFor((events) => events.some((event) => event.type === "health" && event.layout === "5.1" && event.spatialBusCount === 5), "5.1 graph health");
+send({ type: "setLayout", layout: "9.1.6" });
+await waitFor((events) => events.filter((event) => event.type === "ack" && event.command === "setLayout" && event.accepted).length >= 2, "9.1.6 layout ACK");
+send({ type: "setLayout", layout: "not-a-layout" });
+await waitFor((events) => events.some((event) => event.type === "ack" && event.command === "setLayout" && !event.accepted), "invalid layout rejection");
+send({ type: "health" });
+await waitFor((events) => events.some((event) => event.type === "health" && event.layout === "9.1.6" && event.spatialBusCount === 15), "9.1.6 graph health");
+send({ type: "setOutputActive", active: true });
+await waitFor(acceptedAck("setOutputActive"), "output activation ACK");
+send({ type: "startAt", origin: 48_000 });
+await waitFor(acceptedAck("startAt"), "start ACK");
+send({ type: "health" });
+await waitFor((events) => events.some((event) => event.type === "health"), "health event");
+await waitFor(
+  (events) => events.some((event) => event.type === "objectActivity" && Array.isArray(event.ids) && event.ids.length === 1 && event.ids[0] === 7),
+  "DAC-aligned object activity",
+);
+send({ type: "shutdown" });
 child.stdin.end();
 
 const exitCode = await new Promise((resolveExit, reject) => {
@@ -72,15 +140,25 @@ const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.pars
 assert.equal(events[0].type, "ready");
 assert.ok(events.some((event) => event.type === "ack" && event.command === "hello" && event.accepted));
 assert.ok(events.some((event) => event.type === "ack" && event.command === "addSource" && event.accepted));
-assert.ok(events.some((event) => event.type === "batchAck" && event.accepted && event.samples === 3));
+assert.ok(events.some((event) => event.type === "batchAck" && event.accepted && event.samples === 20_000));
 assert.ok(events.some((event) => event.type === "ack" && event.command === "objectEvents" && event.accepted));
 assert.ok(events.some((event) => event.type === "ack" && event.command === "headPose" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setLfeMuted" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setVolume" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setProgramEnabled" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setProgramGain" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setBinauralEq" && event.accepted));
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setHeadphoneFir" && event.accepted));
 assert.ok(events.some((event) => event.type === "ack" && event.command === "setHrtf" && event.accepted), "camelCase wetWeight loads the calibrated bundled HRTF");
+assert.ok(events.some((event) => event.type === "ack" && event.command === "setLayout" && event.accepted), "native layout changes are accepted");
+assert.ok(events.some((event) => event.type === "health" && event.layout === "5.1" && event.spatialBusCount === 5), "5.1 creates only five physical spatial buses");
+assert.ok(events.some((event) => event.type === "health" && event.layout === "9.1.6" && event.spatialBusCount === 15), "9.1.6 creates fifteen physical spatial buses");
 assert.ok(events.some((event) => event.type === "ack" && event.command === "setOutputActive" && event.accepted), "native output activates only after HRTF configuration");
 assert.ok(events.some((event) => event.type === "ack" && event.command === "setHrtf" && event.accepted));
 assert.ok(events.some((event) => event.type === "ack" && event.command === "startAt" && event.accepted), "startAt must succeed after HRTF is configured");
 const health = events.find((event) => event.type === "health");
 assert.ok(health && health.activeSources === 2, "atomic PCM batch preserves independently registered sources");
+assert.ok(events.some((event) => event.type === "objectActivity" && event.ids?.join(",") === "7"), "only the audible object source reports activity");
 assert.ok(events.some((event) => event.type === "ack" && event.command === "shutdown"));
 
 console.log("native renderer binary protocol tests passed");

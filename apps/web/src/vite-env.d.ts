@@ -64,6 +64,10 @@ declare global {
     hrtfReady?: boolean;
   }
 
+  interface NativeRendererObjectActivity {
+    ids: readonly number[];
+  }
+
   interface Window {
     sdaDesktop?: {
       electron3D: boolean;
@@ -83,19 +87,27 @@ declare global {
       startNativeRenderer?: () => Promise<NativeRendererStatus>;
       stopNativeRenderer?: () => Promise<NativeRendererStatus>;
       getNativeRendererHealth?: () => Promise<NativeRendererStatus>;
-      nativeRendererSource?: (id: string, atSample: number) => Promise<boolean>;
+      nativeRendererSource?: (source: { id: string; atSample: number; bedLabel?: string }) => Promise<boolean>;
       nativeRendererRemoveSource?: (id: string, atSample: number) => Promise<boolean>;
       nativeRendererEvents?: (events: readonly import("@sda/core").ObjectEvent[]) => Promise<boolean>;
       nativeRendererReset?: (origin: number) => Promise<boolean>;
       nativeRendererMuted?: (id: string, muted: boolean, atSample?: number) => Promise<boolean>;
+      nativeRendererLfeMuted?: (muted: boolean) => Promise<boolean>;
+      nativeRendererVolume?: (volume: number) => Promise<boolean>;
+      nativeRendererProgramEnabled?: (enabled: boolean) => Promise<boolean>;
+      nativeRendererProgramGain?: (gain: number, atSample?: number) => Promise<boolean>;
+      nativeRendererBinauralEq?: (bands: { low: number; mid: number; high: number }, lowCut: boolean) => Promise<boolean>;
+      nativeRendererHeadphoneProfile?: (id: string | null) => Promise<boolean>;
       nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;
+      nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
       nativeRendererStartAt?: (origin: number) => Promise<boolean>;
       nativeRendererPause?: (paused: boolean) => Promise<boolean>;
       nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[]) => Promise<{ accepted: boolean; samples: number; reason?: string }>;
       onNativeRendererStatus?: (callback: (status: NativeRendererStatus) => void) => () => void;
+      onNativeRendererObjectActivity?: (callback: (activity: NativeRendererObjectActivity) => void) => () => void;
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;

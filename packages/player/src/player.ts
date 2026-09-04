@@ -15,6 +15,7 @@
 
 import {
   SpatialRenderer,
+  LAYOUTS,
   getBinauralIrSet,
   headphoneProfileById,
   registerLocalHeadphoneCompensation,
@@ -28,6 +29,7 @@ import {
   type HeadPose,
   type HeadPoseOptions,
   type OutputMode,
+  type LayoutId,
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, FrameLoudness, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
@@ -113,13 +115,27 @@ export interface PlayerCallbacks {
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
 }
 
+export interface NativeRendererSourceDeclaration {
+  id: string;
+  atSample: number;
+  /** Present only for fixed bed channels. The native renderer uses this label
+   * to select a room-locked virtual-speaker route or the dedicated LFE path. */
+  bedLabel?: string;
+}
+
 /** Optional mirror transport to the native Rust sidecar. The player continues
  * feeding Web Audio until a later native-output mode explicitly takes ownership. */
 export interface NativeRendererSink {
-  /** Resolves only after the sidecar has created the source. */
-  addSource(id: string, atSample: number): void | Promise<void>;
+  /** Resolves only after the sidecar has created or rebound the source route. */
+  addSource(source: NativeRendererSourceDeclaration): void | Promise<void>;
   removeSource(id: string, atSample: number): void | Promise<void>;
   setMuted(id: string, muted: boolean, atSample?: number): void | Promise<void>;
+  setLfeMuted(muted: boolean): void | Promise<void>;
+  setVolume(volume: number): void | Promise<void>;
+  setProgramEnabled(enabled: boolean): void | Promise<void>;
+  setProgramGainDb(gainDb: number | null, atSample?: number): void | Promise<void>;
+  setBinauralEq(bands: BinauralEqBands, lowCut: boolean): void | Promise<void>;
+  setHeadphoneProfile(id: string | null): void | Promise<void>;
   events(events: readonly ObjectEvent[]): void | Promise<void>;
   /** Resolves only once the sidecar accepted or rejected the entire codec batch. */
   frame(samplePos: number, entries: readonly { id: string; samples: Float32Array }[]): void | Promise<{ accepted: boolean; samples: number; reason?: string }>;
@@ -128,10 +144,14 @@ export interface NativeRendererSink {
   clearHeadPose(): void | Promise<void>;
   startAt(origin: number): void | Promise<boolean>;
   pause(paused: boolean): void | Promise<boolean>;
+  /** Selects the master-defined virtual physical speaker layout. */
+  setLayout(layout: LayoutId): void | Promise<void>;
   /** Optional native DAC consumption cursor on the codec sample clock. */
   getConsumedSamples?(): number;
   /** Subscribe to native consumption cursor updates; returns an optional unsubscribe. */
   onConsumedSamples?(callback: (sample: number) => void): void | (() => void);
+  /** DAC-aligned post-source-gain/post-mute object activity from the native worker. */
+  onObjectActivity?(callback: (ids: readonly number[]) => void): void | (() => void);
 }
 
 export type OutputBackend = "web-audio" | "native-sidecar";
@@ -205,6 +225,23 @@ const MAX_IN_FLIGHT_BATCHES = 32;
 const MAX_IN_FLIGHT_SECONDS = 1;
 const CHUNK_SIZE = 1 << 20; // 1 MiB reads
 
+function layoutIdFor(layout: readonly VirtualSpeaker[]): LayoutId {
+  for (const [id, candidate] of Object.entries(LAYOUTS) as [LayoutId, readonly VirtualSpeaker[]][]) {
+    if (
+      candidate.length === layout.length &&
+      candidate.every((speaker, index) => {
+        const current = layout[index];
+        return current !== undefined
+          && current.name === speaker.name
+          && current.azimuth === speaker.azimuth
+          && current.elevation === speaker.elevation
+          && current.isLfe === speaker.isLfe;
+      })
+    ) return id;
+  }
+  throw new Error("native renderer only supports SDA preset speaker layouts");
+}
+
 export class SdaPlayer {
   /** 当前活跃实例。防止 HMR / 异常路径泄漏的旧 AudioContext 继续发声：
    *  新实例 init 时强制 dispose 上一个。 */
@@ -221,6 +258,7 @@ export class SdaPlayer {
   private readonly nativeRendererSink: NativeRendererSink | undefined;
   private nativeConsumedSamples = 0;
   private nativeConsumedUnsubscribe: (() => void) | undefined;
+  private nativeObjectActivityUnsubscribe: (() => void) | undefined;
   /** 逐对象精确方向双耳渲染开关与密集 IR 集地址；renderer 重建时恢复。 */
   private denseBinauralObjects: boolean;
   private denseBinauralBaseUrl: string | undefined;
@@ -351,13 +389,21 @@ export class SdaPlayer {
     this.worker.onmessageerror = () => this.handleWorkerFailure("解码 worker 消息传输失败");
   }
 
-  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf", layoutResolver?: LayoutResolver): Promise<void> {
+  async init(
+    mode: OutputMode,
+    workletUrl: string | URL,
+    layout?: readonly VirtualSpeaker[],
+    binauralBaseUrl = "/hrtf",
+    layoutResolver?: LayoutResolver,
+    initialAutoLayout = true,
+  ): Promise<void> {
     console.log(`[SDA] player#${this.id} init (active=#${SdaPlayer.active?.id ?? "-"})`);
     // The UI publishes a fully initialized player atomically. Do not dispose a
     // different instance here: overlapping play requests may still be preparing
     // one, and the older request must never tear down the latest audible player.
     SdaPlayer.active = this;
     this.initArgs = { mode, workletUrl, layout, binauralBaseUrl, layoutResolver };
+    this.autoLayoutEnabled = initialAutoLayout;
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health.requestedOutputLatencySeconds = this.requestedOutputLatencySeconds;
     this.health.nextRecommendedOutputLatencySeconds = this.pendingOutputLatencySeconds;
@@ -366,6 +412,15 @@ export class SdaPlayer {
     try {
       if (this.outputBackend === "native-sidecar") {
         this.installNativeConsumedClock();
+        this.installNativeObjectActivity();
+        await this.nativeRendererSink?.setLayout(layoutIdFor(layout ?? LAYOUTS["7.1.4"]));
+        // A replacement native session starts with its LFE group unmuted. Replay
+        // the player's retained state before decoded source declarations arrive.
+        this.setLfeMuted(this.lfeMuted);
+        this.setVolume(this.lastVolume);
+        this.setVolumeBalance(this.volumeBalanceEnabled);
+        this.setNativeProgramGainDb(this.programLoudnessGainDb);
+        this.setHeadphoneCompensation(this.headphoneProfileId);
         this.initialRendererReady = true;
         this.worker.postMessage({ type: "init" });
         await this.ready;
@@ -424,6 +479,16 @@ export class SdaPlayer {
     if (manual) this.autoLayoutEnabled = false;
     this.initArgs.layout = layout;
     this.renderer?.setLayout(layout);
+    if (this.outputBackend === "native-sidecar") {
+      try {
+        const result = this.nativeRendererSink?.setLayout(layoutIdFor(layout));
+        if (result instanceof Promise) void result.catch((error) => {
+          console.warn(`[SDA] player#${this.id} native layout update failed:`, error);
+        });
+      } catch (error) {
+        console.warn(`[SDA] player#${this.id} native layout update failed:`, error);
+      }
+    }
     this.emitHealth();
   }
 
@@ -540,6 +605,14 @@ export class SdaPlayer {
     }
     this.headphoneProfileId = profileId;
     this.renderer?.setHeadphoneCompensation(profileId);
+    try {
+      const result = this.nativeRendererSink?.setHeadphoneProfile(profileId);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native headphone profile update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native headphone profile update failed:`, error);
+    }
   }
 
   get headphoneCompensationProfileId(): string | null {
@@ -550,6 +623,17 @@ export class SdaPlayer {
   setBinauralEqBands(bands: BinauralEqBands): void {
     this.binauralEqBands = bands;
     this.renderer?.setBinauralEqBands(bands);
+    try {
+      const result = this.nativeRendererSink?.setBinauralEq(
+        bands,
+        this.binauralLowFrequencyDiagnosticMode === "low-cut",
+      );
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native binaural EQ update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native binaural EQ update failed:`, error);
+    }
   }
 
   get binauralEq(): Readonly<BinauralEqBands> {
@@ -560,6 +644,17 @@ export class SdaPlayer {
   setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
     this.binauralLowFrequencyDiagnosticMode = mode;
     this.renderer?.setBinauralLowFrequencyDiagnostic(mode);
+    try {
+      const result = this.nativeRendererSink?.setBinauralEq(
+        this.binauralEqBands,
+        mode === "low-cut",
+      );
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native low-frequency diagnostic update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native low-frequency diagnostic update failed:`, error);
+    }
   }
 
   get binauralLowFrequencyDiagnostic(): BinauralLowFrequencyDiagnostic {
@@ -609,6 +704,14 @@ export class SdaPlayer {
   setLfeMuted(muted: boolean): void {
     this.lfeMuted = muted;
     this.renderer?.setLfeMuted(muted);
+    try {
+      const result = this.nativeRendererSink?.setLfeMuted(muted);
+      if (result instanceof Promise) {
+        void result.catch((error) => console.warn(`[SDA] player#${this.id} native LFE mute failed:`, error));
+      }
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native LFE mute failed:`, error);
+    }
   }
 
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
@@ -903,6 +1006,10 @@ export class SdaPlayer {
   async resume(): Promise<void> {
     this.pausedState = false;
     if (this.outputBackend === "native-sidecar") {
+      if (!this.playbackStarted) {
+        this.startPlaybackIfReady();
+        return;
+      }
       try { await this.nativeRendererSink?.pause(false); } catch (error) {
         console.warn(`[SDA] player#${this.id} native resume failed:`, error);
       }
@@ -924,6 +1031,14 @@ export class SdaPlayer {
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
     this.renderer?.setVolumeBalance(enabled);
+    try {
+      const result = this.nativeRendererSink?.setProgramEnabled(enabled);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
+    }
   }
 
   /** 码流携带的节目响度元数据（Dolby dialnorm），无元数据时为 null。 */
@@ -942,20 +1057,41 @@ export class SdaPlayer {
 
   /** Schedule the measured balance as a gentle staircase so the settle is
    *  inaudible; attenuation-only, matching the dialnorm contract. */
+  private setNativeProgramGainDb(gainDb: number | null, atSample?: number): void {
+    try {
+      const result = this.nativeRendererSink?.setProgramGainDb(gainDb, atSample);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native program gain failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native program gain failed:`, error);
+    }
+  }
+
   private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number): void {
     this.cb.onMeasuredLoudness?.(integratedLufs);
     const gainDb = Math.min(0, MEASURED_LOUDNESS_TARGET_LUFS - integratedLufs);
-    if (gainDb > -0.05 || !this.renderer) return;
+    if (gainDb > -0.05) return;
     const steps = Math.ceil(-gainDb / MEASURED_LOUDNESS_STEP_DB);
     const stepSamples = Math.round(MEASURED_LOUDNESS_STEP_SECONDS * this.sampleRate);
     for (let i = 1; i <= steps; i++) {
-      this.renderer.setProgramLoudnessGainDb((gainDb * i) / steps, atSample + i * stepSamples);
+      const target = (gainDb * i) / steps;
+      this.renderer?.setProgramLoudnessGainDb(target, atSample + i * stepSamples);
+      this.setNativeProgramGainDb(target, atSample + i * stepSamples);
     }
   }
 
   setVolume(v: number): void {
     this.lastVolume = v;
     this.renderer?.setVolume(v);
+    try {
+      const result = this.nativeRendererSink?.setVolume(v);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] player#${this.id} native volume update failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] player#${this.id} native volume update failed:`, error);
+    }
   }
 
   async dispose(): Promise<void> {
@@ -966,6 +1102,8 @@ export class SdaPlayer {
     this.worker.terminate();
     this.nativeConsumedUnsubscribe?.();
     this.nativeConsumedUnsubscribe = undefined;
+    this.nativeObjectActivityUnsubscribe?.();
+    this.nativeObjectActivityUnsubscribe = undefined;
     await this.renderer?.close();
     if (SdaPlayer.active === this) SdaPlayer.active = null;
   }
@@ -1187,7 +1325,13 @@ export class SdaPlayer {
   }
 
   private startPlaybackIfReady(force = false): void {
-    if (!this.initialRendererReady || this.playbackStarted || this.nativeStartPending || this.startupOrigin === null) return;
+    if (
+      !this.initialRendererReady
+      || this.playbackStarted
+      || this.nativeStartPending
+      || this.startupOrigin === null
+      || this.pausedState
+    ) return;
     const required = Math.min(STARTUP_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? STARTUP_AHEAD_SECONDS) * this.sampleRate;
     if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
     if (this.outputBackend === "native-sidecar") {
@@ -1273,6 +1417,16 @@ export class SdaPlayer {
     this.nativeConsumedSamples = sink.getConsumedSamples?.() ?? 0;
     const unsubscribe = sink.onConsumedSamples?.((sample) => this.updateNativeConsumedCursor(sample));
     if (typeof unsubscribe === "function") this.nativeConsumedUnsubscribe = unsubscribe;
+  }
+
+  private installNativeObjectActivity(): void {
+    this.nativeObjectActivityUnsubscribe?.();
+    this.nativeObjectActivityUnsubscribe = undefined;
+    const sink = this.nativeRendererSink;
+    if (!sink) return;
+    const generation = this.rendererGeneration;
+    const unsubscribe = sink.onObjectActivity?.((ids) => this.handleObjectActivity(generation, ids));
+    if (typeof unsubscribe === "function") this.nativeObjectActivityUnsubscribe = unsubscribe;
   }
 
   /** Native-sidecar cursor updates drive queue reclamation, pacing, end detection,
@@ -1571,6 +1725,7 @@ export class SdaPlayer {
         if (gainDb !== this.scheduledProgramLoudnessGainDb) {
           this.scheduledProgramLoudnessGainDb = gainDb;
           renderer?.setProgramLoudnessGainDb(gainDb, frame.samplePos);
+          this.setNativeProgramGainDb(gainDb, frame.samplePos);
         }
       } else if (!this.measuredLoudnessSettled) {
         // Metadata-less content (ALAC/PCM/AAC stereo): balance from a persisted
@@ -1600,7 +1755,13 @@ export class SdaPlayer {
         this.knownBedLabels = frame.labels;
         frame.labels.forEach((label, ch) => {
           if (!label.startsWith("Obj_")) {
-            renderer?.rebindBedSource(`bed:${ch}`, label, frame.samplePos);
+            const id = `bed:${ch}`;
+            renderer?.rebindBedSource(id, label, frame.samplePos);
+            try {
+              this.nativeRendererSink?.addSource({ id, atSample: frame.samplePos, bedLabel: label });
+            } catch (error) {
+              console.warn(`[SDA] player#${this.id} native renderer bed rebind mirror failed:`, error);
+            }
           }
         });
       }
@@ -1610,24 +1771,16 @@ export class SdaPlayer {
       // drop old object routes so a later bed PCM channel cannot inherit a stale
       // moving-object binding after an invalid/missing JOC↔OAMD mapping.
       const hasObjectLabels = frame.labels.some((label) => label.startsWith("Obj_"));
-      let visualChanged = false;
-      if (!hasObjectLabels) {
-        for (const id of this.objectChannels.keys()) {
-          renderer?.retireSourceAt(`obj:${id}`, frame.samplePos);
-          try { this.nativeRendererSink?.removeSource(`obj:${id}`, frame.samplePos); } catch (error) {
-            console.warn(`[SDA] player#${this.id} native renderer source removal mirror failed:`, error);
-          }
-          this.discardPendingVisualEvents(id);
-        }
-        this.objectChannels.clear();
-        if (this.objects.size > 0) {
-          this.objects.clear();
-          this.visualSnapshotDirty = true;
-          visualChanged = true;
-        }
-      }
-
-      const declarations = frame.objectChannels as ObjectChannelDecl[];
+      const declaredObjects = frame.objectChannels as ObjectChannelDecl[];
+      // JOC declarations are intentionally sparse. A decoder can omit the
+      // unchanged declaration while still carrying the same Obj_* PCM channels;
+      // recover that durable mapping from labels so those channels can never be
+      // rebound as `bed:*` during a sparse metadata update.
+      const labelObjects: ObjectChannelDecl[] = frame.labels.flatMap((label, channel) => {
+        const id = /^Obj_(\d+)$/.exec(label)?.[1];
+        return id === undefined ? [] : [{ id: Number(id), channel }];
+      });
+      const declarations = declaredObjects.length > 0 ? declaredObjects : labelObjects;
       const bedLabels = frame.labels.filter((label) => !label.startsWith("Obj_"));
       // Object declarations are sparse after their first frame. Labels remain on
       // every PCM frame, so they are the durable decoded-format signal for UI.
@@ -1637,6 +1790,7 @@ export class SdaPlayer {
         this.decodedFormatKey = decodedFormatKey;
         this.cb.onDecodedFormat?.({ rawBedLabels: frame.rawBedLabels, bedLabels, objectChannels: objectChannelCount });
       }
+      let visualChanged = false;
       if (declarations.length > 0) {
         // A non-empty sparse declaration is the complete replacement mapping,
         // not a patch. Retire removed sources on the codec sample boundary.
@@ -1676,6 +1830,24 @@ export class SdaPlayer {
             visualChanged = true;
           }
         }
+      } else if (!hasObjectLabels) {
+        // No object labels on this frame means the decoded programme really is a
+        // pure bed now; do not retire objects merely because the frame carried a
+        // sparse declaration with no changes.
+        for (const id of this.objectChannels.keys()) {
+          const sourceId = `obj:${id}`;
+          renderer?.retireSourceAt(sourceId, frame.samplePos);
+          try { this.nativeRendererSink?.removeSource(sourceId, frame.samplePos); } catch (error) {
+            console.warn(`[SDA] player#${this.id} native renderer source removal mirror failed:`, error);
+          }
+          this.discardPendingVisualEvents(id);
+        }
+        this.objectChannels.clear();
+        if (this.objects.size > 0) {
+          this.objects.clear();
+          this.visualSnapshotDirty = true;
+          visualChanged = true;
+        }
       }
       const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
@@ -1709,14 +1881,16 @@ export class SdaPlayer {
       // Enqueue every channel of the decoded frame atomically on the codec's
       // absolute sample clock. Per-source feed messages allowed the worklet to
       // consume a partial frame and permanently desynchronise late objects.
-      const entries = frame.channels.map((samples, ch) => {
+      const sourceDeclarations = frame.channels.map((_, ch) => {
         const objectId = channelToObject.get(ch);
         const id = objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`;
-        if (objectId === undefined) {
-          renderer?.addSource(id, { bedLabel: frame.labels[ch] ?? `Bed_${ch}`, atSample: frame.samplePos });
+        const bedLabel = objectId === undefined ? frame.labels[ch] ?? `Bed_${ch}` : undefined;
+        if (bedLabel !== undefined) {
+          renderer?.addSource(id, { bedLabel, atSample: frame.samplePos });
         }
-        return { id, samples };
+        return { id, atSample: frame.samplePos, bedLabel } satisfies NativeRendererSourceDeclaration;
       });
+      const entries = frame.channels.map((samples, ch) => ({ id: sourceDeclarations[ch]!.id, samples }));
       const sequence = this.nextBatchSequence++;
       const pending = { sequence, frame, samples: frameSamples };
       this.inFlight.set(sequence, pending);
@@ -1728,7 +1902,7 @@ export class SdaPlayer {
           // unknown-object metadata and applies it during addSource, so each decoded
           // Obj_* PCM route creates its own convolver at its first true direction.
           if (events.length > 0) await this.nativeRendererSink!.events(events);
-          await Promise.all(entries.map((entry) => this.nativeRendererSink!.addSource(entry.id, frame.samplePos)));
+          await Promise.all(sourceDeclarations.map((source) => this.nativeRendererSink!.addSource(source)));
           const result = await this.nativeRendererSink!.frame(frame.samplePos, entries);
           this.handleBatchResult(this.rendererGeneration, result
             ? { sequence, ...result }
@@ -1744,7 +1918,7 @@ export class SdaPlayer {
         });
       } else {
         try {
-          for (const entry of entries) this.nativeRendererSink?.addSource(entry.id, frame.samplePos);
+          for (const source of sourceDeclarations) this.nativeRendererSink?.addSource(source);
           this.nativeRendererSink?.frame(frame.samplePos, entries);
         } catch (error) {
           console.warn(`[SDA] player#${this.id} native renderer frame mirror failed:`, error);
@@ -1770,6 +1944,9 @@ export class SdaPlayer {
       this.ended = false;
       if (this.visualTimer) clearInterval(this.visualTimer);
       this.visualTimer = null;
+      this.soundingObjectIds.clear();
+      this.soundingObjectIdsDirty = true;
+      this.emitVisual();
       this.cb.onEnded?.();
     }
   }

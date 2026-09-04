@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
+import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type NativeRendererSourceDeclaration, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -266,6 +266,10 @@ export function App() {
   const [mode, setMode] = useState<OutputMode>("binaural");
   /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
   const [layoutId, setLayoutId] = useState<LayoutId | "auto">("auto");
+  /** Latest requested layout, including a selection made while sidecar/HRTF
+   * setup is still awaiting. The newly created player reconciles this before
+   * its decoder is allowed to submit PCM. */
+  const layoutIdRef = useRef<LayoutId | "auto">("auto");
   /** 自动模式下首帧检测出的布局（用于界面回显 + 3D 视图）。 */
   const [detectedLayout, setDetectedLayout] = useState<LayoutId | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
@@ -355,10 +359,14 @@ export function App() {
   const playingRef = useRef(false);
   const playRef = useRef<(source: PlaybackSource) => Promise<void>>(async () => {});
   const playPlaylistItemRef = useRef<(id: string) => void>(() => {});
+  const volumeRef = useRef(volume);
   const volumeBalanceRef = useRef(volumeBalanceEnabled);
   const binauralEqBandsRef = useRef(binauralEqBands);
+  const binauralLowFrequencyDiagnosticRef = useRef(binauralLowFrequencyDiagnostic);
+  volumeRef.current = volume;
   volumeBalanceRef.current = volumeBalanceEnabled;
   binauralEqBandsRef.current = binauralEqBands;
+  binauralLowFrequencyDiagnosticRef.current = binauralLowFrequencyDiagnostic;
   playlistRef.current = playlist;
   playlistCurrentIdRef.current = playlistCurrentId;
   playingRef.current = playing;
@@ -383,7 +391,7 @@ export function App() {
       let nativeStatus = await desktop.getNativeRendererStatus();
       if (!nativeStatus.running) await desktop.startNativeRenderer();
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
-      const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.2);
+      const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.04);
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       // A replacement session owns the sidecar from this exact point. Reset it
@@ -400,42 +408,100 @@ export function App() {
       // serialized through the WASAPI sidecar. A frame resolves only after its
       // full codec batch was accepted by the native ring.
       let nativeCommandChain: Promise<void> = Promise.resolve();
-      const enqueueNative = (label: string, operation: () => void | Promise<unknown>) => {
+      const enqueueNative = <T,>(
+        label: string,
+        operation: () => T | Promise<T>,
+        rejectFalse = true,
+      ): Promise<T> => {
         const result = nativeCommandChain.then(async () => {
           if (!ownsNativeSession()) throw new Error(`native sidecar session expired before ${label}`);
-          const accepted = await operation();
+          const value = await operation();
           if (!ownsNativeSession()) throw new Error(`native sidecar session expired during ${label}`);
-          if (accepted === false) throw new Error(`native sidecar rejected ${label}`);
+          if (rejectFalse && (value as unknown) === false) {
+            throw new Error(`native sidecar rejected ${label}`);
+          }
+          return value;
         });
-        // A failed command rejects its caller but must not permanently poison the
-        // serial transport: the caller may declare a replacement source later.
-        nativeCommandChain = result.catch(() => {});
+        // A failed operation rejects its caller but must not permanently poison
+        // the serial transport: a later source declaration may repair the state.
+        nativeCommandChain = result.then(() => undefined, () => undefined);
         return result;
       };
       const nativeSourceAcks = new Map<string, Promise<void>>();
+      const nativeSourceDeclarations = new Map<string, NativeRendererSourceDeclaration>();
+      const nativeSourceKey = (source: NativeRendererSourceDeclaration) =>
+        `${source.id}|${source.bedLabel ?? "object"}`;
       const nativeRendererSink: NativeRendererSink | undefined = desktop?.nativeRendererSource && desktop.nativeRendererFrame
         ? {
-            addSource: async (id, atSample) => {
+            addSource: async (source) => {
               if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
-              const known = nativeSourceAcks.get(id);
+              const key = nativeSourceKey(source);
+              nativeSourceDeclarations.set(source.id, source);
+              const known = nativeSourceAcks.get(key);
               if (known) return known;
-              const declared = enqueueNative(`addSource ${id}@${atSample}`, () => desktop.nativeRendererSource!(id, atSample));
-              nativeSourceAcks.set(id, declared);
+              const declared = enqueueNative(
+                `addSource ${source.id}@${source.atSample}`,
+                () => desktop.nativeRendererSource!(source),
+              ).then(() => {});
+              nativeSourceAcks.set(key, declared);
               try {
                 await declared;
               } catch (error) {
-                if (nativeSourceAcks.get(id) === declared) nativeSourceAcks.delete(id);
+                if (nativeSourceAcks.get(key) === declared) nativeSourceAcks.delete(key);
                 throw error;
               }
             },
             removeSource: async (id, atSample) => {
               if (!ownsNativeSession()) return;
-              nativeSourceAcks.delete(id);
+              for (const key of nativeSourceAcks.keys()) {
+                if (key.startsWith(`${id}|`)) nativeSourceAcks.delete(key);
+              }
+              nativeSourceDeclarations.delete(id);
               await enqueueNative(`removeSource ${id}@${atSample}`, () => desktop.nativeRendererRemoveSource?.(id, atSample));
             },
             setMuted: async (id, muted, atSample) => {
               if (!ownsNativeSession()) return;
               await enqueueNative(`setMuted ${id}=${muted}`, () => desktop.nativeRendererMuted?.(id, muted, atSample));
+            },
+            setLfeMuted: async (muted) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(`setLfeMuted=${muted}`, () => desktop.nativeRendererLfeMuted?.(muted));
+            },
+            setVolume: async (volume) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(`setVolume=${volume}`, () => desktop.nativeRendererVolume?.(volume));
+            },
+            setProgramEnabled: async (enabled) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(`setProgramEnabled=${enabled}`, () => desktop.nativeRendererProgramEnabled?.(enabled));
+            },
+            setProgramGainDb: async (gainDb, atSample) => {
+              if (!ownsNativeSession()) return;
+              const gain = gainDb === null || !Number.isFinite(gainDb)
+                ? 1
+                : Math.pow(10, Math.min(0, gainDb) / 20);
+              await enqueueNative(
+                `setProgramGain=${gain}@${atSample ?? "now"}`,
+                () => desktop.nativeRendererProgramGain?.(gain, atSample),
+              );
+            },
+            setBinauralEq: async (bands, lowCut) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(
+                `setBinauralEq low=${bands.low} mid=${bands.mid} high=${bands.high} lowCut=${lowCut}`,
+                () => desktop.nativeRendererBinauralEq?.(bands, lowCut),
+              );
+            },
+            setHeadphoneProfile: async (id) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(
+                `setHeadphoneProfile=${id ?? "bypass"}`,
+                () => desktop.nativeRendererHeadphoneProfile?.(id),
+              );
+            },
+            setLayout: async (layout) => {
+              if (!ownsNativeSession()) return;
+              await enqueueNative(`setLayout=${layout}`, () => desktop.nativeRendererLayout?.(layout));
             },
             events: async (events) => {
               if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
@@ -443,17 +509,29 @@ export function App() {
             },
             frame: async (samplePos, entries) => {
               if (!ownsNativeSession()) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
-              await nativeCommandChain;
-              if (!ownsNativeSession()) return { accepted: false, samples: 0, reason: "native renderer session expired" };
-              let result = await desktop.nativeRendererFrame!(samplePos, entries);
+              let result = await enqueueNative(
+                `frame @${samplePos} (${entries.length} sources)`,
+                () => desktop.nativeRendererFrame!(samplePos, entries),
+                false,
+              );
               // A stale player cleanup or sidecar reset can remove sources after
               // their declaration promise was cached. Re-declare and retry this
               // exact codec batch once instead of dropping the current track.
               if (!result.accepted && /unknown source/i.test(result.reason ?? "")) {
-                for (const entry of entries) nativeSourceAcks.delete(entry.id);
-                for (const entry of entries) await nativeRendererSink!.addSource(entry.id, samplePos);
-                await nativeCommandChain;
-                result = await desktop.nativeRendererFrame!(samplePos, entries);
+                for (const entry of entries) {
+                  for (const key of nativeSourceAcks.keys()) {
+                    if (key.startsWith(`${entry.id}|`)) nativeSourceAcks.delete(key);
+                  }
+                }
+                for (const entry of entries) {
+                  const source = nativeSourceDeclarations.get(entry.id) ?? { id: entry.id, atSample: samplePos };
+                  await nativeRendererSink!.addSource(source);
+                }
+                result = await enqueueNative(
+                  `frame retry @${samplePos} (${entries.length} sources)`,
+                  () => desktop.nativeRendererFrame!(samplePos, entries),
+                  false,
+                );
               }
               return result;
             },
@@ -473,18 +551,34 @@ export function App() {
             },
             startAt: async (origin) => {
               if (!ownsNativeSession()) return false;
-              await nativeCommandChain;
-              return desktop.nativeRendererStartAt?.(origin) ?? false;
+              try {
+                await enqueueNative(`startAt ${origin}`, () => desktop.nativeRendererStartAt?.(origin) ?? false);
+                return true;
+              } catch (error) {
+                console.warn("[SDA] native startAt rejected:", error);
+                return false;
+              }
             },
-            pause: (paused) => ownsNativeSession()
-              ? desktop.nativeRendererPause?.(paused) ?? Promise.resolve(false)
-              : Promise.resolve(false),
+            pause: async (paused) => {
+              if (!ownsNativeSession()) return false;
+              try {
+                await enqueueNative(`pause=${paused}`, () => desktop.nativeRendererPause?.(paused) ?? false);
+                return true;
+              } catch (error) {
+                console.warn("[SDA] native pause rejected:", error);
+                return false;
+              }
+            },
             getConsumedSamples: () => nativeRendererSampleRef.current,
             onConsumedSamples: (callback) => desktop.onNativeRendererStatus?.((status) => {
               const samplePos = status.samplePos;
               if (!ownsNativeSession() || !status.running || typeof samplePos !== "number" || !Number.isSafeInteger(samplePos)) return;
               nativeRendererSampleRef.current = samplePos;
               callback(samplePos);
+            }),
+            onObjectActivity: (callback) => desktop.onNativeRendererObjectActivity?.((activity) => {
+              if (!ownsNativeSession() || !Array.isArray(activity?.ids)) return;
+              callback(activity.ids);
             }),
           }
         : undefined;
@@ -602,22 +696,34 @@ export function App() {
       });
       createdPlayer = player;
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
-      const resolver = lid === "auto"
-        ? (labels: readonly string[], hasDynamics: boolean) => {
-            const id = detectLayoutId(labels, hasDynamics);
-            setDetectedLayout(id);
-            return LAYOUTS[id];
-          }
-        : undefined;
-      await player.init(m, workletUrl, fallbackLayout, binauralHeadBaseUrl(readBinauralHead()), resolver);
+      const resolver = (labels: readonly string[], hasDynamics: boolean) => {
+        const id = detectLayoutId(labels, hasDynamics);
+        setDetectedLayout(id);
+        return LAYOUTS[id];
+      };
+      await player.init(
+        m,
+        workletUrl,
+        fallbackLayout,
+        binauralHeadBaseUrl(readBinauralHead()),
+        resolver,
+        lid === "auto",
+      );
+      const requestedLayout = layoutIdRef.current;
+      if (requestedLayout !== lid) {
+        if (requestedLayout === "auto") player.setAutoLayout();
+        else player.setLayout(LAYOUTS[requestedLayout]);
+      }
       if (!isCurrent()) {
         await player.dispose();
         return null;
       }
       const latestHeadPose = headTrackingSessionRef.current.latestPose;
       if (latestHeadPose) player.setHeadPose(latestHeadPose);
+      player.setVolume(volumeRef.current);
       player.setVolumeBalance(volumeBalanceRef.current);
       player.setBinauralEqBands(binauralEqBandsRef.current);
+      player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnosticRef.current);
       return player;
     },
     [],
@@ -625,6 +731,12 @@ export function App() {
 
   useEffect(
     () => () => {
+      // Invalidate a player still awaiting sidecar/HRTF setup before disposing
+      // published instances. This prevents a dev remount from reviving a stale
+      // session after the component has gone away.
+      playRequestRef.current++;
+      nativeSessionEpochRef.current++;
+      playingRef.current = false;
       if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
       void playerRef.current?.dispose();
       if (retiringPlayerRef.current !== playerRef.current) void retiringPlayerRef.current?.dispose();
@@ -702,13 +814,6 @@ export function App() {
     });
     return desktop.onNativeRendererStatus?.(setNativeRendererStatus);
   }, []);
-
-  // A native process is intentionally silent until it has loaded the same
-  // complete-subject v4 HRTF selected by the UI.
-  useEffect(() => {
-    if (!nativeRendererStatus?.running) return;
-    void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.2);
-  }, [nativeRendererStatus?.running, binauralHead]);
 
   useEffect(() => {
     const desktop = window.sdaDesktop;
@@ -792,7 +897,7 @@ export function App() {
       const next = nativeRendererStatus?.running
         ? await desktop.stopNativeRenderer()
         : await desktop.startNativeRenderer();
-      if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.5);
+      if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.04);
       setNativeRendererStatus(next);
     } catch (error) {
       console.warn("[SDA] native renderer 切换失败:", error);
@@ -913,6 +1018,11 @@ export function App() {
   const play = useCallback(
     async (source: PlaybackSource) => {
       const request = ++playRequestRef.current;
+      // Claim playback before any await. The preload can synchronously drain a
+      // burst of open-file events, and every later append must see this request
+      // as active instead of constructing another player/session.
+      playingRef.current = true;
+      setPlaying(true);
       nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
@@ -940,7 +1050,6 @@ export function App() {
       setDuration(0);
       setHealth(null);
       setDetectedLayout(null);
-      setPlaying(true);
       setPaused(false);
       pausedRef.current = false;
       lastSourceRef.current = source;
@@ -1004,6 +1113,7 @@ export function App() {
         retiringPlayerRef.current = null;
         if (outgoing) await outgoing.dispose().catch(() => {});
         setErrors((prev) => [...prev, String(e)]);
+        playingRef.current = false;
         setPlaying(false);
       }
     },
@@ -1080,6 +1190,7 @@ export function App() {
   const changeOutputMode = useCallback((next: OutputMode) => {
     playerRef.current?.setOutputMode(next);
     if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
+      layoutIdRef.current = "2.0";
       setLayoutId("2.0");
       setDetectedLayout(null);
       playerRef.current?.setLayout(LAYOUTS["2.0"]);
@@ -1088,6 +1199,7 @@ export function App() {
   }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
+    layoutIdRef.current = next;
     setLayoutId(next);
     if (next === "auto") {
       playerRef.current?.setAutoLayout();
@@ -1147,7 +1259,7 @@ export function App() {
       void playerRef.current?.setDenseBinauralObjects(false);
     }
     void playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
-    if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.5);
+    if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.04);
   }, []);
 
   const changeDenseBinauralObjects = useCallback((on: boolean) => {
@@ -1177,10 +1289,11 @@ export function App() {
     && track.bedLabels.some((label) => label === "R" || label === "FrontRight");
 
   // A decoded fixed L/R programme has no meaningful immersive speaker layout.
-  // Lock it to 2.0 initially; users may then opt into the only other applicable
-  // physical topology, 2.1 bass management.
+  // Lock it to 2.0 initially; users may then opt into 2.1, which retains the
+  // same binaural FL/FR room while keeping a discrete LFE direct path.
   useEffect(() => {
     if (!stereoProgram || layoutId === "2.0" || layoutId === "2.1") return;
+    layoutIdRef.current = "2.0";
     setLayoutId("2.0");
     setDetectedLayout(null);
     playerRef.current?.setLayout(LAYOUTS["2.0"]);
@@ -1280,10 +1393,12 @@ export function App() {
       <header>
         <h1>SDA · 空间音频解码器</h1>
         <div className="controls">
-          <select value={mode} onChange={(e) => changeOutputMode(e.target.value as OutputMode)}>
+          <select
+            value="binaural"
+            disabled
+            title="桌面 WASAPI sidecar 当前仅提供固定虚拟扬声器的双耳 HRTF 输出"
+          >
             <option value="binaural">双耳 (耳机 HRTF)</option>
-            <option value="stereo">立体声</option>
-            <option value="multichannel">多声道</option>
           </select>
           <select value={layoutId} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
             {!stereoProgram && mode !== "stereo" && <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>}
@@ -1494,8 +1609,8 @@ export function App() {
                 <dd>{track.objectChannels === undefined ? "等待首帧" : `${track.objectChannels} 路动态对象`}</dd>
                 <dt>渲染</dt>
                 <dd>{mode === "multichannel"
-                  ? `${(layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId) === "2.1" ? "物理 2.1：L/R + 85 Hz 低音管理 sub（离散 LFE 另经 120 Hz 低通）" : `物理 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 系统声卡`}`
-                  : `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → ${mode === "binaural" ? "耳机 L/R" : "立体声 L/R"}`}</dd>
+                  ? `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 耳机 L/R（native HRTF）`
+                  : `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 立体声 L/R`}</dd>
                 <dt>容器</dt>
                 <dd>{track.container}</dd>
                 <dt>响度</dt>

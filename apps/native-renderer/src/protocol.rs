@@ -25,7 +25,7 @@ fn handle_command(
                     .then_some("device format is fixed for this sidecar instance"),
             });
         }
-        Command::AddSource { id } => {
+        Command::AddSource { id, at: _, bed_label } => {
             if state.sources.len() >= MAX_SOURCES && !state.sources.contains_key(&id) {
                 write_event(&Event::Ack {
                     command: "addSource",
@@ -33,18 +33,52 @@ fn handle_command(
                     detail: Some("source limit"),
                 });
             } else {
-                let pending = state.pending_object_events.remove(&id).unwrap_or_default();
                 let sample_pos = state.sample_pos;
                 let source_id = id.clone();
+                let object_id = source_id
+                    .strip_prefix("obj:")
+                    .and_then(|value| value.parse::<u32>().ok());
+                let is_object = object_id.is_some();
+                let pending = if is_object {
+                    state
+                        .pending_object_events
+                        .remove(&source_id)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let bed_route = (!is_object)
+                    .then(|| bed_route(bed_label.as_deref().unwrap_or(""), &state.vbap));
                 let source = state.sources.entry(id).or_insert_with(|| Source {
                     gain: 1.0,
                     target_gain: 1.0,
                     ..Source::default()
                 });
-                for event in pending {
-                    apply_object_event(source, sample_pos, event);
+                source.kind = if is_object {
+                    SourceKind::Object
+                } else {
+                    SourceKind::Bed
+                };
+                source.object_id = object_id;
+                source.bed_label = (!is_object).then(|| bed_label.unwrap_or_else(|| "Bed_0".into()));
+                source.activity_until = 0;
+                if is_object {
+                    for event in pending {
+                        apply_object_event(source, sample_pos, event);
+                    }
+                } else if let Some(route) = bed_route {
+                    let is_new_route = source.bus_gains == [0.0; vbap::MAX_BUS_COUNT]
+                        && source.bus_targets == [0.0; vbap::MAX_BUS_COUNT]
+                        && source.lfe_gain == 0.0
+                        && source.lfe_target == 0.0;
+                    // Bed declarations may arrive before their first PCM block.
+                    // The ring itself already gates audibility at the codec `at`
+                    // timestamp, so apply the semantic route now rather than
+                    // retaining a precomputed vector whose indices may become
+                    // stale if the user changes the virtual room first.
+                    Engine::set_source_route(source, route, if is_new_route { 0 } else { 32 });
                 }
-                let routed = if source_id.starts_with("obj:") {
+                let routed = if is_object {
                     state.route_source_now(&source_id, 0)
                 } else {
                     Ok(())
@@ -171,6 +205,9 @@ fn handle_command(
                         state.active_hrtf_set = Some(loaded);
                         state.hrtf_wet_weight = wet_weight.clamp(0.0, 1.0);
                         let prepared = state.rebuild_bus_renderer();
+                        if prepared.is_ok() {
+                            state.lfe_path.reset();
+                        }
                         write_event(&Event::Ack {
                             command: "setHrtf",
                             accepted: prepared.is_ok(),
@@ -188,6 +225,32 @@ fn handle_command(
                         detail: Some(&error),
                     }),
                 }
+            }
+        }
+        Command::SetLayout { layout } => {
+            match vbap::LayoutId::parse(&layout) {
+                Some(layout) => match state.set_layout(layout) {
+                    Ok(()) => {
+                        // The bus graph owns partitioned-convolution history. Isolate
+                        // this graph replacement with the existing FIFO reheat edge.
+                        state.render_epoch = state.render_epoch.wrapping_add(1);
+                        write_event(&Event::Ack {
+                            command: "setLayout",
+                            accepted: true,
+                            detail: None,
+                        });
+                    }
+                    Err(error) => write_event(&Event::Ack {
+                        command: "setLayout",
+                        accepted: false,
+                        detail: Some(&error),
+                    }),
+                },
+                None => write_event(&Event::Ack {
+                    command: "setLayout",
+                    accepted: false,
+                    detail: Some("unsupported virtual speaker layout"),
+                }),
             }
         }
         Command::SetOutputActive { active } => {
@@ -214,6 +277,7 @@ fn handle_command(
                 if let Some(bus_renderer) = &mut state.bus_renderer {
                     bus_renderer.reset();
                 }
+                state.lfe_path.reset();
                 for source in state.sources.values_mut() {
                     source.availability = 0.0;
                     source.availability_target = 0.0;
@@ -228,6 +292,14 @@ fn handle_command(
         }
         Command::ClearHeadPose => {
             state.head_pose = None;
+            let ids: Vec<String> = state
+                .sources
+                .iter()
+                .filter_map(|(id, source)| (source.kind == SourceKind::Object).then(|| id.clone()))
+                .collect();
+            for id in ids {
+                let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
+            }
             write_event(&Event::Ack {
                 command: "clearHeadPose",
                 accepted: true,
@@ -286,6 +358,117 @@ fn handle_command(
                 });
             }
         }
+        Command::SetLfeMuted { muted } => {
+            state.lfe_muted = muted;
+            // LFE is a direct path; clear its delayed/filter state so mute takes
+            // effect at the control boundary instead of leaking a stale tail.
+            if muted {
+                state.lfe_path.reset();
+            }
+            write_event(&Event::Ack {
+                command: "setLfeMuted",
+                accepted: true,
+                detail: None,
+            });
+        }
+        Command::SetVolume { volume } => {
+            if volume.is_finite() {
+                state.set_output_volume(volume, !state.output_active);
+                write_event(&Event::Ack {
+                    command: "setVolume",
+                    accepted: true,
+                    detail: None,
+                });
+            } else {
+                write_event(&Event::Ack {
+                    command: "setVolume",
+                    accepted: false,
+                    detail: Some("invalid volume"),
+                });
+            }
+        }
+        Command::SetProgramEnabled { enabled } => {
+            state.program_enabled = enabled;
+            state.set_program_target(state.program_metadata_gain, !state.output_active);
+            write_event(&Event::Ack {
+                command: "setProgramEnabled",
+                accepted: true,
+                detail: None,
+            });
+        }
+        Command::SetProgramGain { gain, at } => {
+            if !gain.is_finite() {
+                write_event(&Event::Ack {
+                    command: "setProgramGain",
+                    accepted: false,
+                    detail: Some("invalid program gain"),
+                });
+            } else {
+                let gain = gain.clamp(0.0, 1.0);
+                let at = at.unwrap_or(state.sample_pos);
+                if at > state.sample_pos {
+                    state.program_events.insert(at, ProgramGainEvent { gain });
+                } else {
+                    state.program_metadata_gain = gain;
+                    let immediate = !state.output_active;
+                    state.set_program_target(gain, immediate);
+                    if !immediate {
+                        state.fast_forward_program_envelope(state.sample_pos.saturating_sub(at));
+                    }
+                }
+                write_event(&Event::Ack {
+                    command: "setProgramGain",
+                    accepted: true,
+                    detail: None,
+                });
+            }
+        }
+        Command::ClearHeadphoneCompensation => match headphone::HeadphoneCompensation::bypass() {
+            Ok(compensation) => {
+                state.headphone = compensation;
+                state.render_epoch = state.render_epoch.wrapping_add(1);
+                write_event(&Event::Ack {
+                    command: "clearHeadphoneCompensation",
+                    accepted: true,
+                    detail: None,
+                });
+            }
+            Err(error) => write_event(&Event::Ack {
+                command: "clearHeadphoneCompensation",
+                accepted: false,
+                detail: Some(&error),
+            }),
+        },
+        Command::SetBinauralEq {
+            low,
+            mid,
+            high,
+            low_cut,
+        } => {
+            if !low.is_finite() || !mid.is_finite() || !high.is_finite() {
+                write_event(&Event::Ack {
+                    command: "setBinauralEq",
+                    accepted: false,
+                    detail: Some("invalid binaural EQ"),
+                });
+            } else {
+                match StereoEq::new(state.output_sample_rate, [low, mid, high], low_cut) {
+                    Ok(eq) => {
+                        state.binaural_eq = eq;
+                        write_event(&Event::Ack {
+                            command: "setBinauralEq",
+                            accepted: true,
+                            detail: None,
+                        });
+                    }
+                    Err(error) => write_event(&Event::Ack {
+                        command: "setBinauralEq",
+                        accepted: false,
+                        detail: Some(&error),
+                    }),
+                }
+            }
+        }
         Command::Pause { paused } => {
             if state.paused != paused {
                 state.paused = paused;
@@ -298,37 +481,7 @@ fn handle_command(
             });
         }
         Command::Reset { origin } => {
-            state.sample_pos = origin;
-            state.block_offset = 0;
-            // A replacement player can queue PCM before startAt reaches the
-            // worker. Stop the old transport so it cannot consume the new
-            // origin and leave startAt waiting for an already-taken sample.
-            state.output_active = false;
-            state.paused = true;
-            state.render_epoch = state.render_epoch.wrapping_add(1);
-            state.pending_object_events.clear();
-            if let Some(bus_renderer) = &mut state.bus_renderer {
-                bus_renderer.reset();
-            }
-            for source in state.sources.values_mut() {
-                source.samples.clear();
-                source.gain_events.clear();
-                source.spatial_events.clear();
-                source.remove_at = None;
-                source.gain = 1.0;
-                source.target_gain = 1.0;
-                source.ramp_remaining = 0;
-                source.ramp_step = 0.0;
-                source.muted = false;
-                source.mute_events.clear();
-                source.availability = 0.0;
-                source.availability_target = 0.0;
-                source.availability_ramp_remaining = 0;
-                source.bus_gains = [0.0; vbap::BUS_COUNT];
-                source.bus_targets = [0.0; vbap::BUS_COUNT];
-                source.bus_steps = [0.0; vbap::BUS_COUNT];
-                source.bus_ramp_remaining = 0;
-            }
+            state.reset_session(origin);
             write_event(&Event::Ack {
                 command: "reset",
                 accepted: true,
@@ -366,7 +519,47 @@ pub(super) fn apply_render_command(
             ingest_pcm_batch(state, start, entries);
             true
         }
+        render_command::RenderCommand::HeadphoneFir {
+            preamp,
+            left,
+            right,
+        } => {
+            match headphone::HeadphoneCompensation::new(&left, &right, preamp) {
+                Ok(compensation) => {
+                    state.headphone = compensation;
+                    state.render_epoch = state.render_epoch.wrapping_add(1);
+                    write_event(&Event::Ack {
+                        command: "setHeadphoneFir",
+                        accepted: true,
+                        detail: None,
+                    });
+                }
+                Err(error) => write_event(&Event::Ack {
+                    command: "setHeadphoneFir",
+                    accepted: false,
+                    detail: Some(&error),
+                }),
+            }
+            true
+        }
     }
+}
+
+fn object_scalar_gain(gain_db: f32, position: [f32; 3]) -> f32 {
+    if gain_db <= -128.0 {
+        return 0.0;
+    }
+    let distance = position
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let distance_gain = if distance > 1.0 {
+        distance.recip()
+    } else {
+        1.0
+    };
+    10.0_f32.powf(gain_db / 20.0) * distance_gain
 }
 
 fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectEvent) {
@@ -389,7 +582,12 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
         }
     }
     if event.gain_db.is_finite() {
-        let gain = 10.0_f32.powf(event.gain_db / 20.0);
+        let position = if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
+            event.pos
+        } else {
+            source.position
+        };
+        let gain = object_scalar_gain(event.gain_db, position);
         if event.sample_pos > sample_pos {
             source
                 .gain_events
@@ -505,6 +703,23 @@ fn read_u64(input: &mut impl Read) -> io::Result<u64> {
     let mut bytes = [0; 8];
     input.read_exact(&mut bytes)?;
     Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_f32_taps(input: &mut impl Read, count: usize) -> io::Result<Vec<f32>> {
+    let mut raw = vec![0_u8; count * 4];
+    input.read_exact(&mut raw)?;
+    let taps: Vec<f32> = raw
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+    if taps.iter().all(|tap| tap.is_finite()) {
+        Ok(taps)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "non-finite headphone FIR tap",
+        ))
+    }
 }
 
 pub(super) fn read_frames(
@@ -636,6 +851,41 @@ pub(super) fn read_frames(
                     });
                 }
             }
+            FRAME_HEADPHONE_FIR => {
+                let mut preamp_bytes = [0_u8; 4];
+                input.read_exact(&mut preamp_bytes)?;
+                let preamp = f32::from_le_bytes(preamp_bytes);
+                let left_count = read_u32(input)? as usize;
+                let right_count = read_u32(input)? as usize;
+                if !preamp.is_finite()
+                    || preamp <= 0.0
+                    || left_count < 2
+                    || right_count < 2
+                    || left_count > MAX_HEADPHONE_FIR_TAPS
+                    || right_count > MAX_HEADPHONE_FIR_TAPS
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid headphone FIR header",
+                    ));
+                }
+                let left = read_f32_taps(input, left_count)?;
+                let right = read_f32_taps(input, right_count)?;
+                if !enqueue(
+                    commands,
+                    render_command::RenderCommand::HeadphoneFir {
+                        preamp,
+                        left,
+                        right,
+                    },
+                ) {
+                    write_event(&Event::Ack {
+                        command: "setHeadphoneFir",
+                        accepted: false,
+                        detail: Some("render command queue is full"),
+                    });
+                }
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -655,9 +905,16 @@ fn command_name(command: &Command) -> &'static str {
         Command::Feed { .. } => "feed",
         Command::SetGain { .. } => "setGain",
         Command::SetMuted { .. } => "setMuted",
+        Command::SetLfeMuted { .. } => "setLfeMuted",
+        Command::SetVolume { .. } => "setVolume",
+        Command::SetProgramEnabled { .. } => "setProgramEnabled",
+        Command::SetProgramGain { .. } => "setProgramGain",
+        Command::SetBinauralEq { .. } => "setBinauralEq",
+        Command::ClearHeadphoneCompensation => "clearHeadphoneCompensation",
         Command::ObjectEvents { .. } => "objectEvents",
         Command::HeadPose { .. } => "headPose",
         Command::SetHrtf { .. } => "setHrtf",
+        Command::SetLayout { .. } => "setLayout",
         Command::SetOutputActive { .. } => "setOutputActive",
         Command::StartAt { .. } => "startAt",
         Command::ClearHeadPose => "clearHeadPose",

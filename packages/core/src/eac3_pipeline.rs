@@ -176,18 +176,34 @@ impl Eac3Pipeline {
             joc_slot_count,
             core.lfe_channel.is_some(),
         ) else {
-            // JOC without a complete, topology-consistent OAMD map cannot be
-            // routed safely: a guessed slot can attach dialogue to motion.
-            let object_channels = self.sparse_declare(Vec::new());
-            return bed_frame(
-                "eac3",
-                core,
-                Vec::new(),
-                object_channels,
-                Some(loudness),
+            // Sparse JOC updates are legal. When the current frame does not carry
+            // a complete topology map, keep the last declared object layout instead
+            // of collapsing the whole programme back to bed channels.
+            let declarations = self.declared.clone().unwrap_or_default();
+            let object_channels = self.sparse_declare(declarations);
+            let mut channels =
+                Vec::with_capacity(joc_slot_count + usize::from(core.lfe_channel.is_some()));
+            let mut labels = Vec::with_capacity(channels.capacity());
+            if let Some(lfe) = &core.lfe_channel {
+                channels.push(lfe.clone());
+                labels.push("LFE".to_string());
+            }
+            for (index, pcm_channel) in pcm.object_channels.iter().enumerate() {
+                channels.push(pcm_channel.clone());
+                labels.push(format!("Obj_{}", 10 + index as u32));
+            }
+            return FrameData {
+                codec: "eac3",
+                sample_rate: core.sample_rate,
                 sample_pos,
-                &[],
-            );
+                channels,
+                labels,
+                raw_bed_labels,
+                ramp_duration: 0,
+                events: Vec::new(),
+                object_channels,
+                program_loudness: Some(loudness),
+            };
         };
 
         // JOC reconstructs every OAMD essence except the ordinary LFE carried by

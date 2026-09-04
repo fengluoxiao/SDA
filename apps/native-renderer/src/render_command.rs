@@ -24,6 +24,11 @@ pub(super) enum RenderCommand {
         start: u64,
         entries: Vec<(String, Vec<f32>)>,
     },
+    HeadphoneFir {
+        preamp: f32,
+        left: Vec<f32>,
+        right: Vec<f32>,
+    },
 }
 
 impl RenderCommand {
@@ -35,6 +40,7 @@ impl RenderCommand {
                 .iter()
                 .map(|(_, samples)| samples.len() * size_of::<f32>())
                 .sum(),
+            Self::HeadphoneFir { left, right, .. } => (left.len() + right.len()) * size_of::<f32>(),
             _ => 0,
         }
     }
