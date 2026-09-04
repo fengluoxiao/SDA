@@ -367,6 +367,11 @@ struct Source {
     last_audible_at: u64,
     muted: bool,
     mute_events: BTreeMap<u64, bool>,
+    /// This block's scheduled events, materialized once per 128-sample block so
+    /// the per-sample loop never touches the B-tree maps.
+    block_spatial: Vec<(u64, SpatialEvent)>,
+    block_gains: Vec<(u64, GainEvent)>,
+    block_mutes: Vec<(u64, bool)>,
     /// Suspended sources skip their entire per-sample render body: no ring
     /// take, no event scan, no envelope advance. Muting only zeroes the
     /// output; suspension removes the work. Woken by PCM arriving at the
@@ -406,6 +411,9 @@ impl Default for Source {
             muted: false,
             mute_events: BTreeMap::new(),
             suspended: false,
+            block_spatial: Vec::new(),
+            block_gains: Vec::new(),
+            block_mutes: Vec::new(),
         }
     }
 }
@@ -914,17 +922,26 @@ impl Engine {
                         source.suspended = false;
                     }
                     if let Some(event) = source.spatial_events.remove(&at) {
+                        // Static-position carriers re-send the same OAMD event
+                        // every frame; recomputing VBAP + pose transform for an
+                        // unchanged pose dominated the render budget. Only a
+                        // real change may rebuild the route.
+                        let unchanged = source.position == event.position
+                            && source.spread == event.spread
+                            && head_pose.is_none();
                         source.position = event.position;
                         source.spread = event.spread;
-                        Self::set_source_route(
-                            source,
-                            RouteGains {
-                                buses: bus_renderer::route(&vbap, event.position, head_pose, event.spread),
-                                lfe: 0.0,
-                            },
-                            event.ramp,
-                        );
-                        self.route_update_count = self.route_update_count.saturating_add(1);
+                        if !unchanged {
+                            Self::set_source_route(
+                                source,
+                                RouteGains {
+                                    buses: bus_renderer::route(&vbap, event.position, head_pose, event.spread),
+                                    lfe: 0.0,
+                                },
+                                event.ramp,
+                            );
+                            self.route_update_count = self.route_update_count.saturating_add(1);
+                        }
                     }
                     if at % convolution::DEFAULT_PARTITION as u64 == 0
                         && source.samples.has_future_pcm_within(at, 4800)
@@ -934,7 +951,11 @@ impl Engine {
                     continue;
                 }
                 if source.kind == SourceKind::Object {
-                    if let Some(event) = source.spatial_events.remove(&at) {
+                    let mut applied: Option<SpatialEvent> = None;
+                    if let Some(index) = source.block_spatial.iter().position(|(clock, _)| *clock == at) {
+                        applied = Some(source.block_spatial.remove(index).1);
+                    }
+                    if let Some(event) = applied {
                         source.position = event.position;
                         source.spread = event.spread;
                         Self::set_source_route(
