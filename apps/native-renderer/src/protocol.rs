@@ -780,7 +780,32 @@ pub(super) fn read_frames(
         if read_exact_or_eof(input, &mut kind)? {
             return Ok(());
         }
-        match kind[0] {
+        // A malformed frame used to bubble up and terminate the process, taking
+        // playback with it. The writer can emit a torn frame under pipe
+        // backpressure, so instead of exiting we report the frame and continue
+        // with the next type byte: control commands self-heal on the next
+        // submission, and PCM gaps fade through the availability ramp.
+        let frame = read_frame(input, commands, enqueue, kind[0]);
+        if let Err(error) = frame {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                return Ok(());
+            }
+            write_event(&Event::Error {
+                detail: format!("frame dropped: {error}"),
+            });
+        }
+    }
+}
+
+/// Reads one frame. Returns Ok(false) when the shutdown command was processed.
+fn read_frame(
+    input: &mut impl Read,
+    commands: &Arc<render_command::RenderCommandQueue>,
+    enqueue: fn(&render_command::RenderCommandQueue, render_command::RenderCommand) -> bool,
+    kind: u8,
+) -> io::Result<bool> {
+    {
+        match kind {
             FRAME_JSON => {
                 let length = read_u32(input)? as usize;
                 if length > NATIVE_RENDERER_MAX_JSON_BYTES {
@@ -799,7 +824,7 @@ pub(super) fn read_frames(
                         accepted: protocol == PROTOCOL,
                         detail: (protocol != PROTOCOL).then_some("protocol mismatch"),
                     });
-                    continue;
+                    return Ok(true);
                 }
                 let name = command_name(&command);
                 let shutdown = matches!(command, Command::Shutdown);
@@ -810,7 +835,7 @@ pub(super) fn read_frames(
                         detail: Some("render command queue is full"),
                     });
                 } else if shutdown {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             FRAME_PCM => {
@@ -936,6 +961,7 @@ pub(super) fn read_frames(
                 ));
             }
         }
+        Ok(true)
     }
 }
 

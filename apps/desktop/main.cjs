@@ -241,6 +241,10 @@ const NATIVE_RENDERER_PROTOCOL = 6;
 const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
 let nativeRenderer = null;
 let nativeRendererWritable = true;
+// PCM batches that arrived during pipe backpressure. They are flushed in order
+// on drain so the codec timeline never loses a frame to congestion.
+const nativeRendererBatchQueue = [];
+const nativeRendererBatchWaiters = [];
 let nativeRendererBuffer = "";
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
 let nativeRendererObjectActivity = [];
@@ -395,12 +399,24 @@ function nativeRendererHeadphoneFir(preamp, left, right) {
 }
 
 function nativeRendererBatch(start, entries) {
-  if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 64) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
+  if (!nativeRenderer?.stdin || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 64) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
   if (nativeRendererPendingBatches.has(start)) {
     // The batch is still awaiting its ACK, not lost. Report the original outcome
     // once it arrives instead of failing the player's duplicate submission.
     const pending = nativeRendererPendingBatches.get(start);
     return pending.then((result) => (result?.accepted ? result : { accepted: false, samples: 0, reason: "duplicate codec batch clock" }));
+  }
+  // Backpressure must NOT reject PCM: each rejected batch is a 32 ms silent gap
+  // in every object, and the refill lands as an audible level-step crackle.
+  // Queue behind the drain instead - order is preserved by the pipe.
+  if (!nativeRendererWritable) {
+    nativeRendererBatchQueue.push({ start, entries, queuedAt: Date.now() });
+    if (nativeRendererBatchQueue.length > 512) {
+      const dropped = nativeRendererBatchQueue.shift();
+      writeStartupLog(`sidecar batch queue overflow: dropped start=${dropped.start}`);
+    }
+    const pending = new Promise((resolve) => { nativeRendererBatchWaiters.push(resolve); });
+    return pending;
   }
   try {
     const prepared = entries.map((entry) => {
@@ -503,6 +519,10 @@ function clearNativeRendererSession(reason) {
   nativeRendererHealthTimer = null;
   nativeRendererWritable = false;
   nativeRendererBuffer = "";
+  nativeRendererBatchQueue.length = 0;
+  for (const waiter of nativeRendererBatchWaiters.splice(0)) {
+    waiter({ accepted: false, samples: 0, reason: "native renderer pipe closed" });
+  }
   for (const pending of nativeRendererPendingBatches.values()) {
     clearTimeout(pending.timeout);
     pending.resolve({ accepted: false, samples: 0, reason });
@@ -533,7 +553,31 @@ function startNativeRenderer() {
   nativeRendererWritable = true;
   nativeRenderer.stdout.setEncoding("utf8");
   nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
-  nativeRenderer.stdin.on("drain", () => { nativeRendererWritable = true; });
+  nativeRenderer.stdin.on("drain", () => {
+    nativeRendererWritable = true;
+    // Flush queued PCM batches in order; stop as soon as the pipe backs up again.
+    while (nativeRendererWritable && nativeRendererBatchQueue.length > 0) {
+      const queuedBatch = nativeRendererBatchQueue.shift();
+      const prepared = queuedBatch.entries.map((entry) => {
+        const samples = entry.samples instanceof Float32Array ? entry.samples : new Float32Array(entry.samples.buffer, entry.samples.byteOffset, Math.floor(entry.samples.byteLength / 4));
+        const id = Buffer.from(entry.id, "utf8");
+        const entryHeader = Buffer.allocUnsafe(6);
+        entryHeader.writeUInt16LE(id.length, 0);
+        entryHeader.writeUInt32LE(samples.length, 2);
+        return [entryHeader, id, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)];
+      });
+      const header = Buffer.allocUnsafe(11);
+      header.writeUInt8("B".charCodeAt(0), 0);
+      header.writeBigUInt64LE(BigInt(queuedBatch.start), 1);
+      header.writeUInt16LE(prepared.length, 9);
+      nativeRendererWritable = nativeRenderer.stdin.write(Buffer.concat([header, ...prepared.flat()]));
+      const done = { accepted: true, samples: prepared.reduce((sum, p) => sum + p[2].length / 4, 0) };
+      for (const waiter of nativeRendererBatchWaiters.splice(0)) waiter(done);
+    }
+    if (nativeRendererBatchQueue.length === 0) {
+      for (const waiter of nativeRendererBatchWaiters.splice(0)) waiter({ accepted: true, samples: 1536 });
+    }
+  });
   // A pipe can close between a writable check and write(); swallow EPIPE here
   // and transition the renderer into the explicit stopped state instead of
   // letting Node surface an uncaught main-process exception.
