@@ -396,7 +396,12 @@ function nativeRendererHeadphoneFir(preamp, left, right) {
 
 function nativeRendererBatch(start, entries) {
   if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 64) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
-  if (nativeRendererPendingBatches.has(start)) return Promise.resolve({ accepted: false, samples: 0, reason: "duplicate codec batch clock" });
+  if (nativeRendererPendingBatches.has(start)) {
+    // The batch is still awaiting its ACK, not lost. Report the original outcome
+    // once it arrives instead of failing the player's duplicate submission.
+    const pending = nativeRendererPendingBatches.get(start);
+    return pending.then((result) => (result?.accepted ? result : { accepted: false, samples: 0, reason: "duplicate codec batch clock" }));
+  }
   try {
     const prepared = entries.map((entry) => {
       if (!/^((obj:\d+)|(bed:\d+))$/.test(entry?.id ?? "") || !ArrayBuffer.isView(entry?.samples) || entry.samples.BYTES_PER_ELEMENT !== 4) throw new Error("invalid source entry");

@@ -354,6 +354,7 @@ struct Source {
     availability_target: f32,
     availability_step: f32,
     availability_ramp_remaining: u32,
+    last_audible_at: u64,
     muted: bool,
     mute_events: BTreeMap<u64, bool>,
 }
@@ -386,6 +387,7 @@ impl Default for Source {
             availability_target: 0.0,
             availability_step: 0.0,
             availability_ramp_remaining: 0,
+            last_audible_at: 0,
             muted: false,
             mute_events: BTreeMap::new(),
         }
@@ -896,9 +898,19 @@ impl Engine {
                 let raw = source.samples.take(at);
                 let target = if raw.is_some() { 1.0 } else { 0.0 };
                 if target != source.availability_target {
+                    // Streams legitimately encode whole silent passages per object.
+                    // A hard 0.67 ms edge after minutes of encoded silence is audible
+                    // as stutter, so re-entry fades track the silence length while
+                    // departures stay at the fast master ramp.
+                    let silence = at.saturating_sub(source.last_audible_at);
+                    let ramp = if target == 1.0 && silence > self.output_sample_rate as u64 {
+                        self.output_sample_rate / 100 // 10 ms de-pop on long-silence re-entry
+                    } else {
+                        32
+                    };
                     source.availability_target = target;
-                    source.availability_ramp_remaining = 32;
-                    source.availability_step = (target - source.availability) / 32.0;
+                    source.availability_ramp_remaining = ramp;
+                    source.availability_step = (target - source.availability) / ramp as f32;
                 }
                 if source.availability_ramp_remaining > 0 {
                     source.availability += source.availability_step;
@@ -906,6 +918,9 @@ impl Engine {
                     if source.availability_ramp_remaining == 0 {
                         source.availability = source.availability_target;
                     }
+                }
+                if raw.is_some() {
+                    source.last_audible_at = at;
                 }
                 let sample = raw.unwrap_or(0.0)
                     * source.availability

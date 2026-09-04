@@ -616,6 +616,25 @@ fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f3
         });
         return;
     }
+    // A replayed batch whose every sample is already behind the codec clock is an
+    // ACK race, not an error: the render worker consumed the earlier copy, the
+    // reply may have been lost, and the player retried. Accept it idempotently
+    // (writing is a no-op for consumed slots) instead of rejecting it and making
+    // the player drop the frame's objects audibly.
+    let fully_stale = state.sample_pos.saturating_sub(start)
+        >= entries.first().map_or(0, |(_, pcm)| pcm.len() as u64)
+        && entries
+            .iter()
+            .all(|(id, pcm)| pcm.len() <= MAX_PENDING_SAMPLES && state.sources.contains_key(id));
+    if fully_stale {
+        write_event(&Event::BatchAck {
+            start,
+            samples: batch_samples,
+            accepted: true,
+            detail: Some("stale replay accepted idempotently"),
+        });
+        return;
+    }
     let valid = entries.iter().all(|(id, pcm)| {
         pcm.len() <= MAX_PENDING_SAMPLES
             && state

@@ -1524,6 +1524,16 @@ export class SdaPlayer {
     this.inFlight.delete(result.sequence);
     if (!result.accepted && result.reason === "ring-full") {
       this.submittedFrames.delete(pending.frame);
+    } else if (
+      !result.accepted &&
+      this.outputBackend === "native-sidecar" &&
+      /unknown source or source ring capacity/i.test(result.reason ?? "") &&
+      pending.frame.samplePos + pending.samples <= this.consumedSamples()
+    ) {
+      // The sidecar already consumed an earlier copy of this frame and the ACK
+      // was lost; the retry raced the codec clock. The audio is committed, so
+      // treat the replay as accepted instead of dropping the frame audibly.
+      this.batchResults.set(pending.frame, { sequence: result.sequence, accepted: true, samples: pending.samples });
     } else {
       this.batchResults.set(pending.frame, result);
     }

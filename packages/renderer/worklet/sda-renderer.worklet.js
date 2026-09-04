@@ -77,6 +77,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       availabilityRampLeft: 0,
       availabilityLastOutput: 0,
       availabilityWasValid: false,
+      lastAudibleAt: 0,
       hasReceivedPcm: false,
       lifecycleEvents: [],
       lifecycleCursor: 0,
@@ -531,9 +532,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         const retired = !src.active;
         const available = src.active && samplePosition >= src.validStart && samplePosition < src.validEnd && src.valid[slot] === 1;
         if (available !== src.availabilityWasValid) {
+          // Streams legitimately encode whole silent passages per object. A hard
+          // 0.67 ms edge after a long encoded silence is audible as stutter, so
+          // re-entry fades track the silence length while departures stay fast.
+          const silence = samplePosition - src.lastAudibleAt;
           src.availabilityWasValid = available;
           src.availabilityFrom = src.availabilityLastOutput;
-          src.availabilityRampLeft = 32;
+          src.availabilityRampLeft = available && silence > sampleRate
+            ? Math.round(sampleRate / 100)
+            : 32;
         }
         if (!retired && !available && src.hasReceivedPcm && samplePosition >= src.validStart) this.underrunSamples++;
         const target = available ? src.ring[slot] : 0;
@@ -552,7 +559,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         sample *= gain * muteGain;
         // UI activity reflects the actual source sample after metadata gain and user mute.
         // A short hold makes intermittent drum hits readable at the throttled visual cadence.
-        if (Math.abs(sample) >= 0.001) activityUntil = samplePosition + this.activityHoldSamples;
+        if (Math.abs(sample) >= 0.001) {
+          activityUntil = samplePosition + this.activityHoldSamples;
+          src.lastAudibleAt = samplePosition;
+        }
 
         for (const bus of src.routeBuses) {
           if (bus >= buses.length) break;
