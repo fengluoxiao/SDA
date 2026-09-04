@@ -1224,7 +1224,12 @@ fn spawn_render_worker(
                     || engine.paused
                     || (all_sources_silent && fifo.available_read() == 0)
                 {
-                    commands.wait(Duration::from_micros(500));
+                    // A 500 us idle sleep let a burst of control commands keep
+                    // re-waking the loop without crossing the render gate, so
+                    // the FIFO drained by hundreds of ms before rendering
+                    // resumed. Wake at most every 5 ms while idling: still
+                    // cheap, but the watermark is re-evaluated in time.
+                    commands.wait(Duration::from_millis(5));
                     continue;
                 }
                 let started = Instant::now();
