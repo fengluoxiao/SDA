@@ -220,8 +220,9 @@ impl MonoCompressor {
     }
 }
 
-/// Master's linked 5 ms sample-peak guard. Both ears share one envelope so
-/// limiting cannot move a binaural image.
+/// Linked 5 ms sample-peak guard. Both ears share one envelope so limiting
+/// cannot move a binaural image. Its short recovery avoids one sparse-object
+/// transient audibly suppressing the following object-update interval.
 pub(super) struct StereoPeakGuard {
     left: Vec<f32>,
     right: Vec<f32>,
@@ -242,7 +243,7 @@ impl StereoPeakGuard {
             right: vec![0.0; lookahead],
             write: 0,
             ceiling: 10.0_f32.powf(-1.0 / 20.0),
-            release_coeff: (-1.0 / (sample_rate as f32 * 0.1)).exp(),
+            release_coeff: (-1.0 / (sample_rate as f32 * 0.02)).exp(),
             gain: 1.0,
             attack_target: 1.0,
             attack_step: 0.0,
@@ -359,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn peak_guard_has_lookahead_and_linked_ceiling() {
+    fn peak_guard_has_lookahead_linked_ceiling_and_short_recovery() {
         let mut guard = StereoPeakGuard::new(48_000);
         for _ in 0..239 {
             assert_eq!(guard.process(0.0, 0.0), [0.0, 0.0]);
@@ -369,5 +370,13 @@ mod tests {
             let output = guard.process(0.0, 0.0);
             assert!(output[0].abs() <= 1.0 && output[1].abs() <= 1.0);
         }
+        for _ in 0..1_536 {
+            let _ = guard.process(0.0, 0.0);
+        }
+        assert!(
+            guard.gain > 0.84,
+            "20 ms release must recover within one object-update interval: {}",
+            guard.gain
+        );
     }
 }

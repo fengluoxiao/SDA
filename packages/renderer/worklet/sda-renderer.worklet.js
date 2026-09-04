@@ -622,14 +622,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
 }
 
 /** Stereo-linked lookahead limiter. Both ears share one gain envelope so peak
- * control cannot shift the binaural image. */
+ * control cannot shift the binaural image. The short release prevents one sparse
+ * object transient from suppressing the following object-update interval. */
 class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const ceilingDb = options?.processorOptions?.ceilingDb ?? -1;
     this.ceiling = Math.pow(10, ceilingDb / 20);
     this.lookahead = Math.max(1, Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.005));
-    this.releaseCoeff = Math.exp(-1 / ((typeof sampleRate === "number" ? sampleRate : 48000) * 0.1));
+    this.releaseCoeff = Math.exp(-1 / ((typeof sampleRate === "number" ? sampleRate : 48000) * 0.02));
     this.buffers = [new Float32Array(this.lookahead), new Float32Array(this.lookahead)];
     this.write = 0;
     this.gain = 1;

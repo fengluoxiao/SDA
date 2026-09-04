@@ -21,6 +21,7 @@ pub struct Eac3Pipeline {
     pending_independent_core: Option<(CorePcmFrame, ProgramLoudnessMetadata)>,
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
+    last_joc_layout: Option<JocPresentationLayout>,
 }
 
 impl Eac3Pipeline {
@@ -33,6 +34,7 @@ impl Eac3Pipeline {
             pending_independent_core: None,
             total_samples: 0,
             declared: None,
+            last_joc_layout: None,
         }
     }
 
@@ -176,11 +178,26 @@ impl Eac3Pipeline {
             joc_slot_count,
             core.lfe_channel.is_some(),
         ) else {
-            // Sparse JOC updates are legal. When the current frame does not carry
-            // a complete topology map, keep the last declared object layout instead
-            // of collapsing the whole programme back to bed channels.
-            let declarations = self.declared.clone().unwrap_or_default();
-            let object_channels = self.sparse_declare(declarations);
+            // `object_channels` alone cannot describe where fixed JOC bed slots
+            // sit among dynamic slots. Reuse a proven topology only when this
+            // access unit has the same JOC/LFE shape; never invent Obj_N labels
+            // from raw JOC-row indices.
+            let Some(slot_layout) = self
+                .cached_joc_slot_layout(joc_slot_count, core.lfe_channel.is_some())
+                .cloned()
+            else {
+                let object_channels = self.sparse_declare(Vec::new());
+                return bed_frame(
+                    "eac3",
+                    core,
+                    Vec::new(),
+                    object_channels,
+                    Some(loudness),
+                    sample_pos,
+                    &[],
+                );
+            };
+
             let mut channels =
                 Vec::with_capacity(joc_slot_count + usize::from(core.lfe_channel.is_some()));
             let mut labels = Vec::with_capacity(channels.capacity());
@@ -188,10 +205,16 @@ impl Eac3Pipeline {
                 channels.push(lfe.clone());
                 labels.push("LFE".to_string());
             }
-            for (index, pcm_channel) in pcm.object_channels.iter().enumerate() {
+            let joc_channel_base = channels.len();
+            for (slot, pcm_channel) in slot_layout.slots.iter().zip(&pcm.object_channels) {
                 channels.push(pcm_channel.clone());
-                labels.push(format!("Obj_{}", 10 + index as u32));
+                labels.push(match slot {
+                    JocSlot::Bed(label) => format!("{label:?}"),
+                    JocSlot::Dynamic { id } => format!("Obj_{id}"),
+                });
             }
+            let object_channels =
+                self.sparse_declare(dynamic_object_declarations(&slot_layout.slots, joc_channel_base));
             return FrameData {
                 codec: "eac3",
                 sample_rate: core.sample_rate,
@@ -205,6 +228,7 @@ impl Eac3Pipeline {
                 program_loudness: Some(loudness),
             };
         };
+        self.last_joc_layout = Some(slot_layout.clone());
 
         // JOC reconstructs every OAMD essence except the ordinary LFE carried by
         // CorePcmFrame::lfe_channel. Non-LFE bed members (including LFE2) retain
@@ -255,6 +279,16 @@ impl Eac3Pipeline {
     }
 
     /// Emit the object↔channel declaration only when it changed (bridge parity).
+    fn cached_joc_slot_layout(
+        &self,
+        joc_slot_count: usize,
+        has_lfe: bool,
+    ) -> Option<&JocPresentationLayout> {
+        self.last_joc_layout.as_ref().filter(|layout| {
+            layout.slots.len() == joc_slot_count && layout.has_lfe == has_lfe
+        })
+    }
+
     fn sparse_declare(&mut self, current: Vec<ObjectChannelDecl>) -> Vec<ObjectChannelDecl> {
         if self.declared.as_ref() == Some(&current) {
             Vec::new()
@@ -575,6 +609,44 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn cached_sparse_layout_keeps_preceding_bed_slot_out_of_object_ids() {
+        let layout = joc_slot_layout(
+            &oamd(
+                vec![BedChannel::FrontLeft, BedChannel::LowFrequencyEffects],
+                2,
+            ),
+            3,
+        )
+        .expect("valid JOC layout");
+        let pipeline = Eac3Pipeline {
+            last_joc_layout: Some(layout),
+            ..Eac3Pipeline::new()
+        };
+        let cached = pipeline
+            .cached_joc_slot_layout(3, true)
+            .expect("matching cached JOC layout");
+        let labels: Vec<_> = cached
+            .slots
+            .iter()
+            .map(|slot| match slot {
+                JocSlot::Bed(label) => format!("{label:?}"),
+                JocSlot::Dynamic { id } => format!("Obj_{id}"),
+            })
+            .collect();
+
+        assert_eq!(labels, ["FrontLeft", "Obj_10", "Obj_11"]);
+        assert_eq!(
+            dynamic_object_declarations(&cached.slots, 1),
+            vec![
+                ObjectChannelDecl { id: 10, channel: 2 },
+                ObjectChannelDecl { id: 11, channel: 3 },
+            ]
+        );
+        assert!(pipeline.cached_joc_slot_layout(2, true).is_none());
+        assert!(pipeline.cached_joc_slot_layout(3, false).is_none());
     }
 
     #[test]
