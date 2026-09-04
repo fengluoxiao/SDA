@@ -1183,11 +1183,22 @@ fn spawn_render_worker(
                         .callback_consumed_sample_pos
                         .load(Ordering::Acquire),
                 );
+                // Only stop rendering when there is truly nothing to play and
+                // nothing queued: a source gap at the exact current sample must
+                // not idle the worker, because starving the FIFO makes the
+                // callback drop to zeros and the refill lands as a level-step
+                // crackle. render_into already emits silence for missing
+                // samples through the availability ramp.
+                let all_sources_silent = !engine.has_any_pcm_at(engine.sample_pos)
+                    && !engine
+                        .sources
+                        .values()
+                        .any(|source| source.samples.has_future_pcm_within(engine.sample_pos, 4800));
                 if fifo.available_read() >= STEREO_FIFO_TARGET_FRAMES
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
                     || !engine.output_active
                     || engine.paused
-                    || !engine.has_any_pcm_at(engine.sample_pos)
+                    || (all_sources_silent && fifo.available_read() == 0)
                 {
                     commands.wait(Duration::from_micros(500));
                     continue;
