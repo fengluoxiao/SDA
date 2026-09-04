@@ -45,6 +45,9 @@ const DEFAULT_OBJECT_RAMP: u32 = 128;
 const ROOM_SPEAKER_REFERENCE_GAIN: f32 = 0.12589251; // 10^(-18/20)
 const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
+/// Prebuffer before the WASAPI callback may start pulling: 8192 frames is
+/// about 170 ms of program, enough to absorb decode jitter at startup.
+const STEREO_FIFO_START_FRAMES: usize = 8_192;
 /// Keep browser object-activity semantics: −60 dBFS source signal held for 200 ms.
 const OBJECT_ACTIVITY_THRESHOLD: f32 = 0.001;
 const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 16;
@@ -1209,7 +1212,11 @@ fn spawn_render_worker(
                     continue;
                 }
                 telemetry.render_block_count.fetch_add(1, Ordering::Relaxed);
-                if fifo.available_read() >= 2_048 {
+                // Start pulling the callback only with a solid prebuffer.
+                // Enabling at a thin watermark made the callback catch up to the
+                // renderer during the start burst, and every catch-up dropped to
+                // zeros and refilled as an audible level step.
+                if fifo.available_read() >= STEREO_FIFO_START_FRAMES {
                     telemetry
                         .callback_output_enabled
                         .store(true, Ordering::Release);
