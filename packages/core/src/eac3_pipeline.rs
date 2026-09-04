@@ -299,23 +299,11 @@ impl Eac3Pipeline {
             labels.push("LFE".to_string());
         }
         let joc_channel_base = channels.len();
-        for (slot_index, (slot, pcm_channel)) in
-            slot_layout.slots.iter().zip(&pcm.object_channels).enumerate()
-        {
+        for (slot, pcm_channel) in slot_layout.slots.iter().zip(&pcm.object_channels) {
             channels.push(pcm_channel.clone());
             labels.push(match slot {
                 JocSlot::Bed(label) => format!("{label:?}"),
-                JocSlot::Dynamic { id } => {
-                    if self.bed_mode {
-                        static_position_label(
-                            self.motion_tracks
-                                .get(slot_index.saturating_sub(1))
-                                .map(|track| track.last),
-                        )
-                    } else {
-                        format!("Obj_{id}")
-                    }
-                }
+                JocSlot::Dynamic { id } => format!("Obj_{id}"),
             });
         }
 
@@ -326,11 +314,23 @@ impl Eac3Pipeline {
             .count();
         self.observe_object_motion(&pcm.oamd_payloads, dynamic_count);
         if !self.bed_mode && self.all_objects_static(dynamic_count) {
-            // The "objects" are a disguised bed: re-label the JOC rows as bed
-            // channels at their fixed positions and drop the per-object events.
-            // Rendering reverts to the clean 5.1-style bed path players use.
+            // The "objects" are a disguised bed. JOC rows for such carriers keep
+            // sparse-frame coefficient jumps that the bed was never meant to
+            // expose, so present what static-object players actually present:
+            // the decoded, delay-aligned 5.1 core itself.
             self.bed_mode = true;
             self.declared = Some(Vec::new());
+        }
+        if self.bed_mode {
+            return bed_frame(
+                "eac3",
+                core,
+                Vec::new(),
+                Vec::new(),
+                Some(loudness),
+                sample_pos,
+                &[],
+            );
         }
         let mut events = Vec::new();
         if !self.bed_mode {
@@ -636,38 +636,6 @@ fn extract_events(
     events
 }
 
-/// Maps a static OAMD position to the nearest standard bed label so a disguised
-/// bed renders through the fixed-speaker path instead of per-object HRTF.
-fn static_position_label(position: Option<[f32; 3]>) -> String {
-    const SPEAKERS: &[(&str, [f32; 3])] = &[
-        ("FrontLeft", [0.0, 1.0, 0.0]),
-        ("FrontRight", [1.0, 1.0, 0.0]),
-        ("Center", [0.5, 1.0, 0.0]),
-        ("LowFrequencyEffects", [0.5, 0.5, 0.0]),
-        ("SurroundLeft", [0.0, 0.0, 0.0]),
-        ("SurroundRight", [1.0, 0.0, 0.0]),
-        ("TopFrontLeft", [0.0, 1.0, 1.0]),
-        ("TopFrontRight", [1.0, 1.0, 1.0]),
-        ("TopRearLeft", [0.0, 0.0, 1.0]),
-        ("TopRearRight", [1.0, 0.0, 1.0]),
-    ];
-    let Some(position) = position else {
-        return "Center".to_string();
-    };
-    let (name, _) = SPEAKERS
-        .iter()
-        .min_by(|(_, left), (_, right)| {
-            let d = |speaker: &[f32; 3]| {
-                (speaker[0] - position[0]).powi(2)
-                    + (speaker[1] - position[1]).powi(2)
-                    + (speaker[2] - position[2]).powi(2)
-            };
-            d(left).total_cmp(&d(right))
-        })
-        .expect("non-empty speaker table");
-    name.to_string()
-}
-
 /// Shared bed-frame construction (also used by the plain PCM fallback).
 fn bed_frame(
     codec: &'static str,
@@ -810,16 +778,6 @@ mod tests {
                 ],
             })
         );
-    }
-
-    #[test]
-    fn static_position_label_maps_oamd_corners_to_speakers() {
-        assert_eq!(static_position_label(Some([0.0, 0.0, 0.0])), "SurroundLeft");
-        assert_eq!(static_position_label(Some([1.0, 0.0, 0.0])), "SurroundRight");
-        assert_eq!(static_position_label(Some([0.5, 1.0, 0.0])), "Center");
-        assert_eq!(static_position_label(Some([0.0, 1.0, 0.0])), "FrontLeft");
-        assert_eq!(static_position_label(Some([1.0, 1.0, 0.0])), "FrontRight");
-        assert_eq!(static_position_label(None), "Center");
     }
 
     #[test]
