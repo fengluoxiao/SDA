@@ -14,6 +14,9 @@ const EMPTY_CLOCK: u64 = u64::MAX;
 
 pub(super) struct AbsolutePcmRing {
     slots: Vec<Slot>,
+    /// Highest clock ever written; zero when nothing was ever queued. Gives the
+    /// suspend wake probe an O(1) "anything queued ahead?" answer.
+    highest_written: u64,
 }
 
 impl AbsolutePcmRing {
@@ -27,6 +30,7 @@ impl AbsolutePcmRing {
                 };
                 capacity
             ],
+            highest_written: 0,
         }
     }
 
@@ -74,6 +78,9 @@ impl AbsolutePcmRing {
             slot.clock = clock;
             slot.sample = sample;
         }
+        if start + samples.len() as u64 > self.highest_written {
+            self.highest_written = start + samples.len() as u64;
+        }
     }
 
     /// Whether the ring currently holds any unplayed samples in its future window.
@@ -81,11 +88,12 @@ impl AbsolutePcmRing {
         self.slots.iter().any(|slot| slot.clock != EMPTY_CLOCK)
     }
 
-    /// Cheap scan for unplayed samples within `window` samples of `now`,
-    /// without consuming anything. Used to wake suspended sources.
+    /// O(1) wake probe for suspended sources: was anything queued past `now`
+    /// (within the lookahead window) since the last write? The scan version of
+    /// this walked thousands of slots per block inside the render budget and
+    /// blew the render deadline.
     pub(super) fn has_future_pcm_within(&self, now: u64, window: u64) -> bool {
-        let scan = window.min(self.slots.len() as u64);
-        (1..=scan).any(|offset| self.has_at(now + offset))
+        self.highest_written > now && self.highest_written <= now + window
     }
 
     pub(super) fn has_at(&self, clock: u64) -> bool {
