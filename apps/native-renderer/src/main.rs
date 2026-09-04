@@ -472,6 +472,7 @@ struct Engine {
     program_gain_ramp_remaining: u32,
     program_events: BTreeMap<u64, ProgramGainEvent>,
     peak_guard: dsp::StereoPeakGuard,
+    loudness_rider: dsp::LoudnessRider,
     binaural_eq: StereoEq,
     headphone: headphone::HeadphoneCompensation,
     block_offset: usize,
@@ -515,6 +516,7 @@ impl Engine {
             program_gain_ramp_remaining: 0,
             program_events: BTreeMap::new(),
             peak_guard: dsp::StereoPeakGuard::new(sample_rate),
+            loudness_rider: dsp::LoudnessRider::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
             headphone: headphone::HeadphoneCompensation::bypass()
@@ -784,6 +786,7 @@ impl Engine {
         self.program_gain_ramp_remaining = 0;
         self.program_events.clear();
         self.peak_guard.reset();
+        self.loudness_rider.reset();
         self.headphone.reset();
         if let Some(bus_renderer) = &mut self.bus_renderer {
             bus_renderer.reset();
@@ -959,9 +962,10 @@ impl Engine {
             // Match master binaural ordering: summed HRTF/LFE -> headphone FIR
             // -> EQ -> +6 dB makeup -> volume/program -> linked guard.
             let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
+            let ridden = self.loudness_rider.process(equalized[0], equalized[1]);
             let pre_guard = [
-                equalized[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
-                equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
+                ridden[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
+                ridden[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
             ];
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain,

@@ -13,60 +13,6 @@ use eac3::{
 
 use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline, ProgramLoudnessMetadata};
 
-/// A dynamic object whose OAMD position stays put for its whole life is not an
-/// authored moving object: music carriers frequently "objectize" a 5.1 bed, and
-/// rendering those static slots as individual HRTF sources over-amplifies the
-/// sparse-frame coefficient jumps the bed was never meant to expose.
-const STATIC_OBJECT_MOTION_EPSILON: f32 = 1e-3;
-const STATIC_OBJECT_MIN_FRAMES: u32 = 128;
-
-#[derive(Clone, Copy)]
-struct ObjectMotionTrack {
-    seen: bool,
-    has_position: bool,
-    last: [f32; 3],
-    moving_frames: u32,
-    total_frames: u32,
-}
-
-impl ObjectMotionTrack {
-    const fn new() -> Self {
-        Self {
-            seen: false,
-            has_position: false,
-            last: [0.0; 3],
-            moving_frames: 0,
-            total_frames: 0,
-        }
-    }
-
-    fn observe(&mut self, has_pos: bool, pos: [f32; 3]) {
-        self.seen = true;
-        self.total_frames += 1;
-        if !has_pos {
-            return;
-        }
-        if self.has_position {
-            let delta = (pos[0] - self.last[0]).abs()
-                .max((pos[1] - self.last[1]).abs())
-                .max((pos[2] - self.last[2]).abs());
-            if delta > STATIC_OBJECT_MOTION_EPSILON {
-                self.moving_frames += 1;
-            }
-        }
-        self.last = pos;
-        self.has_position = true;
-    }
-
-    fn is_static_bed_member(&self) -> bool {
-        self.seen
-            && self.total_frames >= STATIC_OBJECT_MIN_FRAMES
-            // A bed member may jump at cut boundaries; what disqualifies it from
-            // object rendering is sustained motion, not a handful of edits.
-            && self.moving_frames * 8 < self.total_frames
-    }
-}
-
 pub struct Eac3Pipeline {
     extractor: eac3::Extractor,
     object_decoder: eac3::ObjectPcmDecoder,
@@ -76,8 +22,6 @@ pub struct Eac3Pipeline {
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
     last_joc_layout: Option<JocPresentationLayout>,
-    motion_tracks: Vec<ObjectMotionTrack>,
-    bed_mode: bool,
 }
 
 impl Eac3Pipeline {
@@ -91,8 +35,6 @@ impl Eac3Pipeline {
             total_samples: 0,
             declared: None,
             last_joc_layout: None,
-            motion_tracks: Vec::new(),
-            bed_mode: false,
         }
     }
 
@@ -312,41 +254,15 @@ impl Eac3Pipeline {
             .iter()
             .filter(|slot| matches!(slot, JocSlot::Dynamic { .. }))
             .count();
-        self.observe_object_motion(&pcm.oamd_payloads, dynamic_count);
-        if !self.bed_mode && self.all_objects_static(dynamic_count) {
-            // The "objects" are a disguised bed. JOC rows for such carriers keep
-            // sparse-frame coefficient jumps that the bed was never meant to
-            // expose, so present what static-object players actually present:
-            // the decoded, delay-aligned 5.1 core itself.
-            self.bed_mode = true;
-            self.declared = Some(Vec::new());
-        }
-        if self.bed_mode {
-            return bed_frame(
-                "eac3",
-                core,
-                Vec::new(),
-                Vec::new(),
-                Some(loudness),
-                sample_pos,
-                &[],
-            );
-        }
         let mut events = Vec::new();
-        if !self.bed_mode {
-            for (oamd, sample_offset) in &pcm.oamd_payloads {
-                let event_sample_pos =
-                    sample_pos + sample_offset.unwrap_or(0) as u64 + JOC_QMF_LATENCY_SAMPLES as u64;
-                events.extend(extract_events(oamd, event_sample_pos, dynamic_count));
-            }
-            events.sort_by_key(|event| event.sample_pos);
+        for (oamd, sample_offset) in &pcm.oamd_payloads {
+            let event_sample_pos =
+                sample_pos + sample_offset.unwrap_or(0) as u64 + JOC_QMF_LATENCY_SAMPLES as u64;
+            events.extend(extract_events(oamd, event_sample_pos, dynamic_count));
         }
+        events.sort_by_key(|event| event.sample_pos);
 
-        let declarations = if self.bed_mode {
-            Vec::new()
-        } else {
-            dynamic_object_declarations(&slot_layout.slots, joc_channel_base)
-        };
+        let declarations = dynamic_object_declarations(&slot_layout.slots, joc_channel_base);
         let object_channels = self.sparse_declare(declarations);
         FrameData {
             codec: "eac3",
@@ -362,50 +278,6 @@ impl Eac3Pipeline {
         }
     }
 
-    /// Records per-dynamic-object OAMD position activity for bed-mode detection.
-    fn observe_object_motion(
-        &mut self,
-        payloads: &[(OamdPayload, Option<u16>)],
-        dynamic_count: usize,
-    ) {
-        if self.bed_mode || dynamic_count == 0 {
-            return;
-        }
-        self.motion_tracks.resize(dynamic_count, ObjectMotionTrack::new());
-        for (oamd, _) in payloads {
-            for element in &oamd.elements {
-                let OamdElementKind::Object(ref object_element) = element.kind else {
-                    continue;
-                };
-                for (index, blocks) in object_element.object_blocks.iter().enumerate() {
-                    if index < oamd.bed_or_isf_objects {
-                        continue;
-                    }
-                    let dynamic = index - oamd.bed_or_isf_objects;
-                    let Some(track) = self.motion_tracks.get_mut(dynamic) else {
-                        continue;
-                    };
-                    track.seen = true;
-                    if let Some(block) = blocks.last() {
-                        let position = block.position.map_or(track.last, |p| [p.x, p.y, p.z]);
-                        track.observe(block.valid_position, position);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Bed mode engages only once every dynamic object has enough OAMD history
-    /// to prove it never moves. Tracks without enough history keep object mode.
-    fn all_objects_static(&self, dynamic_count: usize) -> bool {
-        dynamic_count > 0
-            && self.motion_tracks.len() >= dynamic_count
-            && self
-                .motion_tracks
-                .iter()
-                .take(dynamic_count)
-                .all(ObjectMotionTrack::is_static_bed_member)
-    }
 
     /// Emit the object↔channel declaration only when it changed (bridge parity).
     fn cached_joc_slot_layout(
@@ -778,37 +650,6 @@ mod tests {
                 ],
             })
         );
-    }
-
-    #[test]
-    fn motion_track_proves_static_bed_members() {
-        let mut track = ObjectMotionTrack::new();
-        for _ in 0..200 {
-            track.observe(true, [0.25, 0.75, 0.0]);
-        }
-        assert!(track.is_static_bed_member());
-
-        let mut moving = ObjectMotionTrack::new();
-        for frame in 0..200 {
-            let x = if frame % 2 == 0 { 0.0 } else { 0.5 };
-            moving.observe(true, [x, 0.5, 0.0]);
-        }
-        assert!(!moving.is_static_bed_member());
-
-        // Not enough history yet: keep object rendering.
-        let mut young = ObjectMotionTrack::new();
-        for _ in 0..16 {
-            young.observe(true, [0.25, 0.75, 0.0]);
-        }
-        assert!(!young.is_static_bed_member());
-
-        // Cut-boundary jumps do not disqualify a mostly-static object.
-        let mut cuts = ObjectMotionTrack::new();
-        for frame in 0..200 {
-            let x = if frame == 100 { 1.0 } else { 0.25 };
-            cuts.observe(true, [x, 0.75, 0.0]);
-        }
-        assert!(cuts.is_static_bed_member());
     }
 
     #[test]

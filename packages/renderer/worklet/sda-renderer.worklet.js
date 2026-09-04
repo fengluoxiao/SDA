@@ -631,6 +631,60 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   }
 }
 
+/** Stereo-linked loudness rider: lifts encoded quiet spans toward the recent
+ * loud reference so sparse-frame fader swings read as one level program. Both
+ * ears always move together; loud spans pass at unity for the peak guard. */
+class SdaLoudnessRiderProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    const rate = typeof sampleRate === "number" ? sampleRate : 48000;
+    this.fastCoeff = Math.exp(-1 / (rate * 0.032));
+    this.slowCoeff = Math.exp(-1 / (rate * 1.0));
+    this.fast = 0;
+    this.slow = 0;
+    this.gain = 1;
+    this.maxGain = Math.pow(10, 6 / 20);
+    this.minGain = Math.pow(10, -6 / 20);
+    this.port.onmessage = (event) => {
+      if (event.data?.type === "reset") {
+        this.fast = 0;
+        this.slow = 0;
+        this.gain = 1;
+      }
+    };
+  }
+
+  process(inputs, outputs) {
+    const input = inputs[0] || [];
+    const output = outputs[0] || [];
+    const blockSize = output[0]?.length ?? 128;
+    for (let i = 0; i < blockSize; i++) {
+      const left = Number.isFinite(input[0]?.[i]) ? input[0][i] : 0;
+      const right = Number.isFinite(input[1]?.[i]) ? input[1][i] : 0;
+      const magnitude = (Math.abs(left) + Math.abs(right)) * 0.5;
+      this.fast += this.fastCoeff * (magnitude - this.fast);
+      if (magnitude > this.slow) this.slow += this.slowCoeff * (magnitude - this.slow);
+      let target = 1;
+      if (this.fast > 1e-4 && this.slow > 1e-4) {
+        const ratioDb = 20 * Math.log10(this.slow / this.fast);
+        target = Math.pow(10, (Math.max(0, Math.min(6, ratioDb))) / 20);
+        target = Math.max(this.minGain, Math.min(this.maxGain, target));
+      }
+      const maxStep = 6 / 20 / (0.1 * sampleRate / 1000);
+      const step = Math.max(-maxStep, Math.min(maxStep, target - this.gain));
+      this.gain = Math.max(this.minGain, Math.min(this.maxGain, this.gain + step));
+    }
+    for (let channel = 0; channel < output.length; channel++) {
+      const source = input[channel] || input[0];
+      for (let i = 0; i < blockSize; i++) {
+        const raw = Number.isFinite(source?.[i]) ? source[i] : 0;
+        output[channel][i] = raw * this.gain;
+      }
+    }
+    return true;
+  }
+}
+
 /** Stereo-linked lookahead limiter. Both ears share one gain envelope so peak
  * control cannot shift the binaural image. The short release prevents one sparse
  * object transient from suppressing the following object-update interval. */
@@ -793,4 +847,5 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor("sda-renderer", SdaRendererProcessor);
+registerProcessor("sda-loudness-rider", SdaLoudnessRiderProcessor);
 registerProcessor("sda-final-peak-guard", SdaFinalPeakGuardProcessor);

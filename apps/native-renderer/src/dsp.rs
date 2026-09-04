@@ -220,6 +220,83 @@ impl MonoCompressor {
     }
 }
 
+/// Stereo-linked loudness rider. JOC carriers swing program level several-fold
+/// between encoded loud and sparse passages; the presentation rider tracks a
+/// slow reference envelope and gently lifts quiet spans (and ducks loud ones)
+/// within a bounded window, so object fader swings arrive at the peak guard
+/// as a roughly level program instead of an alternating pump. The rider only
+/// ever moves both ears together and never exceeds +-6 dB.
+pub(super) struct LoudnessRider {
+    fast: f32,
+    slow: f32,
+    fast_coeff: f32,
+    slow_coeff: f32,
+    gain: f32,
+    target_gain: f32,
+    gain_step: f32,
+    ramp_remaining: u32,
+    max_gain: f32,
+    min_gain: f32,
+}
+
+impl LoudnessRider {
+    pub(super) fn new(sample_rate: u32) -> Self {
+        Self {
+            fast: 0.0,
+            slow: 0.0,
+            // Fast envelope: about one 32 ms object-update interval.
+            fast_coeff: (-1.0 / (sample_rate as f32 * 0.032)).exp(),
+            // Slow envelope: the roughly 1 s program reference.
+            slow_coeff: (-1.0 / (sample_rate as f32 * 1.0)).exp(),
+            gain: 1.0,
+            target_gain: 1.0,
+            gain_step: 0.0,
+            ramp_remaining: 0,
+            max_gain: 10.0_f32.powf(6.0 / 20.0),
+            min_gain: 10.0_f32.powf(-6.0 / 20.0),
+        }
+    }
+
+    pub(super) fn process(&mut self, left: f32, right: f32) -> [f32; 2] {
+        let magnitude = (left.abs() + right.abs()) * 0.5;
+        self.fast += self.fast_coeff * (magnitude - self.fast);
+        // The reference must NOT chase the current span, or the ratio collapses
+        // to unity and there is nothing to ride. It rises slowly on louder
+        // program and holds through quieter spans, so it keeps remembering the
+        // recent loud level across an encoded quiet passage.
+        if magnitude > self.slow {
+            self.slow += self.slow_coeff * (magnitude - self.slow);
+        }
+        if self.fast > 1e-4 && self.slow > 1e-4 {
+            // Lift-only: quiet spans (fast below the remembered loud reference)
+            // are raised toward it; loud spans pass at unity and stay the peak
+            // guard's job. Ducking program the encoder mastered loud would
+            // fight the mix, while lifting its own quiet passages is what makes
+            // the encoded fader swings read as one level program.
+            let ratio_db = 20.0 * (self.slow / self.fast).log10();
+            let correction_db = ratio_db.max(0.0).min(6.0);
+            self.target_gain = 10.0_f32.powf(correction_db / 20.0).clamp(self.min_gain, self.max_gain);
+        } else {
+            self.target_gain = 1.0;
+        }
+        // Limit slew to about 6 dB per 100 ms so the ride itself is inaudible.
+        let max_step = 6.0 / 20.0 / (0.1 * 48000.0 / 1000.0);
+        let difference = self.target_gain - self.gain;
+        let step = difference.clamp(-max_step, max_step);
+        self.gain = (self.gain + step).clamp(self.min_gain, self.max_gain);
+        [left * self.gain, right * self.gain]
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.fast = 0.0;
+        self.slow = 0.0;
+        self.gain = 1.0;
+        self.target_gain = 1.0;
+        self.gain_step = 0.0;
+        self.ramp_remaining = 0;
+    }
+}
+
 /// Linked 5 ms sample-peak guard. Both ears share one envelope so limiting
 /// cannot move a binaural image. Its short recovery avoids one sparse-object
 /// transient audibly suppressing the following object-update interval.
@@ -357,6 +434,39 @@ mod tests {
         }
         assert!(output < 0.85);
         assert!(output > 0.65);
+    }
+
+    #[test]
+    fn loudness_rider_levels_quiet_and_loud_spans() {
+        // After a loud reference settles, a quiet span must be lifted.
+        let mut rider = LoudnessRider::new(48_000);
+        for _ in 0..48_000 {
+            let _ = rider.process(0.6, 0.6);
+        }
+        for _ in 0..96_000 {
+            let _ = rider.process(0.03, 0.03);
+        }
+        assert!(
+            rider.gain > 1.2,
+            "a quiet span after a loud reference must be lifted: {}",
+            rider.gain
+        );
+        // After a quiet reference settles, a loud span must be ducked.
+        let mut rider = LoudnessRider::new(48_000);
+        for _ in 0..48_000 {
+            let _ = rider.process(0.03, 0.03);
+        }
+        for _ in 0..96_000 {
+            let _ = rider.process(0.6, 0.6);
+        }
+        assert!(
+            (0.95..=1.05).contains(&rider.gain),
+            "a loud span passes at unity without ducking: {}",
+            rider.gain
+        );
+        // The ride bound is +-6 dB and both ears always move together.
+        assert_eq!(rider.max_gain, 10.0_f32.powf(6.0 / 20.0));
+        assert_eq!(rider.min_gain, 10.0_f32.powf(-6.0 / 20.0));
     }
 
     #[test]
