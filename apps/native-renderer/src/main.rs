@@ -1218,7 +1218,7 @@ fn spawn_render_worker(
                         .sources
                         .values()
                         .any(|source| source.samples.has_future_pcm_within(engine.sample_pos, 4800));
-                if fifo.available_read() >= STEREO_FIFO_TARGET_FRAMES
+                if fifo.available_read() >= STEREO_FIFO_TARGET_FRAMES - 512
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
                     || !engine.output_active
                     || engine.paused
@@ -1230,6 +1230,11 @@ fn spawn_render_worker(
                 let started = Instant::now();
                 engine.render_into(&mut block, 2);
                 if fifo.push(&block) != convolution::DEFAULT_PARTITION {
+                    // The FIFO is full and the callback is not consuming (or a
+                    // flush raced us). Back off instead of spinning: a render-
+                    // discard loop burned the core and pushed stale blocks
+                    // through flush race windows as audible clicks.
+                    commands.wait(Duration::from_millis(2));
                     continue;
                 }
                 telemetry.render_block_count.fetch_add(1, Ordering::Relaxed);
