@@ -36,6 +36,13 @@ const FRAME_HEADPHONE_FIR: u8 = b'H';
 const NATIVE_RENDERER_MAX_JSON_BYTES: usize = 16 * 1024;
 const MAX_HEADPHONE_FIR_TAPS: usize = 32_768;
 const DEFAULT_OBJECT_RAMP: u32 = 128;
+/// Room-calibrated per-speaker presentation level. A Genelec/Dolby Atmos
+/// listening room calibrates every loudspeaker - physical or virtual - to one
+/// reference SPL (79 dB for small rooms), which in the digital domain means
+/// each speaker feed renders roughly 18 dB below full scale so that a full
+/// object ensemble sums near one calibrated program instead of N independent
+/// full-scale sources piling up ahead of the peak guard.
+const ROOM_SPEAKER_REFERENCE_GAIN: f32 = 0.12589251; // 10^(-18/20)
 const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
 /// Keep browser object-activity semantics: −60 dBFS source signal held for 200 ms.
@@ -937,7 +944,7 @@ impl Engine {
                     underruns += 1;
                 }
                 self.bus_renderer.as_mut().expect("checked above").add(
-                    sample,
+                    sample * ROOM_SPEAKER_REFERENCE_GAIN,
                     &source.bus_gains,
                     block_index,
                 );
