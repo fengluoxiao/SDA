@@ -29,6 +29,35 @@ pub fn spread_from_size(size: [f32; 3]) -> f32 {
     average.clamp(0.0, 1.0)
 }
 
+/// Spherical interpolation between two head-to-world quaternions. Used to
+/// smooth head-pose updates across the render clock so HRTF route updates run
+/// at the block cadence instead of the arrival cadence of pose messages.
+#[must_use]
+pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    // Take the short arc: a and -a describe the same rotation.
+    let (b, dot) = if dot < 0.0 {
+        ([-b[0], -b[1], -b[2], -b[3]], -dot)
+    } else {
+        (b, dot)
+    };
+    let (sin_a, sin_b_weight) = if dot > 0.9995 {
+        // Nearly identical: fall back to normalized lerp for stability.
+        let w = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3])];
+        return normalize_quaternion(w).unwrap_or(b);
+    } else {
+        (dot.acos(), ((1.0 - t) * dot.acos()).sin())
+    };
+    let sin_b = (t * sin_a).sin();
+    let inv_sin = if sin_a.abs() < 1e-6 { 0.0 } else { 1.0 / sin_a };
+    [
+        (sin_b_weight * a[0] + sin_b * b[0]) * inv_sin,
+        (sin_b_weight * a[1] + sin_b * b[1]) * inv_sin,
+        (sin_b_weight * a[2] + sin_b * b[2]) * inv_sin,
+        (sin_b_weight * a[3] + sin_b * b[3]) * inv_sin,
+    ]
+}
+
 pub fn normalize_quaternion(q: [f32; 4]) -> Option<[f32; 4]> {
     if !q.iter().all(|value| value.is_finite()) {
         return None;

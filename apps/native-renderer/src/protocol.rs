@@ -147,10 +147,27 @@ fn handle_command(
         Command::HeadPose { orientation } => {
             // Pose delivery can run at 60–120 Hz. Rebuilding every source filter
             // here holds the shared render lock long enough to cause WASAPI xruns.
-            // Keep the newest pose; filter transitions are prepared separately.
-            state.head_pose = spatial::normalize_quaternion(orientation);
-            let accepted = state.head_pose.is_some();
-            if accepted {
+            // Throttle to one route rebuild per 20 ms and keep the newest pose;
+            // the render loop interpolates between accepted poses per block, so
+            // orientation motion stays smooth at the block cadence.
+            const POSE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+            let now = std::time::Instant::now();
+            let throttled = state
+                .last_pose_apply
+                .is_some_and(|previous| now.duration_since(previous) < POSE_MIN_INTERVAL);
+            let normalized = spatial::normalize_quaternion(orientation);
+            let accepted = normalized.is_some();
+            if let Some(pose) = normalized {
+                state.pending_pose = Some(pose);
+                if !throttled {
+                    state.last_pose_apply = Some(now);
+                    state.head_pose = Some(pose);
+                    if state.pose_route_base.is_none() {
+                        state.pose_route_base = Some(pose);
+                    }
+                }
+            }
+            if accepted && !throttled {
                 let ids: Vec<String> = state
                     .sources
                     .keys()

@@ -81,6 +81,13 @@ impl AbsolutePcmRing {
         self.slots.iter().any(|slot| slot.clock != EMPTY_CLOCK)
     }
 
+    /// Cheap scan for unplayed samples within `window` samples of `now`,
+    /// without consuming anything. Used to wake suspended sources.
+    pub(super) fn has_future_pcm_within(&self, now: u64, window: u64) -> bool {
+        let scan = window.min(self.slots.len() as u64);
+        (1..=scan).any(|offset| self.has_at(now + offset))
+    }
+
     pub(super) fn has_at(&self, clock: u64) -> bool {
         self.slots[(clock % self.slots.len() as u64) as usize].clock == clock
     }

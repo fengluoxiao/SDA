@@ -364,6 +364,11 @@ struct Source {
     last_audible_at: u64,
     muted: bool,
     mute_events: BTreeMap<u64, bool>,
+    /// Suspended sources skip their entire per-sample render body: no ring
+    /// take, no event scan, no envelope advance. Muting only zeroes the
+    /// output; suspension removes the work. Woken by PCM arriving at the
+    /// source or an unmute, and the existing availability ramp fades it in.
+    suspended: bool,
 }
 
 impl Default for Source {
@@ -397,6 +402,7 @@ impl Default for Source {
             last_audible_at: 0,
             muted: false,
             mute_events: BTreeMap::new(),
+            suspended: false,
         }
     }
 }
@@ -459,6 +465,12 @@ struct Engine {
     output_sample_rate: u32,
     output_channels: u16,
     head_pose: Option<[f32; 4]>,
+    /// Newest accepted pose waiting for the next throttle window, plus the
+    /// timestamp of the last route rebuild triggered by a pose.
+    pending_pose: Option<[f32; 4]>,
+    last_pose_apply: Option<std::time::Instant>,
+    /// Pose the current object routes were built against; the slerp origin.
+    pose_route_base: Option<[f32; 4]>,
     pending_object_events: HashMap<String, Vec<NativeObjectEvent>>,
     active_hrtf_set: Option<hrtf::NativeHrtfSet>,
     hrtf_wet_weight: f32,
@@ -503,6 +515,9 @@ impl Engine {
             output_sample_rate: sample_rate,
             output_channels: channels,
             head_pose: None,
+            pending_pose: None,
+            last_pose_apply: None,
+            pose_route_base: None,
             pending_object_events: HashMap::new(),
             active_hrtf_set: None,
             hrtf_wet_weight: 0.04,
@@ -835,6 +850,13 @@ impl Engine {
         }
     }
 
+    /// Wake probe for suspended sources, run at most once per 128-sample block
+    /// from the render loop: a suspended source resumes when fresh PCM has been
+    /// queued within its lookahead window.
+    fn pending_suspend_recheck(&self, at: u64) -> bool {
+        at % convolution::DEFAULT_PARTITION as u64 == 0
+    }
+
     /// True only when no active source has the current codec sample. This is a
     /// producer-starvation guard, not the old all-source barrier: one late object
     /// is allowed to fade locally while any bed or other object keeps transport
@@ -871,6 +893,41 @@ impl Engine {
             let mut lfe_sum = 0.0_f32;
             for source in self.sources.values_mut() {
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
+                    continue;
+                }
+                // Mute/unmute events must land even while suspended: an unmute
+                // is what wakes the source back up.
+                if let Some(muted) = source.mute_events.remove(&at) {
+                    source.muted = muted;
+                    if !muted {
+                        source.suspended = false;
+                    }
+                }
+                if source.suspended {
+                    // Keep the render-clock bookkeeping that other sources and
+                    // the codec clock depend on, then skip the audio body.
+                    Self::advance_source_envelopes(source, 1);
+                    if source.gain_events.remove(&at).is_some() {
+                        source.suspended = false;
+                    }
+                    if let Some(event) = source.spatial_events.remove(&at) {
+                        source.position = event.position;
+                        source.spread = event.spread;
+                        Self::set_source_route(
+                            source,
+                            RouteGains {
+                                buses: bus_renderer::route(&vbap, event.position, head_pose, event.spread),
+                                lfe: 0.0,
+                            },
+                            event.ramp,
+                        );
+                        self.route_update_count = self.route_update_count.saturating_add(1);
+                    }
+                    if at % convolution::DEFAULT_PARTITION as u64 == 0
+                        && source.samples.has_future_pcm_within(at, 4800)
+                    {
+                        source.suspended = false;
+                    }
                     continue;
                 }
                 if source.kind == SourceKind::Object {
@@ -931,6 +988,18 @@ impl Engine {
                 }
                 if raw.is_some() {
                     source.last_audible_at = at;
+                }
+                // Enter suspend: a muted source with no queued future PCM has
+                // nothing to render until an unmute or new PCM arrives. Its
+                // whole body is skipped from the next block onward.
+                if source.muted
+                    && !source.suspended
+                    && raw.is_none()
+                    && !source.samples.has_future_pcm_within(at, 4800)
+                    && source.gain_events.is_empty()
+                    && source.spatial_events.is_empty()
+                {
+                    source.suspended = true;
                 }
                 let sample = raw.unwrap_or(0.0)
                     * source.availability
@@ -1341,6 +1410,81 @@ mod tests {
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
         engine
+    }
+
+    /// A/B/C arbitration for the "silent objects still do work" hypothesis:
+    /// (A) 15 objects render; (B) 13 of them are muted; (C) those 13 are never
+    /// declared at all. If silent objects polluted the signal, B != A. If mere
+    /// declaration did, C != B. The mix must be identical in A and B, and C
+    /// must equal B exactly (a muted source contributes an all-zero path).
+    #[test]
+    fn muted_objects_do_not_change_the_mix_of_their_active_peers() {
+        let mut engine_a = calibrated_engine();
+        let mut engine_b = calibrated_engine();
+        let mut engine_c = calibrated_engine();
+        let block = convolution::DEFAULT_PARTITION;
+        let pcm: Vec<f32> = (0..block * 8)
+            .map(|n| ((n * 37 % 97) as f32 - 48.0) / 96.0)
+            .collect();
+        let make_source = |id: u32| Source {
+            kind: SourceKind::Object,
+            object_id: Some(id),
+            gain: 1.0,
+            target_gain: 1.0,
+            ..Source::default()
+        };
+        for id in 10..25_u32 {
+            engine_a.sources.insert(format!("obj:{id}"), make_source(id));
+            engine_b.sources.insert(format!("obj:{id}"), make_source(id));
+            if matches!(id, 14 | 15 | 22) {
+                engine_c.sources.insert(format!("obj:{id}"), make_source(id));
+            }
+        }
+        for engine in [&mut engine_a, &mut engine_b, &mut engine_c] {
+            for id in 10..25_u32 {
+                let Some(source) = engine.sources.get_mut(&format!("obj:{id}")) else {
+                    continue;
+                };
+                source.samples.write(0, 0, &pcm);
+                let _ = engine.route_source_now(&format!("obj:{id}"), 0);
+            }
+            engine.paused = false;
+        }
+        // B mutes 13 of the 15 objects after they have been routed.
+        for id in 10..25_u32 {
+            if matches!(id, 14 | 15 | 22) {
+                continue;
+            }
+            engine_b.sources.get_mut(&format!("obj:{id}")).unwrap().muted = true;
+        }
+        let mut out_a = vec![0.0_f32; block * 4 * 2];
+        let mut out_b = vec![0.0_f32; block * 4 * 2];
+        let mut out_c = vec![0.0_f32; block * 4 * 2];
+        // Render block by block so availability ramps settle identically.
+        for index in 0..4 {
+            let mut chunk_a = vec![0.0_f32; block * 2];
+            let mut chunk_b = vec![0.0_f32; block * 2];
+            let mut chunk_c = vec![0.0_f32; block * 2];
+            engine_a.mix(&mut chunk_a, 2);
+            engine_b.mix(&mut chunk_b, 2);
+            engine_c.mix(&mut chunk_c, 2);
+            out_a[index * block * 2..(index + 1) * block * 2].copy_from_slice(&chunk_a);
+            out_b[index * block * 2..(index + 1) * block * 2].copy_from_slice(&chunk_b);
+            out_c[index * block * 2..(index + 1) * block * 2].copy_from_slice(&chunk_c);
+        }
+        let mut first_difference = None;
+        for (index, (a, b)) in out_a.iter().zip(out_b.iter()).enumerate() {
+            if (a - b).abs() > 1e-6 {
+                first_difference = Some((index, *a, *b));
+                break;
+            }
+        }
+        if let Some((index, a, b)) = first_difference {
+            panic!(
+                "muting changed the active mix at sample {index}: with_all={a} muted={b}"
+            );
+        }
+        assert_eq!(out_b, out_c, "declaring-but-muted objects must not change the mix vs not declaring them");
     }
 
     #[test]
