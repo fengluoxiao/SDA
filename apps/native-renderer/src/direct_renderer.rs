@@ -2,6 +2,8 @@
 use crate::{convolution::{StereoPartitionedConvolver, DEFAULT_PARTITION}, hrtf::NativeHrtfSet, vbap};
 
 pub(super) struct DirectSource {
+    background: Option<Box<DirectSource>>,
+    background_filter: crate::focus::BackgroundFilter,
     convolver: StereoPartitionedConvolver,
     route: Option<(vbap::LayoutId, [f32; vbap::MAX_BUS_COUNT], u32)>,
     pub input: [f32; DEFAULT_PARTITION],
@@ -60,6 +62,8 @@ impl DirectSource {
     pub fn new(set: &NativeHrtfSet, wet: f32) -> Result<Self, String> {
         let (_, _, left, right) = set.mixed_nearest(0.0, 0.0, wet)?;
         Ok(Self {
+            background: None,
+            background_filter: crate::focus::BackgroundFilter::default(),
             convolver: StereoPartitionedConvolver::new(&left, &right, DEFAULT_PARTITION)?,
             route: None,
             input: [0.0; DEFAULT_PARTITION], left: [0.0; DEFAULT_PARTITION], right: [0.0; DEFAULT_PARTITION],
@@ -103,10 +107,32 @@ impl DirectSource {
         Ok(())
     }
 
+    pub fn update_focus(&mut self, set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32,
+        gains: [f32; vbap::MAX_BUS_COUNT], amounts: [f32; vbap::MAX_BUS_COUNT]) -> Result<(), String> {
+        if self.background.is_none() && amounts.iter().any(|value| *value > 0.0) {
+            self.background = Some(Box::new(Self::new(set, wet)?));
+        }
+        if let Some(background) = &mut self.background {
+            background.update(set, solver, wet, std::array::from_fn(|i| gains[i] * amounts[i]))?;
+        }
+        self.update(set, solver, wet, std::array::from_fn(|i| gains[i] * (1.0 - amounts[i])))
+    }
+
     pub fn finish_block(&mut self) {
+        for (i, sample) in self.input.iter().enumerate() {
+            let filtered = self.background_filter.process(*sample);
+            if let Some(background) = &mut self.background { background.input[i] = filtered; }
+        }
         self.left.fill(0.0);
         self.right.fill(0.0);
         self.convolver.process_block(&self.input, &mut self.left, &mut self.right).expect("fixed block dimensions");
+        if let Some(background) = &mut self.background {
+            background.finish_block();
+            for i in 0..DEFAULT_PARTITION {
+                self.left[i] += background.left[i];
+                self.right[i] += background.right[i];
+            }
+        }
         self.input.fill(0.0);
     }
 }

@@ -146,8 +146,8 @@ function readBinauralHead(): BinauralHead {
 function binauralHeadBaseUrl(head: BinauralHead): string {
   return assetUrl(head === "ku100" ? "hrtf" : `hrtf-${head}`);
 }
-function nativeHrtfSetName(head: BinauralHead): string {
-  return head === "ku100" ? "hrtf" : `hrtf-${head}`;
+function nativeHrtfSetName(head: BinauralHead, dense = readDenseBinauralObjects()): string {
+  return head === "ku100" ? (dense ? "hrtf-dense" : "hrtf") : `hrtf-${head}`;
 }
 
 /** 逐对象精确方向渲染（实验性）：对象按精确方位 VBAP 到密集球面，而不是吸附到
@@ -1027,6 +1027,15 @@ export function App() {
   }, [soloIds, mutedIds, objects]);
 
   const outputSpeakers = LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId];
+  const [speakerGroup, setSpeakerGroup] = useState<"all" | "top" | "front" | "rear">("all");
+  const filteredSpeakers = outputSpeakers.filter(speaker => {
+    if (speakerGroup === "all") return true;
+    if (speakerGroup === "top") return !speaker.isLfe && speaker.elevation > 0;
+    if (speaker.elevation > 0 && !speaker.isLfe) return false;
+    if (speaker.isLfe) return speakerGroup === "front";
+    const azimuth = Math.abs(((speaker.azimuth + 540) % 360) - 180);
+    return speakerGroup === "front" ? azimuth <= 90 : azimuth > 90;
+  });
   const activeSpeakerSolo = outputSpeakers.some(speaker => soloSpeakerNames.has(speaker.name));
   const activeSpeakerFocus = useMemo(() => new Set([...focusedSpeakers].filter(name => outputSpeakers.some(speaker => speaker.name === name))), [focusedSpeakers, outputSpeakers]);
   const effectiveSpeakerMutes = useMemo(() => new Set(outputSpeakers
@@ -1338,17 +1347,27 @@ export function App() {
     if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.04);
   }, []);
 
-  const changeDenseBinauralObjects = useCallback((on: boolean) => {
+  const [denseBinauralBusy, setDenseBinauralBusy] = useState(false);
+  const changeDenseBinauralObjects = useCallback(async (on: boolean) => {
+    if (denseBinauralBusy) return;
     const allowed = binauralHead === "ku100";
     const next = allowed && on;
+    setDenseBinauralBusy(true);
     try {
-      localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, next ? "1" : "0");
-    } catch {
-      // 持久化失败不影响本次切换。
+      const desktop = window.sdaDesktop;
+      const status = await desktop?.getNativeRendererStatus?.();
+      if (status?.running && !await desktop?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead, next), 0.04)) {
+        throw new Error("原生渲染器未接受高解析 HRTF 设置");
+      }
+      await playerRef.current?.setDenseBinauralObjects(next, denseBinauralBaseUrl());
+      try { localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, next ? "1" : "0"); } catch {}
+      setDenseBinauralObjects(next);
+    } catch (error) {
+      setErrors((prev) => [...prev, `高解析 HRTF 切换失败: ${String(error)}`]);
+    } finally {
+      setDenseBinauralBusy(false);
     }
-    setDenseBinauralObjects(next);
-    void playerRef.current?.setDenseBinauralObjects(next, denseBinauralBaseUrl());
-  }, [binauralHead]);
+  }, [binauralHead, denseBinauralBusy]);
 
   const resetBinauralEq = useCallback(() => {
     for (const band of ["low", "mid", "high"] as const) localStorage.setItem(`sda-binaural-eq-${band}-db`, "0");
@@ -1771,6 +1790,7 @@ export function App() {
                 <button
                   key={head.id}
                   className={`pinna-option ${binauralHead === head.id ? "active" : ""}`}
+                  disabled={denseBinauralBusy}
                   onClick={() => changeBinauralHead(head.id)}
                 >
                   <b>{head.label}</b>
@@ -1780,13 +1800,13 @@ export function App() {
               ))}
             </div>
             <label className="settings-switch" title={binauralHead === "ku100"
-              ? "对象不再吸附到床层扬声器方向，而是在 32 路实时双耳总线中按精确方位落到 KU100 的 61 个测量方向 HRTF。方向分离度更高，CPU 占用更高；仅双耳输出生效，播放中切换实时生效。"
+              ? "采用 KU100 的 61 向测量 HRTF。原生播放保留当前扬声器布局，同时用于声床和对象的双耳滤波；独立对象渲染由对象 HRTF 开关控制。"
               : "高解析对象集目前仅有完整 KU100 的 61 向测量。为避免将 KU100 对象 HRTF 混入当前完整 subject HRTF，此模式已关闭。"}>
-              <span>高解析对象渲染（仅 KU100）</span>
+              <span>高解析 HRTF（仅 KU100）</span>
               <input
                 type="checkbox"
                 role="switch"
-                disabled={binauralHead !== "ku100"}
+                disabled={binauralHead !== "ku100" || denseBinauralBusy || nativeRendererBusy}
                 checked={denseBinauralObjects}
                 onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
               />
@@ -1820,7 +1840,12 @@ export function App() {
               {activeSpeakerFocus.size > 0 && <button className="obj-clear-solo" onClick={() => setFocusedSpeakers(new Set())}>取消聚焦 ×{activeSpeakerFocus.size}</button>}
               {soloSpeakerNames.size > 0 && <button className="obj-clear-solo" disabled={speakerMixLocked} onClick={() => toggleSpeakerSoloGroup([], true)}>取消独奏 ×{soloSpeakerNames.size}</button>}
             </div>
-            {outputSpeakers.some(speaker => speaker.name === "WideLeft") && <div className="speaker-pair-controls">
+            <div className="speaker-group-tabs" role="group" aria-label="声道分组">
+              {([ ["all", "全部"], ["top", "顶部"], ["front", "前方平面"], ["rear", "后方平面"] ] as const).map(([group, label]) => (
+                <button key={group} aria-pressed={speakerGroup === group} onClick={() => setSpeakerGroup(group)}>{label}</button>
+              ))}
+            </div>
+            {filteredSpeakers.some(speaker => speaker.name === "WideLeft") && <div className="speaker-pair-controls">
               <span className="obj-info"><strong>前宽声道 Lw / Rw</strong><small>9.1 新增 · 左右 60°</small></span>
               <span className="obj-ms">
                 <button disabled={speakerMixLocked} className={`obj-ms-btn${WIDE_SPEAKERS.every(name => mutedSpeakerNames.has(name)) ? " m-on" : ""}`} aria-label="前宽声道 静音" aria-pressed={WIDE_SPEAKERS.every(name => mutedSpeakerNames.has(name))} title={speakerMixLocked ? "请先取消音箱聚焦" : "同时切换左前宽与右前宽静音"} onClick={() => toggleSpeakerMuteGroup(WIDE_SPEAKERS)}>M</button>
@@ -1828,7 +1853,8 @@ export function App() {
               </span>
             </div>}
             <ul className="objects">
-              {outputSpeakers.map(speaker => {
+              {filteredSpeakers.length === 0 && <li className="speaker-group-empty">当前布局无此类声道</li>}
+              {filteredSpeakers.map(speaker => {
                 const label = speaker.name;
                 const muted = mutedSpeakerNames.has(label);
                 const soloed = soloSpeakerNames.has(label);

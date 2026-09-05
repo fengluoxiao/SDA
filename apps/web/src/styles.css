@@ -885,6 +885,30 @@ aside {
 }
 
 /* 对象级 mute/solo 按钮 */
+.speaker-group-tabs {
+  display: grid;
+  grid-template-columns: 0.8fr 0.8fr 1.2fr 1.2fr;
+  gap: 2px;
+  margin: 8px 0;
+  border-bottom: 1px solid #64748b55;
+}
+.speaker-group-tabs button {
+  min-width: 0;
+  padding: 7px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+.speaker-group-tabs button[aria-pressed="true"] {
+  border-bottom-color: #73a9e8;
+  opacity: 1;
+}
+.speaker-group-empty { padding: 16px 8px; opacity: 0.65; font-size: 12px; }
 .speaker-pair-controls {
   display: flex;
   align-items: center;

@@ -283,7 +283,13 @@ const Listener = memo(function Listener() {
   const gray = "#8a93a6";
   const grayDark = "#767e91";
   return (
-    <group position={[0, 0, 0]}>
+    <group
+      name="listener"
+      position={[0, 0, 0]}
+      onClick={(event) => event.stopPropagation()}
+      onPointerOver={(event) => event.stopPropagation()}
+      onPointerMove={(event) => event.stopPropagation()}
+    >
       {/* 头：蛋形（略高、前后稍扁） */}
       <mesh scale={[0.85, 1.08, 0.92]}>
         <sphereGeometry args={[0.16, 16, 16]} />

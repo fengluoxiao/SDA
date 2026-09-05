@@ -11,6 +11,7 @@ pub(super) struct BusRenderer {
 }
 
 struct Bus {
+    background_filter: crate::focus::BackgroundFilter,
     convolver: convolution::StereoPartitionedConvolver,
     input: Vec<f32>,
     left: Vec<f32>,
@@ -29,6 +30,7 @@ impl BusRenderer {
             let (_, _, left, right) =
                 set.mixed_nearest(azimuth as f64, elevation as f64, wet_weight)?;
             buses.push(Bus {
+                background_filter: crate::focus::BackgroundFilter::default(),
                 convolver: convolution::StereoPartitionedConvolver::new(
                     &left,
                     &right,
@@ -66,6 +68,14 @@ impl BusRenderer {
         })
     }
 
+    pub(super) fn shape_background(&mut self, frame: usize, amounts: &[f32; vbap::MAX_BUS_COUNT]) {
+        for (bus, amount) in self.buses.iter_mut().zip(amounts) {
+            let input = bus.input[frame];
+            let filtered = bus.background_filter.process(input);
+            bus.input[frame] = input + (filtered - input) * amount;
+        }
+    }
+
     pub(super) fn finish_block(&mut self) -> Result<(), String> {
         for bus in &mut self.buses {
             bus.left.fill(0.0);
@@ -79,6 +89,7 @@ impl BusRenderer {
     pub(super) fn reset(&mut self) {
         for bus in &mut self.buses {
             bus.convolver.reset();
+            bus.background_filter = crate::focus::BackgroundFilter::default();
             bus.input.fill(0.0);
             bus.left.fill(0.0);
             bus.right.fill(0.0);

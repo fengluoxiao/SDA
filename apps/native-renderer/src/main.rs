@@ -55,6 +55,7 @@ mod convolution;
 mod dsp;
 #[allow(dead_code)]
 mod headphone;
+mod focus;
 mod hrtf;
 mod output_monitor;
 mod pcm_ring;
@@ -505,6 +506,7 @@ struct Engine {
     speaker_mutes: Vec<String>,
     focused_speakers: Vec<String>,
     speaker_levels: [f32; vbap::MAX_BUS_COUNT],
+    speaker_background: [f32; vbap::MAX_BUS_COUNT],
     speaker_lfe_level: f32,
     output_gain: f32,
     output_target_gain: f32,
@@ -543,7 +545,7 @@ impl Engine {
             vbap::speakers(self.layout).iter().any(|speaker| speaker.name == focus)
                 || (focus == "LFE" && self.layout != vbap::LayoutId::Stereo2_0)
         });
-        if has_focus && !self.focused_speakers.iter().any(|focus| focus == name) { 0.25118864 } else { 1.0 }
+        if has_focus && !self.focused_speakers.iter().any(|focus| focus == name) { focus::BACKGROUND_GAIN } else { 1.0 }
     }
 
     fn new(sample_rate: u32, channels: u16) -> Self {
@@ -571,6 +573,7 @@ impl Engine {
             speaker_mutes: Vec::new(),
             focused_speakers: Vec::new(),
             speaker_levels: [1.0; vbap::MAX_BUS_COUNT],
+            speaker_background: [0.0; vbap::MAX_BUS_COUNT],
             speaker_lfe_level: 1.0,
             output_gain: 1.0,
             output_target_gain: 1.0,
@@ -1001,6 +1004,10 @@ impl Engine {
             for (level, target) in self.speaker_levels.iter_mut().zip(speaker_targets) {
                 *level += (target - *level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
             }
+            for (amount, target) in self.speaker_background.iter_mut().zip(speaker_targets) {
+                let background = if target == focus::BACKGROUND_GAIN { 1.0 } else { 0.0 };
+                *amount += (background - *amount).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
+            }
             self.speaker_lfe_level += (lfe_target - self.speaker_lfe_level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
             if block_index == 0 {
                 self.bus_renderer
@@ -1053,7 +1060,7 @@ impl Engine {
                 }
                 if source.suspended {
                     if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                        if block_index == 0 { let _ = direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus])); }
+                        if block_index == 0 { let _ = direct.update_focus(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
                     }
                     Self::advance_source_envelopes(source, 1);
                     if at % convolution::DEFAULT_PARTITION as u64 == 0
@@ -1123,7 +1130,7 @@ impl Engine {
                     block_index,
                 );
                 if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                    if block_index == 0 { let _ = direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus])); }
+                    if block_index == 0 { let _ = direct.update_focus(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
                     direct.input[block_index] = sample * ROOM_SPEAKER_REFERENCE_GAIN * self.direct_mix;
                 }
                 if !self.lfe_muted {
@@ -1135,6 +1142,7 @@ impl Engine {
                 self.program_metadata_gain = event.gain;
                 self.set_program_target(event.gain, false);
             }
+            self.bus_renderer.as_mut().expect("checked above").shape_background(block_index, &self.speaker_background);
             let binaural = self
                 .bus_renderer
                 .as_ref()
@@ -2252,19 +2260,32 @@ mod tests {
                             availability: 1.0, availability_target: 1.0, ..Source::default() };
                         let route = if kind == SourceKind::Object {
                             let mut route = RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 0.0 };
-                            route.buses[0] = if reference { if focus { 0.6 * 10.0_f32.powf(-12.0 / 20.0) } else { 0.0 } } else { 0.6 };
+                            route.buses[0] = if reference { 0.0 } else { 0.6 };
                             route.buses[1] = 0.8;
                             route
                         } else {
                             let mut route = bed_route(label, &engine.vbap);
                             if reference && focus {
-                                for gain in &mut route.buses { *gain *= 10.0_f32.powf(-12.0 / 20.0); }
-                                if !focus_lfe { route.lfe *= 10.0_f32.powf(-12.0 / 20.0); }
+                                for gain in &mut route.buses { *gain *= focus::BACKGROUND_GAIN; }
+                                if !focus_lfe { route.lfe *= focus::BACKGROUND_GAIN; }
                             }
                             route
                         };
                         Engine::set_source_route(&mut source, route, 0);
-                        let pcm: Vec<f32> = (0..count).map(|i| 0.002 * ((i * 37 % 97) as f32 - 48.0) / 48.0).collect();
+                        let mut pcm: Vec<f32> = (0..count).map(|i| 0.002 * ((i * 37 % 97) as f32 - 48.0) / 48.0).collect();
+                        if reference && focus {
+                            let mut filter = focus::BackgroundFilter::default();
+                            let filtered: Vec<f32> = pcm.iter().map(|sample| filter.process(*sample)).collect();
+                            if kind == SourceKind::Object {
+                                let mut background = Source { kind, gain: 1.0, target_gain: 1.0,
+                                    availability: 1.0, availability_target: 1.0, ..Source::default() };
+                                let mut route = RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 0.0 };
+                                route.buses[0] = 0.6 * focus::BACKGROUND_GAIN;
+                                Engine::set_source_route(&mut background, route, 0);
+                                background.samples.write(0, 0, &filtered);
+                                engine.sources.insert("reference-background".into(), background);
+                            } else if label != "LFE" { pcm = filtered; }
+                        }
                         source.samples.write(0, 0, &pcm);
                         engine.sources.insert(id.into(), source);
                     }
@@ -2287,7 +2308,7 @@ mod tests {
         assert!(engine.speaker_mutes.is_empty());
         assert_eq!(engine.speaker_target("FrontLeft"), 1.0);
         assert_eq!(engine.speaker_target("TopRearRight"), 1.0);
-        assert!((engine.speaker_target("FrontRight") - 10.0_f32.powf(-12.0 / 20.0)).abs() < 1e-6);
+        assert!((engine.speaker_target("FrontRight") - focus::BACKGROUND_GAIN).abs() < 1e-6);
         engine.set_speaker_monitor(vec!["FrontLeft".into()], Vec::new());
         assert!(engine.focused_speakers.is_empty());
         assert_eq!(engine.speaker_target("FrontLeft"), 0.0);

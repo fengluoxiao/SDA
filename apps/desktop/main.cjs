@@ -364,9 +364,17 @@ function nativeRendererPcm(id, start, samples) {
 
 function nativeRendererHeadphoneFir(preamp, left, right) {
   if (!nativeRenderer?.stdin || !nativeRendererWritable || !Number.isFinite(preamp) || preamp <= 0) return Promise.resolve(false);
-  if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right) || left.BYTES_PER_ELEMENT !== 4 || right.BYTES_PER_ELEMENT !== 4) return Promise.resolve(false);
-  const leftTaps = left instanceof Float32Array ? left : new Float32Array(left.buffer, left.byteOffset, Math.floor(left.byteLength / 4));
-  const rightTaps = right instanceof Float32Array ? right : new Float32Array(right.buffer, right.byteOffset, Math.floor(right.byteLength / 4));
+  // Files contain little-endian f32 bytes; Buffer elements are bytes, not taps.
+  const decodeTaps = (value) => {
+    if (value instanceof Float32Array) return value;
+    if (!Buffer.isBuffer(value) || value.byteLength % 4 !== 0 || value.byteLength > 32768 * 4) return null;
+    const taps = new Float32Array(value.byteLength / 4);
+    for (let i = 0; i < taps.length; i++) taps[i] = value.readFloatLE(i * 4);
+    return taps;
+  };
+  const leftTaps = decodeTaps(left);
+  const rightTaps = decodeTaps(right);
+  if (!leftTaps || !rightTaps) return Promise.resolve(false);
   if (leftTaps.length < 2 || rightTaps.length < 2 || leftTaps.length > 32768 || rightTaps.length > 32768 || !leftTaps.every(Number.isFinite) || !rightTaps.every(Number.isFinite)) return Promise.resolve(false);
   const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
     const ackCommand = "setHeadphoneFir";
