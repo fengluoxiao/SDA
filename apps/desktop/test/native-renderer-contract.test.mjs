@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 const root = join(import.meta.dirname, "..");
 const main = readFileSync(join(root, "main.cjs"), "utf8");
@@ -9,6 +10,25 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 assert.match(main, /const NATIVE_RENDERER_PROTOCOL = 6/);
 assert.match(main, /function bundledNativeRendererPath\(\)/);
+const rendererPathFunction = main.match(/function bundledNativeRendererPath\(\) \{[\s\S]*?\r?\n\}/)?.[0];
+assert.ok(rendererPathFunction);
+for (const isPackaged of [false, true]) {
+  for (const isDev of [false, true]) {
+    const resourcesPath = join(root, "electron-resources");
+    const expected = join(isPackaged ? resourcesPath : root, "native-renderer", "SdaNativeRenderer.exe");
+    for (const exists of [false, true]) {
+      const actual = runInNewContext(`${rendererPathFunction}\nbundledNativeRendererPath()`, {
+        app: { isPackaged },
+        isDev,
+        process: { resourcesPath },
+        __dirname: root,
+        path: { join },
+        fs: { existsSync: (candidate) => exists && candidate === expected },
+      });
+      assert.equal(actual, exists ? expected : null, `isPackaged=${isPackaged}, isDev=${isDev}, exists=${exists}`);
+    }
+  }
+}
 assert.match(main, /function startNativeRenderer\(\)/);
 assert.match(main, /function stopNativeRenderer\(\)/);
 assert.match(main, /native object renderer owns desktop audible output/i);
@@ -69,3 +89,21 @@ assert.match(pkg.scripts.dev, /build-native-renderer/);
 assert.ok(pkg.build.win.extraResources.some((entry) => entry.to === "native-renderer"));
 
 console.log("native renderer desktop bridge contract tests passed");
+
+const directHandler = main.match(/ipcMain\.handle\("sda:native-renderer-object-hrtf",[\s\S]*?\r?\n\}\);/)?.[0];
+assert.ok(directHandler);
+let handler;
+const calls = [];
+runInNewContext(directHandler, {
+  ipcMain: { handle: (_channel, fn) => { handler = fn; } },
+  nativeRendererCommandAck: async (command, ack) => { calls.push({ ...command, ack }); return command.enabled; },
+  writeStartupLog: () => {},
+});
+for (const invalid of [undefined, null, 1, "true", {}]) assert.equal(await handler(null, invalid), false);
+assert.equal(calls.length, 0);
+assert.equal(await handler(null, true), true);
+assert.equal(await handler(null, false), false);
+assert.deepEqual(calls, [
+  { type: "setObjectHrtf", enabled: true, ack: "setObjectHrtf" },
+  { type: "setObjectHrtf", enabled: false, ack: "setObjectHrtf" },
+]);

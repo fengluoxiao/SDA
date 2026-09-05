@@ -317,6 +317,8 @@ export function App() {
     () => readBinauralHead() === "ku100" && readDenseBinauralObjects(),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
+  const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   /** Desktop playback is owned by the WASAPI native object renderer. */
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
@@ -392,6 +394,9 @@ export function App() {
       if (!nativeStatus.running) await desktop.startNativeRenderer();
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.04);
+      if (!await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+        throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
+      }
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       // A replacement session owns the sidecar from this exact point. Reset it
@@ -898,6 +903,9 @@ export function App() {
         ? await desktop.stopNativeRenderer()
         : await desktop.startNativeRenderer();
       if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.04);
+      if (next.running && !await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+        throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
+      }
       setNativeRendererStatus(next);
     } catch (error) {
       console.warn("[SDA] native renderer 切换失败:", error);
@@ -906,6 +914,24 @@ export function App() {
       setNativeRendererBusy(false);
     }
   }, [nativeRendererStatus?.running]);
+
+  const changeDirectObjectHrtf = async (enabled: boolean) => {
+    if (directObjectHrtfBusy) return;
+    setDirectObjectHrtfBusy(true);
+    try {
+      const desktop = window.sdaDesktop;
+      const status = await desktop?.getNativeRendererStatus?.();
+      if (status?.running && !await desktop?.nativeRendererObjectHrtf?.(enabled)) {
+        throw new Error("原生渲染器未接受设置");
+      }
+      localStorage.setItem("sda-direct-object-hrtf", String(enabled));
+      setDirectObjectHrtf(enabled);
+    } catch (error) {
+      setErrors((prev) => [...prev, `逐对象 HRTF 切换失败: ${String(error)}`]);
+    } finally {
+      setDirectObjectHrtfBusy(false);
+    }
+  };
 
   const recenterHeadTracking = useCallback(async () => {
     const desktop = window.sdaDesktop;
@@ -1472,6 +1498,12 @@ export function App() {
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>原生空间渲染器</legend>
+                <label className="settings-switch" title="开启：逐对象 HRTF 卷积。关闭：虚拟音箱总线。两种模式均保留独立对象与 Solo。">
+                  <span>逐对象 HRTF（实验）</span>
+                  <input type="checkbox" role="switch" checked={directObjectHrtf}
+                    disabled={directObjectHrtfBusy || nativeRendererBusy}
+                    onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
+                </label>
                 <p className="settings-description">
                   Rust/WASAPI 是桌面版唯一可听输出：对象 PCM 在 native sidecar 中按完整 subject HRTF/BRIR 分区卷积后直接送入 WASAPI。启动前会校验 48 kHz、完整 v4 HRTF 与原子 codec-clock 预缓冲。
                 </p>

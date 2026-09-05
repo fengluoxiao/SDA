@@ -37,7 +37,7 @@ pub struct NativeHrtfSet {
     pub complete_subject: bool,
     positions: Vec<Position>,
     cache: Vec<StereoIr>,
-    prepared: std::collections::HashMap<(i32, i32), crate::convolution::PreparedStereoFilter>,
+    prepared: std::collections::HashMap<(i32, i32, u32), crate::convolution::PreparedStereoFilter>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,7 +248,8 @@ impl NativeHrtfSet {
         elevation: f64,
         wet_weight: f32,
     ) -> Result<crate::convolution::PreparedStereoFilter, String> {
-        let key = Self::direction_key(azimuth, elevation);
+        let (az, el) = Self::direction_key(azimuth, elevation);
+        let key = (az, el, wet_weight.clamp(0.0, 1.0).to_bits());
         if let Some(filter) = self.prepared.get(&key) {
             return Ok(filter.clone());
         }

@@ -244,6 +244,10 @@ fn handle_command(
                 }
             }
         }
+        Command::SetObjectHrtf { enabled } => {
+            let result = state.set_direct_objects(enabled);
+            write_event(&Event::Ack { command: "setObjectHrtf", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
         Command::SetLayout { layout } => {
             match vbap::LayoutId::parse(&layout) {
                 Some(layout) => match state.set_layout(layout) {
@@ -984,6 +988,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::HeadPose { .. } => "headPose",
         Command::SetHrtf { .. } => "setHrtf",
         Command::SetLayout { .. } => "setLayout",
+        Command::SetObjectHrtf { .. } => "setObjectHrtf",
         Command::SetOutputActive { .. } => "setOutputActive",
         Command::StartAt { .. } => "startAt",
         Command::ClearHeadPose => "clearHeadPose",

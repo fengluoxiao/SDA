@@ -346,7 +346,6 @@ export class SpatialRenderer {
   private node: AudioWorkletNode | null = null;
   /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
   private peakGuard: AudioWorkletNode | null = null;
-  private loudnessRider: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
   private postNodes: AudioNode[] = [];
   /** Per-bank binaural convolution nodes, keyed by fixed topology bus. */
@@ -708,12 +707,6 @@ export class SpatialRenderer {
         this.onBatchResult?.({ sequence: e.data.sequence, accepted: false, samples: 0, reason: String(e.data.reason ?? "unknown") });
       }
     };
-    this.loudnessRider = new AudioWorkletNode(this.ctx, "sda-loudness-rider", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [2],
-    });
-    this.postNodes.push(this.loudnessRider);
     this.peakGuard = new AudioWorkletNode(this.ctx, "sda-final-peak-guard", {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -1090,7 +1083,7 @@ export class SpatialRenderer {
       } else {
         const peakGuard = this.peakGuard;
         if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
-        gain.connect(this.loudnessRider ?? peakGuard);
+        gain.connect(peakGuard);
       }
       this.modeVolumeGains.set(mode, volume);
       this.modeProgramGains.set(mode, program);
@@ -1103,12 +1096,7 @@ export class SpatialRenderer {
     this.buildStereoPath(n, createModeOutput("stereo"));
     this.buildBinauralPath(createModeOutput("binaural"));
     this.peakGuard?.disconnect();
-    if (this.loudnessRider) {
-      this.peakGuard?.connect(this.loudnessRider);
-      this.loudnessRider.connect(master);
-    } else {
-      this.peakGuard?.connect(master);
-    }
+    this.peakGuard?.connect(master);
     this.loadHeadphoneCompensation();
   }
 
@@ -1864,7 +1852,6 @@ export class SpatialRenderer {
     }
     this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
     this.peakGuard?.port.postMessage({ type: "reset" });
-    this.loudnessRider?.port.postMessage({ type: "reset" });
   }
 
   /** Playhead in seconds: frames the worklet actually rendered. */

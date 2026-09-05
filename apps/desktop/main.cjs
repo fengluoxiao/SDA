@@ -257,9 +257,9 @@ const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
 
 function bundledNativeRendererPath() {
   const executable = "SdaNativeRenderer.exe";
-  const candidates = isDev
-    ? [path.join(__dirname, "native-renderer", executable)]
-    : [path.join(process.resourcesPath, "native-renderer", executable)];
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "native-renderer", executable)]
+    : [path.join(__dirname, "native-renderer", executable)];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
@@ -494,6 +494,9 @@ function consumeNativeRendererOutput(chunk) {
           `health sample=${message.samplePos} sources=${message.activeSources} layout=${message.layout ?? "unknown"} ` +
           `spatialBuses=${message.spatialBusCount ?? 0} ` +
           `sourceUnderrun=${message.underrunSamples} fifoUnderrun=${message.callbackFifoUnderrunFrames ?? 0} ` +
+          `outputPeak=${message.outputPeak ?? 0} outputMaxStep=${message.outputMaxSampleStep ?? 0} ` +
+          `outputMaxStepSample=${message.outputMaxStepSample ?? 0} ` +
+          `outputLargeSteps=${message.outputLargeSteps ?? 0} outputLastStepSample=${message.outputLastLargeStepSample ?? 0} ` +
           `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
           `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
@@ -549,6 +552,15 @@ function startNativeRenderer() {
   } catch (error) {
     nativeRenderer = null;
     return setNativeRendererStatus(false, `native renderer 启动失败: ${error.message}`);
+  }
+  // The first prebuffer must not wait for the 30-second process-tree refresh.
+  if (nativeRenderer.pid) {
+    try {
+      os.setPriority(nativeRenderer.pid, os.constants.priority.PRIORITY_HIGH);
+      writeStartupLog("native renderer process priority=high");
+    } catch (error) {
+      writeStartupLog(`native renderer priority unchanged: ${error.message}`);
+    }
   }
   nativeRendererWritable = true;
   nativeRenderer.stdout.setEncoding("utf8");
@@ -1272,6 +1284,12 @@ ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => {
   if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6"]).has(layout)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
   writeStartupLog(`setLayout ${layout} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  const accepted = await nativeRendererCommandAck({ type: "setObjectHrtf", enabled }, "setObjectHrtf");
+  writeStartupLog(`setObjectHrtf ${enabled} -> ${accepted}`);
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-output-active", (_event, active) => {

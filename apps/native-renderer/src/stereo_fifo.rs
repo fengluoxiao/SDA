@@ -83,16 +83,26 @@ impl StereoFifo {
     }
 
     /// Consumer-owned application of a pending producer flush request.
-    pub fn apply_flush_from_consumer(&self) {
-        let write = self.write.load(Ordering::Acquire);
-        let read = self.effective_read(self.read.load(Ordering::Relaxed), write);
-        self.read.store(read, Ordering::Release);
-        self.flush_ack_epoch
-            .store(self.flush_epoch.load(Ordering::Acquire), Ordering::Release);
+    pub fn apply_flush_from_consumer(&self) -> bool {
+        // Read the published epoch before its boundary, so a concurrent request
+        // cannot be acknowledged without applying the corresponding boundary.
+        let epoch = self.flush_epoch.load(Ordering::Acquire);
+        self.apply_flush_epoch_from_consumer(epoch)
     }
 
-    fn pop_frames(&self, requested: usize, mut write: impl FnMut(usize, [f32; 2])) -> usize {
-        self.apply_flush_from_consumer();
+    fn apply_flush_epoch_from_consumer(&self, epoch: usize) -> bool {
+        let changed = self.flush_ack_epoch.load(Ordering::Relaxed) != epoch;
+        let write = self.write.load(Ordering::Acquire);
+        let previous_read = self.read.load(Ordering::Relaxed);
+        let read = self.effective_read(previous_read, write);
+        self.read.store(read, Ordering::Release);
+        self.flush_ack_epoch
+            .store(epoch, Ordering::Release);
+        changed || read != previous_read
+    }
+
+    /// Single consumer only, after applying pending flushes at callback entry.
+    pub(super) fn pop_frames(&self, requested: usize, mut write: impl FnMut(usize, [f32; 2])) -> usize {
         let read = self.read.load(Ordering::Relaxed);
         let write_cursor = self.write.load(Ordering::Acquire);
         let count = requested.min(write_cursor.wrapping_sub(read).min(self.capacity));
@@ -106,6 +116,7 @@ impl StereoFifo {
 
     /// Single consumer only. Missing frames are written as silence.
     pub fn pop_into_f32(&self, output: &mut [f32], channels: usize) -> usize {
+        self.apply_flush_from_consumer();
         let requested = output.len() / channels;
         let count = self.pop_frames(requested, |offset, frame| {
             let target = &mut output[offset * channels..(offset + 1) * channels];
@@ -122,6 +133,7 @@ impl StereoFifo {
     }
 
     pub fn pop_into_i16(&self, output: &mut [i16], channels: usize) -> usize {
+        self.apply_flush_from_consumer();
         let requested = output.len() / channels;
         let count = self.pop_frames(requested, |offset, frame| {
             let target = &mut output[offset * channels..(offset + 1) * channels];
@@ -138,6 +150,7 @@ impl StereoFifo {
     }
 
     pub fn pop_into_u16(&self, output: &mut [u16], channels: usize) -> usize {
+        self.apply_flush_from_consumer();
         let requested = output.len() / channels;
         let count = self.pop_frames(requested, |offset, frame| {
             let target = &mut output[offset * channels..(offset + 1) * channels];
@@ -207,5 +220,19 @@ mod tests {
         assert_eq!(output, [0.0; 4]);
         assert_eq!(fifo.read.load(Ordering::Acquire), 2);
         assert!(fifo.flush_acknowledged(flush));
+    }
+
+    #[test]
+    fn flush_requested_after_epoch_snapshot_is_not_acknowledged_early() {
+        let fifo = StereoFifo::new(4);
+        assert_eq!(fifo.push(&[1.0, 10.0, 2.0, 20.0]), 2);
+        let observed_epoch = fifo.flush_epoch.load(Ordering::Acquire);
+        let next_epoch = fifo.clear_from_producer();
+        assert!(fifo.apply_flush_epoch_from_consumer(observed_epoch));
+        assert!(!fifo.flush_acknowledged(next_epoch));
+        assert!(fifo.apply_flush_from_consumer());
+        assert!(fifo.flush_acknowledged(next_epoch));
+        assert!(!fifo.apply_flush_from_consumer());
+        assert_eq!(fifo.available_read(), 0);
     }
 }

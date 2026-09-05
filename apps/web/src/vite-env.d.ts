@@ -101,6 +101,7 @@ declare global {
       nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;
+      nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
       nativeRendererStartAt?: (origin: number) => Promise<boolean>;
