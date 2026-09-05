@@ -20,6 +20,12 @@ pub struct PreparedStereoFilter {
 }
 
 impl PreparedStereoFilter {
+    pub fn scale(&mut self, gain: f32) {
+        for value in self.filters_left.iter_mut().chain(self.filters_right.iter_mut()).flatten() {
+            *value *= gain;
+        }
+    }
+
     pub fn blend(&mut self, other: &Self, weight: f32) {
         for (value, target) in self.filters_left.iter_mut().flatten().zip(other.filters_left.iter().flatten()) {
             *value += (*target - *value) * weight;

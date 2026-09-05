@@ -5,12 +5,13 @@
  * 7.1.4 virtual layout used by the renderer.
  */
 
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, RoundedBox } from "@react-three/drei";
+import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
+import { speakerLabel } from "../speaker-labels";
 export type { VisualObject };
 
 const ROOM = 2; // half-extent of the room footprint in scene units
@@ -50,6 +51,16 @@ type Palette = (typeof PALETTE)[Theme];
 
 type RequestFrame = () => void;
 const RequestFrameContext = createContext<RequestFrame>(() => {});
+
+function ViewportFraming() {
+  const { camera, size, invalidate } = useThree();
+  useEffect(() => {
+    camera.zoom = Math.min(1, size.width / Math.max(1, size.height) / 1.5);
+    camera.updateProjectionMatrix();
+    invalidate();
+  }, [camera, size.width, size.height, invalidate]);
+  return null;
+}
 
 function FrameScheduler({ children, maxFps }: { children: ReactNode; maxFps: number | null }) {
   const invalidate = useThree((state) => state.invalidate);
@@ -142,7 +153,59 @@ function GenelecSub() {
   );
 }
 
-const SpeakerRing = memo(function SpeakerRing({ layout }: { layout: readonly VirtualSpeaker[] }) {
+function FocusSpeaker({ speaker, dimmed, focused, onFocus }: {
+  speaker: { name: string; isLfe?: boolean; position: THREE.Vector3; quaternion: THREE.Quaternion };
+  dimmed: boolean;
+  focused: boolean;
+  onFocus?: (name: string) => void;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+  const { gl, invalidate } = useThree();
+  useEffect(() => {
+    group.current?.traverse(object => {
+      if (!(object instanceof THREE.Mesh) || object.userData.focusHitbox) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        material.transparent = dimmed;
+        material.opacity = dimmed ? 0.22 : 1;
+        material.depthWrite = !dimmed;
+        material.needsUpdate = true;
+      }
+    });
+    invalidate();
+  }, [dimmed, invalidate]);
+  useEffect(() => {
+    if (!hovered) return;
+    gl.domElement.style.cursor = onFocus ? "pointer" : "not-allowed";
+    return () => { gl.domElement.style.cursor = ""; };
+  }, [hovered, gl, onFocus]);
+  return <group ref={group} name={`speaker:${speaker.name}`} position={speaker.position} quaternion={speaker.quaternion}
+    userData={{ speakerName: speaker.name, focused, dimmed }}
+    onClick={event => {
+      if (event.delta > 4) return;
+      event.stopPropagation();
+      onFocus?.(speaker.name);
+    }}
+    onPointerOver={event => { event.stopPropagation(); setHovered(true); }}
+    onPointerOut={() => setHovered(false)}>
+    {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
+    <mesh userData={{ focusHitbox: true }}>
+      <boxGeometry args={speaker.isLfe ? [0.3, 0.3, 0.27] : [0.22, 0.28, 0.2]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>
+    {hovered && <Html position={[0, 0.23, 0]} center style={{ pointerEvents: "none" }}>
+      <span className="speaker-tooltip">{speakerLabel(speaker.name)} · {!onFocus ? "请先取消声道静音和独奏" : focused ? "取消聚焦" : "聚焦"}</span>
+    </Html>}
+  </group>;
+}
+
+const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeakerFocus, hiddenSpeakerNames }: {
+  layout: readonly VirtualSpeaker[];
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
+}) {
   const speakers = useMemo(
     () =>
       layout.map((s) => {
@@ -161,10 +224,9 @@ const SpeakerRing = memo(function SpeakerRing({ layout }: { layout: readonly Vir
   );
   return (
     <group>
-      {speakers.map((s) => (
-        <group key={s.name} position={s.position} quaternion={s.quaternion}>
-          {s.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
-        </group>
+      {speakers.filter(s => !hiddenSpeakerNames?.has(s.name)).map((s) => (
+        <FocusSpeaker key={s.name} speaker={s} dimmed={!!focusedSpeakers?.size && !focusedSpeakers.has(s.name)}
+          focused={focusedSpeakers?.has(s.name) ?? false} onFocus={onSpeakerFocus} />
       ))}
     </group>
   );
@@ -343,6 +405,9 @@ export function ObjectView({
   theme = "dark",
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
@@ -351,6 +416,9 @@ export function ObjectView({
   mutedIds?: ReadonlySet<number>;
   /** Worklet-confirmed post-gain/post-mute object signal IDs. */
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
 }) {
   const p = PALETTE[theme];
   const rendererMode = window.sdaDesktop?.rendererMode;
@@ -370,8 +438,9 @@ export function ObjectView({
           software rasterization competing with the audio renderer for CPU —
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
+        <ViewportFraming />
         <Room p={p} />
-        <SpeakerRing layout={layout} />
+        <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         <Listener />
         {objects.map((o) => (
           <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />

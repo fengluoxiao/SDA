@@ -93,6 +93,7 @@ declare global {
       nativeRendererReset?: (origin: number) => Promise<boolean>;
       nativeRendererMuted?: (id: string, muted: boolean, atSample?: number) => Promise<boolean>;
       nativeRendererLfeMuted?: (muted: boolean) => Promise<boolean>;
+      nativeRendererSpeakerMutes?: (names: string[], focus?: string[]) => Promise<boolean>;
       nativeRendererVolume?: (volume: number) => Promise<boolean>;
       nativeRendererProgramEnabled?: (enabled: boolean) => Promise<boolean>;
       nativeRendererProgramGain?: (gain: number, atSample?: number) => Promise<boolean>;

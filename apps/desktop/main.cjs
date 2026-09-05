@@ -1202,6 +1202,12 @@ ipcMain.handle("sda:native-renderer-muted", async (_event, id, muted, atSample) 
   writeStartupLog(`setMuted ${id}=${muted}@${atSample ?? "now"} ACK -> ${accepted}`);
   return accepted;
 });
+ipcMain.handle("sda:native-renderer-speaker-mutes", async (_event, names, focus) => {
+  if (!Array.isArray(names) || names.length > 16 || names.some(name => typeof name !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(name))) return false;
+  const focusedNames = focus == null ? [] : typeof focus === "string" ? [focus] : focus;
+  if (!Array.isArray(focusedNames) || focusedNames.length > 16 || focusedNames.some(name => typeof name !== "string" || !/^[A-Za-z0-9]{1,32}$/.test(name))) return false;
+  return nativeRendererCommandAck({ type: "setSpeakerMutes", names, focus: focusedNames }, "setSpeakerMutes");
+});
 ipcMain.handle("sda:native-renderer-lfe-muted", async (_event, muted) => {
   if (typeof muted !== "boolean") return false;
   const accepted = await nativeRendererCommandAck({ type: "setLfeMuted", muted }, "setLfeMuted");

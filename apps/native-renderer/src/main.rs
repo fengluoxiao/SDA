@@ -36,13 +36,9 @@ const FRAME_HEADPHONE_FIR: u8 = b'H';
 const NATIVE_RENDERER_MAX_JSON_BYTES: usize = 16 * 1024;
 const MAX_HEADPHONE_FIR_TAPS: usize = 32_768;
 const DEFAULT_OBJECT_RAMP: u32 = 128;
-/// Room-calibrated per-speaker presentation level. A Genelec/Dolby Atmos
-/// listening room calibrates every loudspeaker - physical or virtual - to one
-/// reference SPL (79 dB for small rooms), which in the digital domain means
-/// each speaker feed renders roughly 18 dB below full scale so that a full
-/// object ensemble sums near one calibrated program instead of N independent
-/// full-scale sources piling up ahead of the peak guard.
-const ROOM_SPEAKER_REFERENCE_GAIN: f32 = 0.12589251; // 10^(-18/20)
+// Calibrated HRTFs and VBAP already define speaker levels. Acoustic reference
+// SPL and a program's LKFS delivery limit do not imply per-source attenuation.
+const ROOM_SPEAKER_REFERENCE_GAIN: f32 = 1.0;
 const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
 /// Prebuffer before the WASAPI callback may start pulling: 8192 frames is
@@ -69,6 +65,13 @@ mod stereo_fifo;
 mod vbap;
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SpeakerFocus {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Command {
     Hello {
@@ -87,6 +90,7 @@ enum Command {
     SetLfeMuted {
         muted: bool,
     },
+    SetSpeakerMutes { names: Vec<String>, focus: Option<SpeakerFocus> },
     SetVolume {
         volume: f32,
     },
@@ -365,6 +369,7 @@ struct Source {
     position: [f32; 3],
     spread: f32,
     spatial_events: BTreeMap<u64, SpatialEvent>,
+    motion: Option<SpatialEvent>,
     bus_gains: [f32; vbap::MAX_BUS_COUNT],
     bus_targets: [f32; vbap::MAX_BUS_COUNT],
     bus_steps: [f32; vbap::MAX_BUS_COUNT],
@@ -402,6 +407,7 @@ impl Default for Source {
             position: [0.0, 1.0, 0.0],
             spread: 0.0,
             spatial_events: BTreeMap::new(),
+            motion: None,
             bus_gains: [0.0; vbap::MAX_BUS_COUNT],
             bus_targets: [0.0; vbap::MAX_BUS_COUNT],
             bus_steps: [0.0; vbap::MAX_BUS_COUNT],
@@ -496,6 +502,10 @@ struct Engine {
     direct_mix: f32,
     lfe_path: LfePath,
     lfe_muted: bool,
+    speaker_mutes: Vec<String>,
+    focused_speakers: Vec<String>,
+    speaker_levels: [f32; vbap::MAX_BUS_COUNT],
+    speaker_lfe_level: f32,
     output_gain: f32,
     output_target_gain: f32,
     output_gain_step: f32,
@@ -522,6 +532,20 @@ struct Engine {
 }
 
 impl Engine {
+    fn set_speaker_monitor(&mut self, names: Vec<String>, focus: Vec<String>) {
+        self.speaker_mutes = if !focus.is_empty() { Vec::new() } else { names };
+        self.focused_speakers = focus;
+    }
+
+    fn speaker_target(&self, name: &str) -> f32 {
+        if self.speaker_mutes.iter().any(|muted| muted == name) { return 0.0; }
+        let has_focus = self.focused_speakers.iter().any(|focus| {
+            vbap::speakers(self.layout).iter().any(|speaker| speaker.name == focus)
+                || (focus == "LFE" && self.layout != vbap::LayoutId::Stereo2_0)
+        });
+        if has_focus && !self.focused_speakers.iter().any(|focus| focus == name) { 0.25118864 } else { 1.0 }
+    }
+
     fn new(sample_rate: u32, channels: u16) -> Self {
         Self {
             sample_pos: 0,
@@ -544,6 +568,10 @@ impl Engine {
             direct_mix: 0.0,
             lfe_path: LfePath::new(sample_rate),
             lfe_muted: false,
+            speaker_mutes: Vec::new(),
+            focused_speakers: Vec::new(),
+            speaker_levels: [1.0; vbap::MAX_BUS_COUNT],
+            speaker_lfe_level: 1.0,
             output_gain: 1.0,
             output_target_gain: 1.0,
             output_gain_step: 0.0,
@@ -585,7 +613,7 @@ impl Engine {
             for (id, source) in &self.sources {
                 if source.kind == SourceKind::Object && source.direct.is_none() {
                     let mut direct = direct_renderer::DirectSource::new(set, self.hrtf_wet_weight)?;
-                    direct.update(set, self.hrtf_wet_weight, source.position, self.head_pose, source.spread)?;
+                    direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]))?;
                     prepared.push((id.clone(), direct));
                 }
             }
@@ -661,6 +689,20 @@ impl Engine {
     }
 
     fn advance_source_envelopes(source: &mut Source, samples: u32) {
+        if let Some(mut motion) = source.motion {
+            let elapsed = samples.min(motion.ramp);
+            let fraction = elapsed as f32 / motion.ramp.max(1) as f32;
+            for axis in 0..3 {
+                source.position[axis] += (motion.position[axis] - source.position[axis]) * fraction;
+            }
+            source.spread += (motion.spread - source.spread) * fraction;
+            motion.ramp -= elapsed;
+            source.motion = if motion.ramp == 0 {
+                source.position = motion.position;
+                source.spread = motion.spread;
+                None
+            } else { Some(motion) };
+        }
         let scalar = samples.min(source.ramp_remaining);
         if scalar > 0 {
             source.gain += source.ramp_step * scalar as f32;
@@ -697,8 +739,34 @@ impl Engine {
             lfe: 0.0,
         };
         let source = self.sources.get_mut(id).expect("source was checked above");
-        Self::set_source_route(source, route, ramp);
+        if source.motion.is_some() {
+            Self::route_motion_block(source, &self.vbap, self.head_pose, convolution::DEFAULT_PARTITION as u32);
+        } else {
+            Self::set_source_route(source, route, ramp);
+        }
         Ok(())
+    }
+
+    fn start_source_motion(source: &mut Source, mut event: SpatialEvent) -> bool {
+        if source.motion.is_none() && source.position == event.position && source.spread == event.spread {
+            return false;
+        }
+        event.ramp = event.ramp.max(1);
+        source.motion = Some(event);
+        true
+    }
+
+    fn route_motion_block(source: &mut Source, solver: &vbap::VbapSolver, head: Option<[f32; 4]>, samples: u32) {
+        let Some(motion) = source.motion else { return; };
+        let samples = samples.min(motion.ramp).max(1);
+        let fraction = samples as f32 / motion.ramp as f32;
+        let position = std::array::from_fn(|axis| source.position[axis] + (motion.position[axis] - source.position[axis]) * fraction);
+        let spread = source.spread + (motion.spread - source.spread) * fraction;
+        // Re-pan points along the Cartesian trajectory, not just its endpoints.
+        // Gain interpolation only bridges this short segment of the route.
+        Self::set_source_route(source, RouteGains {
+            buses: bus_renderer::route(solver, position, head, spread), lfe: 0.0,
+        }, samples);
     }
 
     fn set_output_volume(&mut self, volume: f32, immediate: bool) {
@@ -923,9 +991,17 @@ impl Engine {
         let mut underruns = 0_u64;
         let vbap = self.vbap.clone();
         let head_pose = self.head_pose;
+        let speaker_targets: [f32; vbap::MAX_BUS_COUNT] = std::array::from_fn(|bus| {
+            vbap::speakers(self.layout).get(bus).map_or(1.0, |speaker| self.speaker_target(speaker.name))
+        });
+        let lfe_target = self.speaker_target("LFE");
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
             let block_index = self.block_offset;
+            for (level, target) in self.speaker_levels.iter_mut().zip(speaker_targets) {
+                *level += (target - *level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
+            }
+            self.speaker_lfe_level += (lfe_target - self.speaker_lfe_level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
             if block_index == 0 {
                 self.bus_renderer
                     .as_mut()
@@ -960,33 +1036,13 @@ impl Engine {
                 // Metadata follows the codec clock even when a source is
                 // suspended; its next audible sample must use the current state.
                 if source.kind == SourceKind::Object {
+                    let mut changed = false;
                     if let Some(event) = source.spatial_events.remove(&at) {
-                        // Static-position carriers re-send the same OAMD event
-                        // every frame; recomputing VBAP + pose transform for an
-                        // unchanged pose dominated the render budget. Only a
-                        // real change may rebuild the route.
-                        let unchanged = source.position == event.position
-                            && source.spread == event.spread
-                            && source.bus_ramp_remaining == 0
-                            && head_pose.is_none();
-                        source.position = event.position;
-                        source.spread = event.spread;
-                        if !unchanged {
-                            Self::set_source_route(
-                                source,
-                                RouteGains {
-                                buses: bus_renderer::route(
-                                    &vbap,
-                                    event.position,
-                                    head_pose,
-                                    event.spread,
-                                ),
-                                    lfe: 0.0,
-                                },
-                                event.ramp,
-                            );
-                            self.route_update_count = self.route_update_count.saturating_add(1);
-                        }
+                        changed = Self::start_source_motion(source, event);
+                    }
+                    if source.motion.is_some() && (changed || block_index == 0) {
+                        Self::route_motion_block(source, &vbap, head_pose, (convolution::DEFAULT_PARTITION - block_index) as u32);
+                        self.route_update_count = self.route_update_count.saturating_add(1);
                     }
                 }
                 if let Some(event) = source.gain_events.remove(&at) {
@@ -997,7 +1053,7 @@ impl Engine {
                 }
                 if source.suspended {
                     if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                        if block_index == 0 { let _ = direct.update(set, self.hrtf_wet_weight, source.position, head_pose, source.spread); }
+                        if block_index == 0 { let _ = direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus])); }
                     }
                     Self::advance_source_envelopes(source, 1);
                     if at % convolution::DEFAULT_PARTITION as u64 == 0
@@ -1063,15 +1119,15 @@ impl Engine {
                 }
                 self.bus_renderer.as_mut().expect("checked above").add(
                     sample * ROOM_SPEAKER_REFERENCE_GAIN * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 },
-                    &source.bus_gains,
+                    &std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]),
                     block_index,
                 );
                 if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                    if block_index == 0 { let _ = direct.update(set, self.hrtf_wet_weight, source.position, head_pose, source.spread); }
+                    if block_index == 0 { let _ = direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus])); }
                     direct.input[block_index] = sample * ROOM_SPEAKER_REFERENCE_GAIN * self.direct_mix;
                 }
                 if !self.lfe_muted {
-                    lfe_sum += sample * source.lfe_gain;
+                    lfe_sum += sample * source.lfe_gain * self.speaker_lfe_level;
                 }
                 Self::advance_source_envelopes(source, 1);
             }
@@ -1183,6 +1239,21 @@ fn bed_route(label: &str, solver: &vbap::VbapSolver) -> RouteGains {
     if let Some(bus) = solver.speaker_index(name) {
         one_hot_route(bus)
     } else {
+        // A 7.1.2 bed's middle-height channel spans the same-side overhead pair
+        // in .4 layouts. Generic 3D VBAP can leak it into ear-level surrounds.
+        let overhead_pair = match name {
+            "TopMiddleLeft" => Some(["TopFrontLeft", "TopRearLeft"]),
+            "TopMiddleRight" => Some(["TopFrontRight", "TopRearRight"]),
+            _ => None,
+        };
+        if let Some([front, rear]) = overhead_pair {
+            if let (Some(front), Some(rear)) = (solver.speaker_index(front), solver.speaker_index(rear)) {
+                let mut route = RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 0.0 };
+                route.buses[front] = std::f32::consts::FRAC_1_SQRT_2;
+                route.buses[rear] = std::f32::consts::FRAC_1_SQRT_2;
+                return route;
+            }
+        }
         RouteGains { buses: solver.pan(position, 0.0), lfe: 0.0 }
     }
 }
@@ -1547,6 +1618,137 @@ mod tests {
     }
 
     #[test]
+    fn egaku_front_to_rear_trajectory_routes_through_the_side() {
+        for direct in [false, true] {
+            let mut engine = calibrated_engine();
+            engine.direct_objects = direct;
+            engine.direct_mix = if direct { 1.0 } else { 0.0 };
+            let mut source = Source { kind: SourceKind::Object, object_id: Some(14),
+                position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
+            source.samples.write(0, 0, &[0.001; 4096]);
+            // Obj14's captured OAMD uses this path and 1536-sample duration.
+            // Retain its 577-sample QMF offset and shift the event to the first frame.
+            source.spatial_events.insert(577, SpatialEvent {
+                position: [-1.0, -1.0, 0.0], spread: 0.0, ramp: 1536,
+            });
+            engine.sources.insert("obj:14".into(), source);
+            engine.route_source_now("obj:14", 0).unwrap();
+            let start = engine.sources["obj:14"].bus_gains;
+            let end = bus_renderer::route(&engine.vbap, [-1.0, -1.0, 0.0], None, 0.0);
+            let side = bus_renderer::route(&engine.vbap, [-1.0, 0.0, 0.0], None, 0.0);
+            engine.render_into(&mut vec![0.0; (577 + 768) * 2], 2);
+            let source = &engine.sources["obj:14"];
+            assert!(source.position[1].abs() < 1e-5);
+            for bus in 0..vbap::MAX_BUS_COUNT {
+                assert!((source.bus_gains[bus] - side[bus]).abs() < 0.02,
+                    "direct={direct}, bus={bus}: midpoint must route through the side");
+            }
+            assert!((0..vbap::MAX_BUS_COUNT).any(|bus| ((start[bus] + end[bus]) * 0.5 - side[bus]).abs() > 0.1),
+                "fixture must distinguish position motion from endpoint crossfade");
+            engine.render_into(&mut vec![0.0; 768 * 2], 2);
+            assert_eq!(engine.sources["obj:14"].position, [-1.0, -1.0, 0.0]);
+            assert!(engine.sources["obj:14"].motion.is_none());
+        }
+    }
+
+    #[test]
+    fn every_egaku_object_id_has_an_independent_audible_route() {
+        let mut engine = calibrated_engine();
+        let pcm: Vec<f32> = (0..8192).map(|i| 0.001 * ((i * 37 % 97) as f32 - 48.0)).collect();
+        for direct in [false, true] {
+            for id in 10..=24 {
+                engine.reset_session(0);
+                engine.output_active = true;
+                engine.paused = false;
+                engine.direct_objects = direct;
+                engine.direct_mix = if direct { 1.0 } else { 0.0 };
+                let mut source = Source { kind: SourceKind::Object, object_id: Some(id),
+                    gain: 1.0, target_gain: 1.0, ..Source::default() };
+                source.samples.write(0, 0, &pcm);
+                let key = format!("obj:{id}");
+                engine.sources.insert(key.clone(), source);
+                engine.route_source_now(&key, 0).unwrap();
+                let mut output = vec![0.0; pcm.len() * 2];
+                engine.render_into(&mut output, 2);
+                assert!(output.iter().all(|v| v.is_finite()));
+                assert!(output.iter().any(|v| v.abs() > 1e-5), "inaudible object {id}, direct={direct}");
+            }
+        }
+    }
+
+    #[test]
+    fn scheduled_object_motion_moves_the_audible_image_in_both_modes() {
+        for direct in [false, true] {
+            let mut engine = calibrated_engine();
+            engine.direct_objects = direct;
+            engine.direct_mix = if direct { 1.0 } else { 0.0 };
+            let pcm: Vec<f32> = (0..48000).map(|i| 0.001 * ((i * 37 % 97) as f32 - 48.0)).collect();
+            let mut source = Source { kind: SourceKind::Object, object_id: Some(14),
+                position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
+            source.samples.write(0, 0, &pcm);
+            source.spatial_events.insert(12000, SpatialEvent {
+                position: [1.0, 1.0, 0.0], spread: 0.0, ramp: 24000,
+            });
+            engine.sources.insert("obj:14".into(), source);
+            engine.route_source_now("obj:14", 0).unwrap();
+            let mut output = vec![0.0; pcm.len() * 2];
+            engine.render_into(&mut output, 2);
+            let balance = |start: usize| {
+                let mut ears = [0.0_f64; 2];
+                for frame in output[start * 2..(start + 4000) * 2].chunks_exact(2) {
+                    for ear in 0..2 { ears[ear] += (frame[ear] as f64).powi(2); }
+                }
+                (ears[0] - ears[1]) / (ears[0] + ears[1])
+            };
+            let left = balance(6000);
+            let middle = balance(22000);
+            let right = balance(40000);
+            assert!(left > 0.05 && right < -0.05, "direct={direct}: left={left}, right={right}");
+            assert!(middle > right + 0.05 && middle < left - 0.05,
+                "motion must retain its 500 ms ramp: direct={direct}, middle={middle}");
+        }
+    }
+
+    #[test]
+    fn source_level_matches_calibrated_speaker_reference_in_both_modes() {
+        let count = 32_768;
+        let pcm: Vec<f32> = (0..count)
+            .map(|i| 0.001 * (std::f32::consts::TAU * i as f32 / 48.0).sin())
+            .collect();
+        for direct in [false, true] {
+            let mut engine = calibrated_engine();
+            engine.direct_objects = direct;
+            let position = [0.0, 1.0, 0.0];
+            let route = bus_renderer::route(&engine.vbap, position, None, 0.0);
+            let mut reference = bus_renderer::BusRenderer::new(
+                engine.active_hrtf_set.as_ref().unwrap(), &engine.vbap, engine.hrtf_wet_weight,
+            ).unwrap();
+            let mut expected = Vec::new();
+            for block in pcm.chunks_exact(convolution::DEFAULT_PARTITION) {
+                reference.begin_block();
+                for (i, &sample) in block.iter().enumerate() { reference.add(sample, &route, i); }
+                reference.finish_block().unwrap();
+                for i in 0..block.len() { expected.extend(reference.output_at(i)); }
+            }
+            let mut source = Source { kind: SourceKind::Object, position,
+                gain: 1.0, target_gain: 1.0, ..Source::default() };
+            source.samples.write(0, 0, &pcm);
+            engine.sources.insert("obj:14".into(), source);
+            engine.route_source_now("obj:14", 0).unwrap();
+            let mut actual = vec![0.0; count * 2];
+            engine.render_into(&mut actual, 2);
+            // Measure complete steady-state tone periods after fades and FIR tails.
+            let rms = |values: &[f32]| {
+                let tail = &values[values.len() - 12_288 * 2..];
+                (tail.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / tail.len() as f64).sqrt()
+            };
+            let expected_rms = rms(&expected) * 10.0_f64.powf(6.0 / 20.0);
+            let ratio = rms(&actual) / expected_rms;
+            assert!((ratio - 1.0).abs() < 0.001, "direct={direct}: level ratio={ratio}");
+        }
+    }
+
+    #[test]
     fn direct_mode_keeps_beds_on_buses_and_drains_muted_objects() {
         let mut engine = calibrated_engine();
         engine.direct_objects = true;
@@ -1850,8 +2052,8 @@ mod tests {
         assert_eq!(engine.sources["obj:14"].gain, 1.0);
         engine.mix(&mut [0.0; 2], 2);
         let source = &engine.sources["obj:14"];
-        assert_eq!(source.position, target_position);
-        assert_eq!(source.spread, 0.2);
+        assert_eq!(source.position, [1.0 / 32.0, 31.0 / 32.0, 0.0]);
+        assert_eq!(source.spread, 0.2 / 32.0);
         assert!(source.spatial_events.is_empty());
         assert!(source.gain_events.is_empty());
         assert_eq!(source.bus_ramp_remaining, 31);
@@ -1864,6 +2066,7 @@ mod tests {
 
         engine.mix(&mut [0.0; 31 * 2], 2);
         assert_eq!(engine.sources["obj:14"].bus_gains, target_gains);
+        assert_eq!(engine.sources["obj:14"].position, target_position);
         assert_eq!(engine.sources["obj:14"].gain, 0.25);
         assert_eq!(engine.route_update_count, 1);
     }
@@ -2021,6 +2224,174 @@ mod tests {
         engine.mix(&mut output, 2);
         assert_eq!(output, [0.0, 0.0]);
         assert_eq!(engine.sample_pos, 0);
+    }
+
+    #[test]
+    fn speaker_monitor_filters_bed_and_object_contributions_in_both_modes() {
+        let count = 16_384;
+        for layout in [vbap::LayoutId::Dolby5_1_2, vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Dolby9_1_6] {
+            let mut engine = calibrated_engine();
+            engine.set_layout(layout).unwrap();
+            for (focus, direct, focus_lfe) in [(false, false, false), (false, true, false), (true, false, false), (true, true, false), (true, false, true), (true, true, true)] {
+                let mut outputs = Vec::new();
+                for reference in [false, true] {
+                    engine.reset_session(0);
+                    engine.paused = false;
+                    engine.output_active = true;
+                    engine.direct_objects = direct;
+                    engine.direct_mix = if direct { 1.0 } else { 0.0 };
+                    engine.focused_speakers = if focus && !reference { vec!["FrontRight".into()] } else { Vec::new() };
+                    if focus && !reference && focus_lfe { engine.focused_speakers.push("LFE".into()); }
+                    engine.speaker_mutes = if reference || focus { Vec::new() } else {
+                        vbap::speakers(layout).iter().filter(|s| s.name != "FrontRight")
+                            .map(|s| s.name.to_string()).chain(std::iter::once("LFE".into())).collect()
+                    };
+                    for (id, kind, label) in [("bed:0", SourceKind::Bed, "FrontLeft"), ("obj:14", SourceKind::Object, ""), ("bed:1", SourceKind::Bed, "LFE")] {
+                        if reference && !focus && kind == SourceKind::Bed { continue; }
+                        let mut source = Source { kind, gain: 1.0, target_gain: 1.0,
+                            availability: 1.0, availability_target: 1.0, ..Source::default() };
+                        let route = if kind == SourceKind::Object {
+                            let mut route = RouteGains { buses: [0.0; vbap::MAX_BUS_COUNT], lfe: 0.0 };
+                            route.buses[0] = if reference { if focus { 0.6 * 10.0_f32.powf(-12.0 / 20.0) } else { 0.0 } } else { 0.6 };
+                            route.buses[1] = 0.8;
+                            route
+                        } else {
+                            let mut route = bed_route(label, &engine.vbap);
+                            if reference && focus {
+                                for gain in &mut route.buses { *gain *= 10.0_f32.powf(-12.0 / 20.0); }
+                                if !focus_lfe { route.lfe *= 10.0_f32.powf(-12.0 / 20.0); }
+                            }
+                            route
+                        };
+                        Engine::set_source_route(&mut source, route, 0);
+                        let pcm: Vec<f32> = (0..count).map(|i| 0.002 * ((i * 37 % 97) as f32 - 48.0) / 48.0).collect();
+                        source.samples.write(0, 0, &pcm);
+                        engine.sources.insert(id.into(), source);
+                    }
+                    let mut output = vec![0.0; count * 2];
+                    engine.render_into(&mut output, 2);
+                    outputs.push(output);
+                }
+                let error = outputs[0][16384..].iter().zip(&outputs[1][16384..])
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(outputs[1][16384..].iter().any(|v| v.abs() > 1e-5));
+                assert!(error < 2e-6, "layout={layout:?} direct={direct} focus={focus} error={error}");
+            }
+        }
+    }
+
+    #[test]
+    fn speaker_focus_excludes_mutes_and_ignores_missing_layout_speakers() {
+        let mut engine = Engine::new(48000, 2);
+        engine.set_speaker_monitor(vec!["FrontLeft".into()], vec!["FrontLeft".into(), "TopRearRight".into()]);
+        assert!(engine.speaker_mutes.is_empty());
+        assert_eq!(engine.speaker_target("FrontLeft"), 1.0);
+        assert_eq!(engine.speaker_target("TopRearRight"), 1.0);
+        assert!((engine.speaker_target("FrontRight") - 10.0_f32.powf(-12.0 / 20.0)).abs() < 1e-6);
+        engine.set_speaker_monitor(vec!["FrontLeft".into()], Vec::new());
+        assert!(engine.focused_speakers.is_empty());
+        assert_eq!(engine.speaker_target("FrontLeft"), 0.0);
+        engine.set_speaker_monitor(Vec::new(), vec!["LFE".into()]);
+        assert_eq!(engine.speaker_target("LFE"), 1.0);
+        engine.layout = vbap::LayoutId::Stereo2_0;
+        assert_eq!(engine.speaker_target("FrontRight"), 1.0);
+        engine.focused_speakers.clear();
+        assert_eq!(engine.speaker_target("FrontRight"), 1.0);
+    }
+
+    #[test]
+    fn authored_bed_motion_preserves_channel_mix_in_both_object_modes() {
+        let count = 16_384;
+        let partition = convolution::DEFAULT_PARTITION;
+        let delay = 2 * partition + 240; // Speaker block, headphone block, 5 ms peak guard.
+        for layout in [
+            vbap::LayoutId::Stereo2_0, vbap::LayoutId::Stereo2_1,
+            vbap::LayoutId::Dolby5_1, vbap::LayoutId::Dolby5_1_2,
+            vbap::LayoutId::Dolby5_1_4, vbap::LayoutId::Dolby7_1_2,
+            vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Dolby9_1_2,
+            vbap::LayoutId::Dolby9_1_4, vbap::LayoutId::Dolby9_1_6,
+        ] {
+            let speakers = vbap::speakers(layout);
+            // A closed tour exercises every bed channel as both the departing
+            // and arriving signal, including wides and each overhead channel.
+            for index in 0..speakers.len() {
+                let start_label = speakers[index].name;
+                let target_label = speakers[(index + 1) % speakers.len()].name;
+                let mut engine = calibrated_engine();
+                engine.set_layout(layout).unwrap();
+                let channels: [Vec<f32>; 2] = std::array::from_fn(|channel| {
+                    (0..count).map(|i| {
+                        if i >= 8192 { return 0.0; }
+                        let phase = ((i as f32 - 2048.0) / 4096.0).clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2;
+                        let gain = if channel == 0 { phase.cos() } else { phase.sin() };
+                        0.002 * ((i * 37 % 97) as f32 - 48.0) / 48.0 * gain
+                    }).collect()
+                });
+                let target_speakers = vec![target_label];
+                let mut expected = vec![0.0_f32; count * 2];
+                // Reference mixes the authored channel PCM through individual
+                // speaker filters; it does not use bed_route or the engine mixer.
+                for (channel, speakers) in [vec![start_label], target_speakers].iter().enumerate() {
+                    let weight = 1.0 / (speakers.len() as f32).sqrt();
+                    for name in speakers {
+                        let bus = engine.vbap.speaker_index(name).unwrap();
+                        let (az, el) = engine.vbap.speaker_direction(bus);
+                        let (_, _, left, right) = engine.active_hrtf_set.as_ref().unwrap()
+                            .mixed_nearest(az as f64, el as f64, 0.04).unwrap();
+                        let mut filter = convolution::StereoPartitionedConvolver::new(&left, &right, partition).unwrap();
+                        for (block, input) in channels[channel].chunks_exact(partition).enumerate() {
+                            let mut left = vec![0.0; partition];
+                            let mut right = vec![0.0; partition];
+                            filter.process_block(input, &mut left, &mut right).unwrap();
+                            for i in 0..partition {
+                                let at = block * partition + i + delay;
+                                if at < count {
+                                    expected[at * 2] += left[i] * weight * 10.0_f32.powf(6.0 / 20.0);
+                                    expected[at * 2 + 1] += right[i] * weight * 10.0_f32.powf(6.0 / 20.0);
+                                }
+                            }
+                        }
+                    }
+                }
+                for direct in [false, true] {
+                    engine.reset_session(0);
+                    engine.paused = false;
+                    engine.output_active = true;
+                    engine.direct_objects = direct;
+                    for (channel, label) in [start_label, target_label].iter().enumerate() {
+                        let mut source = Source { kind: SourceKind::Bed, bed_label: Some((*label).into()),
+                            gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                            ..Source::default() };
+                        source.samples.write(0, 0, &channels[channel]);
+                        Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0);
+                        engine.sources.insert(format!("bed:{channel}"), source);
+                    }
+                    let mut actual = vec![0.0; count * 2];
+                    engine.render_into(&mut actual, 2);
+                    let error = actual.iter().zip(&expected).map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                    assert!(expected.iter().any(|v| v.abs() > 1e-5));
+                    assert!(actual.iter().all(|v| v.is_finite()));
+                    assert!(error < 2e-6, "layout={layout:?}, target={target_label}, direct={direct}, error={error}");
+                    assert!(engine.sources.values().all(|source| source.direct.is_none()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn middle_height_bed_stays_in_the_height_layer_when_layout_has_four_tops() {
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        for (label, names) in [("Ltm", ["TopFrontLeft", "TopRearLeft"]), ("Rtm", ["TopFrontRight", "TopRearRight"])] {
+            let route = bed_route(label, &solver);
+            for bus in 0..solver.bus_count() {
+                let expected = if names.iter().any(|name| solver.speaker_index(name) == Some(bus)) {
+                    std::f32::consts::FRAC_1_SQRT_2
+                } else { 0.0 };
+                assert!((route.buses[bus] - expected).abs() < 1e-6,
+                    "{label} bus {bus}: expected {expected}, got {}", route.buses[bus]);
+            }
+            assert_eq!(route.lfe, 0.0);
+        }
     }
 
     #[test]

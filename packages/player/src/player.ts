@@ -131,6 +131,7 @@ export interface NativeRendererSink {
   removeSource(id: string, atSample: number): void | Promise<void>;
   setMuted(id: string, muted: boolean, atSample?: number): void | Promise<void>;
   setLfeMuted(muted: boolean): void | Promise<void>;
+  setSpeakerMutes?(names: string[], focus?: string[]): void | Promise<void>;
   setVolume(volume: number): void | Promise<void>;
   setProgramEnabled(enabled: boolean): void | Promise<void>;
   setProgramGainDb(gainDb: number | null, atSample?: number): void | Promise<void>;
@@ -270,6 +271,10 @@ export class SdaPlayer {
   private decodedFormatKey = "";
   private trackReported = false;
   private knownBedLabels: string[] = [];
+  private mutedBedLabels = new Set<string>();
+  private soloBedLabels = new Set<string>();
+  private mutedSpeakers = new Set<string>();
+  private focusedSpeakers = new Set<string>();
   private acceptedEndSample = 0;
   private startupOrigin: number | null = null;
   private startupAcceptedEnd = 0;
@@ -417,6 +422,7 @@ export class SdaPlayer {
         // A replacement native session starts with its LFE group unmuted. Replay
         // the player's retained state before decoded source declarations arrive.
         this.setLfeMuted(this.lfeMuted);
+        this.syncSpeakerMutes(this.mutedSpeakers, this.focusedSpeakers);
         this.setVolume(this.lastVolume);
         this.setVolumeBalance(this.volumeBalanceEnabled);
         this.setNativeProgramGainDb(this.programLoudnessGainDb);
@@ -697,6 +703,41 @@ export class SdaPlayer {
       } catch (error) {
         console.warn(`[SDA] player#${this.id} native object mute sync failed:`, error);
       }
+    }
+  }
+
+  syncSpeakerMutes(names: ReadonlySet<string>, focus: ReadonlySet<string> = new Set()): void {
+    this.mutedSpeakers = focus.size > 0 ? new Set() : new Set(names);
+    this.focusedSpeakers = new Set(focus);
+    if (!this.nativeRendererSink?.setSpeakerMutes) {
+      if (names.size > 0 || focus.size > 0) this.cb.onError?.("当前输出后端不支持音箱监听控制");
+      return;
+    }
+    try {
+      const result = this.nativeRendererSink?.setSpeakerMutes?.([...this.mutedSpeakers], [...this.focusedSpeakers]);
+      if (result instanceof Promise) void result.catch(error => this.cb.onError?.(`音箱静音同步失败：${error}`));
+    } catch (error) { this.cb.onError?.(`音箱静音同步失败：${error}`); }
+  }
+
+  syncBedMix(muted: ReadonlySet<string>, solo: ReadonlySet<string>): void {
+    this.mutedBedLabels = new Set(muted);
+    this.soloBedLabels = new Set(solo);
+    this.knownBedLabels.forEach((label, channel) => {
+      if (!label.startsWith("Obj_")) this.applyBedMute(`bed:${channel}`, label);
+    });
+  }
+
+  private applyBedMute(id: string, label: string, atSample?: number): void {
+    const muted = this.mutedBedLabels.has(label)
+      || (this.soloBedLabels.size > 0 && !this.soloBedLabels.has(label));
+    this.renderer?.setSourceMuted(id, muted);
+    try {
+      const result = this.nativeRendererSink?.setMuted(id, muted, atSample);
+      if (result instanceof Promise) void result.catch((error) => {
+        console.warn(`[SDA] native bed mute failed:`, error);
+      });
+    } catch (error) {
+      console.warn(`[SDA] native bed mute failed:`, error);
     }
   }
 
@@ -1772,6 +1813,7 @@ export class SdaPlayer {
             } catch (error) {
               console.warn(`[SDA] player#${this.id} native renderer bed rebind mirror failed:`, error);
             }
+            this.applyBedMute(id, label, frame.samplePos);
           }
         });
       }

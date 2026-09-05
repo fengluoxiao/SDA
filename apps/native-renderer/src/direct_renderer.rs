@@ -1,14 +1,59 @@
 //! Per-object convolution; shares measured assets with the speaker renderer.
-use crate::{convolution::{StereoPartitionedConvolver, DEFAULT_PARTITION}, hrtf::NativeHrtfSet, spatial};
+use crate::{convolution::{StereoPartitionedConvolver, DEFAULT_PARTITION}, hrtf::NativeHrtfSet, vbap};
 
 pub(super) struct DirectSource {
     convolver: StereoPartitionedConvolver,
-    direction: Vec<(f64, f64)>,
-    spread: f32,
-    pose: Option<([f32; 3], Option<[f32; 4]>, f32)>,
+    route: Option<(vbap::LayoutId, [f32; vbap::MAX_BUS_COUNT], u32)>,
     pub input: [f32; DEFAULT_PARTITION],
     pub left: [f32; DEFAULT_PARTITION],
     pub right: [f32; DEFAULT_PARTITION],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus_renderer;
+
+    #[test]
+    fn independent_object_matches_speaker_sum_and_changes_with_layout() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let mut direct = DirectSource::new(&set, 0.04).unwrap();
+        let mut outputs = Vec::new();
+        for layout in [vbap::LayoutId::Dolby5_1_2, vbap::LayoutId::Dolby9_1_6] {
+            let solver = vbap::VbapSolver::with_layout(layout);
+            let position = [0.7, -0.4, 0.8];
+            let gains = bus_renderer::route(&solver, position, None, 0.3);
+            let mut buses = bus_renderer::BusRenderer::new(&set, &solver, 0.04).unwrap();
+            direct.update(&mut set, &solver, 0.04, gains).unwrap();
+            // Drain history and finish any layout-transition crossfade.
+            for _ in 0..80 { direct.finish_block(); }
+            let mut output = Vec::new();
+            for block in 0..32 {
+                buses.begin_block();
+                for sample in 0..DEFAULT_PARTITION {
+                    let x = if block == 0 && sample == 0 { 0.1 } else { 0.0 };
+                    direct.input[sample] = x;
+                    buses.add(x, &gains, sample);
+                }
+                direct.finish_block();
+                buses.finish_block().unwrap();
+                for sample in 0..DEFAULT_PARTITION {
+                    let expected = buses.output_at(sample);
+                    let actual = [direct.left[sample], direct.right[sample]];
+                    for ear in 0..2 {
+                        assert!((actual[ear] - expected[ear]).abs() < 1e-6,
+                            "layout {layout:?} sample {sample} ear {ear}");
+                    }
+                    output.extend(actual);
+                }
+            }
+            outputs.push(output);
+        }
+        let difference: f32 = outputs[0].iter().zip(&outputs[1]).map(|(a,b)| (a-b).abs()).sum();
+        assert!(difference > 1e-4, "layout selection must change independent-object audio");
+    }
 }
 
 impl DirectSource {
@@ -16,29 +61,45 @@ impl DirectSource {
         let (_, _, left, right) = set.mixed_nearest(0.0, 0.0, wet)?;
         Ok(Self {
             convolver: StereoPartitionedConvolver::new(&left, &right, DEFAULT_PARTITION)?,
-            direction: Vec::new(), spread: -1.0, pose: None,
+            route: None,
             input: [0.0; DEFAULT_PARTITION], left: [0.0; DEFAULT_PARTITION], right: [0.0; DEFAULT_PARTITION],
         })
     }
 
-    pub fn update(&mut self, set: &mut NativeHrtfSet, wet: f32, position: [f32; 3], head: Option<[f32; 4]>, spread: f32) -> Result<(), String> {
-        let pose = (position, head, spread);
-        if self.pose == Some(pose) { return Ok(()); }
-        let angle = spatial::adm_to_spherical(spatial::head_relative_adm(position, head));
-        let directions = set.nearest_directions(angle.azimuth as f64, angle.elevation as f64, if spread > 0.0 { 3 } else { 1 })?;
-        if directions != self.direction || spread != self.spread {
-            let mut filter = set.prepared_direction(directions[0].0, directions[0].1, wet)?;
-            // Local spread blends measured filters with unity total weight.
-            if directions.len() == 3 {
-                let mut sides = set.prepared_direction(directions[1].0, directions[1].1, wet)?;
-                sides.blend(&set.prepared_direction(directions[2].0, directions[2].1, wet)?, 0.5);
-                filter.blend(&sides, spread.clamp(0.0, 1.0) * (2.0 / 3.0));
+    pub fn update(&mut self, set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32, gains: [f32; vbap::MAX_BUS_COUNT]) -> Result<(), String> {
+        let route = (solver.layout(), gains, wet.to_bits());
+        if self.route == Some(route) { return Ok(()); }
+        let mut combined = None;
+        let mut total = 0.0;
+        // Sum speaker filters with the actual VBAP amplitudes, preserving the
+        // room layout while retaining this object's own convolution history.
+        for (bus, &gain) in gains.iter().take(solver.bus_count()).enumerate() {
+            if gain <= 0.0 { continue; }
+            let (azimuth, elevation) = solver.speaker_direction(bus);
+            let filter = set.prepared_direction(azimuth as f64, elevation as f64, wet)?;
+            total += gain;
+            if let Some(current) = &mut combined {
+                crate::convolution::PreparedStereoFilter::blend(current, &filter, gain / total);
+            } else {
+                combined = Some(filter);
             }
-            self.convolver.transition_to(filter, 1536);
-            self.direction = directions;
-            self.spread = spread;
         }
-        self.pose = Some(pose);
+        let mut filter = match combined {
+            Some(filter) => filter,
+            None => {
+                let (azimuth, elevation) = solver.speaker_direction(0);
+                set.prepared_direction(azimuth as f64, elevation as f64, wet)?
+            }
+        };
+        filter.scale(total);
+        if self.route.is_none() {
+            self.convolver.set_prepared_filter(filter);
+        } else {
+            // The engine already interpolates codec-timed routes. Only bridge
+            // adjacent render blocks here; do not impose another 32 ms motion.
+            self.convolver.transition_to(filter, DEFAULT_PARTITION);
+        }
+        self.route = Some(route);
         Ok(())
     }
 

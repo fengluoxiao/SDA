@@ -509,6 +509,9 @@ aside {
 .float-buttons {
   display: flex;
   flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100vw - 28px);
   gap: 8px;
   order: -1;
 }
@@ -864,6 +867,7 @@ aside {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow-wrap: anywhere;
   line-height: 1.35;
 }
 
@@ -881,9 +885,31 @@ aside {
 }
 
 /* 对象级 mute/solo 按钮 */
+.speaker-pair-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.speaker-pair-controls strong,
+.speaker-channel-label strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.speaker-pair-controls small,
+.speaker-channel-label small {
+  font-size: 11px;
+  color: var(--subtle);
+}
+
 .obj-ms {
   margin-left: auto;
   display: inline-flex;
+  flex-shrink: 0;
   gap: 4px;
 }
 
@@ -903,7 +929,12 @@ aside {
   transition: filter 0.15s ease;
 }
 
-.obj-ms-btn:hover {
+.obj-ms-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.obj-ms-btn:hover:not(:disabled) {
   filter: brightness(1.4);
 }
 
@@ -1335,6 +1366,9 @@ aside {
 .flat-speaker {
   width: 8px;
   height: 8px;
+  padding: 0;
+  border: 0;
+  cursor: pointer;
   background: var(--subtle);
   box-shadow: 0 0 0 3px rgba(130, 155, 205, 0.16);
 }
@@ -1418,6 +1452,17 @@ aside {
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
+}
+
+.speaker-tooltip {
+  display: block;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .pinna-option {

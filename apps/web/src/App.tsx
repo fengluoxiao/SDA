@@ -19,6 +19,7 @@ import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
+import { speakerLabel, speakerPosition, WIDE_SPEAKERS } from "./speaker-labels";
 import {
   quaternionAngularVelocity,
   quaternionEulerAngles,
@@ -286,6 +287,46 @@ export function App() {
    *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
   const [mutedIds, setMutedIds] = useState<ReadonlySet<number>>(new Set());
   const [soloIds, setSoloIds] = useState<ReadonlySet<number>>(new Set());
+  const [mutedSpeakerNames, setMutedSpeakerNames] = useState<ReadonlySet<string>>(new Set());
+  const [soloSpeakerNames, setSoloSpeakerNames] = useState<ReadonlySet<string>>(new Set());
+  const [focusedSpeakers, setFocusedSpeakers] = useState<ReadonlySet<string>>(new Set());
+  const speakerControlLayout = LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId];
+  const speakerMixLocked = speakerControlLayout.some(speaker => focusedSpeakers.has(speaker.name));
+  const speakerFocusLocked = speakerControlLayout.some(speaker => mutedSpeakerNames.has(speaker.name) || soloSpeakerNames.has(speaker.name));
+  useEffect(() => {
+    // Prune unavailable speakers when the layout changes; keep the others selected.
+    setFocusedSpeakers(current => {
+      const next = new Set([...current].filter(name => !speakerFocusLocked && speakerControlLayout.some(speaker => speaker.name === name)));
+      return next.size === current.size ? current : next;
+    });
+  }, [speakerControlLayout, speakerFocusLocked]);
+  const toggleSpeakerFocus = useCallback((name: string) => {
+    if (speakerFocusLocked) return;
+    setFocusedSpeakers(current => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }, [speakerFocusLocked]);
+  const toggleSpeakerMuteGroup = useCallback((names: readonly string[]) => {
+    if (speakerMixLocked) return;
+    setMutedSpeakerNames(current => {
+      const next = new Set(current);
+      const remove = names.every(name => current.has(name));
+      for (const name of names) { if (remove) next.delete(name); else next.add(name); }
+      return next;
+    });
+  }, [speakerMixLocked]);
+  const toggleSpeakerSoloGroup = useCallback((names: readonly string[], clear = false) => {
+    if (speakerMixLocked) return;
+    setSoloSpeakerNames(current => {
+      if (clear) return new Set();
+      const next = new Set(current);
+      const remove = names.every(name => current.has(name));
+      for (const name of names) { if (remove) next.delete(name); else next.add(name); }
+      return next;
+    });
+  }, [speakerMixLocked]);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [debug, setDebug] = useState("");
@@ -335,7 +376,7 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession());
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -471,6 +512,11 @@ export function App() {
             setLfeMuted: async (muted) => {
               if (!ownsNativeSession()) return;
               await enqueueNative(`setLfeMuted=${muted}`, () => desktop.nativeRendererLfeMuted?.(muted));
+            },
+            setSpeakerMutes: async (names, focus) => {
+              if (!ownsNativeSession()) return;
+              if (!desktop.nativeRendererSpeakerMutes) throw new Error("请重启 Electron 以加载音箱控制接口");
+              await enqueueNative("setSpeakerMutes", () => desktop.nativeRendererSpeakerMutes!(names, focus));
             },
             setVolume: async (volume) => {
               if (!ownsNativeSession()) return;
@@ -980,11 +1026,15 @@ export function App() {
     return next;
   }, [soloIds, mutedIds, objects]);
 
-  /** 动态对象全部静音时，独立的 LFE 床声道也必须一起静音。 */
-  const allObjectsMuted = objects.length > 0 && objects.every((object) => effectiveMutedIds.has(object.id));
+  const outputSpeakers = LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId];
+  const activeSpeakerSolo = outputSpeakers.some(speaker => soloSpeakerNames.has(speaker.name));
+  const activeSpeakerFocus = useMemo(() => new Set([...focusedSpeakers].filter(name => outputSpeakers.some(speaker => speaker.name === name))), [focusedSpeakers, outputSpeakers]);
+  const effectiveSpeakerMutes = useMemo(() => new Set(outputSpeakers
+    .filter(speaker => mutedSpeakerNames.has(speaker.name) || (activeSpeakerSolo && !soloSpeakerNames.has(speaker.name)))
+    .map(speaker => speaker.name)), [outputSpeakers, mutedSpeakerNames, soloSpeakerNames, activeSpeakerSolo]);
   useEffect(() => {
-    playerReady?.setLfeMuted(allObjectsMuted);
-  }, [playerReady, allObjectsMuted]);
+    playerReady?.syncSpeakerMutes(effectiveSpeakerMutes, activeSpeakerFocus);
+  }, [playerReady, effectiveSpeakerMutes, activeSpeakerFocus]);
 
   // React state and worker frames are asynchronous. Keep the player's durable
   // mute set synchronized whenever either the active player or the UI set changes.
@@ -1603,7 +1653,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} />
+          <ObjectView objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
@@ -1763,6 +1813,39 @@ export function App() {
             )}
           </div>
         )}
+        {floatPanel === "channels" && (
+          <div className="panel obj-panel float-panel" aria-label="输出音箱声道">
+            <div className="obj-head">
+              <h2>声道 <span className="obj-count">{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} · {outputSpeakers.length}</span></h2>
+              {activeSpeakerFocus.size > 0 && <button className="obj-clear-solo" onClick={() => setFocusedSpeakers(new Set())}>取消聚焦 ×{activeSpeakerFocus.size}</button>}
+              {soloSpeakerNames.size > 0 && <button className="obj-clear-solo" disabled={speakerMixLocked} onClick={() => toggleSpeakerSoloGroup([], true)}>取消独奏 ×{soloSpeakerNames.size}</button>}
+            </div>
+            {outputSpeakers.some(speaker => speaker.name === "WideLeft") && <div className="speaker-pair-controls">
+              <span className="obj-info"><strong>前宽声道 Lw / Rw</strong><small>9.1 新增 · 左右 60°</small></span>
+              <span className="obj-ms">
+                <button disabled={speakerMixLocked} className={`obj-ms-btn${WIDE_SPEAKERS.every(name => mutedSpeakerNames.has(name)) ? " m-on" : ""}`} aria-label="前宽声道 静音" aria-pressed={WIDE_SPEAKERS.every(name => mutedSpeakerNames.has(name))} title={speakerMixLocked ? "请先取消音箱聚焦" : "同时切换左前宽与右前宽静音"} onClick={() => toggleSpeakerMuteGroup(WIDE_SPEAKERS)}>M</button>
+                <button disabled={speakerMixLocked} className={`obj-ms-btn${WIDE_SPEAKERS.every(name => soloSpeakerNames.has(name)) ? " s-on" : ""}`} aria-label="前宽声道 独奏" aria-pressed={WIDE_SPEAKERS.every(name => soloSpeakerNames.has(name))} title={speakerMixLocked ? "请先取消音箱聚焦" : "同时切换左前宽与右前宽独奏"} onClick={event => toggleSpeakerSoloGroup(WIDE_SPEAKERS, event.ctrlKey || event.metaKey)}>S</button>
+              </span>
+            </div>}
+            <ul className="objects">
+              {outputSpeakers.map(speaker => {
+                const label = speaker.name;
+                const muted = mutedSpeakerNames.has(label);
+                const soloed = soloSpeakerNames.has(label);
+                const silenced = muted || (activeSpeakerSolo && !soloed);
+                return <li key={label} className={`obj-row${soloed ? " obj-solo" : ""}${silenced ? " obj-muted" : ""}`}>
+                  <span className="obj-info speaker-channel-label" title={label}><strong>{speakerLabel(label)}</strong><small>{speakerPosition(speaker)}</small></span>
+                  <span className="obj-ms">
+                    <button disabled={speakerMixLocked} className={`obj-ms-btn${muted ? " m-on" : ""}`} aria-label={`${label} 静音`} aria-pressed={muted} title={speakerMixLocked ? "请先取消音箱聚焦" : `${muted ? "取消静音" : "静音"} ${speakerLabel(label)}`} onClick={() => toggleSpeakerMuteGroup([label])}>M</button>
+                    <button disabled={speakerMixLocked} className={`obj-ms-btn${soloed ? " s-on" : ""}`} aria-label={`${label} 独奏`} aria-pressed={soloed} title={speakerMixLocked ? "请先取消音箱聚焦" : "独奏此声道（Ctrl/Cmd+点击取消全部独奏）"} onClick={(event) => {
+                      toggleSpeakerSoloGroup([label], event.ctrlKey || event.metaKey);
+                    }}>S</button>
+                  </span>
+                </li>;
+              })}
+            </ul>
+          </div>
+        )}
         {floatPanel === "objects" && (
           <ObjectPanel
             className="float-panel"
@@ -1812,6 +1895,12 @@ export function App() {
             title={`对象 (${diagnosticObjects.length})`}
             onClick={() => setFloatPanel(floatPanel === "objects" ? null : "objects")}
           >对象</button>
+          <button
+            className={floatPanel === "channels" ? "active" : ""}
+            title="声道静音与独奏"
+            aria-expanded={floatPanel === "channels"}
+            onClick={() => setFloatPanel(floatPanel === "channels" ? null : "channels")}
+          >声道</button>
           {mode === "binaural" && (
             <button
               className={floatPanel === "pinna" ? "active" : ""}

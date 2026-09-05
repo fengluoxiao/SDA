@@ -1,6 +1,7 @@
 import { Component, lazy, memo, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
+import { speakerLabel } from "../speaker-labels";
 
 export type { VisualObject };
 export type Theme = "dark" | "light";
@@ -45,12 +46,18 @@ function FlatObjectView({
   theme,
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme: Theme;
   mutedIds?: ReadonlySet<number>;
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
 }) {
   const background = theme === "light" ? "#e9edf4" : "#0c101c";
   return (
@@ -59,14 +66,18 @@ function FlatObjectView({
         <div className="flat-room-grid" />
         <div className="flat-front-wall">前方</div>
         <div className="flat-listener" title="听者">●</div>
-        {layout.filter((s) => !s.isLfe).map((speaker) => {
+        {layout.filter((s) => !s.isLfe && !hiddenSpeakerNames?.has(s.name)).map((speaker) => {
           const [x, , z] = sphericalToWebAudio(speaker);
           return (
-            <span
+            <button
               className="flat-speaker"
               key={speaker.name}
-              title={speaker.name}
-              style={{ left: `${clampPercent(x)}%`, top: `${clampPercent(-z)}%` }}
+              title={speakerLabel(speaker.name)}
+              aria-label={`聚焦 ${speaker.name}`}
+              aria-pressed={focusedSpeakers?.has(speaker.name) ?? false}
+              disabled={!onSpeakerFocus}
+              onClick={() => onSpeakerFocus?.(speaker.name)}
+              style={{ left: `${clampPercent(x)}%`, top: `${clampPercent(-z)}%`, opacity: focusedSpeakers?.size && !focusedSpeakers.has(speaker.name) ? 0.22 : 1 }}
             />
           );
         })}
@@ -100,23 +111,29 @@ export const ObjectView = memo(function ObjectView({
   theme = "dark",
   mutedIds,
   soundingIds,
+  focusedSpeakers,
+  onSpeakerFocus,
+  hiddenSpeakerNames,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
   mutedIds?: ReadonlySet<number>;
   soundingIds?: ReadonlySet<number>;
+  focusedSpeakers?: ReadonlySet<string>;
+  onSpeakerFocus?: (name: string) => void;
+  hiddenSpeakerNames?: ReadonlySet<string>;
 }) {
   const desktop = window.sdaDesktop;
   if (desktop && desktop.electron3D !== true) {
-    return <FlatObjectView objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />;
+    return <FlatObjectView objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />;
   }
 
   const rendererMode = desktop?.rendererMode ?? "browser";
   return (
     <WebglErrorBoundary mode={rendererMode}>
       <Suspense fallback={<div className="flat-view" aria-label="正在加载三维视图">正在加载三维视图…</div>}>
-        <ObjectView3D objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} />
+        <ObjectView3D objects={objects} layout={layout} theme={theme} mutedIds={mutedIds} soundingIds={soundingIds} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
       </Suspense>
     </WebglErrorBoundary>
   );
@@ -124,4 +141,7 @@ export const ObjectView = memo(function ObjectView({
   && previous.layout === next.layout
   && previous.theme === next.theme
   && previous.mutedIds === next.mutedIds
-  && previous.soundingIds === next.soundingIds);
+  && previous.soundingIds === next.soundingIds
+  && previous.focusedSpeakers === next.focusedSpeakers
+  && previous.onSpeakerFocus === next.onSpeakerFocus
+  && previous.hiddenSpeakerNames === next.hiddenSpeakerNames);

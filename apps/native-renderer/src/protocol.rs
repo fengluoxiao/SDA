@@ -106,7 +106,6 @@ fn handle_command(
                         apply_object_event(source, state.sample_pos, event);
                     }
                     if applies_now {
-                        let _ = state.route_source_now(&id, ramp);
                         if elapsed > 0 {
                             let source = state.sources.get_mut(&id).expect("source still exists");
                             Engine::advance_source_envelopes(
@@ -114,6 +113,7 @@ fn handle_command(
                                 elapsed.min(u32::MAX as u64) as u32,
                             );
                         }
+                        let _ = state.route_source_now(&id, ramp.min(convolution::DEFAULT_PARTITION as u32));
                     }
                 } else {
                     // Decoders can emit OAMD before the matching PCM declaration.
@@ -379,6 +379,15 @@ fn handle_command(
                 });
             }
         }
+        Command::SetSpeakerMutes { names, focus } => {
+            let focus = match focus {
+                Some(super::SpeakerFocus::Single(name)) => vec![name],
+                Some(super::SpeakerFocus::Multiple(names)) => names,
+                None => Vec::new(),
+            };
+            state.set_speaker_monitor(names, focus);
+            write_event(&Event::Ack { command: "setSpeakerMutes", accepted: true, detail: None });
+        }
         Command::SetLfeMuted { muted } => {
             state.lfe_muted = muted;
             // LFE is a direct path; clear its delayed/filter state so mute takes
@@ -598,8 +607,7 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
         if event.sample_pos > sample_pos {
             source.spatial_events.insert(event.sample_pos, spatial);
         } else {
-            source.position = spatial.position;
-            source.spread = spatial.spread;
+            Engine::start_source_motion(source, spatial);
         }
     }
     if event.gain_db.is_finite() {
@@ -979,6 +987,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetGain { .. } => "setGain",
         Command::SetMuted { .. } => "setMuted",
         Command::SetLfeMuted { .. } => "setLfeMuted",
+        Command::SetSpeakerMutes { .. } => "setSpeakerMutes",
         Command::SetVolume { .. } => "setVolume",
         Command::SetProgramEnabled { .. } => "setProgramEnabled",
         Command::SetProgramGain { .. } => "setProgramGain",
