@@ -437,3 +437,10 @@ means spatial bypass, not bit-perfect output. No per-mode loudness normalization
 is added: identical output settings need not produce identical perceived volume.
 These modes are diagnostic comparisons, not a reproduction of Apple's private
 Spatialize Stereo algorithm.
+
+## Backend portability
+
+See the [cross-platform backend investigation](backend-portability-research.md)
+for the current Rust/TypeScript boundary, macOS/Linux/iOS/Android migration
+paths, audio-clock and memory constraints, official references, and acceptance
+criteria. This is a feasibility report, not a claim of completed platform support.
