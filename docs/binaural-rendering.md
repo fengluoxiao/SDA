@@ -440,6 +440,10 @@ Spatialize Stereo algorithm.
 
 ## Backend portability
 
+For the current many-to-many audio graph and the interaction between HRTF,
+room profiles, cinema controls, and independent objects, see the
+[rendering signal-flow diagrams](rendering-signal-flow.md).
+
 See the [cross-platform backend investigation](backend-portability-research.md)
 for the current Rust/TypeScript boundary, macOS/Linux/iOS/Android migration
 paths, audio-clock and memory constraints, official references, and acceptance
