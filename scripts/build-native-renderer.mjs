@@ -29,7 +29,7 @@ await copyFile(source, target);
 const hrtfDestination = join(destination, "hrtf-assets");
 await rm(hrtfDestination, { recursive: true, force: true });
 await mkdir(hrtfDestination, { recursive: true });
-for (const set of ["hrtf", "hrtf-dense", "hrtf-d2", ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`)]) {
+for (const set of ["hrtf", "hrtf-dense", "hrtf-raw", "hrtf-dense-raw", "hrtf-d2", ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`)]) {
   await cp(join(root, "apps", "web", "public", set), join(hrtfDestination, set), { recursive: true });
 }
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets)`);

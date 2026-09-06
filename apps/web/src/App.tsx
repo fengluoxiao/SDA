@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type NativeRendererSourceDeclaration, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
@@ -19,6 +19,10 @@ import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
+import CinemaPanel from "./components/CinemaPanel";
+import RoomLab, {type ComparisonMode,type LayoutMemory,type RoomVisual,type RoomAudition} from "./components/RoomLab";
+const RoomRayView = lazy(()=>import("./components/RoomRayView"));
+import type {CinemaSettings} from "./vite-env";
 import { speakerLabel, speakerPosition, WIDE_SPEAKERS } from "./speaker-labels";
 import {
   quaternionAngularVelocity,
@@ -143,11 +147,20 @@ function readBinauralHead(): BinauralHead {
   }
 }
 /** 每个完整测量 subject 直接选择自己的 HRTF 集；禁止加载旧的 KU100+耳廓 hybrid。 */
-function binauralHeadBaseUrl(head: BinauralHead): string {
-  return assetUrl(head === "ku100" ? "hrtf" : `hrtf-${head}`);
+const KU100_CALIBRATION_KEY = "sda-ku100-calibration";
+function readKu100Calibration(): boolean {
+  try { return localStorage.getItem(KU100_CALIBRATION_KEY) !== "0"; } catch { return true; }
 }
-function nativeHrtfSetName(head: BinauralHead, dense = readDenseBinauralObjects()): string {
-  return head === "ku100" ? (dense ? "hrtf-dense" : "hrtf") : `hrtf-${head}`;
+function binauralHeadBaseUrl(head: BinauralHead, calibrated = readKu100Calibration()): string {
+  return assetUrl(head === "ku100" ? (calibrated ? "hrtf" : "hrtf-raw") : `hrtf-${head}`);
+}
+function nativeHrtfSetName(head: BinauralHead, dense = readDenseBinauralObjects(), calibrated = readKu100Calibration()): string {
+  return head === "ku100" ? `${dense ? "hrtf-dense" : "hrtf"}${calibrated ? "" : "-raw"}` : `hrtf-${head}`;
+}
+type StereoRenderMode = "original" | "dry" | "room";
+function readStereoRenderMode(): StereoRenderMode {
+  const value = localStorage.getItem("sda-stereo-render-mode");
+  return value === "original" || value === "dry" ? value : "room";
 }
 
 /** 逐对象精确方向渲染（实验性）：对象按精确方位 VBAP 到密集球面，而不是吸附到
@@ -160,8 +173,8 @@ function readDenseBinauralObjects(): boolean {
     return false;
   }
 }
-function denseBinauralBaseUrl(): string {
-  return assetUrl("hrtf-dense");
+function denseBinauralBaseUrl(calibrated = readKu100Calibration()): string {
+  return assetUrl(calibrated ? "hrtf-dense" : "hrtf-dense-raw");
 }
 
 function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
@@ -271,6 +284,8 @@ export function App() {
    * setup is still awaiting. The newly created player reconciles this before
    * its decoder is allowed to submit PCM. */
   const layoutIdRef = useRef<LayoutId | "auto">("auto");
+  const immersiveLayoutRef = useRef<LayoutId | "auto">("auto");
+  const stereoLayoutRef = useRef<LayoutId>("2.0");
   /** 自动模式下首帧检测出的布局（用于界面回显 + 3D 视图）。 */
   const [detectedLayout, setDetectedLayout] = useState<LayoutId | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
@@ -353,6 +368,8 @@ export function App() {
   const [binauralLowFrequencyDiagnostic, setBinauralLowFrequencyDiagnostic] = useState<BinauralLowFrequencyDiagnostic>(readBinauralLowFrequencyDiagnostic);
   /** 完整人头/受试者 HRTF 档案。 */
   const [binauralHead, setBinauralHead] = useState<BinauralHead>(readBinauralHead);
+  const [ku100Calibration, setKu100Calibration] = useState(readKu100Calibration);
+  const [ku100CalibrationBusy, setKu100CalibrationBusy] = useState(false);
   /** 逐对象精确方向双耳渲染（实验性，仅完整 KU100 资产族）。 */
   const [denseBinauralObjects, setDenseBinauralObjects] = useState<boolean>(
     () => readBinauralHead() === "ku100" && readDenseBinauralObjects(),
@@ -360,6 +377,8 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
   const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
+  const [stereoRenderMode, setStereoRenderMode] = useState(readStereoRenderMode);
+  const [stereoRenderBusy, setStereoRenderBusy] = useState(false);
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   /** Desktop playback is owned by the WASAPI native object renderer. */
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
@@ -376,7 +395,12 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession());
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
+  const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
+  const [roomAudition,setRoomAudition]=useState<RoomAudition>({stage:"full",matched:true});
+  const comparisonGain=useRef(0);
+  const comparisonRestore=useRef<{head:string;dense:boolean;calibrated:boolean;stereo:StereoRenderMode;cinema:{settings:CinemaSettings;profileId:string|null}}|null>(null);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -435,6 +459,14 @@ export function App() {
       if (!nativeStatus.running) await desktop.startNativeRenderer();
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.04);
+      if(desktop.nativeRendererComparisonGain && !await desktop.nativeRendererComparisonGain(comparisonGain.current))throw new Error("参考电平设置失败");
+      if (desktop.getCinemaSettings && desktop.nativeRendererCinema) {
+        const cinema = await desktop.getCinemaSettings();
+        if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw new Error("影院设置未被原生渲染器接受");
+      }
+      if (!await desktop.nativeRendererStereoMode?.(readStereoRenderMode())) {
+        throw new Error("请重启 Electron 以加载立体声对照接口");
+      }
       if (!await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
@@ -668,7 +700,36 @@ export function App() {
           }
         },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => {
-          if (isCurrent()) setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels });
+          if (!isCurrent()) return;
+          setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels });
+          const stereo = objectChannels === 0 && bedLabels.length === 2
+            && bedLabels.some(label => ["L", "Left", "FrontLeft"].includes(label))
+            && bedLabels.some(label => ["R", "Right", "FrontRight"].includes(label));
+          const current = layoutIdRef.current;
+          const stereoLayout = current === "2.0" || current === "2.1";
+          // Queue layout changes before this decoded frame's PCM is submitted.
+          if (stereo && !stereoLayout) {
+            immersiveLayoutRef.current = current;
+            const next = stereoLayoutRef.current;
+            layoutIdRef.current = next;
+            setLayoutId(next);
+            setDetectedLayout(null);
+            createdPlayer?.setLayout(LAYOUTS[next]);
+          } else if (!stereo && stereoLayout) {
+            stereoLayoutRef.current = current;
+            const next = immersiveLayoutRef.current;
+            layoutIdRef.current = next;
+            setLayoutId(next);
+            if (next === "auto") {
+              createdPlayer?.setAutoLayout();
+              const detected = detectLayoutId(bedLabels, objectChannels > 0);
+              setDetectedLayout(detected);
+              createdPlayer?.setLayout(LAYOUTS[detected], false);
+            } else {
+              setDetectedLayout(null);
+              createdPlayer?.setLayout(LAYOUTS[next]);
+            }
+          }
         },
         onBinauralMetadata: (metadata) => {
           if (isCurrent()) setBinauralMetadata(metadata);
@@ -749,7 +810,7 @@ export function App() {
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = (labels: readonly string[], hasDynamics: boolean) => {
         const id = detectLayoutId(labels, hasDynamics);
-        setDetectedLayout(id);
+        if (isCurrent()) setDetectedLayout(id);
         return LAYOUTS[id];
       };
       await player.init(
@@ -949,6 +1010,13 @@ export function App() {
         ? await desktop.stopNativeRenderer()
         : await desktop.startNativeRenderer();
       if (next.running) await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead), 0.04);
+      if (next.running && desktop.getCinemaSettings && desktop.nativeRendererCinema) {
+        const cinema = await desktop.getCinemaSettings();
+        if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw new Error("影院设置恢复失败");
+      }
+      if (next.running && !await desktop.nativeRendererStereoMode?.(readStereoRenderMode())) {
+        throw new Error("原生渲染器未接受立体声处理设置");
+      }
       if (next.running && !await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
@@ -977,6 +1045,21 @@ export function App() {
     } finally {
       setDirectObjectHrtfBusy(false);
     }
+  };
+  const changeStereoRenderMode = async (next: StereoRenderMode) => {
+    if (stereoRenderBusy) return;
+    setStereoRenderBusy(true);
+    try {
+      const desktop = window.sdaDesktop;
+      const status = await desktop?.getNativeRendererStatus?.();
+      if (status?.running && !await desktop?.nativeRendererStereoMode?.(next)) {
+        throw new Error("原生渲染器未接受立体声处理设置，请确认 Electron 已重启");
+      }
+      localStorage.setItem("sda-stereo-render-mode", next);
+      setStereoRenderMode(next);
+    } catch (error) {
+      setErrors(prev => [...prev, `立体声处理切换失败: ${String(error)}`]);
+    } finally { setStereoRenderBusy(false); }
   };
 
   const recenterHeadTracking = useCallback(async () => {
@@ -1284,6 +1367,8 @@ export function App() {
   }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
+    if (next === "2.0" || next === "2.1") stereoLayoutRef.current = next;
+    else immersiveLayoutRef.current = next;
     layoutIdRef.current = next;
     setLayoutId(next);
     if (next === "auto") {
@@ -1298,6 +1383,53 @@ export function App() {
     setVolume(v);
     playerRef.current?.setVolume(v);
   }, []);
+
+  const recallLayoutMemory=(memory:LayoutMemory)=>{
+    if(!memory||!(memory.layout in LAYOUTS))throw new Error("布局记忆无效");
+    if(stereoProgram&&memory.layout!=="2.0"&&memory.layout!=="2.1")throw new Error("当前为立体声节目，不能载入多声道布局");
+    const names=new Set(LAYOUTS[memory.layout as LayoutId].map(s=>s.name));
+    const read=(list:unknown)=>{if(!Array.isArray(list)||list.some(v=>typeof v!=="string"))throw new Error("声道记忆无效");return new Set(list.filter(v=>names.has(v)));};
+    const muted=read(memory.muted),solo=read(memory.solo),focus=read(memory.focus);
+    if(focus.size&&(muted.size||solo.size))throw new Error("布局记忆中的聚焦与静音/Solo 冲突");
+    changeLayout(memory.layout as LayoutId);setMutedSpeakerNames(muted);setSoloSpeakerNames(solo);setFocusedSpeakers(focus);
+  };
+  const restoreRoomComparison=async()=>{
+    const saved=comparisonRestore.current;if(!saved)return;
+    const api=window.sdaDesktop;
+    if(!(await api?.getNativeRendererStatus?.())?.running)await api?.startNativeRenderer?.();
+    if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(saved.head,saved.dense,saved.calibrated),.04)
+      ||!await api?.nativeRendererCinema?.(saved.cinema.settings,saved.cinema.profileId)
+      ||!await api?.nativeRendererStereoMode?.(saved.stereo)
+      ||!await api?.nativeRendererComparisonGain?.(0))throw new Error("对照设置恢复失败");
+    await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(saved.head,saved.calibrated));
+    await playerRef.current?.setDenseBinauralObjects(saved.dense,denseBinauralBaseUrl(saved.calibrated));
+    localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,saved.head);localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,saved.dense?"1":"0");
+    localStorage.setItem(KU100_CALIBRATION_KEY,saved.calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode",saved.stereo);
+    setBinauralHead(saved.head);setDenseBinauralObjects(saved.dense);setKu100Calibration(saved.calibrated);setStereoRenderMode(saved.stereo);
+    comparisonGain.current=0;comparisonRestore.current=null;setRoomComparison(null);
+    localStorage.removeItem("sda-room-comparison-backup");
+  };
+  const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full")=>{
+    const api=window.sdaDesktop;if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
+    if(!comparisonRestore.current)comparisonRestore.current={head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,stereo:stereoRenderMode,cinema:await api.getCinemaSettings()};
+    localStorage.setItem("sda-room-comparison-backup",JSON.stringify(comparisonRestore.current));
+    try{
+      if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
+      if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("对照布局设置失败");
+      const calibrated=next!=="raw";
+      if(!await api.nativeRendererHrtf?.(nativeHrtfSetName("ku100",false,calibrated),.04))throw new Error("HRTF 对照切换失败");
+      const settings:CinemaSettings={enabled:true,reflectionMode:stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
+      if(!await api.nativeRendererCinema?.(settings,next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",calibrated));await playerRef.current?.setDenseBinauralObjects(false,denseBinauralBaseUrl(calibrated));
+      localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,"ku100");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,"0");localStorage.setItem(KU100_CALIBRATION_KEY,calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode","room");
+      setBinauralHead("ku100");setDenseBinauralObjects(false);setKu100Calibration(calibrated);setStereoRenderMode("room");
+      comparisonGain.current=gainDb;setRoomComparison(next);
+    }catch(error){await restoreRoomComparison();throw error;}
+  };
+  useEffect(()=>{
+    const stored=localStorage.getItem("sda-room-comparison-backup");
+    if(stored){try{comparisonRestore.current=JSON.parse(stored);void restoreRoomComparison().catch(e=>setErrors(v=>[...v,`恢复对照前设置失败: ${String(e)}`]));}catch(e){setErrors(v=>[...v,String(e)]);}}
+  },[]);
 
   const changeVolumeBalance = useCallback((enabled: boolean) => {
     setVolumeBalanceEnabled(enabled);
@@ -1348,6 +1480,33 @@ export function App() {
   }, []);
 
   const [denseBinauralBusy, setDenseBinauralBusy] = useState(false);
+  const changeKu100Calibration = async (next: boolean) => {
+    if (binauralHead !== "ku100" || ku100CalibrationBusy || denseBinauralBusy) return;
+    setKu100CalibrationBusy(true);
+    const desktop = window.sdaDesktop;
+    const previous = ku100Calibration;
+    let nativeChanged = false;
+    try {
+      const status = await desktop?.getNativeRendererStatus?.();
+      if (status?.running) {
+        if (!await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,next),0.04)) {
+          throw new Error("原生渲染器未接受 KU100 校准切换");
+        }
+        nativeChanged = true;
+      }
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",next));
+      await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects,denseBinauralBaseUrl(next));
+      try { localStorage.setItem(KU100_CALIBRATION_KEY,next ? "1" : "0"); } catch {}
+      setKu100Calibration(next);
+    } catch (error) {
+      try {
+        if(nativeChanged) await desktop?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,previous),0.04);
+        await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",previous));
+        await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects,denseBinauralBaseUrl(previous));
+      } catch (restoreError) { setErrors(prev=>[...prev,`KU100 恢复失败: ${String(restoreError)}`]); }
+      setErrors(prev=>[...prev,`KU100 校准切换失败: ${String(error)}`]);
+    } finally { setKu100CalibrationBusy(false); }
+  };
   const changeDenseBinauralObjects = useCallback(async (on: boolean) => {
     if (denseBinauralBusy) return;
     const allowed = binauralHead === "ku100";
@@ -1382,17 +1541,9 @@ export function App() {
     && new Set(track.bedLabels).size === 2
     && track.bedLabels.some((label) => label === "L" || label === "FrontLeft")
     && track.bedLabels.some((label) => label === "R" || label === "FrontRight");
-
-  // A decoded fixed L/R programme has no meaningful immersive speaker layout.
-  // Lock it to 2.0 initially; users may then opt into 2.1, which retains the
-  // same binaural FL/FR room while keeping a discrete LFE direct path.
   useEffect(() => {
-    if (!stereoProgram || layoutId === "2.0" || layoutId === "2.1") return;
-    layoutIdRef.current = "2.0";
-    setLayoutId("2.0");
-    setDetectedLayout(null);
-    playerRef.current?.setLayout(LAYOUTS["2.0"]);
-  }, [stereoProgram, layoutId]);
+    if (!stereoProgram) setFloatPanel(current => current === "stereo" ? null : current);
+  }, [stereoProgram]);
 
   const replay = useCallback(() => {
     const source = lastSourceRef.current;
@@ -1495,7 +1646,7 @@ export function App() {
           >
             <option value="binaural">双耳 (耳机 HRTF)</option>
           </select>
-          <select value={layoutId} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
+          <select value={layoutId} disabled={roomComparison!==null} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
             {!stereoProgram && mode !== "stereo" && <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>}
             {(Object.keys(LAYOUTS) as LayoutId[])
               .filter((id) => (stereoProgram || mode === "stereo")
@@ -1672,7 +1823,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />
+          {roomVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
@@ -1690,6 +1841,9 @@ export function App() {
       </main>
 
       <div className="float-dock">
+        {floatPanel==="roomlab"&&<RoomLab layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
+          snapshot={{layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,muted:[...mutedSpeakerNames],solo:[...soloSpeakerNames],focus:[...focusedSpeakers]}}
+          onRecall={recallLayoutMemory} onCompare={applyRoomComparison} onRestore={restoreRoomComparison} onVisual={setRoomVisual} comparison={roomComparison} visualSpeaker={roomVisual?.speaker} audition={roomAudition} onAudition={setRoomAudition}/>}
         {floatPanel === "head-tracking" && headTrackingStatus?.running && (
           <HeadTrackingTelemetryPanel samples={headTrackingTelemetry} />
         )}
@@ -1782,6 +1936,12 @@ export function App() {
         {floatPanel === "pinna" && (
           <div className="panel float-panel">
             <h2>完整 HRTF 测量</h2>
+            {binauralHead === "ku100" && <label className="settings-switch" title="关闭后使用原始 SADIE II 测量样本，保留原始电平、延时、左右差异和房间响应。影院、耳机 EQ 与输出音量仍独立生效。">
+              <span>KU100 数据校准</span>
+              <input type="checkbox" role="switch" aria-label="KU100 数据校准" checked={ku100Calibration}
+                disabled={ku100CalibrationBusy||denseBinauralBusy||nativeRendererBusy||roomComparison!==null}
+                onChange={event=>void changeKu100Calibration(event.target.checked)}/>
+            </label>}
             <p className="settings-description">
               每个档案使用单一人头或受试者的完整 HRIR/BRIR（头部、耳道、耳廓与房间响应来自同一测量系统）。不再将 KU100 与另一套耳廓做频段拼接。播放中切换实时生效。
             </p>
@@ -1790,7 +1950,7 @@ export function App() {
                 <button
                   key={head.id}
                   className={`pinna-option ${binauralHead === head.id ? "active" : ""}`}
-                  disabled={denseBinauralBusy}
+                  disabled={denseBinauralBusy || ku100CalibrationBusy || roomComparison!==null}
                   onClick={() => changeBinauralHead(head.id)}
                 >
                   <b>{head.label}</b>
@@ -1806,7 +1966,7 @@ export function App() {
               <input
                 type="checkbox"
                 role="switch"
-                disabled={binauralHead !== "ku100" || denseBinauralBusy || nativeRendererBusy}
+                disabled={binauralHead !== "ku100" || denseBinauralBusy || ku100CalibrationBusy || nativeRendererBusy || roomComparison!==null}
                 checked={denseBinauralObjects}
                 onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
               />
@@ -1884,7 +2044,29 @@ export function App() {
             onToggleSolo={toggleSolo}
           />
         )}
+        {stereoProgram && floatPanel === "stereo" && (
+          <div className="panel float-panel" aria-label="立体声处理">
+            <h2>立体声</h2>
+            <div className="speaker-group-tabs" role="group" aria-label="立体声模式" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+              {([["original", "原始立体声"], ["dry", "干声 HRTF"], ["room", "房间 HRTF"]] as const).map(([value, label]) => (
+                <button key={value} aria-pressed={stereoRenderMode === value}
+                  disabled={stereoRenderBusy || nativeRendererBusy}
+                  onClick={() => void changeStereoRenderMode(value)}>{label}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {floatPanel === "cinema" && <CinemaPanel layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
         <div className="float-buttons">
+          {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}>返回声场</button>}
+          <button className={floatPanel==="roomlab"?"active":""} onClick={()=>setFloatPanel(floatPanel==="roomlab"?null:"roomlab")} title="房间实验室">房间</button>
+          <button disabled={roomComparison!==null} className={floatPanel === "cinema" ? "active" : ""} title="影院处理" aria-expanded={floatPanel === "cinema"}
+            onClick={() => setFloatPanel(floatPanel === "cinema" ? null : "cinema")}>影院</button>
+          {stereoProgram && <button
+            className={floatPanel === "stereo" ? "active" : ""}
+            title="立体声处理" aria-expanded={floatPanel === "stereo"}
+            onClick={() => setFloatPanel(floatPanel === "stereo" ? null : "stereo")}
+          >立体声</button>}
           {headTrackingStatus?.running && (
             <button
               className={`head-tracking-toggle ${floatPanel === "head-tracking" ? "active" : ""}`}

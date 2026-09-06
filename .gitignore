@@ -22,3 +22,6 @@ apps/head-tracking-driver/cert/
 .DS_Store
 Thumbs.db
 *.log
+
+# Machine-local room simulation runtime and measured source locations.
+apps/desktop/room-simulator/runtime.json

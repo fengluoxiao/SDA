@@ -27,11 +27,15 @@ impl PreparedStereoFilter {
     }
 
     pub fn blend(&mut self, other: &Self, weight: f32) {
-        for (value, target) in self.filters_left.iter_mut().flatten().zip(other.filters_left.iter().flatten()) {
-            *value += (*target - *value) * weight;
-        }
-        for (value, target) in self.filters_right.iter_mut().flatten().zip(other.filters_right.iter().flatten()) {
-            *value += (*target - *value) * weight;
+        for (current, target) in [(&mut self.filters_left, &other.filters_left), (&mut self.filters_right, &other.filters_right)] {
+            let fft_len = current[0].len();
+            current.resize_with(current.len().max(target.len()), || vec![Complex32::new(0.0, 0.0); fft_len]);
+            for (partition, values) in current.iter_mut().enumerate() {
+                for (bin, value) in values.iter_mut().enumerate() {
+                    let target = target.get(partition).map_or(Complex32::new(0.0, 0.0), |values| values[bin]);
+                    *value += (target - *value) * weight;
+                }
+            }
         }
     }
 }
@@ -190,13 +194,15 @@ impl StereoPartitionedConvolver {
             let spectrum = &self.history[history_index];
             let filter_left = &self.filters_left[filter_index];
             let filter_right = &self.filters_right[filter_index];
-            for bin in 0..self.fft_len {
+            for bin in 0..filter_left.len() {
                 self.sum_left[bin] += spectrum[bin] * filter_left[bin];
                 self.sum_right[bin] += spectrum[bin] * filter_right[bin];
             }
         }
         self.output_left.copy_from_slice(&self.sum_left);
         self.output_right.copy_from_slice(&self.sum_right);
+        restore_real_spectrum(&mut self.output_left);
+        restore_real_spectrum(&mut self.output_right);
         self.inverse
             .process_with_scratch(&mut self.output_left, &mut self.fft_scratch);
         self.inverse
@@ -207,11 +213,13 @@ impl StereoPartitionedConvolver {
             self.sum_right.fill(Complex32::new(0.0, 0.0));
             for part in 0..self.history.len() {
                 let spectrum = &self.history[(self.history_cursor + self.history.len() - part) % self.history.len()];
-                for bin in 0..self.fft_len {
+                for bin in 0..target.filters_left[part].len() {
                     self.sum_left[bin] += spectrum[bin] * target.filters_left[part][bin];
                     self.sum_right[bin] += spectrum[bin] * target.filters_right[part][bin];
                 }
             }
+            restore_real_spectrum(&mut self.sum_left);
+            restore_real_spectrum(&mut self.sum_right);
             self.inverse.process_with_scratch(&mut self.sum_left, &mut self.fft_scratch);
             self.inverse.process_with_scratch(&mut self.sum_right, &mut self.fft_scratch);
             for index in 0..self.partition {
@@ -237,6 +245,13 @@ impl StereoPartitionedConvolver {
     }
 }
 
+// Real PCM has conjugate-symmetric spectra. Store and multiply only the unique
+// bins; reconstruct their conjugates once before each inverse FFT.
+fn restore_real_spectrum(spectrum: &mut [Complex32]) {
+    let length=spectrum.len();
+    for bin in 1..length/2 { spectrum[length-bin]=spectrum[bin].conj(); }
+}
+
 fn prepare_filters(
     ir: &[f32],
     partition: usize,
@@ -252,6 +267,7 @@ fn prepare_filters(
                 spectrum[offset] = Complex32::new(*sample, 0.0);
             }
             forward.process(&mut spectrum);
+            spectrum.truncate(fft_len/2+1);
             spectrum
         })
         .collect()

@@ -13,6 +13,8 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const cinemaProfiles = require("./cinema-profiles.cjs");
+const { createRoomLab } = require("./room-lab.cjs");
 const { exec, spawn } = require("node:child_process");
 const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
 function writeStartupLog(line) {
@@ -316,13 +318,13 @@ function nativeRendererCommand(command) {
   }
 }
 
-function nativeRendererCommandAck(command, ackCommand) {
+function nativeRendererCommandAck(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS) {
   const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
     const timeout = setTimeout(() => {
       nativeRendererPendingCommands.delete(ackCommand);
       writeStartupLog(`${ackCommand} ACK timeout`);
       resolve(false);
-    }, NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
+    }, timeoutMs);
     nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
     if (!nativeRendererCommand(command)) {
       nativeRendererPendingCommands.delete(ackCommand);
@@ -1289,7 +1291,7 @@ ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
 });
 ipcMain.handle("sda:native-renderer-clear-pose", () => nativeRendererCommand({ type: "clearHeadPose" }));
 ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
-  if (!/^hrtf(?:-dense|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") || !Number.isFinite(wetWeight)) return false;
+  if (!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") || !Number.isFinite(wetWeight)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf");
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
@@ -1298,6 +1300,92 @@ ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => {
   if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6"]).has(layout)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
   writeStartupLog(`setLayout ${layout} ACK -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-stereo-mode", async (_event, mode) => {
+  if (!["original", "dry", "room"].includes(mode)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setStereoMode", mode }, "setStereoMode");
+  writeStartupLog(`setStereoMode ${mode} ACK -> ${accepted}`);
+  return accepted;
+});
+const cinemaProfileDirectory = () => path.join(app.getPath("userData"), "cinema-rooms");
+let roomLabService;
+const roomLab = () => roomLabService ??= createRoomLab({
+  runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
+  storeRoot:app.getPath("userData"),
+  assetsRoot:app.isPackaged ? path.join(__dirname,"web") : path.resolve(__dirname,"../web/public"),
+});
+ipcMain.handle("sda:room-lab-status",()=>roomLab().status());
+ipcMain.handle("sda:room-lab-generate",(_event,config)=>roomLab().generate(config));
+ipcMain.handle("sda:room-lab-cancel",()=>roomLab().cancel());
+app.on("before-quit",()=>roomLabService?.cancel());
+ipcMain.handle("sda:comparison-gain", async (_event,gainDb)=>{
+  if(!Number.isFinite(gainDb)||gainDb < -40||gainDb > 0)return false;
+  return nativeRendererCommandAck({type:"setComparisonGain",gainDb},"setComparisonGain");
+});
+const defaultCinemaSettings = () => ({ enabled: false, directDb: 0, earlyDb: 0, lateDb: 0, earlyMs: 50,
+  bassEnabled: false, crossoverHz: 80, bassDb: 0, speakers: {} });
+function readCinemaProfile(id) {
+  if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("房间档案 ID 无效");
+  const filePath = path.join(cinemaProfileDirectory(), `${id}.json`);
+  if (fs.statSync(filePath).size > 64 * 1024 * 1024) throw new Error("房间档案过大");
+  const bytes = fs.readFileSync(filePath);
+  if (cinemaProfiles.roomId(bytes) !== id) throw new Error("房间档案完整性校验失败");
+  return { filePath, profile: cinemaProfiles.validateRoom(JSON.parse(bytes.toString("utf8"))) };
+}
+ipcMain.handle("sda:cinema-settings", () => {
+  try {
+    const value = readSettings().cinema;
+    if (!value) return { settings: defaultCinemaSettings(), profileId: null };
+    const settings = cinemaProfiles.validateSettings(value.settings);
+    if (value.profileId) readCinemaProfile(value.profileId);
+    return { settings, profileId: value.profileId ?? null };
+  } catch (error) {
+    return { settings: defaultCinemaSettings(), profileId: null, error: String(error) };
+  }
+});
+ipcMain.handle("sda:cinema-rooms", () => {
+  if (!fs.existsSync(cinemaProfileDirectory())) return [];
+  return fs.readdirSync(cinemaProfileDirectory()).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).flatMap(name => {
+    try { const id = name.slice(0, -5); return [cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id)]; }
+    catch { return []; }
+  });
+});
+ipcMain.handle("sda:cinema-import", async event => {
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: "导入实测房间档案", filters: [{ name: "SDA room profile", extensions: ["json"] }], properties: ["openFile"],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const filePath = result.filePaths[0];
+  if (fs.statSync(filePath).size > 64 * 1024 * 1024) throw new Error("房间档案超过 64 MB");
+  const profile = cinemaProfiles.validateRoom(JSON.parse(fs.readFileSync(filePath, "utf8")));
+  const bytes = Buffer.from(JSON.stringify(profile));
+  const id = cinemaProfiles.roomId(bytes);
+  fs.mkdirSync(cinemaProfileDirectory(), { recursive: true });
+  fs.writeFileSync(path.join(cinemaProfileDirectory(), `${id}.json`), bytes);
+  return cinemaProfiles.roomSummary(profile, id);
+});
+ipcMain.handle("sda:cinema-delete", (_event, id) => {
+  const { filePath } = readCinemaProfile(id);
+  if (readSettings().cinema?.profileId === id) throw new Error("请先应用其他房间档案");
+  fs.unlinkSync(filePath);
+  return true;
+});
+ipcMain.handle("sda:cinema-export-report", async (event, id) => {
+  const summary = cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id);
+  const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: "导出测量报告", defaultPath: "SDA-room-report.json", filters: [{name:"JSON",extensions:["json"]}],
+  });
+  if (result.canceled || !result.filePath) return false;
+  fs.writeFileSync(result.filePath, JSON.stringify(summary, null, 2));
+  return true;
+});
+ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => {
+  const normalized = cinemaProfiles.validateSettings(settings);
+  const profile = profileId === null ? null : readCinemaProfile(profileId).filePath;
+  const accepted = !nativeRenderer?.stdin || await nativeRendererCommandAck({ type: "setCinema", settings: normalized, profile }, "setCinema", 30000);
+  if (accepted) writeSettings({ cinema: { settings: normalized, profileId } });
+  writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {

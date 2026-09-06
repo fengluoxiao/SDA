@@ -20,6 +20,8 @@
     "files": [
       "main.cjs",
       "preload.cjs",
+      "cinema-profiles.cjs",
+      "room-lab.cjs",
       {
         "from": "../web/dist",
         "to": "web"

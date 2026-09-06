@@ -738,7 +738,7 @@ export class SpatialRenderer {
     // Dense directions share the same final L/R merger as calibrated bed buses.
     // Reject an uncalibrated set instead of mixing two incompatible direct/tail
     // reference systems, which is especially destructive with many objects.
-    if (set && !set.calibrated) {
+    if (set && !set.calibrated && !(set.preserveMeasurements && set.subjectId === "ku100")) {
       console.warn("[SDA] 拒绝未校准 dense HRTF：保持标准 KU100 双耳路径");
       this.denseIrSet = null;
       if (this.denseBinauralObjects) this.setDenseBinauralObjects(false);

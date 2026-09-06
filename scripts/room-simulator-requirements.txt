@@ -1,0 +1,4 @@
+pyroomacoustics==0.10.1
+numpy==2.5.2
+scipy==1.18.1
+h5py==3.16.0

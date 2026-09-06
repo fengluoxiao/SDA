@@ -11,6 +11,9 @@ impl BackgroundFilter {
         // Native HRTF playback is 48 kHz. Keep some high-frequency ambience.
         let alpha = 1.0 - (-std::f32::consts::TAU * 1500.0 / 48000.0).exp();
         self.low += alpha * (input - self.low);
+        // Silent IIR tails otherwise stick at subnormal values and make both
+        // live DSP and the prepared background spectra much slower on x86.
+        if self.low.abs() < 1e-20 { self.low = 0.0; }
         0.25 * input + 0.75 * self.low
     }
 }
@@ -29,5 +32,14 @@ mod tests {
             if i >= 4096 { energy += y * y; }
         }
         assert!(energy / 4096.0 < 0.12);
+    }
+
+    #[test]
+    fn silent_tail_reaches_exact_zero_before_subnormal_arithmetic() {
+        let mut filter = BackgroundFilter::default();
+        filter.process(1.0);
+        for _ in 0..512 { filter.process(0.0); }
+        assert_eq!(filter.low, 0.0);
+        assert_eq!(filter.process(0.0), 0.0);
     }
 }

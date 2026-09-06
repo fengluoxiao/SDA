@@ -59,7 +59,7 @@ assert.match(main, /sda:native-renderer-start-at/);
 assert.match(main, /sda:native-renderer-pause/);
 assert.match(main, /nativeRendererPendingBatches/);
 assert.match(main, /message\?\.type === "ack"/);
-assert.match(main, /function nativeRendererCommandAck\(command, ackCommand\)/);
+assert.match(main, /function nativeRendererCommandAck\(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS\)/);
 assert.match(main, /message\?\.type === "batchAck"/);
 assert.match(main, /message\?\.type === "objectActivity"/);
 assert.match(main, /function publishNativeRendererObjectActivity\(ids\)/);

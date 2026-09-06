@@ -55,6 +55,7 @@ mod convolution;
 mod dsp;
 #[allow(dead_code)]
 mod headphone;
+mod cinema;
 mod focus;
 mod hrtf;
 mod output_monitor;
@@ -95,6 +96,7 @@ enum Command {
     SetVolume {
         volume: f32,
     },
+    SetComparisonGain { #[serde(rename = "gainDb")] gain_db: f32 },
     SetProgramEnabled {
         enabled: bool,
     },
@@ -151,6 +153,8 @@ enum Command {
         layout: String,
     },
     SetObjectHrtf { enabled: bool },
+    SetStereoMode { mode: StereoMode },
+    SetCinema { settings: cinema::Settings, profile: Option<String> },
     /// Explicit exclusive output ownership. Defaults to muted while transport
     /// and HRTF preparation are being validated beside Web Audio.
     SetOutputActive {
@@ -352,7 +356,12 @@ impl LfePath {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StereoMode { Original, Dry, Room }
+
 struct Source {
+    bass_split: Option<cinema::BassSplit>,
     direct: Option<direct_renderer::DirectSource>,
     samples: pcm_ring::AbsolutePcmRing,
     kind: SourceKind,
@@ -394,6 +403,7 @@ impl Default for Source {
     fn default() -> Self {
         Self {
             samples: pcm_ring::AbsolutePcmRing::new(MAX_PENDING_SAMPLES),
+            bass_split: None,
             direct: None,
             kind: SourceKind::Bed,
             bed_label: None,
@@ -507,8 +517,21 @@ struct Engine {
     focused_speakers: Vec<String>,
     speaker_levels: [f32; vbap::MAX_BUS_COUNT],
     speaker_background: [f32; vbap::MAX_BUS_COUNT],
+    stereo_mode: StereoMode,
+    cinema: cinema::Settings,
+    cinema_bass_mix: f32,
+    cinema_bass_delay: [f32; convolution::DEFAULT_PARTITION],
+    cinema_sub_delay: Vec<f32>,
+    cinema_sub_cursor: usize,
+    room_profile: Option<Arc<cinema::RoomProfile>>,
+    stereo_weights: [f32; 3],
+    stereo_delay: [[f32; 2]; convolution::DEFAULT_PARTITION],
+    stereo_background: [focus::BackgroundFilter; 2],
+    stereo_dry_bus: Option<bus_renderer::BusRenderer>,
     speaker_lfe_level: f32,
     output_gain: f32,
+    comparison_gain: f32,
+    comparison_target: f32,
     output_target_gain: f32,
     output_gain_step: f32,
     output_gain_ramp_remaining: u32,
@@ -574,8 +597,21 @@ impl Engine {
             focused_speakers: Vec::new(),
             speaker_levels: [1.0; vbap::MAX_BUS_COUNT],
             speaker_background: [0.0; vbap::MAX_BUS_COUNT],
+            stereo_mode: StereoMode::Room,
+            cinema: cinema::Settings::default(),
+            cinema_bass_mix: 0.0,
+            cinema_bass_delay: [0.0; convolution::DEFAULT_PARTITION],
+            cinema_sub_delay: Vec::new(),
+            cinema_sub_cursor: 0,
+            room_profile: None,
+            stereo_weights: [0.0, 0.0, 1.0],
+            stereo_delay: [[0.0; 2]; convolution::DEFAULT_PARTITION],
+            stereo_background: std::array::from_fn(|_| focus::BackgroundFilter::default()),
+            stereo_dry_bus: None,
             speaker_lfe_level: 1.0,
             output_gain: 1.0,
+            comparison_gain: 1.0,
+            comparison_target: 1.0,
             output_target_gain: 1.0,
             output_gain_step: 0.0,
             output_gain_ramp_remaining: 0,
@@ -627,6 +663,8 @@ impl Engine {
     }
 
     fn rebuild_bus_renderer(&mut self) -> Result<(), String> {
+        self.stereo_dry_bus = None;
+        if let Some(set) = &mut self.active_hrtf_set { set.configure_cinema(self.cinema.clone(), self.room_profile.clone()); }
         let set = self
             .active_hrtf_set
             .as_ref()
@@ -819,6 +857,7 @@ impl Engine {
     }
 
     fn advance_output_envelopes(&mut self) {
+        self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
         if self.output_gain_ramp_remaining > 0 {
             self.output_gain += self.output_gain_step;
             self.output_gain_ramp_remaining -= 1;
@@ -895,6 +934,14 @@ impl Engine {
     }
 
     fn reset_session(&mut self, origin: u64) {
+        self.cinema_bass_delay.fill(0.0);
+        self.cinema_sub_delay.fill(0.0);
+        self.cinema_sub_cursor = 0;
+        self.cinema_bass_mix = 0.0;
+        self.stereo_delay.fill([0.0; 2]);
+        self.stereo_background = std::array::from_fn(|_| focus::BackgroundFilter::default());
+        self.stereo_dry_bus = None;
+        self.stereo_weights = [0.0, 0.0, 1.0];
         self.sample_pos = origin;
         self.block_offset = 0;
         self.direct_mix = 0.0;
@@ -991,6 +1038,17 @@ impl Engine {
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
             return;
         }
+        let stereo = self.sources.len() == 2
+            && self.sources.values().all(|source| source.kind == SourceKind::Bed)
+            && self.sources.values().any(|source| matches!(source.bed_label.as_deref(), Some("FrontLeft" | "L" | "Left")))
+            && self.sources.values().any(|source| matches!(source.bed_label.as_deref(), Some("FrontRight" | "R" | "Right")));
+        if stereo && self.stereo_dry_bus.is_none() {
+            self.stereo_dry_bus = self.active_hrtf_set.as_ref()
+                .and_then(|set| bus_renderer::BusRenderer::new(set, &self.vbap, 0.0).ok());
+        }
+        let stereo_index = if stereo && self.stereo_dry_bus.is_some() {
+            match self.stereo_mode { StereoMode::Original => 0, StereoMode::Dry => 1, StereoMode::Room => 2 }
+        } else { 2 };
         let mut underruns = 0_u64;
         let vbap = self.vbap.clone();
         let head_pose = self.head_pose;
@@ -1001,6 +1059,14 @@ impl Engine {
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
             let block_index = self.block_offset;
+            let bass_target = if self.cinema.enabled && self.cinema.bass_enabled && self.layout != vbap::LayoutId::Stereo2_0 { 1.0 } else { 0.0 };
+            self.cinema_bass_mix += (bass_target - self.cinema_bass_mix) / 256.0;
+            let bass_output = self.cinema_bass_delay[block_index];
+            self.cinema_bass_delay[block_index] = 0.0;
+            for (i, weight) in self.stereo_weights.iter_mut().enumerate() {
+                let target = if i == stereo_index { 1.0 } else { 0.0 };
+                *weight += (target - *weight) / 256.0;
+            }
             for (level, target) in self.speaker_levels.iter_mut().zip(speaker_targets) {
                 *level += (target - *level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
             }
@@ -1015,7 +1081,10 @@ impl Engine {
                     .expect("checked above")
                     .begin_block();
                 self.headphone.begin_block();
+                if let Some(bus) = &mut self.stereo_dry_bus { bus.begin_block(); }
             }
+            let original = self.stereo_delay[block_index];
+            self.stereo_delay[block_index] = [0.0; 2];
             let mut lfe_sum = 0.0_f32;
             let mut direct_sum = [0.0_f32; 2];
             // Fade the excitation, retaining both paths' convolution tails.
@@ -1113,16 +1182,36 @@ impl Engine {
                 {
                     source.suspended = true;
                 }
-                let sample = raw.unwrap_or(0.0)
+                let mut sample = raw.unwrap_or(0.0)
                     * source.availability
                     * source.gain
                     * if source.muted { 0.0 } else { 1.0 };
+                let original_sample = sample;
+                if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
+                    if source.bass_split.as_ref().is_none_or(|filter| filter.frequency != self.cinema.crossover_hz) {
+                        source.bass_split = cinema::BassSplit::new(self.cinema.crossover_hz).ok();
+                    }
+                    if let Some(filter) = &mut source.bass_split {
+                        let (low, high) = filter.process(sample);
+                        let contribution: f32 = source.bus_gains.iter().zip(&self.speaker_levels).map(|(gain, level)| gain * level).sum();
+                        self.cinema_bass_delay[block_index] += low * contribution * self.cinema_bass_mix;
+                        sample += (high - sample) * self.cinema_bass_mix;
+                    }
+                }
                 if source.object_id.is_some() && sample.abs() >= OBJECT_ACTIVITY_THRESHOLD {
                     source.activity_until =
                         at.saturating_add((self.output_sample_rate as f32 * 0.2).round() as u64);
                 }
                 if raw.is_none() && source.gain != 0.0 {
                     underruns += 1;
+                }
+                if stereo {
+                    let ear = if matches!(source.bed_label.as_deref(), Some("FrontLeft" | "L" | "Left")) { 0 } else { 1 };
+                    self.stereo_delay[block_index][ear] += original_sample;
+                    if let Some(bus) = &mut self.stereo_dry_bus {
+                        bus.add(sample * ROOM_SPEAKER_REFERENCE_GAIN,
+                            &std::array::from_fn(|i| source.bus_gains[i] * self.speaker_levels[i]), block_index);
+                    }
                 }
                 self.bus_renderer.as_mut().expect("checked above").add(
                     sample * ROOM_SPEAKER_REFERENCE_GAIN * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 },
@@ -1138,26 +1227,45 @@ impl Engine {
                 }
                 Self::advance_source_envelopes(source, 1);
             }
+            for ear in 0..2 {
+                let input = self.stereo_delay[block_index][ear] * self.speaker_levels[ear];
+                let filtered = self.stereo_background[ear].process(input);
+                self.stereo_delay[block_index][ear] = input + (filtered - input) * self.speaker_background[ear];
+            }
             if let Some(event) = self.program_events.remove(&at) {
                 self.program_metadata_gain = event.gain;
                 self.set_program_target(event.gain, false);
             }
             self.bus_renderer.as_mut().expect("checked above").shape_background(block_index, &self.speaker_background);
+            if let Some(bus) = &mut self.stereo_dry_bus { bus.shape_background(block_index, &self.speaker_background); }
+            let dry = self.stereo_dry_bus.as_ref().map_or([0.0; 2], |bus| bus.output_at(block_index));
             let binaural = self
                 .bus_renderer
                 .as_ref()
                 .expect("checked above")
                 .output_at(block_index);
-            let lfe = self.lfe_path.process(lfe_sum) * 0.5;
+            let mut lfe = self.lfe_path.process(lfe_sum) * 0.5
+                + bass_output * cinema::db(self.cinema.bass_db) * self.speaker_lfe_level * if self.lfe_muted { 0.0 } else { 1.0 };
+            if self.cinema.enabled {
+                lfe *= self.cinema.speakers.get("LFE").map_or(1.0, |s| cinema::db(s.gain_db));
+                if !self.cinema_sub_delay.is_empty() {
+                    let delayed = self.cinema_sub_delay[self.cinema_sub_cursor];
+                    self.cinema_sub_delay[self.cinema_sub_cursor] = lfe;
+                    self.cinema_sub_cursor = (self.cinema_sub_cursor + 1) % self.cinema_sub_delay.len();
+                    lfe = delayed;
+                }
+            }
             let compensated = self.headphone.output_at(block_index);
             self.headphone
-                .add(block_index, [lfe + binaural[0] + direct_sum[0], lfe + binaural[1] + direct_sum[1]]);
+                .add(block_index, std::array::from_fn(|ear|
+                    original[ear] * self.stereo_weights[0] + (dry[ear] + lfe) * self.stereo_weights[1]
+                    + (lfe + binaural[ear] + direct_sum[ear]) * self.stereo_weights[2]));
             // Match master binaural ordering: summed HRTF/LFE -> headphone FIR
             // -> EQ -> +6 dB makeup -> volume/program -> linked guard.
             let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
             let pre_guard = [
-                equalized[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
-                equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain,
+                equalized[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain * self.comparison_gain,
+                equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain * self.comparison_gain,
             ];
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain,
@@ -1180,6 +1288,7 @@ impl Engine {
                     .expect("checked above")
                     .finish_block();
                 let _ = self.headphone.finish_block();
+                if let Some(bus) = &mut self.stereo_dry_bus { let _ = bus.finish_block(); }
             }
             self.sample_pos += 1;
             self.queue_object_activity_snapshot(self.sample_pos);
@@ -1623,6 +1732,70 @@ mod tests {
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
         engine
+    }
+
+    #[test]
+    fn room_comparison_gain_scales_both_ears_without_changing_direction() {
+        let render = |gain: f32| {
+            let mut engine = calibrated_engine();
+            engine.comparison_gain = gain;
+            engine.comparison_target = gain;
+            engine.paused = false;
+            let mut source = Source { kind: SourceKind::Bed, bed_label: Some("FrontLeft".into()),
+                gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Source::default() };
+            Engine::set_source_route(&mut source,bed_route("FrontLeft",&engine.vbap),0);
+            let pcm:Vec<f32>=(0..4096).map(|i|0.001*(i as f32*0.1).sin()).collect();
+            source.samples.write(0,0,&pcm);engine.sources.insert("FrontLeft".into(),source);
+            let mut output=vec![0.0;8192];engine.render_into(&mut output,2);output
+        };
+        let unity=render(1.0);let half=render(0.5);
+        assert!(unity.iter().any(|v|v.abs()>1e-5));
+        for(a,b)in unity.iter().zip(&half){assert!((a*0.5-b).abs()<1e-7);}
+        let command:Command=serde_json::from_str(r#"{"type":"setComparisonGain","gainDb":-6}"#).unwrap();
+        assert!(matches!(command,Command::SetComparisonGain{gain_db} if gain_db == -6.0));
+    }
+
+    #[test]
+    fn stereo_comparison_preserves_original_channels_and_isolates_dry_room_processing() {
+        let count = 8192;
+        let pcm: Vec<f32> = (0..count).map(|i| 0.005 * (i as f32 * 0.173).sin()).collect();
+        let render = |mode, wet, extra_object| {
+            let mut engine = calibrated_engine();
+            engine.set_layout(vbap::LayoutId::Stereo2_0).unwrap();
+            engine.hrtf_wet_weight = wet;
+            engine.rebuild_bus_renderer().unwrap();
+            engine.stereo_mode = mode;
+            engine.paused = false;
+            // Exercise the common final-output compensation, not just routing.
+            engine.headphone = headphone::HeadphoneCompensation::new(&[0.5, 0.0], &[0.5, 0.0], 1.0).unwrap();
+            for (ear, label) in ["FrontLeft", "FrontRight"].iter().enumerate() {
+                let mut source = Source { kind: SourceKind::Bed, bed_label: Some((*label).into()),
+                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0, ..Source::default() };
+                Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0);
+                source.samples.write(0, 0, &if ear == 0 { pcm.clone() } else { vec![0.0; count] });
+                engine.sources.insert((*label).into(), source);
+            }
+            if extra_object { engine.sources.insert("obj:1".into(), Source { kind: SourceKind::Object, ..Source::default() }); }
+            let mut output = vec![0.0; count * 2];
+            engine.render_into(&mut output, 2);
+            output
+        };
+        let original = render(StereoMode::Original, 0.04, false);
+        let delay = 2 * convolution::DEFAULT_PARTITION + 240;
+        for i in 4096..count {
+            assert!(original[i * 2 + 1].abs() < 1e-7, "original leaked into opposite ear");
+            let expected = pcm[i - delay] * 0.5 * 10.0_f32.powf(6.0 / 20.0);
+            assert!((original[i * 2] - expected).abs() < 2e-6, "original sample mismatch");
+        }
+        let dry = render(StereoMode::Dry, 0.04, false);
+        let dry_reference = render(StereoMode::Room, 0.0, false);
+        assert!(dry[8192..].iter().zip(&dry_reference[8192..]).all(|(a,b)| (a-b).abs() < 2e-6));
+        let room = render(StereoMode::Room, 0.04, false);
+        assert!(dry[8192..].iter().zip(&room[8192..]).any(|(a,b)| (a-b).abs() > 1e-6));
+        assert!(dry[8192..].chunks_exact(2).any(|frame| frame[1].abs() > 1e-5));
+        let immersive = render(StereoMode::Original, 0.04, true);
+        let immersive_reference = render(StereoMode::Room, 0.04, true);
+        assert_eq!(immersive, immersive_reference, "stereo preference affected object programme");
     }
 
     #[test]
@@ -2297,6 +2470,123 @@ mod tests {
                     .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
                 assert!(outputs[1][16384..].iter().any(|v| v.abs() > 1e-5));
                 assert!(error < 2e-6, "layout={layout:?} direct={direct} focus={focus} error={error}");
+            }
+        }
+    }
+
+    #[test]
+    fn dense_object_assets_preserve_physical_speaker_directions() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for (dense, standard) in [("hrtf-dense", "hrtf"), ("hrtf-dense-raw", "hrtf-raw")] {
+            let dense = hrtf::NativeHrtfSet::load_calibrated(&root.join(dense).join("hrtf-set.json")).unwrap();
+            let standard = hrtf::NativeHrtfSet::load_calibrated(&root.join(standard).join("hrtf-set.json")).unwrap();
+            for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Dolby9_1_6] {
+                for speaker in vbap::speakers(layout) {
+                    let expected = standard.mixed_speaker(speaker.name, layout.as_str(), speaker.azimuth as f64, speaker.elevation as f64, 0.04).unwrap();
+                    let actual = dense.mixed_speaker(speaker.name, layout.as_str(), speaker.azimuth as f64, speaker.elevation as f64, 0.04).unwrap();
+                    for (actual, expected) in [(&actual.0, &expected.0), (&actual.1, &expected.1)] {
+                        for i in 0..actual.len().max(expected.len()) {
+                            assert_eq!(actual.get(i).copied().unwrap_or(0.0), expected.get(i).copied().unwrap_or(0.0), "{} sample={i}", speaker.name);
+                        }
+                    }
+                }
+            }
+            assert_eq!(dense.nearest(-30.0, 45.0).unwrap().azimuth, -30.0, "dense object directions remain available");
+        }
+    }
+
+    #[test]
+    fn overhead_bed_output_matches_measured_direction_impulse() {
+        let count = 12288;
+        let impulse_at = 2048;
+        let latency = 2 * convolution::DEFAULT_PARTITION + 240;
+        for (layout, label, azimuth) in [
+            (vbap::LayoutId::Dolby7_1_4, "TopFrontRight", -45.0),
+            (vbap::LayoutId::Dolby7_1_4, "TopRearRight", -135.0),
+            (vbap::LayoutId::Dolby9_1_6, "TopMiddleRight", -90.0),
+        ] {
+            for wet in [0.0, 0.04] {
+                let mut engine = calibrated_engine();
+                engine.hrtf_wet_weight = wet;
+                engine.set_layout(layout).unwrap();
+                engine.rebuild_bus_renderer().unwrap();
+                engine.paused = false;
+                let measured = engine.active_hrtf_set.as_ref().unwrap().nearest(azimuth, 45.0).unwrap();
+                assert_eq!((measured.azimuth, measured.elevation), (azimuth, 45.0));
+                let dry_len = measured.dry.len() / 2;
+                let wet_len = measured.wet.len() / 2;
+                let mut source = Source { kind: SourceKind::Bed, bed_label: Some(label.into()),
+                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                    ..Source::default() };
+                let mut pcm = vec![0.0; count];
+                pcm[impulse_at] = 0.01;
+                source.samples.write(0, 0, &pcm);
+                Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0);
+                engine.sources.insert("bed:top".into(), source);
+                let mut output = vec![0.0; count * 2];
+                engine.render_into(&mut output, 2);
+                // Independent time-domain oracle, without the bus mixer or FFT convolver.
+                let mut error = 0.0_f32;
+                let mut peak = 0.0_f32;
+                for frame in 0..count {
+                    for ear in 0..2 {
+                        let expected = frame.checked_sub(impulse_at + latency).map_or(0.0, |i| {
+                            let dry = if i < dry_len { measured.dry[ear * dry_len + i] } else { 0.0 };
+                            let room = if i < wet_len { measured.wet[ear * wet_len + i] } else { 0.0 };
+                            (dry + wet * (room - dry)) * 0.01 * 10.0_f32.powf(6.0 / 20.0)
+                        });
+                        peak = peak.max(expected.abs());
+                        error = error.max((output[frame * 2 + ear] - expected).abs());
+                    }
+                }
+                assert!(peak > 1e-5);
+                assert!(error < 1e-6, "{label} wet={wet} error={error} peak={peak}");
+            }
+        }
+    }
+
+    #[test]
+    fn overhead_bed_monitor_preserves_selected_speaker_filter() {
+        let count = 8192;
+        for (layout, label) in [
+            (vbap::LayoutId::Dolby7_1_4, "TopFrontRight"),
+            (vbap::LayoutId::Dolby7_1_4, "TopRearRight"),
+            (vbap::LayoutId::Dolby9_1_6, "TopMiddleRight"),
+        ] {
+            let mut engine = calibrated_engine();
+            engine.set_layout(layout).unwrap();
+            let target = engine.vbap.speaker_index(label).unwrap();
+            let route = bed_route(label, &engine.vbap);
+            for (index, gain) in route.buses.iter().enumerate() {
+                assert_eq!(*gain, if index == target { 1.0 } else { 0.0 });
+            }
+            let mut reference = Vec::new();
+            for mode in 0..3 {
+                engine.reset_session(0);
+                engine.paused = false;
+                engine.output_active = true;
+                engine.focused_speakers = if mode == 2 { vec![label.into()] } else { Vec::new() };
+                engine.speaker_mutes = if mode == 1 {
+                    vbap::speakers(layout).iter().filter(|s| s.name != label)
+                        .map(|s| s.name.to_string()).collect()
+                } else { Vec::new() };
+                let mut source = Source { kind: SourceKind::Bed, bed_label: Some(label.into()),
+                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                    ..Source::default() };
+                let pcm: Vec<f32> = (0..count).map(|i|
+                    if i < 4096 { 0.002 * ((i * 37 % 97) as f32 - 48.0) / 48.0 } else { 0.0 }
+                ).collect();
+                source.samples.write(0, 0, &pcm);
+                Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0);
+                engine.sources.insert("bed:top".into(), source);
+                let mut output = vec![0.0; count * 2];
+                engine.render_into(&mut output, 2);
+                assert!(output.iter().all(|v| v.is_finite()));
+                assert!(output.iter().any(|v| v.abs() > 1e-5));
+                if mode == 0 { reference = output; } else {
+                    let error = output.iter().zip(&reference).map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                    assert!(error < 2e-6, "{label} mode={mode} error={error}");
+                }
             }
         }
     }

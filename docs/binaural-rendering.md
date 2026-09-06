@@ -332,6 +332,22 @@ iOS 15+ 系统对 Atmos 内容自动做头追双耳；`AVAudioSession.SpatialExp
 
 ## 5. HRTF 数据集：SADIE II KU100（已落地）
 
+### KU100 数据校准开关
+
+“耳廓 / 完整 HRTF 测量”面板仅在选择 KU100 时显示“KU100 数据校准”，默认开启，
+保存于 `sda-ku100-calibration`。关闭时普通、高解析分别使用 `hrtf-raw`、
+`hrtf-dense-raw`，由 `scripts/build-raw-ku100.mjs` 从校验 SHA-256 的原始 D1.zip
+提取同一方向映射的完整 48 kHz WAV 样本：HRIR 256 点、BRIR 14400 点。
+仅转换为 float32 打包格式，不截断、不峰值归一、不做共同到达对齐、电平匹配、
+对称化、房间 EQ/门控/高通或尾声去相关。浏览器也绕过旧未校准资产的能量归一、
+中心耳间平衡、干湿对齐与右侧宽声道镜像。独立对象和当前布局继续使用所选资产。
+
+这取消的是 SDA 的 KU100 数据校准，不是禁用 HRTF。原始 HRIR/BRIR 仍按现有
+干湿权重混合，原始测量的时间、电平与房间差异会保留，切换不保证等响。
+影院处理（包括实测房间覆盖）、耳机 EQ、输出补偿、限幅器仍独立生效，
+因此此模式不等同于整个播放链 bit-perfect，也不声称等于原始测量房间的全湿回放。
+其他人头不受该偏好影响。切换会重建卷积响应，可能有短暂过渡。
+
 **格式标准：SOFA（AES69）**，netCDF-4 容器；但 SADIE II 同时发布 **WAV 版本**，
 SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 
@@ -401,3 +417,23 @@ calibration v1 manifest 明确禁用峰值归一和运行时逐 IR 总能量归�
 
 2026-09-05 的对象起伏排查、官方资料边界和可听对照见
 [`egaku-object-envelope-investigation.md`](egaku-object-envelope-investigation.md)。
+# Stereo Spatial Comparison
+
+Pure two-channel L/R programmes without objects expose three native playback
+modes: original stereo, dry HRTF, and room HRTF (the default). The setting is
+retained across tracks and restarts, but does not apply to multichannel/object
+programmes. ALAC is decoded to PCM before this selection; the same comparison
+also applies to other decoded stereo formats.
+
+Original stereo sends L/R to their corresponding ears with a one-block delay
+matching the spatial buses. Dry HRTF uses the selected measurements with zero
+room-response weight. Room HRTF uses the existing room-response weight. The
+paths stay warm and crossfade when switched. Changing the HRTF set or layout
+rebuilds the dry path alongside the room path.
+
+All modes retain channel monitoring, headphone compensation, final EQ, output
+gain, optional programme gain, and peak protection. Original stereo therefore
+means spatial bypass, not bit-perfect output. No per-mode loudness normalization
+is added: identical output settings need not produce identical perceived volume.
+These modes are diagnostic comparisons, not a reproduction of Apple's private
+Spatialize Stereo algorithm.

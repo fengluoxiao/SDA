@@ -27,8 +27,8 @@ impl BusRenderer {
         let mut buses = Vec::with_capacity(solver.bus_count());
         for index in 0..solver.bus_count() {
             let (azimuth, elevation) = solver.speaker_direction(index);
-            let (_, _, left, right) =
-                set.mixed_nearest(azimuth as f64, elevation as f64, wet_weight)?;
+            let (left, right) = set.mixed_speaker(vbap::speakers(solver.layout())[index].name,
+                solver.layout().as_str(), azimuth as f64, elevation as f64, wet_weight)?;
             buses.push(Bus {
                 background_filter: crate::focus::BackgroundFilter::default(),
                 convolver: convolution::StereoPartitionedConvolver::new(

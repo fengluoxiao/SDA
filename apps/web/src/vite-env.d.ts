@@ -1,4 +1,24 @@
 /// <reference types="vite/client" />
+export interface CinemaSpeakerCalibration { gainDb: number; delayMs: number; lowDb: number; highDb: number; }
+export interface CinemaSettings {
+  reflectionMode?: "direct"|"early"|"full";
+  enabled: boolean; directDb: number; earlyDb: number; lateDb: number; earlyMs: number;
+  bassEnabled: boolean; crossoverHz: number; bassDb: number; speakers: Record<string, CinemaSpeakerCalibration>;
+}
+export interface CinemaRoomSummary {
+  id: string; name: string; source: string; license: string; measurement: string; layout: string; sampleRate: number;
+  limited: boolean; suggested: Record<string, CinemaSpeakerCalibration>;
+  rows: { name: string; arrivalMs: number; itdMs: number; directEnergyDb: number; peak: number }[];
+  simulation?: RoomSimulation;
+}
+export interface RoomSimulationConfig { layout:string; length:number; width:number; height:number; earHeight:number; placement:number; material:"treated"|"living"|"reflective"; order:number; }
+export interface RoomSimulation {
+  revision?:number;
+  engine:string; config:RoomSimulationConfig; listener:[number,number,number]; size:[number,number,number];
+  positions:Record<string,[number,number,number]>;
+  paths:Record<string,{wall:string;order:number;distance:number;arrivalMs:number;points:[number,number,number][]}[]>;
+  comparison:{metric:string;energyDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early",number>>;gainDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early",number>>;limited:boolean};
+}
 
 interface LocalHeadphoneProfileAsset {
   fileName: string;
@@ -102,6 +122,17 @@ declare global {
       nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;
+      nativeRendererStereoMode?: (mode: "original" | "dry" | "room") => Promise<boolean>;
+      getCinemaSettings?: () => Promise<{settings: CinemaSettings; profileId: string | null; error?: string}>;
+      listCinemaRooms?: () => Promise<CinemaRoomSummary[]>;
+      importCinemaRoom?: () => Promise<CinemaRoomSummary | null>;
+      deleteCinemaRoom?: (id: string) => Promise<boolean>;
+      exportCinemaReport?: (id: string) => Promise<boolean>;
+      nativeRendererCinema?: (settings: CinemaSettings, profileId: string | null) => Promise<boolean>;
+      roomLabStatus?: () => Promise<{available:boolean;running:boolean;current:number;total:number;error:string|null}>;
+      roomLabGenerate?: (config:RoomSimulationConfig) => Promise<CinemaRoomSummary>;
+      roomLabCancel?: () => Promise<boolean>;
+      nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;

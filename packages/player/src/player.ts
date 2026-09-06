@@ -578,11 +578,12 @@ export class SdaPlayer {
   /** 逐对象精确方向双耳渲染开关（播放中实时生效）。
    *  首次开启时按需加载密集球面 IR 集；renderer 重建后由 attachBinauralIrs 恢复。 */
   async setDenseBinauralObjects(enabled: boolean, denseBaseUrl?: string): Promise<void> {
+    const changedSet = !!denseBaseUrl && denseBaseUrl !== this.denseBinauralBaseUrl;
     if (denseBaseUrl) this.denseBinauralBaseUrl = denseBaseUrl;
     this.denseBinauralObjects = enabled;
     const r = this.renderer;
     if (!r) return;
-    if (enabled && !r.hasDenseBinauralData) {
+    if (enabled && (changedSet || !r.hasDenseBinauralData)) {
       if (!this.denseBinauralBaseUrl) throw new Error("密集双耳 IR 资产地址缺失");
       const dense = await getBinauralIrSet(this.denseBinauralBaseUrl);
       if (this.disposed || this.renderer !== r) return;

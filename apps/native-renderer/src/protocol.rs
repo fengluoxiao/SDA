@@ -189,6 +189,8 @@ fn handle_command(
                 set.as_str(),
                 "hrtf"
                     | "hrtf-dense"
+                    | "hrtf-raw"
+                    | "hrtf-dense-raw"
                     | "hrtf-d2"
                     | "hrtf-h3"
                     | "hrtf-h4"
@@ -247,6 +249,34 @@ fn handle_command(
         Command::SetObjectHrtf { enabled } => {
             let result = state.set_direct_objects(enabled);
             write_event(&Event::Ack { command: "setObjectHrtf", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
+        Command::SetStereoMode { mode } => {
+            state.stereo_mode = mode;
+            write_event(&Event::Ack { command: "setStereoMode", accepted: true, detail: None });
+        }
+        Command::SetCinema { settings, profile } => {
+            let result = (|| -> Result<(), String> {
+                settings.validate()?;
+                let room = profile.as_deref().map(cinema::RoomProfile::load).transpose()?.map(Arc::new);
+                // Build on a clone first so invalid assets cannot damage the active graph.
+                let mut candidate = state.active_hrtf_set.clone().ok_or("HRTF is not ready")?;
+                candidate.configure_cinema(settings.clone(), room.clone());
+                let bus = bus_renderer::BusRenderer::new(&candidate, &state.vbap, state.hrtf_wet_weight)?;
+                state.cinema = settings;
+                let sub_delay = state.cinema.speakers.get("LFE").map_or(0, |s| (s.delay_ms * 48.0).round() as usize);
+                state.cinema_sub_delay = vec![0.0; sub_delay];
+                state.cinema_sub_cursor = 0;
+                state.cinema_bass_delay.fill(0.0);
+                state.room_profile = room;
+                state.active_hrtf_set = Some(candidate);
+                state.bus_renderer = Some(bus);
+                state.stereo_dry_bus = None;
+                for source in state.sources.values_mut() { source.direct = None; source.bass_split = None; }
+                state.direct_mix = 0.0;
+                state.render_epoch = state.render_epoch.wrapping_add(1);
+                Ok(())
+            })();
+            write_event(&Event::Ack { command: "setCinema", accepted: result.is_ok(), detail: result.err().as_deref() });
         }
         Command::SetLayout { layout } => {
             match vbap::LayoutId::parse(&layout) {
@@ -400,6 +430,11 @@ fn handle_command(
                 accepted: true,
                 detail: None,
             });
+        }
+        Command::SetComparisonGain { gain_db } => {
+            let accepted = gain_db.is_finite() && (-40.0..=0.0).contains(&gain_db);
+            if accepted { state.comparison_target = cinema::db(gain_db); }
+            write_event(&Event::Ack {command:"setComparisonGain",accepted,detail:None});
         }
         Command::SetVolume { volume } => {
             if volume.is_finite() {
@@ -989,6 +1024,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetLfeMuted { .. } => "setLfeMuted",
         Command::SetSpeakerMutes { .. } => "setSpeakerMutes",
         Command::SetVolume { .. } => "setVolume",
+        Command::SetComparisonGain { .. } => "setComparisonGain",
         Command::SetProgramEnabled { .. } => "setProgramEnabled",
         Command::SetProgramGain { .. } => "setProgramGain",
         Command::SetBinauralEq { .. } => "setBinauralEq",
@@ -998,6 +1034,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetHrtf { .. } => "setHrtf",
         Command::SetLayout { .. } => "setLayout",
         Command::SetObjectHrtf { .. } => "setObjectHrtf",
+        Command::SetStereoMode { .. } => "setStereoMode",
+        Command::SetCinema { .. } => "setCinema",
         Command::SetOutputActive { .. } => "setOutputActive",
         Command::StartAt { .. } => "startAt",
         Command::ClearHeadPose => "clearHeadPose",

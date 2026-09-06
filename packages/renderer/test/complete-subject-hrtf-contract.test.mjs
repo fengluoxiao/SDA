@@ -8,7 +8,7 @@ const playerSource = await readFile(path.join(root, "packages/player/src/player.
 
 assert.match(
   appSource,
-  /return assetUrl\(head === "ku100" \? "hrtf" : `hrtf-\$\{head\}`\);/,
+  /return assetUrl\(head === "ku100" \? \(calibrated \? "hrtf" : "hrtf-raw"\) : `hrtf-\$\{head\}`\);/,
   "complete subject selection must map directly to its own HRTF directory",
 );
 assert.doesNotMatch(

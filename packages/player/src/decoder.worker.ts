@@ -13,6 +13,7 @@ import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type Objec
 import { createDemuxer, sniffContainer, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
 import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
+import { FrameBatcher } from "./frame-batcher.js";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -26,6 +27,7 @@ let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
 const lastObjectTargets = new Map<number, ObjectEvent>();
+let frameBatcher = new FrameBatcher(postFrame);
 
 function compactObjectEvents(frame: DecodedFrameData): void {
   const objectIds = new Set<number>();
@@ -44,7 +46,6 @@ function compactObjectEvents(frame: DecodedFrameData): void {
 }
 
 function postFrame(frame: DecodedFrameData): void {
-  compactObjectEvents(frame);
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   if (frame.channels[0]?.length) {
@@ -63,7 +64,8 @@ function drainFrames(): void {
   while (true) {
     const frame = decoder.nextFrame();
     if (!frame) break;
-    postFrame(frame);
+    compactObjectEvents(frame);
+    frameBatcher.push(frame);
   }
   for (const message of decoder.drainErrors()) {
     self.postMessage({ type: "error", message });
@@ -81,6 +83,7 @@ self.onmessage = async (e: MessageEvent) => {
     }
     case "open": {
       decoder?.free();
+      frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
       // Keep the existing immediate decoder for raw and legacy MP4 streams.
@@ -95,6 +98,7 @@ self.onmessage = async (e: MessageEvent) => {
     case "flush": {
       demuxer?.flush();
       drainFrames();
+      frameBatcher.flush();
       self.postMessage({ type: "flushed" });
       break;
     }
@@ -138,6 +142,7 @@ self.onmessage = async (e: MessageEvent) => {
       }
       demuxer.push(chunk);
       drainFrames();
+      frameBatcher.flush();
       self.postMessage({ type: "push-ack", sequence: msg.sequence });
       break;
     }
