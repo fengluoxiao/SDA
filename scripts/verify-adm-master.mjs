@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const input = resolve(process.argv[2] ?? 'tmp/dolby-natures-fury/Exercise_Content_2-3/NaturesFuryADM.wav');
-const output = resolve('tmp/dolby-natures-fury/inspection');
+const started = performance.now();
+const output = resolve(process.argv[3] ?? 'tmp/dolby-natures-fury/inspection');
 await mkdir(output, { recursive: true });
 const bundle = join(output, 'bwf-verifier.mjs');
 await build({ entryPoints: ['packages/demux/src/bwf.ts'], bundle: true, platform: 'node', format: 'esm', outfile: bundle });
@@ -50,9 +51,11 @@ demux.flush();
 assert.equal(samples, expected);
 assert.ok(peaks.some(peak => peak > 0.01));
 const report = {
+  elapsedSeconds: (performance.now() - started) / 1000, peakRssMiB: process.resourceUsage().maxRSS / 1024,
   input, format: metadata.format, durationSeconds: samples / metadata.format.sampleRate,
   samplesPerChannel: samples, frames, emittedEvents: events, metadataReadBytes: readBytes,
   beds: metadata.adm?.rawBedLabels, objects: metadata.adm?.objectChannels.length,
+  warnings: metadata.adm?.warnings ?? [],
   diffuseEvents: metadata.adm?.events.filter(event => event.diffuse > 0).length,
   horizontalOnlyEvents: metadata.adm?.events.filter(event => event.horizontalOnly).length,
   channels: metadata.labels.map((label, i) => ({ label, peak: peaks[i], rms: Math.sqrt(energy[i] / samples) })),

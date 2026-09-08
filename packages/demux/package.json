@@ -7,6 +7,7 @@
   "types": "./src/index.ts",
   "dependencies": {
     "@xmldom/xmldom": "0.9.10",
-    "mp4box": "^0.5.3"
+    "mp4box": "^0.5.3",
+    "saxes": "6.0.0"
   }
 }

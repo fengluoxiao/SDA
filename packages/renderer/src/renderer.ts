@@ -24,6 +24,8 @@
 
 import { admToSpherical, sphericalToAdm, sphericalToWebAudio, type Spherical } from "./coords.js";
 import { HeadPoseTracker, type HeadPose, type HeadPoseOptions } from "./head-pose.js";
+import { applyZoneExclusion } from "./adm-zone.js";
+import type { AdmZone } from "../../core/src/adm-zone.js";
 import {
   LAYOUT_7_1_4,
   LAYOUTS,
@@ -265,6 +267,7 @@ interface SourceState {
   spread: number;
   diffuse: number;
   horizontalOnly?: boolean;
+  zoneExclusion?: AdmZone[];
   position: Spherical;
   gainDb: number;
   /** At least one codec object event has established this source's target. */
@@ -293,6 +296,7 @@ interface SourceState {
     fromDiffuse: number;
     diffuse: number;
     horizontalOnly?: boolean;
+    zoneExclusion?: AdmZone[];
     gainDb: number;
     rampSamples: number;
   }[];
@@ -987,6 +991,7 @@ export class SpatialRenderer {
               spread: due.fromSpread + (due.spread - due.fromSpread) * progress,
               diffuse: due.fromDiffuse + (due.diffuse - due.fromDiffuse) * progress,
               horizontalOnly: due.horizontalOnly,
+              zoneExclusion: due.zoneExclusion,
               gainDb: due.gainDb,
             };
           }
@@ -996,7 +1001,7 @@ export class SpatialRenderer {
             // head-relative route so the worklet never waits on the next timer.
             for (let index = dueIndex + 1; index < state.objectPoseTimeline.length; index++) {
               const target = state.objectPoseTimeline[index]!;
-              const future = { ...state, position: target.position, spread: target.spread, diffuse: target.diffuse, horizontalOnly: target.horizontalOnly, gainDb: target.gainDb };
+              const future = { ...state, position: target.position, spread: target.spread, diffuse: target.diffuse, horizontalOnly: target.horizontalOnly, zoneExclusion: target.zoneExclusion, gainDb: target.gainDb };
               futurePoseMessages.push(this.gainMessage(future, target.rampSamples, target.at, true));
             }
           }
@@ -1689,6 +1694,7 @@ export class SpatialRenderer {
         && state.spread === nextSpread
         && (state.diffuse ?? 0) === nextDiffuse
         && !!state.horizontalOnly === !!ev.horizontalOnly
+        && JSON.stringify(state.zoneExclusion ?? []) === JSON.stringify(ev.zoneExclusion ?? [])
         && state.gainDb === ev.gainDb;
       if (unchanged) continue;
       const previousPose = state.objectPoseTimeline.at(-1);
@@ -1708,6 +1714,7 @@ export class SpatialRenderer {
       state.spread = nextSpread;
       state.diffuse = nextDiffuse;
       state.horizontalOnly = !!ev.horizontalOnly;
+      state.zoneExclusion = ev.zoneExclusion;
       state.gainDb = ev.gainDb;
       state.hasObjectMetadata = true;
       state.objectRampEndSample = at + ramp;
@@ -1720,6 +1727,7 @@ export class SpatialRenderer {
         fromDiffuse,
         diffuse: nextDiffuse,
         horizontalOnly: state.horizontalOnly,
+        zoneExclusion: state.zoneExclusion,
         gainDb: ev.gainDb,
         rampSamples: ramp,
       });
@@ -1797,6 +1805,8 @@ export class SpatialRenderer {
           : Math.sqrt((1 - state.diffuse) * gains[i]! ** 2 + state.diffuse / Math.max(1, count));
       }
     }
+
+    applyZoneExclusion(gains, this.renderLayout, state.zoneExclusion ?? []);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
     // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径

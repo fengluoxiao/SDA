@@ -252,7 +252,7 @@ const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 
 // Native object renderer owns desktop audible output. It remains muted until a
 // complete calibrated HRTF is prepared and the player issues startAt().
-const NATIVE_RENDERER_PROTOCOL = 6;
+const NATIVE_RENDERER_PROTOCOL = 7;
 const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
 let nativeRenderer = null;
 let nativeRendererWritable = true;
@@ -1207,13 +1207,20 @@ ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample)
 });
 ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
   if (!Array.isArray(events) || events.length > 4096) return false;
-  // A 128-track ADM initial state exceeds the protocol's 16 KiB JSON limit.
-  // Await each bounded group before allowing its PCM batch to be submitted.
+  // Zone metadata varies in size; bound both event count and encoded bytes.
   let accepted = true;
-  for (let offset = 0; offset < events.length; offset += 32) {
-    accepted = await nativeRendererCommandAck({ type: "objectEvents", events: events.slice(offset, offset + 32) }, "objectEvents");
-    if (!accepted) break;
+  let batch = [];
+  for (const event of events) {
+    const candidate = [...batch, event];
+    if (candidate.length > 32 || Buffer.byteLength(JSON.stringify({ type: "objectEvents", events: candidate }), "utf8") > 16000) {
+      if (!batch.length) return false;
+      if (!await nativeRendererCommandAck({ type: "objectEvents", events: batch }, "objectEvents")) return false;
+      batch = [];
+    }
+    if (Buffer.byteLength(JSON.stringify({ type: "objectEvents", events: [event] }), "utf8") > 16000) return false;
+    batch.push(event);
   }
+  if (batch.length) accepted = await nativeRendererCommandAck({ type: "objectEvents", events: batch }, "objectEvents");
   writeStartupLog(`objectEvents count=${events.length} ACK -> ${accepted}`);
   return accepted;
 });

@@ -5,7 +5,7 @@ const rate = 96000;
 const length = 4001;
 const changes = [
   { samplePos: 0, rampDuration: 0, pos: [-1, 1, 0] },
-  { samplePos: 333, rampDuration: 2001, pos: [1, 0, 1] },
+  { samplePos: 333, rampDuration: 2001, pos: [1, 0, 1], zoneExclusion: [{ type: "polar", min: [150, -20], max: [-150, 90] }] },
   { samplePos: 3960, rampDuration: 0, pos: [0, -1, 0] },
 ].map(change => ({ id: 7, hasPos: true, gainDb: -6, size: [0, 0, 0], anchor: "room", distanceM: null, distanceInfinite: false, screenFactor: null, depthFactor: null, ...change }));
 

@@ -1,4 +1,6 @@
-import { DOMParser, type Element } from "@xmldom/xmldom";
+import { DOMParser, type Document, type Element } from "@xmldom/xmldom";
+import { scanAdmXml } from "./adm-xml.js";
+import type { AdmZone } from "../../core/src/adm-zone.js";
 
 /** ADM targets use the renderer's forward ramp, beginning at samplePos. */
 export interface AdmObjectEvent {
@@ -9,6 +11,7 @@ export interface AdmObjectEvent {
   gainDb: number;
   diffuse?: number;
   horizontalOnly?: boolean;
+  zoneExclusion?: AdmZone[];
   size: [number, number, number];
   anchor: "room" | "screen" | "speaker";
   distanceM: number | null;
@@ -24,6 +27,12 @@ export interface AdmMetadata {
   objectChannels: { id: number; channel: number }[];
   events: AdmObjectEvent[];
   title?: string;
+  warnings?: string[];
+}
+
+export interface AdmParseOptions {
+  overlapPolicy?: "reject" | "latest-start";
+  interpolationPolicy?: "reject" | "clamp";
 }
 
 interface TrackAssignment { channel: number; uid: string; trackRef: string; packRef: string }
@@ -207,67 +216,119 @@ function unsupportedBlock(block: Element): void {
   }
 }
 
-function horizontalExclusion(block: Element): boolean {
-  const exclusions = children(block, "zoneExclusion");
-  if (!exclusions.length) return false;
-  const zones = exclusions.flatMap(entry => children(entry, "zone"));
-  // Dolby's ZB/ZT pair excludes the lower and upper layers. Other region
-  // shapes need a general ADM zone renderer and must not be silently ignored.
-  const bounds = zones.map(zone => ["minX", "maxX", "minY", "maxY", "minZ", "maxZ"].map(key => number(zone.getAttribute(key), NaN, key)));
-  if (bounds.length !== 2 || bounds.some(b => b[0] !== -1 || b[1] !== 1 || b[2] !== -1 || b[3] !== 1)
-    || !bounds.some(b => b[4] === -1 && Math.abs(b[5]! + 0.4995) < 1e-6)
-    || !bounds.some(b => Math.abs(b[4]! - 0.4995) < 1e-6 && b[5] === 1)) fail("unsupported zoneExclusion shape");
-  return true;
+function zoneExclusion(block: Element): AdmZone[] {
+  return children(block, "zoneExclusion").flatMap(entry => children(entry, "zone")).map(zone => {
+    const cartesian = ["minX", "maxX", "minY", "maxY", "minZ", "maxZ"];
+    const polar = ["minAzimuth", "maxAzimuth", "minElevation", "maxElevation"];
+    const isCartesian = cartesian.some(key => zone.hasAttribute(key));
+    if (isCartesian && polar.some(key => zone.hasAttribute(key))) fail("mixed zoneExclusion coordinate systems");
+    const keys = isCartesian ? cartesian : polar;
+    const bounds = keys.map(key => number(zone.getAttribute(key), NaN, key));
+    if (bounds.some(bound => !Number.isFinite(bound))) fail("incomplete zoneExclusion bounds");
+    if (isCartesian) {
+      if (bounds.some(bound => Math.abs(bound) > 1) || [0, 2, 4].some(i => bounds[i]! > bounds[i + 1]!)) fail("invalid Cartesian zoneExclusion bounds");
+      return { type: "cartesian", min: [bounds[0]!, bounds[2]!, bounds[4]!], max: [bounds[1]!, bounds[3]!, bounds[5]!] };
+    }
+    if (Math.abs(bounds[0]!) > 180 || Math.abs(bounds[1]!) > 180 || Math.abs(bounds[2]!) > 90 || Math.abs(bounds[3]!) > 90 || bounds[2]! > bounds[3]!) fail("invalid polar zoneExclusion bounds");
+    return { type: "polar", min: [bounds[0]!, bounds[2]!], max: [bounds[1]!, bounds[3]!] };
+  });
 }
 
-function objectEvents(id: number, blocks: Element[], context: ObjectContext, sampleRate: number): AdmObjectEvent[] {
+interface ObjectBlock {
+  name: string;
+  start: number;
+  duration?: number;
+  interpolation?: number;
+  pos: [number, number, number];
+  gainDb: number;
+  diffuse: number;
+  size: [number, number, number];
+  zones: AdmZone[];
+}
+
+function prepareObjectBlock(block: Element, context: ObjectContext): ObjectBlock {
+  unsupportedBlock(block);
+  const { pos, cartesian } = objectPosition(block, context);
+  const diffuseText = value(block, "diffuse");
+  const diffuse = diffuseText === "false" ? 0 : diffuseText === "true" ? 1 : number(diffuseText, 0, "diffuse");
+  if (diffuse < 0 || diffuse > 1) fail("diffuse must be in [0, 1]");
+  const size: [number, number, number] = [number(value(block, "width"), 0, "width"), number(value(block, "depth"), 0, "depth"), number(value(block, "height"), 0, "height")];
+  if (size.some(extent => extent < 0 || extent > 1) || (!cartesian && size.some(extent => extent !== 0))) fail("only point spherical objects and normalized Cartesian extents are supported");
+  const jumps = children(block, "jumpPosition");
+  if (jumps.length > 1) fail("multiple jumpPosition values are unsupported");
+  const jump = jumps[0];
+  return {
+    name: block.getAttribute("audioBlockFormatID") || "", start: timeAttribute(block, "rtime", 0),
+    duration: block.getAttribute("duration") ? timeAttribute(block, "duration", 0) : undefined,
+    interpolation: flag(jump?.textContent?.trim(), "jumpPosition") ? number(jump?.getAttribute("interpolationLength"), 0, "interpolationLength") : undefined,
+    pos, gainDb: Math.max(-200, gain(block) + context.gainDb), diffuse, size, zones: zoneExclusion(block),
+  };
+}
+
+function objectEvents(id: number, blocks: ObjectBlock[], context: ObjectContext, sampleRate: number, options: AdmParseOptions, warnings: string[]): AdmObjectEvent[] {
+  blocks.sort((left, right) => left.start - right.start);
   const events: AdmObjectEvent[] = [];
   let previousEnd = 0;
   let lastEnd = Infinity;
+  let clampedInterpolations = 0;
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index]!;
-    unsupportedBlock(block);
-    const start = timeAttribute(block, "rtime", 0);
+    const start = block.start;
     const next = blocks[index + 1];
-    const fallbackDuration = next ? timeAttribute(next, "rtime", 0) - start : context.end - context.start - start;
-    const duration = timeAttribute(block, "duration", fallbackDuration);
-    if (start < 0 || duration <= 0 || (index > 0 && Math.abs(start - previousEnd) > 0.5 / sampleRate)) fail("object blocks overlap, have gaps, or have invalid durations");
-    const { pos, cartesian } = objectPosition(block, context);
-    const diffuse = number(value(block, "diffuse"), 0, "diffuse");
-    if (diffuse < 0 || diffuse > 1) fail("diffuse must be in [0, 1]");
-    const size: [number, number, number] = [number(value(block, "width"), 0, "width"), number(value(block, "depth"), 0, "depth"), number(value(block, "height"), 0, "height")];
-    if (size.some((extent) => extent < 0 || extent > 1) || (!cartesian && size.some((extent) => extent !== 0))) fail("only point spherical objects and normalized Cartesian extents are supported");
-    const jumps = children(block, "jumpPosition");
-    if (jumps.length > 1) fail("multiple jumpPosition values are unsupported");
-    const jump = jumps[0];
-    const interpolation = flag(jump?.textContent?.trim(), "jumpPosition")
-      ? number(jump?.getAttribute("interpolationLength"), 0, "interpolationLength") : duration;
-    if (interpolation < 0 || interpolation > duration) fail("invalid interpolationLength");
+    const fallbackDuration = next ? next.start - start : context.end - context.start - start;
+    const duration = block.duration ?? fallbackDuration;
+    if (next && fallbackDuration <= 0) fail(`object ${id} has duplicate block start ${start}`);
+    let activeDuration = duration;
+    // Recovery policy only: a newer block supersedes the old block permanently.
+    // Keep the declared interpolation speed; stop its ramp at the next event.
+    if (next && duration > fallbackDuration + 1 / sampleRate && options.overlapPolicy === "latest-start") {
+      activeDuration = fallbackDuration;
+      warnings.push(`ADM object ${id}: overlapping block ${block.name || index} truncated at ${start + activeDuration}s (latest-start recovery)`);
+    }
+    // Decimal timestamps can round adjacent boundaries by up to one sample.
+    if (start < 0 || duration <= 0 || (index > 0 && start < previousEnd - 1 / sampleRate)) fail(`object ${id} block ${block.name || index} overlaps or has invalid duration (start ${start}, previous end ${previousEnd})`);
+    const afterGap = index > 0 && start > previousEnd + 1 / sampleRate;
+    let interpolation = block.interpolation ?? duration;
+    if (interpolation < 0) fail("invalid interpolationLength");
+    if (interpolation > duration) {
+      if (options.interpolationPolicy !== "clamp") fail("invalid interpolationLength");
+      // Match EAR timing recovery: contract to the declared block duration.
+      interpolation = duration;
+      clampedInterpolations++;
+    }
     if (index > 0 && !Number.isFinite(interpolation)) fail("moving object block requires a duration");
     const absoluteStart = context.start + start;
     if (absoluteStart >= context.end) break;
     const event: AdmObjectEvent = {
-      id, samplePos: Math.round(absoluteStart * sampleRate), hasPos: true, pos,
-      gainDb: Math.max(-200, gain(block) + context.gainDb), diffuse, horizontalOnly: horizontalExclusion(block), size, anchor: "room",
+      id, samplePos: Math.round(absoluteStart * sampleRate), hasPos: true, pos: block.pos,
+      gainDb: block.gainDb, diffuse: block.diffuse, zoneExclusion: block.zones, size: block.size, anchor: "room",
       distanceM: null, distanceInfinite: false, screenFactor: null, depthFactor: null,
-      rampDuration: index === 0 ? 0 : Math.max(0, Math.round(interpolation * sampleRate)),
+      rampDuration: index === 0 || afterGap ? 0 : Math.max(0, Math.round(interpolation * sampleRate)),
     };
+    if (afterGap) events.push({ ...events.at(-1)!, samplePos: Math.round(lastEnd * sampleRate), gainDb: -200, rampDuration: 1 });
     if (index === 0 && event.samplePos > 0) events.push({ ...event, samplePos: 0, gainDb: -200, rampDuration: 1 });
     events.push(event);
-    previousEnd = start + duration;
+    previousEnd = start + activeDuration;
     lastEnd = Math.min(context.end, context.start + previousEnd);
   }
   if (!events.length) fail("object has no active audio blocks");
+  if (clampedInterpolations) warnings.push(`ADM object ${id}: clamped interpolationLength to block duration in ${clampedInterpolations} blocks (interpolation recovery)`);
   if (Number.isFinite(lastEnd)) events.push({ ...events.at(-1)!, samplePos: Math.round(lastEnd * sampleRate), gainDb: -200, rampDuration: 1 });
   return events;
 }
 
 /** Parse the ADM `axml` and EBU Tech 3306 `chna` chunk payloads. */
-export function parseAdmMetadata(axml: string | Uint8Array, chna: Uint8Array, sampleRate: number, channelCount?: number): AdmMetadata {
+export function parseAdmMetadata(axml: string | Uint8Array, chna: Uint8Array, sampleRate: number, channelCount?: number, options: AdmParseOptions = {}): AdmMetadata {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) fail("invalid sample rate");
   const xml = typeof axml === "string" ? axml : new TextDecoder("utf-8", { fatal: true }).decode(axml);
   const document = new DOMParser({ onError: (level, message) => { fail(`malformed XML (${level}): ${message}`); } }).parseFromString(xml.replace(/\0+$/, ""), "application/xml");
   if (document.doctype) fail("XML document types are unsupported");
+  return resolveAdm(document, chna, sampleRate, channelCount, options);
+}
+
+type ChannelConsumer = (channel: Element, type: string | undefined, id: number, context: ObjectContext) => void;
+
+function resolveAdm(document: Document, chna: Uint8Array, sampleRate: number, channelCount: number | undefined, options: AdmParseOptions, consume?: ChannelConsumer): AdmMetadata {
   const all = Array.from(document.getElementsByTagName("*"));
   const elements = (name: string) => all.filter((element) => element.localName === name);
   if (elements("audioFormatExtended").length !== 1) fail("expected one audioFormatExtended element");
@@ -327,6 +388,7 @@ export function parseAdmMetadata(axml: string | Uint8Array, chna: Uint8Array, sa
   };
   for (const id of rootObjects) visit(id, { start: 0, end: programmeEnd, gainDb: 0, offsets: [] }, new Set());
   const result: AdmMetadata = { labels: [], rawBedLabels: [], objectChannels: [], events: [], title: programme?.getAttribute("audioProgrammeName") || undefined };
+  const warnings: string[] = [];
   const assignments = parseChna(chna, channelCount);
   for (const assignment of assignments) {
     const uid = uids.get(assignment.uid);
@@ -335,16 +397,19 @@ export function parseAdmMetadata(axml: string | Uint8Array, chna: Uint8Array, sa
     if (declaredRate !== sampleRate) fail("audioTrackUID sampleRate differs from PCM");
     const channelRefs = refs(uid, "audioChannelFormatIDRef");
     const trackRefs = refs(uid, "audioTrackFormatIDRef");
-    if (channelRefs.length + trackRefs.length !== 1) fail(`ambiguous channel reference for ${assignment.uid}`);
-    const explicitRef = channelRefs[0] ?? trackRefs[0]!;
-    if (assignment.trackRef && assignment.trackRef !== explicitRef) fail(`CHNA/AXML track reference mismatch for ${assignment.uid}`);
-    let channelId = channelRefs[0];
+    if (channelRefs.length + trackRefs.length > 1) fail(`ambiguous channel reference for ${assignment.uid}`);
+    // Older BWF exports carry the UID's format reference only in CHNA.
+    const explicitRef = channelRefs[0] ?? trackRefs[0];
+    if (assignment.trackRef && explicitRef && assignment.trackRef !== explicitRef) fail(`CHNA/AXML track reference mismatch for ${assignment.uid}`);
+    const formatRef = explicitRef ?? assignment.trackRef;
+    if (!formatRef) fail(`missing channel reference for ${assignment.uid}`);
+    let channelId = formatRef.startsWith("AC_") ? formatRef : undefined;
     if (!channelId) {
-      const track = tracks.get(trackRefs[0]!);
-      if (!track) fail(`unresolved audioTrackFormat ${trackRefs[0]}; external common definitions are unsupported`);
+      const track = tracks.get(formatRef);
+      if (!track) fail(`unresolved audioTrackFormat ${formatRef}; external common definitions are unsupported`);
       const streamId = value(track, "audioStreamFormatIDRef");
       const stream = streamId ? streams.get(streamId) : undefined;
-      if (!stream) fail(`unresolved audioStreamFormat for ${trackRefs[0]}`);
+      if (!stream) fail(`unresolved audioStreamFormat for ${formatRef}`);
       channelId = value(stream, "audioChannelFormatIDRef");
     }
     const channel = channelId ? channels.get(channelId) : undefined;
@@ -355,21 +420,65 @@ export function parseAdmMetadata(axml: string | Uint8Array, chna: Uint8Array, sa
     if (pack && refs(pack, "audioChannelFormatIDRef").length && !refs(pack, "audioChannelFormatIDRef").includes(channelId!)) fail(`channel is not in its audioPackFormat ${uidPack}`);
     const type = channel.getAttribute("typeDefinition") || ({ "0001": "DirectSpeakers", "0003": "Objects" } as Record<string, string>)[channel.getAttribute("typeLabel") || channelId!.slice(3, 7)];
     const blocks = children(channel, "audioBlockFormat");
-    if (!blocks.length) fail(`audioChannelFormat ${channelId} has no blocks`);
+    if (!consume && !blocks.length) fail(`audioChannelFormat ${channelId} has no blocks`);
     const context = ownership.get(assignment.uid) ?? (objects.size === 0 ? { start: 0, end: programmeEnd, gainDb: 0, offsets: [] } : fail(`PCM track ${assignment.uid} is outside the selected programme`));
+    if (consume) { consume(channel, type, assignment.channel, context); continue; }
     if (type === "DirectSpeakers") {
       if (context.start !== 0 || context.gainDb !== 0 || context.offsets.length) fail("timed or adjusted DirectSpeakers audioObjects are unsupported");
       const label = bedLabel(channel, blocks);
-      if (result.rawBedLabels.includes(label)) fail(`duplicate DirectSpeakers output label ${label}`);
       result.labels.push(label);
-      result.rawBedLabels.push(label);
+      if (!result.rawBedLabels.includes(label)) result.rawBedLabels.push(label);
     } else if (type === "Objects") {
       const id = assignment.channel;
       result.labels.push(`Obj_${id}`);
       result.objectChannels.push({ id, channel: assignment.channel });
-      result.events.push(...objectEvents(id, blocks, context, sampleRate));
+      for (const event of objectEvents(id, blocks.map(block => prepareObjectBlock(block, context)), context, sampleRate, options, warnings)) result.events.push(event);
     } else fail(`unsupported audioChannelFormat type ${type ?? "unknown"}`);
   }
   result.events.sort((left, right) => left.samplePos - right.samplePos || left.id - right.id);
+  if (warnings.length) result.warnings = warnings;
+  return result;
+}
+
+/** Two bounded XML passes resolve arbitrary reference order without retaining block DOMs. */
+export async function parseAdmMetadataStream(source: () => AsyncIterable<Uint8Array>, chna: Uint8Array, sampleRate: number, channelCount?: number, options: AdmParseOptions = {}): Promise<AdmMetadata> {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) fail("invalid sample rate");
+  const document = await scanAdmXml(source());
+  const bindings = new Map<string, { channel: Element; type: string | undefined; id: number; context: ObjectContext; blocks: ObjectBlock[]; bed: Element[] }[]>();
+  const result = resolveAdm(document, chna, sampleRate, channelCount, options, (channel, type, id, context) => {
+    if (type !== "Objects" && type !== "DirectSpeakers") fail(`unsupported audioChannelFormat type ${type ?? "unknown"}`);
+    const key = channel.getAttribute("audioChannelFormatID")!;
+    const entries = bindings.get(key) ?? [];
+    entries.push({ channel, type, id, context, blocks: [], bed: [] });
+    bindings.set(key, entries);
+  });
+  await scanAdmXml(source(), (channelId, block) => {
+    for (const binding of bindings.get(channelId) ?? []) {
+      if (binding.type === "Objects") binding.blocks.push(prepareObjectBlock(block, binding.context));
+      else {
+        if (binding.bed.length) fail("time-varying DirectSpeakers channels are unsupported");
+        binding.bed.push(block);
+      }
+    }
+  });
+  const warnings: string[] = [];
+  const ordered = [...bindings.values()].flat().sort((a, b) => a.id - b.id);
+  for (const binding of ordered) {
+    const { channel, type, id, context, blocks, bed } = binding;
+    if (type === "DirectSpeakers") {
+      if (!bed.length) fail(`audioChannelFormat ${channel.getAttribute("audioChannelFormatID")} has no blocks`);
+      if (context.start !== 0 || context.gainDb !== 0 || context.offsets.length) fail("timed or adjusted DirectSpeakers audioObjects are unsupported");
+      const label = bedLabel(channel, bed);
+      result.labels.push(label);
+      if (!result.rawBedLabels.includes(label)) result.rawBedLabels.push(label);
+    } else {
+      result.labels.push(`Obj_${id}`);
+      result.objectChannels.push({ id, channel: id });
+      for (const event of objectEvents(id, blocks, context, sampleRate, options, warnings)) result.events.push(event);
+      blocks.length = 0;
+    }
+  }
+  result.events.sort((left, right) => left.samplePos - right.samplePos || left.id - right.id);
+  if (warnings.length) result.warnings = warnings;
   return result;
 }

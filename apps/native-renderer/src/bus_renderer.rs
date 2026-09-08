@@ -128,6 +128,15 @@ pub(super) fn route_diffuse(
     gains
 }
 
+pub(super) fn route_zoned(
+    solver: &vbap::VbapSolver, position: [f32; 3], head_pose: Option<[f32; 4]>,
+    spread: f32, diffuse: f32, horizontal_only: bool, zones: &[crate::adm_zone::Zone],
+) -> [f32; vbap::MAX_BUS_COUNT] {
+    let mut gains = route_diffuse(solver, position, head_pose, spread, diffuse, horizontal_only);
+    crate::adm_zone::apply(&mut gains, solver, zones);
+    gains
+}
+
 #[cfg(test)]
 mod adm_tests {
     use super::*;

@@ -8,7 +8,7 @@ const main = readFileSync(join(root, "main.cjs"), "utf8");
 const preload = readFileSync(join(root, "preload.cjs"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
-assert.match(main, /const NATIVE_RENDERER_PROTOCOL = 6/);
+assert.match(main, /const NATIVE_RENDERER_PROTOCOL = 7/);
 assert.match(main, /function bundledNativeRendererPath\(\)/);
 const rendererPathFunction = main.match(/function bundledNativeRendererPath\(\) \{[\s\S]*?\r?\n\}/)?.[0];
 assert.ok(rendererPathFunction);

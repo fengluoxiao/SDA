@@ -3,7 +3,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
-const fixture = JSON.parse(await readFile('tmp/dolby-natures-fury/inspection/playback-verification.json', 'utf8'));
+const inspection = resolve(process.argv[3] ?? 'tmp/dolby-natures-fury/inspection');
+const fixture = JSON.parse(await readFile(resolve(inspection, 'playback-verification.json'), 'utf8'));
 const log = await readFile(process.argv[2] ?? 'tmp/sda-startup.log', 'utf8');
 const sessionStart = log.lastIndexOf('startNativeRenderer() called');
 assert.ok(sessionStart >= 0, 'native session must be present');
@@ -43,5 +44,5 @@ const report = {
   renderBudgetMicroseconds: 256 / fixture.format.sampleRate * 1e6,
   nativeExecutableSha256: createHash('sha256').update(await readFile('apps/desktop/native-renderer/SdaNativeRenderer.exe')).digest('hex'),
 };
-await writeFile(resolve('tmp/dolby-natures-fury/inspection/native-playback-verification.json'), `${JSON.stringify(report, null, 2)}\n`);
+await writeFile(resolve(inspection, 'native-playback-verification.json'), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify(report, null, 2));

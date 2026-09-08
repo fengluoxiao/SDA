@@ -14,6 +14,8 @@ import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 export type CodecName = "auto" | "truehd" | "eac3" | "dts" | "alac";
 
 export type ObjectAnchor = "room" | "screen" | "speaker";
+export type { AdmZone } from "./adm-zone.js";
+import type { AdmZone } from "./adm-zone.js";
 
 /** One dynamic-object spatial event (ADM cartesian plus codec render metadata). */
 export interface ObjectEvent {
@@ -28,6 +30,7 @@ export interface ObjectEvent {
   diffuse?: number;
   /** Dolby ADM ZB/ZT exclusion pair retains the horizontal speaker layer. */
   horizontalOnly?: boolean;
+  zoneExclusion?: AdmZone[];
   /** (width, depth, height) each normalised to [0, 1]; [0,0,0] = point source. */
   size: [number, number, number];
   /** Real codec render metadata. Speaker anchors are bed/ISF semantics. */

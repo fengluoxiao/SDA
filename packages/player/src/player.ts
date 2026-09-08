@@ -935,6 +935,7 @@ export class SdaPlayer {
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
   open(codec: "auto" | "truehd" | "eac3" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+    for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
     this.worker.postMessage({ type: "open", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });

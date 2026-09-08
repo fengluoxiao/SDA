@@ -24,7 +24,7 @@ use cpal::{
 };
 use serde::{Deserialize, Serialize};
 
-const PROTOCOL: u32 = 6;
+const PROTOCOL: u32 = 7;
 const MAX_SOURCES: usize = 128;
 const MAX_PENDING_SAMPLES: usize = 480_000; // 10 s @ 48 kHz per source.
 const FRAME_JSON: u8 = b'J';
@@ -49,6 +49,7 @@ const OBJECT_ACTIVITY_THRESHOLD: f32 = 0.001;
 const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 16;
 
 mod bus_renderer;
+mod adm_zone;
 mod direct_renderer;
 mod callback_output;
 mod convolution;
@@ -250,6 +251,8 @@ struct NativeObjectEvent {
     diffuse: f32,
     #[serde(default)]
     horizontal_only: bool,
+    #[serde(default)]
+    zone_exclusion: Vec<adm_zone::Zone>,
     #[serde(default = "default_object_ramp")]
     ramp_duration: u32,
 }
@@ -269,12 +272,13 @@ struct ProgramGainEvent {
     gain: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SpatialEvent {
     position: [f32; 3],
     spread: f32,
     diffuse: f32,
     horizontal_only: bool,
+    zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
     ramp: u32,
 }
 
@@ -391,6 +395,7 @@ struct Source {
     spread: f32,
     diffuse: f32,
     horizontal_only: bool,
+    zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
     spatial_events: BTreeMap<u64, SpatialEvent>,
     motion: Option<SpatialEvent>,
     bus_gains: [f32; vbap::MAX_BUS_COUNT],
@@ -432,6 +437,7 @@ impl Default for Source {
             spread: 0.0,
             diffuse: 0.0,
             horizontal_only: false,
+            zone_exclusion: Default::default(),
             spatial_events: BTreeMap::new(),
             motion: None,
             bus_gains: [0.0; vbap::MAX_BUS_COUNT],
@@ -746,7 +752,7 @@ impl Engine {
     }
 
     fn advance_source_envelopes(source: &mut Source, samples: u32) {
-        if let Some(mut motion) = source.motion {
+        if let Some(mut motion) = source.motion.take() {
             let elapsed = samples.min(motion.ramp);
             let fraction = elapsed as f32 / motion.ramp.max(1) as f32;
             for axis in 0..3 {
@@ -785,16 +791,16 @@ impl Engine {
     }
 
     fn route_source_now(&mut self, id: &str, ramp: u32) -> Result<(), String> {
-        let (position, spread, diffuse, horizontal_only, kind) = self
+        let (position, spread, diffuse, horizontal_only, zones, kind) = self
             .sources
             .get(id)
-            .map(|source| (source.position, source.spread, source.diffuse, source.horizontal_only, source.kind))
+            .map(|source| (source.position, source.spread, source.diffuse, source.horizontal_only, source.zone_exclusion.clone(), source.kind))
             .ok_or("unknown source")?;
         if kind != SourceKind::Object {
             return Ok(());
         }
         let route = RouteGains {
-            buses: bus_renderer::route_diffuse(&self.vbap, position, self.head_pose, spread, diffuse, horizontal_only),
+            buses: bus_renderer::route_zoned(&self.vbap, position, self.head_pose, spread, diffuse, horizontal_only, &zones),
             lfe: 0.0,
         };
         let source = self.sources.get_mut(id).expect("source was checked above");
@@ -807,10 +813,11 @@ impl Engine {
     }
 
     fn start_source_motion(source: &mut Source, event: SpatialEvent) -> bool {
-        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only {
+        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only && source.zone_exclusion == event.zone_exclusion {
             return false;
         }
         source.horizontal_only = event.horizontal_only;
+        source.zone_exclusion = event.zone_exclusion.clone();
         if event.ramp == 0 {
             source.position = event.position;
             source.spread = event.spread;
@@ -823,7 +830,7 @@ impl Engine {
     }
 
     fn route_motion_block(source: &mut Source, solver: &vbap::VbapSolver, head: Option<[f32; 4]>, samples: u32) {
-        let Some(motion) = source.motion else { return; };
+        let Some(motion) = source.motion.as_ref() else { return; };
         let samples = samples.min(motion.ramp).max(1);
         let fraction = samples as f32 / motion.ramp as f32;
         let position = std::array::from_fn(|axis| source.position[axis] + (motion.position[axis] - source.position[axis]) * fraction);
@@ -832,7 +839,7 @@ impl Engine {
         // Re-pan points along the Cartesian trajectory, not just its endpoints.
         // Gain interpolation only bridges this short segment of the route.
         Self::set_source_route(source, RouteGains {
-            buses: bus_renderer::route_diffuse(solver, position, head, spread, diffuse, source.horizontal_only), lfe: 0.0,
+            buses: bus_renderer::route_zoned(solver, position, head, spread, diffuse, source.horizontal_only, &source.zone_exclusion), lfe: 0.0,
         }, samples);
     }
 
@@ -1150,7 +1157,7 @@ impl Engine {
                         self.route_update_count = self.route_update_count.saturating_add(1);
                     } else if changed {
                         Self::set_source_route(source, RouteGains {
-                            buses: bus_renderer::route_diffuse(&vbap, source.position, head_pose, source.spread, source.diffuse, source.horizontal_only),
+                            buses: bus_renderer::route_zoned(&vbap, source.position, head_pose, source.spread, source.diffuse, source.horizontal_only, &source.zone_exclusion),
                             lfe: 0.0,
                         }, 0);
                         self.route_update_count = self.route_update_count.saturating_add(1);
@@ -1853,7 +1860,7 @@ mod tests {
             source.samples.write(0, 0, &[0.001; 4096]);
             // Obj14's captured OAMD uses this path and 1536-sample duration.
             // Retain its 577-sample QMF offset and shift the event to the first frame.
-            source.spatial_events.insert(577, SpatialEvent { horizontal_only: false, diffuse: 0.0,
+            source.spatial_events.insert(577, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: [-1.0, -1.0, 0.0], spread: 0.0, ramp: 1536,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -1911,7 +1918,7 @@ mod tests {
             let mut source = Source { kind: SourceKind::Object, object_id: Some(14),
                 position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
             source.samples.write(0, 0, &pcm);
-            source.spatial_events.insert(12000, SpatialEvent { horizontal_only: false, diffuse: 0.0,
+            source.spatial_events.insert(12000, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: [1.0, 1.0, 0.0], spread: 0.0, ramp: 24000,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -2243,7 +2250,7 @@ mod tests {
         let target_position = [1.0, 0.0, 0.0];
         source.spatial_events.insert(
             96,
-            SpatialEvent { horizontal_only: false, diffuse: 0.0,
+            SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: target_position,
                 spread: 0.2,
                 ramp: 32,
@@ -2333,7 +2340,7 @@ mod tests {
             ..Source::default()
         };
         let position = [1.0, 0.0, 0.0];
-        source.spatial_events.insert(96, SpatialEvent { horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
+        source.spatial_events.insert(96, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
         source.gain_events.insert(96, GainEvent { gain: 0.25, ramp: 0 });
         engine.sources.insert("obj:7".into(), source);
         engine.route_source_now("obj:7", 0).unwrap();

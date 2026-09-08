@@ -61,6 +61,16 @@ for (const batched of [false, true]) {
 }
 
 const legacy = fixture(false, false);
+for (const tracking of [false, true]) {
+  const {renderer, state, messages} = fixture(true, tracking);
+  renderer.renderLayout = [{azimuth:90,elevation:0},{azimuth:-90,elevation:0}];
+  const zone = {type:'cartesian',min:[-1,-1,-1],max:[-0.1,1,1]};
+  assert.equal(SpatialRenderer.prototype.applyEvents.call(renderer,[
+    {...event(10,[-1,0,0],0),zoneExclusion:[zone]}, {...event(20,[-1,0,0],0),zoneExclusion:[]}
+  ]),2,'zone-only changes must not coalesce');
+  assert.deepEqual(messages[0].entries.filter(entry=>!entry.poseUpdate).map(entry=>[...entry.gains]),[[0,1],[1,0]]);
+  assert.deepEqual(state.objectPoseTimeline.map(entry=>entry.zoneExclusion),[[zone],[]]);
+}
 const unspecified = event(10, [-1, 0, 0], 0);
 delete unspecified.rampDuration;
 SpatialRenderer.prototype.applyEvents.call(legacy.renderer, [unspecified]);

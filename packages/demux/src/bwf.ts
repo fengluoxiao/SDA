@@ -1,5 +1,5 @@
 import { decodeDbmdBinauralMetadata, type BinauralRenderMetadata } from "./dbmd.js";
-import { parseAdmMetadata, type AdmMetadata, type AdmObjectEvent } from "./adm.js";
+import { parseAdmMetadataStream, type AdmMetadata, type AdmObjectEvent } from "./adm.js";
 
 interface PcmFormat {
   encoding: number; channels: number; sampleRate: number;
@@ -93,7 +93,7 @@ export async function readBwfMetadata(
   const tag = text(header.subarray(0, 4));
   let end = tag === "RIFF" ? view(header).getUint32(4, true) + 8 : fileSize;
   if (end > fileSize || end < 12) fail("invalid RIFF size");
-  let format: PcmFormat | undefined, axml: Uint8Array | undefined, chna: Uint8Array | undefined;
+  let format: PcmFormat | undefined, axml: { offset: number; length: number } | undefined, chna: Uint8Array | undefined;
   let dataOffset = -1, dataSize = 0, binaural = missingBinaural();
   let ds64Data: number | undefined;
   const sizes = new Map<string, number[]>(), seen = new Set<string>();
@@ -110,12 +110,12 @@ export async function readBwfMetadata(
     if (["fmt ", "axml", "chna", "dbmd", "ds64", "data"].includes(id)) {
       if (seen.has(id)) fail("multiple chunks are unsupported: " + id);
       seen.add(id);
-      if (id !== "data" && length > MAX_METADATA) fail("metadata exceeds 64 MiB: " + id);
+      if (id !== "data" && id !== "axml" && length > MAX_METADATA) fail("metadata exceeds 64 MiB: " + id);
       if (id === "data") { dataOffset = offset + 8; dataSize = length; }
+      else if (id === "axml") axml = { offset: offset + 8, length };
       else {
         const bytes = await read(offset + 8, length);
         if (id === "fmt ") format = parseFormat(bytes);
-        if (id === "axml") axml = bytes;
         if (id === "chna") chna = bytes;
         if (id === "dbmd") binaural = decodeDbmdBinauralMetadata(bytes);
         if (id === "ds64") {
@@ -140,7 +140,15 @@ export async function readBwfMetadata(
   if (!format || dataOffset < 0) fail("missing fmt or data chunk");
   if (dataSize % format.blockAlign) fail("partial PCM sample frame");
   if (!!axml !== !!chna) fail("ADM requires both axml and chna chunks");
-  const adm = axml && chna ? parseAdmMetadata(axml, chna, format.sampleRate, format.channels) : undefined;
+  const xmlRange = axml;
+  const source = async function* () {
+    for (let consumed = 0; consumed < xmlRange!.length;) {
+      const length = Math.min(64 * 1024, xmlRange!.length - consumed);
+      yield await read(xmlRange!.offset + consumed, length);
+      consumed += length;
+    }
+  };
+  const adm = axml && chna ? await parseAdmMetadataStream(source, chna, format.sampleRate, format.channels, { overlapPolicy: "latest-start", interpolationPolicy: "clamp" }) : undefined;
   return { format, dataOffset, dataSize, fileSize, adm, labels: adm?.labels ?? pcmLabels(format), binaural };
 }
 

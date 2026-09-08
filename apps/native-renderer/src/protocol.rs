@@ -91,6 +91,10 @@ fn handle_command(
             }
         }
         Command::ObjectEvents { events } => {
+            if events.iter().any(|event| event.zone_exclusion.iter().any(|zone| !zone.valid())) {
+                write_event(&Event::Ack { command: "objectEvents", accepted: false, detail: Some("invalid ADM exclusion bounds") });
+                return true;
+            }
             for event in events {
                 let id = format!("obj:{}", event.id);
                 if state.sources.contains_key(&id) {
@@ -631,6 +635,7 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
             spread: spatial::spread_from_size(event.size),
             diffuse: if event.diffuse.is_finite() { event.diffuse.clamp(0.0, 1.0) } else { 0.0 },
             horizontal_only: event.horizontal_only,
+            zone_exclusion: event.zone_exclusion.into(),
             ramp,
         };
         if event.sample_pos > sample_pos {
@@ -1048,6 +1053,46 @@ fn command_name(command: &Command) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zones_validate_before_mutation_and_preserve_scheduled_state() {
+        let mut engine = Engine::new(48_000, 2);
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        let value = serde_json::json!({"id": 7, "samplePos": 128, "hasPos": true, "pos": [-1, 1, 0], "gainDb": 0,
+            "size": [0,0,0], "rampDuration": 0, "zoneExclusion": [{"type":"cartesian","min":[-1,-1,-1],"max":[-0.1,1,1]}]});
+        let event: NativeObjectEvent = serde_json::from_value(value.clone()).unwrap();
+        let mut source = Source { kind: SourceKind::Object, ..Default::default() };
+        apply_object_event(&mut source, 0, event);
+        assert!(source.zone_exclusion.is_empty());
+        let scheduled = source.spatial_events.remove(&128).unwrap();
+        assert!(Engine::start_source_motion(&mut source, scheduled));
+        let zone = source.zone_exclusion.clone();
+        let gains = bus_renderer::route_zoned(&engine.vbap, source.position, None, 0.0, 0.0, false, &zone);
+        for (i, gain) in gains.iter().enumerate().take(engine.vbap.bus_count()) {
+            let (az, el) = engine.vbap.speaker_direction(i); if zone[0].contains(az, el) { assert_eq!(*gain, 0.0); }
+        }
+        engine.sources.insert("obj:7".into(), source);
+        let mut invalid = value;
+        invalid["zoneExclusion"][0]["max"][0] = serde_json::json!(-2);
+        assert!(handle_command(&mut engine, Command::ObjectEvents { events: vec![serde_json::from_value(invalid).unwrap()] }, &fifo, &telemetry));
+        assert_eq!(engine.sources["obj:7"].zone_exclusion, zone);
+    }
+
+    #[test]
+    fn repeated_bed_labels_preserve_independent_pcm_sources() {
+        let mut engine = Engine::new(48_000, 2);
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        for id in ["bed:0", "bed:1"] {
+            handle_command(&mut engine, Command::AddSource { id: id.into(), at: Some(0), bed_label: Some("L".into()) }, &fifo, &telemetry);
+        }
+        ingest_pcm_batch(&mut engine, 0, vec![("bed:0".into(), vec![0.1]), ("bed:1".into(), vec![0.2])]);
+        assert_eq!(engine.sources.len(), 2);
+        assert_eq!(engine.sources["bed:0"].bus_gains, engine.sources["bed:1"].bus_gains);
+        assert_eq!(engine.sources.get_mut("bed:0").unwrap().samples.take(0), Some(0.1));
+        assert_eq!(engine.sources.get_mut("bed:1").unwrap().samples.take(0), Some(0.2));
+    }
 
     #[test]
     fn adm_128_tracks_accept_an_atomic_pcm_batch() {
