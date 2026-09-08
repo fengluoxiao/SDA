@@ -1,0 +1,24 @@
+[package]
+name = "macindecode-ac4-scene"
+description = "Streaming render-ready scene views for AC-4 Core and Full A-JOC decoding"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core"
+documentation = "https://docs.rs/macindecode-ac4-scene"
+readme = "README.md"
+keywords = ["ac-4", "audio", "object-audio", "decoder", "no-std"]
+categories = ["multimedia::audio", "no-std"]
+include = ["src/**", "README.md", "LICENSE"]
+
+[features]
+default = []
+audio-decode = ["dep:macindecode-ac4-decode", "macindecode-ac4-decode/audio-decode"]
+
+[dependencies]
+macindecode-ac4-bitstream = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123" }
+macindecode-ac4-decode = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123", optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"

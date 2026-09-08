@@ -17,8 +17,14 @@ truehd = "0.6.3"
 eac3 = { version = "0.7.3", path = "../../harletty-bridge/eac3" }
 dca = { version = "0.7.3", path = "../../harletty-bridge/dca" }
 alac = { version = "0.5.0", default-features = false }
+macindecode-ac4-bitstream = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123" }
+macindecode-ac4-scene = { path = "../../vendor/macindecode-ac4-scene", features = ["audio-decode"] }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Rust 1.98's single-unit TrueHD optimization can exceed 7 GiB on Windows.
+[profile.release.package.truehd]
+codegen-units = 16

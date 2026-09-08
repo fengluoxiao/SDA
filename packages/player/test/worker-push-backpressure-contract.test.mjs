@@ -12,6 +12,8 @@ assert.match(player, /await this\.pushWorkerChunk\(copy\)/);
 assert.match(player, /case "push-ack"/);
 assert.match(worker, /self\.postMessage\(\{ type: "push-ack", sequence: msg\.sequence \}\)/);
 assert.match(worker, /if \(msg\.type === "push"\) self\.postMessage\(\{ type: "push-ack", sequence: msg\.sequence, error: message \}\)/);
-assert.match(app, /const FILE_CHUNK_SIZE = 1 << 18/);
+assert.match(player, /await this\.push\(value\)/);
+assert.match(player, /offset \+= this\.decodeChunkSize/);
+assert.match(player, /const COMPRESSED_DECODE_CHUNK_SIZE = 1 << 15/);
 
 console.log("worker push backpressure contract tests passed");

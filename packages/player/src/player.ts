@@ -224,7 +224,8 @@ const MAX_IN_FLIGHT_BATCHES = 32;
 /** Native sidecar transport needs enough lead to survive IPC/control scheduling;
  * its source rings retain at most ten seconds per source. */
 const MAX_IN_FLIGHT_SECONDS = 1;
-const CHUNK_SIZE = 1 << 20; // 1 MiB reads
+const COMPRESSED_DECODE_CHUNK_SIZE = 1 << 15;
+const PCM_DECODE_CHUNK_SIZE = 1 << 20;
 
 function layoutIdFor(layout: readonly VirtualSpeaker[]): LayoutId {
   for (const [id, candidate] of Object.entries(LAYOUTS) as [LayoutId, readonly VirtualSpeaker[]][]) {
@@ -898,7 +899,7 @@ export class SdaPlayer {
   }
 
   /** Play a File/Blob (browser) end-to-end. */
-  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "dts" = "auto"): Promise<void> {
+  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto"): Promise<void> {
     if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
@@ -912,8 +913,7 @@ export class SdaPlayer {
       for (;;) {
         const { done, value } = await reader.read();
         if (done || this.disposed) break;
-        await this.pushWorkerChunk(Uint8Array.from(value).buffer);
-        await this.pace();
+        await this.push(value);
       }
       if (!this.disposed) this.worker.postMessage({ type: "flush" });
     } finally {
@@ -926,7 +926,7 @@ export class SdaPlayer {
   async openSeekable(
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
-    codec: "auto" | "truehd" | "eac3" | "dts" = "auto",
+    codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
   ): Promise<void> {
     const header = await readRange(0, Math.min(12, size));
     const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
@@ -934,7 +934,8 @@ export class SdaPlayer {
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+    this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
@@ -951,10 +952,16 @@ export class SdaPlayer {
     });
   }
 
+  private decodeChunkSize = COMPRESSED_DECODE_CHUNK_SIZE;
+
   async push(chunk: Uint8Array): Promise<void> {
-    const copy = Uint8Array.from(chunk).buffer;
-    await this.pushWorkerChunk(copy);
-    await this.pace();
+    // Bound decode bursts independently of filesystem/network read sizes.
+    // Pace each part so queued PCM cannot hide a multi-second decode gap.
+    for (let offset = 0; offset < chunk.length && !this.disposed; offset += this.decodeChunkSize) {
+      const copy = Uint8Array.from(chunk.subarray(offset, offset + this.decodeChunkSize)).buffer;
+      await this.pushWorkerChunk(copy);
+      await this.pace();
+    }
   }
 
   /** Signal end of a manually pushed stream and drain remaining demuxed PCM. */

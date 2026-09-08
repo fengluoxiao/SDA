@@ -15,6 +15,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 pub mod alac_pipeline;
+pub mod ac4_pipeline;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
@@ -30,7 +31,7 @@ pub struct ObjectEvent {
     pub has_pos: bool,
     /// ADM cartesian [x, y, z]: x+ = right, y+ = front, z+ = up.
     pub pos: [f64; 3],
-    pub gain_db: i8,
+    pub gain_db: f64,
     /// Object extent (width, depth, height), each normalised to [0, 1].
     /// [0, 0, 0] = point source.
     pub size: [f64; 3],
@@ -94,6 +95,7 @@ pub trait Pipeline {
     fn codec_name(&self) -> &'static str;
     fn push(&mut self, data: &[u8], out: &mut VecDeque<FrameData>, errors: &mut Vec<String>);
     fn reset(&mut self);
+    fn flush(&mut self, _out: &mut VecDeque<FrameData>, _errors: &mut Vec<String>) {}
 }
 
 /// A decoded frame. PCM channels are fetched one at a time as typed arrays;
@@ -234,7 +236,7 @@ impl SdaDecoder {
                 }
                 None if sniff.len() >= 64 * 1024 => {
                     return Err(JsValue::from_str(
-                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/DTS syncword)",
+                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS syncword)",
                     ));
                 }
                 None => return Ok(()),
@@ -267,6 +269,10 @@ impl SdaDecoder {
         self.pipeline.reset();
         self.queue.clear();
     }
+
+    pub fn flush(&mut self) {
+        self.pipeline.flush(&mut self.queue, &mut self.errors);
+    }
 }
 
 fn build_pipeline(codec: &str) -> Result<Box<dyn Pipeline>, JsValue> {
@@ -274,6 +280,7 @@ fn build_pipeline(codec: &str) -> Result<Box<dyn Pipeline>, JsValue> {
         "truehd" | "thd" | "mlp" => Ok(Box::new(truehd_pipeline::TruehdPipeline::new())),
         "eac3" | "ec3" | "ac3" => Ok(Box::new(eac3_pipeline::Eac3Pipeline::new())),
         "dts" | "dca" => Ok(Box::new(dts_pipeline::DtsPipeline::new())),
+        "ac4" | "ac-4" => Ok(Box::new(ac4_pipeline::Ac4Pipeline::new())),
         other => Err(JsValue::from_str(&format!("unknown codec: {other}"))),
     }
 }
@@ -289,6 +296,9 @@ impl Pipeline for NoopPipeline {
 
 /// Syncword sniffing over the first bytes of the stream.
 fn detect_codec(data: &[u8]) -> Option<&'static str> {
+    if data.len() >= 4 && data[0] == 0xac && matches!(data[1], 0x40 | 0x41) {
+        return Some("ac4");
+    }
     let scan = &data[..data.len().min(64 * 1024)];
     let mut first_eac3 = None;
     let mut first_dts = None;

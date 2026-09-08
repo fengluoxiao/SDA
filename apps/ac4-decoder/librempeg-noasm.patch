@@ -1,0 +1,9 @@
+diff --git a/libavutil/x86/Makefile b/libavutil/x86/Makefile
+--- a/libavutil/x86/Makefile
++++ b/libavutil/x86/Makefile
+@@ -1,1 +1,1 @@
+-OBJS += x86/cpu.o                                                       \
++OBJS += x86/cpu.o x86/float_dsp_init.o                                   \
+@@ -10,1 +10,1 @@
+-               x86/float_dsp.o x86/float_dsp_init.o                     \
++               x86/float_dsp.o                                         \

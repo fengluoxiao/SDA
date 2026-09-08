@@ -5,10 +5,15 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { renameSync } from "node:fs";
+import { renameSync, existsSync } from "node:fs";
 
 const coreDir = join(dirname(fileURLToPath(import.meta.url)), "../packages/core");
 const wasm = join(coreDir, "target/wasm32-unknown-unknown/release/sda_core.wasm");
+const specDir = process.env.MACINDECODE_AC4_SPEC_DIR ?? join(coreDir, "../../tmp/MacinDecode-AC4-Core/spec");
+if (!existsSync(join(specDir, "generated/ts103190_pdf_tables.rs"))) {
+  throw new Error("AC-4 tables missing. Run node scripts/prepare-ac4.mjs first (requires Python 3).");
+}
+process.env.MACINDECODE_AC4_SPEC_DIR = specDir;
 
 const run = (cmd, args) =>
   execFileSync(cmd, args, { cwd: coreDir, stdio: "inherit", shell: process.platform === "win32" });

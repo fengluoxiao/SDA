@@ -357,7 +357,7 @@ fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Ex
             sample_pos,
             has_pos,
             pos,
-            gain_db: object_data.object_basic_info.object_gain,
+            gain_db: f64::from(object_data.object_basic_info.object_gain),
             size,
             anchor,
             distance_m,

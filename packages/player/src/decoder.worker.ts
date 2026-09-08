@@ -71,7 +71,7 @@ function drainFrames(): void {
   while (true) {
     const frame = decoder.nextFrame();
     if (!frame) break;
-    decodedFrames.push(frame);
+    acceptDecodedFrame(frame);
   }
   for (const message of decoder.drainErrors()) {
     self.postMessage({ type: "error", message });
@@ -88,6 +88,17 @@ async function processDecodedFrames(): Promise<void> {
       frameBatcher.push(output);
     }
   }
+}
+
+function acceptDecodedFrame(frame: DecodedFrameData): void {
+  if (outputSampleRate && frame.sampleRate !== outputSampleRate) {
+    decodedFrames.push(frame);
+    return;
+  }
+  // Do not hold native-rate PCM until the entire compressed input chunk has
+  // decoded: the audio thread must receive frames while decoding continues.
+  compactObjectEvents(frame);
+  frameBatcher.push(frame);
 }
 
 // WASM resampler initialization is async: keep open/push/flush in port order.
@@ -126,6 +137,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
     }
     case "flush": {
       demuxer?.flush();
+      decoder?.flush();
       drainFrames();
       await processDecodedFrames();
       const tail = resampler?.finish();
@@ -140,6 +152,11 @@ async function handleMessage(e: MessageEvent): Promise<void> {
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
+            if (t.codec === "ac-4") {
+              decoder?.free();
+              decoder = new SdaDecoder("ac4");
+              decoderConfigurationError = null;
+            }
             if (t.codec === "adm" || t.codec === "pcm") {
               decoder?.free();
               decoder = null;
@@ -174,7 +191,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
             drainFrames();
           },
           onError: (m) => self.postMessage({ type: "error", message: m }),
-          onPcmFrame: (frame) => decodedFrames.push(frame),
+          onPcmFrame: acceptDecodedFrame,
           onBinauralMetadata: (metadata: BinauralRenderMetadata) => self.postMessage({ type: "binaural-metadata", metadata }),
         }, bwfMetadata);
       }

@@ -493,7 +493,7 @@ fn extract_events(
                     sample_pos: base_sample_pos + sample_offset,
                     has_pos,
                     pos,
-                    gain_db: object_gain_db(block.gain, block.inactive),
+                    gain_db: f64::from(object_gain_db(block.gain, block.inactive)),
                     size,
                     anchor,
                     distance_m,

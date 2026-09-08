@@ -1,0 +1,9 @@
+[package]
+name = "sda-ac4-ims-inspect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+macindecode-ac4-bitstream = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123" }
+serde_json = "1"

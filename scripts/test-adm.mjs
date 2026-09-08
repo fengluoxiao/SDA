@@ -8,6 +8,7 @@ await mkdir(directory, { recursive: true });
 const tests = [
   'packages/demux/test/adm-bwf.test.mjs',
   'packages/demux/test/dbmd.test.mjs',
+  'packages/demux/test/ac4.test.mjs',
   'packages/demux/test/alac-sample-entry.test.mjs',
   'packages/demux/test/mkv-streaming.test.mjs',
   'packages/demux/test/mp4-extraction-lifecycle.test.mjs',

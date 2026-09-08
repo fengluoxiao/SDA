@@ -37,6 +37,20 @@ export interface Mp4DemuxerCallbacks {
 }
 
 const AUDIO_CODECS = new Set(["ec-3", "ac-3", "ac-4", "mlpa", "dtsc", "dtsh", "dtsl", "dtse"]);
+
+/** ISO BMFF supplies raw AC-4 AUs; add Annex G framing for the byte-stream decoder. */
+export function ac4SyncFrame(payload: Uint8Array): Uint8Array {
+  if (!payload.length || payload.length > 0xffffff) throw new Error("Invalid AC-4 MP4 access unit size");
+  const extended = payload.length >= 0xffff;
+  const frame = new Uint8Array(payload.length + (extended ? 7 : 4));
+  frame[0] = 0xac; frame[1] = 0x40;
+  if (extended) {
+    frame[2] = 0xff; frame[3] = 0xff;
+    frame[4] = payload.length >>> 16; frame[5] = payload.length >>> 8; frame[6] = payload.length;
+  } else { frame[2] = payload.length >>> 8; frame[3] = payload.length; }
+  frame.set(payload, extended ? 7 : 4);
+  return frame;
+}
 /** Keep EC-3/JOC work bounded: 16 × 1536-sample AUs is about 512 ms at 48 kHz.
  * Large MP4Box extraction batches turn into long worker decode bursts and flood
  * the renderer with object PCM/event messages. */
@@ -125,6 +139,7 @@ export class Mp4Demuxer {
   private file: ReturnType<typeof MP4Box.createFile>;
   private offset = 0;
   private wantedTrackId: number | null = null;
+  private wantedCodec: string | null = null;
   /** MP4Box keeps sample payloads until this cursor is released. */
   private deliveredSamples = 0;
   private cb: Mp4DemuxerCallbacks;
@@ -138,10 +153,11 @@ export class Mp4Demuxer {
       const alac = alacTrackFromMp4Box(this.file as unknown as { moov?: { traks?: Mp4AlacTrack[] } });
       if (alac) candidates.push(alac);
       for (const t of info.audioTracks) {
-        if (!AUDIO_CODECS.has(t.codec)) continue;
+        const codec = t.codec.split(".")[0]!;
+        if (!AUDIO_CODECS.has(codec)) continue;
         const track: Mp4AudioTrack = {
           trackId: t.id,
-          codec: t.codec,
+          codec,
           sampleRate: t.audio.sample_rate,
           channels: t.audio.channel_count,
         };
@@ -152,12 +168,14 @@ export class Mp4Demuxer {
         candidates.push(track);
       }
       for (const track of candidates) {
+        if (this.wantedTrackId !== null) break;
         const coverArt = embeddedCoverArt(this.file);
         if (coverArt) track.coverArt = coverArt;
         this.cb.onTrack?.(track);
         // Extract the first supported track only.
         if (this.wantedTrackId === null && track.trackId > 0) {
           this.wantedTrackId = track.trackId;
+          this.wantedCodec = track.codec;
           this.file.setExtractionOptions(track.trackId, null, { nbSamples: MP4_EXTRACTION_BATCH_SAMPLES });
           this.file.start();
         }
@@ -171,7 +189,7 @@ export class Mp4Demuxer {
         this.cb.onPacket?.({
           trackId: this.wantedTrackId ?? 0,
           timestampMs: (s.cts / s.timescale) * 1000,
-          data: s.data,
+          data: this.wantedCodec === "ac-4" ? ac4SyncFrame(s.data) : s.data,
         });
       }
       // onPacket consumes each access unit synchronously. Release only after

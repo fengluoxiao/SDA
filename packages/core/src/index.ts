@@ -11,7 +11,7 @@ import init, { SdaDecoder as WasmDecoder, VbapSolver as WasmVbapSolver } from ".
 // @ts-ignore
 import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 
-export type CodecName = "auto" | "truehd" | "eac3" | "dts" | "alac";
+export type CodecName = "auto" | "truehd" | "eac3" | "ac4" | "dts" | "alac";
 
 export type ObjectAnchor = "room" | "screen" | "speaker";
 export type { AdmZone } from "./adm-zone.js";
@@ -163,6 +163,10 @@ export class SdaDecoder {
 
   reset(): void {
     this.inner.reset();
+  }
+
+  flush(): void {
+    this.inner.flush();
   }
 
   free(): void {
