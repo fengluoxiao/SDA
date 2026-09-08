@@ -96,11 +96,7 @@ fn handle_command(
                 if state.sources.contains_key(&id) {
                     let applies_now = event.sample_pos <= state.sample_pos;
                     let elapsed = state.sample_pos.saturating_sub(event.sample_pos);
-                    let ramp = if event.ramp_duration == 0 {
-                        DEFAULT_OBJECT_RAMP
-                    } else {
-                        event.ramp_duration
-                    };
+                    let ramp = event.ramp_duration;
                     {
                         let source = state.sources.get_mut(&id).expect("checked above");
                         apply_object_event(source, state.sample_pos, event);
@@ -628,15 +624,13 @@ fn object_scalar_gain(gain_db: f32, position: [f32; 3]) -> f32 {
 }
 
 fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectEvent) {
-    let ramp = if event.ramp_duration == 0 {
-        DEFAULT_OBJECT_RAMP
-    } else {
-        event.ramp_duration
-    };
+    let ramp = event.ramp_duration;
     if event.has_pos && event.pos.iter().all(|value| value.is_finite()) {
         let spatial = SpatialEvent {
             position: event.pos,
             spread: spatial::spread_from_size(event.size),
+            diffuse: if event.diffuse.is_finite() { event.diffuse.clamp(0.0, 1.0) } else { 0.0 },
+            horizontal_only: event.horizontal_only,
             ramp,
         };
         if event.sample_pos > sample_pos {
@@ -659,7 +653,12 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
         } else {
             source.target_gain = gain;
             source.ramp_remaining = ramp;
-            source.ramp_step = (gain - source.gain) / ramp as f32;
+            source.ramp_step = if ramp == 0 {
+                source.gain = gain;
+                0.0
+            } else {
+                (gain - source.gain) / ramp as f32
+            };
         }
     }
 }
@@ -1049,6 +1048,42 @@ fn command_name(command: &Command) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adm_128_tracks_accept_an_atomic_pcm_batch() {
+        let mut engine = Engine::new(48_000, 2);
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        for id in 0..128 {
+            handle_command(&mut engine, Command::AddSource { id: format!("obj:{id}"), at: Some(0), bed_label: None }, &fifo, &telemetry);
+        }
+        assert_eq!(engine.sources.len(), 128);
+        ingest_pcm_batch(&mut engine, 0, (0..128).map(|id| (format!("obj:{id}"), vec![0.25])).collect());
+        for source in engine.sources.values_mut() { assert_eq!(source.samples.take(0), Some(0.25)); }
+        handle_command(&mut engine, Command::AddSource { id: "obj:128".into(), at: Some(0), bed_label: None }, &fifo, &telemetry);
+        assert_eq!(engine.sources.len(), 128);
+    }
+
+    #[test]
+    fn object_event_default_duration_preserves_explicit_adm_jumps() {
+        let mut value = serde_json::json!({
+            "id": 7, "samplePos": 0, "hasPos": true, "pos": [1, 0, 0],
+            "gainDb": -6, "size": [0, 0, 0]
+        });
+        let legacy: NativeObjectEvent = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(legacy.ramp_duration, DEFAULT_OBJECT_RAMP);
+        value["rampDuration"] = serde_json::json!(0);
+        let jump: NativeObjectEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(jump.ramp_duration, 0);
+
+        let mut source = Source::default();
+        apply_object_event(&mut source, 0, jump);
+        assert_eq!(source.position, [1.0, 0.0, 0.0]);
+        assert!(source.motion.is_none());
+        assert!((source.gain - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+        assert_eq!(source.ramp_remaining, 0);
+        assert_eq!(source.ramp_step, 0.0);
+    }
 
     #[test]
     fn rejected_pcm_batch_does_not_partially_write_any_source() {

@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
-pub const DEFAULT_PARTITION: usize = 128;
+// Long room/headphone FIRs need this block size to leave rendering headroom
+// for 118-track ADM. Two stages add 10.67 ms at 48 kHz.
+pub const DEFAULT_PARTITION: usize = 256;
 
 /// Prepared spectral filters for one measured direction. Runtime state lives
 /// in `StereoPartitionedConvolver`; a set of these partitions is therefore

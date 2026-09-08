@@ -263,6 +263,8 @@ interface ScheduledGainMessage {
 interface SourceState {
   id: string;
   spread: number;
+  diffuse: number;
+  horizontalOnly?: boolean;
   position: Spherical;
   gainDb: number;
   /** At least one codec object event has established this source's target. */
@@ -288,6 +290,9 @@ interface SourceState {
     position: Spherical;
     fromSpread: number;
     spread: number;
+    fromDiffuse: number;
+    diffuse: number;
+    horizontalOnly?: boolean;
     gainDb: number;
     rampSamples: number;
   }[];
@@ -329,6 +334,7 @@ export class SpatialRenderer {
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
+  private horizontalVbap?: { layout: readonly VirtualSpeaker[]; solver: VbapSolver; indices: number[] };
   /** Optional Rust/WASM batch solver. The TypeScript solver remains the
    * correctness fallback until the WASM core is loaded and for unsupported calls. */
   private wasmVbap: VbapBatchSolver | null = null;
@@ -971,7 +977,7 @@ export class SpatialRenderer {
               dueIndex = 0;
             }
             const due = state.objectPoseTimeline[dueIndex]!;
-            const progress = Math.min(1, Math.max(
+            const progress = due.rampSamples === 0 ? 1 : Math.min(1, Math.max(
               0,
               (this.consumedSamples - due.at) / due.rampSamples,
             ));
@@ -979,6 +985,8 @@ export class SpatialRenderer {
               ...state,
               position: interpolateObjectPosition(due.fromPosition, due.position, progress),
               spread: due.fromSpread + (due.spread - due.fromSpread) * progress,
+              diffuse: due.fromDiffuse + (due.diffuse - due.fromDiffuse) * progress,
+              horizontalOnly: due.horizontalOnly,
               gainDb: due.gainDb,
             };
           }
@@ -988,7 +996,7 @@ export class SpatialRenderer {
             // head-relative route so the worklet never waits on the next timer.
             for (let index = dueIndex + 1; index < state.objectPoseTimeline.length; index++) {
               const target = state.objectPoseTimeline[index]!;
-              const future = { ...state, position: target.position, spread: target.spread, gainDb: target.gainDb };
+              const future = { ...state, position: target.position, spread: target.spread, diffuse: target.diffuse, horizontalOnly: target.horizontalOnly, gainDb: target.gainDb };
               futurePoseMessages.push(this.gainMessage(future, target.rampSamples, target.at, true));
             }
           }
@@ -1505,6 +1513,7 @@ export class SpatialRenderer {
     const state: SourceState = {
       id,
       spread: 0,
+      diffuse: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       hasObjectMetadata: false,
@@ -1667,7 +1676,10 @@ export class SpatialRenderer {
       if (!state) continue;
       const nextPosition = ev.hasPos ? admToSpherical(ev.pos) : state.position;
       const nextSpread = ev.hasPos ? sizeToSpread(ev.size) : state.spread;
-      const ramp = ev.rampDuration || 128;
+      const nextDiffuse = Math.max(0, Math.min(1, ev.diffuse ?? 0));
+      const ramp = Number.isFinite(ev.rampDuration) && ev.rampDuration >= 0
+        ? Math.trunc(ev.rampDuration)
+        : 128;
       const at = Math.trunc(ev.samplePos);
       const unchanged = state.hasObjectMetadata
         && state.objectRampEndSample <= at
@@ -1675,10 +1687,12 @@ export class SpatialRenderer {
         && state.position.elevation === nextPosition.elevation
         && state.position.distance === nextPosition.distance
         && state.spread === nextSpread
+        && (state.diffuse ?? 0) === nextDiffuse
+        && !!state.horizontalOnly === !!ev.horizontalOnly
         && state.gainDb === ev.gainDb;
       if (unchanged) continue;
       const previousPose = state.objectPoseTimeline.at(-1);
-      const previousProgress = previousPose
+      const previousProgress = previousPose && previousPose.rampSamples > 0
         ? Math.min(1, Math.max(0, (at - previousPose.at) / previousPose.rampSamples))
         : 1;
       const fromPosition = previousPose
@@ -1688,20 +1702,30 @@ export class SpatialRenderer {
         ? previousPose.fromSpread + (previousPose.spread - previousPose.fromSpread) * previousProgress
         : state.spread;
       state.position = nextPosition;
+      const fromDiffuse = previousPose
+        ? previousPose.fromDiffuse + (previousPose.diffuse - previousPose.fromDiffuse) * previousProgress
+        : (state.diffuse ?? 0);
       state.spread = nextSpread;
+      state.diffuse = nextDiffuse;
+      state.horizontalOnly = !!ev.horizontalOnly;
       state.gainDb = ev.gainDb;
       state.hasObjectMetadata = true;
-      state.objectRampEndSample = at + Math.max(1, ramp);
+      state.objectRampEndSample = at + ramp;
       state.objectPoseTimeline.push({
         at,
         fromPosition,
         position: nextPosition,
         fromSpread,
         spread: nextSpread,
+        fromDiffuse,
+        diffuse: nextDiffuse,
+        horizontalOnly: state.horizontalOnly,
         gainDb: ev.gainDb,
-        rampSamples: Math.max(1, ramp),
+        rampSamples: ramp,
       });
-      pending.push({ state, ramp, at });
+      // Several events for one object can share a PCM batch. Keep each target
+      // stable while the live source advances to the last event in the batch.
+      pending.push({ state: { ...state }, ramp, at });
       accepted++;
     }
     // Prototype-level renderer tests and narrow control surfaces may provide only
@@ -1755,6 +1779,24 @@ export class SpatialRenderer {
     const gains = precomputedSpatialGains && !headTrackingActive
       ? new Float32Array(precomputedSpatialGains)
       : this.vbap.pan(spatialPosition, state.spread);
+
+    if (state.horizontalOnly) {
+      if (this.horizontalVbap?.layout !== this.renderLayout) {
+        const indices = this.renderLayout.flatMap((speaker, i) => !speaker.isLfe && Math.abs(speaker.elevation) < 1e-3 ? [i] : []);
+        this.horizontalVbap = { layout: this.renderLayout, indices, solver: new VbapSolver(indices.map(i => this.renderLayout[i]!)) };
+      }
+      gains.fill(0);
+      const local = this.horizontalVbap.solver.pan(spatialPosition, state.spread);
+      this.horizontalVbap.indices.forEach((index, i) => { gains[index] = local[i]!; });
+    }
+    if (state.diffuse > 0 && !state.isLfe && !state.bedLabel) {
+      const allowed = this.renderLayout.map(speaker => !speaker.isLfe && (!state.horizontalOnly || Math.abs(speaker.elevation) < 1e-3));
+      const count = allowed.filter(Boolean).length;
+      for (let i = 0; i < gains.length; i++) {
+        gains[i] = !allowed[i] ? 0
+          : Math.sqrt((1 - state.diffuse) * gains[i]! ** 2 + state.diffuse / Math.max(1, count));
+      }
+    }
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
     // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径
@@ -1815,7 +1857,7 @@ export class SpatialRenderer {
       gains: topologyGains,
       gain: scalar,
       lp,
-      ramp: Math.max(1, rampSamples),
+      ramp: Math.max(0, rampSamples),
       poseControlled: !state.bedLabel && !state.isLfe,
       poseUpdate,
     };

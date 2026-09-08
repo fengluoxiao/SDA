@@ -82,7 +82,7 @@ mod tests {
                 let expected=bus.output_at(i);
                 assert!((expected[0]-direct.left[i]).abs()<1e-6);
                 assert!((expected[1]-direct.right[i]).abs()<1e-6);
-                if block>90 && direct.left[i].abs()>1e-4 {tail=true;}
+                if block*DEFAULT_PARTITION+i>11520 && direct.left[i].abs()>1e-4 {tail=true;}
             }
         }
         assert!(tail,"imported late tail was truncated");

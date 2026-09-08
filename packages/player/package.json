@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
+    "@alexanderolsen/libsamplerate-js": "2.1.2",
     "@sda/core": "workspace:*",
     "@sda/demux": "workspace:*",
     "@sda/renderer": "workspace:*"

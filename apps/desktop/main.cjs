@@ -17,14 +17,27 @@ const cinemaProfiles = require("./cinema-profiles.cjs");
 const { createRoomLab } = require("./room-lab.cjs");
 const { exec, spawn } = require("node:child_process");
 const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
+let startupLogPending = "";
+let startupLogWriting = false;
+let startupLogTimer = null;
+function flushStartupLog() {
+  startupLogTimer = null;
+  if (startupLogWriting || !startupLogPending) return;
+  startupLogWriting = true;
+  const text = startupLogPending;
+  startupLogPending = "";
+  fs.mkdir(path.dirname(startupLogPath), { recursive: true }, () => {
+    fs.appendFile(startupLogPath, text, "utf8", () => {
+      startupLogWriting = false;
+      if (startupLogPending && !startupLogTimer) startupLogTimer = setTimeout(flushStartupLog, 50);
+    });
+  });
+}
 function writeStartupLog(line) {
-  try {
-    fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
-    fs.appendFileSync(startupLogPath, `[${new Date().toISOString()}] ${line}\n`, "utf8");
-  } catch {
-    // Never let a broken log sink bring down the main process or surface as a
-    // system error dialog. Startup diagnostics are best-effort only.
-  }
+  // Diagnostic disk writes must not stall the PCM/ACK transport. Bound queued
+  // diagnostics if the disk stalls; playback never waits on the log sink.
+  if (startupLogPending.length < 1024 * 1024) startupLogPending += `[${new Date().toISOString()}] ${line}\n`;
+  if (!startupLogWriting && !startupLogTimer) startupLogTimer = setTimeout(flushStartupLog, 50);
 }
 function logRenderer(_level, sourceId, line, message) {
   writeStartupLog(`[SDA renderer] ${sourceId}:${line} ${message}`);
@@ -85,7 +98,7 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
-const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".dts"]);
+const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".dts"]);
 const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
 const MAX_FOLDER_MEDIA_FILES = 2000;
 const MAX_FOLDER_ENTRIES = 20000;
@@ -288,7 +301,7 @@ function publishNativeRendererObjectActivity(ids) {
   const normalized = [...new Set(ids)]
     .filter((id) => Number.isSafeInteger(id) && id >= 0)
     .sort((left, right) => left - right)
-    .slice(0, 64);
+    .slice(0, 128);
   if (
     normalized.length === nativeRendererObjectActivity.length &&
     normalized.every((id, index) => id === nativeRendererObjectActivity[index])
@@ -409,7 +422,7 @@ function nativeRendererHeadphoneFir(preamp, left, right) {
 }
 
 function nativeRendererBatch(start, entries) {
-  if (!nativeRenderer?.stdin || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 64) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
+  if (!nativeRenderer?.stdin || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 128) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
   if (nativeRendererPendingBatches.has(start)) {
     // The batch is still awaiting its ACK, not lost. Report the original outcome
     // once it arrives instead of failing the player's duplicate submission.
@@ -1193,8 +1206,14 @@ ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample)
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
-  if (!Array.isArray(events) || events.length > 256) return false;
-  const accepted = await nativeRendererCommandAck({ type: "objectEvents", events }, "objectEvents");
+  if (!Array.isArray(events) || events.length > 4096) return false;
+  // A 128-track ADM initial state exceeds the protocol's 16 KiB JSON limit.
+  // Await each bounded group before allowing its PCM batch to be submitted.
+  let accepted = true;
+  for (let offset = 0; offset < events.length; offset += 32) {
+    accepted = await nativeRendererCommandAck({ type: "objectEvents", events: events.slice(offset, offset + 32) }, "objectEvents");
+    if (!accepted) break;
+  }
   writeStartupLog(`objectEvents count=${events.length} ACK -> ${accepted}`);
   return accepted;
 });

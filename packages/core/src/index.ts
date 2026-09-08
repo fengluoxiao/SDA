@@ -24,6 +24,10 @@ export interface ObjectEvent {
    *  (ITU-R BS.2076 / EBU EAR / Omniphony 约定). */
   pos: [number, number, number];
   gainDb: number;
+  /** ADM diffuse energy fraction, independent of object extent. */
+  diffuse?: number;
+  /** Dolby ADM ZB/ZT exclusion pair retains the horizontal speaker layer. */
+  horizontalOnly?: boolean;
   /** (width, depth, height) each normalised to [0, 1]; [0,0,0] = point source. */
   size: [number, number, number];
   /** Real codec render metadata. Speaker anchors are bed/ISF semantics. */

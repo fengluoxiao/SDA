@@ -25,7 +25,7 @@ use cpal::{
 use serde::{Deserialize, Serialize};
 
 const PROTOCOL: u32 = 6;
-const MAX_SOURCES: usize = 64;
+const MAX_SOURCES: usize = 128;
 const MAX_PENDING_SAMPLES: usize = 480_000; // 10 s @ 48 kHz per source.
 const FRAME_JSON: u8 = b'J';
 const FRAME_PCM: u8 = b'P';
@@ -246,7 +246,16 @@ struct NativeObjectEvent {
     pos: [f32; 3],
     gain_db: f32,
     size: [f32; 3],
+    #[serde(default)]
+    diffuse: f32,
+    #[serde(default)]
+    horizontal_only: bool,
+    #[serde(default = "default_object_ramp")]
     ramp_duration: u32,
+}
+
+fn default_object_ramp() -> u32 {
+    DEFAULT_OBJECT_RAMP
 }
 
 #[derive(Clone, Copy)]
@@ -264,6 +273,8 @@ struct ProgramGainEvent {
 struct SpatialEvent {
     position: [f32; 3],
     spread: f32,
+    diffuse: f32,
+    horizontal_only: bool,
     ramp: u32,
 }
 
@@ -378,6 +389,8 @@ struct Source {
     remove_at: Option<u64>,
     position: [f32; 3],
     spread: f32,
+    diffuse: f32,
+    horizontal_only: bool,
     spatial_events: BTreeMap<u64, SpatialEvent>,
     motion: Option<SpatialEvent>,
     bus_gains: [f32; vbap::MAX_BUS_COUNT],
@@ -417,6 +430,8 @@ impl Default for Source {
             remove_at: None,
             position: [0.0, 1.0, 0.0],
             spread: 0.0,
+            diffuse: 0.0,
+            horizontal_only: false,
             spatial_events: BTreeMap::new(),
             motion: None,
             bus_gains: [0.0; vbap::MAX_BUS_COUNT],
@@ -463,6 +478,7 @@ impl ObjectActivitySnapshot {
     }
 }
 
+#[cfg_attr(test, derive(Default))]
 struct RuntimeTelemetry {
     callback_output_enabled: AtomicBool,
     /// Codec timeline consumed by WASAPI, never the worker's render-ahead clock.
@@ -737,10 +753,12 @@ impl Engine {
                 source.position[axis] += (motion.position[axis] - source.position[axis]) * fraction;
             }
             source.spread += (motion.spread - source.spread) * fraction;
+            source.diffuse += (motion.diffuse - source.diffuse) * fraction;
             motion.ramp -= elapsed;
             source.motion = if motion.ramp == 0 {
                 source.position = motion.position;
                 source.spread = motion.spread;
+                source.diffuse = motion.diffuse;
                 None
             } else { Some(motion) };
         }
@@ -767,16 +785,16 @@ impl Engine {
     }
 
     fn route_source_now(&mut self, id: &str, ramp: u32) -> Result<(), String> {
-        let (position, spread, kind) = self
+        let (position, spread, diffuse, horizontal_only, kind) = self
             .sources
             .get(id)
-            .map(|source| (source.position, source.spread, source.kind))
+            .map(|source| (source.position, source.spread, source.diffuse, source.horizontal_only, source.kind))
             .ok_or("unknown source")?;
         if kind != SourceKind::Object {
             return Ok(());
         }
         let route = RouteGains {
-            buses: bus_renderer::route(&self.vbap, position, self.head_pose, spread),
+            buses: bus_renderer::route_diffuse(&self.vbap, position, self.head_pose, spread, diffuse, horizontal_only),
             lfe: 0.0,
         };
         let source = self.sources.get_mut(id).expect("source was checked above");
@@ -788,12 +806,19 @@ impl Engine {
         Ok(())
     }
 
-    fn start_source_motion(source: &mut Source, mut event: SpatialEvent) -> bool {
-        if source.motion.is_none() && source.position == event.position && source.spread == event.spread {
+    fn start_source_motion(source: &mut Source, event: SpatialEvent) -> bool {
+        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only {
             return false;
         }
-        event.ramp = event.ramp.max(1);
-        source.motion = Some(event);
+        source.horizontal_only = event.horizontal_only;
+        if event.ramp == 0 {
+            source.position = event.position;
+            source.spread = event.spread;
+            source.diffuse = event.diffuse;
+            source.motion = None;
+        } else {
+            source.motion = Some(event);
+        }
         true
     }
 
@@ -803,10 +828,11 @@ impl Engine {
         let fraction = samples as f32 / motion.ramp as f32;
         let position = std::array::from_fn(|axis| source.position[axis] + (motion.position[axis] - source.position[axis]) * fraction);
         let spread = source.spread + (motion.spread - source.spread) * fraction;
+        let diffuse = source.diffuse + (motion.diffuse - source.diffuse) * fraction;
         // Re-pan points along the Cartesian trajectory, not just its endpoints.
         // Gain interpolation only bridges this short segment of the route.
         Self::set_source_route(source, RouteGains {
-            buses: bus_renderer::route(solver, position, head, spread), lfe: 0.0,
+            buses: bus_renderer::route_diffuse(solver, position, head, spread, diffuse, source.horizontal_only), lfe: 0.0,
         }, samples);
     }
 
@@ -1011,7 +1037,7 @@ impl Engine {
         }
     }
 
-    /// Wake probe for suspended sources, run at most once per 128-sample block
+    /// Wake probe for suspended sources, run at most once per convolution block
     /// from the render loop: a suspended source resumes when fresh PCM has been
     /// queued within its lookahead window.
     fn pending_suspend_recheck(&self, at: u64) -> bool {
@@ -1032,7 +1058,7 @@ impl Engine {
 
     /// Renders source PCM into fixed virtual-speaker buses. PCM availability is
     /// intentionally source-local: a late object fades itself out instead of
-    /// stopping all beds and objects at the next 128-sample boundary.
+    /// stopping all beds and objects at the next convolution boundary.
     fn render_into(&mut self, output: &mut [f32], channels: usize) {
         output.fill(0.0);
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
@@ -1116,15 +1142,29 @@ impl Engine {
                     if let Some(event) = source.spatial_events.remove(&at) {
                         changed = Self::start_source_motion(source, event);
                     }
-                    if source.motion.is_some() && (changed || block_index == 0) {
-                        Self::route_motion_block(source, &vbap, head_pose, (convolution::DEFAULT_PARTITION - block_index) as u32);
+                    // Preserve the authored motion resolution independently of
+                    // the FFT partition used by long room/headphone filters.
+                    const MOTION_QUANTUM: usize = 128;
+                    if source.motion.is_some() && (changed || block_index % MOTION_QUANTUM == 0) {
+                        Self::route_motion_block(source, &vbap, head_pose, (MOTION_QUANTUM - block_index % MOTION_QUANTUM) as u32);
+                        self.route_update_count = self.route_update_count.saturating_add(1);
+                    } else if changed {
+                        Self::set_source_route(source, RouteGains {
+                            buses: bus_renderer::route_diffuse(&vbap, source.position, head_pose, source.spread, source.diffuse, source.horizontal_only),
+                            lfe: 0.0,
+                        }, 0);
                         self.route_update_count = self.route_update_count.saturating_add(1);
                     }
                 }
                 if let Some(event) = source.gain_events.remove(&at) {
                     source.target_gain = event.gain;
-                    source.ramp_remaining = event.ramp.max(1);
-                    source.ramp_step = (event.gain - source.gain) / source.ramp_remaining as f32;
+                    source.ramp_remaining = event.ramp;
+                    source.ramp_step = if event.ramp == 0 {
+                        source.gain = event.gain;
+                        0.0
+                    } else {
+                        (event.gain - source.gain) / event.ramp as f32
+                    };
                     source.suspended = false;
                 }
                 if source.suspended {
@@ -1213,11 +1253,15 @@ impl Engine {
                             &std::array::from_fn(|i| source.bus_gains[i] * self.speaker_levels[i]), block_index);
                     }
                 }
-                self.bus_renderer.as_mut().expect("checked above").add(
-                    sample * ROOM_SPEAKER_REFERENCE_GAIN * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 },
-                    &std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]),
-                    block_index,
-                );
+                // ADM masters carry silent PCM for inactive objects. Keep their
+                // clocks, filters and envelopes running, but avoid zero bus work.
+                if sample != 0.0 {
+                    self.bus_renderer.as_mut().expect("checked above").add(
+                        sample * ROOM_SPEAKER_REFERENCE_GAIN * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 },
+                        &std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]),
+                        block_index,
+                    );
+                }
                 if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
                     if block_index == 0 { let _ = direct.update_focus(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
                     direct.input[block_index] = sample * ROOM_SPEAKER_REFERENCE_GAIN * self.direct_mix;
@@ -1809,7 +1853,7 @@ mod tests {
             source.samples.write(0, 0, &[0.001; 4096]);
             // Obj14's captured OAMD uses this path and 1536-sample duration.
             // Retain its 577-sample QMF offset and shift the event to the first frame.
-            source.spatial_events.insert(577, SpatialEvent {
+            source.spatial_events.insert(577, SpatialEvent { horizontal_only: false, diffuse: 0.0,
                 position: [-1.0, -1.0, 0.0], spread: 0.0, ramp: 1536,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -1867,7 +1911,7 @@ mod tests {
             let mut source = Source { kind: SourceKind::Object, object_id: Some(14),
                 position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
             source.samples.write(0, 0, &pcm);
-            source.spatial_events.insert(12000, SpatialEvent {
+            source.spatial_events.insert(12000, SpatialEvent { horizontal_only: false, diffuse: 0.0,
                 position: [1.0, 1.0, 0.0], spread: 0.0, ramp: 24000,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -1998,18 +2042,18 @@ mod tests {
             }
             engine.paused = false;
         }
-        // B mutes 13 of the 15 objects after they have been routed.
+        // B mutes 12 of the 15 objects after they have been routed.
         for id in 10..25_u32 {
             if matches!(id, 14 | 15 | 22) {
                 continue;
             }
             engine_b.sources.get_mut(&format!("obj:{id}")).unwrap().muted = true;
         }
-        let mut out_a = vec![0.0_f32; block * 4 * 2];
-        let mut out_b = vec![0.0_f32; block * 4 * 2];
-        let mut out_c = vec![0.0_f32; block * 4 * 2];
+        let mut out_a = vec![0.0_f32; block * 8 * 2];
+        let mut out_b = vec![0.0_f32; block * 8 * 2];
+        let mut out_c = vec![0.0_f32; block * 8 * 2];
         // Render block by block so availability ramps settle identically.
-        for index in 0..4 {
+        for index in 0..8 {
             let mut chunk_a = vec![0.0_f32; block * 2];
             let mut chunk_b = vec![0.0_f32; block * 2];
             let mut chunk_c = vec![0.0_f32; block * 2];
@@ -2020,18 +2064,8 @@ mod tests {
             out_b[index * block * 2..(index + 1) * block * 2].copy_from_slice(&chunk_b);
             out_c[index * block * 2..(index + 1) * block * 2].copy_from_slice(&chunk_c);
         }
-        let mut first_difference = None;
-        for (index, (a, b)) in out_a.iter().zip(out_b.iter()).enumerate() {
-            if (a - b).abs() > 1e-6 {
-                first_difference = Some((index, *a, *b));
-                break;
-            }
-        }
-        if let Some((index, a, b)) = first_difference {
-            panic!(
-                "muting changed the active mix at sample {index}: with_all={a} muted={b}"
-            );
-        }
+        assert!(out_b.iter().any(|sample| sample.abs() > 1e-6), "comparison must extend past convolution latency");
+        assert!(out_a.iter().zip(&out_b).any(|(a, b)| (a - b).abs() > 1e-6), "muting audible objects must change the full mix");
         assert_eq!(out_b, out_c, "declaring-but-muted objects must not change the mix vs not declaring them");
     }
 
@@ -2209,7 +2243,7 @@ mod tests {
         let target_position = [1.0, 0.0, 0.0];
         source.spatial_events.insert(
             96,
-            SpatialEvent {
+            SpatialEvent { horizontal_only: false, diffuse: 0.0,
                 position: target_position,
                 spread: 0.2,
                 ramp: 32,
@@ -2286,6 +2320,38 @@ mod tests {
         engine.mix(&mut [0.0; 31 * 2], 2);
         assert_eq!(engine.sources["obj:22"].gain, 0.25);
         assert_eq!(engine.sources["obj:22"].ramp_remaining, 0);
+    }
+
+    #[test]
+    fn queued_adm_jump_updates_position_route_and_gain_at_the_authored_sample() {
+        let mut engine = calibrated_engine();
+        let mut source = Source {
+            kind: SourceKind::Object,
+            object_id: Some(7),
+            gain: 1.0,
+            target_gain: 1.0,
+            ..Source::default()
+        };
+        let position = [1.0, 0.0, 0.0];
+        source.spatial_events.insert(96, SpatialEvent { horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
+        source.gain_events.insert(96, GainEvent { gain: 0.25, ramp: 0 });
+        engine.sources.insert("obj:7".into(), source);
+        engine.route_source_now("obj:7", 0).unwrap();
+        let target_route = bus_renderer::route(&engine.vbap, position, None, 0.2);
+
+        engine.mix(&mut [0.0; 96 * 2], 2);
+        assert_eq!(engine.sources["obj:7"].position, [0.0, 1.0, 0.0]);
+        assert_eq!(engine.sources["obj:7"].gain, 1.0);
+        engine.mix(&mut [0.0; 2], 2);
+        let source = &engine.sources["obj:7"];
+        assert_eq!(source.position, position);
+        assert_eq!(source.spread, 0.2);
+        assert_eq!(source.bus_gains, target_route);
+        assert_eq!(source.gain, 0.25);
+        assert_eq!(source.ramp_remaining, 0);
+        assert_eq!(source.bus_ramp_remaining, 0);
+        assert!(source.motion.is_none());
+        assert!(source.ramp_step.is_finite());
     }
 
     #[test]

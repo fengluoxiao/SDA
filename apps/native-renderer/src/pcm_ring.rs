@@ -11,12 +11,15 @@ struct Slot {
 }
 
 const EMPTY_CLOCK: u64 = u64::MAX;
+const READ_CACHE_SIZE: usize = 32;
 
 pub(super) struct AbsolutePcmRing {
     slots: Vec<Slot>,
     /// Highest clock ever written; zero when nothing was ever queued. Gives the
     /// suspend wake probe an O(1) "anything queued ahead?" answer.
     highest_written: u64,
+    read_start: u64,
+    read_cache: [Slot; READ_CACHE_SIZE],
 }
 
 impl AbsolutePcmRing {
@@ -31,10 +34,13 @@ impl AbsolutePcmRing {
                 capacity
             ],
             highest_written: 0,
+            read_start: EMPTY_CLOCK,
+            read_cache: [Slot { clock: EMPTY_CLOCK, sample: 0.0 }; READ_CACHE_SIZE],
         }
     }
 
     pub(super) fn clear(&mut self) {
+        self.read_start = EMPTY_CLOCK;
         for slot in &mut self.slots {
             slot.clock = EMPTY_CLOCK;
         }
@@ -66,6 +72,9 @@ impl AbsolutePcmRing {
     /// allocate and only changes slots in the current absolute-clock window.
     pub(super) fn write(&mut self, now: u64, start: u64, samples: &[f32]) {
         debug_assert!(self.can_write(now, start, samples.len()));
+        // A new write may reuse physical slots even when its absolute clock is
+        // outside the cached range. Commit consumed tags before any overwrite.
+        self.flush_read_cache();
         let capacity = self.slots.len();
         for (offset, &sample) in samples.iter().enumerate() {
             let Some(clock) = start.checked_add(offset as u64) else {
@@ -85,7 +94,7 @@ impl AbsolutePcmRing {
 
     /// Whether the ring currently holds any unplayed samples in its future window.
     pub(super) fn has_any(&self) -> bool {
-        self.slots.iter().any(|slot| slot.clock != EMPTY_CLOCK)
+        self.slots.iter().any(|slot| slot.clock != EMPTY_CLOCK && self.has_at(slot.clock))
     }
 
     /// O(1) wake probe for suspended sources: was anything queued past `now`
@@ -97,13 +106,35 @@ impl AbsolutePcmRing {
     }
 
     pub(super) fn has_at(&self, clock: u64) -> bool {
+        if let Some(index) = clock.checked_sub(self.read_start).filter(|index| *index < READ_CACHE_SIZE.min(self.slots.len()) as u64) {
+            return self.read_cache[index as usize].clock == clock;
+        }
         self.slots[(clock % self.slots.len() as u64) as usize].clock == clock
+    }
+
+    fn flush_read_cache(&mut self) {
+        if self.read_start == EMPTY_CLOCK { return; }
+        for offset in 0..READ_CACHE_SIZE.min(self.slots.len()) {
+            let index = ((self.read_start + offset as u64) % self.slots.len() as u64) as usize;
+            self.slots[index] = self.read_cache[offset];
+        }
+        self.read_start = EMPTY_CLOCK;
     }
 
     /// Consumes exactly one absolute-clock sample.
     pub(super) fn take(&mut self, clock: u64) -> Option<f32> {
-        let index = (clock % self.slots.len() as u64) as usize;
-        let slot = &mut self.slots[index];
+        let cache_len = READ_CACHE_SIZE.min(self.slots.len()) as u64;
+        if clock.checked_sub(self.read_start).is_none_or(|index| index >= cache_len) {
+            self.flush_read_cache();
+            self.read_start = clock;
+            // Group accesses to each large track ring: 118 interleaved tracks
+            // otherwise touch 118 distant pages for every rendered sample.
+            for offset in 0..cache_len as usize {
+                let index = ((clock + offset as u64) % self.slots.len() as u64) as usize;
+                self.read_cache[offset] = self.slots[index];
+            }
+        }
+        let slot = &mut self.read_cache[(clock - self.read_start) as usize];
         (slot.clock == clock).then(|| {
             slot.clock = EMPTY_CLOCK;
             slot.sample
@@ -114,6 +145,26 @@ impl AbsolutePcmRing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_cache_preserves_late_writes_wrap_and_consumption() {
+        let mut ring = AbsolutePcmRing::new(64);
+        ring.write(0, 0, &[0.25; 64]);
+        for clock in 0..40 { assert_eq!(ring.take(clock), Some(0.25)); }
+        assert!(!ring.has_at(0));
+        assert!(!ring.has_at(39));
+        assert!(ring.has_at(40));
+        ring.write(40, 64, &[0.5; 40]);
+        for clock in 40..64 { assert_eq!(ring.take(clock), Some(0.25)); }
+        for clock in 64..104 { assert_eq!(ring.take(clock), Some(0.5)); }
+        assert!(!ring.has_any());
+        ring.write(104, 104, &[1.0]);
+        assert_eq!(ring.take(104), Some(1.0));
+        ring.write(104, 105, &[0.75]);
+        assert_eq!(ring.take(105), Some(0.75));
+        ring.clear();
+        assert_eq!(ring.take(106), None);
+    }
 
     #[test]
     fn samples_are_fetched_by_absolute_clock() {

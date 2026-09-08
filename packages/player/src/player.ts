@@ -33,7 +33,7 @@ import {
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, FrameLoudness, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
-import type { BinauralRenderMetadata } from "@sda/demux";
+import { BwfDemuxer, readBwfMetadata, type BwfMetadata, type BinauralRenderMetadata } from "@sda/demux";
 import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
 
 export interface VisualObject {
@@ -903,30 +903,41 @@ export class SdaPlayer {
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
     console.log(`[SDA] player#${this.id} playFile`);
-    this.resetOutputLatencyProtection(true);
-    this.resetHealth();
-    this.worker.postMessage({ type: "open", codec });
-
-    // Audio/object events stay sample-accurate; diagnostics redraw at 10 Hz so
-    // the React/Three scene cannot contend with object-heavy Atmos playback.
-    this.visualTimer = setInterval(() => this.emitVisual(), 100);
+    await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
+    if (this.disposed) return;
 
     const stream = file.stream();
     const reader = stream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done || this.disposed) break;
-      await this.pushWorkerChunk(value.buffer);
-      await this.pace();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done || this.disposed) break;
+        await this.pushWorkerChunk(Uint8Array.from(value).buffer);
+        await this.pace();
+      }
+      if (!this.disposed) this.worker.postMessage({ type: "flush" });
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
     }
-    if (!this.disposed) this.worker.postMessage({ type: "flush" });
+  }
+
+  /** Read BWF metadata before PCM, including ADM chunks after a multi-GB data chunk. */
+  async openSeekable(
+    readRange: (offset: number, length: number) => Promise<Uint8Array>,
+    size: number,
+    codec: "auto" | "truehd" | "eac3" | "dts" = "auto",
+  ): Promise<void> {
+    const header = await readRange(0, Math.min(12, size));
+    const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
+    if (!this.disposed) this.open(codec, metadata);
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "dts" = "auto"): void {
+  open(codec: "auto" | "truehd" | "eac3" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", codec });
+    this.worker.postMessage({ type: "open", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 100);
   }
 
@@ -1575,7 +1586,7 @@ export class SdaPlayer {
       // The sidecar already consumed an earlier copy of this frame and the ACK
       // was lost; the retry raced the codec clock. The audio is committed, so
       // treat the replay as accepted instead of dropping the frame audibly.
-      this.batchResults.set(pending.frame, { sequence: result.sequence, accepted: true, samples: pending.samples });
+      this.batchResults.set(pending.frame, { accepted: true, samples: pending.samples });
     } else {
       this.batchResults.set(pending.frame, result);
     }
@@ -1779,7 +1790,7 @@ export class SdaPlayer {
           renderer?.setProgramLoudnessGainDb(gainDb, frame.samplePos);
           this.setNativeProgramGainDb(gainDb, frame.samplePos);
         }
-      } else if (!this.measuredLoudnessSettled) {
+      } else if (frame.codec !== "adm" && !this.measuredLoudnessSettled) {
         // Metadata-less content (ALAC/PCM/AAC stereo): balance from a persisted
         // measurement immediately, or from the live BS.1770-4 estimate once it
         // has enough gated audio to be trustworthy.

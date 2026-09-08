@@ -14,6 +14,8 @@ export function sameObjectTarget(left: ObjectEvent | undefined, right: ObjectEve
     && left.pos[1] === right.pos[1]
     && left.pos[2] === right.pos[2]
     && left.gainDb === right.gainDb
+    && (left.diffuse ?? 0) === (right.diffuse ?? 0)
+    && !!left.horizontalOnly === !!right.horizontalOnly
     && left.size[0] === right.size[0]
     && left.size[1] === right.size[1]
     && left.size[2] === right.size[2]

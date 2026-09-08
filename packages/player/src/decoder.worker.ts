@@ -10,10 +10,11 @@
  */
 
 import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
-import { createDemuxer, sniffContainer, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
+import { createDemuxer, sniffContainer, type BwfMetadata, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
 import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
 import { FrameBatcher } from "./frame-batcher.js";
+import { AlacResampler } from "./alac-resampler.js";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -23,11 +24,15 @@ declare const self: {
 
 let decoder: SdaDecoder | null = null;
 let demuxer: Demuxer | null = null;
+let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
 const lastObjectTargets = new Map<number, ObjectEvent>();
 let frameBatcher = new FrameBatcher(postFrame);
+let outputSampleRate: number | undefined;
+let resampler: AlacResampler | null = null;
+let decodedFrames: DecodedFrameData[] = [];
 
 function compactObjectEvents(frame: DecodedFrameData): void {
   const objectIds = new Set<number>();
@@ -48,7 +53,9 @@ function compactObjectEvents(frame: DecodedFrameData): void {
 function postFrame(frame: DecodedFrameData): void {
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
-  if (frame.channels[0]?.length) {
+  // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
+  // channel-layout weights to 118 objects is both incorrect and very costly.
+  if (frame.codec !== "adm" && frame.channels[0]?.length) {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
     loudnessMeter.push(frame.channels);
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
@@ -64,15 +71,32 @@ function drainFrames(): void {
   while (true) {
     const frame = decoder.nextFrame();
     if (!frame) break;
-    compactObjectEvents(frame);
-    frameBatcher.push(frame);
+    decodedFrames.push(frame);
   }
   for (const message of decoder.drainErrors()) {
     self.postMessage({ type: "error", message });
   }
 }
 
-self.onmessage = async (e: MessageEvent) => {
+async function processDecodedFrames(): Promise<void> {
+  for (const frame of decodedFrames.splice(0)) {
+    const output = outputSampleRate && frame.sampleRate !== outputSampleRate
+      ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
+      : frame;
+    if (output) {
+      compactObjectEvents(output);
+      frameBatcher.push(output);
+    }
+  }
+}
+
+// WASM resampler initialization is async: keep open/push/flush in port order.
+let messages = Promise.resolve();
+self.onmessage = (e: MessageEvent) => {
+  messages = messages.then(() => handleMessage(e));
+};
+
+async function handleMessage(e: MessageEvent): Promise<void> {
   const msg = e.data;
   try {
     switch (msg.type) {
@@ -83,6 +107,11 @@ self.onmessage = async (e: MessageEvent) => {
     }
     case "open": {
       decoder?.free();
+      resampler?.destroy();
+      resampler = null;
+      decodedFrames = [];
+      outputSampleRate = msg.outputSampleRate;
+      bwfMetadata = msg.bwfMetadata;
       frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
@@ -98,6 +127,9 @@ self.onmessage = async (e: MessageEvent) => {
     case "flush": {
       demuxer?.flush();
       drainFrames();
+      await processDecodedFrames();
+      const tail = resampler?.finish();
+      if (tail) frameBatcher.push(tail);
       frameBatcher.flush();
       self.postMessage({ type: "flushed" });
       break;
@@ -105,9 +137,14 @@ self.onmessage = async (e: MessageEvent) => {
     case "push": {
       const chunk = new Uint8Array(msg.chunk as ArrayBuffer);
       if (!demuxer) {
-        const kind: ContainerKind = msg.kind ?? sniffContainer(chunk);
+        const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
         demuxer = createDemuxer(kind, {
           onTrack: (t) => {
+            if (t.codec === "adm" || t.codec === "pcm") {
+              decoder?.free();
+              decoder = null;
+              decoderConfigurationError = null;
+            }
             if (t.codec === "alac") {
               try {
                 if (!t.decoderConfig) throw new Error("MP4 ALAC track is missing its decoder configuration");
@@ -137,11 +174,13 @@ self.onmessage = async (e: MessageEvent) => {
             drainFrames();
           },
           onError: (m) => self.postMessage({ type: "error", message: m }),
+          onPcmFrame: (frame) => decodedFrames.push(frame),
           onBinauralMetadata: (metadata: BinauralRenderMetadata) => self.postMessage({ type: "binaural-metadata", metadata }),
-        });
+        }, bwfMetadata);
       }
       demuxer.push(chunk);
       drainFrames();
+      await processDecodedFrames();
       frameBatcher.flush();
       self.postMessage({ type: "push-ack", sequence: msg.sequence });
       break;
@@ -152,6 +191,6 @@ self.onmessage = async (e: MessageEvent) => {
     self.postMessage({ type: "error", message });
     if (msg.type === "push") self.postMessage({ type: "push-ack", sequence: msg.sequence, error: message });
   }
-};
+}
 
 export {};

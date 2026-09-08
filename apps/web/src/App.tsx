@@ -57,7 +57,7 @@ interface PlaylistItem {
 
 // Keep each Electron worker decode turn short for object-heavy JOC streams.
 // push() now waits for a worker ACK, so this also bounds renderer message bursts.
-const FILE_CHUNK_SIZE = 1 << 18;
+const FILE_CHUNK_SIZE = 1 << 20;
 const OUTPUT_LATENCY_STORAGE_KEY = "sda-output-latency-seconds";
 const BINAURAL_LOW_FREQUENCY_DIAGNOSTIC_STORAGE_KEY = "sda-binaural-low-frequency-diagnostic";
 type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
@@ -1263,7 +1263,9 @@ export function App() {
           const opened = await desktop.openPath(source.path);
           try {
             if (!isCurrent() || playerRef.current !== player) return;
-            player.open("auto");
+            const readSlice = desktop.readSlice;
+            await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
+            if (!isCurrent() || playerRef.current !== player) return;
             for (let offset = 0; offset < opened.size; offset += FILE_CHUNK_SIZE) {
               const chunk = await desktop.readSlice(opened.id, offset, Math.min(FILE_CHUNK_SIZE, opened.size - offset));
               if (!isCurrent() || playerRef.current !== player) return;
@@ -1560,7 +1562,7 @@ export function App() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
+    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
     input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
   }, [appendToPlaylist]);

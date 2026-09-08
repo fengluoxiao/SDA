@@ -7,7 +7,7 @@
  */
 
 const WORKLET_BUILD = "head-pose-route-v3";
-const MAX_SOURCES = 64;
+const MAX_SOURCES = 128;
 const CALLBACK_GAP_TELEMETRY_MS = 12;
 const CALLBACK_GAP_ESCALATION_MS = 25;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
@@ -131,7 +131,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   /** Start an event at eventTime and fast-forward it to currentTime. */
   startGainRampAtTime(src, msg, eventTime, currentTime) {
     if (msg.type === "scheduleGains" && msg.poseUpdate === true && !this.headTracking) return;
-    const ramp = Math.max(1, msg.ramp | 0);
+    const ramp = msg.ramp === 0 ? 0 : Math.max(1, msg.ramp | 0);
     const preserveSpatial = this.headTracking
       && msg.type === "scheduleGains"
       && msg.poseControlled === true
@@ -141,14 +141,16 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       const target = msg.gains;
       for (let bus = 0; bus < this.busCount; bus++) {
         src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
-        src.rampStep[bus] = (src.target[bus] - src.gains[bus]) / ramp;
+        src.rampStep[bus] = ramp === 0 ? 0 : (src.target[bus] - src.gains[bus]) / ramp;
+        if (ramp === 0) src.gains[bus] = src.target[bus];
       }
       src.rampLeft = ramp;
-      this.refreshRouteBuses(src, true);
+      this.refreshRouteBuses(src, ramp > 0);
     }
     if (!preserveScalar) {
       src.targetGain = msg.gain ?? 1;
-      src.gainStep = (src.targetGain - src.gain) / ramp;
+      src.gainStep = ramp === 0 ? 0 : (src.targetGain - src.gain) / ramp;
+      if (ramp === 0) src.gain = src.targetGain;
       src.gainRampLeft = ramp;
       src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
     }

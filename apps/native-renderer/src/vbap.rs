@@ -138,7 +138,8 @@ pub fn speakers(layout: LayoutId) -> &'static [Speaker] {
 #[derive(Clone)]
 pub struct VbapSolver {
     layout: LayoutId,
-    speakers: &'static [Speaker],
+    speakers: Vec<Speaker>,
+    horizontal: Option<Box<VbapSolver>>,
     dirs: Vec<[f32; 3]>,
     faces: Vec<Face>,
     pairs: Vec<Pair>,
@@ -162,7 +163,13 @@ impl VbapSolver {
     }
 
     pub fn with_layout(layout: LayoutId) -> Self {
-        let speakers = speakers(layout);
+        Self::with_speakers(layout, speakers(layout).to_vec())
+    }
+
+    fn with_speakers(layout: LayoutId, speakers: Vec<Speaker>) -> Self {
+        let horizontal = if speakers.iter().any(|speaker| speaker.elevation.abs() > 1e-3) {
+            Some(Box::new(Self::with_speakers(layout, speakers.iter().filter(|speaker| speaker.elevation.abs() < 1e-3).copied().collect())))
+        } else { None };
         let dirs: Vec<_> = speakers
             .iter()
             .map(|speaker| unit(speaker.azimuth, speaker.elevation))
@@ -230,11 +237,21 @@ impl VbapSolver {
                 }
             }
         }
-        Self { layout, speakers, dirs, faces, pairs }
+        Self { layout, speakers, dirs, faces, pairs, horizontal }
     }
 
     pub fn layout(&self) -> LayoutId {
         self.layout
+    }
+
+    pub fn pan_horizontal(&self, position: [f32; 3], spread: f32) -> [f32; MAX_BUS_COUNT] {
+        let Some(horizontal) = &self.horizontal else { return self.pan(position, spread); };
+        let local = horizontal.pan(position, spread);
+        let mut gains = [0.0; MAX_BUS_COUNT];
+        for (i, speaker) in horizontal.speakers.iter().enumerate() {
+            if let Some(index) = self.speaker_index(speaker.name) { gains[index] = local[i]; }
+        }
+        gains
     }
 
     pub fn bus_count(&self) -> usize {
