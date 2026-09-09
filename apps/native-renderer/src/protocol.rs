@@ -7,6 +7,8 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     match command {
+        Command::ListOutputDevices => output_manager::request(None),
+        Command::SetOutputDevice {settings} => output_manager::request(Some(settings)),
         Command::Hello { protocol } => write_event(&Event::Ack {
             command: "hello",
             accepted: protocol == PROTOCOL,
@@ -263,7 +265,10 @@ fn handle_command(
                 candidate.configure_cinema(settings.clone(), room.clone());
                 let bus = bus_renderer::BusRenderer::new(&candidate, &state.vbap, state.hrtf_wet_weight)?;
                 state.cinema = settings;
-                let sub_delay = state.cinema.speakers.get("LFE").map_or(0, |s| (s.delay_ms * 48.0).round() as usize);
+                state.hardware_lfe = crate::hardware::Chain::new(&state.cinema.monitor.hardware);
+                state.hardware_stereo = std::array::from_fn(|_| crate::hardware::Chain::new(&state.cinema.monitor.hardware));
+                let sub_delay = (if state.cinema.enabled { state.cinema.speakers.get("LFE").map_or(0, |s| (s.delay_ms * 48.0).round() as usize) } else { 0 })
+                    + state.cinema.monitor.delay("LFE");
                 state.cinema_sub_delay = vec![0.0; sub_delay];
                 state.cinema_sub_cursor = 0;
                 state.cinema_bass_delay.fill(0.0);
@@ -329,6 +334,8 @@ fn handle_command(
                     bus_renderer.reset();
                 }
                 state.lfe_path.reset();
+                state.hardware_lfe.reset();
+                for chain in &mut state.hardware_stereo { chain.reset(); }
                 for source in state.sources.values_mut() {
                     source.availability = 0.0;
                     source.availability_target = 0.0;
@@ -555,6 +562,7 @@ fn handle_command(
         }
         Command::Health => write_event(&Event::Health(state.health(fifo, telemetry))),
         Command::Shutdown => {
+            output_manager::stop();
             write_event(&Event::Ack {
                 command: "shutdown",
                 accepted: true,
@@ -1047,6 +1055,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Reset { .. } => "reset",
         Command::Health => "health",
         Command::Shutdown => "shutdown",
+        Command::ListOutputDevices => "listOutputDevices",
+        Command::SetOutputDevice { .. } => "setOutputDevice",
     }
 }
 

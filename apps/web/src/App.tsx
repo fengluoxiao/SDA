@@ -1,4 +1,10 @@
+import Select from "./components/Select";
+import OutputPanel from "./components/OutputPanel";
+import {ROOM_LISTENING_LEVELS} from "./room-listening";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WindowTitlebar } from "./components/WindowTitlebar";
+import { MediaPicker } from "./components/MediaPicker";
+import { Box, SlidersHorizontal, AudioLines, Headphones, FileAudio, ListMusic, Orbit, Speaker, Ear, RotateCcw, ScanFace, Sun, Moon, Settings, FolderOpen, FolderPlus, Upload, X } from "lucide-react";
 import { SdaPlayer, type BinauralRenderMetadata, type NativeRendererSink, type NativeRendererSourceDeclaration, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
@@ -20,6 +26,7 @@ import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
 import CinemaPanel from "./components/CinemaPanel";
+import MonitorPanel from "./components/MonitorPanel";
 import RoomLab, {type ComparisonMode,type LayoutMemory,type RoomVisual,type RoomAudition} from "./components/RoomLab";
 const RoomRayView = lazy(()=>import("./components/RoomRayView"));
 import type {CinemaSettings} from "./vite-env";
@@ -272,6 +279,7 @@ setHeadphoneCompensationAssetLoader(bundledFirReader
     }
   : null);
 
+const headphoneModelName=(name:string)=>name.replace(/（AutoEq[^）]*）/g,"");
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
   /** Retains the outgoing decoder/player until the replacement native session is ready. */
@@ -288,7 +296,12 @@ export function App() {
   const stereoLayoutRef = useRef<LayoutId>("2.0");
   /** 自动模式下首帧检测出的布局（用于界面回显 + 3D 视图）。 */
   const [detectedLayout, setDetectedLayout] = useState<LayoutId | null>(null);
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>(() => {
+    try { return localStorage.getItem("sda-theme") === "light" ? "light" : "dark"; }
+    catch { return "dark"; }
+  });
+  const [mediaPicker, setMediaPicker] = useState<"files" | "folder" | null>(null);
+  const [immersiveView, setImmersiveView] = useState(false);
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [binauralMetadata, setBinauralMetadata] = useState<BinauralRenderMetadata | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
@@ -382,6 +395,8 @@ export function App() {
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   /** Desktop playback is owned by the WASAPI native object renderer. */
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
+  const [outputUnavailable, setOutputUnavailable] = useState(false);
+  useEffect(() => window.sdaDesktop?.onOutputDevices?.(value => setOutputUnavailable(value.status.state === "unavailable")), []);
   const nativeRendererRunningRef = useRef(false);
   const nativeRendererSampleRef = useRef(0);
   /** Invalidates every native sink owned by a replaced player immediately. */
@@ -395,16 +410,20 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession());
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
-  const [roomAudition,setRoomAudition]=useState<RoomAudition>({stage:"full",matched:true});
+  const [roomAudition,setRoomAudition]=useState<RoomAudition>({stage:"full",matched:false});
   const comparisonGain=useRef(0);
   const comparisonRestore=useRef<{head:string;dense:boolean;calibrated:boolean;stereo:StereoRenderMode;cinema:{settings:CinemaSettings;profileId:string|null}}|null>(null);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
+  const [headphoneSource,setHeadphoneSource]=useState(()=>{
+    const saved=localStorage.getItem("sda-headphone-simulation-source");
+    return !saved||saved==="airpods-pro-3-reference"?"reference":saved;
+  });
   const [headphoneProfiles, setHeadphoneProfiles] = useState(() => availableHeadphoneCompensationProfiles());
   const [profileBusy, setProfileBusy] = useState(false);
   const coverUrlRef = useRef<string | null>(null);
@@ -854,6 +873,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("sda-theme", theme); } catch { /* Storage may be unavailable. */ }
   }, [theme]);
 
   useEffect(() => {
@@ -937,7 +957,9 @@ export function App() {
         }));
         for (const entry of entries) registerLocalHeadphoneCompensation(entry);
         setHeadphoneProfiles(availableHeadphoneCompensationProfiles());
-        localStorage.removeItem("sda-headphone-profile-id");
+        const saved=localStorage.getItem("sda-headphone-simulation-target");
+        if(saved&&availableHeadphoneCompensationProfiles().some(p=>p.id===saved))void changeHeadphoneCompensation(saved);
+        else localStorage.removeItem("sda-headphone-simulation-target");
       })
       .catch((error) => setErrors((prev) => [...prev, `加载本地耳机档案失败: ${String(error)}`]));
   }, []);
@@ -1393,9 +1415,10 @@ export function App() {
   const restoreRoomComparison=async()=>{
     const saved=comparisonRestore.current;if(!saved)return;
     const api=window.sdaDesktop;
+    const currentMonitor=(await api?.getCinemaSettings?.())?.settings.monitor;
     if(!(await api?.getNativeRendererStatus?.())?.running)await api?.startNativeRenderer?.();
     if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(saved.head,saved.dense,saved.calibrated),.04)
-      ||!await api?.nativeRendererCinema?.(saved.cinema.settings,saved.cinema.profileId)
+      ||!await api?.nativeRendererCinema?.({...saved.cinema.settings,monitor:currentMonitor??saved.cinema.settings.monitor},saved.cinema.profileId)
       ||!await api?.nativeRendererStereoMode?.(saved.stereo)
       ||!await api?.nativeRendererComparisonGain?.(0))throw new Error("对照设置恢复失败");
     await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(saved.head,saved.calibrated));
@@ -1406,6 +1429,17 @@ export function App() {
     comparisonGain.current=0;comparisonRestore.current=null;setRoomComparison(null);
     localStorage.removeItem("sda-room-comparison-backup");
   };
+  const applyRoomPreset=async(roomId:string)=>{
+    const api=window.sdaDesktop;
+    if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
+    if(roomComparison!==null)await restoreRoomComparison();
+    if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
+    if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("房间布局设置失败");
+    if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw new Error("HRTF 未就绪");
+    const current=await api.getCinemaSettings();
+    if(!await api.nativeRendererCinema?.({...current.settings,enabled:true,reflectionMode:"full",...ROOM_LISTENING_LEVELS,speakers:{}},roomId))throw new Error("房间档案未被接受");
+    setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
+  };
   const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full")=>{
     const api=window.sdaDesktop;if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
     if(!comparisonRestore.current)comparisonRestore.current={head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,stereo:stereoRenderMode,cinema:await api.getCinemaSettings()};
@@ -1415,7 +1449,7 @@ export function App() {
       if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("对照布局设置失败");
       const calibrated=next!=="raw";
       if(!await api.nativeRendererHrtf?.(nativeHrtfSetName("ku100",false,calibrated),.04))throw new Error("HRTF 对照切换失败");
-      const settings:CinemaSettings={enabled:true,reflectionMode:stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
+      const settings:CinemaSettings={monitor:(await api.getCinemaSettings()).settings.monitor,enabled:true,reflectionMode:stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
       if(!await api.nativeRendererCinema?.(settings,next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",calibrated));await playerRef.current?.setDenseBinauralObjects(false,denseBinauralBaseUrl(calibrated));
       localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,"ku100");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,"0");localStorage.setItem(KU100_CALIBRATION_KEY,calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode","room");
@@ -1444,13 +1478,28 @@ export function App() {
     playerRef.current?.setBinauralEqBands(next);
   }, [binauralEqBands]);
 
-  const changeHeadphoneCompensation = useCallback((id: string) => {
+  const [headphoneSwitchBusy,setHeadphoneSwitchBusy]=useState(false);
+  const [audioSettingsRevision,setAudioSettingsRevision]=useState(0);
+  const changeHeadphoneCompensation = async (id: string, source=headphoneSource) => {
+    if(headphoneSwitchBusy)return;
+    setHeadphoneSwitchBusy(true);
     const next = id || null;
+    try {
+    const api=window.sdaDesktop;
+    if(next&&roomComparison!==null)await restoreRoomComparison();
+    if(!(await api?.getNativeRendererStatus?.())?.running) {
+      await api?.startNativeRenderer?.();
+      if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw new Error("HRTF 未就绪");
+    }
+    if(!await api?.nativeRendererHeadphoneProfile?.(next,source))throw new Error("耳机模拟切换失败");
+    setHeadphoneSource(source);localStorage.setItem("sda-headphone-simulation-source",source);
     setHeadphoneProfileId(next);
-    if (next) localStorage.setItem("sda-headphone-profile-id", next);
-    else localStorage.removeItem("sda-headphone-profile-id");
+    if (next) localStorage.setItem("sda-headphone-simulation-target", next);
+    else localStorage.removeItem("sda-headphone-simulation-target");
     playerRef.current?.setHeadphoneCompensation(next);
-  }, []);
+    } catch(error) {setErrors(v=>[...v,String(error)]);}
+    finally {setAudioSettingsRevision(v=>v+1);setHeadphoneSwitchBusy(false);}
+  };
 
   const changeBinauralLowFrequencyDiagnostic = useCallback((next: BinauralLowFrequencyDiagnostic) => {
     persistBinauralLowFrequencyDiagnostic(next);
@@ -1549,6 +1598,7 @@ export function App() {
 
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;
+    if (desktop?.browseMedia) { setMediaPicker("files"); return; }
     if (desktop?.pickFile) {
       const path = await desktop.pickFile();
       if (path) appendToPlaylist([{ kind: "path", path }]);
@@ -1563,6 +1613,7 @@ export function App() {
   }, [appendToPlaylist]);
 
   const openFolder = useCallback(async () => {
+    if (window.sdaDesktop?.browseMedia) { setMediaPicker("folder"); return; }
     const result = await window.sdaDesktop?.pickFolder?.();
     if (!result || result.canceled) return;
     appendToPlaylist(result.paths.map((path) => ({ kind: "path", path })));
@@ -1633,73 +1684,85 @@ export function App() {
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}
     >
+      <WindowTitlebar />
+      {mediaPicker && <MediaPicker mode={mediaPicker} onClose={() => setMediaPicker(null)} onSelect={paths => appendToPlaylist(paths.map(path => ({kind:"path",path})))}/>}
       <header>
-        <h1>SDA · 空间音频解码器</h1>
+        <h1><AudioLines size={24} /><span>SDA<small>空间音频工作台</small></span></h1>
         <div className="controls">
-          <select
+          <Select
             value="binaural"
             disabled
             title="桌面 WASAPI sidecar 当前仅提供固定虚拟扬声器的双耳 HRTF 输出"
           >
             <option value="binaural">双耳 (耳机 HRTF)</option>
-          </select>
-          <select value={layoutId} disabled={roomComparison!==null} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
+          </Select>
+          <Select value={layoutId} disabled={roomComparison!==null} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
             {!stereoProgram && mode !== "stereo" && <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>}
             {(Object.keys(LAYOUTS) as LayoutId[])
-              .filter((id) => (stereoProgram || mode === "stereo")
+              .filter((id) => !track || ((stereoProgram || mode === "stereo")
                 ? id === "2.0" || id === "2.1"
-                : id !== "2.0" && id !== "2.1")
+                : id !== "2.0" && id !== "2.1"))
               .map((id) => (
                 <option key={id} value={id}>
                   {id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `Dolby ${id}`}
                 </option>
               ))}
-          </select>
-          <select
-            value={headphoneProfileId ?? ""}
-            disabled={mode !== "binaural"}
-            title={mode === "binaural" ? "应用经完整性校验的最终双耳 EQ；平均测量档案会明确标注其限制" : "耳机补偿仅用于双耳输出"}
-            onChange={(e) => changeHeadphoneCompensation(e.target.value)}
+          </Select>
+          <Select aria-label="实际佩戴耳机" title="默认通用耳机，无需适配型号；也可选择实际型号进行近似校准" value={headphoneSource} disabled={headphoneSwitchBusy} onChange={e=>{
+            const source=e.target.value;
+            if(headphoneProfileId)void changeHeadphoneCompensation(headphoneProfileId,source);
+            else {setHeadphoneSource(source);localStorage.setItem("sda-headphone-simulation-source",source);}
+          }}>
+            <option value="reference">通用耳机（未校准）</option>
+            {headphoneProfiles.map(p=><option key={p.id} value={p.id}>型号校准：{headphoneModelName(p.name)}</option>)}
+          </Select>
+          <Select
+            aria-label="模拟目标耳机" value={headphoneProfileId ?? ""}
+            disabled={mode !== "binaural"||headphoneSwitchBusy}
+            title={mode === "binaural" ? "近似目标耳机的频响音色；未校准参考保留实际耳机自身音染" : "耳机模拟仅用于双耳输出"}
+            onChange={(e) => void changeHeadphoneCompensation(e.target.value)}
           >
-            <option value="">耳机补偿：无</option>
+            <option value="">耳机模拟：关闭</option>
             {headphoneProfiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>{profile.name}</option>
+              <option key={profile.id} value={profile.id}>模拟：{headphoneModelName(profile.name)}</option>
             ))}
-          </select>
+          </Select>
           {window.sdaDesktop?.importHeadphoneProfile && (
             <button disabled={profileBusy} onClick={() => void importHeadphoneProfile()} title="导入经 FIR、SHA-256、测量类别和来源证明验证的 profile.json">
-              导入耳机档案
+              <Upload size={16} /><span>导入耳机档案</span>
             </button>
           )}
           <button
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             title={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
           >
-            {theme === "dark" ? "☀️" : "🌙"}
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
           <button onClick={() => void openFile()}>
-            打开文件
+            <FolderOpen size={16} /><span>打开文件</span>
           </button>
           {window.sdaDesktop?.pickFolder && (
             <button onClick={() => void openFolder()}>
-              添加文件夹
+              <FolderPlus size={16} /><span>添加文件夹</span>
             </button>
           )}
           <button className="settings-toggle" onClick={() => setSettingsOpen((open) => !open)} title="系统设置" aria-expanded={settingsOpen}>
-            ⚙
+            <Settings size={18} />
           </button>
         </div>
       </header>
 
+      {outputUnavailable && <button className="output-unavailable-notice" onClick={() => setSettingsOpen(true)}>输出设备不可用 · 打开设置恢复</button>}
       {settingsOpen && (
         <div className="settings-layer" onMouseDown={() => setSettingsOpen(false)}>
           <section className="settings-panel" aria-label="系统设置" onMouseDown={(event) => event.stopPropagation()}>
             <div className="settings-header">
               <h2>系统设置</h2>
               <button className="settings-close" onClick={() => setSettingsOpen(false)} title="关闭系统设置" aria-label="关闭系统设置">
-                ×
+                <X size={18} />
               </button>
             </div>
+            <OutputPanel />
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
               <label className="settings-switch" title="Dolby 对话归一化（dialnorm，ETSI TS 102 366 / ATSC A/52）：把节目对白响度对齐到 -31 LUFS 参考，只衰减过响的节目（dialnorm ≤ 31 故增益恒 ≤ 0 dB），不启用 DRC 动态范围压缩。作用于双耳与立体声输出。无响度元数据的节目（ALAC/立体声 PCM 等）按 BS.1770-4 实测综合响度平衡到 -18 LKFS（杜比 Atmos 音乐交付目标），同样只衰减。">
@@ -1714,18 +1777,15 @@ export function App() {
             </fieldset>
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
-                <legend>原生空间渲染器</legend>
+                <legend>空间渲染</legend>
                 <label className="settings-switch" title="开启：逐对象 HRTF 卷积。关闭：虚拟音箱总线。两种模式均保留独立对象与 Solo。">
-                  <span>逐对象 HRTF（实验）</span>
+                  <span>逐对象双耳渲染 <small>实验性</small></span>
                   <input type="checkbox" role="switch" checked={directObjectHrtf}
                     disabled={directObjectHrtfBusy || nativeRendererBusy}
                     onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
                 </label>
-                <p className="settings-description">
-                  Rust/WASAPI 是桌面版唯一可听输出：对象 PCM 在 native sidecar 中按完整 subject HRTF/BRIR 分区卷积后直接送入 WASAPI。启动前会校验 48 kHz、完整 v4 HRTF 与原子 codec-clock 预缓冲。
-                </p>
                 <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
-                  <span>WASAPI 空间输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
+                  <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <button type="button" disabled={nativeRendererBusy} onClick={() => void toggleNativeRenderer()}>
                     {nativeRendererBusy ? "处理中" : nativeRendererStatus?.running ? "停止" : "启动"}
                   </button>
@@ -1734,20 +1794,20 @@ export function App() {
             )}
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
-              <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机补偿档案。</p>
-              <label className="settings-switch" title="将最终双耳低/中/高三段 EQ 全部恢复为 0 dB；不改变 HRTF、LFE 或耳机补偿档案。">
+              <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机模拟档案。</p>
+              <label className="settings-switch" title="将最终双耳低/中/高三段 EQ 全部恢复为 0 dB；不改变 HRTF、LFE 或耳机模拟档案。">
                 <span>耳机 EQ 归零</span>
                 <button type="button" onClick={resetBinauralEq}>归零</button>
               </label>
-              <label className="settings-switch" title="仅用于鼓声 A/B：在最终双耳输出应用左右链接的 180 Hz、-3 dB low shelf。选择会在重启后恢复；不会改动 HRTF、LFE、主声道路由、物理多声道或耳机补偿 FIR。">
+              <label className="settings-switch" title="仅用于鼓声 A/B：在最终双耳输出应用左右链接的 180 Hz、-3 dB low shelf。选择会在重启后恢复；不会改动 HRTF、LFE、主声道路由、物理多声道或耳机模拟 FIR。">
                 <span>双耳低频诊断 <small>{binauralLowFrequencyDiagnostic === "low-cut" ? "180 Hz / -3 dB" : "参考（旁路）"}</small></span>
-                <select
+                <Select
                   value={binauralLowFrequencyDiagnostic}
                   onChange={(event) => changeBinauralLowFrequencyDiagnostic(event.target.value as "reference" | "low-cut")}
                 >
                   <option value="reference">参考</option>
                   <option value="low-cut">低频诊断</option>
-                </select>
+                </Select>
               </label>
               {([
                 ["low", "低频", "120 Hz"],
@@ -1820,8 +1880,8 @@ export function App() {
 
       <main>
         <section className="view">
-          {roomVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
-          <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
+{roomVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+          <div className="scene-heading"><span>空间声场</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
             position={position}
@@ -1838,7 +1898,8 @@ export function App() {
       </main>
 
       <div className="float-dock">
-        {floatPanel==="roomlab"&&<RoomLab layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
+        {floatPanel==="roomcalibration"&&<CinemaPanel key={audioSettingsRevision} onBack={()=>setFloatPanel("roomlab")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId} speakers={outputSpeakers}/>}
+        {floatPanel==="roomlab"&&<RoomLab key={audioSettingsRevision} onApply={applyRoomPreset} onCalibration={()=>setFloatPanel("roomcalibration")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
           snapshot={{layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,muted:[...mutedSpeakerNames],solo:[...soloSpeakerNames],focus:[...focusedSpeakers]}}
           onRecall={recallLayoutMemory} onCompare={applyRoomComparison} onRestore={restoreRoomComparison} onVisual={setRoomVisual} comparison={roomComparison} visualSpeaker={roomVisual?.speaker} audition={roomAudition} onAudition={setRoomAudition}/>}
         {floatPanel === "head-tracking" && headTrackingStatus?.running && (
@@ -1919,14 +1980,16 @@ export function App() {
         )}
         {floatPanel === "headphone" && selectedHeadphoneProfile && (
           <div className="panel float-panel">
-            <h2>耳机补偿</h2>
+            <h2>耳机听感模拟</h2>
             <dl>
               <dt>模式</dt>
-              <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
+              <dd>{headphoneSource==="reference"?"通用耳机 → 目标音色":"实际耳机 → 目标耳机"}</dd>
+              <dt>实际佩戴</dt><dd>{headphoneProfiles.find(p=>p.id===headphoneSource)?.name??"通用耳机（未校准，保留实际耳机自身音染）"}</dd>
+              <dt>模拟目标</dt><dd>{selectedHeadphoneProfile.name}</dd>
               <dt>来源</dt>
               <dd>{selectedHeadphoneProfile.source}</dd>
-              {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
-              {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
+              <dt>近似范围</dt><dd>基于公开校正曲线的频响音色转换；测量系统与目标曲线可能不同。不能复刻佩戴、失真或完整声场。</dd>
+              <dt>电平</dt><dd>按粉红噪声参考能量匹配，保留最终峰值保护；实际歌曲的主观响度仍可能不同。</dd>
             </dl>
           </div>
         )}
@@ -2053,17 +2116,18 @@ export function App() {
             </div>
           </div>
         )}
-        {floatPanel === "cinema" && <CinemaPanel layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
-        <div className="float-buttons">
-          {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}>返回声场</button>}
-          <button className={floatPanel==="roomlab"?"active":""} onClick={()=>setFloatPanel(floatPanel==="roomlab"?null:"roomlab")} title="房间实验室">房间</button>
-          <button disabled={roomComparison!==null} className={floatPanel === "cinema" ? "active" : ""} title="影院处理" aria-expanded={floatPanel === "cinema"}
-            onClick={() => setFloatPanel(floatPanel === "cinema" ? null : "cinema")}>影院</button>
+        {floatPanel === "cinema" && <MonitorPanel key={`${roomComparison??"editing"}-${audioSettingsRevision}`} comparisonActive={roomComparison!==null} onExitComparison={restoreRoomComparison} layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
+        <nav className="float-buttons" aria-label="音频工具">
+          {window.sdaDesktop?.electron3D !== false && <button className={immersiveView ? "active" : ""} aria-pressed={immersiveView} title={immersiveView ? "退出沉浸视角" : "进入沉浸视角"} onClick={() => { setRoomVisual(null); setImmersiveView(value => !value); }}><ScanFace size={19} /><span>沉浸</span></button>}
+          {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}><RotateCcw size={19} /><span>返回声场</span></button>}
+          <button className={floatPanel==="roomlab"?"active":""} onClick={()=>setFloatPanel(floatPanel==="roomlab"?null:"roomlab")} title="房间实验室"><Box size={19} /><span>房间</span></button>
+          <button className={floatPanel === "cinema" ? "active" : ""} title="监听处理器" aria-expanded={floatPanel === "cinema"}
+            onClick={() => setFloatPanel(floatPanel === "cinema" ? null : "cinema")}><SlidersHorizontal size={19} /><span>监听</span></button>
           {stereoProgram && <button
             className={floatPanel === "stereo" ? "active" : ""}
             title="立体声处理" aria-expanded={floatPanel === "stereo"}
             onClick={() => setFloatPanel(floatPanel === "stereo" ? null : "stereo")}
-          >立体声</button>}
+          ><AudioLines size={19} /><span>立体声</span></button>}
           {headTrackingStatus?.running && (
             <button
               className={`head-tracking-toggle ${floatPanel === "head-tracking" ? "active" : ""}`}
@@ -2071,49 +2135,49 @@ export function App() {
               aria-label="查看头部追踪实时数据"
               aria-expanded={floatPanel === "head-tracking"}
               onClick={() => setFloatPanel(floatPanel === "head-tracking" ? null : "head-tracking")}
-            >头追</button>
+            ><ScanFace size={19} /><span>头追</span></button>
           )}
           <button
             className={floatPanel === "stream" ? "active" : ""}
             title="码流信息"
             onClick={() => setFloatPanel(floatPanel === "stream" ? null : "stream")}
-          >码流</button>
+          ><FileAudio size={19} /><span>码流</span></button>
           <button
             className={floatPanel === "binaural" ? "active" : ""}
             title="双耳元数据"
             onClick={() => setFloatPanel(floatPanel === "binaural" ? null : "binaural")}
-          >双耳</button>
+          ><Headphones size={19} /><span>双耳</span></button>
           {selectedHeadphoneProfile && (
             <button
               className={floatPanel === "headphone" ? "active" : ""}
-              title="耳机补偿详情"
+              title="耳机模拟详情"
               onClick={() => setFloatPanel(floatPanel === "headphone" ? null : "headphone")}
-            >耳机</button>
+            ><Headphones size={19} /><span>耳机</span></button>
           )}
           <button
             className={floatPanel === "playlist" ? "active" : ""}
             title={`播放列表 (${playlist.length})`}
             onClick={() => setFloatPanel(floatPanel === "playlist" ? null : "playlist")}
-          >列表</button>
+          ><ListMusic size={19} /><span>列表</span></button>
           <button
             className={floatPanel === "objects" ? "active" : ""}
             title={`对象 (${diagnosticObjects.length})`}
             onClick={() => setFloatPanel(floatPanel === "objects" ? null : "objects")}
-          >对象</button>
+          ><Orbit size={19} /><span>对象</span></button>
           <button
             className={floatPanel === "channels" ? "active" : ""}
             title="声道静音与独奏"
             aria-expanded={floatPanel === "channels"}
             onClick={() => setFloatPanel(floatPanel === "channels" ? null : "channels")}
-          >声道</button>
+          ><Speaker size={19} /><span>声道</span></button>
           {mode === "binaural" && (
             <button
               className={floatPanel === "pinna" ? "active" : ""}
               title="选择人头麦/耳廓（HRTF）"
               onClick={() => setFloatPanel(floatPanel === "pinna" ? null : "pinna")}
-            >耳廓</button>
+            ><Ear size={19} /><span>耳廓</span></button>
           )}
-        </div>
+        </nav>
       </div>
     </div>
   );

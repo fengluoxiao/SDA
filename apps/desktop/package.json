@@ -19,8 +19,13 @@
     "productName": "SDA",
     "files": [
       "main.cjs",
+      "media-browser.cjs",
       "preload.cjs",
       "cinema-profiles.cjs",
+      "monitor-settings.cjs",
+      "headphone-simulation.cjs",
+      "builtin-rooms.cjs",
+      "builtin-rooms/**",
       "room-lab.cjs",
       {
         "from": "../web/dist",
@@ -55,5 +60,8 @@
       "target": "dmg",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
+  },
+  "dependencies": {
+    "fft.js": "4.0.4"
   }
 }

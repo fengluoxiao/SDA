@@ -11,6 +11,7 @@ pub(super) struct BusRenderer {
 }
 
 struct Bus {
+    hardware: crate::hardware::Chain,
     background_filter: crate::focus::BackgroundFilter,
     convolver: convolution::StereoPartitionedConvolver,
     input: Vec<f32>,
@@ -30,6 +31,7 @@ impl BusRenderer {
             let (left, right) = set.mixed_speaker(vbap::speakers(solver.layout())[index].name,
                 solver.layout().as_str(), azimuth as f64, elevation as f64, wet_weight)?;
             buses.push(Bus {
+                hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
                 background_filter: crate::focus::BackgroundFilter::default(),
                 convolver: convolution::StereoPartitionedConvolver::new(
                     &left,
@@ -80,6 +82,7 @@ impl BusRenderer {
         for bus in &mut self.buses {
             bus.left.fill(0.0);
             bus.right.fill(0.0);
+            for sample in &mut bus.input { *sample = bus.hardware.process(*sample); }
             bus.convolver
                 .process_block(&bus.input, &mut bus.left, &mut bus.right)?;
         }
@@ -89,6 +92,7 @@ impl BusRenderer {
     pub(super) fn reset(&mut self) {
         for bus in &mut self.buses {
             bus.convolver.reset();
+            bus.hardware.reset();
             bus.background_filter = crate::focus::BackgroundFilter::default();
             bus.input.fill(0.0);
             bus.left.fill(0.0);

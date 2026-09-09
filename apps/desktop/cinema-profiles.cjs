@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const monitorSettings = require('./monitor-settings.cjs');
 
 const names = ['FrontLeft', 'FrontRight', 'Center', 'LFE', 'WideLeft', 'WideRight', 'SurroundLeft', 'SurroundRight', 'RearLeft', 'RearRight', 'TopFrontLeft', 'TopFrontRight', 'TopMiddleLeft', 'TopMiddleRight', 'TopRearLeft', 'TopRearRight'];
 const layouts = ['2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','7.1.4','9.1.2','9.1.4','9.1.6'];
@@ -19,6 +20,35 @@ function validateSimulation(value, speakers, layout) {
   }
   for(const mode of ['raw','calibrated','room',...(value.revision>=2?['direct','early']:[])])if(!finite(value.comparison.gainDb?.[mode],-40,0)||!finite(value.comparison.energyDb?.[mode],-300,300))reject('参考电平数据无效');
   if(JSON.stringify(value).length>100000)reject('仿真来源记录过大');
+  if(value.revision>=4){
+    const r=value.reference,m=value.material;
+    if(r?.kind!=='relative-digital'||r.propagationReferenceMetres!==1||r.absoluteSplCalibrated!==false||r.makeupGainDb!==0||r.rirHighpassEnabled!==false)
+      reject('房间参考条件无效');
+    if(!m||!text(m.id,128)||m.id!==value.config.material||!text(m.source)||!text(m.reference)||!text(m.coverage)
+      ||!/^[a-f0-9]{64}$/.test(m.sourceSha256)||!Array.isArray(m.coeffs)||!Array.isArray(m.centerFreqs)
+      ||m.coeffs.length!==7||m.centerFreqs.length!==7||!m.coeffs.every(v=>finite(v,0,1))
+      ||m.centerFreqs.some((f,i)=>f!==[125,250,500,1000,2000,4000,8000][i]))reject('房间材料来源无效');
+  }
+  if(value.revision>=5){
+    const walls=['east','west','north','south','ceiling','floor'],d=value.studioDesign;
+    if(value.config.material!=='studio'||!finite(value.config.listeningDistance,.8,2.5)
+      ||!value.surfaces||Object.keys(value.surfaces).length!==6)reject('控制室表面数据无效');
+    for(const wall of walls){
+      const s=value.surfaces[wall];
+      if(!s||!text(s.materialId,128)||!text(s.remainder,128)||!finite(s.coverage,0,1)
+        ||!Array.isArray(s.coeffs)||s.coeffs.length!==7||!s.coeffs.every(v=>finite(v,0,1)))reject('控制室表面数据无效');
+    }
+    if(!d||!text(d.source)||!finite(d.nominalTargetSeconds,.01,10)
+      ||d.nearFieldDistanceMetres!==value.config.listeningDistance||!Array.isArray(d.eyringSeconds)
+      ||d.eyringSeconds.length!==7||!d.eyringSeconds.every(v=>finite(v,.001,100))
+      ||!Array.isArray(d.firstOrderEarlyReflections)||!d.firstOrderEarlyReflections.every(p=>
+        speakers.some(s=>s.name===p.speaker)&&['front','back','left','right','floor','ceiling'].includes(p.wall)
+        &&finite(p.delayMs,0,15)&&finite(p.worstDb,-300,0)))reject('控制室设计数据无效');
+    for(const s of speakers){
+      const distance=Math.hypot(...value.positions[s.name].map((v,i)=>v-value.listener[i]));
+      if(Math.abs(distance-d.nearFieldDistanceMetres)>1e-6)reject('控制室监听距离不一致');
+    }
+  }
   return value;
 }
 
@@ -35,8 +65,10 @@ function validateSettings(value) {
     if (name === 'LFE' && (entry.lowDb !== 0 || entry.highDb !== 0)) reject('LFE 校准仅支持电平与延时');
     speakers[name] = { gainDb:entry.gainDb, delayMs:entry.delayMs, lowDb:entry.lowDb, highDb:entry.highDb };
   }
-  return { ...(value.reflectionMode!==undefined?{reflectionMode:value.reflectionMode}:{}), enabled:value.enabled, directDb:value.directDb, earlyDb:value.earlyDb, lateDb:value.lateDb,
-    earlyMs:value.earlyMs, bassEnabled:value.bassEnabled, crossoverHz:value.crossoverHz, bassDb:value.bassDb, speakers };
+  const monitor = monitorSettings.validate(value.monitor ?? {...monitorSettings.defaults(),
+    enabled:value.enabled && value.bassEnabled,bassEnabled:value.bassEnabled,crossoverHz:value.crossoverHz,bassDb:value.bassDb});
+  return { monitor, ...(value.reflectionMode!==undefined?{reflectionMode:value.reflectionMode}:{}), enabled:value.enabled, directDb:value.directDb, earlyDb:value.earlyDb, lateDb:value.lateDb,
+    earlyMs:value.earlyMs, bassEnabled:false, crossoverHz:value.crossoverHz, bassDb:value.bassDb, speakers };
 }
 
 function validateRoom(value) {

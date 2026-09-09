@@ -4,8 +4,7 @@
  * The desktop app is the web build (apps/web/dist) plus:
  *  - native file open dialog / CLI file argument (no 4 GB File API limits —
  *    renderer reads via sda.readFileSlice IPC)
- *  - multichannel audio devices just work via Chromium (WASAPI exclusive
- *    would need a native output path; see docs for the plan)
+ *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
@@ -13,6 +12,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createMediaBrowser } = require("./media-browser.cjs");
 const cinemaProfiles = require("./cinema-profiles.cjs");
 const { createRoomLab } = require("./room-lab.cjs");
 const { exec, spawn } = require("node:child_process");
@@ -137,6 +137,7 @@ function scanMediaFolder(root) {
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
 const BUNDLED_HEADPHONE_PROFILES = new Map([
+  ["beyerdynamic-dt-1990-balanced-average-autoeq", { preampDb: -1.8, left: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32" }],
   ["sennheiser-hd-820-average-autoeq", { preampDb: -8.3, left: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32", right: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32" }],
   ["beyerdynamic-xelento-2nd-gen-average-autoeq", { preampDb: -6.3, left: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32" }],
   ["beyerdynamic-xelento-wired-average-autoeq", { preampDb: -5.2, left: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32", right: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32" }],
@@ -471,6 +472,23 @@ function nativeRendererBatch(start, entries) {
   }
 }
 
+let outputDevicesState = null;
+let outputSettingsChain = Promise.resolve();
+function publishOutputDevices(value) {
+  outputDevicesState = value;
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send("sda:output-devices", value);
+}
+function validOutputSettings(value) {
+  return value && typeof value.exclusive === "boolean" && (value.remoteCompatible === undefined || typeof value.remoteCompatible === "boolean") && (value.deviceId === null ||
+    (typeof value.deviceId === "string" && value.deviceId.length > 0 && value.deviceId.length <= 1024 && !/[\x00-\x1f]/.test(value.deviceId)));
+}
+function savedOutputSettings() {
+  const value = readSettings().audioOutput;
+  return validOutputSettings(value) ? normalizeOutputSettings(value) : {deviceId:null,exclusive:false,remoteCompatible:true};
+}
+function normalizeOutputSettings(value) {
+  return {deviceId:value.remoteCompatible ? null : value.deviceId,exclusive:value.remoteCompatible ? false : value.exclusive,remoteCompatible:value.remoteCompatible===true};
+}
 function consumeNativeRendererOutput(chunk) {
   nativeRendererBuffer += chunk;
   if (nativeRendererBuffer.length > NATIVE_RENDERER_MAX_LINE_BYTES * 2) {
@@ -487,7 +505,10 @@ function consumeNativeRendererOutput(chunk) {
     try {
       const message = JSON.parse(line);
       if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
-        setNativeRendererStatus(true, `WASAPI ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true);
+        setNativeRendererStatus(true, `渲染 ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true);
+      } else if (message?.type === "outputDevices") {
+        publishOutputDevices({status:message.status,devices:message.devices});
+        writeStartupLog(`audio output: ${JSON.stringify(message.status)}`);
       } else if (message?.type === "error") {
         setNativeRendererStatus(false, `native renderer: ${safeDiagnosticText(message.detail, "错误")}`);
       } else if (message?.type === "ack") {
@@ -540,6 +561,7 @@ function consumeNativeRendererOutput(chunk) {
 }
 
 function clearNativeRendererSession(reason) {
+  publishOutputDevices({status:{requested:savedOutputSettings(),state:"unavailable",detail:reason},devices:[]});
   publishNativeRendererObjectActivity([]);
   if (nativeRendererHealthTimer) clearInterval(nativeRendererHealthTimer);
   nativeRendererHealthTimer = null;
@@ -570,7 +592,7 @@ function startNativeRenderer() {
     nativeRenderer = spawn(executable, [], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets") },
+      env: { ...process.env, SDA_OUTPUT_SETTINGS: JSON.stringify(savedOutputSettings()), SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets") },
     });
   } catch (error) {
     nativeRenderer = null;
@@ -1055,7 +1077,8 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    backgroundColor: "#0c101c",
+    backgroundColor: "#171819",
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1066,6 +1089,10 @@ function createWindow() {
     },
   });
 
+  win.setMenu(null);
+  const publishWindowState = () => win.webContents.send("sda:window-state", win.isMaximized());
+  win.on("maximize", publishWindowState);
+  win.on("unmaximize", publishWindowState);
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     writeStartupLog(`[SDA] 页面加载失败 ${errorCode} ${errorDescription}: ${validatedURL}`);
     dialog.showErrorBox("SDA 页面加载失败", `${errorDescription}\n${validatedURL}`);
@@ -1110,6 +1137,15 @@ function createWindow() {
     });
   }
 }
+
+ipcMain.handle("sda:window-state", event => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false);
+ipcMain.handle("sda:window-control", (event, action) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (action === "minimize") win.minimize();
+  else if (action === "maximize") win.isMaximized() ? win.unmaximize() : win.maximize();
+  else if (action === "close") win.close();
+});
 
 ipcMain.on("sda:get-output-latency-seconds", (event) => {
   event.returnValue = readOutputLatencySeconds();
@@ -1172,6 +1208,24 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
 ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
+ipcMain.handle("sda:output-devices", async () => {
+  startNativeRenderer();
+  const accepted = await nativeRendererCommandAck({type:"listOutputDevices"},"listOutputDevices");
+  if (!accepted) throw new Error("无法读取输出设备，请确认原生输出已启动");
+  return outputDevicesState;
+});
+ipcMain.handle("sda:set-output-device", (_event, value) => {
+  if (!validOutputSettings(value)) throw new Error("无效的输出设置");
+  const settings = normalizeOutputSettings(value);
+  const task = outputSettingsChain.then(async () => {
+    startNativeRenderer();
+    const accepted = await nativeRendererCommandAck({type:"setOutputDevice",...settings},"setOutputDevice",15000);
+    if (accepted) writeSettings({audioOutput:settings});
+    return {accepted, ...outputDevicesState};
+  });
+  outputSettingsChain = task.catch(() => {});
+  return task;
+});
 ipcMain.handle("sda:native-renderer-start", () => {
   const status = startNativeRenderer();
   writeStartupLog(`ipc startNativeRenderer -> ${JSON.stringify(status)}`);
@@ -1278,10 +1332,11 @@ ipcMain.handle("sda:native-renderer-binaural-eq", async (_event, bands, lowCut) 
   writeStartupLog(`setBinauralEq low=${bands.low} mid=${bands.mid} high=${bands.high} lowCut=${lowCut} ACK -> ${accepted}`);
   return accepted;
 });
-ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id) => {
+ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id, sourceId) => exclusiveAudioUpdate(async () => {
   if (id !== null && typeof id !== "string") return false;
   if (id === null) {
     const accepted = await nativeRendererCommandAck({ type: "clearHeadphoneCompensation" }, "clearHeadphoneCompensation");
+    if (accepted) exclusiveHeadphoneId = null;
     writeStartupLog(`clearHeadphoneCompensation ACK -> ${accepted}`);
     return accepted;
   }
@@ -1302,15 +1357,37 @@ ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id) => {
       right = stored.rightFir;
       profile = { preampDb: stored.manifest.preampDb };
     }
-    const preamp = Math.pow(10, profile.preampDb / 20);
+    const requestedSource = sourceId ?? readSettings().headphoneSimulationSource ?? 'reference';
+    const source = requestedSource === 'airpods-pro-3-reference' ? 'reference' : requestedSource;
+    if(typeof source !== 'string')return false;
+    let sourceLeft=null,sourceRight=null;
+    if(!['reference','airpods-pro-3-reference'].includes(source)) {
+      const entry=BUNDLED_HEADPHONE_PROFILES.get(source);
+      if(entry){const root=webAssetRoot();sourceLeft=fs.readFileSync(path.join(root,...entry.left.split('/')));sourceRight=fs.readFileSync(path.join(root,...entry.right.split('/')));}
+      else {const stored=readStoredProfile(source);sourceLeft=stored.leftFir;sourceRight=stored.rightFir;}
+    }
+    const simulated=require('./headphone-simulation.cjs').simulate(sourceLeft,sourceRight,left,right);
+    left=simulated.left;right=simulated.right;
+    const preamp = simulated.preamp;
+    const saved = readSettings().cinema;
+    const settings = cinemaProfiles.validateSettings(saved?.settings ?? defaultCinemaSettings());
+    const bypass = {...settings, enabled:false, bassEnabled:false, monitor:{...settings.monitor, enabled:false,
+      hardware:{...settings.monitor.hardware, enabled:false}}};
+    const normalized = cinemaProfiles.validateSettings(bypass);
+    const roomId = saved?.profileId ?? null;
+    const roomPath = roomId ? readCinemaProfile(roomId).filePath : null;
+    if (!await nativeRendererCommandAck({type:"setCinema",settings:normalized,profile:roomPath},"setCinema",30000)) return false;
+    if (!await nativeRendererCommandAck({type:"setComparisonGain",gainDb:0},"setComparisonGain")) return false;
+    writeSettings({cinema:{settings:normalized,profileId:roomId}});
     const accepted = await nativeRendererHeadphoneFir(preamp, left, right);
-    writeStartupLog(`setHeadphoneFir profile=${id} taps=${left.byteLength / 4}/${right.byteLength / 4} ACK -> ${accepted}`);
+    if (accepted) {exclusiveHeadphoneId = id;writeSettings({headphoneSimulationSource:source});}
+    writeStartupLog(`headphoneSimulation source=${source} target=${id} preamp=${preamp} taps=${left.byteLength / 4}/${right.byteLength / 4} ACK -> ${accepted}`);
     return accepted;
   } catch (error) {
     writeStartupLog(`setHeadphoneFir profile=${id} failed: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
-});
+}));
 ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
   if (!Array.isArray(orientation) || orientation.length !== 4 || !orientation.every(Number.isFinite)) return false;
   return nativeRendererCommand({ type: "headPose", orientation });
@@ -1335,6 +1412,16 @@ ipcMain.handle("sda:native-renderer-stereo-mode", async (_event, mode) => {
   return accepted;
 });
 const cinemaProfileDirectory = () => path.join(app.getPath("userData"), "cinema-rooms");
+let exclusiveHeadphoneId = null;
+let exclusiveAudioQueue = Promise.resolve();
+function exclusiveAudioUpdate(action) {
+  const result = exclusiveAudioQueue.then(action);
+  exclusiveAudioQueue = result.catch(() => {});
+  return result;
+}
+let builtinRoomLibrary;
+const builtinRooms = () => builtinRoomLibrary ??= require("./builtin-rooms.cjs").createBuiltinRooms(
+  path.join(__dirname,"builtin-rooms"),path.join(app.getPath("userData"),"builtin-room-cache"));
 let roomLabService;
 const roomLab = () => roomLabService ??= createRoomLab({
   runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
@@ -1353,6 +1440,7 @@ const defaultCinemaSettings = () => ({ enabled: false, directDb: 0, earlyDb: 0, 
   bassEnabled: false, crossoverHz: 80, bassDb: 0, speakers: {} });
 function readCinemaProfile(id) {
   if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("房间档案 ID 无效");
+  if (builtinRooms().has(id)) return builtinRooms().read(id);
   const filePath = path.join(cinemaProfileDirectory(), `${id}.json`);
   if (fs.statSync(filePath).size > 64 * 1024 * 1024) throw new Error("房间档案过大");
   const bytes = fs.readFileSync(filePath);
@@ -1371,11 +1459,12 @@ ipcMain.handle("sda:cinema-settings", () => {
   }
 });
 ipcMain.handle("sda:cinema-rooms", () => {
-  if (!fs.existsSync(cinemaProfileDirectory())) return [];
-  return fs.readdirSync(cinemaProfileDirectory()).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).flatMap(name => {
+  const builtins=builtinRooms().list();
+  if (!fs.existsSync(cinemaProfileDirectory())) return builtins;
+  return [...builtins,...fs.readdirSync(cinemaProfileDirectory()).filter(name => /^[a-f0-9]{64}\.json$/.test(name)&&!builtinRooms().has(name.slice(0,-5))).flatMap(name => {
     try { const id = name.slice(0, -5); return [cinemaProfiles.roomSummary(readCinemaProfile(id).profile, id)]; }
     catch { return []; }
-  });
+  })];
 });
 ipcMain.handle("sda:cinema-import", async event => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
@@ -1392,6 +1481,7 @@ ipcMain.handle("sda:cinema-import", async event => {
   return cinemaProfiles.roomSummary(profile, id);
 });
 ipcMain.handle("sda:cinema-delete", (_event, id) => {
+  if (builtinRooms().has(id)) throw new Error("内置房间档案不可删除");
   const { filePath } = readCinemaProfile(id);
   if (readSettings().cinema?.profileId === id) throw new Error("请先应用其他房间档案");
   fs.unlinkSync(filePath);
@@ -1406,14 +1496,17 @@ ipcMain.handle("sda:cinema-export-report", async (event, id) => {
   fs.writeFileSync(result.filePath, JSON.stringify(summary, null, 2));
   return true;
 });
-ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => {
+ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => exclusiveAudioUpdate(async () => {
   const normalized = cinemaProfiles.validateSettings(settings);
+  if (exclusiveHeadphoneId && (normalized.enabled || normalized.monitor.enabled || normalized.monitor.hardware?.enabled)) {
+    throw new Error("请先关闭耳机模拟，再启用房间或监听处理");
+  }
   const profile = profileId === null ? null : readCinemaProfile(profileId).filePath;
   const accepted = !nativeRenderer?.stdin || await nativeRendererCommandAck({ type: "setCinema", settings: normalized, profile }, "setCinema", 30000);
   if (accepted) writeSettings({ cinema: { settings: normalized, profileId } });
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
-});
+}));
 ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;
   const accepted = await nativeRendererCommandAck({ type: "setObjectHrtf", enabled }, "setObjectHrtf");
@@ -1471,6 +1564,9 @@ ipcMain.handle("sda:pick-file", async (event) => {
   }
   return filePath;
 });
+
+const browseMedia = createMediaBrowser({app, readSettings, writeSettings, isMediaFile});
+ipcMain.handle("sda:media-browser", (_event, action, value) => browseMedia(action, value));
 
 ipcMain.handle("sda:pick-folder", async (event) => {
   const parent = BrowserWindow.fromWebContents(event.sender);

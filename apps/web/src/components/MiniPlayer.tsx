@@ -1,10 +1,6 @@
 import { memo } from "react";
-
-/**
- * iOS 26 风格迷你播放器（macOS 布局）：通栏液态玻璃底条 —
- * 左侧封面+曲名，中间传输控制+进度条，右侧对象数+音量。
- * 液态玻璃为纯 CSS 实现：backdrop-filter 磨砂 + 内高光描边 + 斜向镜面光泽。
- */
+import { GlassRefraction } from "./GlassRefraction";
+import { Pause, Play, RotateCcw, Volume2 } from "lucide-react";
 
 export interface TrackInfo {
   codec: string;
@@ -61,6 +57,7 @@ export const MiniPlayer = memo(function MiniPlayer({
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
       <div className="mp-glass">
+        <GlassRefraction />
         <div className="mp-bar">
           {/* 左：封面 + 曲名 */}
           <div className="mp-left">
@@ -78,15 +75,15 @@ export const MiniPlayer = memo(function MiniPlayer({
           {/* 中：传输控制 + 进度 */}
           <div className="mp-center">
             <div className="mp-transport">
-              <button className="mp-btn" onClick={onReplay} title="从头重新播放">
-                ⟲
+              <button className="mp-btn mp-replay" onClick={onReplay} aria-label="从头重新播放">
+                <RotateCcw size={17} strokeWidth={1.8} aria-hidden="true" />
               </button>
               <button
                 className="mp-btn mp-play"
                 onClick={onTogglePlay}
-                title={playing && !paused ? "暂停" : paused ? "继续" : "播放"}
+                aria-label={playing && !paused ? "暂停" : paused ? "继续" : "播放"}
               >
-                {playing && !paused ? "❚❚" : "▶"}
+                {playing && !paused ? <Pause size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" /> : <Play size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />}
               </button>
             </div>
             <div className="mp-progress">
@@ -103,9 +100,10 @@ export const MiniPlayer = memo(function MiniPlayer({
           <div className="mp-right">
             <span className="mp-objs">{objectCount} 对象</span>
             <div className="mp-vol" title="音量">
-              <span className="mp-vol-icon">🔊</span>
+              <span className="mp-vol-icon"><Volume2 size={18} /></span>
               <input
                 type="range"
+                aria-label="音量"
                 min={0}
                 max={100}
                 value={Math.round(volume * 100)}

@@ -1,18 +1,34 @@
 /// <reference types="vite/client" />
+export interface MediaBrowserSaved { recent:string[]; favorites:string[]; }
+export interface MediaBrowserPlaces extends MediaBrowserSaved { places:{name:string;path:string}[];initial:string; }
+export interface MediaBrowserDirectory { path:string;parent:string;entries:{name:string;path:string;directory:boolean}[]; }
 export interface CinemaSpeakerCalibration { gainDb: number; delayMs: number; lowDb: number; highDb: number; }
+export interface MonitorOutput { trimDb:number; delayMs:number; invert:boolean; muted:boolean; }
+export interface MonitorSettings {
+  hardware?: {enabled:boolean;inputDb:number;dacBits:number;lineRms:number;gainDb:number;railV:number;currentA:number;loadOhms:number;outputOhms:number;bandwidthHz:number};
+  enabled:boolean; levelDb:number; dim:boolean; dimDb:number; muted:boolean;
+  bassEnabled:boolean; crossoverHz:number; bassDb:number; outputs:Record<string,MonitorOutput>;
+}
 export interface CinemaSettings {
+  monitor?: MonitorSettings;
   reflectionMode?: "direct"|"early"|"full";
   enabled: boolean; directDb: number; earlyDb: number; lateDb: number; earlyMs: number;
   bassEnabled: boolean; crossoverHz: number; bassDb: number; speakers: Record<string, CinemaSpeakerCalibration>;
 }
 export interface CinemaRoomSummary {
+  builtin?: boolean;
   id: string; name: string; source: string; license: string; measurement: string; layout: string; sampleRate: number;
   limited: boolean; suggested: Record<string, CinemaSpeakerCalibration>;
   rows: { name: string; arrivalMs: number; itdMs: number; directEnergyDb: number; peak: number }[];
   simulation?: RoomSimulation;
 }
-export interface RoomSimulationConfig { layout:string; length:number; width:number; height:number; earHeight:number; placement:number; material:"treated"|"living"|"reflective"; order:number; }
+export interface RoomSimulationConfig { layout:string; length:number; width:number; height:number; earHeight:number; placement:number; listeningDistance?:number; material:"studio"|"treated"|"living"|"reflective"|"rockwool_50mm_80kgm3"|"plasterboard"|"hard_surface"; order:number; }
 export interface RoomSimulation {
+  surfaces?:Record<string,{materialId:string;coverage:number;remainder:string;coeffs:number[]}>;
+  studioDesign?:{nominalTargetSeconds:number;eyringSeconds:number[];nearFieldDistanceMetres:number;source:string;firstOrderEarlyReflections:{speaker:string;wall:string;delayMs:number;worstDb:number}[]};
+  reference?:{kind:string;propagationReferenceMetres:number;absoluteSplCalibrated:boolean;makeupGainDb:number;};
+  material?:{id:string;description:string;coeffs:number[];centerFreqs:number[];source:string;reference:string;coverage:string;};
+  sourceModel?:string;
   revision?:number;
   engine:string; config:RoomSimulationConfig; listener:[number,number,number]; size:[number,number,number];
   positions:Record<string,[number,number,number]>;
@@ -91,6 +107,16 @@ declare global {
   interface Window {
     sdaDesktop?: {
       electron3D: boolean;
+      browseMedia?: {
+        (action:"places"):Promise<MediaBrowserPlaces>;
+        (action:"list",value:string):Promise<MediaBrowserDirectory>;
+        (action:"favorite"|"unfavorite"|"forget",value:string):Promise<MediaBrowserSaved>;
+        (action:"files",value:string[]):Promise<string[]>;
+        (action:"folder",value:string):Promise<string[]>;
+      };
+      windowControl?: (action: "minimize" | "maximize" | "close") => Promise<void>;
+      getWindowMaximized?: () => Promise<boolean>;
+      onWindowMaximized?: (callback: (maximized: boolean) => void) => () => void;
       rendererMode: string;
       getOutputLatencySeconds?: () => 0.1 | 0.2 | 0.3;
       setOutputLatencySeconds?: (seconds: 0.1 | 0.2 | 0.3) => boolean;
@@ -104,6 +130,9 @@ declare global {
       stopHeadTracking?: () => Promise<HeadTrackingStatus>;
       recenterHeadTracking?: () => Promise<HeadTrackingPose | null>;
       getNativeRendererStatus?: () => Promise<NativeRendererStatus>;
+      getOutputDevices?: () => Promise<import("./components/OutputPanel").OutputDevices>;
+      setOutputDevice?: (settings: import("./components/OutputPanel").OutputSettings) => Promise<import("./components/OutputPanel").OutputDevices & {accepted:boolean}>;
+      onOutputDevices?: (callback:(value:import("./components/OutputPanel").OutputDevices)=>void) => () => void;
       startNativeRenderer?: () => Promise<NativeRendererStatus>;
       stopNativeRenderer?: () => Promise<NativeRendererStatus>;
       getNativeRendererHealth?: () => Promise<NativeRendererStatus>;
@@ -118,7 +147,7 @@ declare global {
       nativeRendererProgramEnabled?: (enabled: boolean) => Promise<boolean>;
       nativeRendererProgramGain?: (gain: number, atSample?: number) => Promise<boolean>;
       nativeRendererBinauralEq?: (bands: { low: number; mid: number; high: number }, lowCut: boolean) => Promise<boolean>;
-      nativeRendererHeadphoneProfile?: (id: string | null) => Promise<boolean>;
+      nativeRendererHeadphoneProfile?: (id: string | null, source?: string) => Promise<boolean>;
       nativeRendererPose?: (orientation: readonly [number, number, number, number]) => Promise<boolean>;
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;

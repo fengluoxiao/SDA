@@ -183,7 +183,9 @@ mod tests {
         profile.validate().unwrap();
         let mut settings=crate::cinema::Settings {enabled:true,late_db:-3.0,..Default::default()};
         settings.speakers.insert("FrontLeft".into(),crate::cinema::SpeakerCalibration {delay_ms:2.0,gain_db:-3.0,..Default::default()});
-        settings.speakers.insert("FrontRight".into(),crate::cinema::SpeakerCalibration {delay_ms:7.0,high_db:-2.0,..Default::default()});
+          settings.speakers.insert("FrontRight".into(),crate::cinema::SpeakerCalibration {delay_ms:7.0,high_db:-2.0,..Default::default()});
+          settings.monitor.enabled = true;
+          settings.monitor.outputs.insert("FrontLeft".into(),crate::monitor::Output {trim_db:-4.0,delay_ms:3.0,invert:true,muted:false});
         set.configure_cinema(settings,Some(std::sync::Arc::new(profile)));
         let mut bus=bus_renderer::BusRenderer::new(&set,&solver,0.04).unwrap();
         let mut direct=DirectSource::new(&set,0.04).unwrap();

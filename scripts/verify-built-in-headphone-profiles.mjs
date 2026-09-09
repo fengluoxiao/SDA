@@ -45,6 +45,7 @@ function maximumFirResponseDb(bytes) {
 }
 
 const ids = [
+  "beyerdynamic-dt-1990-balanced-average-autoeq",
   "sony-mdr-7506-average-autoeq",
   "beyerdynamic-xelento-wired-average-autoeq",
   "beyerdynamic-xelento-2nd-gen-average-autoeq",

@@ -9,6 +9,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRe
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
+import { ImmersiveCamera } from "./ImmersiveCamera";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
 import { speakerLabel } from "../speaker-labels";
@@ -26,24 +27,20 @@ export type Theme = "dark" | "light";
 /** 房间配色：深色 / 浅色两套 */
 const PALETTE = {
   dark: {
-    bg: "#0c101c",
-    floor: "#101a30",
-    wallSide: "#0d1628",
-    wallFront: "#12203c",
-    gridMain: "#223344",
-    gridWall: "#141d33",
-    outline: "#26304d",
-    floorGrid: "#1a2338",
+    bg: "#171819",
+    floor: "#242827",
+    gridMain: "#4c5851",
+    gridWall: "#333b36",
+    outline: "#637168",
+    floorGrid: "#343d37",
   },
   light: {
-    bg: "#e9edf4",
-    floor: "#dde4ef",
-    wallSide: "#d0d9e8",
-    wallFront: "#e2e9f4",
-    gridMain: "#a8b5cd",
-    gridWall: "#c3cddd",
-    outline: "#9dabc5",
-    floorGrid: "#c8d1e2",
+    bg: "#eceeed",
+    floor: "#dce2dd",
+    gridMain: "#9aab9f",
+    gridWall: "#b8c5bc",
+    outline: "#879c8e",
+    floorGrid: "#b9c8be",
   },
 } as const;
 
@@ -251,18 +248,6 @@ const Room = memo(function Room({ p }: { p: Palette }) {
         <planeGeometry args={[ROOM * 2, ROOM * 2]} />
         <meshBasicMaterial color={p.floor} transparent opacity={0.45} depthWrite={false} />
       </mesh>
-      {/* 两面实体侧墙（-x / -z），半透明，不挡对象。
-          depthWrite=false 是关键：透明墙若写深度，按对象中心排序的透明队列里
-          墙先画时会把其后绘制的对象光晕沿墙面直线切掉一块（遮挡假象）。 */}
-      <mesh rotation={[0, Math.PI / 2, 0]} position={[-ROOM + 0.001, WALL_MID_Y, 0]}>
-        <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallSide} transparent opacity={0.75} depthWrite={false} />
-      </mesh>
-      {/* 正面墙（听者朝向，-z）颜色稍亮以示区分 */}
-      <mesh position={[0, WALL_MID_Y, -ROOM + 0.001]}>
-        <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallFront} transparent opacity={0.85} depthWrite={false} />
-      </mesh>
       {/* 墙面参考网格（4 × WALL_H，压扁局部高度轴） */}
       <gridHelper
         args={[ROOM * 2, 10, p.gridMain, p.gridWall]}
@@ -416,6 +401,7 @@ const ObjectDot = memo(function ObjectDot({
 });
 
 export function ObjectView({
+  immersive = false,
   objects,
   layout,
   theme = "dark",
@@ -425,6 +411,7 @@ export function ObjectView({
   onSpeakerFocus,
   hiddenSpeakerNames,
 }: {
+  immersive?: boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
@@ -442,7 +429,7 @@ export function ObjectView({
   return (
     <Canvas
       frameloop="demand"
-      camera={{ position: [0, 1.3, 4.2], fov: 55 }}
+      camera={{ position: [5, 4.2, 6], fov: 50 }}
       style={{ background: p.bg }}
       // SwiftShader is software rasterization: render one device pixel per CSS
       // pixel and skip MSAA to avoid multiplying the fill cost.
@@ -455,26 +442,27 @@ export function ObjectView({
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
-        <ViewportFraming />
-        <Room p={p} />
+        {immersive ? <ImmersiveCamera /> : <ViewportFraming />}
+        {!immersive && <Room p={p} />}
         <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
-        <Listener />
+        {!immersive && <Listener />}
         {objects.map((o) => (
           <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
-        <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
+        {!immersive && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
         <ambientLight intensity={0.75} />
         <directionalLight position={[2.5, 4, 2]} intensity={1.2} />
         {/* 左键拖动旋转视角 / 右键拖动平移 / 滚轮缩放空间 */}
-        <OrbitControls
+        {!immersive && <OrbitControls
           makeDefault
+          target={[0, 0.5, 0]}
           enableDamping={!isSwiftShader}
           dampingFactor={0.08}
           rotateSpeed={0.9}
           minDistance={0.5}
           maxDistance={12}
-        />
+        />}
       </FrameScheduler>
     </Canvas>
   );

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct Settings {
+    pub monitor: crate::monitor::Settings,
     pub enabled: bool,
     pub reflection_mode: ReflectionMode,
     pub direct_db: f32,
@@ -27,7 +28,7 @@ pub enum ReflectionMode {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: false, reflection_mode: ReflectionMode::Full, direct_db: 0.0, early_db: 0.0, late_db: 0.0,
+        Self { monitor: crate::monitor::Settings::default(), enabled: false, reflection_mode: ReflectionMode::Full, direct_db: 0.0, early_db: 0.0, late_db: 0.0,
             early_ms: 50.0, bass_enabled: false, crossover_hz: 80.0, bass_db: 0.0, speakers: BTreeMap::new() }
     }
 }
@@ -44,6 +45,7 @@ pub struct SpeakerCalibration {
 fn bounded(value: f32, low: f32, high: f32) -> bool { value.is_finite() && value >= low && value <= high }
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
+        self.monitor.validate()?;
         if !bounded(self.direct_db, -24.0, 6.0) || !bounded(self.early_db, -40.0, 6.0)
             || !bounded(self.late_db, -40.0, 6.0) || !bounded(self.early_ms, 10.0, 100.0)
             || !bounded(self.crossover_hz, 40.0, 160.0) || !bounded(self.bass_db, -24.0, 6.0)

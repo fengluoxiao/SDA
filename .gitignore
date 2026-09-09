@@ -25,3 +25,11 @@ Thumbs.db
 
 # Machine-local room simulation runtime and measured source locations.
 apps/desktop/room-simulator/runtime.json
+
+# Local research, dependency caches and native build intermediates.
+/tmp/
+/.tmp/
+/.pnpm-store/
+apps/native-renderer/target/
+__pycache__/
+*.pyc

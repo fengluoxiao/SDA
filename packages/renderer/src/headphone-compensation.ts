@@ -80,6 +80,23 @@ export interface HeadphoneCompensationBuffers {
  */
 export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProfile[] = [
   {
+    id: "beyerdynamic-dt-1990-balanced-average-autoeq",
+    name: "拜亚动力 DT 1990 PRO（一代 · Balanced 耳垫）",
+    source: "AutoEq Rtings HMS II.3 over-ear, revision 7ae0f56d53074872b028649617a22bbb4232feb7",
+    target: "AutoEq over-ear target; FIR normalized at 1 kHz",
+    leftMeasurement: "不适用：平均测量响应",
+    rightMeasurement: "不适用：平均测量响应",
+    balanceEvidence: "非独立左右声道测量或平衡校准",
+    measurementMode: "average-dual-mono",
+    channelClaim: "同一平均测量 EQ 应用于 L/R；非独立 L/R 校准，不修正个体声道差异。",
+    averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/7ae0f56d53074872b028649617a22bbb4232feb7/results/Rtings/HMS%20II.3%20over-ear/Beyerdynamic%20DT%201990%20(balanced%20earpads)",
+    derivation: "scripts/build-beyerdynamic-dt-1990-balanced-average-profile.mjs; published PEQ, 48 kHz, 8192 taps, 1 kHz normalization; headroom recomputed",
+    sampleRate: 48000,
+    preampDb: -1.8,
+    leftFirUrl: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32",
+    rightFirUrl: "headphone-compensation/beyerdynamic-dt-1990-balanced-average-autoeq/average.f32",
+  },
+  {
     id: "sennheiser-hd-820-average-autoeq",
     name: "森海塞尔 HD 820（AutoEq 平均测量 EQ，L/R 同一曲线）",
     source: "AutoEq HypetheSonics over-ear result, revision 7ae0f56d53074872b028649617a22bbb4232feb7",

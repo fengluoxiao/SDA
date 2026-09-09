@@ -1,11 +1,13 @@
+import Select from "./Select";
+import {ROOM_LISTENING_LEVELS} from "../room-listening";
 import { useEffect, useState } from "react";
 import type { VirtualSpeaker } from "@sda/renderer";
 import { speakerLabel } from "../speaker-labels";
 import type { CinemaSettings, CinemaSpeakerCalibration, CinemaRoomSummary } from "../vite-env";
 
-const defaults = (): CinemaSettings => ({enabled:false,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}});
+const defaults = (): CinemaSettings => ({enabled:false,...ROOM_LISTENING_LEVELS,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}});
 const neutral = (): CinemaSpeakerCalibration => ({gainDb:0,delayMs:0,lowDb:0,highDb:0});
-export default function CinemaPanel({ layout, speakers }: {layout:string; speakers: readonly VirtualSpeaker[]}) {
+export default function CinemaPanel({ layout, speakers, onBack }: {layout:string; speakers: readonly VirtualSpeaker[]; onBack?:()=>void}) {
   const [settings,setSettings] = useState(defaults);
   const [profileId,setProfileId] = useState<string|null>(null);
   const [rooms,setRooms] = useState<CinemaRoomSummary[]>([]);
@@ -48,28 +50,24 @@ export default function CinemaPanel({ layout, speakers }: {layout:string; speake
     setSaved(JSON.stringify({settings:next,profileId}));
   });
   const equidistant = speakers.length > 0 && speakers.every(s=>s.distance===speakers[0]!.distance);
-  return <div className="panel float-panel cinema-panel" aria-label="影院处理">
-    <div className="obj-head"><h2>影院 <span className="obj-count">{layout}</span></h2>
-      <label className="cinema-enable">启用 <input type="checkbox" role="switch" aria-label="启用影院处理" checked={settings.enabled} disabled={busy} onChange={e=>setSettings(s=>({...s,enabled:e.target.checked}))}/></label>
+  return <div className="panel float-panel cinema-panel" aria-label="房间档案与校准">
+    <div className="obj-head"><h2>房间校准 <span className="obj-count">{layout}</span></h2><button onClick={onBack}>返回房间</button>
+      <label className="cinema-enable">启用 <input type="checkbox" role="switch" aria-label="启用房间校准" checked={settings.enabled} disabled={busy} onChange={e=>setSettings(s=>({...s,enabled:e.target.checked}))}/></label>
     </div>
     <div className="speaker-group-tabs cinema-tabs" role="group" aria-label="影院页面">
       {([["room","房间"],["speakers","音箱校准"],["report","测量报告"]] as const).map(([id,label])=><button key={id} aria-pressed={view===id} onClick={()=>setView(id)}>{label}</button>)}
     </div>
     {view==="room" && <>
-      <label className="cinema-profile">房间档案<select aria-label="房间档案" value={profileId??""} disabled={busy} onChange={e=>setProfileId(e.target.value||null)}>
+      <label className="cinema-profile">房间档案<Select aria-label="房间档案" value={profileId??""} disabled={busy} onChange={e=>setProfileId(e.target.value||null)}>
         <option value="">当前完整 HRTF / BRIR</option>{rooms.map(r=><option key={r.id} value={r.id}>{r.name} · {r.layout}</option>)}
-      </select></label>
+      </Select></label>
       <div className="cinema-actions"><button disabled={busy} onClick={()=>void run(async()=>{const r=await desktop?.importCinemaRoom?.();if(r){setRooms(list=>[...list.filter(v=>v.id!==r.id),r]);setProfileId(r.id);}})}>导入档案</button>
-        <button disabled={busy||!room} onClick={()=>void run(async()=>{if(room&&await desktop?.deleteCinemaRoom?.(room.id)){setRooms(list=>list.filter(r=>r.id!==room.id));setProfileId(null);}})}>删除档案</button></div>
+        <button disabled={busy||!room||room.builtin} onClick={()=>void run(async()=>{if(room&&await desktop?.deleteCinemaRoom?.(room.id)){setRooms(list=>list.filter(r=>r.id!==room.id));setProfileId(null);}})}>删除档案</button></div>
       {room&&<p className="cinema-status">{room.measurement==="simulated"?"实测音箱 / 模拟房间":room.measurement==="personal"?"个人测量（档案声明）":"人头麦测量"} · {room.sampleRate/1000} kHz</p>}
       {!compatible&&<p className="cinema-warning">档案为 {room?.layout}；当前 {layout} 使用原 HRTF。</p>}
       <div className="cinema-band">
         {number("directDb","直达声",-24,6,"dB")}{number("earlyDb","早期反射",-40,6,"dB")}
         {number("lateDb","混响尾部",-40,6,"dB")}{number("earlyMs","早晚分界",10,100,"ms")}
-      </div>
-      <div className="cinema-band"><label className="settings-switch"><span>低频管理</span><input type="checkbox" role="switch" aria-label="低频管理" disabled={busy||layout==="2.0"} checked={settings.bassEnabled} onChange={e=>setSettings(s=>({...s,bassEnabled:e.target.checked}))}/></label>
-        {number("crossoverHz","分频点",40,160,"Hz")}{number("bassDb","重定向低频",-24,6,"dB")}
-        {layout==="2.0"&&<p className="cinema-status">2.0 无独立低音声道</p>}
       </div>
     </>}
     {view==="speakers"&&<>

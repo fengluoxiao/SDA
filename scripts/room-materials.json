@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "source": "https://github.com/LCAV/pyroomacoustics/blob/master/pyroomacoustics/data/materials.json",
+  "reference": "Michael Vorlaender, Auralization, Springer, 1st Edition, 2008, annex (database attribution; not a product test certificate)",
+  "sourceSha256": "1249f0cfdcd4598cf98ec9be05230f910e53aa1da4861d7fe3f88de23a24e0e0",
+  "center_freqs": [
+    125,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000
+  ],
+  "materials": {
+    "rockwool_50mm_80kgm3": {
+      "description": "Rockwool thickness = 50 mm, 80 kg/m3",
+      "coeffs": [
+        0.22,
+        0.6,
+        0.92,
+        0.9,
+        0.88,
+        0.88,
+        0.88
+      ]
+    },
+    "plasterboard": {
+      "description": "2 * 13 mm plasterboard on steel frame, 50 mm mineral wool in cavity, surface painted",
+      "coeffs": [
+        0.15,
+        0.1,
+        0.06,
+        0.04,
+        0.04,
+        0.05,
+        0.05
+      ]
+    },
+    "hard_surface": {
+      "description": "Walls, hard surfaces average (brick walls, plaster, hard floors, etc.)",
+      "coeffs": [
+        0.02,
+        0.02,
+        0.03,
+        0.03,
+        0.04,
+        0.05,
+        0.05
+      ]
+    },
+    "panel_fabric_covered_6pcf": {
+      "description": "Fabric-covered panel, 6 pcf rockwool core",
+      "coeffs": [
+        0.46,
+        0.93,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "mineral_wool_50mm_70kgm3": {
+      "description": "50 mm mineral wool (70 kg/m3) 300 mm in front of wall",
+      "coeffs": [
+        0.7,
+        0.45,
+        0.65,
+        0.6,
+        0.75,
+        0.65,
+        0.65
+      ]
+    },
+    "carpet_1.35_kg_m2": {
+      "description": "Carpet 1.35 kg/m2, on hair felt or foam rubber",
+      "coeffs": [
+        0.08,
+        0.24,
+        0.57,
+        0.69,
+        0.71,
+        0.73,
+        0.73
+      ],
+      "extrapolation": "8 kHz held at 4 kHz value; database has no 8 kHz measurement"
+    }
+  }
+}

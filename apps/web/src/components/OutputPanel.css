@@ -1,0 +1,8 @@
+.output-manager { display: grid; gap: 12px; min-width: 0; }
+.output-manager > label { display: grid; grid-template-columns: 76px minmax(0,1fr); align-items: center; gap: 10px; }
+.output-manager-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.output-manager-status { display: grid; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.output-manager-status strong { font-weight: 600; }
+.output-manager-status small { opacity: .65; line-height: 1.6; }
+.output-manager-status p { margin: 0; color: var(--error); }
+.output-unavailable-notice { position: fixed; top: 56px; right: 18px; z-index: 40; max-width: calc(100vw - 36px); padding: 10px 14px; border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 4px 20px #0003; }

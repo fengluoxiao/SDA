@@ -6,11 +6,14 @@ const profiles=require('./cinema-profiles.cjs');
 
 const layouts=['2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','7.1.4','9.1.2','9.1.4','9.1.6'];
 function validateConfig(input) {
-  if(!input||!layouts.includes(input.layout)||!['treated','living','reflective'].includes(input.material))throw new Error('仿真布局或材料无效');
-  const result={layout:input.layout,material:input.material};
+  if(!input||!layouts.includes(input.layout)||!['treated','living','reflective','rockwool_50mm_80kgm3','plasterboard','hard_surface','studio'].includes(input.material))throw new Error('仿真布局或材料无效');
+  const result={layout:input.layout,material:({treated:"rockwool_50mm_80kgm3",living:"plasterboard",reflective:"hard_surface"}[input.material]??input.material)};
   for(const [key,min,max] of [['length',3,10],['width',3,8],['height',2.2,4],['earHeight',.8,1.6],['placement',.5,1],['order',1,12]]){
     const value=input[key];if(typeof value!=='number'||!Number.isFinite(value)||value<min||value>max)throw new Error(`仿真参数超出范围：${key}`);
     result[key]=value;
+  }
+  if(input.listeningDistance!==undefined||result.material==='studio'){
+    const d=input.listeningDistance??1.2;if(typeof d!=='number'||!Number.isFinite(d)||d<.8||d>2.5)throw new Error('监听距离应为 0.8–2.5 米');result.listeningDistance=d;
   }
   if(!Number.isInteger(result.order))throw new Error('反射阶数必须是整数');
   const [floor,,top=0]=input.layout.split('.').map(Number);
@@ -29,7 +32,7 @@ function createRoomLab({runtimeFile,storeRoot,assetsRoot}) {
   const runtime=()=>{
     if(!fs.existsSync(runtimeFile))throw new Error('尚未配置房间仿真运行环境');
     const config=JSON.parse(fs.readFileSync(runtimeFile,'utf8'));
-    for(const key of ['python','script','source','hrtf'])if(typeof config[key]!=='string'||!fs.existsSync(config[key]))throw new Error(`仿真文件缺失：${key}`);
+    for(const key of ['python','script','source','hrtf'])if(typeof config[key]!=='string'||(key==='source'&&config[key]==='ideal'?false:!fs.existsSync(config[key])))throw new Error(`仿真文件缺失：${key}`);
     return config;
   };
   return {

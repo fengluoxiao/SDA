@@ -18,7 +18,7 @@ test('room import, apply acknowledgement, persistence, export and removal',async
   const handlers=new Map();let stored={};let accepted=true;let sent;
   const main=fs.readFileSync(new URL('../main.cjs',import.meta.url),'utf8');
   const code=main.slice(main.indexOf('const cinemaProfileDirectory ='),main.indexOf('ipcMain.handle("sda:native-renderer-object-hrtf"'));
-  vm.runInNewContext(code,{fs,path,Buffer,cinemaProfiles,app:{getPath:()=>directory,on(){}},
+  vm.runInNewContext(code,{fs,path,Buffer,cinemaProfiles,__dirname:directory,require:()=>({createBuiltinRooms:()=>({list:()=>[],has:()=>false})}),app:{getPath:()=>directory,on(){}},
     BrowserWindow:{fromWebContents:()=>null},
     dialog:{showOpenDialog:async()=>({filePaths:[input]}),showSaveDialog:async()=>({filePath:path.join(directory,'report.json')})},
     ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},readSettings:()=>stored,writeSettings:value=>{stored={...stored,...value};},

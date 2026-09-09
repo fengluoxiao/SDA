@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "beyerdynamic-dt-1990-balanced-average-autoeq",
+  "name": "拜亚动力 DT 1990 PRO（一代 · Balanced 耳垫）",
+  "source": "AutoEq Rtings HMS II.3 over-ear, revision 7ae0f56d53074872b028649617a22bbb4232feb7",
+  "target": "AutoEq over-ear target; 1 kHz normalized",
+  "measurementMode": "average-dual-mono",
+  "channelClaim": "同一平均测量 EQ 应用于 L/R；非独立 L/R 校准，不修正个体声道差异。",
+  "averageMeasurement": "https://github.com/jaakkopasanen/AutoEq/tree/7ae0f56d53074872b028649617a22bbb4232feb7/results/Rtings/HMS%20II.3%20over-ear/Beyerdynamic%20DT%201990%20(balanced%20earpads)",
+  "derivation": "scripts/build-beyerdynamic-dt-1990-balanced-average-profile.mjs; published PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -4.1 dB preamp excluded; headroom recomputed.",
+  "createdAt": "2026-09-09T00:00:00.000Z",
+  "deviceRevision": "DT 1990 PRO first generation",
+  "playbackState": "Passive wired over-ear",
+  "earTips": "Balanced earpads, not Analytical",
+  "firmware": "Not applicable",
+  "measurementRig": "Rtings HMS II.3",
+  "referenceBand": "1 kHz",
+  "sampleRate": 48000,
+  "preampDb": -1.8,
+  "leftFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "52b721ed9f24e667c390c622c17915fe7846b0b50810bf7810e892e045e2592d"
+  },
+  "rightFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "52b721ed9f24e667c390c622c17915fe7846b0b50810bf7810e892e045e2592d"
+  }
+}

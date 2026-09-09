@@ -1,5 +1,10 @@
 # Cinema Room Rendering
 
+As of 2026-09-09, room profiles, reflections and calibration are accessed through
+Room > profiles and calibration. The former Cinema dock entry is now the
+[digital monitor processor](monitor-processor.md); bass management belongs to
+that independent processor. The historical `cinema` protocol name is retained.
+
 SDA's cinema controls are an explicit virtual-room and calibration tool. They do
 not implement Trinnov Optimizer/WaveForming, Dirac ART, Dolby Surround or DTS
 Neural:X. No brand-specific sound is claimed. Existing independent object PCM,
@@ -148,3 +153,13 @@ does not first insert the hypothetical room's distance attenuation and travel
 times; it is an auditionable preset, not proof of correcting that BRIR. It does
 not move the 3D speaker meshes or replace object directions. Existing room
 responses and other draft controls are retained.
+
+## Unscaled room playback (2026-09-09)
+
+Normal room application now uses direct/early/late gains of 0 dB. Removed the
+previous automatic -6 dB early and -9 dB late attenuation. No room energy
+normalization, makeup gain or automatic loudness matching is applied. Preserve
+the authored response, including distance loss, reflections and decay.
+Comparison reference-level matching is opt-in and defaults off. Explicit user
+calibration controls remain separate. The proposed native direct-energy makeup
+was withdrawn before compilation/deployment at the user request.

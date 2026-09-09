@@ -151,11 +151,12 @@ impl NativeHrtfSet {
     pub fn speaker_filter_len(&self) -> usize {
         let base = self.cache.iter().map(|ir| ir.wet.len() / 2).max().unwrap_or(8192)
             .max(self.speaker_set.as_ref().map_or(0, |set| set.speaker_filter_len()));
-        if !self.cinema.enabled { return base; }
+        let monitor_delay = self.cinema.monitor.max_delay();
+        if !self.cinema.enabled { return base + monitor_delay; }
         let room = self.room_profile.as_ref().map_or(0, |p| p.speakers.iter().map(|s| s.room_left.len()).max().unwrap_or(0));
         let delay = self.cinema.speakers.values().map(|s| (s.delay_ms * 48.0).round() as usize).max().unwrap_or(0);
         let tail = if self.cinema.speakers.values().any(|s| s.low_db != 0.0 || s.high_db != 0.0) { 2048 } else { 0 };
-        base.max(room) + delay + tail
+        base.max(room) + delay + tail + monitor_delay
     }
 
     pub fn mixed_speaker(&self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32) -> Result<(Vec<f32>, Vec<f32>), String> {
@@ -170,7 +171,7 @@ impl NativeHrtfSet {
             let r = ir.wet.len() / 2;
             self.cinema.mix((&ir.dry[..d], &ir.dry[d..]), (&ir.wet[..r], &ir.wet[r..]), wet, 128)
         };
-        let (mut left, mut right) = self.cinema.calibrate(name, pair)?;
+        let (mut left, mut right) = self.cinema.monitor.filter(name, self.cinema.calibrate(name, pair)?);
         left.resize(self.speaker_filter_len(), 0.0);
         right.resize(self.speaker_filter_len(), 0.0);
         Ok((left, right))

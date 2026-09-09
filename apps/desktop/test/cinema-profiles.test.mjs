@@ -23,7 +23,9 @@ test('incomplete, mismatched, nonfinite and mislabeled measurements are rejected
 });
 test('cinema control bounds include channel restrictions',()=>{
  const settings={enabled:true,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
- assert.deepEqual(profiles.validateSettings(settings),settings);
+ const normalized=profiles.validateSettings(settings);
+ assert.deepEqual({...normalized,monitor:undefined},{...settings,monitor:undefined});
+ assert.equal(normalized.monitor.enabled,false);
  for(const reflectionMode of ['direct','early','full'])assert.equal(profiles.validateSettings({...settings,reflectionMode}).reflectionMode,reflectionMode);
  assert.throws(()=>profiles.validateSettings({...settings,reflectionMode:'invalid'}));
  assert.throws(()=>profiles.validateSettings({...settings,crossoverHz:500}));

@@ -18,10 +18,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cpal::{
-    SampleFormat, Stream, StreamConfig,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-};
 use serde::{Deserialize, Serialize};
 
 const PROTOCOL: u32 = 7;
@@ -60,6 +56,8 @@ mod cinema;
 mod focus;
 mod hrtf;
 mod output_monitor;
+mod monitor;
+mod hardware;
 mod pcm_ring;
 mod protocol;
 mod render_command;
@@ -173,12 +171,15 @@ enum Command {
         origin: u64,
     },
     Health,
+    ListOutputDevices,
+    SetOutputDevice { #[serde(flatten)] settings: output_manager::Settings },
     Shutdown,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Event<'a> {
+    OutputDevices {status:output_manager::Status,devices:Vec<output_manager::Endpoint>},
     Ready {
         protocol: u32,
         sample_rate: u32,
@@ -534,6 +535,8 @@ struct Engine {
     direct_objects: bool,
     direct_mix: f32,
     lfe_path: LfePath,
+    hardware_lfe: hardware::Chain,
+    hardware_stereo: [hardware::Chain; 2],
     lfe_muted: bool,
     speaker_mutes: Vec<String>,
     focused_speakers: Vec<String>,
@@ -615,6 +618,8 @@ impl Engine {
             direct_objects: false,
             direct_mix: 0.0,
             lfe_path: LfePath::new(sample_rate),
+            hardware_lfe: hardware::Chain::new(&Default::default()),
+            hardware_stereo: std::array::from_fn(|_| hardware::Chain::new(&Default::default())),
             lfe_muted: false,
             speaker_mutes: Vec::new(),
             focused_speakers: Vec::new(),
@@ -669,7 +674,7 @@ impl Engine {
     }
 
     fn set_direct_objects(&mut self, enabled: bool) -> Result<(), String> {
-        if enabled {
+        if enabled && !self.cinema.monitor.hardware.enabled {
             let set = self.active_hrtf_set.as_mut().ok_or("native HRTF set is not configured")?;
             let mut prepared = Vec::new();
             for (id, source) in &self.sources {
@@ -990,6 +995,8 @@ impl Engine {
         self.head_pose = None;
         self.lfe_muted = false;
         self.lfe_path.reset();
+        self.hardware_lfe.reset();
+        for chain in &mut self.hardware_stereo { chain.reset(); }
         self.program_metadata_gain = 1.0;
         self.program_gain = 1.0;
         self.program_target_gain = 1.0;
@@ -1093,7 +1100,7 @@ impl Engine {
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
             let block_index = self.block_offset;
-            let bass_target = if self.cinema.enabled && self.cinema.bass_enabled && self.layout != vbap::LayoutId::Stereo2_0 { 1.0 } else { 0.0 };
+            let bass_target = if self.cinema.monitor.enabled && self.cinema.monitor.bass_enabled && self.layout != vbap::LayoutId::Stereo2_0 { 1.0 } else { 0.0 };
             self.cinema_bass_mix += (bass_target - self.cinema_bass_mix) / 256.0;
             let bass_output = self.cinema_bass_delay[block_index];
             self.cinema_bass_delay[block_index] = 0.0;
@@ -1117,15 +1124,16 @@ impl Engine {
                 self.headphone.begin_block();
                 if let Some(bus) = &mut self.stereo_dry_bus { bus.begin_block(); }
             }
-            let original = self.stereo_delay[block_index];
+            let original = std::array::from_fn::<_, 2, _>(|ear| self.hardware_stereo[ear].process(self.stereo_delay[block_index][ear]));
             self.stereo_delay[block_index] = [0.0; 2];
             let mut lfe_sum = 0.0_f32;
             let mut direct_sum = [0.0_f32; 2];
             // Fade the excitation, retaining both paths' convolution tails.
-            let target_mix = if self.direct_objects { 1.0 } else { 0.0 };
+            let effective_direct = self.direct_objects && !self.cinema.monitor.hardware.enabled;
+            let target_mix = if effective_direct { 1.0 } else { 0.0 };
             self.direct_mix += (target_mix - self.direct_mix).clamp(-1.0 / 9600.0, 1.0 / 9600.0);
             for source in self.sources.values_mut() {
-                if source.kind == SourceKind::Object && self.direct_objects && source.direct.is_none() {
+                if source.kind == SourceKind::Object && effective_direct && source.direct.is_none() {
                     source.direct = self.active_hrtf_set.as_ref().and_then(|set| direct_renderer::DirectSource::new(set, self.hrtf_wet_weight).ok());
                 }
                 if let Some(direct) = &source.direct {
@@ -1236,8 +1244,8 @@ impl Engine {
                     * if source.muted { 0.0 } else { 1.0 };
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
-                    if source.bass_split.as_ref().is_none_or(|filter| filter.frequency != self.cinema.crossover_hz) {
-                        source.bass_split = cinema::BassSplit::new(self.cinema.crossover_hz).ok();
+                    if source.bass_split.as_ref().is_none_or(|filter| filter.frequency != self.cinema.monitor.crossover_hz) {
+                        source.bass_split = cinema::BassSplit::new(self.cinema.monitor.crossover_hz).ok();
                     }
                     if let Some(filter) = &mut source.bass_split {
                         let (low, high) = filter.process(sample);
@@ -1299,9 +1307,13 @@ impl Engine {
                 .expect("checked above")
                 .output_at(block_index);
             let mut lfe = self.lfe_path.process(lfe_sum) * 0.5
-                + bass_output * cinema::db(self.cinema.bass_db) * self.speaker_lfe_level * if self.lfe_muted { 0.0 } else { 1.0 };
+                + bass_output * cinema::db(self.cinema.monitor.bass_db) * self.speaker_lfe_level * if self.lfe_muted { 0.0 } else { 1.0 };
+            lfe = self.hardware_lfe.process(lfe);
             if self.cinema.enabled {
                 lfe *= self.cinema.speakers.get("LFE").map_or(1.0, |s| cinema::db(s.gain_db));
+            }
+            lfe *= self.cinema.monitor.gain("LFE");
+            {
                 if !self.cinema_sub_delay.is_empty() {
                     let delayed = self.cinema_sub_delay[self.cinema_sub_cursor];
                     self.cinema_sub_delay[self.cinema_sub_cursor] = lfe;
@@ -1322,8 +1334,8 @@ impl Engine {
                 equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain * self.comparison_gain,
             ];
             let guarded = self.peak_guard.process(
-                pre_guard[0] * self.program_gain,
-                pre_guard[1] * self.program_gain,
+                pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain(),
+                pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain(),
             );
             if channels >= 2 {
                 frame[0] = guarded[0];
@@ -1562,174 +1574,8 @@ fn record_callback(
 
 mod device_output;
 
-fn build_stream(
-    fifo: Arc<stereo_fifo::StereoFifo>,
-    telemetry: Arc<RuntimeTelemetry>,
-    device: &cpal::Device,
-    config: &StreamConfig,
-    format: SampleFormat,
-) -> Result<Stream, String> {
-    let channels = config.channels as usize;
-    let mut callback_output = device_output::DeviceOutput::new(
-        config.sample_rate.0,
-        STEREO_FIFO_START_FRAMES,
-    );
-    let mut output_monitor = output_monitor::OutputMonitor::default();
-    let error = |err| eprintln!("[SDA native renderer] WASAPI stream error: {err}");
-    match format {
-        SampleFormat::F32 => device.build_output_stream(
-            config,
-            move |data: &mut [f32], _| {
-                let started = Instant::now();
-                let requested = data.len() / channels;
-                if fifo.apply_flush_from_consumer() {
-                    callback_output.reset();
-                    output_monitor.reset();
-                }
-                let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
-                let popped = callback_output.fill(&fifo, output_enabled, requested, |offset, frame| {
-                    let target = &mut data[offset * channels..(offset + 1) * channels];
-                    target.fill(0.0);
-                    target[0] = frame[0];
-                    if channels > 1 {
-                        target[1] = frame[1];
-                    }
-                });
-                if output_enabled {
-                    output_monitor.observe(
-                        data.chunks_exact(channels).map(|frame| [frame[0], frame[1]]),
-                        telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),
-                        &telemetry.output,
-                    );
-                } else {
-                    output_monitor.reset();
-                }
-                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
-            },
-            error,
-            None,
-        ),
-        SampleFormat::I16 => device.build_output_stream(
-            config,
-            move |data: &mut [i16], _| {
-                let started = Instant::now();
-                let requested = data.len() / channels;
-                if fifo.apply_flush_from_consumer() {
-                    callback_output.reset();
-                    output_monitor.reset();
-                }
-                let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
-                let popped = callback_output.fill(&fifo, output_enabled, requested, |offset, frame| {
-                    let target = &mut data[offset * channels..(offset + 1) * channels];
-                    target.fill(0);
-                    target[0] = (frame[0].clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                    if channels > 1 {
-                        target[1] = (frame[1].clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                    }
-                });
-                if output_enabled {
-                    output_monitor.observe(
-                        data.chunks_exact(channels).map(|frame| [
-                            frame[0] as f32 / i16::MAX as f32,
-                            frame[1] as f32 / i16::MAX as f32,
-                        ]),
-                        telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),
-                        &telemetry.output,
-                    );
-                } else {
-                    output_monitor.reset();
-                }
-                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
-            },
-            error,
-            None,
-        ),
-        SampleFormat::U16 => device.build_output_stream(
-            config,
-            move |data: &mut [u16], _| {
-                let started = Instant::now();
-                let requested = data.len() / channels;
-                if fifo.apply_flush_from_consumer() {
-                    callback_output.reset();
-                    output_monitor.reset();
-                }
-                let output_enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
-                let popped = callback_output.fill(&fifo, output_enabled, requested, |offset, frame| {
-                    let target = &mut data[offset * channels..(offset + 1) * channels];
-                    target.fill(u16::MAX / 2);
-                    target[0] = ((frame[0].clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32) as u16;
-                    if channels > 1 {
-                        target[1] = ((frame[1].clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
-                    }
-                });
-                if output_enabled {
-                    output_monitor.observe(
-                        data.chunks_exact(channels).map(|frame| [
-                            frame[0] as f32 / u16::MAX as f32 * 2.0 - 1.0,
-                            frame[1] as f32 / u16::MAX as f32 * 2.0 - 1.0,
-                        ]),
-                        telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),
-                        &telemetry.output,
-                    );
-                } else {
-                    output_monitor.reset();
-                }
-                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
-            },
-            error,
-            None,
-        ),
-        other => return Err(format!("unsupported WASAPI sample format: {other:?}")),
-    }
-    .map_err(|error| error.to_string())
-}
-
+mod output_manager;
 fn main() {
-    let host = cpal::default_host();
-    let device = match host.default_output_device() {
-        Some(device) => device,
-        None => {
-            write_event(&Event::Error {
-                detail: "No default WASAPI output device".into(),
-            });
-            return;
-        }
-    };
-    // Keep decoding/HRTF at 48 kHz; DeviceOutput adapts the device clock.
-    let supported = match device.supported_output_configs() {
-        Ok(configs) => configs
-            .filter(|config| {
-                config.channels() >= 2 && matches!(config.sample_format(),
-                    SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16)
-            })
-            .min_by_key(|config| (48_000u32.abs_diff(48_000u32.clamp(
-                config.min_sample_rate().0, config.max_sample_rate().0)), match config.sample_format() {
-                SampleFormat::F32 => 0,
-                SampleFormat::I16 => 1,
-                SampleFormat::U16 => 2,
-                _ => 3,
-            }))
-            .map(|config| {
-                let rate = 48_000u32.clamp(config.min_sample_rate().0, config.max_sample_rate().0);
-                config.with_sample_rate(cpal::SampleRate(rate))
-            }),
-        Err(error) => {
-            write_event(&Event::Error {
-                detail: format!("Cannot enumerate WASAPI output formats: {error}"),
-            });
-            return;
-        }
-    };
-    let Some(supported) = supported else {
-        write_event(&Event::Error {
-            detail: "Default WASAPI device has no supported stereo output format".into(),
-        });
-        return;
-    };
-    let config: StreamConfig = supported.config();
-    eprintln!("Output device: {:?}, device rate={} Hz, renderer rate=48000 Hz, channels={}",
-        device.name(), config.sample_rate.0, config.channels);
-    let engine = Engine::new(48_000, config.channels);
     let commands = Arc::new(render_command::RenderCommandQueue::new(256));
     let fifo = Arc::new(stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES));
     let telemetry = Arc::new(RuntimeTelemetry {
@@ -1743,41 +1589,8 @@ fn main() {
         render_block_total_micros: AtomicU64::new(0),
         render_block_max_micros: AtomicU64::new(0),
     });
-    spawn_render_worker(engine, commands.clone(), fifo.clone(), telemetry.clone());
-    let stream = match build_stream(
-        fifo.clone(),
-        telemetry.clone(),
-        &device,
-        &config,
-        supported.sample_format(),
-    ) {
-        Ok(stream) => stream,
-        Err(error) => {
-            write_event(&Event::Error {
-                detail: format!("Cannot start WASAPI output: {error}"),
-            });
-            return;
-        }
-    };
-    if let Err(error) = stream.play() {
-        write_event(&Event::Error {
-            detail: format!("Cannot play WASAPI stream: {error}"),
-        });
-        return;
-    }
-    write_event(&Event::Ready {
-        protocol: PROTOCOL,
-        sample_rate: 48_000,
-        output_channels: config.channels,
-    });
-
-    let stdin = io::stdin();
-    if let Err(error) = protocol::read_frames(&mut stdin.lock(), &commands) {
-        write_event(&Event::Error {
-            detail: format!("Native renderer protocol error: {error}"),
-        });
-    }
-    drop(stream);
+    spawn_render_worker(Engine::new(48000, 2), commands.clone(), fifo.clone(), telemetry.clone());
+    output_manager::run(fifo, telemetry, commands);
 }
 
 #[cfg(test)]
@@ -1792,6 +1605,59 @@ mod tests {
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
         engine
+    }
+
+    #[test]
+    fn hardware_uses_summed_buses_with_room_disabled_and_retains_direct_preference() {
+        let render = |direct: bool, hardware_enabled: bool, gains: &[f32]| {
+            let mut engine = calibrated_engine();
+            engine.cinema.enabled = false;
+            engine.cinema.monitor.hardware.enabled = hardware_enabled;
+            engine.cinema.monitor.hardware.input_db = 0.0;
+            engine.cinema.monitor.hardware.rail_v = 1.0;
+            engine.rebuild_bus_renderer().unwrap();
+            let pcm: Vec<f32> = (0..4096).map(|i| 0.1*(std::f32::consts::TAU*i as f32/48.0).sin()).collect();
+            for (id,gain) in gains.iter().enumerate() {
+                let mut source=Source {kind:SourceKind::Object,gain:1.0,target_gain:1.0,
+                    availability:1.0,availability_target:1.0,..Source::default()};
+                source.samples.write(0,0,&pcm.iter().map(|v|v*gain).collect::<Vec<_>>());
+                let key=format!("obj:{id}");engine.sources.insert(key.clone(),source);
+                engine.route_source_now(&key,0).unwrap();
+            }
+            engine.set_direct_objects(direct).unwrap();
+            let mut output=vec![0.0;8192];engine.render_into(&mut output,2);
+            assert_eq!(engine.direct_objects,direct);
+            if hardware_enabled {assert!(engine.sources.values().all(|s|s.direct.is_none()));}
+            output
+        };
+        let split=render(true,true,&[2.0,-1.0]);
+        let summed=render(false,true,&[1.0]);
+        assert!(split.iter().zip(&summed).all(|(a,b)|(a-b).abs()<1e-6));
+        assert!(summed.iter().any(|v|v.abs()>1e-5));
+        let bypass=render(false,false,&[1.0]);
+        let energy=|v:&[f32]|v.iter().map(|x|x*x).sum::<f32>();
+        assert!(energy(&summed)<energy(&bypass)*0.5);
+    }
+
+    #[test]
+    fn headphone_identity_matches_bypass_through_full_output_chain() {
+        let render=|identity:bool| {
+            let mut engine=calibrated_engine();
+            if identity {
+                let mut fir=vec![0.0;8192];fir[0]=1.0;
+                engine.headphone=headphone::HeadphoneCompensation::new(&fir,&fir,1.0).unwrap();
+            }
+            let pcm:Vec<f32>=(0..16384).map(|i|0.005*((i*37%97) as f32-48.0)).collect();
+            let mut source=Source {kind:SourceKind::Object,gain:1.0,target_gain:1.0,
+                availability:1.0,availability_target:1.0,..Source::default()};
+            source.samples.write(0,0,&pcm);engine.sources.insert("obj:0".into(),source);
+            engine.route_source_now("obj:0",0).unwrap();
+            let mut output=vec![0.0;pcm.len()*2];engine.render_into(&mut output,2);output
+        };
+        let bypass=render(false);let identity=render(true);
+        assert!(bypass.iter().any(|v|v.abs()>1e-4));
+        let max_error=bypass.iter().zip(&identity).map(|(a,b)|(a-b).abs()).fold(0.0_f32,f32::max);
+        assert!(max_error<1e-6,"identity output changed by {max_error}");
     }
 
     #[test]
