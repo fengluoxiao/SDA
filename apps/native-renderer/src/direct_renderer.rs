@@ -1,9 +1,67 @@
 //! Per-object convolution; shares measured assets with the speaker renderer.
 use crate::{convolution::{StereoPartitionedConvolver, DEFAULT_PARTITION}, hrtf::NativeHrtfSet, vbap};
+use std::sync::{Arc, OnceLock};
+use rayon::prelude::*;
+
+type Route = (vbap::LayoutId, [f32; vbap::MAX_BUS_COUNT], [f32; vbap::MAX_BUS_COUNT], u32);
+type FilterBank = Vec<[Arc<crate::convolution::PreparedStereoFilter>; 2]>;
+
+pub(super) fn workers() -> Option<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let count = std::thread::available_parallelism().map_or(1, usize::from).saturating_sub(2).clamp(1, 4);
+        if count == 1 { return None; }
+        rayon::ThreadPoolBuilder::new().num_threads(count)
+            .thread_name(|id| format!("sda-object-hrtf-{id}"))
+            .build().ok()
+    }).as_ref()
+}
+
+fn prepare_bank(set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32) -> Result<FilterBank, String> {
+    vbap::speakers(solver.layout()).iter().map(|speaker| {
+        Ok([
+            set.prepared_focus_speaker(speaker.name, solver.layout().as_str(), speaker.azimuth as f64, speaker.elevation as f64, wet, false)?,
+            set.prepared_focus_speaker(speaker.name, solver.layout().as_str(), speaker.azimuth as f64, speaker.elevation as f64, wet, true)?,
+        ])
+    }).collect()
+}
+
+pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSource>,
+    set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32) -> Result<(), String> {
+    let mut sources: Vec<_> = sources.collect();
+    let bank = if sources.iter().any(|source| source.needs_processing()
+        && (source.pending_route.is_some() || source.idle_route.is_some())) {
+        prepare_bank(set, solver, wet).map(Some)
+    } else { Ok(None) };
+    let finish = |source: &mut &mut DirectSource| {
+        if !source.needs_processing() {
+            if let Some(route) = source.pending_route.take() { source.idle_route = Some(route); }
+        } else if let Ok(Some(bank)) = &bank {
+            if let Some(route) = source.idle_route.take() {
+                // No history remains, but the last silent block's direction
+                // still defines the starting filter of an audible crossfade.
+                source.route = None;
+                source.update_from_bank(bank, route);
+            }
+            if let Some(route) = source.pending_route.take() { source.update_from_bank(bank, route); }
+        }
+        source.finish_block();
+    };
+    if let Some(pool) = workers().filter(|_| sources.len() >= 16) {
+        // Independent histories stay with their sources; summation order in
+        // the engine is unchanged. Join before publishing the next PCM block.
+        pool.install(|| sources.par_iter_mut().with_min_len(4).for_each(finish));
+    } else {
+        sources.iter_mut().for_each(finish);
+    }
+    bank.map(|_| ())
+}
 
 pub(super) struct DirectSource {
     convolver: StereoPartitionedConvolver,
-    route: Option<(vbap::LayoutId, [f32; vbap::MAX_BUS_COUNT], [f32; vbap::MAX_BUS_COUNT], u32)>,
+    route: Option<Route>,
+    pending_route: Option<Route>,
+    idle_route: Option<Route>,
     pub input: [f32; DEFAULT_PARTITION],
     pub left: [f32; DEFAULT_PARTITION],
     pub right: [f32; DEFAULT_PARTITION],
@@ -13,6 +71,67 @@ pub(super) struct DirectSource {
 mod tests {
     use super::*;
     use crate::bus_renderer;
+
+    #[test]
+    #[ignore = "offline performance measurement"]
+    fn benchmark_adm_direct_objects() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        let mut sources: Vec<_> = (0..108).map(|_| DirectSource::new(&set, 0.04).unwrap()).collect();
+        for moving in [false, true] {
+            let mut routing = std::time::Duration::ZERO;
+            let mut convolution = std::time::Duration::ZERO;
+            let mut checksum = 0.0_f64;
+            for block in 0..220 {
+                let start = std::time::Instant::now();
+                for (id, source) in sources.iter_mut().enumerate() {
+                    let phase = id as f32 * 0.17 + if moving { block as f32 * 0.01 } else { 0.0 };
+                    let gains = bus_renderer::route(&solver, [phase.cos() * 0.7, phase.sin() * 0.7, 0.4], None, 0.3);
+                    source.schedule_focus(solver.layout(), 0.04, gains, [0.0; vbap::MAX_BUS_COUNT]);
+                    source.input = std::array::from_fn(|i| ((block * DEFAULT_PARTITION + i + id) as f32 * 0.13).sin() * 0.01);
+                }
+                if block >= 20 { routing += start.elapsed(); }
+                let start = std::time::Instant::now();
+                finish_sources(sources.iter_mut(), &mut set, &solver, 0.04).unwrap();
+                if block >= 20 { convolution += start.elapsed(); }
+                for source in &sources { checksum += source.left.iter().chain(&source.right).map(|v| *v as f64).sum::<f64>(); }
+            }
+            eprintln!("108 objects moving={moving} schedule_us={:.1} filters_and_convolution_us={:.1} checksum={checksum:.9}",
+                routing.as_secs_f64() * 1e6 / 200.0, convolution.as_secs_f64() * 1e6 / 200.0);
+        }
+    }
+
+    #[test]
+    fn batched_motion_focus_and_silent_tails_match_serial_sources() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        // Exercise both sides of the parallel threshold with the same inputs.
+        for count in [3, 24] {
+            let mut actual: Vec<_> = (0..count).map(|_| DirectSource::new(&set, 0.04).unwrap()).collect();
+            let mut expected: Vec<_> = (0..count).map(|_| DirectSource::new(&set, 0.04).unwrap()).collect();
+            for block in 0..130 {
+                for (id, (a, b)) in actual.iter_mut().zip(&mut expected).enumerate() {
+                    let phase = (block + id) as f32 * 0.03;
+                    let gains = bus_renderer::route(&solver, [phase.cos() * 0.7, phase.sin() * 0.7, 0.4], None, 0.3);
+                    let amounts = std::array::from_fn(|bus| if bus == id % solver.bus_count() { 0.0 } else { (block as f32 / 30.0).min(1.0) });
+                    a.schedule_focus(solver.layout(), 0.04, gains, amounts);
+                    b.update_focus(&mut set, &solver, 0.04, gains, amounts).unwrap();
+                    let input = std::array::from_fn(|i| if block < 20 || block == 110 { ((block * DEFAULT_PARTITION + i + id) as f32 * 0.17).sin() * 0.01 } else { 0.0 });
+                    a.input = input; b.input = input;
+                    b.finish_block();
+                }
+                finish_sources(actual.iter_mut(), &mut set, &solver, 0.04).unwrap();
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.left, b.left, "left count={count} block={block}");
+                    assert_eq!(a.right, b.right, "right count={count} block={block}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn focus_single_convolver_matches_split_paths_during_motion_and_toggle() {
@@ -140,6 +259,8 @@ impl DirectSource {
         Ok(Self {
             convolver: StereoPartitionedConvolver::new(&left, &right, DEFAULT_PARTITION)?,
             route: None,
+            pending_route: None,
+            idle_route: None,
             input: [0.0; DEFAULT_PARTITION], left: [0.0; DEFAULT_PARTITION], right: [0.0; DEFAULT_PARTITION],
         })
     }
@@ -152,38 +273,50 @@ impl DirectSource {
         gains: [f32; vbap::MAX_BUS_COUNT], amounts: [f32; vbap::MAX_BUS_COUNT]) -> Result<(), String> {
         let route = (solver.layout(), gains, amounts, wet.to_bits());
         if self.route == Some(route) { return Ok(()); }
-        let mut combined = None;
-        let mut total = 0.0;
+        let bank = prepare_bank(set, solver, wet)?;
+        self.update_from_bank(&bank, route);
+        Ok(())
+    }
+
+    pub fn schedule_focus(&mut self, layout: vbap::LayoutId, wet: f32,
+        gains: [f32; vbap::MAX_BUS_COUNT], amounts: [f32; vbap::MAX_BUS_COUNT]) {
+        let route = (layout, gains, amounts, wet.to_bits());
+        self.pending_route = (self.idle_route.or(self.route) != Some(route)).then_some(route);
+    }
+
+    fn needs_processing(&self) -> bool {
+        !self.convolver.tail_is_silent() || self.input.iter().any(|sample| *sample != 0.0)
+    }
+
+    fn update_from_bank(&mut self, bank: &FilterBank, route: Route) {
+        let (_, gains, amounts, _) = route;
+        let mut combined = self.convolver.take_spare_filter();
+        if let Some(filter) = &mut combined { filter.clear(); }
         // Sum speaker filters with the actual VBAP amplitudes, preserving the
         // room layout while retaining this object's own convolution history.
-        for (bus, &gain) in gains.iter().take(solver.bus_count()).enumerate() {
+        for (bus, &gain) in gains.iter().take(bank.len()).enumerate() {
             if gain <= 0.0 { continue; }
-            let (azimuth, elevation) = solver.speaker_direction(bus);
-            let name = vbap::speakers(solver.layout())[bus].name;
             let amount = amounts[bus];
-            let mut filter = set.prepared_focus_speaker(name,
-                solver.layout().as_str(), azimuth as f64, elevation as f64, wet, amount == 1.0)?;
-            if amount > 0.0 && amount < 1.0 {
-                let background = set.prepared_focus_speaker(name,
-                    solver.layout().as_str(), azimuth as f64, elevation as f64, wet, true)?;
-                crate::convolution::PreparedStereoFilter::blend(&mut filter, &background, amount);
-            }
-            total += gain;
-            if let Some(current) = &mut combined {
-                crate::convolution::PreparedStereoFilter::blend(current, &filter, gain / total);
-            } else {
-                combined = Some(filter);
+            for (background, weight) in [(false, gain * (1.0 - amount)), (true, gain * amount)] {
+                if weight == 0.0 { continue; }
+                let filter = &bank[bus][usize::from(background)];
+                if let Some(current) = &mut combined {
+                    current.add_scaled(filter, weight);
+                } else {
+                    let mut first = (**filter).clone();
+                    first.scale(weight);
+                    combined = Some(first);
+                }
             }
         }
-        let mut filter = match combined {
+        let filter = match combined {
             Some(filter) => filter,
             None => {
-                let (azimuth, elevation) = solver.speaker_direction(0);
-                set.prepared_focus_speaker(vbap::speakers(solver.layout())[0].name,
-                    solver.layout().as_str(), azimuth as f64, elevation as f64, wet, false)?
+                let mut silent = (*bank[0][0]).clone();
+                silent.clear();
+                silent
             }
         };
-        filter.scale(total);
         if self.route.is_none() {
             self.convolver.set_prepared_filter(filter);
         } else {
@@ -192,7 +325,6 @@ impl DirectSource {
             self.convolver.transition_to(filter, DEFAULT_PARTITION);
         }
         self.route = Some(route);
-        Ok(())
     }
 
     pub fn finish_block(&mut self) {

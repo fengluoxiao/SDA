@@ -594,6 +594,7 @@ impl Engine {
     }
 
     fn new(sample_rate: u32, channels: u16) -> Self {
+        let _ = direct_renderer::workers();
         Self {
             sample_pos: 0,
             paused: false,
@@ -1175,8 +1176,8 @@ impl Engine {
                     source.suspended = false;
                 }
                 if source.suspended {
-                    if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                        if block_index == 0 { let _ = direct.update_focus(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
+                    if let Some(direct) = &mut source.direct {
+                        if block_index == 0 { direct.schedule_focus(self.layout, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
                     }
                     Self::advance_source_envelopes(source, 1);
                     if at % convolution::DEFAULT_PARTITION as u64 == 0
@@ -1262,15 +1263,17 @@ impl Engine {
                 }
                 // ADM masters carry silent PCM for inactive objects. Keep their
                 // clocks, filters and envelopes running, but avoid zero bus work.
-                if sample != 0.0 {
+                let bus_sample = sample * ROOM_SPEAKER_REFERENCE_GAIN
+                    * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 };
+                if bus_sample != 0.0 {
                     self.bus_renderer.as_mut().expect("checked above").add(
-                        sample * ROOM_SPEAKER_REFERENCE_GAIN * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 },
+                        bus_sample,
                         &std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]),
                         block_index,
                     );
                 }
-                if let (Some(direct), Some(set)) = (&mut source.direct, &mut self.active_hrtf_set) {
-                    if block_index == 0 { let _ = direct.update_focus(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
+                if let Some(direct) = &mut source.direct {
+                    if block_index == 0 { direct.schedule_focus(self.layout, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
                     direct.input[block_index] = sample * ROOM_SPEAKER_REFERENCE_GAIN * self.direct_mix;
                 }
                 if !self.lfe_muted {
@@ -1330,8 +1333,9 @@ impl Engine {
             }
             self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
-                for source in self.sources.values_mut() {
-                    if let Some(direct) = &mut source.direct { direct.finish_block(); }
+                if let Some(set) = &mut self.active_hrtf_set {
+                    let _ = direct_renderer::finish_sources(self.sources.values_mut().filter_map(|source| source.direct.as_mut()),
+                        set, &self.vbap, self.hrtf_wet_weight);
                 }
                 let _ = self
                     .bus_renderer
@@ -1556,6 +1560,8 @@ fn record_callback(
     );
 }
 
+mod device_output;
+
 fn build_stream(
     fifo: Arc<stereo_fifo::StereoFifo>,
     telemetry: Arc<RuntimeTelemetry>,
@@ -1564,7 +1570,7 @@ fn build_stream(
     format: SampleFormat,
 ) -> Result<Stream, String> {
     let channels = config.channels as usize;
-    let mut callback_output = callback_output::CallbackOutput::new(
+    let mut callback_output = device_output::DeviceOutput::new(
         config.sample_rate.0,
         STEREO_FIFO_START_FRAMES,
     );
@@ -1598,7 +1604,7 @@ fn build_stream(
                 } else {
                     output_monitor.reset();
                 }
-                record_callback(&telemetry, started, requested, popped, output_enabled);
+                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
             },
             error,
             None,
@@ -1633,7 +1639,7 @@ fn build_stream(
                 } else {
                     output_monitor.reset();
                 }
-                record_callback(&telemetry, started, requested, popped, output_enabled);
+                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
             },
             error,
             None,
@@ -1668,7 +1674,7 @@ fn build_stream(
                 } else {
                     output_monitor.reset();
                 }
-                record_callback(&telemetry, started, requested, popped, output_enabled);
+                record_callback(&telemetry, started, callback_output.requested_source, popped, output_enabled);
             },
             error,
             None,
@@ -1689,23 +1695,24 @@ fn main() {
             return;
         }
     };
-    // The decoder and measured HRTF assets are both 48 kHz. Never advance their
-    // shared codec clock at an arbitrary default device rate: select an actual
-    // 48 kHz WASAPI configuration or fail explicitly until resampling exists.
+    // Keep decoding/HRTF at 48 kHz; DeviceOutput adapts the device clock.
     let supported = match device.supported_output_configs() {
         Ok(configs) => configs
             .filter(|config| {
-                config.channels() >= 2
-                    && config.min_sample_rate().0 <= 48_000
-                    && config.max_sample_rate().0 >= 48_000
+                config.channels() >= 2 && matches!(config.sample_format(),
+                    SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16)
             })
-            .min_by_key(|config| match config.sample_format() {
+            .min_by_key(|config| (48_000u32.abs_diff(48_000u32.clamp(
+                config.min_sample_rate().0, config.max_sample_rate().0)), match config.sample_format() {
                 SampleFormat::F32 => 0,
                 SampleFormat::I16 => 1,
                 SampleFormat::U16 => 2,
                 _ => 3,
-            })
-            .map(|config| config.with_sample_rate(cpal::SampleRate(48_000))),
+            }))
+            .map(|config| {
+                let rate = 48_000u32.clamp(config.min_sample_rate().0, config.max_sample_rate().0);
+                config.with_sample_rate(cpal::SampleRate(rate))
+            }),
         Err(error) => {
             write_event(&Event::Error {
                 detail: format!("Cannot enumerate WASAPI output formats: {error}"),
@@ -1715,12 +1722,14 @@ fn main() {
     };
     let Some(supported) = supported else {
         write_event(&Event::Error {
-            detail: "Default WASAPI device has no stereo 48 kHz output format".into(),
+            detail: "Default WASAPI device has no supported stereo output format".into(),
         });
         return;
     };
     let config: StreamConfig = supported.config();
-    let engine = Engine::new(config.sample_rate.0, config.channels);
+    eprintln!("Output device: {:?}, device rate={} Hz, renderer rate=48000 Hz, channels={}",
+        device.name(), config.sample_rate.0, config.channels);
+    let engine = Engine::new(48_000, config.channels);
     let commands = Arc::new(render_command::RenderCommandQueue::new(256));
     let fifo = Arc::new(stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES));
     let telemetry = Arc::new(RuntimeTelemetry {
@@ -1758,7 +1767,7 @@ fn main() {
     }
     write_event(&Event::Ready {
         protocol: PROTOCOL,
-        sample_rate: config.sample_rate.0,
+        sample_rate: 48_000,
         output_channels: config.channels,
     });
 
@@ -1783,6 +1792,49 @@ mod tests {
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
         engine
+    }
+
+    #[test]
+    #[ignore = "offline performance measurement"]
+    fn benchmark_adm_full_engine() {
+        let mut engine = calibrated_engine();
+        engine.direct_objects = true;
+        engine.direct_mix = 1.0;
+        for id in 0..118 {
+            let mut source = Source { kind: if id < 108 { SourceKind::Object } else { SourceKind::Bed },
+                gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                ..Source::default() };
+            if id >= 108 { source.bed_label = Some(vbap::speakers(engine.layout)[id - 108].name.into()); }
+            engine.sources.insert(format!("source:{id}"), source);
+            engine.route_source_now(&format!("source:{id}"), 0).unwrap();
+        }
+        engine.set_direct_objects(true).unwrap();
+        for moving in [false, true] {
+            let mut times = Vec::new();
+            let mut checksum = 0.0_f64;
+            for block in 0..220 {
+                let now = engine.sample_pos;
+                for (id, source) in engine.sources.values_mut().enumerate() {
+                    let pcm: [f32; convolution::DEFAULT_PARTITION] = std::array::from_fn(|i|
+                        ((now as usize + i + id) as f32 * 0.13).sin() * 0.001);
+                    source.samples.write(now, now, &pcm);
+                    if source.kind == SourceKind::Object {
+                        let phase = id as f32 * 0.17 + if moving { block as f32 * 0.01 } else { 0.0 };
+                        let buses = bus_renderer::route(&engine.vbap, [phase.cos() * 0.7, phase.sin() * 0.7, 0.4], None, 0.3);
+                        Engine::set_source_route(source, RouteGains { buses, lfe: 0.0 }, 128);
+                    }
+                }
+                let mut output = [0.0; convolution::DEFAULT_PARTITION * 2];
+                let start = Instant::now();
+                engine.render_into(&mut output, 2);
+                if block >= 20 { times.push(start.elapsed().as_secs_f64() * 1e6); }
+                checksum += output.iter().map(|v| *v as f64).sum::<f64>();
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("118 sources full engine moving={moving} mean_us={:.1} p95_us={:.1} max_us={:.1} budget_us={:.1} checksum={checksum:.9}",
+                times.iter().sum::<f64>() / times.len() as f64, times[times.len() * 95 / 100], times[times.len() - 1],
+                convolution::DEFAULT_PARTITION as f64 / 48000.0 * 1e6);
+        }
     }
 
     #[test]

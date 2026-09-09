@@ -62,6 +62,14 @@ function ViewportFraming() {
   return null;
 }
 
+function ObjectListRefresh({ objects }: { objects: readonly VisualObject[] }) {
+  const requestFrame = useContext(RequestFrameContext);
+  // Removing the last dot also removes its useFrame callback. Repaint the
+  // cleared scene explicitly, including while playback/camera are paused.
+  useEffect(() => requestFrame(), [objects, requestFrame]);
+  return null;
+}
+
 function FrameScheduler({ children, maxFps }: { children: ReactNode; maxFps: number | null }) {
   const invalidate = useThree((state) => state.invalidate);
   const handle = useRef(0);
@@ -356,8 +364,10 @@ const ObjectDot = memo(function ObjectDot({
   sounding: boolean;
 }) {
   const ref = useRef<THREE.Group>(null);
+  const initialPosition = useMemo(() => admToScene(obj.pos), []);
   const target = useMemo(() => new THREE.Vector3(), []);
   const requestFrame = useContext(RequestFrameContext);
+  useEffect(() => requestFrame(), [requestFrame, obj.pos[0], obj.pos[1], obj.pos[2]]);
   useFrame((_, dt) => {
     if (!ref.current) return;
     // Smooth toward the latest event position (renderer ramps audio; we ease
@@ -378,7 +388,7 @@ const ObjectDot = memo(function ObjectDot({
   // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
   const dotOpacity = muted ? 0.18 : 1;
   return (
-    <group ref={ref} renderOrder={10}>
+    <group ref={ref} position={initialPosition} renderOrder={10}>
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
@@ -444,6 +454,7 @@ export function ObjectView({
           software rasterization competing with the audio renderer for CPU —
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
+        <ObjectListRefresh objects={objects} />
         <ViewportFraming />
         <Room p={p} />
         <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />

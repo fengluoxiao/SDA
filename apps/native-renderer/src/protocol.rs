@@ -1055,6 +1055,70 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires SDA_ADM_BENCHMARK metadata from a local 24-bit ADM WAV"]
+    fn benchmark_adm_file() {
+        use std::io::{Read, Seek, SeekFrom};
+        let metadata_path = std::env::var("SDA_ADM_BENCHMARK").expect("set SDA_ADM_BENCHMARK to the BwfMetadata JSON path");
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata_path).unwrap()).unwrap();
+        assert_eq!(metadata["format"]["bits"], 24);
+        assert_eq!(metadata["format"]["sampleRate"], 48000);
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut engine = Engine::new(48000, 2);
+        engine.active_hrtf_set = Some(hrtf::NativeHrtfSet::load_calibrated(&root.join("apps/web/public/hrtf/hrtf-set.json")).unwrap());
+        engine.rebuild_bus_renderer().unwrap();
+        engine.output_active = true;
+        let labels: Vec<String> = serde_json::from_value(metadata["labels"].clone()).unwrap();
+        let object_channels = metadata["adm"]["objectChannels"].as_array().unwrap();
+        let mut ids = Vec::new();
+        for (channel, label) in labels.iter().enumerate() {
+            let object = object_channels.iter().find(|o| o["channel"].as_u64() == Some(channel as u64));
+            let object_id = object.map(|o| o["id"].as_u64().unwrap() as u32);
+            let id = object_id.map_or_else(|| format!("bed:{channel}"), |id| format!("obj:{id}"));
+            let mut source = Source { kind: if object_id.is_some() { SourceKind::Object } else { SourceKind::Bed },
+                object_id, bed_label: object_id.is_none().then(|| label.clone()),
+                gain: 1.0, target_gain: 1.0, ..Source::default() };
+            if object_id.is_none() { Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0); }
+            engine.sources.insert(id.clone(), source);
+            ids.push(id);
+        }
+        let seconds = std::env::var("SDA_ADM_BENCHMARK_SECONDS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(20);
+        let frames = (seconds * 48000).min(metadata["dataSize"].as_u64().unwrap() as usize / (labels.len() * 3));
+        let events: Vec<NativeObjectEvent> = serde_json::from_value(metadata["adm"]["events"].clone()).unwrap();
+        for event in events.into_iter().filter(|e| e.sample_pos < frames as u64) {
+            apply_object_event(engine.sources.get_mut(&format!("obj:{}", event.id)).unwrap(), 0, event);
+        }
+        for id in &ids { engine.route_source_now(id, 0).unwrap(); }
+        engine.set_direct_objects(true).unwrap();
+        engine.direct_mix = 1.0;
+        let mut file = std::fs::File::open(root.join(metadata["path"].as_str().unwrap())).unwrap();
+        file.seek(SeekFrom::Start(metadata["dataOffset"].as_u64().unwrap())).unwrap();
+        let mut bytes = vec![0_u8; convolution::DEFAULT_PARTITION * labels.len() * 3];
+        let mut times = Vec::new();
+        let mut checksum = 0.0_f64;
+        for block in 0..frames / convolution::DEFAULT_PARTITION {
+            file.read_exact(&mut bytes).unwrap();
+            for (channel, id) in ids.iter().enumerate() {
+                let pcm: [f32; convolution::DEFAULT_PARTITION] = std::array::from_fn(|i| {
+                    let offset = (i * labels.len() + channel) * 3;
+                    let value = i32::from_le_bytes([0, bytes[offset], bytes[offset + 1], bytes[offset + 2]]) >> 8;
+                    value as f32 / 8388608.0
+                });
+                engine.sources.get_mut(id).unwrap().samples.write(engine.sample_pos, engine.sample_pos, &pcm);
+            }
+            let mut output = [0.0; convolution::DEFAULT_PARTITION * 2];
+            let start = Instant::now();
+            engine.render_into(&mut output, 2);
+            if block >= 20 { times.push(start.elapsed().as_secs_f64() * 1e6); }
+            assert!(output.iter().all(|v| v.is_finite()));
+            checksum += output.iter().map(|v| *v as f64).sum::<f64>();
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!("ADM file sources={} seconds={seconds} mean_us={:.1} p95_us={:.1} max_us={:.1} budget_us={:.1} checksum={checksum:.9}",
+            ids.len(), times.iter().sum::<f64>() / times.len() as f64, times[times.len() * 95 / 100], times[times.len() - 1],
+            convolution::DEFAULT_PARTITION as f64 / 48000.0 * 1e6);
+    }
+
+    #[test]
     fn zones_validate_before_mutation_and_preserve_scheduled_state() {
         let mut engine = Engine::new(48_000, 2);
         let fifo = stereo_fifo::StereoFifo::new(4096);

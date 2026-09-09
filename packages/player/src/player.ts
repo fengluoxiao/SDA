@@ -35,6 +35,7 @@ import {
 import type { DecodedFrameData, FrameLoudness, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
 import { BwfDemuxer, readBwfMetadata, type BwfMetadata, type BinauralRenderMetadata } from "@sda/demux";
 import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
+import { PresentationClock } from "./presentation-clock.js";
 
 export interface VisualObject {
   id: number;
@@ -312,6 +313,7 @@ export class SdaPlayer {
   private soundingObjectIdsDirty = false;
   private visualSnapshotDirty = true;
   private visualTimer: ReturnType<typeof setInterval> | null = null;
+  private presentationClock = new PresentationClock();
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
   private initArgs: {
@@ -940,7 +942,7 @@ export class SdaPlayer {
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
     this.worker.postMessage({ type: "open", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
-    this.visualTimer ??= setInterval(() => this.emitVisual(), 100);
+    this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
   private pushWorkerChunk(chunk: ArrayBuffer): Promise<void> {
@@ -997,6 +999,7 @@ export class SdaPlayer {
     }
     void this.renderer?.ctx.resume();
     this.objects.clear();
+    this.presentationClock.reset();
     this.visualSnapshotDirty = true;
     this.binauralMetadata = null;
     this.pendingVisualEvents = [];
@@ -2048,7 +2051,11 @@ export class SdaPlayer {
         this.updateNativeConsumedCursor(consumed);
       }
     }
-    const streamTimeSec = this.positionSeconds();
+    const streamTimeSec = this.outputBackend === "native-sidecar"
+      ? Math.min(this.durationSeconds(), Math.max(0,
+          this.presentationClock.read(this.nativeConsumedSamples, performance.now(), this.sampleRate,
+            this.playbackStarted && !this.pausedState) - (this.startupOrigin ?? 0)) / this.sampleRate)
+      : this.positionSeconds();
     const playedSample = Math.floor(streamTimeSec * this.sampleRate);
     let changed = false;
     while (

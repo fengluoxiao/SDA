@@ -737,15 +737,10 @@ export function App() {
         onVisualState: (objs, t, sounding) => {
           if (!isCurrent()) return;
           objectsRef.current = objs;
-          // Visual events can fire per decoded frame while objects move, and
-          // every state write here re-renders the whole app in competition with
-          // the 3D paint. Flush at ~15 Hz (10 Hz baseline from the player
-          // timer is untouched); ObjectDot eases toward targets at full frame
-          // rate, so this only caps target delivery, not motion smoothness.
-          // Paused or seek emissions flush immediately — no further ticks may
-          // follow them.
+          // Deliver positions at the player's 30 Hz display cadence. Keep
+          // diagnostic text/list work at 5 Hz so it does not compete with 3D.
           const now = performance.now();
-          if (!playingRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 66) {
+          if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
             setObjects(objs);
             setSoundingObjectIds(sounding);
@@ -753,11 +748,11 @@ export function App() {
               lastDiagnosticUpdateRef.current = t;
               setDiagnosticObjects(objs);
               setProgramLoudness(playerRef.current?.programLoudnessInfo() ?? null);
+              setPosition(t);
+              const p = playerRef.current;
+              setDuration(p?.durationSeconds() ?? 0);
+              setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
             }
-            setPosition(t);
-            const p = playerRef.current;
-            setDuration(p?.durationSeconds() ?? 0);
-            setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
           }
         },
         onHealth: (snapshot) => {

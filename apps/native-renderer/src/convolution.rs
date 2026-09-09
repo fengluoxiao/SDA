@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
-// Long room/headphone FIRs need this block size to leave rendering headroom
-// for 118-track ADM. Two stages add 10.67 ms at 48 kHz.
-pub const DEFAULT_PARTITION: usize = 256;
+// Long per-object room FIRs need 1024-frame partitions for large ADM masters.
+// Two stages add 42.67 ms at 48 kHz; authored routing still ticks every 128
+// samples, independently of the convolution partition.
+pub const DEFAULT_PARTITION: usize = 1024;
 
 /// Prepared spectral filters for one measured direction. Runtime state lives
 /// in `StereoPartitionedConvolver`; a set of these partitions is therefore
@@ -22,6 +23,21 @@ pub struct PreparedStereoFilter {
 }
 
 impl PreparedStereoFilter {
+    pub fn clear(&mut self) {
+        for partition in self.filters_left.iter_mut().chain(&mut self.filters_right) {
+            partition.fill(Complex32::new(0.0, 0.0));
+        }
+    }
+
+    pub fn add_scaled(&mut self, other: &Self, gain: f32) {
+        for (current, target) in [(&mut self.filters_left, &other.filters_left), (&mut self.filters_right, &other.filters_right)] {
+            assert_eq!(current.len(), target.len());
+            for (values, source) in current.iter_mut().zip(target) {
+                for (value, source) in values.iter_mut().zip(source) { *value += *source * gain; }
+            }
+        }
+    }
+
     pub fn scale(&mut self, gain: f32) {
         for value in self.filters_left.iter_mut().chain(self.filters_right.iter_mut()).flatten() {
             *value *= gain;
@@ -61,6 +77,7 @@ pub struct StereoPartitionedConvolver {
     fft_scratch: Vec<Complex32>,
     silent_blocks: usize,
     transition: Option<(PreparedStereoFilter, usize, usize)>,
+    spare_filter: Option<PreparedStereoFilter>,
 }
 
 impl StereoPartitionedConvolver {
@@ -103,6 +120,7 @@ impl StereoPartitionedConvolver {
             fft_scratch: vec![Complex32::new(0.0, 0.0); scratch_len],
             silent_blocks: count + 1,
             transition: None,
+            spare_filter: None,
         })
     }
 
@@ -125,6 +143,18 @@ impl StereoPartitionedConvolver {
             filters_left: self.filters_left.clone(),
             filters_right: self.filters_right.clone(),
         }
+    }
+    pub fn take_spare_filter(&mut self) -> Option<PreparedStereoFilter> {
+        self.spare_filter.take()
+    }
+    pub fn tail_is_silent(&self) -> bool {
+        self.silent_blocks >= self.history.len() + 1
+    }
+    fn commit_filter(&mut self, filter: PreparedStereoFilter) {
+        self.spare_filter = Some(PreparedStereoFilter {
+            filters_left: std::mem::replace(&mut self.filters_left, filter.filters_left),
+            filters_right: std::mem::replace(&mut self.filters_right, filter.filters_right),
+        });
     }
     /// Retarget without discarding the overlap or the partition history.
     pub fn transition_to(&mut self, filter: PreparedStereoFilter, samples: usize) {
@@ -171,8 +201,7 @@ impl StereoPartitionedConvolver {
         if input.iter().all(|sample| *sample == 0.0) {
             if self.silent_blocks >= self.history.len() + 1 {
                 if let Some((filter, _, _)) = self.transition.take() {
-                    self.filters_left = filter.filters_left;
-                    self.filters_right = filter.filters_right;
+                    self.commit_filter(filter);
                 }
                 return Ok(());
             }
@@ -196,10 +225,7 @@ impl StereoPartitionedConvolver {
             let spectrum = &self.history[history_index];
             let filter_left = &self.filters_left[filter_index];
             let filter_right = &self.filters_right[filter_index];
-            for bin in 0..filter_left.len() {
-                self.sum_left[bin] += spectrum[bin] * filter_left[bin];
-                self.sum_right[bin] += spectrum[bin] * filter_right[bin];
-            }
+            accumulate_stereo(&mut self.sum_left, &mut self.sum_right, spectrum, filter_left, filter_right);
         }
         self.output_left.copy_from_slice(&self.sum_left);
         self.output_right.copy_from_slice(&self.sum_right);
@@ -215,10 +241,8 @@ impl StereoPartitionedConvolver {
             self.sum_right.fill(Complex32::new(0.0, 0.0));
             for part in 0..self.history.len() {
                 let spectrum = &self.history[(self.history_cursor + self.history.len() - part) % self.history.len()];
-                for bin in 0..target.filters_left[part].len() {
-                    self.sum_left[bin] += spectrum[bin] * target.filters_left[part][bin];
-                    self.sum_right[bin] += spectrum[bin] * target.filters_right[part][bin];
-                }
+                accumulate_stereo(&mut self.sum_left, &mut self.sum_right, spectrum,
+                    &target.filters_left[part], &target.filters_right[part]);
             }
             restore_real_spectrum(&mut self.sum_left);
             restore_real_spectrum(&mut self.sum_right);
@@ -238,12 +262,55 @@ impl StereoPartitionedConvolver {
         }
         if self.transition.as_ref().is_some_and(|(_, elapsed, duration)| elapsed >= duration) {
             let (filter, _, _) = self.transition.take().unwrap();
-            self.filters_left = filter.filters_left;
-            self.filters_right = filter.filters_right;
+            self.commit_filter(filter);
         }
         self.previous_input.copy_from_slice(input);
         self.history_cursor = (self.history_cursor + 1) % self.history.len();
         Ok(())
+    }
+}
+
+fn accumulate_stereo(left: &mut [Complex32], right: &mut [Complex32], input: &[Complex32],
+    filter_left: &[Complex32], filter_right: &[Complex32]) {
+    let count = filter_left.len();
+    assert!(left.len() >= count && right.len() >= count && input.len() >= count && filter_right.len() >= count);
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx") {
+        // The checked slices contain at least count complex values; the AVX
+        // loop reads four at a time and handles the final bins separately.
+        unsafe { accumulate_stereo_avx(left, right, input, filter_left, filter_right, count); }
+        return;
+    }
+    for bin in 0..count {
+        left[bin] += input[bin] * filter_left[bin];
+        right[bin] += input[bin] * filter_right[bin];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn accumulate_stereo_avx(left: &mut [Complex32], right: &mut [Complex32], input: &[Complex32],
+    filter_left: &[Complex32], filter_right: &[Complex32], count: usize) {
+    use std::arch::x86_64::*;
+    let end = count / 4 * 4;
+    // Complex32 is repr(C), with contiguous real/imaginary f32 components.
+    // Unaligned loads also support histories and filters at any offset.
+    unsafe {
+        for bin in (0..end).step_by(4) {
+            let x = _mm256_loadu_ps(input.as_ptr().add(bin).cast());
+            let re = _mm256_moveldup_ps(x);
+            let im = _mm256_movehdup_ps(x);
+            for (out, filter) in [(left.as_mut_ptr(), filter_left.as_ptr()), (right.as_mut_ptr(), filter_right.as_ptr())] {
+                let h = _mm256_loadu_ps(filter.add(bin).cast());
+                let product = _mm256_addsub_ps(_mm256_mul_ps(re, h), _mm256_mul_ps(im, _mm256_permute_ps(h, 0xb1)));
+                let sum = _mm256_add_ps(_mm256_loadu_ps(out.add(bin).cast()), product);
+                _mm256_storeu_ps(out.add(bin).cast(), sum);
+            }
+        }
+    }
+    for bin in end..count {
+        left[bin] += input[bin] * filter_left[bin];
+        right[bin] += input[bin] * filter_right[bin];
     }
 }
 
@@ -278,6 +345,28 @@ fn prepare_filters(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spectral_accumulation_matches_scalar_for_unaligned_and_partial_vectors() {
+        for count in [0, 1, 3, 4, 7, 8, 17, 257, 513] {
+            let input: Vec<_> = (0..count + 1).map(|i| Complex32::new((i as f32 * 0.7).sin(), (i as f32 * 0.3).cos())).collect();
+            let hl: Vec<_> = input.iter().map(|v| *v * 0.17).collect();
+            let hr: Vec<_> = input.iter().map(|v| v.conj() * -0.23).collect();
+            let mut left = vec![Complex32::new(0.03, -0.02); count + 1];
+            let mut right = left.clone();
+            let mut expected_left = left.clone();
+            let mut expected_right = right.clone();
+            for _ in 0..5 {
+                accumulate_stereo(&mut left[1..], &mut right[1..], &input[1..], &hl[1..], &hr[1..]);
+                for i in 1..=count {
+                    expected_left[i] += input[i] * hl[i];
+                    expected_right[i] += input[i] * hr[i];
+                }
+            }
+            assert_eq!(left, expected_left, "left count={count}");
+            assert_eq!(right, expected_right, "right count={count}");
+        }
+    }
 
     #[test]
     fn filter_transition_preserves_history_and_retargets_continuously() {

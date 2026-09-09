@@ -36,7 +36,7 @@ pub struct Position {
 pub struct NativeHrtfSet {
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
-    speaker_prepared: std::collections::HashMap<(String, String, u32), crate::convolution::PreparedStereoFilter>,
+    speaker_prepared: std::collections::HashMap<(String, String, u32), std::sync::Arc<crate::convolution::PreparedStereoFilter>>,
     pub sample_rate: u32,
     pub subject_id: Option<String>,
     pub complete_subject: bool,
@@ -178,15 +178,15 @@ impl NativeHrtfSet {
 
     pub fn prepared_speaker(&mut self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32) -> Result<crate::convolution::PreparedStereoFilter, String> {
         let key = (name.to_string(), layout.to_string(), wet.to_bits());
-        if let Some(filter) = self.speaker_prepared.get(&key) { return Ok(filter.clone()); }
+        if let Some(filter) = self.speaker_prepared.get(&key) { return Ok((**filter).clone()); }
         let (left, right) = self.mixed_speaker(name, layout, azimuth, elevation, wet)?;
         let convolver = crate::convolution::StereoPartitionedConvolver::new(&left, &right, crate::convolution::DEFAULT_PARTITION)?;
         let filter = convolver.prepared_filter();
-        self.speaker_prepared.insert(key, filter.clone());
+        self.speaker_prepared.insert(key, std::sync::Arc::new(filter.clone()));
         Ok(filter)
     }
 
-    pub fn prepared_focus_speaker(&mut self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32, background: bool) -> Result<crate::convolution::PreparedStereoFilter, String> {
+    pub fn prepared_focus_speaker(&mut self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32, background: bool) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>, String> {
         let key = (format!("focus:{background}:{name}"), layout.to_string(), wet.to_bits());
         if let Some(filter) = self.speaker_prepared.get(&key) { return Ok(filter.clone()); }
         let (mut left, mut right) = self.mixed_speaker(name, layout, azimuth, elevation, wet)?;
@@ -200,6 +200,7 @@ impl NativeHrtfSet {
             }
         }
         let filter = crate::convolution::StereoPartitionedConvolver::new(&left, &right, crate::convolution::DEFAULT_PARTITION)?.prepared_filter();
+        let filter = std::sync::Arc::new(filter);
         self.speaker_prepared.insert(key, filter.clone());
         Ok(filter)
     }
