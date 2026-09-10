@@ -379,6 +379,7 @@ export class SpatialRenderer {
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
   /** 最终双耳回放补偿。无 profile 时是 literal bypass。 */
+  private headphoneLoadRevision = 0;
   private headphoneProfileId: string | null = null;
   /** User-controlled final 3-band EQ. Never affects stereo or physical multichannel output. */
   private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
@@ -810,6 +811,7 @@ export class SpatialRenderer {
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
     }
+    this.headphoneLoadRevision++;
     this.headphoneProfileId = profileId;
     if (!profileId) {
       this.headphoneBuffers = null;
@@ -1119,8 +1121,7 @@ export class SpatialRenderer {
     const wetTarget = wet ? 1 : 0;
     for (const node of [...this.headphoneDry, ...this.headphoneWet]) {
       const target = this.headphoneDry.includes(node) ? dryTarget : wetTarget;
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(target, now + duration);
     }
   }
@@ -1166,16 +1167,17 @@ export class SpatialRenderer {
 
     const now = this.ctx.currentTime;
     for (const node of this.headphoneDry) {
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(0, now + 0.05);
     }
     for (const node of oldWet ?? []) {
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.cancelAndHoldAtTime(now);
       node.gain.linearRampToValueAtTime(0, now + 0.05);
     }
-    for (const node of [wetLeft, wetRight]) node.gain.linearRampToValueAtTime(1, now + 0.05);
+    for (const node of [wetLeft, wetRight]) {
+      node.gain.setValueAtTime(0, now);
+      node.gain.linearRampToValueAtTime(1, now + 0.05);
+    }
 
     this.retirePostNodes(retired, 250);
   }
@@ -1188,9 +1190,10 @@ export class SpatialRenderer {
       return;
     }
     const revision = this.outputGraphRevision;
+    const loadRevision = ++this.headphoneLoadRevision;
     void getHeadphoneCompensationBuffers(this.ctx, profile)
       .then((buffers) => {
-        if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
+        if (loadRevision !== this.headphoneLoadRevision || this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
         this.headphoneBuffers = buffers;
         this.installHeadphoneCompensation(buffers);
         console.log(`[SDA] 耳机补偿已启用: ${profile.id} (${buffers.left.length}/${buffers.right.length} taps)`);

@@ -175,8 +175,22 @@
 .monitor-table th { font-weight: 500; color: var(--dim); }
 .monitor-table input[type="number"] { padding: 4px; }
 .settings-layer { background: #0007; backdrop-filter: blur(3px); }
-.settings-panel { top: 90px; right: 20px; width: min(480px, calc(100vw - 40px)); max-height: calc(100vh - 110px); border-radius: 8px; background: var(--panel); padding: 24px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.settings-header { position: sticky; top: -24px; z-index: 2; margin: -24px -24px 12px; padding: 24px 24px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.settings-panel { top: 90px; right: 20px; width: min(520px, calc(100vw - 40px)); max-height: calc(100dvh - 110px); border-radius: 14px; background: var(--panel); padding: 24px; display: flex; flex-direction: column; overflow: hidden; }
+.settings-header { flex-shrink: 0; margin: 0 0 20px; padding: 0; background: var(--panel); }
+.settings-tabs { display: flex; flex-shrink: 0; gap: 4px; padding: 4px; border-radius: 10px; background: color-mix(in srgb, var(--dim) 9%, var(--panel)); }
+.settings-tabs button { flex: 1; min-width: 0; padding: 9px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--dim); font-size: 12px; white-space: nowrap; }
+.settings-tabs button[aria-selected="true"] { background: var(--panel); color: var(--accent); box-shadow: 0 1px 4px #0001; }
+.settings-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 8px 0 0; margin-top: 14px; scrollbar-gutter: stable; }
+.settings-content[hidden] { display: none; }
+.settings-content .settings-group { min-width: 0; margin-top: 14px; padding: 12px 0; }
+.settings-panel .settings-switch { padding: 8px 0; }
+.settings-panel .settings-switch > span { min-width: 0; overflow-wrap: anywhere; }
+.settings-panel .settings-switch small { display: block; margin-top: 4px; font-size: 11px; line-height: 1.5; }
+.settings-panel .settings-switch input[role="switch"] { flex-shrink: 0; }
+.settings-details { margin-top: 8px; color: var(--dim); font-size: 12px; line-height: 1.65; }
+.settings-details summary { cursor: pointer; padding: 8px 0; }
+.settings-details[open] summary { margin-bottom: 6px; }
+.settings-panel .cinema-actions { flex-wrap: wrap; }
 .settings-header h2 { font-size: 18px; }
 .settings-group { border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 16px 0; margin-top: 20px; }
 .settings-group legend { color: var(--accent); padding: 0 8px 0 0; font-size: 12px; }
@@ -363,7 +377,7 @@
   .float-panel, .room-lab, .cinema-panel, .head-tracking-panel { right: 8px; top: calc(118px + var(--titlebar)); bottom: auto; max-height: calc(100vh - 192px - var(--titlebar)); width: calc(100vw - 16px); padding: 18px 16px; }
   .scene-heading { top: 14px; left: 16px; }
   .settings-panel { top: 16px; right: 12px; width: calc(100vw - 24px); max-height: calc(100vh - 32px); padding: 18px; }
-  .settings-header { top: -18px; margin: -18px -18px 12px; padding: 18px 18px 12px; }
+  .settings-header { margin: 0 0 16px; padding: 0; }
   .mp-bar { gap: 12px; padding: 12px 16px; }
   .mp-left { flex: 1 1 180px; }
   .mp-center { order: 3; flex-basis: 100%; }
@@ -378,3 +392,8 @@
 .playlist-playback-mode { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
 
 .app .mp-btn.mp-playlist[aria-expanded="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.avatar-skin-control { position: relative; }
+.avatar-skin-menu { position: absolute; top: calc(100% + 8px); left: 0; width: 220px; display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 10px 30px #0003; pointer-events: auto; text-align: left; }
+.avatar-skin-menu small { color: var(--dim); }
+.avatar-skin-menu [role="alert"] { color: var(--error); font-size: 12px; }

@@ -1,3 +1,4 @@
+import AvatarSkinControl from "./AvatarSkinControl";
 import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
  * Live 3D object visualization — the spiritual successor to Omniphony
@@ -10,7 +11,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRe
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
-import { ImmersiveCamera, immersiveInputTarget } from "./ImmersiveCamera";
+import { ImmersiveCamera, immersiveInputTarget, type ImmersiveView } from "./ImmersiveCamera";
 import { Maximize, Minimize, PersonStanding, Plane, Eye } from "lucide-react";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
@@ -110,7 +111,7 @@ function GenelecSpeaker() {
   return (
     <group>
       {/* 圆角箱体（Polar White 极地白） */}
-      <RoundedBox args={[0.13, 0.18, 0.11]} radius={0.03} smoothness={2}>
+      <RoundedBox userData={{ immersiveCabinet: true }} args={[0.13, 0.18, 0.11]} radius={0.03} smoothness={2}>
         <meshStandardMaterial color="#e8eaec" roughness={0.4} metalness={0.15} />
       </RoundedBox>
       {/* 正面大椭圆波导（DCW，覆盖整个前障板） */}
@@ -136,7 +137,7 @@ function GenelecSpeaker() {
 function GenelecSub() {
   return (
     <group>
-      <RoundedBox args={[0.24, 0.22, 0.2]} radius={0.04} smoothness={2}>
+      <RoundedBox userData={{ immersiveCabinet: true }} args={[0.24, 0.22, 0.2]} radius={0.04} smoothness={2}>
         <meshStandardMaterial color="#e8eaec" roughness={0.4} metalness={0.15} />
       </RoundedBox>
       {/* 正面低音单元（纸盆）—— 前移避开与箱体面板的 z-fighting */}
@@ -459,12 +460,12 @@ export function ObjectView({
 }) {
   const p = PALETTE[theme];
   const shell=useRef<HTMLDivElement>(null);
-  const [thirdPerson,setThirdPerson]=useState(false),[flying,setFlying]=useState(false);
+  const [view,setView]=useState<ImmersiveView>("first"),[flying,setFlying]=useState(false);
   const [fullscreen,setFullscreen]=useState(false),[navigationError,setNavigationError]=useState("");
   useEffect(()=>{
     if(!immersive)return;
     const host=shell.current;
-    const key=(e:KeyboardEvent)=>{if(e.code!=="F5")return;e.preventDefault();e.stopPropagation();if(!e.repeat&&!immersiveInputTarget(e.target))setThirdPerson(v=>!v);};
+    const key=(e:KeyboardEvent)=>{if(e.code!=="F5")return;e.preventDefault();e.stopPropagation();if(!e.repeat&&!immersiveInputTarget(e.target))setView(v=>v==="first"?"second":v==="second"?"third":"first");};
     const change=()=>setFullscreen(document.fullscreenElement===shell.current);
     change();
     window.addEventListener("keydown",key,true);document.addEventListener("fullscreenchange",change);
@@ -491,7 +492,7 @@ export function ObjectView({
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
         {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
-        {immersive ? <ImmersiveCamera thirdPerson={thirdPerson} onFlightChange={setFlying}/> : <ViewportFraming />}
+        {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming />}
         {!immersive && <Room p={p} />}
         <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
@@ -516,12 +517,13 @@ export function ObjectView({
     </Canvas>
     {immersive&&<div className="immersive-hud">
       <div className="immersive-toolbar">
+        <AvatarSkinControl/>
         <span className={`immersive-motion${flying?" flying":""}`} role="status">{flying?<Plane size={15}/>:<PersonStanding size={15}/>} {flying?"飞行中":"步行"}</span>
-        <button onClick={()=>setThirdPerson(v=>!v)} aria-label="切换第一或第三人称视角"><Eye size={15}/>{thirdPerson?"第三人称":"第一人称"}<kbd>F5</kbd></button>
+        <button onClick={()=>setView(v=>v==="first"?"second":v==="second"?"third":"first")} aria-label="切换第一、第二或第三人称视角"><Eye size={15}/>{view==="first"?"第一人称":view==="second"?"第二人称":"第三人称"}<kbd>F5</kbd></button>
         <button onClick={()=>void toggleFullscreen()} aria-label={fullscreen?"退出全屏":"进入全屏"}>{fullscreen?<Minimize size={16}/>:<Maximize size={16}/>}</button>
       </div>
-      <p>{fullscreen?"点击画面控制鼠标 · Esc 释放鼠标":"按住画面拖动转向 · 松手停止"} · WASD 移动 · Shift 加速</p>
-      <p>双击空格切换飞行 · F6 返回原点{flying?" · 空格上升 · Ctrl 下降":""}</p>
+      <p>{fullscreen?"按住 Alt 显示鼠标 · 松开恢复转向 · Esc 释放鼠标":"按住画面拖动转向 · 松手停止"} · WASD 移动 · Shift 加速</p>
+      <p>空格跳跃 · 双击空格切换飞行 · F6 返回原点{flying?" · 空格上升 · Ctrl 下降":""}</p>
       {navigationError&&<p role="alert">{navigationError}</p>}
     </div>}
     </div>

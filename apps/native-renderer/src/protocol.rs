@@ -518,7 +518,7 @@ fn handle_command(
         }
         Command::ClearHeadphoneCompensation => match headphone::HeadphoneCompensation::bypass() {
             Ok(compensation) => {
-                state.headphone = compensation;
+                state.headphone.transition_to(compensation, state.output_sample_rate);
                 state.render_epoch = state.render_epoch.wrapping_add(1);
                 write_event(&Event::Ack {
                     command: "clearHeadphoneCompensation",
@@ -620,7 +620,7 @@ pub(super) fn apply_render_command(
         } => {
             match headphone::HeadphoneCompensation::new(&left, &right, preamp) {
                 Ok(compensation) => {
-                    state.headphone = compensation;
+                    state.headphone.transition_to(compensation, state.output_sample_rate);
                     state.render_epoch = state.render_epoch.wrapping_add(1);
                     write_event(&Event::Ack {
                         command: "setHeadphoneFir",

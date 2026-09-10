@@ -396,6 +396,7 @@ export function App() {
     () => readBinauralHead() === "ku100" && readDenseBinauralObjects(),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("output");
   const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
   const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
   const [stereoRenderMode, setStereoRenderMode] = useState(readStereoRenderMode);
@@ -1826,7 +1827,7 @@ export function App() {
         </div>
       </header>
 
-      {outputUnavailable && <button className="output-unavailable-notice" onClick={() => setSettingsOpen(true)}>输出设备不可用 · 打开设置恢复</button>}
+      {outputUnavailable && <button className="output-unavailable-notice" onClick={() => { setSettingsTab("output"); setSettingsOpen(true); }}>输出设备不可用 · 打开设置恢复</button>}
       {settingsOpen && (
         <div className="settings-layer" onMouseDown={() => setSettingsOpen(false)}>
           <section className="settings-panel" aria-label="系统设置" onMouseDown={(event) => event.stopPropagation()}>
@@ -1836,6 +1837,27 @@ export function App() {
                 <X size={18} />
               </button>
             </div>
+            <div className="settings-tabs" role="tablist" aria-label="设置分类">
+              {[
+                { id: "output", label: "音频输出" },
+                ...(window.sdaDesktop?.startNativeRenderer ? [{ id: "spatial", label: "空间音效" }] : []),
+                { id: "eq", label: "耳机 EQ" },
+                ...(window.sdaDesktop?.getHeadTrackingStatus ? [{ id: "tracking", label: "头部追踪" }] : []),
+              ].map((tab) => (
+                <button key={tab.id} id={`settings-tab-${tab.id}`} type="button" role="tab"
+                  aria-selected={settingsTab === tab.id} aria-controls={`settings-content-${tab.id}`}
+                  tabIndex={settingsTab === tab.id ? 0 : -1}
+                  onKeyDown={(event) => {
+                    const tabs = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                    const index = tabs.indexOf(event.currentTarget);
+                    const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+                    const target = tabs[next];
+                    if (target) { event.preventDefault(); target.focus(); target.click(); }
+                  }}
+                  onClick={() => setSettingsTab(tab.id)}>{tab.label}</button>
+              ))}
+            </div>
+            <div className="settings-content" id="settings-content-output" role="tabpanel" aria-labelledby="settings-tab-output" hidden={settingsTab !== "output"}>
             <OutputPanel />
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
@@ -1849,6 +1871,9 @@ export function App() {
                 />
               </label>
             </fieldset>
+            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅作用于纯立体声曲目，在双耳或立体声输出下生效。</p>}
+            </div>
+            <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>
@@ -1860,13 +1885,15 @@ export function App() {
                 </label>
                 <label className="settings-switch" title="启动或停止桌面唯一的 Rust/WASAPI 空间输出。停止后桌面不会退回 Web Audio 输出。">
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
-                  <button type="button" disabled={nativeRendererBusy} onClick={() => void toggleNativeRenderer()}>
-                    {nativeRendererBusy ? "处理中" : nativeRendererStatus?.running ? "停止" : "启动"}
-                  </button>
+                  <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
+                    disabled={nativeRendererBusy} aria-label="音频输出" onChange={() => void toggleNativeRenderer()} />
                 </label>
               </fieldset>
             )}
             {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel/><SourceExtentPanel/><NearFieldPanel/></>}
+            </div>
+            <div className="settings-content" id="settings-content-eq" role="tabpanel" aria-labelledby="settings-tab-eq" hidden={settingsTab !== "eq"}>
+            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
               <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机模拟档案。</p>
@@ -1905,6 +1932,9 @@ export function App() {
                 </label>
               ))}
             </fieldset>
+            </div>
+            <div className="settings-content" id="settings-content-tracking" role="tabpanel" aria-labelledby="settings-tab-tracking" hidden={settingsTab !== "tracking"}>
+            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用头部追踪。</p>}
             {window.sdaDesktop?.getHeadTrackingStatus && (
               <fieldset className="settings-group settings-section" disabled={mode !== "binaural" || headTrackingBusy}>
                 <legend>实验性 AirPods 头部追踪</legend>
@@ -1928,10 +1958,9 @@ export function App() {
                 </div>
                 <div className="settings-switch">
                   <span>追踪控制</span>
-                  <button
+                  <input type="checkbox" role="switch" aria-label="头部追踪" checked={headTrackingStatus?.running ?? false}
                     disabled={!headTrackingStatus?.running && !headTrackingHelper?.configured && !headTrackingHelper?.mockAvailable}
-                    onClick={() => void setHeadTrackingRunning(!(headTrackingStatus?.running ?? false))}
-                  >{headTrackingStatus?.running ? "停止" : "启动"}</button>
+                    onChange={(event) => void setHeadTrackingRunning(event.target.checked)} />
                 </div>
                 <div className="settings-switch">
                   <span>面向前方</span>
@@ -1947,8 +1976,7 @@ export function App() {
                 <p className="settings-description">请先在 Windows 设置中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
               </fieldset>
             )}
-            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅作用于纯立体声曲目，在双耳或立体声输出下生效。</p>}
-            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ 和头部追踪。</p>}
+            </div>
           </section>
         </div>
       )}
