@@ -9,7 +9,8 @@ import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRe
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
-import { ImmersiveCamera } from "./ImmersiveCamera";
+import { ImmersiveCamera, immersiveInputTarget } from "./ImmersiveCamera";
+import { Maximize, Minimize, PersonStanding, Plane, Eye } from "lucide-react";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
 import { speakerLabel } from "../speaker-labels";
@@ -343,10 +344,12 @@ const ObjectDot = memo(function ObjectDot({
   obj,
   muted,
   sounding,
+  theme,
 }: {
   obj: VisualObject;
   muted: boolean;
   sounding: boolean;
+  theme: Theme;
 }) {
   const ref = useRef<THREE.Group>(null);
   const initialPosition = useMemo(() => admToScene(obj.pos), []);
@@ -365,13 +368,15 @@ const ObjectDot = memo(function ObjectDot({
   });
   const height = obj.pos[2]; // ADM z = up
   const color = useMemo(
-    () => new THREE.Color().setHSL(0.55 - height * 0.25, 0.9, 0.6),
-    [height],
+    () => theme === "light"
+      ? new THREE.Color().setHSL(0.55 - height * 0.25, 0.78, 0.32, THREE.SRGBColorSpace)
+      : new THREE.Color().setHSL(0.55 - height * 0.25, 0.9, 0.6),
+    [height, theme],
   );
   // ADM size[0]（宽度 0..1）→ 半透明扩散光晕半径
   const spread = Math.min(1, Math.max(0, obj.size?.[0] ?? 0));
   // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
-  const dotOpacity = muted ? 0.18 : 1;
+  const dotOpacity = muted ? (theme === "light" ? 0.35 : 0.18) : 1;
   return (
     <group ref={ref} position={initialPosition} renderOrder={10}>
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
@@ -379,9 +384,13 @@ const ObjectDot = memo(function ObjectDot({
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={muted ? 0.03 : sounding ? 0.18 : 0.1} depthTest={false} depthWrite={false} />
       </mesh>
-      <mesh renderOrder={11}>
+      {theme === "light" && <mesh renderOrder={11}>
+        <sphereGeometry args={[0.069, 12, 12]} />
+        <meshBasicMaterial color="#173d40" transparent opacity={muted ? 0.3 : 0.9} toneMapped={false} depthTest={false} depthWrite={false} />
+      </mesh>}
+      <mesh renderOrder={12}>
         <sphereGeometry args={[0.06, 10, 10]} />
-        <meshBasicMaterial color={color} transparent opacity={dotOpacity} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={dotOpacity} toneMapped={theme !== "light"} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -389,6 +398,7 @@ const ObjectDot = memo(function ObjectDot({
   const a = prev.obj;
   const b = next.obj;
   return prev.muted === next.muted
+    && prev.theme === next.theme
     && prev.sounding === next.sounding
     && a.id === b.id
     && a.pos[0] === b.pos[0]
@@ -424,9 +434,23 @@ export function ObjectView({
   hiddenSpeakerNames?: ReadonlySet<string>;
 }) {
   const p = PALETTE[theme];
+  const shell=useRef<HTMLDivElement>(null);
+  const [thirdPerson,setThirdPerson]=useState(false),[flying,setFlying]=useState(false);
+  const [fullscreen,setFullscreen]=useState(false),[navigationError,setNavigationError]=useState("");
+  useEffect(()=>{
+    if(!immersive)return;
+    const host=shell.current;
+    const key=(e:KeyboardEvent)=>{if(e.code!=="F5")return;e.preventDefault();e.stopPropagation();if(!e.repeat&&!immersiveInputTarget(e.target))setThirdPerson(v=>!v);};
+    const change=()=>setFullscreen(document.fullscreenElement===shell.current);
+    change();
+    window.addEventListener("keydown",key,true);document.addEventListener("fullscreenchange",change);
+    return()=>{window.removeEventListener("keydown",key,true);document.removeEventListener("fullscreenchange",change);if(host&&document.fullscreenElement===host)void document.exitFullscreen().catch(()=>{});};
+  },[immersive]);
+  const toggleFullscreen=async()=>{try{setNavigationError("");if(document.fullscreenElement===shell.current)await document.exitFullscreen();else await shell.current?.requestFullscreen();}catch{setNavigationError("无法进入全屏，请重试。");}};
   const rendererMode = window.sdaDesktop?.rendererMode;
   const isSwiftShader = rendererMode === "swiftshader";
   return (
+    <div ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
       frameloop="demand"
       camera={{ position: [5, 4.2, 6], fov: 50 }}
@@ -442,12 +466,12 @@ export function ObjectView({
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
-        {immersive ? <ImmersiveCamera /> : <ViewportFraming />}
+        {immersive ? <ImmersiveCamera thirdPerson={thirdPerson} onFlightChange={setFlying}/> : <ViewportFraming />}
         {!immersive && <Room p={p} />}
-        <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
+        <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
         {objects.map((o) => (
-          <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
+          <ObjectDot key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
         ))}
         {!immersive && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
@@ -465,6 +489,17 @@ export function ObjectView({
         />}
       </FrameScheduler>
     </Canvas>
+    {immersive&&<div className="immersive-hud">
+      <div className="immersive-toolbar">
+        <span className={`immersive-motion${flying?" flying":""}`} role="status">{flying?<Plane size={15}/>:<PersonStanding size={15}/>} {flying?"飞行中":"步行"}</span>
+        <button onClick={()=>setThirdPerson(v=>!v)} aria-label="切换第一或第三人称视角"><Eye size={15}/>{thirdPerson?"第三人称":"第一人称"}<kbd>F5</kbd></button>
+        <button onClick={()=>void toggleFullscreen()} aria-label={fullscreen?"退出全屏":"进入全屏"}>{fullscreen?<Minimize size={16}/>:<Maximize size={16}/>}</button>
+      </div>
+      <p>{fullscreen?"点击画面控制鼠标 · Esc 释放鼠标":"按住画面拖动转向 · 松手停止"} · WASD 移动 · Shift 加速</p>
+      <p>双击空格切换飞行 · F6 返回原点{flying?" · 空格上升 · Ctrl 下降":""}</p>
+      {navigationError&&<p role="alert">{navigationError}</p>}
+    </div>}
+    </div>
   );
 }
 

@@ -1,4 +1,5 @@
 import Select from "./components/Select";
+import PlaylistPanel from "./components/PlaylistPanel";
 import OutputPanel from "./components/OutputPanel";
 import {ROOM_LISTENING_LEVELS} from "./room-listening";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2033,26 +2034,7 @@ export function App() {
             </label>
           </div>
         )}
-        {floatPanel === "playlist" && (          <div className="panel float-panel playlist-panel" aria-label="播放列表">
-            <div className="playlist-head">
-              <h2>播放列表 <span>{playlistCurrentId ? `${Math.max(1, playlist.findIndex((item) => item.id === playlistCurrentId) + 1)}/${playlist.length}` : `${playlist.length}`}</span></h2>
-              <button disabled={playlist.length === 0} onClick={clearPlaylist}>清空</button>
-            </div>
-            {playlist.length === 0 ? <p className="dim">打开文件或添加文件夹后，曲目会出现在这里。</p> : (
-              <ol className="playlist-items">
-                {playlist.map((item) => {
-                  const current = item.id === playlistCurrentId;
-                  return <li key={item.id} className={current ? "current" : ""} aria-current={current ? "true" : undefined}>
-                    <button className="playlist-select" onClick={() => playPlaylistItem(item.id)} title={`播放 ${item.title}`}>
-                      <span>{current ? (paused ? "暂停" : "播放") : ""}</span><b>{item.title}</b>
-                    </button>
-                    <button className="playlist-remove" onClick={() => removePlaylistItem(item.id)} title={`移除 ${item.title}`}>×</button>
-                  </li>;
-                })}
-              </ol>
-            )}
-          </div>
-        )}
+        {floatPanel === "playlist" && <PlaylistPanel items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={playPlaylistItem} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}
         {floatPanel === "channels" && (
           <div className="panel obj-panel float-panel" aria-label="输出音箱声道">
             <div className="obj-head">

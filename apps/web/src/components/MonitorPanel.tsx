@@ -1,4 +1,5 @@
 import Select from "./Select";
+import {SlidersHorizontal, Layers, Volume2, Waves, CircuitBoard} from "lucide-react";
 import {AHB2_SOURCE,HARDWARE_PRESETS,createHardwarePreset,matchingHardwarePreset} from "../hardware-presets";
 import {useEffect,useState} from "react";
 import type {VirtualSpeaker} from "@sda/renderer";
@@ -44,8 +45,10 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false}:{l
   const toggle=(key:"enabled"|"dim"|"muted"|"bassEnabled",label:string)=><label className="settings-switch"><span>{label}</span><input type="checkbox" role="switch" aria-label={label} checked={settings[key]} disabled={busy||(key==="bassEnabled"&&layout==="2.0")} onChange={e=>setSettings(s=>({...s,[key]:e.target.checked}))}/></label>;
   const changeOutput=(name:string,value:Partial<MonitorOutput>)=>setSettings(s=>({...s,outputs:{...s.outputs,[name]:{...output(),...s.outputs[name],...value}}}));
   return <section className="panel float-panel cinema-panel monitor-panel" aria-label="监听处理器">
-    <div className="obj-head"><h2>监听处理器 <span className="obj-count">{layout} · 48 kHz</span></h2></div>
+    <div className="monitor-heading"><div><SlidersHorizontal size={20}/><h2>监听处理器</h2></div><span>{layout} · 48 kHz</span></div>
     <fieldset className="monitor-controls">
+    <div className="monitor-master">{toggle("enabled","启用监听处理器")}<p>管理监听电平、输出通道与硬件仿真</p></div>
+    <details className="monitor-presets"><summary><Layers size={15}/>内置监听配置<span>{preset?MONITOR_PRESETS.find(p=>p.id===preset)?.name:"选择与载入"}</span></summary><div className="monitor-preset-body">
     <label className="cinema-profile"><span>内置监听配置</span>
       <Select aria-label="内置监听配置" value={preset} disabled={busy} onChange={e=>setPreset(e.target.value)}>
         <option value="">选择配置</option>
@@ -55,9 +58,9 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false}:{l
     <div className="cinema-actions"><button disabled={busy||!preset} title="载入当前布局的中性通道参数；保留主音量、DIM 开关、静音及处理器开关，点击应用后生效" onClick={()=>{
       try{setSettings(createMonitorPreset(preset,settings,speakers.map(s=>s.name)));setAlignment(null);setError("");}catch(e){setError(String(e));}
     }}>载入配置</button><span className="cinema-source" title={MONITOR_PRESETS.find(p=>p.id===preset)?.url}>{MONITOR_PRESETS.find(p=>p.id===preset)?.source}</span></div>
-    {toggle("enabled","启用监听处理器")}
+    </div></details>
     <div className="speaker-group-tabs cinema-tabs" role="group" aria-label="监听处理器页面">
-      {([["level","监听电平"],["outputs","输出通道"],["bass","低频管理"],["hardware","硬件链路"]] as const).map(([id,label])=><button key={id} aria-pressed={view===id} onClick={()=>setView(id)}>{label}</button>)}
+      {([["level","监听电平"],["outputs","输出通道"],["bass","低频管理"],["hardware","硬件链路"]] as const).map(([id,label])=><button key={id} aria-pressed={view===id} onClick={()=>setView(id)}>{id==="level"?<Volume2 size={16}/>:id==="outputs"?<Layers size={16}/>:id==="bass"?<Waves size={16}/>:<CircuitBoard size={16}/>}<span>{label}</span></button>)}
     </div>
     {view==="level"&&<div className="cinema-band">
       {numeric("levelDb","监听衰减",-80,0,"dB")}
@@ -74,7 +77,7 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false}:{l
     {view==="bass"&&<div className="cinema-band">{toggle("bassEnabled","低频管理")}{numeric("crossoverHz","LR4 分频点",40,160,"Hz")}{numeric("bassDb","重定向低频电平",-24,6,"dB")}</div>}
     {view==="hardware"&&<div className="cinema-band">
       <label className="settings-switch"><span>启用硬件链路</span><input type="checkbox" role="switch" aria-label="启用硬件链路" disabled={busy} checked={hardware.enabled} onChange={e=>setSettings(s=>({...s,hardware:{...hardware,enabled:e.target.checked}}))}/></label>
-      <span className="cinema-source" title="通用电路近似，非实测品牌复刻。原始双声道作用于左右输出；空间模式作用于音箱总线，暂代逐对象 HRTF。监听电平是模型之后的听音衰减。">{hardware.enabled?"音箱总线 · 4× 过采样":"旁路"} · 电阻负载</span>
+      <span className="cinema-source monitor-signal-path" title="通用电路近似，非实测品牌复刻。原始双声道作用于左右输出；空间模式作用于音箱总线，暂代逐对象 HRTF。监听电平是模型之后的听音衰减。">{hardware.enabled?"音箱总线 · 4× 过采样":"旁路"} · 电阻负载</span>
       <label className="cinema-profile"><span>功放参数配置</span>
         <Select aria-label="功放参数配置" value={hardwarePreset} disabled={busy} onChange={e=>{if(e.target.value)setSettings(s=>createHardwarePreset(e.target.value,s));}}>
           <option value="">自定义参数</option>
@@ -82,8 +85,9 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false}:{l
         </Select>
       </label>
       {hardwarePreset ? <div className="cinema-source">
-        <p>Benchmark AHB2 · 立体声模式 · 每声道 100 W / 8 Ω。线路电压按所选灵敏度匹配，输入增益可独立调整。</p>
-        <details><summary>参数来源与近似范围</summary>
+        <div className="monitor-spec-chips"><span>AHB2</span><span>立体声</span><span>100 W / 8 Ω</span></div>
+        <details className="monitor-reference"><summary>参数来源与近似范围</summary>
+          <p>线路电压按所选灵敏度匹配，输入增益可独立调整。</p>
           <p>厂家标称：增益 9.2 / 17 / 23 dB，输入灵敏度 9.8 / 4 / 2 Vrms，峰值电流 29 A，频响优于 0.1 Hz–200 kHz（+0/−3 dB）。</p>
           <p>100 W / 8 Ω 换算为负载峰值 40 V；模型电压上限含输出阻抗压降。输出阻抗由 1 kHz 阻尼系数 254 换算，约 0.0315 Ω。</p>
           <p>这是规格约束的近似，不是实测复刻。带宽使用简化滤波，未复现频变阻抗、THX 电路或保护系统。DAC 位深独立设置，非 AHB2 参数。</p>
@@ -99,13 +103,13 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false}:{l
         </Select>
       </label>
       <span className="cinema-source">输入增益独立于功放档位；正增益可能使满幅信号削波。</span>
-      {([
+      <div className="monitor-parameter-grid">{([
         ["inputDb","输入增益",-60,12,.5,"dB"],["dacBits","DAC 位深",8,24,1,"bit"],
         ["lineRms","满幅线路输出",.1,12,.1,"Vrms"],["gainDb","功放增益",0,40,.5,"dB"],
         ["railV","等效峰值电压上限",1,80,.01,"V"],["currentA","峰值电流上限",.01,30,.1,"A"],
         ["loadOhms","负载阻抗",2,600,1,"Ω"],["outputOhms","输出阻抗",0,20,.01,"Ω"],
         ["bandwidthHz","标称带宽近似",5000,250000,1000,"Hz"],
-      ] as const).map(([key,label,min,max,step,unit])=><label className="cinema-number" key={key}><span>{label}</span><input type="number" aria-label={label} value={hardware[key]} min={min} max={max} step={step} disabled={busy} onChange={e=>{let n=e.currentTarget.valueAsNumber;if(Number.isFinite(n)){n=Math.max(min,Math.min(max,n));if(key==="dacBits")n=Math.round(n);setSettings(s=>({...s,hardware:{...hardware,[key]:n}}));}}}/><small>{unit}</small></label>)}
+      ] as const).map(([key,label,min,max,step,unit])=><label className="cinema-number" key={key}><span>{label}</span><input type="number" aria-label={label} value={hardware[key]} min={min} max={max} step={step} disabled={busy} onChange={e=>{let n=e.currentTarget.valueAsNumber;if(Number.isFinite(n)){n=Math.max(min,Math.min(max,n));if(key==="dacBits")n=Math.round(n);setSettings(s=>({...s,hardware:{...hardware,[key]:n}}));}}}/><small>{unit}</small></label>)}</div>
     </div>}
     <div className="cinema-footer"><span>{busy?"处理中":JSON.stringify(settings)===saved?"已应用":"未应用"}</span>
       <button disabled={busy||!saved||JSON.stringify(settings)===saved} onClick={()=>{setSettings(JSON.parse(saved));setAlignment(null);}}>撤销更改</button>
