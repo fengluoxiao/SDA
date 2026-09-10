@@ -1,3 +1,4 @@
+import { isStereoMasterFrame } from "./stereo-master.js";
 /**
  * Decoder worker script — runs demux + wasm decode off the UI thread.
  * Loaded as a module worker; messages:
@@ -55,7 +56,7 @@ function postFrame(frame: DecodedFrameData): void {
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
   // channel-layout weights to 118 objects is both incorrect and very costly.
-  if (frame.codec !== "adm" && frame.channels[0]?.length) {
+  if (isStereoMasterFrame(frame) && frame.channels[0]?.length) {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
     loudnessMeter.push(frame.channels);
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
@@ -143,6 +144,7 @@ async function handleMessage(e: MessageEvent): Promise<void> {
       const tail = resampler?.finish();
       if (tail) frameBatcher.push(tail);
       frameBatcher.flush();
+      if (loudnessMeter) self.postMessage({ type: "loudness-complete", loudness: loudnessMeter.integrated() });
       self.postMessage({ type: "flushed" });
       break;
     }

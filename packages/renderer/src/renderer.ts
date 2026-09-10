@@ -77,8 +77,6 @@ const BASS_MANAGEMENT_CROSSOVER_HZ = 85;
 const LFE_LOWPASS_HZ = 120;
 /** 双耳耳机路径不套用影院/音箱的 LFE +10dB 回放补偿，避免底鼓过量。 */
 const BINAURAL_LFE_INBAND_GAIN = 1;
-/** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
-const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
 /** Shared stereo-linked lookahead sample-peak ceiling; no oversampling, so it is not true-peak limiting. */
 const BINAURAL_PEAK_GUARD_CEILING_DB = -1;
 const BINAURAL_PEAK_GUARD_LOOKAHEAD_S = 0.005;
@@ -1376,8 +1374,6 @@ export class SpatialRenderer {
    * outputs, avoiding the browser's single-node channel limit. */
   private buildBinauralPath(output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
-    const makeup = this.ctx.createGain();
-    makeup.gain.value = BINAURAL_MAKEUP_GAIN;
     const peakGuard = this.peakGuard;
     if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
 
@@ -1472,9 +1468,8 @@ export class SpatialRenderer {
     diagnosticSplit.connect(diagnosticRight, 1);
     diagnosticRight.connect(diagnosticMerge, 0, 1);
     this.postNodes.push(eqHeadroom, eqSplit, eqMerge, diagnosticSplit, diagnosticLeft, diagnosticRight, diagnosticMerge);
-    diagnosticMerge.connect(makeup);
-    makeup.connect(output);
-    this.postNodes.push(merger, makeup);
+    diagnosticMerge.connect(output);
+    this.postNodes.push(merger);
   }
 
   rebindBedSource(id: string, bedLabel: string, atSample: number): void {
@@ -1924,7 +1919,7 @@ export class SpatialRenderer {
   }
 
   setProgramLoudnessGainDb(gainDb: number | null, atSample?: number): void {
-    this.programLoudnessGainDb = gainDb === null || !Number.isFinite(gainDb) ? null : Math.min(0, gainDb);
+    this.programLoudnessGainDb = gainDb === null || !Number.isFinite(gainDb) ? null : Math.max(-60, Math.min(60, gainDb));
     const gain = this.programLoudnessGainDb === null ? 1 : Math.pow(10, this.programLoudnessGainDb / 20);
     this.peakGuard?.port.postMessage({
       type: atSample === undefined ? "programGain" : "scheduleProgramGain",

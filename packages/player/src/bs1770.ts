@@ -79,6 +79,8 @@ export interface IntegratedLoudness {
   integratedLufs: number | null;
   /** Completed 400 ms blocks above the absolute gate. */
   blocks: number;
+  /** Maximum unweighted sample peak of the stereo master, in dBFS. */
+  peakDbfs: number;
 }
 
 export class LoudnessMeter {
@@ -90,6 +92,7 @@ export class LoudnessMeter {
   private readonly block: Float32Array[];
   private readonly scratch: Float32Array;
   private fill = 0;
+  private samplePeak = 0;
   /** Mean-square energy per completed 400 ms block (sum over weighted channels). */
   private readonly blockEnergy: number[] = [];
 
@@ -106,6 +109,7 @@ export class LoudnessMeter {
   push(channels: readonly Float32Array[]): void {
     const first = channels[0];
     if (!first?.length) return;
+    for (const channel of channels) for (const value of channel) this.samplePeak = Math.max(this.samplePeak, Math.abs(value));
     for (let offset = 0; offset < first.length;) {
       const take = Math.min(this.blockSamples - this.fill, first.length - offset);
       for (let ch = 0; ch < this.filters.length; ch++) {
@@ -141,14 +145,24 @@ export class LoudnessMeter {
   }
 
   integrated(): IntegratedLoudness {
+    const peakDbfs = this.samplePeak > 0 ? 20 * Math.log10(this.samplePeak) : -Infinity;
     const aboveAbsolute = this.blockEnergy.filter((energy) => energy > 0 && 10 * Math.log10(energy) > -69.309);
-    if (aboveAbsolute.length === 0) return { integratedLufs: null, blocks: 0 };
+    if (aboveAbsolute.length === 0) return { integratedLufs: null, blocks: 0, peakDbfs };
     const ungatedMean = aboveAbsolute.reduce((a, b) => a + b, 0) / aboveAbsolute.length;
     const relativeGateLufs = -0.691 + 10 * Math.log10(ungatedMean) - 10;
     const aboveRelative = aboveAbsolute.filter(
       (energy) => -0.691 + 10 * Math.log10(energy) > relativeGateLufs,
     );
     const gatedMean = aboveRelative.reduce((a, b) => a + b, 0) / aboveRelative.length;
-    return { integratedLufs: -0.691 + 10 * Math.log10(gatedMean), blocks: aboveAbsolute.length };
+    return { integratedLufs: -0.691 + 10 * Math.log10(gatedMean), blocks: aboveAbsolute.length, peakDbfs };
   }
+}
+
+/** One linked master gain. A sample-peak ceiling leaves 1 dB of headroom;
+ * the final linked guard still catches peaks introduced by rendering. */
+export function masterBalanceGainDb(integratedLufs: number, peakDbfs: number | null): number {
+  if (!Number.isFinite(integratedLufs)) return 0;
+  const target = Math.max(-60, Math.min(60, -18 - integratedLufs));
+  if (peakDbfs == null || !Number.isFinite(peakDbfs)) return Math.min(0, target);
+  return Math.min(target, -1 - peakDbfs);
 }

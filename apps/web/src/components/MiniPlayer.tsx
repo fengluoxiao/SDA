@@ -1,6 +1,8 @@
+import PlaybackModeButton from "./PlaybackModeButton";
+import type { PlaybackMode } from "../playbackOrder";
 import { memo } from "react";
 import { GlassRefraction } from "./GlassRefraction";
-import { Pause, Play, RotateCcw, Volume2 } from "lucide-react";
+import { Pause, Play, RotateCcw, Volume2, ListMusic } from "lucide-react";
 
 export interface TrackInfo {
   codec: string;
@@ -30,6 +32,10 @@ interface MiniPlayerProps {
   objectCount: number;
   volume: number;
   onTogglePlay: () => void;
+  playbackMode: PlaybackMode;
+  onPlaybackModeChange: (mode: PlaybackMode) => void;
+  playlistOpen: boolean;
+  onTogglePlaylist: () => void;
   onReplay: () => void;
   onVolume: (v: number) => void;
 }
@@ -49,6 +55,10 @@ export const MiniPlayer = memo(function MiniPlayer({
   objectCount,
   volume,
   onTogglePlay,
+  playbackMode,
+  onPlaybackModeChange,
+  playlistOpen,
+  onTogglePlaylist,
   onReplay,
   onVolume,
 }: MiniPlayerProps) {
@@ -84,6 +94,11 @@ export const MiniPlayer = memo(function MiniPlayer({
                 aria-label={playing && !paused ? "暂停" : paused ? "继续" : "播放"}
               >
                 {playing && !paused ? <Pause size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" /> : <Play size={16} fill="currentColor" strokeWidth={1.5} aria-hidden="true" />}
+              </button>
+              <PlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange} className="mp-btn" />
+              <button type="button" className="mp-btn mp-playlist" onClick={onTogglePlaylist}
+                aria-label="播放列表" aria-expanded={playlistOpen} title={playlistOpen ? "收起播放列表" : "打开播放列表"}>
+                <ListMusic size={18} strokeWidth={1.8} aria-hidden="true" />
               </button>
             </div>
             <div className="mp-progress">

@@ -3,6 +3,7 @@ import { AudioLines, Headphones, Orbit, Volume2, VolumeX } from "lucide-react";
 import type { BinauralRenderMetadata, VisualObject } from "@sda/player";
 
 interface ObjectPanelProps {
+  onClose?:()=>void;
   objects: readonly VisualObject[];
   mutedIds: ReadonlySet<number>;
   soloIds: ReadonlySet<number>;
@@ -30,6 +31,7 @@ export const ObjectPanel = memo(function ObjectPanel({
   onToggleMute,
   onToggleSolo,
   className,
+  onClose,
 }: ObjectPanelProps) {
   return (
     <div className={`panel obj-panel object-browser${className ? ` ${className}` : ""}`} aria-label="音频对象">

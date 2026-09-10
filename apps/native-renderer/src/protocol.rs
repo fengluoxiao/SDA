@@ -497,7 +497,7 @@ fn handle_command(
                     detail: Some("invalid program gain"),
                 });
             } else {
-                let gain = gain.clamp(0.0, 1.0);
+                let gain = gain.clamp(0.0, 1000.0);
                 let at = at.unwrap_or(state.sample_pos);
                 if at > state.sample_pos {
                     state.program_events.insert(at, ProgramGainEvent { gain });

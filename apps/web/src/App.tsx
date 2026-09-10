@@ -1,3 +1,4 @@
+import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, type PlaybackMode } from "./playbackOrder";
 import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
 import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
 import SourceExtentPanel, {readSourceExtent} from "./components/SourceExtentPanel";
@@ -204,7 +205,7 @@ function telemetryPolyline(  samples: readonly HeadTrackingTelemetrySample[],
   }).join(" ");
 }
 
-function HeadTrackingTelemetryPanel({ samples }: { samples: readonly HeadTrackingTelemetrySample[] }) {
+function HeadTrackingTelemetryPanel({ samples, onClose }: { onClose?:()=>void; samples: readonly HeadTrackingTelemetrySample[] }) {
   const latest = samples[samples.length - 1];
   const scale = Math.max(90, Math.min(1080, Math.ceil(Math.max(
     ...samples.flatMap((sample) => [Math.abs(sample.x), Math.abs(sample.y), Math.abs(sample.z)]),
@@ -248,8 +249,9 @@ function HeadTrackingTelemetryPanel({ samples }: { samples: readonly HeadTrackin
 
 /** Cache key for a track's measured BS.1770-4 loudness (volume balance for
  *  metadata-less content such as ALAC). */
-function measuredLoudnessStorageKey(info: { title?: string; channels: number; sampleRate: number }): string {
-  return `sda-measured-lufs:${info.title ?? "track"}:${info.channels}:${info.sampleRate}`;
+function measuredLoudnessStorageKey(info: { channels: number; sampleRate: number }, source: PlaybackSource): string {
+  const identity = source.kind === "path" ? source.path : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
+  return `sda-measured-lufs-v4:${identity}:${info.channels}:${info.sampleRate}`;
 }
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
@@ -423,6 +425,13 @@ export function App() {
   const [roomAudition,setRoomAudition]=useState<RoomAudition>({stage:"full",matched:false});
   const comparisonGain=useRef(0);
   const comparisonRestore=useRef<{head:string;dense:boolean;calibrated:boolean;stereo:StereoRenderMode;cinema:{settings:CinemaSettings;profileId:string|null}}|null>(null);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(readPlaybackMode);
+  const playbackModeRef = useRef(playbackMode);
+  const changePlaybackMode = useCallback((mode: PlaybackMode) => {
+    playbackModeRef.current = mode;
+    setPlaybackMode(mode);
+    try { localStorage.setItem(PLAYBACK_MODE_KEY, mode); } catch { /* Playback still works if storage is unavailable. */ }
+  }, []);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
   const [playlistCurrentId, setPlaylistCurrentId] = useState<string | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
@@ -470,9 +479,11 @@ export function App() {
       lid: LayoutId | "auto",
       isCurrent: () => boolean,
       playbackPlaylistRevision: number,
+      source: PlaybackSource,
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
+      let endedHandled = false;
       let nativeSessionReady = false;
       const nativeSessionEpoch = nativeSessionEpochRef.current;
       const isNativeSessionCurrent = () => nativeSessionEpochRef.current === nativeSessionEpoch && isCurrent();
@@ -591,7 +602,7 @@ export function App() {
               if (!ownsNativeSession()) return;
               const gain = gainDb === null || !Number.isFinite(gainDb)
                 ? 1
-                : Math.pow(10, Math.min(0, gainDb) / 20);
+                : Math.pow(10, Math.max(-60, Math.min(60, gainDb)) / 20);
               await enqueueNative(
                 `setProgramGain=${gain}@${atSample ?? "now"}`,
                 () => desktop.nativeRendererProgramGain?.(gain, atSample),
@@ -710,20 +721,21 @@ export function App() {
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
           // Feed the persisted measurement so balance applies from sample 0.
-          const key = measuredLoudnessStorageKey(t);
+          const key = measuredLoudnessStorageKey(t, source);
           measuredLoudnessKeyRef.current = key;
           try {
-            const cached = Number(localStorage.getItem(key));
-            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached) ? cached : null);
+            const stored = localStorage.getItem(key);
+            const cached = stored ? JSON.parse(stored) : null;
+            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.peakDbfs) ? cached.peakDbfs : null);
           } catch {
             createdPlayer?.setMeasuredLoudness(null);
           }
         },
-        onMeasuredLoudness: (integratedLufs) => {
+        onMeasuredLoudness: (integratedLufs, peakDbfs) => {
           const key = measuredLoudnessKeyRef.current;
           if (!isCurrent() || !key) return;
           try {
-            localStorage.setItem(key, String(integratedLufs));
+            localStorage.setItem(key, JSON.stringify({integratedLufs, peakDbfs}));
           } catch {
             // Persistence failures must not affect playback.
           }
@@ -801,11 +813,10 @@ export function App() {
         onEnded: () => {
           // A queue edit or playback request invalidates the old item's
           // completion so it cannot advance a replacement/cleared playlist.
-          if (!isCurrent() || playlistRevisionRef.current !== playbackPlaylistRevision) return;
-          const currentId = playlistCurrentIdRef.current;
-          const currentIndex = playlistRef.current.findIndex((item) => item.id === currentId);
-          const next = currentIndex >= 0 ? playlistRef.current[currentIndex + 1] : null;
-          if (next) playPlaylistItemRef.current(next.id);
+          if (endedHandled || !isCurrent() || playlistRevisionRef.current !== playbackPlaylistRevision) return;
+          endedHandled = true;
+          const nextId = nextPlaylistItemId(playlistRef.current, playlistCurrentIdRef.current, playbackModeRef.current);
+          if (nextId) playPlaylistItemRef.current(nextId);
           else {
             playingRef.current = false;
             setPlaying(false);
@@ -1258,7 +1269,7 @@ export function App() {
       try {
         // Build privately first. A stale request never gets to replace or dispose
         // the active player published by a newer request.
-        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision);
+        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source);
         if (!player || !isCurrent()) return;
         playerRef.current = player;
         setPlayerReady(player);
@@ -1828,7 +1839,7 @@ export function App() {
             <OutputPanel />
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
-              <label className="settings-switch" title="Dolby 对话归一化（dialnorm，ETSI TS 102 366 / ATSC A/52）：把节目对白响度对齐到 -31 LUFS 参考，只衰减过响的节目（dialnorm ≤ 31 故增益恒 ≤ 0 dB），不启用 DRC 动态范围压缩。作用于双耳与立体声输出。无响度元数据的节目（ALAC/立体声 PCM 等）按 BS.1770-4 实测综合响度平衡到 -18 LKFS（杜比 Atmos 音乐交付目标），同样只衰减。">
+              <label className="settings-switch" title="仅作用于纯立体声曲目：按 Master 整曲综合响度对齐 −18 LUFS，左右统一增益，提升受峰值余量限制。多声道、Atmos 对象音轨和 ADM 母版自动旁路；选择立体声输出不会使它们参与平衡。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
@@ -1936,7 +1947,7 @@ export function App() {
                 <p className="settings-description">请先在 Windows 设置中配对并连接 AirPods；关闭可能独占 motion stream 的其它 AirPods 控制程序。</p>
               </fieldset>
             )}
-            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅用于双耳和立体声输出。</p>}
+            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅作用于纯立体声曲目，在双耳或立体声输出下生效。</p>}
             {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ 和头部追踪。</p>}
           </section>
         </div>
@@ -1955,6 +1966,10 @@ export function App() {
             objectCount={objects.length}
             volume={volume}
             onTogglePlay={togglePlay}
+            playbackMode={playbackMode}
+            onPlaybackModeChange={changePlaybackMode}
+            playlistOpen={floatPanel === "playlist"}
+            onTogglePlaylist={() => setFloatPanel(current => current === "playlist" ? null : "playlist")}
             onReplay={replay}
             onVolume={changeVolume}
           />
@@ -1962,12 +1977,12 @@ export function App() {
       </main>
 
       <div className="float-dock">
-        {floatPanel==="roomcalibration"&&<CinemaPanel key={audioSettingsRevision} onBack={()=>setFloatPanel("roomlab")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId} speakers={outputSpeakers}/>}
-        {floatPanel==="roomlab"&&<RoomLab key={audioSettingsRevision} onApply={applyRoomPreset} onDisable={disableRoomPreset} onCalibration={()=>setFloatPanel("roomcalibration")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
+        {floatPanel==="roomcalibration"&&<CinemaPanel onClose={()=>setFloatPanel(null)} key={audioSettingsRevision} onBack={()=>setFloatPanel("roomlab")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId} speakers={outputSpeakers}/>}
+        {floatPanel==="roomlab"&&<RoomLab onClose={()=>setFloatPanel(null)} key={audioSettingsRevision} onApply={applyRoomPreset} onDisable={disableRoomPreset} onCalibration={()=>setFloatPanel("roomcalibration")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
           snapshot={{layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,muted:[...mutedSpeakerNames],solo:[...soloSpeakerNames],focus:[...focusedSpeakers]}}
           onRecall={recallLayoutMemory} onCompare={applyRoomComparison} onRestore={restoreRoomComparison} onVisual={setRoomVisual} comparison={roomComparison} visualSpeaker={roomVisual?.speaker} audition={roomAudition} onAudition={setRoomAudition}/>}
         {floatPanel === "head-tracking" && headTrackingStatus?.running && (
-          <HeadTrackingTelemetryPanel samples={headTrackingTelemetry} />
+          <HeadTrackingTelemetryPanel onClose={()=>setFloatPanel(null)} samples={headTrackingTelemetry} />
         )}
         {floatPanel === "stream" && (
           <div className="panel float-panel">
@@ -1992,7 +2007,7 @@ export function App() {
                 <dd>{track.container}</dd>
                 <dt>响度</dt>
                 <dd>{programLoudness
-                  ? `对白 ${programLoudness.dialogueLevelDb} LUFS → 目标 ${programLoudness.targetDb} LUFS（${volumeBalanceEnabled ? `平衡中 ${programLoudness.gainDb} dB` : "平衡关闭"}）`
+                  ? `对白 ${programLoudness.dialogueLevelDb} LUFS → 目标 ${programLoudness.targetDb} LUFS（码流元数据，不参与立体声响度平衡）`
                   : "无响度元数据"}</dd>
                 <dt>播放</dt>
                 <dd>{position.toFixed(1)} s</dd>
@@ -2103,7 +2118,7 @@ export function App() {
             </details>
           </div>
         )}
-        {floatPanel === "playlist" && <PlaylistPanel items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={playPlaylistItem} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}
+        {floatPanel === "playlist" && <PlaylistPanel playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={playPlaylistItem} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}
         {floatPanel === "channels" && (
           <div className="panel obj-panel float-panel" aria-label="输出音箱声道">
             <div className="obj-head">
@@ -2144,7 +2159,7 @@ export function App() {
           </div>
         )}
         {floatPanel === "objects" && (
-          <ObjectPanel
+          <ObjectPanel onClose={()=>setFloatPanel(null)}
             className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}
@@ -2167,7 +2182,7 @@ export function App() {
             </div>
           </div>
         )}
-        {floatPanel === "cinema" && <MonitorPanel key={`${roomComparison??"editing"}-${audioSettingsRevision}`} comparisonActive={roomComparison!==null} onExitComparison={restoreRoomComparison} layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
+        {floatPanel === "cinema" && <MonitorPanel onClose={()=>setFloatPanel(null)} key={`${roomComparison??"editing"}-${audioSettingsRevision}`} comparisonActive={roomComparison!==null} onExitComparison={restoreRoomComparison} layout={layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} speakers={outputSpeakers} />}
         <nav className="float-buttons" aria-label="音频工具">
           {window.sdaDesktop?.electron3D !== false && <button className={immersiveView ? "active" : ""} aria-pressed={immersiveView} title={immersiveView ? "退出沉浸视角" : "进入沉浸视角"} onClick={() => { setRoomVisual(null); setImmersiveView(value => !value); }}><ScanFace size={19} /><span>沉浸</span></button>}
           {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}><RotateCcw size={19} /><span>返回声场</span></button>}

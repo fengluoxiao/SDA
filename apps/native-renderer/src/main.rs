@@ -924,7 +924,7 @@ impl Engine {
 
     fn set_program_target(&mut self, gain: f32, immediate: bool) {
         let target = if self.program_enabled {
-            gain.clamp(0.0, 1.0)
+            gain.clamp(0.0, 1000.0)
         } else {
             1.0
         };
@@ -1529,11 +1529,11 @@ impl Engine {
                     original[ear] * self.stereo_weights[0] + (dry[ear] + lfe) * self.stereo_weights[1]
                     + (lfe + binaural[ear] + direct_sum[ear]) * self.stereo_weights[2]));
             // Match master binaural ordering: summed HRTF/LFE -> headphone FIR
-            // -> EQ -> +6 dB makeup -> volume/program -> linked guard.
+            // -> EQ -> volume/program -> linked guard (no fixed makeup).
             let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
             let pre_guard = [
-                equalized[0] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain * self.comparison_gain,
-                equalized[1] * 10.0_f32.powf(6.0 / 20.0) * self.output_gain * self.comparison_gain,
+                equalized[0] * self.output_gain * self.comparison_gain,
+                equalized[1] * self.output_gain * self.comparison_gain,
             ];
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain(),
@@ -1934,6 +1934,35 @@ mod tests {
     }
 
     #[test]
+    fn master_balance_boost_cut_and_bypass_preserve_stereo_ratio() {
+        let render = |enabled, gain| {
+            let mut engine = calibrated_engine();
+            engine.set_layout(vbap::LayoutId::Stereo2_0).unwrap();
+            engine.stereo_mode = StereoMode::Original;
+            engine.program_enabled = enabled;
+            engine.set_program_target(gain, true);
+            engine.paused = false;
+            for (ear, label) in ["FrontLeft", "FrontRight"].iter().enumerate() {
+                let mut source = Source { kind: SourceKind::Bed, bed_label: Some((*label).into()),
+                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0, ..Source::default() };
+                Engine::set_source_route(&mut source, bed_route(label, &engine.vbap), 0);
+                let pcm: Vec<f32> = (0..8192).map(|i| 0.001*(ear+1) as f32*(i as f32*0.173).sin()).collect();
+                source.samples.write(0,0,&pcm);
+                engine.sources.insert((*label).into(),source);
+            }
+            let mut out=vec![0.0;16384];engine.render_into(&mut out,2);out
+        };
+        let reference=render(false,1.0);
+        for gain in [0.4,1.7782794] {
+            let balanced=render(true,gain);let bypass=render(false,gain);
+            for i in 8192..16384 {
+                assert!((balanced[i]-reference[i]*gain).abs()<2e-6);
+                assert!((bypass[i]-reference[i]).abs()<2e-6);
+            }
+        }
+    }
+
+    #[test]
     fn stereo_comparison_preserves_original_channels_and_isolates_dry_room_processing() {
         let count = 8192;
         let pcm: Vec<f32> = (0..count).map(|i| 0.005 * (i as f32 * 0.173).sin()).collect();
@@ -1962,7 +1991,7 @@ mod tests {
         let delay = 2 * convolution::DEFAULT_PARTITION + 240;
         for i in 4096..count {
             assert!(original[i * 2 + 1].abs() < 1e-7, "original leaked into opposite ear");
-            let expected = pcm[i - delay] * 0.5 * 10.0_f32.powf(6.0 / 20.0);
+            let expected = pcm[i - delay] * 0.5;
             assert!((original[i * 2] - expected).abs() < 2e-6, "original sample mismatch");
         }
         let dry = render(StereoMode::Dry, 0.04, false);
@@ -2101,7 +2130,7 @@ mod tests {
                 let tail = &values[values.len() - 12_288 * 2..];
                 (tail.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / tail.len() as f64).sqrt()
             };
-            let expected_rms = rms(&expected) * 10.0_f64.powf(6.0 / 20.0);
+            let expected_rms = rms(&expected);
             let ratio = rms(&actual) / expected_rms;
             assert!((ratio - 1.0).abs() < 0.001, "direct={direct}: level ratio={ratio}");
         }
@@ -2733,7 +2762,7 @@ mod tests {
                         let expected = frame.checked_sub(impulse_at + latency).map_or(0.0, |i| {
                             let dry = if i < dry_len { measured.dry[ear * dry_len + i] } else { 0.0 };
                             let room = if i < wet_len { measured.wet[ear * wet_len + i] } else { 0.0 };
-                            (dry + wet * (room - dry)) * 0.01 * 10.0_f32.powf(6.0 / 20.0)
+                            (dry + wet * (room - dry)) * 0.01
                         });
                         peak = peak.max(expected.abs());
                         error = error.max((output[frame * 2 + ear] - expected).abs());
@@ -2857,8 +2886,8 @@ mod tests {
                             for i in 0..partition {
                                 let at = block * partition + i + delay;
                                 if at < count {
-                                    expected[at * 2] += left[i] * weight * 10.0_f32.powf(6.0 / 20.0);
-                                    expected[at * 2 + 1] += right[i] * weight * 10.0_f32.powf(6.0 / 20.0);
+                                    expected[at * 2] += left[i] * weight;
+                                    expected[at * 2 + 1] += right[i] * weight;
                                 }
                             }
                         }

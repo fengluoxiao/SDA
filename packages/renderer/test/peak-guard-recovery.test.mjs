@@ -35,3 +35,20 @@ assert.ok(recovered[0].every((sample) => Math.abs(sample) <= 1));
 assert.ok(guard.gain > 0.84, `expected short peak-guard recovery, got ${guard.gain}`);
 
 console.log("peak guard short-recovery tests passed");
+
+// Programme gain must support both directions and share one gain across ears.
+for (const gain of [0.4, 10 ** (5 / 20)]) {
+  const run = enabled => {
+    const g = new PeakGuard();
+    g.onMessage({type:"programGain",gain});
+    g.onMessage({type:"programEnabled",enabled});
+    const out=[new Float32Array(8192),new Float32Array(8192)];
+    g.process([[new Float32Array(8192).fill(.01),new Float32Array(8192).fill(.02)]],[out]);
+    return out;
+  };
+  const balanced=run(true),bypass=run(false);
+  assert(Math.abs(balanced[0][8000]-.01*gain)<1e-6);
+  assert(Math.abs(balanced[1][8000]-.02*gain)<1e-6);
+  assert(Math.abs(bypass[0][8000]-.01)<1e-6);
+}
+console.log("Master balance boost/cut/bypass preserves stereo ratio in Web Audio");

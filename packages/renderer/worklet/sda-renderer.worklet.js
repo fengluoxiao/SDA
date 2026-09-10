@@ -677,7 +677,7 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
 
   normalizeProgramGain(value) {
     const gain = Number(value);
-    return Number.isFinite(gain) ? Math.max(0, Math.min(1, gain)) : 1;
+    return Number.isFinite(gain) ? Math.max(0, Math.min(1000, gain)) : 1;
   }
 
   onMessage(msg) {

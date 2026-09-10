@@ -10,7 +10,7 @@ import {MONITOR_PRESETS,createMonitorPreset} from "../monitor-presets";
 const defaults=():MonitorSettings=>({enabled:false,levelDb:0,dim:false,dimDb:-20,muted:false,bassEnabled:false,crossoverHz:80,bassDb:0,outputs:{}});
 const output=():MonitorOutput=>({trimDb:0,delayMs:0,invert:false,muted:false});
 const hardwareDefaults=()=>({enabled:false,inputDb:0,dacBits:24,lineRms:2,gainDb:26,railV:28,currentA:7,loadOhms:8,outputOhms:0.05,bandwidthHz:60000});
-export default function MonitorPanel({layout,speakers,comparisonActive=false}:{layout:string;speakers:readonly VirtualSpeaker[];comparisonActive?:boolean;onExitComparison?:()=>Promise<void>}) {
+export default function MonitorPanel({layout,speakers,comparisonActive=false,onClose}:{onClose?:()=>void;layout:string;speakers:readonly VirtualSpeaker[];comparisonActive?:boolean;onExitComparison?:()=>Promise<void>}) {
   const [settings,setSettings]=useState(defaults),[saved,setSaved]=useState("");
   const [busy,setBusy]=useState(true),[error,setError]=useState("");
   const [view,setView]=useState<"level"|"outputs"|"bass"|"hardware">("level");

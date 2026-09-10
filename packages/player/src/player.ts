@@ -1,3 +1,5 @@
+import { isStereoMasterFrame } from "./stereo-master.js";
+import { masterBalanceGainDb } from "./bs1770.js";
 /**
  * SdaPlayer — glues everything together:
  *
@@ -98,7 +100,7 @@ export type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 export interface PlayerCallbacks {
   /** Measured-loudness balance converged (or applied from cache) for the
    *  current track; the UI persists it so replays balance from sample 0. */
-  onMeasuredLoudness?: (integratedLufs: number) => void;
+  onMeasuredLoudness?: (integratedLufs: number, peakDbfs?: number) => void;
   onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   /** Program-level DBMD metadata. It never follows the sample event timeline. */
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
@@ -192,14 +194,10 @@ const STARTUP_AHEAD_SECONDS = 0.5;
 const INITIAL_OUTPUT_LATENCY_SECONDS = 0.1;
 const OUTPUT_LATENCY_STEPS_SECONDS = [0.1, 0.2, 0.3] as const;
 
-/** Dolby's music delivery loudness target (Dolby Atmos Music: −18 LKFS
- *  integrated per BS.1770-4). Content without codec loudness metadata —
- *  ALAC, PCM, AAC-LC stereo — is balanced toward it, attenuation-only just
- *  like dialnorm. */const MEASURED_LOUDNESS_TARGET_LUFS = -18;
-/** Balance applies once ≥6 s (150 × 400 ms blocks) of gated audio has been
+/** Balance applies once ≥6 s (57 overlapping 400 ms blocks at 100 ms hops) of gated audio has been
  *  observed; replays use the persisted measurement instead and balance from
  *  sample 0. */
-const MEASURED_LOUDNESS_MIN_BLOCKS = 150;
+const MEASURED_LOUDNESS_MIN_BLOCKS = 57;
 /** The settle is a gentle staircase: ≤0.75 dB per 250 ms scheduled step. */
 const MEASURED_LOUDNESS_STEP_DB = 0.75;
 const MEASURED_LOUDNESS_STEP_SECONDS = 0.25;
@@ -336,6 +334,8 @@ export class SdaPlayer {
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
+  private stereoBalanceEligible = false;
+  private nonStereoProgrammeSeen = false;
   private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
@@ -344,8 +344,10 @@ export class SdaPlayer {
   private measuredLoudnessBlocks = 0;
   /** Measurement balance for this track has been scheduled (or found unnecessary). */
   private measuredLoudnessSettled = false;
+  private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
+  private cachedMeasuredPeakDbfs: number | null = null;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
    *  UI 固定"近"，mid/far 暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
@@ -847,7 +849,7 @@ export class SdaPlayer {
       r.setVolume(this.lastVolume);
       r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
       this.scheduledProgramLoudnessGainDb = undefined;
-      r.setVolumeBalance(this.volumeBalanceEnabled);
+      r.setVolumeBalance(this.volumeBalanceEnabled && this.stereoBalanceEligible);
       r.setHeadphoneCompensation(this.headphoneProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
       r.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
@@ -1022,8 +1024,12 @@ export class SdaPlayer {
     this.programLoudness = null;
     this.programLoudnessGainDb = null;
     this.scheduledProgramLoudnessGainDb = undefined;
+    this.stereoBalanceEligible = false;
+    this.nonStereoProgrammeSeen = false;
+    this.setVolumeBalance(this.volumeBalanceEnabled);
     this.measuredLoudness = null;
     this.measuredLoudnessBlocks = 0;
+    this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
     this.cachedMeasuredLufs = null;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -1094,9 +1100,10 @@ export class SdaPlayer {
 
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
-    this.renderer?.setVolumeBalance(enabled);
+    const effective = enabled && this.stereoBalanceEligible;
+    this.renderer?.setVolumeBalance(effective);
     try {
-      const result = this.nativeRendererSink?.setProgramEnabled(enabled);
+      const result = this.nativeRendererSink?.setProgramEnabled(effective);
       if (result instanceof Promise) void result.catch((error) => {
         console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
       });
@@ -1112,15 +1119,15 @@ export class SdaPlayer {
 
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
-  setMeasuredLoudness(integratedLufs: number | null): void {
+  setMeasuredLoudness(integratedLufs: number | null, peakDbfs: number | null = null): void {
+    this.cachedMeasuredPeakDbfs = peakDbfs;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
       : null;
     this.measuredLoudnessSettled = false;
   }
 
-  /** Schedule the measured balance as a gentle staircase so the settle is
-   *  inaudible; attenuation-only, matching the dialnorm contract. */
+  /** Send one linked programme gain to either output backend. */
   private setNativeProgramGainDb(gainDb: number | null, atSample?: number): void {
     try {
       const result = this.nativeRendererSink?.setProgramGainDb(gainDb, atSample);
@@ -1132,14 +1139,16 @@ export class SdaPlayer {
     }
   }
 
-  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number): void {
-    this.cb.onMeasuredLoudness?.(integratedLufs);
-    const gainDb = Math.min(0, MEASURED_LOUDNESS_TARGET_LUFS - integratedLufs);
-    if (gainDb > -0.05) return;
-    const steps = Math.ceil(-gainDb / MEASURED_LOUDNESS_STEP_DB);
-    const stepSamples = Math.round(MEASURED_LOUDNESS_STEP_SECONDS * this.sampleRate);
+  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, peakDbfs: number | null = null): void {
+    const gainDb = masterBalanceGainDb(integratedLufs, peakDbfs);
+    const previous = this.scheduledProgramLoudnessGainDb ?? 0;
+    this.scheduledProgramLoudnessGainDb = gainDb;
+    this.programLoudnessGainDb = gainDb;
+    if (Math.abs(gainDb - previous) < 0.05) return;
+    const steps = Math.ceil(Math.abs(gainDb - previous) / MEASURED_LOUDNESS_STEP_DB);
+    const stepSamples = Math.round(Math.min(MEASURED_LOUDNESS_STEP_SECONDS, 4 / steps) * this.sampleRate);
     for (let i = 1; i <= steps; i++) {
-      const target = (gainDb * i) / steps;
+      const target = i === steps ? gainDb : previous + ((gainDb - previous) * i) / steps;
       this.renderer?.setProgramLoudnessGainDb(target, atSample + i * stepSamples);
       this.setNativeProgramGainDb(target, atSample + i * stepSamples);
     }
@@ -1721,7 +1730,18 @@ export class SdaPlayer {
         else pending.resolve();
         break;
       }
+      case "loudness-complete":
+        this.measuredLoudness = msg.loudness as FrameLoudness;
+        this.measuredLoudnessBlocks = this.measuredLoudness.blocks;
+        break;
       case "flushed":
+        // Only a complete decode is a track measurement. A stopped intro must
+        // never replace a complete cached value or freeze the next playback.
+        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+            && this.measuredLoudness?.integratedLufs != null
+            && Number.isFinite(this.measuredLoudness.integratedLufs)) {
+          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.peakDbfs);
+        }
         this.ended = true;
         this.startPlaybackIfReady(true);
         this.checkEnded();
@@ -1739,13 +1759,20 @@ export class SdaPlayer {
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
+    if (!isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
+    const eligible = !this.nonStereoProgrammeSeen && isStereoMasterFrame(frame);
+    if (eligible !== this.stereoBalanceEligible) {
+      this.stereoBalanceEligible = eligible;
+      this.setVolumeBalance(this.volumeBalanceEnabled);
+    }
     if (frame.programLoudness) {
       this.programLoudness = frame.programLoudness;
-      this.programLoudnessGainDb = Math.min(0, frame.programLoudness.gainDb);
+
     }
     if (frame.loudness) {
       this.measuredLoudness = frame.loudness;
       this.measuredLoudnessBlocks = frame.loudness.blocks;
+
     }
 
     // Raw elementary streams never fire the demuxer's onTrack — derive the
@@ -1794,22 +1821,25 @@ export class SdaPlayer {
       if (!frame) break;
       const frameSamples = frame.channels[0]?.length ?? 0;
       const renderer = this.renderer;
-      if (frame.programLoudness) {
-        const gainDb = Math.min(0, frame.programLoudness.gainDb);
-        if (gainDb !== this.scheduledProgramLoudnessGainDb) {
+      if (this.stereoBalanceEligible) {
+        const stereoMaster = true;
+        if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
+          // A cached complete-track measurement applies from the first submitted sample.
+          const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredPeakDbfs : null);
           this.scheduledProgramLoudnessGainDb = gainDb;
+          this.programLoudnessGainDb = gainDb;
           renderer?.setProgramLoudnessGainDb(gainDb, frame.samplePos);
           this.setNativeProgramGainDb(gainDb, frame.samplePos);
-        }
-      } else if (frame.codec !== "adm" && !this.measuredLoudnessSettled) {
-        // Metadata-less content (ALAC/PCM/AAC stereo): balance from a persisted
-        // measurement immediately, or from the live BS.1770-4 estimate once it
-        // has enough gated audio to be trustworthy.
-        const integrated = this.cachedMeasuredLufs
-          ?? (this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS ? this.measuredLoudness?.integratedLufs ?? null : null);
-        if (integrated != null) {
           this.measuredLoudnessSettled = true;
-          this.applyMeasuredLoudnessBalance(integrated, frame.samplePos);
+        } else if (this.cachedMeasuredLufs == null && frame.loudness
+            && frame.loudness.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+            && (!this.measuredLoudnessSettled || frame.loudness.blocks >= this.balancedLoudnessBlocks + 50)
+            && frame.loudness.integratedLufs != null && Number.isFinite(frame.loudness.integratedLufs)) {
+          // Follow cumulative measurements at most every five seconds; a quiet
+          // intro must not freeze the correction for the whole programme.
+          this.measuredLoudnessSettled = true;
+          this.balancedLoudnessBlocks = frame.loudness.blocks;
+          this.applyMeasuredLoudnessBalance(frame.loudness.integratedLufs, frame.samplePos, stereoMaster ? frame.loudness.peakDbfs ?? null : null);
         }
       }
 

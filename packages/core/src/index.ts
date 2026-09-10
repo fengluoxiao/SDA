@@ -57,6 +57,7 @@ export interface ProgramLoudnessMetadata {
 
 /** Incremental BS.1770-4 measurement attached to frames by the decoder worker. */
 export interface FrameLoudness {
+  peakDbfs?: number;
   /** Gated integrated loudness in LUFS, or null while nothing passes the absolute gate. */
   integratedLufs: number | null;
   /** Completed 400 ms blocks above the absolute gate. */

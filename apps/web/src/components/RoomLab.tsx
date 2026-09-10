@@ -12,7 +12,8 @@ const memoryKey="sda-layout-comparisons-v1";
 const wallLabels:Record<string,string>={east:"前墙",west:"后墙",north:"左墙",south:"右墙",ceiling:"天花",floor:"地面"};
 const materialLabels:Record<string,string>={panel_fabric_covered_6pcf:"织物覆面吸声板",rockwool_50mm_80kgm3:"50 mm 岩棉 · 80 kg/m³",mineral_wool_50mm_70kgm3:"50 mm 矿棉 · 离墙 300 mm",carpet_1_35_kg_m2:"地毯"};
 const defaultConfig:RoomSimulationConfig={layout:"7.1.4",length:6,width:5,height:3.2,earHeight:1.2,placement:.7,listeningDistance:1.2,material:"studio",order:10};
-export default function RoomLab({layout,snapshot,onRecall,onCompare,onRestore,onVisual,comparison,visualSpeaker,audition,onAudition,onCalibration,onApply,onDisable}: {
+export default function RoomLab({layout,snapshot,onRecall,onCompare,onRestore,onVisual,comparison,visualSpeaker,audition,onAudition,onCalibration,onApply,onDisable,onClose}: {
+  onClose?:()=>void;
   onApply:(id:string)=>Promise<void>;
   onDisable?:()=>Promise<void>;
   onCalibration?:()=>void;

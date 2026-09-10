@@ -7,7 +7,7 @@ import type { CinemaSettings, CinemaSpeakerCalibration, CinemaRoomSummary } from
 
 const defaults = (): CinemaSettings => ({enabled:false,...ROOM_LISTENING_LEVELS,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}});
 const neutral = (): CinemaSpeakerCalibration => ({gainDb:0,delayMs:0,lowDb:0,highDb:0});
-export default function CinemaPanel({ layout, speakers, onBack }: {layout:string; speakers: readonly VirtualSpeaker[]; onBack?:()=>void}) {
+export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onClose?:()=>void;layout:string; speakers: readonly VirtualSpeaker[]; onBack?:()=>void}) {
   const [settings,setSettings] = useState(defaults);
   const [profileId,setProfileId] = useState<string|null>(null);
   const [rooms,setRooms] = useState<CinemaRoomSummary[]>([]);
