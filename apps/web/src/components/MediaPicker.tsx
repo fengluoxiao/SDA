@@ -3,8 +3,8 @@ import { ArrowLeft, ArrowUp, Folder, FileAudio, Star, Clock, X, RefreshCw, Searc
 
 type Entry = {name:string;path:string;directory:boolean};
 type Places = {places:{name:string;path:string}[];recent:string[];favorites:string[];initial:string};
-export function MediaPicker({mode,onClose,onSelect}:{mode:"files"|"folder";onClose:()=>void;onSelect:(paths:string[])=>void}) {
-  const api = window.sdaDesktop!.browseMedia!;
+export function MediaPicker({mode,onClose,onSelect,kind="media"}:{mode:"files"|"folder";onClose:()=>void;onSelect:(paths:string[])=>void;kind?:"media"|"hrtf"}) {
+  const api = (kind==="hrtf"?window.sdaDesktop!.browsePersonalHrtf:window.sdaDesktop!.browseMedia)!;
   const [places,setPlaces] = useState<Places>({places:[],recent:[],favorites:[],initial:""});
   const [directory,setDirectory] = useState("");
   const [parent,setParent] = useState("");
@@ -77,8 +77,8 @@ export function MediaPicker({mode,onClose,onSelect}:{mode:"files"|"folder";onClo
     }
   };
   return <div className="media-picker-layer" onMouseDown={e=>{if(e.target===e.currentTarget&&!submitting)onClose();}}>
-    <div ref={panel} tabIndex={-1} className="media-picker" role="dialog" aria-modal="true" aria-label={mode==="files"?"打开媒体":"添加媒体目录"} onKeyDown={keyDown} onClick={()=>menu&&setMenu(null)}>
-      <div className="media-picker-heading"><h2>{mode==="files"?"打开媒体":"添加媒体目录"}</h2><button title="关闭选择器" aria-label="关闭选择器" disabled={submitting} onClick={onClose}><X size={18}/></button></div>
+    <div ref={panel} tabIndex={-1} className="media-picker" role="dialog" aria-modal="true" aria-label={kind==="hrtf"?(mode==="folder"?"选择 pHRTF 导出目录":"导入个人档案（pHRTF / SOFA）"):mode==="files"?"打开媒体":"添加媒体目录"} onKeyDown={keyDown} onClick={()=>menu&&setMenu(null)}>
+      <div className="media-picker-heading"><h2>{kind==="hrtf"?(mode==="folder"?"选择 pHRTF 导出目录":"导入个人档案（pHRTF / SOFA）"):mode==="files"?"打开媒体":"添加媒体目录"}</h2><button title="关闭选择器" aria-label="关闭选择器" disabled={submitting} onClick={onClose}><X size={18}/></button></div>
       <div className="media-picker-toolbar">
         <button title="后退" aria-label="后退" disabled={!history.length||busy||submitting} onClick={()=>{const target=history[history.length-1];if(target){setHistory(h=>h.slice(0,-1));void navigate(target,true);}}}><ArrowLeft size={17}/></button>
         <button title="上一级" aria-label="上一级" disabled={!parent||parent===directory||busy||submitting} onClick={()=>void navigate(parent)}><ArrowUp size={17}/></button>
@@ -108,7 +108,7 @@ export function MediaPicker({mode,onClose,onSelect}:{mode:"files"|"folder";onClo
         </section>
       </div>
       {error&&<p className="media-picker-error" role="alert">{error}</p>}
-      <footer className="media-picker-footer"><span>{mode==="files"?`已选择 ${selected.length} 个文件`:selected[0]||directory}</span><button disabled={submitting} onClick={onClose}>取消</button><button disabled={busy||submitting||!directory||(mode==="files"&&!selected.length)} onClick={()=>void submit()}><FolderOpen size={16}/>{submitting?"正在导入…":mode==="files"?"打开":"添加此目录"}</button></footer>
+      <footer className="media-picker-footer"><span>{mode==="files"?`已选择 ${selected.length} 个文件`:selected[0]||directory}</span><button disabled={submitting} onClick={onClose}>取消</button><button disabled={busy||submitting||!directory||(mode==="files"&&!selected.length)} onClick={()=>void submit()}><FolderOpen size={16}/>{submitting?"正在导入…":mode==="files"?"打开":kind==="hrtf"?"导出到此目录":"添加此目录"}</button></footer>
       {menu&&<div role="menu" className="media-picker-menu" style={{left:menu.x,top:menu.y}}>
         <button role="menuitem" onClick={()=>void navigate(menu.path)}><FolderOpen size={15}/>打开目录</button>
         <button role="menuitem" onClick={()=>void changeSaved(favorite(menu.path)?"unfavorite":"favorite",menu.path)}><Star size={15}/>{favorite(menu.path)?"取消收藏":"收藏目录"}</button>

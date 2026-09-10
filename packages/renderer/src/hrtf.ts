@@ -88,6 +88,7 @@ export interface HrtfManifestEntry {
 export interface HrtfManifest {
   schemaVersion?: number;
   calibrationVersion?: number;
+  parametricHrtfVersion?: number;
   completeSubject?: boolean;
   subjectId?: string;
   sampleRate: number;
@@ -180,7 +181,7 @@ async function loadSet(baseUrl: string): Promise<BinauralIrSet> {
   return {
     sampleRate: manifest.sampleRate,
     calibrated: manifest.calibrationVersion !== undefined && manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true,
-    preserveMeasurements: manifest.processing?.preserveMeasurements === true,
+    preserveMeasurements: manifest.processing?.preserveMeasurements === true || (manifest.parametricHrtfVersion === 1 && manifest.processing?.preserveSamples === true),
     completeSubject: manifest.completeSubject === true,
     subjectId: typeof manifest.subjectId === "string" ? manifest.subjectId : null,
     positions,

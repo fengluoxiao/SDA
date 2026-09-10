@@ -20,6 +20,11 @@
     "files": [
       "main.cjs",
       "media-browser.cjs",
+      "personal-hrtf.cjs",
+      "personal-hrtf-library.cjs",
+      "parametric-hrtf.mjs",
+      "generated-hrtf.cjs",
+      "personal-hrtf-worker.cjs",
       "preload.cjs",
       "cinema-profiles.cjs",
       "monitor-settings.cjs",
@@ -32,6 +37,7 @@
         "to": "web"
       }
     ],
+    "asarUnpack": ["node_modules/h5wasm/**", "personal-hrtf-worker.cjs", "personal-hrtf.cjs", "parametric-hrtf.mjs", "generated-hrtf.cjs", "personal-hrtf-library.cjs"],
     "win": {
       "target": "nsis",
       "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
@@ -62,6 +68,7 @@
     }
   },
   "dependencies": {
-    "fft.js": "4.0.4"
+    "fft.js": "4.0.4",
+    "h5wasm": "0.10.3"
   }
 }

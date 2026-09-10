@@ -1,4 +1,6 @@
+import type { HrtfTestVisual, PhrtfParameters } from "./phrtf";
 import Select from "./components/Select";
+import PersonalHrtfPanel from "./components/PersonalHrtfPanel";
 import PlaylistPanel from "./components/PlaylistPanel";
 import OutputPanel from "./components/OutputPanel";
 import {ROOM_LISTENING_LEVELS} from "./room-listening";
@@ -149,7 +151,7 @@ const BINAURAL_HEAD_IDS = ["ku100", "d2", ...Array.from({ length: 18 }, (_, i) =
 function readBinauralHead(): BinauralHead {
   try {
     const v = localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY);
-    return v && (BINAURAL_HEAD_IDS as readonly string[]).includes(v) ? v : "ku100";
+    return v && ((BINAURAL_HEAD_IDS as readonly string[]).includes(v) || /^personal-[a-f0-9]{64}$/.test(v)) ? v : "ku100";
   } catch {
     return "ku100";
   }
@@ -412,6 +414,7 @@ export function App() {
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
   const [floatPanel, setFloatPanel] = useState<"roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [hrtfTestVisual,setHrtfTestVisual]=useState<HrtfTestVisual|null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
   const [roomAudition,setRoomAudition]=useState<RoomAudition>({stage:"full",matched:false});
@@ -1526,6 +1529,48 @@ export function App() {
     if (nativeRendererRunningRef.current) void window.sdaDesktop?.nativeRendererHrtf?.(nativeHrtfSetName(next), 0.04);
   }, []);
 
+  const [personalHrtfBusy,setPersonalHrtfBusy] = useState(false);
+  const applyPersonalHrtfInternal = async (next: string) => {
+    if (!(BINAURAL_HEAD_IDS as readonly string[]).includes(next) && !/^personal-[a-f0-9]{64}$/.test(next)) throw new Error("未知 HRTF 档案");
+
+    const previous = binauralHead;
+    const api = window.sdaDesktop;
+    if (api) {
+      if (!(await api.getNativeRendererStatus?.())?.running) {
+        if (!await api.startNativeRenderer?.()) throw new Error("原生渲染器启动失败");
+      }
+      if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(next, false), .04)) {
+        if (!await api.nativeRendererHrtf?.(nativeHrtfSetName(previous, denseBinauralObjects), .04)) throw new Error("个人 HRTF 切换失败，原档案恢复也失败，请重试");
+        throw new Error("原生渲染器未接受个人 HRTF，已恢复原档案");
+      }
+    }
+    try {
+      await playerRef.current?.setDenseBinauralObjects(false);
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
+    } catch (error) {
+      await api?.nativeRendererHrtf?.(nativeHrtfSetName(previous, denseBinauralObjects), .04);
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(previous));
+      await playerRef.current?.setDenseBinauralObjects(denseBinauralObjects, denseBinauralBaseUrl());
+      throw error;
+    }
+    setBinauralHead(next);
+    setDenseBinauralObjects(false);
+    localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY, next);
+    localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY, "0");
+  };
+  const applyPersonalHrtf = async (next: string, parameters?:PhrtfParameters, assessment?:unknown) => {
+    if (personalHrtfBusy) throw new Error("HRTF 正在切换");
+    setPersonalHrtfBusy(true);
+    try {
+      if(parameters){
+        if(!window.sdaDesktop?.generatePersonalHrtf)throw new Error("生成与保存 pHRTF 需要新版桌面端");
+        next=(await window.sdaDesktop.generatePersonalHrtf(parameters,assessment)).id;
+      }
+      await applyPersonalHrtfInternal(next);
+    }
+    finally { setPersonalHrtfBusy(false); }
+  };
+
   const [denseBinauralBusy, setDenseBinauralBusy] = useState(false);
   const changeKu100Calibration = async (next: boolean) => {
     if (binauralHead !== "ku100" || ku100CalibrationBusy || denseBinauralBusy) return;
@@ -1881,7 +1926,7 @@ export function App() {
 
       <main>
         <section className="view">
-{roomVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
           <div className="scene-heading"><span>空间声场</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
@@ -1996,11 +2041,16 @@ export function App() {
         )}
         {floatPanel === "pinna" && (
           <div className="panel float-panel">
-            <h2>完整 HRTF 测量</h2>
+            <h2>个人 HRTF 生成与导入</h2>
+            <PersonalHrtfPanel layout={outputSpeakers} currentHead={binauralHead} playing={playing&&!paused}
+              locked={personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}
+              onApply={applyPersonalHrtf} onVisual={setHrtfTestVisual}/>
+            <details className="phrtf-playback-library">
+              <summary>内置测量库（仅用于歌曲播放）</summary>
             {binauralHead === "ku100" && <label className="settings-switch" title="关闭后使用原始 SADIE II 测量样本，保留原始电平、延时、左右差异和房间响应。影院、耳机 EQ 与输出音量仍独立生效。">
               <span>KU100 数据校准</span>
               <input type="checkbox" role="switch" aria-label="KU100 数据校准" checked={ku100Calibration}
-                disabled={ku100CalibrationBusy||denseBinauralBusy||nativeRendererBusy||roomComparison!==null}
+                disabled={personalHrtfBusy||ku100CalibrationBusy||denseBinauralBusy||nativeRendererBusy||roomComparison!==null}
                 onChange={event=>void changeKu100Calibration(event.target.checked)}/>
             </label>}
             <p className="settings-description">
@@ -2011,7 +2061,7 @@ export function App() {
                 <button
                   key={head.id}
                   className={`pinna-option ${binauralHead === head.id ? "active" : ""}`}
-                  disabled={denseBinauralBusy || ku100CalibrationBusy || roomComparison!==null}
+                  disabled={personalHrtfBusy || denseBinauralBusy || ku100CalibrationBusy || roomComparison!==null}
                   onClick={() => changeBinauralHead(head.id)}
                 >
                   <b>{head.label}</b>
@@ -2027,11 +2077,12 @@ export function App() {
               <input
                 type="checkbox"
                 role="switch"
-                disabled={binauralHead !== "ku100" || denseBinauralBusy || ku100CalibrationBusy || nativeRendererBusy || roomComparison!==null}
+                disabled={personalHrtfBusy || binauralHead !== "ku100" || denseBinauralBusy || ku100CalibrationBusy || nativeRendererBusy || roomComparison!==null}
                 checked={denseBinauralObjects}
                 onChange={(event) => changeDenseBinauralObjects(event.target.checked)}
               />
             </label>
+            </details>
           </div>
         )}
         {floatPanel === "playlist" && <PlaylistPanel items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={playPlaylistItem} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setFloatPanel(null)}/>}

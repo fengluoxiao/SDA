@@ -1,3 +1,4 @@
+import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
  * Live 3D object visualization — the spiritual successor to Omniphony
  * Studio's OSC view: every audio object is a glowing dot moving through a
@@ -211,6 +212,7 @@ const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeak
   focusedSpeakers?: ReadonlySet<string>;
   onSpeakerFocus?: (name: string) => void;
   hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
 }) {
   const speakers = useMemo(
     () =>
@@ -410,6 +412,26 @@ const ObjectDot = memo(function ObjectDot({
     && a.gainDb === b.gainDb;
 });
 
+function HrtfTestMarker({visual,layout}:{visual:HrtfTestVisual;layout:readonly VirtualSpeaker[]}) {
+ const ref=useRef<THREE.Group>(null),requestFrame=useContext(RequestFrameContext);
+ useEffect(()=>{requestFrame();},[visual,requestFrame]);
+ useFrame(()=>{
+  if(!ref.current)return;
+  const t=visual.elapsed();ref.current.visible=t>=0&&t<=visual.duration;
+  const [x,y,z]=testVisualPosition(visual.trial,t/visual.duration);
+  ref.current.position.set(x*ROOM,y*ROOM,z*ROOM);ref.current.lookAt(0,0,0);
+  if(t<visual.duration)requestFrame();
+ });
+ const moving=visual.trial.kind==="motion";
+ const position=testVisualPosition(visual.trial,0);
+ const existing=!moving&&layout.find(s=>!s.isLfe&&sphericalToWebAudio(s).every((v,i)=>Math.abs(v-position[i]!)<.001));
+ return <group ref={ref} visible={false}>
+  {moving?<mesh><sphereGeometry args={[.085,24,16]}/><meshBasicMaterial color="#ffb020"/></mesh>:existing?null:<GenelecSpeaker/>}
+  <mesh><sphereGeometry args={[moving?.14:.25,24,16]}/><meshBasicMaterial color="#ffb020" transparent opacity={.22} depthWrite={false}/></mesh>
+  <Html center position={[0,.32,0]} style={{pointerEvents:"none",whiteSpace:"nowrap",color:"#fff",background:"#684200",border:"1px solid #ffb020",borderRadius:8,padding:"4px 8px",fontSize:12}}>{moving?"测试 OBJ":existing?`${existing.name} · 测试中`:"测试音箱"}</Html>
+ </group>;
+}
+
 export function ObjectView({
   immersive = false,
   objects,
@@ -420,6 +442,7 @@ export function ObjectView({
   focusedSpeakers,
   onSpeakerFocus,
   hiddenSpeakerNames,
+  testVisual,
 }: {
   immersive?: boolean;
   objects: VisualObject[];
@@ -432,6 +455,7 @@ export function ObjectView({
   focusedSpeakers?: ReadonlySet<string>;
   onSpeakerFocus?: (name: string) => void;
   hiddenSpeakerNames?: ReadonlySet<string>;
+  testVisual?: HrtfTestVisual|null;
 }) {
   const p = PALETTE[theme];
   const shell=useRef<HTMLDivElement>(null);
@@ -466,6 +490,7 @@ export function ObjectView({
           keeps a 30 fps display-aligned cap. */}
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
+        {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
         {immersive ? <ImmersiveCamera thirdPerson={thirdPerson} onFlightChange={setFlying}/> : <ViewportFraming />}
         {!immersive && <Room p={p} />}
         <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />

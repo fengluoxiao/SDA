@@ -187,6 +187,8 @@ fn handle_command(
             });
         }
         Command::SetHrtf { set, wet_weight } => {
+            let personal = set.strip_prefix("hrtf-personal-")
+                .is_some_and(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
             let safe = matches!(
                 set.as_str(),
                 "hrtf"
@@ -213,22 +215,21 @@ fn handle_command(
                     | "hrtf-h19"
                     | "hrtf-h20"
             );
-            if !safe || !wet_weight.is_finite() {
+            if !(safe || personal) || !wet_weight.is_finite() {
                 write_event(&Event::Ack {
                     command: "setHrtf",
                     accepted: false,
                     detail: Some("invalid HRTF set or wet weight"),
                 });
             } else {
-                let manifest = Engine::hrtf_root().join(&set).join("hrtf-set.json");
+                let root = if personal {
+                    std::env::var_os("SDA_PERSONAL_HRTF_ROOT").map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| Engine::hrtf_root().join("personal"))
+                } else { Engine::hrtf_root() };
+                let manifest = root.join(&set).join("hrtf-set.json");
                 match hrtf::NativeHrtfSet::load_calibrated(&manifest) {
                     Ok(loaded) if loaded.sample_rate == 48_000 => {
-                        state.active_hrtf_set = Some(loaded);
-                        state.hrtf_wet_weight = wet_weight.clamp(0.0, 1.0);
-                        let prepared = state.rebuild_bus_renderer();
-                        if prepared.is_ok() {
-                            state.lfe_path.reset();
-                        }
+                        let prepared = state.replace_hrtf(loaded, wet_weight.clamp(0.0, 1.0));
                         write_event(&Event::Ack {
                             command: "setHrtf",
                             accepted: prepared.is_ok(),

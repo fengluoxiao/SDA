@@ -690,6 +690,20 @@ impl Engine {
         Ok(())
     }
 
+    fn replace_hrtf(&mut self, mut set: hrtf::NativeHrtfSet, wet: f32) -> Result<(), String> {
+        set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
+        let bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
+        // Publish all related state only after every speaker filter is ready.
+        self.active_hrtf_set = Some(set);
+        self.hrtf_wet_weight = wet;
+        self.bus_renderer = Some(bus);
+        self.stereo_dry_bus = None;
+        for source in self.sources.values_mut() { source.direct = None; }
+        self.direct_mix = 0.0;
+        self.lfe_path.reset();
+        Ok(())
+    }
+
     fn rebuild_bus_renderer(&mut self) -> Result<(), String> {
         self.stereo_dry_bus = None;
         if let Some(set) = &mut self.active_hrtf_set { set.configure_cinema(self.cinema.clone(), self.room_profile.clone()); }

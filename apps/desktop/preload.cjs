@@ -21,6 +21,12 @@ function subscribe(channel, callback) {
 contextBridge.exposeInMainWorld("sdaDesktop", {
   electron3D,
   browseMedia: (action, value) => ipcRenderer.invoke("sda:media-browser", action, value),
+  browsePersonalHrtf: (action, value) => ipcRenderer.invoke("sda:personal-hrtf-browser", action, value),
+  listPersonalHrtf: () => ipcRenderer.invoke("sda:list-personal-hrtf"),
+  renamePersonalHrtf: (id,name) => ipcRenderer.invoke("sda:rename-personal-hrtf",id,name),
+  personalHrtfArchive: (action,id,value) => ipcRenderer.invoke("sda:personal-hrtf-archive",action,id,value),
+  generatePersonalHrtf: (parameters, assessment) => ipcRenderer.invoke("sda:generate-personal-hrtf", parameters, assessment),
+  importPersonalHrtf: (sourcePath) => ipcRenderer.invoke("sda:import-personal-hrtf", sourcePath),
   windowControl: action => ipcRenderer.invoke("sda:window-control", action),
   getWindowMaximized: () => ipcRenderer.invoke("sda:window-state"),
   onWindowMaximized: callback => subscribe("sda:window-state", callback),

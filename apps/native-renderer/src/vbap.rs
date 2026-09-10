@@ -415,6 +415,38 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "run scripts/test/phrtf-routing.test.cjs to generate audition fixtures"]
+    fn personal_audition_matches_native_pcm() {
+        #[derive(serde::Deserialize)]
+        struct Case { layout:String, manifest:String, az:f32, el:f32, gains:Vec<f32>, expected:Vec<f32> }
+        let file=std::env::var("SDA_PHRTF_ROUTING_FIXTURE").expect("audition fixture path");
+        let cases:Vec<Case>=serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        for case in cases {
+            let solver=VbapSolver::with_layout(LayoutId::parse(&case.layout).unwrap());
+            let az=case.az.to_radians();let el=case.el.to_radians();
+            let gains=solver.pan([-az.sin()*el.cos(),az.cos()*el.cos(),el.sin()],0.0);
+            for (i,g) in case.gains.iter().enumerate(){assert!((g-gains[i]).abs()<2e-5,"routing {} {} {} bus {i}",case.layout,case.az,case.el);}
+            let mut set=crate::hrtf::NativeHrtfSet::load_calibrated(std::path::Path::new(&case.manifest)).unwrap();
+            let mut bus=crate::bus_renderer::BusRenderer::new(&set,&solver,0.04).unwrap();
+            let mut object=crate::direct_renderer::DirectSource::new(&set,0.04).unwrap();
+            object.update(&mut set,&solver,0.04,gains).unwrap();
+            let n=crate::convolution::DEFAULT_PARTITION;
+            for block in 0..512/n {
+                bus.begin_block();
+                for i in 0..n {let x=if block==0&&i==0{1.0}else{0.0};bus.add(x,&gains,i);object.input[i]=x;}
+                bus.finish_block().unwrap();object.finish_block();
+                for i in 0..n {for ear in 0..2 {
+                    let expected=case.expected[ear*512+block*n+i];
+                    let direct=if ear==0{object.left[i]}else{object.right[i]};
+                    for actual in [bus.output_at(i)[ear],direct] {
+                        assert!((actual-expected).abs()<2e-5,"PCM {} {} {} sample {} ear {}: {actual} vs {expected}",case.layout,case.az,case.el,block*n+i,ear);
+                    }
+                }}
+            }
+        }
+    }
+
+    #[test]
     fn master_layout_bus_counts_are_preserved() {
         assert_eq!(VbapSolver::with_layout(LayoutId::Stereo2_0).bus_count(), 2);
         assert_eq!(VbapSolver::with_layout(LayoutId::Dolby5_1).bus_count(), 5);

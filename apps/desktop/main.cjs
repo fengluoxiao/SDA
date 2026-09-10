@@ -13,6 +13,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createMediaBrowser } = require("./media-browser.cjs");
+const personalHrtf = require("./personal-hrtf.cjs");
+const personalHrtfDirectory = () => path.join(app.getPath("userData"), "personal-hrtf");
 const cinemaProfiles = require("./cinema-profiles.cjs");
 const { createRoomLab } = require("./room-lab.cjs");
 const { exec, spawn } = require("node:child_process");
@@ -592,7 +594,7 @@ function startNativeRenderer() {
     nativeRenderer = spawn(executable, [], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, SDA_OUTPUT_SETTINGS: JSON.stringify(savedOutputSettings()), SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets") },
+      env: { ...process.env, SDA_OUTPUT_SETTINGS: JSON.stringify(savedOutputSettings()), SDA_HRTF_ROOT: path.join(path.dirname(executable), "hrtf-assets"), SDA_PERSONAL_HRTF_ROOT: personalHrtfDirectory() },
     });
   } catch (error) {
     nativeRenderer = null;
@@ -1394,8 +1396,8 @@ ipcMain.handle("sda:native-renderer-pose", (_event, orientation) => {
 });
 ipcMain.handle("sda:native-renderer-clear-pose", () => nativeRendererCommand({ type: "clearHeadPose" }));
 ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
-  if (!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") || !Number.isFinite(wetWeight)) return false;
-  const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf");
+  if ((!/^hrtf(?:-dense(?:-raw)?|-raw|-d2|-h(?:[3-9]|1[0-9]|20))?$/.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
+  const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   return accepted;
 });
@@ -1567,6 +1569,32 @@ ipcMain.handle("sda:pick-file", async (event) => {
 
 const browseMedia = createMediaBrowser({app, readSettings, writeSettings, isMediaFile});
 ipcMain.handle("sda:media-browser", (_event, action, value) => browseMedia(action, value));
+const browsePersonalHrtf = createMediaBrowser({app, readSettings, writeSettings, isMediaFile: name => /\.(sofa|phrtf)$/i.test(name)});
+ipcMain.handle("sda:personal-hrtf-browser", (_event, action, value) => {
+  if (action === "folder") {if(typeof value!=="string"||!path.isAbsolute(value)||!fs.statSync(value).isDirectory())throw new Error("请选择导出目录");return [value];}
+  return browsePersonalHrtf(action, value);
+});
+ipcMain.handle("sda:list-personal-hrtf", () => personalHrtf.listPersonal(personalHrtfDirectory()));
+let personalHrtfImportBusy = false;
+ipcMain.handle("sda:rename-personal-hrtf", (_event,id,name) => require("./personal-hrtf-library.cjs").rename(personalHrtfDirectory(),id,name));
+ipcMain.handle("sda:personal-hrtf-archive", async (_event,action,id,value) => {
+  if(!["copy","export"].includes(action))throw new Error("未知档案操作");
+  if(personalHrtfImportBusy)throw new Error("个人档案正在处理");personalHrtfImportBusy=true;
+  try{return await personalHrtf.importInWorker(null,personalHrtfDirectory(),{kind:"archive",action,id,...(action==="copy"?{name:value}:{directory:value})});}
+  finally{personalHrtfImportBusy=false;}
+});
+ipcMain.handle("sda:generate-personal-hrtf", async (_event, parameters, assessment) => {
+  if (personalHrtfImportBusy) throw new Error("个人 HRTF 正在处理");
+  personalHrtfImportBusy = true;
+  try { return await personalHrtf.importInWorker(null, personalHrtfDirectory(), { parameters, assessment }); }
+  finally { personalHrtfImportBusy = false; }
+});
+ipcMain.handle("sda:import-personal-hrtf", async (_event, sourcePath) => {
+  if (personalHrtfImportBusy) throw new Error("已有 SOFA 正在导入");
+  personalHrtfImportBusy = true;
+  try { return await personalHrtf.importInWorker(sourcePath, personalHrtfDirectory()); }
+  finally { personalHrtfImportBusy = false; }
+});
 
 ipcMain.handle("sda:pick-folder", async (event) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
@@ -1632,9 +1660,9 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
   if (typeof assetPath !== "string" || !BUNDLED_HRTF_PATTERN.test(assetPath)) {
     throw new Error("内置 HRTF 路径无效");
   }
-  const root = webAssetRoot();
-  if (!root) throw new Error("找不到内置 HRTF 资产目录");
   const setDir = assetPath.split("/")[0];
+  const root = personalHrtf.PERSONAL_SET.test(setDir) ? personalHrtfDirectory() : webAssetRoot();
+  if (!root) throw new Error("找不到 HRTF 资产目录");
   const hrtfRoot = path.resolve(root, setDir);
   const filePath = path.resolve(root, ...assetPath.split("/"));
   if (path.dirname(filePath) !== hrtfRoot) throw new Error("内置 HRTF 路径越界");
