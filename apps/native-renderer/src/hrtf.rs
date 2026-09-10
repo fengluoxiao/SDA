@@ -46,6 +46,7 @@ pub struct NativeHrtfSet {
     pub complete_subject: bool,
     positions: Vec<Position>,
     cache: Vec<StereoIr>,
+    directional_grid: crate::directional::Grid,
     speaker_set: Option<Box<NativeHrtfSet>>,
     prepared: std::collections::HashMap<(i32, i32, u32), crate::convolution::PreparedStereoFilter>,
 }
@@ -125,6 +126,7 @@ impl NativeHrtfSet {
             subject_id: manifest.subject_id,
             complete_subject,
             positions: manifest.positions,
+            directional_grid: crate::directional::Grid::new(&cache),
             cache,
             speaker_set,
             prepared: std::collections::HashMap::new(),
@@ -150,6 +152,65 @@ impl NativeHrtfSet {
         cached.azimuth = position.azimuth;
         cached.elevation = position.elevation;
         Ok(cached)
+    }
+
+    pub fn directional_dry(&self, direction: crate::directional::Direction, layout: crate::vbap::LayoutId,
+        gains: [f32;crate::vbap::MAX_BUS_COUNT], amounts: [f32;crate::vbap::MAX_BUS_COUNT]) -> Result<(Vec<f32>,Vec<f32>),String> {
+        self.directional_dry_length(direction,layout,gains,amounts,self.speaker_filter_len()+crate::convolution::DEFAULT_PARTITION)
+    }
+    pub fn directional_filter_len(&self)->usize {
+        let base=self.cache.iter().map(|ir|ir.dry.len()/2).max().unwrap_or(512)+4;
+        let calibration=if self.cinema.enabled {self.cinema.speakers.values().map(|s|
+            (s.delay_ms*48.0).round() as usize + if s.low_db!=0.0||s.high_db!=0.0 {2048}else{0}).max().unwrap_or(0)}else{0};
+        // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
+        // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
+        // when a 512-tap HRIR also needs four fractional-delay padding samples.
+        base+calibration+self.cinema.monitor.max_delay()+480
+    }
+    pub fn directional_dry_compact(&self,direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
+        gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT])->Result<(Vec<f32>,Vec<f32>),String>{
+        self.directional_dry_length(direction,layout,gains,amounts,self.directional_filter_len())
+    }
+    fn directional_dry_length(&self, direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
+        gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT],length:usize)->Result<(Vec<f32>,Vec<f32>),String>{
+        let pair=self.directional_grid.footprint(&self.cache,direction);
+        let mut output=(vec![0.0;length],vec![0.0;length]);
+        let norm=gains.iter().map(|g|g*g).sum::<f32>().sqrt();
+        if norm<1e-8{return Ok(output);}
+        // With no per-speaker processing all routes use the same dry pair.
+        // Sum their scalar weights once instead of allocating/filtering a copy
+        // for each speaker. Muting still reaches this path through `gains`.
+        if (!self.cinema.enabled || self.cinema.speakers.is_empty())
+            && !self.cinema.monitor.enabled && amounts.iter().all(|x|*x==0.0) {
+            let weight=gains.iter().take(crate::vbap::speakers(layout).len()).filter(|g|**g>0.0)
+                .map(|g|g*g/norm).sum::<f32>()
+                * if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0};
+            for (out,input) in [(&mut output.0,pair.0),(&mut output.1,pair.1)] {
+                for (a,b) in out.iter_mut().zip(input) {*a=weight*b;}
+            }
+            return Ok(output);
+        }
+        for (bus,speaker) in crate::vbap::speakers(layout).iter().enumerate() {
+            if gains[bus]<=0.0{continue;}
+            let scaled=(pair.0.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect(),
+                pair.1.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect());
+            let calibrated=self.cinema.monitor.filter(speaker.name,self.cinema.calibrate(speaker.name,scaled)?);
+            // Preserve speaker mute/trim/focus controls, but not coherent VBAP
+            // amplitude buildup. No normalization of the measured HRIR itself.
+            let weight=gains[bus]*gains[bus]/norm;
+            for (out,input) in [(&mut output.0,calibrated.0),(&mut output.1,calibrated.1)] {
+                if amounts[bus]==0.0 {
+                    for (a,b) in out.iter_mut().zip(input) { *a+=weight*b; }
+                    continue;
+                }
+                let mut filter=crate::focus::BackgroundFilter::default();
+                let active=input.len()+512;
+                for (a,b) in out.iter_mut().take(active).zip(input.into_iter().chain(std::iter::repeat(0.0))) {
+                    *a+=weight*(b+(filter.process(b)-b)*amounts[bus]);
+                }
+            }
+        }
+        Ok(output)
     }
 
     pub fn configure_cinema(&mut self, settings: crate::cinema::Settings, profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>) {
@@ -236,6 +297,15 @@ impl NativeHrtfSet {
         let filter = std::sync::Arc::new(filter);
         self.speaker_prepared.insert(key, filter.clone());
         Ok(filter)
+    }
+
+    pub fn prepared_reflection_speaker(&mut self, name:&str, layout:&str, azimuth:f64,elevation:f64,wet:f32,background:bool) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>,String> {
+        let key=(format!("residual:{background}:{name}"),layout.to_string(),wet.to_bits());
+        if let Some(filter)=self.speaker_prepared.get(&key){return Ok(filter.clone());}
+        let mut filter=(*self.prepared_focus_speaker(name,layout,azimuth,elevation,wet,background)?).clone();
+        let dry=self.prepared_focus_speaker(name,layout,azimuth,elevation,0.0,background)?;
+        filter.add_scaled(&dry,-1.0);
+        let filter=std::sync::Arc::new(filter);self.speaker_prepared.insert(key,filter.clone());Ok(filter)
     }
 
     pub fn nearest_direction(&self, azimuth: f64, elevation: f64) -> Result<(f64, f64), String> {

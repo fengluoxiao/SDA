@@ -249,6 +249,26 @@ fn handle_command(
                 }
             }
         }
+        Command::SetSourceExtent { settings } => {
+            let accepted=settings.valid();
+            if accepted {state.source_extent=settings;let ids:Vec<_>=state.sources.keys().cloned().collect();for id in ids {let _=state.route_source_now(&id,9600);}}
+            write_event(&Event::Ack {command:"setSourceExtent",accepted,detail:if accepted{None}else{Some("invalid extent settings")}});
+        }
+        Command::SetDirectionalHrtf { enabled } => {
+            state.directional_hrtf=enabled;
+            write_event(&Event::Ack {command:"setDirectionalHrtf",accepted:true,detail:None});
+        }
+        Command::SetNearField { settings } => {
+            let result = if !settings.valid() { Err("invalid near-field settings".to_string()) }
+                else if settings.enabled && state.active_hrtf_set.is_some() {
+                    let preference = state.direct_objects;
+                    let result = state.set_direct_objects(true);
+                    state.direct_objects = preference;
+                    result
+                } else { Ok(()) };
+            if result.is_ok() { state.near_field = settings; }
+            write_event(&Event::Ack { command: "setNearField", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
         Command::SetObjectHrtf { enabled } => {
             let result = state.set_direct_objects(enabled);
             write_event(&Event::Ack { command: "setObjectHrtf", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -277,7 +297,7 @@ fn handle_command(
                 state.active_hrtf_set = Some(candidate);
                 state.bus_renderer = Some(bus);
                 state.stereo_dry_bus = None;
-                for source in state.sources.values_mut() { source.direct = None; source.bass_split = None; }
+                for source in state.sources.values_mut() { source.direct = None; source.continuous=None; source.continuous_mix=0.0; source.bass_split = None; }
                 state.direct_mix = 0.0;
                 state.render_epoch = state.render_epoch.wrapping_add(1);
                 Ok(())
@@ -642,6 +662,7 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
         let spatial = SpatialEvent {
             position: event.pos,
             spread: spatial::spread_from_size(event.size),
+            extent: event.size.map(|v|if v.is_finite(){v.abs().clamp(0.0,1.0)}else{0.0}),
             diffuse: if event.diffuse.is_finite() { event.diffuse.clamp(0.0, 1.0) } else { 0.0 },
             horizontal_only: event.horizontal_only,
             zone_exclusion: event.zone_exclusion.into(),
@@ -1046,6 +1067,9 @@ fn command_name(command: &Command) -> &'static str {
         Command::HeadPose { .. } => "headPose",
         Command::SetHrtf { .. } => "setHrtf",
         Command::SetLayout { .. } => "setLayout",
+        Command::SetSourceExtent { .. } => "setSourceExtent",
+        Command::SetNearField { .. } => "setNearField",
+        Command::SetDirectionalHrtf { .. } => "setDirectionalHrtf",
         Command::SetObjectHrtf { .. } => "setObjectHrtf",
         Command::SetStereoMode { .. } => "setStereoMode",
         Command::SetCinema { .. } => "setCinema",
@@ -1063,6 +1087,23 @@ fn command_name(command: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authored_extent_preserves_axes_and_event_clock() {
+        let mut source=crate::Source::default();
+        let event:crate::NativeObjectEvent=serde_json::from_value(serde_json::json!({
+            "id":7,"samplePos":48000,"hasPos":true,"pos":[0,1,0],"gainDb":0,
+            "size":[0.2,0.4,0.8],"diffuse":0.3,"rampDuration":128
+        })).unwrap();
+        super::apply_object_event(&mut source,0,event);
+        assert_eq!(source.extent,[0.0;3]);
+        let queued=source.spatial_events.remove(&48000).unwrap();
+        assert_eq!(queued.extent,[0.2,0.4,0.8]);
+        crate::Engine::start_source_motion(&mut source,queued);
+        crate::Engine::advance_source_envelopes(&mut source,64);
+        assert_eq!(source.extent,[0.1,0.2,0.4]);
+        crate::Engine::advance_source_envelopes(&mut source,64);
+        assert_eq!(source.extent,[0.2,0.4,0.8]);
+    }
     use super::*;
 
     #[test]
@@ -1220,5 +1261,23 @@ mod tests {
             engine.sources.get_mut("obj:1").unwrap().samples.take(100),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod near_field_tests {
+    use super::*;
+    use crate::near_field::Settings;
+    #[test] fn near_field_protocol_validates_and_preserves_direct_preference() {
+        let mut e=crate::Engine::new(48000,2);
+        let fifo=crate::stereo_fifo::StereoFifo::new(48000);
+        let telemetry=crate::RuntimeTelemetry::default();
+        handle_command(&mut e,crate::Command::SetNearField{settings:Settings{enabled:true,metres_per_unit:0.5}},&fifo,&telemetry);
+        assert!(e.near_field.enabled); assert!(!e.direct_objects);
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf/hrtf-set.json");
+        e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+        assert!(e.near_field.enabled); assert_eq!(e.near_field.metres_per_unit,0.5);
+        handle_command(&mut e,crate::Command::SetNearField{settings:Settings{enabled:false,metres_per_unit:f32::NAN}},&fifo,&telemetry);
+        assert!(e.near_field.enabled); assert_eq!(e.near_field.metres_per_unit,0.5);
     }
 }

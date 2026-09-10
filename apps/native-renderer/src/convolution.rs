@@ -4,7 +4,7 @@
 //! every buffer it owns and accepts exactly one fixed PCM block, so the callback
 //! can run FFT convolution without allocations or HRTF file access.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
@@ -93,14 +93,18 @@ impl StereoPartitionedConvolver {
         }
         let fft_len = partition * 2;
         let count = left.len().div_ceil(partition);
-        let mut planner = FftPlanner::<f32>::new();
-        let forward = planner.plan_fft_forward(fft_len);
-        let inverse = planner.plan_fft_inverse(fft_len);
+        // Plans are immutable and shared across objects. Replanning the same
+        // transform for every newly declared ADM object creates a startup spike.
+        static PLANNER: OnceLock<Mutex<FftPlanner<f32>>> = OnceLock::new();
+        let (forward, inverse) = {
+            let mut planner = PLANNER.get_or_init(|| Mutex::new(FftPlanner::new()))
+                .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            (planner.plan_fft_forward(fft_len), planner.plan_fft_inverse(fft_len))
+        };
         let scratch_len = forward
             .get_inplace_scratch_len()
             .max(inverse.get_inplace_scratch_len());
-        let filters_left = prepare_filters(left, partition, fft_len, &forward);
-        let filters_right = prepare_filters(right, partition, fft_len, &forward);
+        let (filters_left,filters_right) = prepare_filters_stereo(left,right,partition,fft_len,&forward);
         Ok(Self {
             partition,
             fft_len,
@@ -143,6 +147,10 @@ impl StereoPartitionedConvolver {
             filters_left: self.filters_left.clone(),
             filters_right: self.filters_right.clone(),
         }
+    }
+    pub fn prepare_pair(&self, left: &[f32], right: &[f32]) -> PreparedStereoFilter {
+        let (filters_left,filters_right)=prepare_filters_stereo(left,right,self.partition,self.fft_len,&self.forward);
+        PreparedStereoFilter {filters_left,filters_right}
     }
     pub fn take_spare_filter(&mut self) -> Option<PreparedStereoFilter> {
         self.spare_filter.take()
@@ -229,12 +237,7 @@ impl StereoPartitionedConvolver {
         }
         self.output_left.copy_from_slice(&self.sum_left);
         self.output_right.copy_from_slice(&self.sum_right);
-        restore_real_spectrum(&mut self.output_left);
-        restore_real_spectrum(&mut self.output_right);
-        self.inverse
-            .process_with_scratch(&mut self.output_left, &mut self.fft_scratch);
-        self.inverse
-            .process_with_scratch(&mut self.output_right, &mut self.fft_scratch);
+        inverse_stereo(&mut self.output_left, &mut self.output_right, &self.inverse, &mut self.fft_scratch);
         let scale = 1.0 / self.fft_len as f32;
         if let Some((target, elapsed, duration)) = &mut self.transition {
             self.sum_left.fill(Complex32::new(0.0, 0.0));
@@ -244,10 +247,7 @@ impl StereoPartitionedConvolver {
                 accumulate_stereo(&mut self.sum_left, &mut self.sum_right, spectrum,
                     &target.filters_left[part], &target.filters_right[part]);
             }
-            restore_real_spectrum(&mut self.sum_left);
-            restore_real_spectrum(&mut self.sum_right);
-            self.inverse.process_with_scratch(&mut self.sum_left, &mut self.fft_scratch);
-            self.inverse.process_with_scratch(&mut self.sum_right, &mut self.fft_scratch);
+            inverse_stereo(&mut self.sum_left, &mut self.sum_right, &self.inverse, &mut self.fft_scratch);
             for index in 0..self.partition {
                 let mix = ((*elapsed + index) as f32 / *duration as f32).min(1.0);
                 let bin = index + self.partition;
@@ -316,35 +316,71 @@ unsafe fn accumulate_stereo_avx(left: &mut [Complex32], right: &mut [Complex32],
 
 // Real PCM has conjugate-symmetric spectra. Store and multiply only the unique
 // bins; reconstruct their conjugates once before each inverse FFT.
-fn restore_real_spectrum(spectrum: &mut [Complex32]) {
-    let length=spectrum.len();
-    for bin in 1..length/2 { spectrum[length-bin]=spectrum[bin].conj(); }
+fn inverse_stereo(left: &mut [Complex32], right: &mut [Complex32],
+    inverse: &Arc<dyn Fft<f32>>, scratch: &mut [Complex32]) {
+    // Pack two real time-domain outputs into one complex inverse transform:
+    // IFFT(L + iR) = left PCM + i * right PCM. The inputs' positive-frequency
+    // halves define the negative halves by conjugate symmetry. This halves
+    // inverse FFT work without changing the per-sample filter crossfade.
+    let length=left.len();
+    for bin in 0..=length/2 {
+        let l=left[bin];let r=right[bin];
+        if bin==0 || bin==length/2 {left[bin]=Complex32::new(l.re,r.re);}
+        else {
+            left[bin]=Complex32::new(l.re-r.im,l.im+r.re);
+            left[length-bin]=Complex32::new(l.re+r.im,-l.im+r.re);
+        }
+    }
+    inverse.process_with_scratch(left,scratch);
+    for (l,r) in left.iter_mut().zip(right) {*r=Complex32::new(l.im,0.0);l.im=0.0;}
 }
 
-fn prepare_filters(
-    ir: &[f32],
-    partition: usize,
-    fft_len: usize,
-    forward: &Arc<dyn Fft<f32>>,
-) -> Vec<Vec<Complex32>> {
-    (0..ir.len().div_ceil(partition))
-        .map(|part| {
-            let mut spectrum = vec![Complex32::new(0.0, 0.0); fft_len];
-            let begin = part * partition;
-            let end = (begin + partition).min(ir.len());
-            for (offset, sample) in ir[begin..end].iter().enumerate() {
-                spectrum[offset] = Complex32::new(*sample, 0.0);
-            }
-            forward.process(&mut spectrum);
-            spectrum.truncate(fft_len/2+1);
-            spectrum
-        })
-        .collect()
+fn prepare_filters_stereo(left:&[f32],right:&[f32],partition:usize,fft_len:usize,
+    forward:&Arc<dyn Fft<f32>>)->(Vec<Vec<Complex32>>,Vec<Vec<Complex32>>) {
+    assert_eq!(left.len(),right.len());
+    let count=left.len().div_ceil(partition);let bins=fft_len/2+1;
+    let mut filters_left=Vec::with_capacity(count);let mut filters_right=Vec::with_capacity(count);
+    let mut scratch=vec![Complex32::new(0.0,0.0);forward.get_inplace_scratch_len()];
+    for part in 0..count {
+        let begin=part*partition;let end=(begin+partition).min(left.len());
+        let mut packed=vec![Complex32::new(0.0,0.0);fft_len];
+        for (i,(&l,&r)) in left[begin..end].iter().zip(&right[begin..end]).enumerate(){packed[i]=Complex32::new(l,r);}
+        if packed[..end-begin].iter().any(|x|x.re!=0.0||x.im!=0.0) {forward.process_with_scratch(&mut packed,&mut scratch);}
+        // Recover the two real-input transforms from conjugate mirror bins.
+        let mut r=Vec::with_capacity(bins);
+        for bin in 0..bins {
+            let a=packed[bin];let b=packed[(fft_len-bin)%fft_len];
+            packed[bin]=Complex32::new((a.re+b.re)*0.5,(a.im-b.im)*0.5);
+            r.push(Complex32::new((a.im+b.im)*0.5,(b.re-a.re)*0.5));
+        }
+        packed.truncate(bins);filters_left.push(packed);filters_right.push(r);
+    }
+    (filters_left,filters_right)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_inverse_preserves_independent_ears_and_silence() {
+        for length in [2, 8, 2048] {
+            for silent_right in [false, true] {
+                let expected_l: Vec<_>=(0..length).map(|i|(i as f32*0.137).sin()*0.4).collect();
+                let expected_r: Vec<_>=(0..length).map(|i|if silent_right{0.0}else{(i as f32*0.219).cos()*0.2}).collect();
+                let mut left:Vec<_>=expected_l.iter().map(|&x|Complex32::new(x,0.0)).collect();
+                let mut right:Vec<_>=expected_r.iter().map(|&x|Complex32::new(x,0.0)).collect();
+                let mut planner=FftPlanner::new();let forward=planner.plan_fft_forward(length);let inverse=planner.plan_fft_inverse(length);
+                forward.process(&mut left);forward.process(&mut right);
+                let mut scratch=vec![Complex32::new(0.0,0.0);inverse.get_inplace_scratch_len()];
+                inverse_stereo(&mut left,&mut right,&inverse,&mut scratch);
+                for i in 0..length {
+                    assert!((left[i].re/length as f32-expected_l[i]).abs()<2e-6);
+                    assert!((right[i].re/length as f32-expected_r[i]).abs()<2e-6);
+                }
+            }
+        }
+    }
 
     #[test]
     fn spectral_accumulation_matches_scalar_for_unaligned_and_partial_vectors() {

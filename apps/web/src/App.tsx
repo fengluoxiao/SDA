@@ -1,3 +1,6 @@
+import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
+import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
+import SourceExtentPanel, {readSourceExtent} from "./components/SourceExtentPanel";
 import type { HrtfTestVisual, PhrtfParameters } from "./phrtf";
 import Select from "./components/Select";
 import PersonalHrtfPanel from "./components/PersonalHrtfPanel";
@@ -490,6 +493,9 @@ export function App() {
       if (!await desktop.nativeRendererStereoMode?.(readStereoRenderMode())) {
         throw new Error("请重启 Electron 以加载立体声对照接口");
       }
+      if (desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
+      if (desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
+      if (desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
       if (!await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
@@ -1038,6 +1044,9 @@ export function App() {
       if (next.running && !await desktop.nativeRendererStereoMode?.(readStereoRenderMode())) {
         throw new Error("原生渲染器未接受立体声处理设置");
       }
+      if (next.running && desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
+      if (next.running && desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
+      if (next.running && desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
       if (next.running && !await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
@@ -1846,6 +1855,7 @@ export function App() {
                 </label>
               </fieldset>
             )}
+            {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel/><SourceExtentPanel/><NearFieldPanel/></>}
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
               <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机模拟档案。</p>

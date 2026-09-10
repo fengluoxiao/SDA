@@ -114,10 +114,11 @@ impl AbsolutePcmRing {
 
     fn flush_read_cache(&mut self) {
         if self.read_start == EMPTY_CLOCK { return; }
-        for offset in 0..READ_CACHE_SIZE.min(self.slots.len()) {
-            let index = ((self.read_start + offset as u64) % self.slots.len() as u64) as usize;
-            self.slots[index] = self.read_cache[offset];
-        }
+        let count = READ_CACHE_SIZE.min(self.slots.len());
+        let start = (self.read_start % self.slots.len() as u64) as usize;
+        let first = count.min(self.slots.len() - start);
+        self.slots[start..start + first].copy_from_slice(&self.read_cache[..first]);
+        self.slots[..count - first].copy_from_slice(&self.read_cache[first..count]);
         self.read_start = EMPTY_CLOCK;
     }
 
@@ -129,10 +130,11 @@ impl AbsolutePcmRing {
             self.read_start = clock;
             // Group accesses to each large track ring: 118 interleaved tracks
             // otherwise touch 118 distant pages for every rendered sample.
-            for offset in 0..cache_len as usize {
-                let index = ((clock + offset as u64) % self.slots.len() as u64) as usize;
-                self.read_cache[offset] = self.slots[index];
-            }
+            let count = cache_len as usize;
+            let start = (clock % self.slots.len() as u64) as usize;
+            let first = count.min(self.slots.len() - start);
+            self.read_cache[..first].copy_from_slice(&self.slots[start..start + first]);
+            self.read_cache[first..count].copy_from_slice(&self.slots[..count - first]);
         }
         let slot = &mut self.read_cache[(clock - self.read_start) as usize];
         (slot.clock == clock).then(|| {

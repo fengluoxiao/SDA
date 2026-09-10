@@ -1,0 +1,4 @@
+.source-extent-control{display:grid;gap:8px;margin:14px 0}
+.source-extent-control>span{display:flex;justify-content:space-between;gap:12px}
+.source-extent-control output{font-variant-numeric:tabular-nums;opacity:.75}
+.source-extent-control input[type=range]{width:100%;min-width:0;margin:0}

@@ -169,6 +169,9 @@ declare global {
       roomLabCancel?: () => Promise<boolean>;
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
+      nativeRendererDirectionalHrtf?: (enabled:boolean) => Promise<boolean>;
+      nativeRendererNearField?: (settings: {enabled:boolean;metresPerUnit:number}) => Promise<boolean>;
+      nativeRendererSourceExtent?: (settings: {enabled:boolean;width:number;diffusion:number}) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
       nativeRendererStartAt?: (origin: number) => Promise<boolean>;

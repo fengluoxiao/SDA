@@ -29,10 +29,58 @@ fn prepare_bank(set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32) ->
 pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSource>,
     set: &mut NativeHrtfSet, solver: &vbap::VbapSolver, wet: f32) -> Result<(), String> {
     let mut sources: Vec<_> = sources.collect();
+    let prepare = |source: &mut &mut DirectSource| -> Result<(),String> {
+        if source.needs_processing() {
+            let route=source.pending_route.or(source.idle_route).or(source.route);
+            let changed=source.direction!=source.applied_direction;
+            if (changed || source.pending_route.is_some() || source.idle_route.is_some()) && (source.direction.is_some() || source.applied_direction.is_some()) {
+                if let Some((layout,gains,amounts,_))=route {
+                    source.direction_filter=if let Some(direction)=source.direction {
+                        let (left,right)=set.directional_dry(direction,layout,gains,amounts)?;
+                        Some(source.convolver.prepare_pair(&left,&right))
+                    }else{None};
+                    source.applied_direction=source.direction;
+                    source.pending_route=route;
+                    if let Some(reference)=&mut source.near_reference {
+                        reference.override_filter=source.direction_filter.clone();
+                        reference.override_dirty=true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    if let Some(pool)=workers().filter(|_|sources.len()>=8) {
+        pool.install(||sources.par_iter_mut().with_min_len(2).try_for_each(prepare))?;
+    }else{sources.iter_mut().try_for_each(prepare)?;}
+    // A separate dry reference lets the correction modify direct sound only.
+    // Full BRIR + (corrected dry - dry) retains the original room residual.
+    for source in &mut sources {
+        let route = source.pending_route.or(source.idle_route).or(source.route);
+        if let Some(reference) = &mut source.near_reference {
+            reference.input = source.input;
+            if reference.route.is_none() { reference.override_filter=source.direction_filter.clone(); }
+            if let Some((layout, gains, amounts, _)) = route {
+                reference.schedule_focus(layout, 0.0, gains, amounts);
+                if reference.override_dirty {
+                    reference.pending_route=Some((layout,gains,amounts,0.0_f32.to_bits()));
+                    reference.override_dirty=false;
+                }
+            }
+        }
+    }
+    let references: Vec<_> = sources.iter_mut().filter_map(|source| source.near_reference.as_deref_mut()).collect();
+    if !references.is_empty() { finish_sources(references.into_iter(), set, solver, 0.0)?; }
     let bank = if sources.iter().any(|source| source.needs_processing()
         && (source.pending_route.is_some() || source.idle_route.is_some())) {
         prepare_bank(set, solver, wet).map(Some)
     } else { Ok(None) };
+    let residual_bank=if sources.iter().any(|s|s.direction_filter.is_some()&&s.pending_route.is_some()) {
+        Some(vbap::speakers(solver.layout()).iter().map(|s| Ok([
+            set.prepared_reflection_speaker(s.name,solver.layout().as_str(),s.azimuth as f64,s.elevation as f64,wet,false)?,
+            set.prepared_reflection_speaker(s.name,solver.layout().as_str(),s.azimuth as f64,s.elevation as f64,wet,true)?
+        ])).collect::<Result<FilterBank,String>>()?)
+    }else{None};
     let finish = |source: &mut &mut DirectSource| {
         if !source.needs_processing() {
             if let Some(route) = source.pending_route.take() { source.idle_route = Some(route); }
@@ -41,9 +89,9 @@ pub(super) fn finish_sources<'a>(sources: impl Iterator<Item = &'a mut DirectSou
                 // No history remains, but the last silent block's direction
                 // still defines the starting filter of an audible crossfade.
                 source.route = None;
-                source.update_from_bank(bank, route);
+                source.update_from_bank(bank, residual_bank.as_ref(), route);
             }
-            if let Some(route) = source.pending_route.take() { source.update_from_bank(bank, route); }
+            if let Some(route) = source.pending_route.take() { source.update_from_bank(bank, residual_bank.as_ref(), route); }
         }
         source.finish_block();
     };
@@ -63,6 +111,14 @@ pub(super) struct DirectSource {
     pending_route: Option<Route>,
     idle_route: Option<Route>,
     pub input: [f32; DEFAULT_PARTITION],
+    pub near_targets: [[f32; 2]; DEFAULT_PARTITION],
+    near_filter: crate::near_field::Filter,
+    pub near_reference: Option<Box<DirectSource>>,
+    pub direction: Option<crate::directional::Direction>,
+    applied_direction: Option<crate::directional::Direction>,
+    direction_filter: Option<crate::convolution::PreparedStereoFilter>,
+    override_filter: Option<crate::convolution::PreparedStereoFilter>,
+    override_dirty: bool,
     pub left: [f32; DEFAULT_PARTITION],
     pub right: [f32; DEFAULT_PARTITION],
 }
@@ -71,6 +127,51 @@ pub(super) struct DirectSource {
 mod tests {
     use super::*;
     use crate::bus_renderer;
+
+    #[test]
+    fn near_field_corrects_direct_but_preserves_room_reflections() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Stereo2_0);
+        let speakers = vbap::speakers(solver.layout()).iter().map(|s| {
+            let mut left=vec![0.0;16384];let mut right=left.clone();
+            left[128]=0.5;right[135]=0.3;
+            let mut room_left=left.clone();let mut room_right=right.clone();
+            room_left[12000]=0.1;room_right[12007]=0.05;
+            crate::cinema::RoomSpeaker {name:s.name.into(),azimuth:s.azimuth,elevation:s.elevation,onset_sample:128,
+                direct_left:left,direct_right:right,room_left,room_right}
+        }).collect();
+        set.configure_cinema(crate::cinema::Settings {enabled:true,..Default::default()},Some(Arc::new(crate::cinema::RoomProfile {
+            version:1,name:"Near-field regression".into(),source:"Synthetic test".into(),license:"Test".into(),
+            measurement:"dummy-head".into(),sample_rate:48000,layout:"2.0".into(),speakers,simulation:None})));
+        for directional in [false,true] {
+        let mut original=DirectSource::new(&set,0.04).unwrap();
+        let mut near=DirectSource::new(&set,0.04).unwrap();
+        near.near_reference=Some(Box::new(DirectSource::new(&set,0.0).unwrap()));
+        if directional { near.direction=Some(crate::directional::Direction {position:[0.7,-0.4,0.3],head:None,width:0.0,height:0.0,depth:0.0}); }
+        let mut gains=[0.0;vbap::MAX_BUS_COUNT];gains[0]=1.0;
+        let mut direct_changed=false;let mut reflection_found=false;
+        for block in 0..80 {
+            for source in [&mut original,&mut near] {
+                source.schedule_focus(solver.layout(),0.04,gains,[0.0;vbap::MAX_BUS_COUNT]);
+                source.input.fill(0.0);
+                if block==20 {source.input[0]=0.1;}
+            }
+            near.near_targets.fill([1.3,0.6]);
+            finish_sources([&mut original,&mut near].into_iter(),&mut set,&solver,0.04).unwrap();
+            for i in 0..DEFAULT_PARTITION {
+                let at=block*DEFAULT_PARTITION+i;
+                let difference=(near.left[i]-original.left[i]).abs()+(near.right[i]-original.right[i]).abs();
+                if at<20*DEFAULT_PARTITION+4000 && difference>0.001 {direct_changed=true;}
+                if at>20*DEFAULT_PARTITION+4000 {
+                    assert!(difference<1e-7,"reflection changed at {at}: {difference}");
+                    if original.left[i].abs()>0.001 {reflection_found=true;}
+                }
+            }
+        }
+        assert!(direct_changed);assert!(reflection_found);
+        }
+    }
 
     #[test]
     #[ignore = "offline performance measurement"]
@@ -254,6 +355,15 @@ mod tests {
 }
 
 impl DirectSource {
+    pub fn is_idle(&self) -> bool {
+        !self.needs_processing() && self.left.iter().chain(&self.right).all(|x|*x==0.0)
+    }
+    pub fn release_near_reference_when_silent(&mut self) {
+        if !self.needs_processing() {self.near_reference=None;}
+    }
+    pub fn release_near_reference_when_bypassed(&mut self) {
+        if self.near_filter.is_bypassed() { self.near_reference = None; }
+    }
     pub fn new(set: &NativeHrtfSet, wet: f32) -> Result<Self, String> {
         let (_, _, mut left, mut right) = set.mixed_nearest(0.0, 0.0, wet)?;
         left.resize(set.speaker_filter_len() + DEFAULT_PARTITION, 0.0);
@@ -263,6 +373,9 @@ impl DirectSource {
             route: None,
             pending_route: None,
             idle_route: None,
+            near_targets: [[1.0; 2]; DEFAULT_PARTITION], near_filter: Default::default(),
+            near_reference: None,
+            direction: None, applied_direction: None, direction_filter: None, override_filter: None, override_dirty:false,
             input: [0.0; DEFAULT_PARTITION], left: [0.0; DEFAULT_PARTITION], right: [0.0; DEFAULT_PARTITION],
         })
     }
@@ -276,7 +389,7 @@ impl DirectSource {
         let route = (solver.layout(), gains, amounts, wet.to_bits());
         if self.route == Some(route) { return Ok(()); }
         let bank = prepare_bank(set, solver, wet)?;
-        self.update_from_bank(&bank, route);
+        self.update_from_bank(&bank, None, route);
         Ok(())
     }
 
@@ -290,7 +403,13 @@ impl DirectSource {
         !self.convolver.tail_is_silent() || self.input.iter().any(|sample| *sample != 0.0)
     }
 
-    fn update_from_bank(&mut self, bank: &FilterBank, route: Route) {
+    fn update_from_bank(&mut self, bank: &FilterBank, residual_bank: Option<&FilterBank>, route: Route) {
+        if let Some(filter)=&self.override_filter {
+            if self.route.is_none(){self.convolver.set_prepared_filter(filter.clone());}
+            else{self.convolver.transition_to(filter.clone(),DEFAULT_PARTITION);}
+            self.route=Some(route);return;
+        }
+        let bank=if self.direction_filter.is_some(){residual_bank.unwrap_or(bank)}else{bank};
         let (_, gains, amounts, _) = route;
         let mut combined = self.convolver.take_spare_filter();
         if let Some(filter) = &mut combined { filter.clear(); }
@@ -311,7 +430,7 @@ impl DirectSource {
                 }
             }
         }
-        let filter = match combined {
+        let mut filter = match combined {
             Some(filter) => filter,
             None => {
                 let mut silent = (*bank[0][0]).clone();
@@ -319,6 +438,9 @@ impl DirectSource {
                 silent
             }
         };
+        if let (Some(directional),Some(_))=(&self.direction_filter,residual_bank) {
+            filter.add_scaled(directional,1.0);
+        }
         if self.route.is_none() {
             self.convolver.set_prepared_filter(filter);
         } else {
@@ -333,6 +455,12 @@ impl DirectSource {
         self.left.fill(0.0);
         self.right.fill(0.0);
         self.convolver.process_block(&self.input, &mut self.left, &mut self.right).expect("fixed block dimensions");
+        for i in 0..DEFAULT_PARTITION {
+            let dry = self.near_reference.as_ref().map_or([self.left[i],self.right[i]], |r| [r.left[i],r.right[i]]);
+            let output = self.near_filter.process(dry, self.near_targets[i]);
+            self.left[i] += output[0] - dry[0]; self.right[i] += output[1] - dry[1];
+        }
+        self.near_targets.fill([1.0; 2]);
         self.input.fill(0.0);
     }
 }

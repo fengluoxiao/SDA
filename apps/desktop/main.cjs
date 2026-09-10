@@ -1515,6 +1515,23 @@ ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
   writeStartupLog(`setObjectHrtf ${enabled} -> ${accepted}`);
   return accepted;
 });
+ipcMain.handle("sda:native-renderer-directional-hrtf", async (_event, enabled) => {
+  if(typeof enabled!=="boolean")return false;
+  const accepted=await nativeRendererCommandAck({type:"setDirectionalHrtf",enabled},"setDirectionalHrtf");
+  writeStartupLog(`setDirectionalHrtf enabled=${enabled} -> ${accepted}`);return accepted;
+});
+ipcMain.handle("sda:native-renderer-near-field", async (_event, settings) => {
+  if(typeof settings?.enabled!=="boolean"||!Number.isFinite(settings.metresPerUnit)||settings.metresPerUnit<0.25||settings.metresPerUnit>4)return false;
+  const accepted=await nativeRendererCommandAck({type:"setNearField",settings:{enabled:settings.enabled,metresPerUnit:settings.metresPerUnit}},"setNearField");
+  writeStartupLog(`setNearField enabled=${settings.enabled} metresPerUnit=${settings.metresPerUnit} -> ${accepted}`);
+  return accepted;
+});
+ipcMain.handle("sda:native-renderer-source-extent", async (_event, settings) => {
+  if(typeof settings?.enabled!=="boolean"||![settings.width,settings.diffusion].every(v=>Number.isFinite(v)&&v>=0&&v<=1))return false;
+  const accepted=await nativeRendererCommandAck({type:"setSourceExtent",settings:{enabled:settings.enabled,width:settings.width,diffusion:settings.diffusion}},"setSourceExtent");
+  writeStartupLog(`setSourceExtent enabled=${settings.enabled} width=${settings.width} diffusion=${settings.diffusion} -> ${accepted}`);
+  return accepted;
+});
 ipcMain.handle("sda:native-renderer-output-active", (_event, active) => {
   return typeof active === "boolean" && nativeRendererCommand({ type: "setOutputActive", active });
 });

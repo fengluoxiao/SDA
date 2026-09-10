@@ -45,6 +45,10 @@ const OBJECT_ACTIVITY_THRESHOLD: f32 = 0.001;
 const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 16;
 
 mod bus_renderer;
+mod source_extent;
+mod near_field;
+mod directional;
+mod object_mixer;
 mod adm_zone;
 mod direct_renderer;
 mod callback_output;
@@ -88,6 +92,9 @@ enum Command {
         #[serde(rename = "bedLabel")]
         bed_label: Option<String>,
     },
+    SetSourceExtent { settings: source_extent::Settings },
+    SetNearField { settings: near_field::Settings },
+    SetDirectionalHrtf { enabled: bool },
     SetLfeMuted {
         muted: bool,
     },
@@ -277,6 +284,7 @@ struct ProgramGainEvent {
 struct SpatialEvent {
     position: [f32; 3],
     spread: f32,
+    extent: [f32;3],
     diffuse: f32,
     horizontal_only: bool,
     zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
@@ -378,7 +386,12 @@ enum StereoMode { Original, Dry, Room }
 
 struct Source {
     bass_split: Option<cinema::BassSplit>,
-    direct: Option<direct_renderer::DirectSource>,
+    direct: Option<Box<direct_renderer::DirectSource>>,
+    continuous: Option<Box<directional::ContinuousSource>>,
+    continuous_mix: f32,
+    continuous_active: bool,
+    fast_mixed: bool,
+    near_target: [f32; 2],
     samples: pcm_ring::AbsolutePcmRing,
     kind: SourceKind,
     /// Canonical decoder bed label retained so a layout change can re-resolve it.
@@ -394,9 +407,12 @@ struct Source {
     remove_at: Option<u64>,
     position: [f32; 3],
     spread: f32,
+    extent: [f32;3],
     diffuse: f32,
     horizontal_only: bool,
     zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
+    diffusion_mix: f32,
+    diffuse_route: [f32;vbap::MAX_BUS_COUNT],
     spatial_events: BTreeMap<u64, SpatialEvent>,
     motion: Option<SpatialEvent>,
     bus_gains: [f32; vbap::MAX_BUS_COUNT],
@@ -424,6 +440,7 @@ impl Default for Source {
             samples: pcm_ring::AbsolutePcmRing::new(MAX_PENDING_SAMPLES),
             bass_split: None,
             direct: None,
+            continuous: None, continuous_mix:0.0, continuous_active:false, fast_mixed:false, near_target:[1.0;2],
             kind: SourceKind::Bed,
             bed_label: None,
             object_id: None,
@@ -436,9 +453,12 @@ impl Default for Source {
             remove_at: None,
             position: [0.0, 1.0, 0.0],
             spread: 0.0,
+            extent: [0.0;3],
             diffuse: 0.0,
             horizontal_only: false,
             zone_exclusion: Default::default(),
+            diffusion_mix: 0.0,
+            diffuse_route: [0.0;vbap::MAX_BUS_COUNT],
             spatial_events: BTreeMap::new(),
             motion: None,
             bus_gains: [0.0; vbap::MAX_BUS_COUNT],
@@ -513,6 +533,14 @@ impl RuntimeTelemetry {
 }
 
 struct Engine {
+    fast_activity: Vec<ObjectActivitySnapshot>,
+    fast_mix_buffers: Vec<object_mixer::Buffer>,
+    #[cfg(test)]
+    disable_fast_objects: bool,
+    #[cfg(test)]
+    fast_object_blocks: u64,
+    #[cfg(test)]
+    profile_ms: [f64; 4],
     sample_pos: u64,
     paused: bool,
     sources: HashMap<String, Source>,
@@ -533,6 +561,9 @@ struct Engine {
     vbap: vbap::VbapSolver,
     bus_renderer: Option<bus_renderer::BusRenderer>,
     direct_objects: bool,
+    source_extent: source_extent::Settings,
+    near_field: near_field::Settings,
+    directional_hrtf: bool,
     direct_mix: f32,
     lfe_path: LfePath,
     hardware_lfe: hardware::Chain,
@@ -599,6 +630,12 @@ impl Engine {
     fn new(sample_rate: u32, channels: u16) -> Self {
         let _ = direct_renderer::workers();
         Self {
+            #[cfg(test)]
+            profile_ms: [0.0; 4],
+            fast_activity: Vec::new(),
+            fast_mix_buffers: Vec::new(),
+            #[cfg(test)] disable_fast_objects: false,
+            #[cfg(test)] fast_object_blocks: 0,
             sample_pos: 0,
             paused: false,
             sources: HashMap::new(),
@@ -616,6 +653,9 @@ impl Engine {
             vbap: vbap::VbapSolver::new(),
             bus_renderer: None,
             direct_objects: false,
+            source_extent: Default::default(),
+            near_field: Default::default(),
+            directional_hrtf: false,
             direct_mix: 0.0,
             lfe_path: LfePath::new(sample_rate),
             hardware_lfe: hardware::Chain::new(&Default::default()),
@@ -678,13 +718,14 @@ impl Engine {
             let set = self.active_hrtf_set.as_mut().ok_or("native HRTF set is not configured")?;
             let mut prepared = Vec::new();
             for (id, source) in &self.sources {
-                if source.kind == SourceKind::Object && source.direct.is_none() {
+                if source.kind == SourceKind::Object && source.direct.is_none()
+                    && !(self.directional_hrtf && source.zone_exclusion.is_empty()) {
                     let mut direct = direct_renderer::DirectSource::new(set, self.hrtf_wet_weight)?;
                     direct.update(set, &self.vbap, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]))?;
                     prepared.push((id.clone(), direct));
                 }
             }
-            for (id, direct) in prepared { self.sources.get_mut(&id).unwrap().direct = Some(direct); }
+            for (id, direct) in prepared { self.sources.get_mut(&id).unwrap().direct = Some(Box::new(direct)); }
         }
         self.direct_objects = enabled;
         Ok(())
@@ -698,7 +739,7 @@ impl Engine {
         self.hrtf_wet_weight = wet;
         self.bus_renderer = Some(bus);
         self.stereo_dry_bus = None;
-        for source in self.sources.values_mut() { source.direct = None; }
+        for source in self.sources.values_mut() { source.direct = None; source.continuous=None; source.continuous_mix=0.0; }
         self.direct_mix = 0.0;
         self.lfe_path.reset();
         Ok(())
@@ -716,7 +757,7 @@ impl Engine {
             &self.vbap,
             self.hrtf_wet_weight,
         )?);
-        for source in self.sources.values_mut() { source.direct = None; }
+        for source in self.sources.values_mut() { source.direct = None; source.continuous=None; source.continuous_mix=0.0; }
         self.direct_mix = 0.0;
         Ok(())
     }
@@ -777,12 +818,14 @@ impl Engine {
             let fraction = elapsed as f32 / motion.ramp.max(1) as f32;
             for axis in 0..3 {
                 source.position[axis] += (motion.position[axis] - source.position[axis]) * fraction;
+                source.extent[axis] += (motion.extent[axis] - source.extent[axis]) * fraction;
             }
             source.spread += (motion.spread - source.spread) * fraction;
             source.diffuse += (motion.diffuse - source.diffuse) * fraction;
             motion.ramp -= elapsed;
             source.motion = if motion.ramp == 0 {
                 source.position = motion.position;
+                source.extent = motion.extent;
                 source.spread = motion.spread;
                 source.diffuse = motion.diffuse;
                 None
@@ -811,21 +854,21 @@ impl Engine {
     }
 
     fn route_source_now(&mut self, id: &str, ramp: u32) -> Result<(), String> {
-        let (position, spread, diffuse, horizontal_only, zones, kind) = self
+        let (position, spread, extent, diffuse, horizontal_only, zones, kind) = self
             .sources
             .get(id)
-            .map(|source| (source.position, source.spread, source.diffuse, source.horizontal_only, source.zone_exclusion.clone(), source.kind))
+            .map(|source| (source.position, source.spread, source.extent, source.diffuse, source.horizontal_only, source.zone_exclusion.clone(), source.kind))
             .ok_or("unknown source")?;
         if kind != SourceKind::Object {
             return Ok(());
         }
         let route = RouteGains {
-            buses: bus_renderer::route_zoned(&self.vbap, position, self.head_pose, spread, diffuse, horizontal_only, &zones),
+            buses: if self.source_extent.enabled {source_extent::route(&self.vbap,position,self.head_pose,extent,horizontal_only,&zones,self.source_extent)}else{bus_renderer::route_zoned(&self.vbap, position, self.head_pose, spread, diffuse, horizontal_only, &zones)},
             lfe: 0.0,
         };
         let source = self.sources.get_mut(id).expect("source was checked above");
         if source.motion.is_some() {
-            Self::route_motion_block(source, &self.vbap, self.head_pose, convolution::DEFAULT_PARTITION as u32);
+            Self::route_motion_block(source, &self.vbap, self.head_pose, self.source_extent, convolution::DEFAULT_PARTITION as u32);
         } else {
             Self::set_source_route(source, route, ramp);
         }
@@ -833,13 +876,14 @@ impl Engine {
     }
 
     fn start_source_motion(source: &mut Source, event: SpatialEvent) -> bool {
-        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only && source.zone_exclusion == event.zone_exclusion {
+        if source.motion.is_none() && source.position == event.position && source.spread == event.spread && source.extent == event.extent && source.diffuse == event.diffuse && source.horizontal_only == event.horizontal_only && source.zone_exclusion == event.zone_exclusion {
             return false;
         }
         source.horizontal_only = event.horizontal_only;
         source.zone_exclusion = event.zone_exclusion.clone();
         if event.ramp == 0 {
             source.position = event.position;
+            source.extent = event.extent;
             source.spread = event.spread;
             source.diffuse = event.diffuse;
             source.motion = None;
@@ -849,7 +893,7 @@ impl Engine {
         true
     }
 
-    fn route_motion_block(source: &mut Source, solver: &vbap::VbapSolver, head: Option<[f32; 4]>, samples: u32) {
+    fn route_motion_block(source: &mut Source, solver: &vbap::VbapSolver, head: Option<[f32; 4]>, settings:source_extent::Settings, samples: u32) {
         let Some(motion) = source.motion.as_ref() else { return; };
         let samples = samples.min(motion.ramp).max(1);
         let fraction = samples as f32 / motion.ramp as f32;
@@ -859,7 +903,7 @@ impl Engine {
         // Re-pan points along the Cartesian trajectory, not just its endpoints.
         // Gain interpolation only bridges this short segment of the route.
         Self::set_source_route(source, RouteGains {
-            buses: bus_renderer::route_zoned(solver, position, head, spread, diffuse, source.horizontal_only, &source.zone_exclusion), lfe: 0.0,
+            buses: if settings.enabled {source_extent::route(solver,position,head,std::array::from_fn(|i|source.extent[i]+(motion.extent[i]-source.extent[i])*fraction),source.horizontal_only,&source.zone_exclusion,settings)}else{bus_renderer::route_zoned(solver, position, head, spread, diffuse, source.horizontal_only, &source.zone_exclusion)}, lfe: 0.0,
         }, samples);
     }
 
@@ -944,6 +988,7 @@ impl Engine {
         self.next_activity_tick = sample_pos.saturating_add(self.activity_tick_every);
         let mut snapshot = ObjectActivitySnapshot::empty(sample_pos);
         for source in self.sources.values() {
+            if source.fast_mixed {continue;}
             let Some(object_id) = source.object_id else {
                 continue;
             };
@@ -957,6 +1002,9 @@ impl Engine {
                 snapshot.ids[snapshot.count] = object_id;
                 snapshot.count += 1;
             }
+        }
+        if let Some(fast)=self.fast_activity.iter().find(|s|s.sample_pos==sample_pos) {
+            for &id in fast.active_ids() {if snapshot.count<MAX_SOURCES {snapshot.ids[snapshot.count]=id;snapshot.count+=1;}}
         }
         snapshot.ids[..snapshot.count].sort_unstable();
         if snapshot.has_same_ids(&self.last_queued_activity) {
@@ -987,6 +1035,7 @@ impl Engine {
     }
 
     fn reset_session(&mut self, origin: u64) {
+        self.fast_activity.clear();
         self.cinema_bass_delay.fill(0.0);
         self.cinema_sub_delay.fill(0.0);
         self.cinema_sub_cursor = 0;
@@ -1062,7 +1111,7 @@ impl Engine {
             layout: self.layout.as_str(),
             spatial_bus_count: self.vbap.bus_count(),
             direct_object_hrtf: self.direct_objects,
-            object_convolver_count: self.sources.values().filter(|source| source.direct.is_some()).count(),
+            object_convolver_count: self.sources.values().filter(|source| source.direct.is_some() || source.continuous.is_some()).count(),
         }
     }
 
@@ -1088,7 +1137,92 @@ impl Engine {
     /// Renders source PCM into fixed virtual-speaker buses. PCM availability is
     /// intentionally source-local: a late object fades itself out instead of
     /// stopping all beds and objects at the next convolution boundary.
+    fn prepare_source_renderers(source: &mut Source, set: Option<&hrtf::NativeHrtfSet>, wet: f32,
+        directional: bool, effective_direct: bool, near_active: bool) {
+        source.continuous_active = source.kind == SourceKind::Object && directional && source.zone_exclusion.is_empty();
+        if source.continuous_active && source.continuous.is_none() {
+            source.continuous = set.and_then(|set| directional::ContinuousSource::new(set).ok()).map(Box::new);
+            if source.direct.is_none() && source.continuous.is_some() {source.continuous_mix=1.0;}
+        }
+        if source.kind == SourceKind::Object && effective_direct && source.direct.is_none()
+            && (!source.continuous_active || source.continuous.is_none()) {
+            source.direct=set.and_then(|set|direct_renderer::DirectSource::new(set,wet).ok()).map(Box::new);
+        }
+        if let Some(direct)=&mut source.direct {
+            if !near_active {direct.release_near_reference_when_bypassed();}
+            if source.continuous_active && source.continuous_mix==1.0 {direct.release_near_reference_when_silent();}
+            if near_active && (!source.continuous_active || source.continuous_mix<1.0) && direct.near_reference.is_none() {
+                direct.near_reference=set.and_then(|set|direct_renderer::DirectSource::new(set,0.0).ok()).map(Box::new);
+            }
+        }
+        if source.continuous_active && source.continuous_mix==1.0
+            && source.direct.as_ref().is_some_and(|direct|direct.is_idle()) {
+            source.direct=None;
+        }
+    }
+
+    fn record_fast_activity(source:&Source,sample_pos:u64,snapshots:&mut [ObjectActivitySnapshot]) {
+        let Some(id)=source.object_id else{return;};
+        if source.muted || source.remove_at.is_some_and(|at|sample_pos>=at) || sample_pos>source.activity_until {return;}
+        if let Some(snapshot)=snapshots.iter_mut().find(|s|s.sample_pos==sample_pos) {
+            if snapshot.count<MAX_SOURCES {snapshot.ids[snapshot.count]=id;snapshot.count+=1;}
+        }
+    }
+
+    /// Source-major excitation avoids touching every track's PCM and metadata
+    /// cache for each individual sample. Beds, exclusion zones, bass management
+    /// and legacy transitions retain the general sample-major path.
+    fn mix_continuous_objects(&mut self,frames:usize,speaker_targets:[f32;vbap::MAX_BUS_COUNT],
+        effective_direct:bool,near_active:bool) {
+        self.fast_activity.clear();
+        for source in self.sources.values_mut(){source.fast_mixed=false;}
+        #[cfg(test)] if self.disable_fast_objects {return;}
+        if frames==0 || !self.directional_hrtf || self.cinema.monitor.hardware.enabled
+            || self.cinema_bass_mix>1e-6 || (self.cinema.monitor.enabled && self.cinema.monitor.bass_enabled) {return;}
+        let end=self.sample_pos+frames as u64;
+        let eligible=|source:&Source| source.kind==SourceKind::Object && source.continuous_active
+            && source.continuous.is_some() && source.direct.is_none() && source.continuous_mix==1.0
+            && source.lfe_gain==0.0 && source.lfe_target==0.0 && source.zone_exclusion.is_empty()
+            && source.spatial_events.range(self.sample_pos..end).all(|(_,event)|event.zone_exclusion.is_empty());
+        if self.sources.values().filter(|s|eligible(s)).count()<8 {return;}
+        let mut tick=self.next_activity_tick.max(self.sample_pos+1);
+        while tick<=end {self.fast_activity.push(ObjectActivitySnapshot::empty(tick));tick=tick.saturating_add(self.activity_tick_every.max(1));}
+        let mut controls=Vec::with_capacity(frames);
+        let mut levels=self.speaker_levels;let mut background=self.speaker_background;let mut mix=self.direct_mix;
+        for _ in 0..frames {
+            for (level,target) in levels.iter_mut().zip(speaker_targets){*level+=(target-*level).clamp(-1.0/2048.0,1.0/2048.0);}
+            for (amount,target) in background.iter_mut().zip(speaker_targets){let target=if target==focus::BACKGROUND_GAIN{1.0}else{0.0};*amount+=(target-*amount).clamp(-1.0/2048.0,1.0/2048.0);}
+            let target=if effective_direct{1.0}else{0.0};mix+=(target-mix).clamp(-1.0/9600.0,1.0/9600.0);
+            controls.push((levels,background,mix));
+        }
+        let ctx=object_mixer::Context {layout:self.layout,head:self.head_pose,extent:self.source_extent,
+            near_active,near_field:self.near_field,sample_rate:self.output_sample_rate,start:self.sample_pos,offset:self.block_offset};
+        let mut sources:Vec<_>=self.sources.values_mut().filter(|s|eligible(s)).collect();
+        for source in &mut sources {source.fast_mixed=true;}
+        #[cfg(test)] {self.fast_object_blocks+=sources.len() as u64;}
+        object_mixer::mix(&mut sources,&mut self.fast_mix_buffers,&controls,ctx,&self.vbap,&self.fast_activity);
+        let bus=self.bus_renderer.as_mut().unwrap();
+        for buffer in &self.fast_mix_buffers {
+            self.underrun_samples+=buffer.underruns;self.route_update_count+=buffer.route_updates;
+            for frame in self.block_offset..self.block_offset+frames {bus.add_accumulated(frame,&buffer.frames[frame]);}
+        }
+        for (i,snapshot) in self.fast_activity.iter_mut().enumerate() {
+            for buffer in &self.fast_mix_buffers {
+                for &id in buffer.activity[i].active_ids() {if snapshot.count<MAX_SOURCES{snapshot.ids[snapshot.count]=id;snapshot.count+=1;}}
+            }
+        }
+    }
+
     fn render_into(&mut self, output: &mut [f32], channels: usize) {
+        if channels==0 {output.fill(0.0);return;}
+        let mut offset=0;
+        while offset<output.len() {
+            let end=(offset+(convolution::DEFAULT_PARTITION-self.block_offset)*channels).min(output.len());
+            self.render_chunk(&mut output[offset..end],channels);offset=end;
+        }
+    }
+
+    fn render_chunk(&mut self, output: &mut [f32], channels: usize) {
         output.fill(0.0);
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
             return;
@@ -1111,6 +1245,14 @@ impl Engine {
             vbap::speakers(self.layout).get(bus).map_or(1.0, |speaker| self.speaker_target(speaker.name))
         });
         let lfe_target = self.speaker_target("LFE");
+            let near_active = self.near_field.enabled && !self.cinema.monitor.hardware.enabled;
+            let effective_direct = (self.direct_objects || near_active || self.directional_hrtf) && !self.cinema.monitor.hardware.enabled;
+        for source in self.sources.values_mut() {
+            Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
+                self.directional_hrtf && !self.cinema.monitor.hardware.enabled,effective_direct,near_active);
+        }
+        if self.block_offset==0 {self.bus_renderer.as_mut().unwrap().begin_block();}
+        self.mix_continuous_objects(output.len()/channels,speaker_targets,effective_direct,near_active);
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
             let block_index = self.block_offset;
@@ -1131,10 +1273,7 @@ impl Engine {
             }
             self.speaker_lfe_level += (lfe_target - self.speaker_lfe_level).clamp(-1.0 / 2048.0, 1.0 / 2048.0);
             if block_index == 0 {
-                self.bus_renderer
-                    .as_mut()
-                    .expect("checked above")
-                    .begin_block();
+
                 self.headphone.begin_block();
                 if let Some(bus) = &mut self.stereo_dry_bus { bus.begin_block(); }
             }
@@ -1143,17 +1282,17 @@ impl Engine {
             let mut lfe_sum = 0.0_f32;
             let mut direct_sum = [0.0_f32; 2];
             // Fade the excitation, retaining both paths' convolution tails.
-            let effective_direct = self.direct_objects && !self.cinema.monitor.hardware.enabled;
             let target_mix = if effective_direct { 1.0 } else { 0.0 };
             self.direct_mix += (target_mix - self.direct_mix).clamp(-1.0 / 9600.0, 1.0 / 9600.0);
             for source in self.sources.values_mut() {
-                if source.kind == SourceKind::Object && effective_direct && source.direct.is_none() {
-                    source.direct = self.active_hrtf_set.as_ref().and_then(|set| direct_renderer::DirectSource::new(set, self.hrtf_wet_weight).ok());
+                if let Some(continuous)=&source.continuous {
+                    direct_sum[0]+=continuous.frames[block_index].output[0];direct_sum[1]+=continuous.frames[block_index].output[1];
                 }
                 if let Some(direct) = &source.direct {
                     direct_sum[0] += direct.left[block_index];
                     direct_sum[1] += direct.right[block_index];
                 }
+                if source.fast_mixed {continue;}
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
                     continue;
                 }
@@ -1171,16 +1310,23 @@ impl Engine {
                     let mut changed = false;
                     if let Some(event) = source.spatial_events.remove(&at) {
                         changed = Self::start_source_motion(source, event);
+                        if changed {Self::prepare_source_renderers(source,self.active_hrtf_set.as_ref(),self.hrtf_wet_weight,
+                            self.directional_hrtf && !self.cinema.monitor.hardware.enabled,effective_direct,near_active);}
                     }
                     // Preserve the authored motion resolution independently of
                     // the FFT partition used by long room/headphone filters.
-                    const MOTION_QUANTUM: usize = 128;
-                    if source.motion.is_some() && (changed || block_index % MOTION_QUANTUM == 0) {
-                        Self::route_motion_block(source, &vbap, head_pose, (MOTION_QUANTUM - block_index % MOTION_QUANTUM) as u32);
+                    let expanded=self.source_extent.enabled && (self.source_extent.width>0.0 || source.extent[0]>0.0 || source.extent[2]>0.0
+                        || source.motion.as_ref().is_some_and(|m|m.extent[0]>0.0||m.extent[2]>0.0));
+                    let motion_quantum: u64 = if expanded {512}else{128};
+                    let motion_phase=if expanded {at%motion_quantum}else{block_index as u64%motion_quantum};
+                    if source.motion.is_some() && (changed || motion_phase == 0) {
+                        #[cfg(test)] let profile_start=std::time::Instant::now();
+                        Self::route_motion_block(source, &vbap, head_pose, self.source_extent, (motion_quantum - motion_phase) as u32);
+                        #[cfg(test)] {self.profile_ms[0]+=profile_start.elapsed().as_secs_f64()*1000.0;}
                         self.route_update_count = self.route_update_count.saturating_add(1);
                     } else if changed {
                         Self::set_source_route(source, RouteGains {
-                            buses: bus_renderer::route_zoned(&vbap, source.position, head_pose, source.spread, source.diffuse, source.horizontal_only, &source.zone_exclusion),
+                            buses: if self.source_extent.enabled {source_extent::route(&vbap,source.position,head_pose,source.extent,source.horizontal_only,&source.zone_exclusion,self.source_extent)}else{bus_renderer::route_zoned(&vbap, source.position, head_pose, source.spread, source.diffuse, source.horizontal_only, &source.zone_exclusion)},
                             lfe: 0.0,
                         }, 0);
                         self.route_update_count = self.route_update_count.saturating_add(1);
@@ -1283,10 +1429,19 @@ impl Engine {
                             &std::array::from_fn(|i| source.bus_gains[i] * self.speaker_levels[i]), block_index);
                     }
                 }
+                if source.kind == SourceKind::Object {
+                    let target=if self.source_extent.enabled {source.diffuse.max(self.source_extent.diffusion)}else{0.0};
+                    source.diffusion_mix+=(target-source.diffusion_mix).clamp(-1.0/9600.0,1.0/9600.0);
+                    if source.diffusion_mix>0.0 {
+                        if block_index==0 {source.diffuse_route=bus_renderer::route_zoned(&vbap,source.position,head_pose,0.0,1.0,source.horizontal_only,&source.zone_exclusion);}
+                        for bus in 0..vbap.bus_count(){self.bus_renderer.as_mut().unwrap().add_diffuse(bus,sample*source.diffusion_mix.sqrt()*source.diffuse_route[bus]*self.speaker_levels[bus],block_index);}
+                        sample*=(1.0-source.diffusion_mix).sqrt();
+                    }
+                }
                 // ADM masters carry silent PCM for inactive objects. Keep their
                 // clocks, filters and envelopes running, but avoid zero bus work.
                 let bus_sample = sample * ROOM_SPEAKER_REFERENCE_GAIN
-                    * if source.direct.is_some() { 1.0 - self.direct_mix } else { 1.0 };
+                    * if source.direct.is_some() || source.continuous.is_some() { 1.0 - self.direct_mix } else { 1.0 };
                 if bus_sample != 0.0 {
                     self.bus_renderer.as_mut().expect("checked above").add(
                         bus_sample,
@@ -1294,9 +1449,41 @@ impl Engine {
                         block_index,
                     );
                 }
-                if let Some(direct) = &mut source.direct {
-                    if block_index == 0 { direct.schedule_focus(self.layout, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
-                    direct.input[block_index] = sample * ROOM_SPEAKER_REFERENCE_GAIN * self.direct_mix;
+                if source.direct.is_some() || source.continuous.is_some() {
+                    if let Some(direct) = &mut source.direct {
+                        if block_index == 0 { direct.schedule_focus(self.layout, self.hrtf_wet_weight, std::array::from_fn(|bus| source.bus_gains[bus] * self.speaker_levels[bus]), self.speaker_background); }
+                    }
+                    let target=if source.continuous_active && source.continuous.is_some(){1.0}else{0.0};
+                    source.continuous_mix+=(target-source.continuous_mix).clamp(-1.0/9600.0,1.0/9600.0);
+                    if block_index == 0 {
+                        // Exclusion zones retain their authored speaker routing.
+                        if let Some(continuous)=&mut source.continuous {
+                            let direction={
+                            let mut position=source.position;
+                            if source.horizontal_only {position[2]=0.0;}
+                            directional::Direction { position, head:head_pose,
+                                width: if self.source_extent.enabled {source.extent[0].max(self.source_extent.width)*120.0}else{source.spread*120.0},
+                                height: if source.horizontal_only {0.0}else if self.source_extent.enabled {source.extent[2]*120.0}else{source.spread*120.0},
+                                depth: if self.source_extent.enabled {source.extent[1]}else{0.0} }
+                            };
+                            continuous.schedule(direction,self.layout,std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),self.speaker_background);
+                        }
+                    }
+                    if block_index % 128 == 0 {
+                        source.near_target = near_field::gains(source.position, head_pose,
+                            near_field::Settings { enabled: near_active, ..self.near_field });
+                    }
+                    let object_sample=sample*ROOM_SPEAKER_REFERENCE_GAIN*self.direct_mix;
+                    if let Some(direct) = &mut source.direct {
+                        direct.near_targets[block_index] = source.near_target;
+                        direct.input[block_index]=object_sample*(1.0-source.continuous_mix);
+                    }
+                    if let Some(continuous)=&mut source.continuous {
+                        let input=object_sample*source.continuous_mix;
+                        continuous.frames[block_index].input=input;
+                        continuous.frames[block_index].near=source.near_target;
+                        if input!=0.0 {self.bus_renderer.as_mut().unwrap().add_reflections(input,&std::array::from_fn(|bus|source.bus_gains[bus]*self.speaker_levels[bus]),block_index);}
+                    }
                 }
                 if !self.lfe_muted {
                     lfe_sum += sample * source.lfe_gain * self.speaker_lfe_level;
@@ -1312,6 +1499,7 @@ impl Engine {
                 self.program_metadata_gain = event.gain;
                 self.set_program_target(event.gain, false);
             }
+            self.bus_renderer.as_mut().expect("checked above").finish_diffuse_frame(block_index);
             self.bus_renderer.as_mut().expect("checked above").shape_background(block_index, &self.speaker_background);
             if let Some(bus) = &mut self.stereo_dry_bus { bus.shape_background(block_index, &self.speaker_background); }
             let dry = self.stereo_dry_bus.as_ref().map_or([0.0; 2], |bus| bus.output_at(block_index));
@@ -1360,14 +1548,21 @@ impl Engine {
             self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
                 if let Some(set) = &mut self.active_hrtf_set {
-                    let _ = direct_renderer::finish_sources(self.sources.values_mut().filter_map(|source| source.direct.as_mut()),
+                    #[cfg(test)] let profile_start=std::time::Instant::now();
+                    let _ = directional::finish_sources(self.sources.values_mut().filter_map(|source|source.continuous.as_deref_mut()),set);
+                    #[cfg(test)] {self.profile_ms[1]+=profile_start.elapsed().as_secs_f64()*1000.0;}
+                    #[cfg(test)] let profile_start=std::time::Instant::now();
+                    let _ = direct_renderer::finish_sources(self.sources.values_mut().filter_map(|source| source.direct.as_deref_mut()),
                         set, &self.vbap, self.hrtf_wet_weight);
+                    #[cfg(test)] {self.profile_ms[2]+=profile_start.elapsed().as_secs_f64()*1000.0;}
                 }
+                #[cfg(test)] let profile_start=std::time::Instant::now();
                 let _ = self
                     .bus_renderer
                     .as_mut()
                     .expect("checked above")
                     .finish_block();
+                #[cfg(test)] {self.profile_ms[3]+=profile_start.elapsed().as_secs_f64()*1000.0;}
                 let _ = self.headphone.finish_block();
                 if let Some(bus) = &mut self.stereo_dry_bus { let _ = bus.finish_block(); }
             }
@@ -1792,7 +1987,7 @@ mod tests {
             source.samples.write(0, 0, &[0.001; 4096]);
             // Obj14's captured OAMD uses this path and 1536-sample duration.
             // Retain its 577-sample QMF offset and shift the event to the first frame.
-            source.spatial_events.insert(577, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
+            source.spatial_events.insert(577, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: [-1.0, -1.0, 0.0], spread: 0.0, ramp: 1536,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -1850,7 +2045,7 @@ mod tests {
             let mut source = Source { kind: SourceKind::Object, object_id: Some(14),
                 position: [-1.0, 1.0, 0.0], gain: 1.0, target_gain: 1.0, ..Source::default() };
             source.samples.write(0, 0, &pcm);
-            source.spatial_events.insert(12000, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
+            source.spatial_events.insert(12000, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: [1.0, 1.0, 0.0], spread: 0.0, ramp: 24000,
             });
             engine.sources.insert("obj:14".into(), source);
@@ -2182,7 +2377,7 @@ mod tests {
         let target_position = [1.0, 0.0, 0.0];
         source.spatial_events.insert(
             96,
-            SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
+            SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0,
                 position: target_position,
                 spread: 0.2,
                 ramp: 32,
@@ -2272,7 +2467,7 @@ mod tests {
             ..Source::default()
         };
         let position = [1.0, 0.0, 0.0];
-        source.spatial_events.insert(96, SpatialEvent { zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
+        source.spatial_events.insert(96, SpatialEvent { extent: [0.0;3], zone_exclusion: Default::default(), horizontal_only: false, diffuse: 0.0, position, spread: 0.2, ramp: 0 });
         source.gain_events.insert(96, GainEvent { gain: 0.25, ramp: 0 });
         engine.sources.insert("obj:7".into(), source);
         engine.route_source_now("obj:7", 0).unwrap();
