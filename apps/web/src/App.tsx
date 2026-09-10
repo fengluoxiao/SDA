@@ -1433,6 +1433,14 @@ export function App() {
     comparisonGain.current=0;comparisonRestore.current=null;setRoomComparison(null);
     localStorage.removeItem("sda-room-comparison-backup");
   };
+  const disableRoomPreset=async()=>{
+    const api=window.sdaDesktop;
+    if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
+    if(roomComparison!==null)await restoreRoomComparison();
+    if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
+    const current=await api.getCinemaSettings();
+    if(!await api.nativeRendererCinema?.({...current.settings,enabled:false},current.profileId))throw new Error("取消房间应用失败");
+  };
   const applyRoomPreset=async(roomId:string)=>{
     const api=window.sdaDesktop;
     if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
@@ -1945,7 +1953,7 @@ export function App() {
 
       <div className="float-dock">
         {floatPanel==="roomcalibration"&&<CinemaPanel key={audioSettingsRevision} onBack={()=>setFloatPanel("roomlab")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId} speakers={outputSpeakers}/>}
-        {floatPanel==="roomlab"&&<RoomLab key={audioSettingsRevision} onApply={applyRoomPreset} onCalibration={()=>setFloatPanel("roomcalibration")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
+        {floatPanel==="roomlab"&&<RoomLab key={audioSettingsRevision} onApply={applyRoomPreset} onDisable={disableRoomPreset} onCalibration={()=>setFloatPanel("roomcalibration")} layout={layoutId==="auto"?detectedLayout??"7.1.4":layoutId}
           snapshot={{layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,muted:[...mutedSpeakerNames],solo:[...soloSpeakerNames],focus:[...focusedSpeakers]}}
           onRecall={recallLayoutMemory} onCompare={applyRoomComparison} onRestore={restoreRoomComparison} onVisual={setRoomVisual} comparison={roomComparison} visualSpeaker={roomVisual?.speaker} audition={roomAudition} onAudition={setRoomAudition}/>}
         {floatPanel === "head-tracking" && headTrackingStatus?.running && (
