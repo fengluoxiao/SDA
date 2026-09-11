@@ -113,7 +113,7 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false,onC
     </div>}
     <div className="cinema-footer"><span>{busy?"处理中":JSON.stringify(settings)===saved?"已应用":"未应用"}</span>
       <button disabled={busy||!saved||JSON.stringify(settings)===saved} onClick={()=>{setSettings(JSON.parse(saved));setAlignment(null);}}>撤销更改</button>
-      <button disabled={busy||JSON.stringify(settings)===saved} onClick={()=>void apply(settings)}>应用</button>
+      <button data-button="primary" disabled={busy||JSON.stringify(settings)===saved} onClick={()=>void apply(settings)}>应用</button>
     </div>
     </fieldset>
     {error&&<p role="alert" className="cinema-warning">{error}</p>}

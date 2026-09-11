@@ -1,0 +1,137 @@
+/* Shared button language, loaded after component and workbench styles.
+   Geometry stays with each component; variants own emphasis and interaction. */
+:root {
+  --button-radius: 9px;
+  --button-fill: color-mix(in srgb, var(--panel) 88%, var(--text));
+  --button-line: color-mix(in srgb, var(--text) 16%, var(--panel));
+  --button-hover: color-mix(in srgb, var(--text) 12%, var(--panel));
+  --button-pressed: color-mix(in srgb, var(--text) 18%, var(--panel));
+  --button-on-accent: #14281e;
+  --button-danger: #f19c9c;
+}
+:root[data-theme="light"] {
+  --button-fill: #fff;
+  --button-hover: #eef3ef;
+  --button-pressed: #e2ebe5;
+  --button-on-accent: #fff;
+  --button-danger: #b83b45;
+}
+:root button,
+:root .app button,
+:root .media-picker button,
+:root .media-picker-menu button {
+  --action-fill: var(--button-fill);
+  --action-ink: var(--text);
+  --action-line: var(--button-line);
+  --action-hover: var(--button-hover);
+  --action-pressed: var(--button-pressed);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--action-line);
+  border-radius: var(--button-radius);
+  background: var(--action-fill);
+  color: var(--action-ink);
+  box-shadow: none;
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+:root button svg { flex-shrink: 0; stroke-width: 1.8; }
+:root .app button.sda-select { justify-content: space-between; font-weight: 400; }
+:root button:not(:disabled):not([aria-disabled="true"]):hover {
+  background: var(--action-hover);
+  border-color: color-mix(in srgb, var(--action-ink) 28%, var(--action-line));
+  filter: none;
+}
+:root button:not(:disabled):not([aria-disabled="true"]):active {
+  background: var(--action-pressed);
+  box-shadow: inset 0 1px 3px #0002;
+  transform: none;
+}
+:root button:focus-visible,
+:root .app button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+/* Explicit primary actions, including the existing HRTF and playback controls. */
+:root .app button:is([data-button="primary"], .phrtf-primary, .mp-play),
+:root .media-picker button[data-button="primary"] {
+  --action-fill: var(--accent);
+  --action-line: var(--accent);
+  --action-ink: var(--button-on-accent);
+  --action-hover: color-mix(in srgb, var(--accent) 88%, var(--text));
+  --action-pressed: color-mix(in srgb, var(--accent) 76%, var(--text));
+  background: var(--action-fill);
+  border-color: var(--action-line);
+  color: var(--action-ink);
+}
+/* Navigation, segmented controls and menu rows stay visually quiet. */
+:root :is(.float-buttons, .settings-tabs, .phrtf-tabs, .room-lab-tabs, .speaker-group-tabs, .cinema-tabs, .media-picker-places, .media-picker-menu) button,
+:root .app button:is(.mp-btn:not(.mp-play), .settings-close, .playlist-remove),
+:root .personal-hrtf-heading button {
+  --action-fill: transparent;
+  --action-line: transparent;
+  --action-ink: var(--dim);
+  background: var(--action-fill);
+  border-color: var(--action-line);
+  color: var(--action-ink);
+}
+:root .app button:is([aria-pressed="true"], [aria-selected="true"], .active),
+:root .app .mp-btn[aria-expanded="true"] {
+  --action-fill: var(--accent-soft);
+  --action-line: color-mix(in srgb, var(--accent) 30%, transparent);
+  --action-ink: var(--accent);
+  --action-hover: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  --action-pressed: color-mix(in srgb, var(--accent) 25%, var(--panel));
+  background: var(--action-fill);
+  color: var(--action-ink);
+  border-color: var(--action-line);
+}
+:root .app :is(.settings-tabs, .phrtf-tabs) button[aria-selected="true"] {
+  --action-fill: var(--panel);
+  background: var(--action-fill);
+  border-color: transparent;
+  box-shadow: 0 1px 4px #0001;
+}
+:root .app button:is(.playlist-clear, .playlist-remove),
+:root .app button[data-button="danger"] { --action-ink: var(--button-danger); }
+/* File and track rows keep their left alignment and full-row hit area. */
+:root :is(.media-picker-places, .media-picker-menu, .media-picker-row) button,
+:root .app button.playlist-select { justify-content: flex-start; }
+:root .media-picker-row button,
+:root .app button.playlist-select { --action-fill: transparent; --action-line: transparent; background: transparent; border-color: transparent; }
+/* Compact transport and channel controls must not expand their dense layouts. */
+:root .app .mp-btn { padding: 0; border-radius: 11px; }
+:root .app button:has(> svg:only-child):not(.window-actions button) { padding-left: 0; padding-right: 0; min-width: 34px; }
+:root .app .mp-btn.mp-play { border-radius: 50%; width: 40px; height: 40px; }
+:root .app button.obj-ms-btn { min-height: 26px; padding: 0; border-radius: 6px; }
+:root .app button.obj-ms-btn.m-on { --action-fill: #7d343d; --action-ink: #fff; background: var(--action-fill); color: var(--action-ink); }
+:root .app button.obj-ms-btn.s-on { --action-fill: #856515; --action-ink: #fff; background: var(--action-fill); color: var(--action-ink); }
+:root .app .float-buttons button { border-radius: 12px; }
+:root .app .window-actions button { min-height: 32px; border: 0; border-radius: 0; padding: 0; --action-fill: transparent; background: transparent; }
+:root .app .window-actions .window-close:hover { background: #c42b35; color: #fff; }
+/* Disabled controls remain readable, including buttons inside disabled fieldsets. */
+:root button:disabled,
+:root .app button:disabled,
+:root button[aria-disabled="true"] {
+  background: color-mix(in srgb, var(--dim) 8%, var(--panel));
+  color: color-mix(in srgb, var(--dim) 85%, var(--panel));
+  border-color: color-mix(in srgb, var(--dim) 15%, var(--panel));
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+@media (pointer: coarse) {
+  :root button, :root .app button { min-height: 44px; }
+  :root .app .window-actions button { min-height: 32px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root button, :root .app button { transition: none; }
+}

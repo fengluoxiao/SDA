@@ -7,6 +7,8 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     match command {
+        Command::SetRemoteLocalMute {muted} => { remote_audio::LOCAL_MUTED.store(muted,Ordering::Release); write_event(&Event::Ack {command:"setRemoteLocalMute",accepted:true,detail:None}); },
+        Command::SetRemoteOutput {address,token} => output_manager::remote_request(address,token),
         Command::ListOutputDevices => output_manager::request(None),
         Command::SetOutputDevice {settings} => output_manager::request(Some(settings)),
         Command::Hello { protocol } => write_event(&Event::Ack {
@@ -565,7 +567,13 @@ fn handle_command(
         Command::Pause { paused } => {
             if state.paused != paused {
                 state.paused = paused;
-                state.render_epoch = state.render_epoch.wrapping_add(1);
+                if remote_audio::HOST_SELECTED.load(Ordering::Acquire) && !remote_audio::MIRROR_SELECTED.load(Ordering::Acquire) {
+                    // Remote pause takes effect after the negotiated network
+                    // buffer, preserving both queued program audio and FIFO.
+                    telemetry.callback_output_enabled.store(!paused && fifo.available_read() >= remote_audio::FRAMES, Ordering::Release);
+                } else {
+                    state.render_epoch = state.render_epoch.wrapping_add(1);
+                }
             }
             write_event(&Event::Ack {
                 command: "pause",
@@ -1080,6 +1088,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Reset { .. } => "reset",
         Command::Health => "health",
         Command::Shutdown => "shutdown",
+        Command::SetRemoteLocalMute {..} => "setRemoteLocalMute",
+        Command::SetRemoteOutput {..} => "setRemoteOutput",
         Command::ListOutputDevices => "listOutputDevices",
         Command::SetOutputDevice { .. } => "setOutputDevice",
     }

@@ -20,6 +20,9 @@ export interface Mp4AudioTrack {
   /** Complete MP4 `alac` atom required before decoding ALAC packets. */
   decoderConfig?: Uint8Array;
   coverArt?: EmbeddedCoverArt;
+  title?: string;
+  artist?: string;
+  album?: string;
   /** Movie duration from the container header (seconds), when known. */
   durationSec?: number;
 }
@@ -113,6 +116,27 @@ export function alacTrackFromMp4Box(file: { moov?: { traks?: Mp4AlacTrack[] } })
   return null;
 }
 
+/** Read bounded UTF-8 iTunes text tags, including track and album artists. */
+export function embeddedMusicTags(ilst?: Uint8Array): {title?:string;artist?:string;album?:string} {
+  const tags: Record<string,string> = {};
+  if (!ilst) return tags;
+  const view = new DataView(ilst.buffer, ilst.byteOffset, ilst.byteLength);
+  const names: Record<string,string> = {"©nam":"title","©ART":"artist","aART":"albumArtist","©alb":"album"};
+  for (let offset=0; offset+8<=ilst.length;) {
+    const size=view.getUint32(offset); if(size<8||size>ilst.length-offset)break;
+    const name=names[atomType(ilst,offset+4)];
+    if(name) for(let child=offset+8;child+16<=offset+size;) {
+      const length=view.getUint32(child); if(length<16||length>offset+size-child)break;
+      if(atomType(ilst,child+4)==="data"&&(view.getUint32(child+8)&0xffffff)===1) {
+        tags[name]=new TextDecoder().decode(ilst.subarray(child+16,Math.min(child+length,child+16+8192))).replace(/\0/g,"").trim(); break;
+      }
+      child+=length;
+    }
+    offset+=size;
+  }
+  return {title:tags.title,artist:tags.artist||tags.albumArtist,album:tags.album};
+}
+
 /** Extract iTunes `covr` artwork from mp4box's unparsed `ilst` children. */
 function embeddedCoverArt(file: { moov?: { udta?: { meta?: { ilst?: { data?: Uint8Array } } } } }): EmbeddedCoverArt | undefined {
   const ilst = file.moov?.udta?.meta?.ilst?.data;
@@ -169,6 +193,7 @@ export class Mp4Demuxer {
       }
       for (const track of candidates) {
         if (this.wantedTrackId !== null) break;
+        Object.assign(track, embeddedMusicTags(this.file.moov?.udta?.meta?.ilst?.data));
         const coverArt = embeddedCoverArt(this.file);
         if (coverArt) track.coverArt = coverArt;
         this.cb.onTrack?.(track);

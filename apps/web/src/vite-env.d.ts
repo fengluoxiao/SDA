@@ -106,6 +106,17 @@ declare global {
 
   interface Window {
     sdaDesktop?: {
+      getRemotePairingKey?:()=>Promise<string>;
+      getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
+      remoteSession?:(action:"host"|"join"|"stop"|"localMute",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      remoteCommand?:(command:import("./remote-session").RemoteCommand)=>Promise<string>;
+      publishRemoteScene?:(scene:import("./remote-session").RemoteScene|undefined)=>void;
+      publishRemoteState?:(state:import("./remote-session").RemotePlayback)=>void;
+      completeRemoteControl?:(id:string,error:string|null)=>void;
+      onRemoteStatus?:(callback:(status:import("./remote-session").RemoteStatus)=>void)=>()=>void;
+      onRemoteControl?:(callback:(command:import("./remote-session").RemoteCommand)=>void)=>()=>void;
+      onRemoteSuspend?:(callback:(value?:{replaceOutput?:boolean}|null)=>void)=>()=>void;
+      onRemoteResult?:(callback:(result:{id:string;error:string|null})=>void)=>()=>void;
       electron3D: boolean;
       browsePersonalHrtf?: NonNullable<Window["sdaDesktop"]>["browseMedia"];
       listPersonalHrtf?: () => Promise<{id:string;name:string;directions:number;method:string}[]>;

@@ -36,7 +36,7 @@ export interface DemuxedAudioPacket {
 
 export interface DemuxerCallbacks {
   /** First supported audio track discovered. durationSec 来自容器头部元数据（如有）。 */
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; decoderConfig?: Uint8Array; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; artist?: string; album?: string; decoderConfig?: Uint8Array; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   onPacket?: (packet: DemuxedAudioPacket) => void;
   onPcmFrame?: (frame: BwfPcmFrame) => void;
   onError?: (message: string) => void;
@@ -62,7 +62,7 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMeta
   if (kind === "mp4") {
     const mp4 = new Mp4Demuxer({
       onTrack: (t: Mp4AudioTrack) =>
-        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", durationSec: t.durationSec, decoderConfig: t.decoderConfig, coverArt: t.coverArt }),
+        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", title: t.title, artist: t.artist, album: t.album, durationSec: t.durationSec, decoderConfig: t.decoderConfig, coverArt: t.coverArt }),
       onPacket: (p) => cb.onPacket?.({ timestampMs: p.timestampMs, frames: [p.data] }),
       onError: cb.onError,
     });

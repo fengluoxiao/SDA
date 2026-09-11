@@ -60,6 +60,7 @@ mod cinema;
 mod focus;
 mod hrtf;
 mod output_monitor;
+mod remote_audio;
 mod monitor;
 mod hardware;
 mod pcm_ring;
@@ -179,6 +180,8 @@ enum Command {
     },
     Health,
     ListOutputDevices,
+    SetRemoteLocalMute { muted: bool },
+    SetRemoteOutput { address: Option<String>, token: Option<String> },
     SetOutputDevice { #[serde(flatten)] settings: output_manager::Settings },
     Shutdown,
 }
@@ -505,7 +508,7 @@ impl ObjectActivitySnapshot {
     }
 }
 
-#[cfg_attr(test, derive(Default))]
+#[derive(Default)]
 struct RuntimeTelemetry {
     callback_output_enabled: AtomicBool,
     /// Codec timeline consumed by WASAPI, never the worker's render-ahead clock.
@@ -1671,6 +1674,7 @@ fn spawn_render_worker(
         .spawn(move || {
             let mut block = vec![0.0_f32; convolution::DEFAULT_PARTITION * 2];
             let mut observed_epoch = 0_u64;
+            let mut mirror_epoch = 0_u64;
             let mut pending_fifo_flush = None;
             loop {
                 for _ in 0..16 {
@@ -1681,6 +1685,7 @@ fn spawn_render_worker(
                         return;
                     }
                 }
+                remote_audio::prepare_mirror(&mut mirror_epoch,engine.render_epoch != observed_epoch);
                 if engine.render_epoch != observed_epoch {
                     engine.clear_object_activity(engine.sample_pos);
                     pending_fifo_flush = Some(fifo.clear_from_producer());
@@ -1737,6 +1742,7 @@ fn spawn_render_worker(
                     commands.wait(Duration::from_millis(2));
                     continue;
                 }
+                remote_audio::publish_mirror(&block);
                 telemetry.render_block_count.fetch_add(1, Ordering::Relaxed);
                 // Start pulling the callback only with a solid prebuffer.
                 // Enabling at a thin watermark made the callback catch up to the
@@ -1798,7 +1804,9 @@ fn main() {
         render_block_total_micros: AtomicU64::new(0),
         render_block_max_micros: AtomicU64::new(0),
     });
-    spawn_render_worker(Engine::new(48000, 2), commands.clone(), fifo.clone(), telemetry.clone());
+    if !remote_audio::receiver() {
+        spawn_render_worker(Engine::new(48000, 2), commands.clone(), fifo.clone(), telemetry.clone());
+    }
     output_manager::run(fifo, telemetry, commands);
 }
 

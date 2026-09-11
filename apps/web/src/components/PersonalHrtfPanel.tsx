@@ -1,3 +1,4 @@
+import { Slider } from "./Slider";
 import type {VirtualSpeaker} from "@sda/renderer";
 import {useEffect,useMemo,useRef,useState} from "react";
 import {trialStart,trialEnd,layoutPositions,speakerTrials,confirmedField,layoutMotionTrials,PHRTF_KEY,PersonalHrtfAudition,answerError,generateCandidate,readProfile,
@@ -9,6 +10,7 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
   layout:readonly VirtualSpeaker[];onVisual?:(value:HrtfTestVisual|null)=>void;currentHead:string;playing:boolean;locked:boolean;onApply:(subject:string,parameters?:PhrtfParameters,assessment?:unknown)=>Promise<void>;
 }) {
   const [profile,setProfile]=useState(readProfile);
+  const [view,setView]=useState<"test"|"library">("test");
   const [trials,setTrials]=useState<Trial[]>([]),[answers,setAnswers]=useState<Answer[]>([]);
   const [index,setIndex]=useState(0),[phase,setPhase]=useState<"idle"|"screen"|"validation"|"result">("idle");
   const [busy,setBusy]=useState(false),[heard,setHeard]=useState(false),[error,setError]=useState("");
@@ -86,25 +88,35 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
     try{await onApply(profile.previousHead);}catch(e){setError(String(e));}finally{guard.current=false;setBusy(false);}
   };
   return <section className="phrtf" aria-label="个性化 HRTF">
-    <header><div><h3>个性化 HRTF</h3><p>自适应感知测试 · 参数化 pHRTF 生成</p></div><span className="phrtf-badge">实验性</span></header>
+    <header><div><h3>个性化 HRTF</h3><p>为当前耳机创建并管理个人空间响应</p></div><span className="phrtf-badge">实验性</span></header>
+    <div className="phrtf-tabs" role="tablist" aria-label="个人 HRTF 分类">
+      {([{id:"test",label:"感知测试"},{id:"library",label:"档案与导入"}] as const).map(tab=><button
+        key={tab.id} id={`phrtf-tab-${tab.id}`} type="button" role="tab" aria-selected={view===tab.id}
+        aria-controls={`phrtf-view-${tab.id}`} tabIndex={view===tab.id?0:-1}
+        disabled={phase==="screen"||phase==="validation"||busy}
+        onKeyDown={e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();const next=e.key==="Home"?"test":e.key==="End"?"library":view==="test"?"library":"test";setView(next);document.getElementById(`phrtf-tab-${next}`)?.focus();}}}
+        onClick={()=>setView(tab.id)}>{tab.label}</button>)}
+    </div>
+    <div id="phrtf-view-test" role="tabpanel" aria-labelledby="phrtf-tab-test" hidden={view!=="test"}>
     {phase==="idle"&&<>
-      <p>按当前房间的音箱逐个试听。回答否，只调整当前音箱并重听；回答是，保留它的响应并进入下一只。已经通过的音箱不会重置。</p>
+      <div className="phrtf-intro"><h4>找到更适合你的声音方向</h4><p>逐个试听并确认方向，完成后自动保存并应用。</p></div>
       {profile&&profile.version>=5&&<div className="phrtf-saved"><strong>{profile.version>=5?"个人生成 pHRTF":`${profile.subject.toUpperCase()} · 旧版匹配档案`} · 已保存</strong>
         <small>{new Date(profile.createdAt).toLocaleDateString()} · 当前耳机与佩戴条件下的定位匹配</small>
-        <div className="phrtf-actions"><button disabled={busy||locked} onClick={()=>void apply(profile,false)}>应用档案</button>
-          <button disabled={busy||locked} onClick={()=>void restore()}>恢复匹配前档案</button></div></div>}
-      <small>每只音箱的响应独立生成和确认；最后合成同一份 pHRTF。低音炮不参与方向定位测试。</small>
-      <p>当前布局：{positions.length} 只定位音箱，之后试听 {positions.length>1?positions.length:0} 条音箱之间的移动路径。保持头朝前、佩戴不变。</p>
+        <details className="phrtf-help"><summary>使用已保存结果</summary><div className="phrtf-actions"><button disabled={busy||locked} onClick={()=>void apply(profile,false)}>应用档案</button>
+          <button disabled={busy||locked} onClick={()=>void restore()}>恢复匹配前档案</button></div></details></div>}
+      <div className="phrtf-test-route"><span>01 · 位置确认<strong>{positions.length} 只音箱</strong></span><span>02 · 移动确认<strong>{positions.length>1?positions.length:0} 条路径</strong></span></div>
+      <p className="phrtf-output-note">测试使用系统默认共享输出，不跟随 SDA 指定设备。</p>
       <label className="phrtf-check"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>
-        <span>已戴耳机，系统默认输出指向这副耳机，并关闭系统空间音效。测试音走系统默认共享输出，不跟随 SDA 的指定设备。</span></label>
+        <span>已戴好耳机，设为系统默认输出，并关闭系统空间音效。</span></label>
       <button className="phrtf-primary" disabled={!confirmed||playing||locked||busy||positions.length===0} onClick={start}>开始感知测试</button>
+      <details className="phrtf-help"><summary>测试方式与注意事项</summary><p>保持头朝前、佩戴不变。回答否，只调整当前音箱并重听；回答是，保留响应并进入下一只。已经通过的音箱不会重置。</p><p>每只音箱独立生成和确认，最后合成一份 pHRTF。低音炮不参与方向定位测试。</p></details>
     </>}
     {(phase==="screen"||phase==="validation")&&<>
       <div className="phrtf-progress"><strong>{trial?.kind==="motion"?"移动感知":"位置感知"}</strong><span>{phase==="screen"?"音箱":"路径"} {index+1} / {trials.length}</span></div>
       <progress max={trials.length} value={index}/>
       <small>{phase==="screen"?`已完成 ${index} 只音箱；否只重试当前音箱，是进入下一只。`:"按正式播放的音箱路由试听；否会重听当前路径，不改动已确认响应。"}</small>
       <p>{busy?"正在播放，请对照中间视图的测试标记…":"听完回答是或否，下一段声音会自动播放。"}</p>
-      <label className="phrtf-level">测试电平 <input aria-label="测试电平" type="range" min="-48" max="-18" step="1" value={gain} disabled={busy||answers.length>0} onChange={e=>setGain(Number(e.target.value))}/><span>{gain} dBFS</span></label>
+      <label className="phrtf-level">测试电平 <Slider aria-label="测试电平"  min="-48" max="-18" step="1" value={gain} disabled={busy||answers.length>0} onChange={e=>setGain(Number(e.target.value))}/><span>{gain} dBFS</span></label>
       <small>此数值是测试信号增益，不是声压级。第一题可调至舒适音量，提交后锁定。</small>
       <div className="phrtf-actions"><button className="phrtf-primary" disabled={busy||playing||locked||layoutChanged} onClick={()=>void listen()}>{busy?"正在播放…":heard?"重听":"播放测试音"}</button><button onClick={cancel}>结束测试</button></div>
       <div className="phrtf-question" aria-live="polite">{heard&&trial?trial.kind==="motion"?<>
@@ -124,10 +136,13 @@ export default function PersonalHrtfPanel({currentHead,playing,locked,onApply,on
       <small>位置与移动测试使用已确认的音箱响应，移动按正式播放的 VBAP 路由合成。测试为干声点对象；歌曲的扩散、头部姿态、房间及其他处理仍可能改变定位。这是主观确认的近似响应，不是耳朵测量。</small>
       <div className="phrtf-actions"><button disabled={busy||playing||locked} className="phrtf-primary" onClick={()=>void (profile?.answers===answers?apply(profile,false):apply(resultProfile(answers),true))}>{profile?.answers===answers?"重新应用 pHRTF":"重试保存 pHRTF"}</button><button disabled={busy} onClick={cancel}>返回</button></div>
     </>}
+    </div>
     {layoutChanged&&<p role="status">布局已改变，测试已暂停。恢复原布局可继续，或结束后按新布局重新开始。</p>}
     {playing&&<p role="status">定位测试需暂停歌曲；已保存的个人档案可在播放中切换。</p>}
     {locked&&<p role="status">请先结束房间对照或等待当前 HRTF 切换完成。</p>}
     {error&&<p className="phrtf-error" role="alert">{error}</p>}
-    {(phase==="idle"||phase==="result")&&<PersonalHrtfLibrary currentHead={currentHead} disabled={busy||locked} revision={profile?.createdAt} onApply={async id=>{await onApply(id)}}/>}
+    <div id="phrtf-view-library" role="tabpanel" aria-labelledby="phrtf-tab-library" hidden={view!=="library"}>
+      {(phase==="idle"||phase==="result")&&<PersonalHrtfLibrary currentHead={currentHead} disabled={busy||locked} revision={profile?.createdAt} onApply={async id=>{await onApply(id)}}/>}
+    </div>
   </section>;
 }

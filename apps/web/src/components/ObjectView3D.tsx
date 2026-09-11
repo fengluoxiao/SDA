@@ -13,7 +13,8 @@ import { Html, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import { ImmersiveCamera, immersiveInputTarget, type ImmersiveView } from "./ImmersiveCamera";
 import { Maximize, Minimize, PersonStanding, Plane, Eye } from "lucide-react";
-import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
+import { sphericalToWebAudio } from "../../../../packages/renderer/src/coords";
+import type { VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
 import { speakerLabel } from "../speaker-labels";
 export type { VisualObject };
@@ -52,13 +53,13 @@ type Palette = (typeof PALETTE)[Theme];
 type RequestFrame = () => void;
 const RequestFrameContext = createContext<RequestFrame>(() => {});
 
-function ViewportFraming() {
+function ViewportFraming({mobile=false}:{mobile?:boolean}) {
   const { camera, size, invalidate } = useThree();
   useEffect(() => {
-    camera.zoom = Math.min(1, size.width / Math.max(1, size.height) / 1.5);
+    camera.zoom = Math.min(1, size.width / Math.max(1, size.height) / (mobile ? .85 : 1.5));
     camera.updateProjectionMatrix();
     invalidate();
-  }, [camera, size.width, size.height, invalidate]);
+  }, [camera, size.width, size.height, invalidate, mobile]);
   return null;
 }
 
@@ -161,7 +162,8 @@ function GenelecSub() {
   );
 }
 
-function FocusSpeaker({ speaker, dimmed, focused, onFocus }: {
+function FocusSpeaker({ speaker, dimmed, focused, onFocus, interactive = true }: {
+  interactive?: boolean;
   speaker: { name: string; isLfe?: boolean; position: THREE.Vector3; quaternion: THREE.Quaternion };
   dimmed: boolean;
   focused: boolean;
@@ -184,31 +186,32 @@ function FocusSpeaker({ speaker, dimmed, focused, onFocus }: {
     invalidate();
   }, [dimmed, invalidate]);
   useEffect(() => {
-    if (!hovered) return;
+    if (!interactive || !hovered) return;
     gl.domElement.style.cursor = onFocus ? "pointer" : "not-allowed";
     return () => { gl.domElement.style.cursor = ""; };
-  }, [hovered, gl, onFocus]);
+  }, [hovered, gl, onFocus, interactive]);
   return <group ref={group} name={`speaker:${speaker.name}`} position={speaker.position} quaternion={speaker.quaternion}
     userData={{ speakerName: speaker.name, focused, dimmed }}
-    onClick={event => {
+    onClick={interactive ? event => {
       if (event.delta > 4) return;
       event.stopPropagation();
       onFocus?.(speaker.name);
-    }}
-    onPointerOver={event => { event.stopPropagation(); setHovered(true); }}
-    onPointerOut={() => setHovered(false)}>
+    } : undefined}
+    onPointerOver={interactive ? event => { event.stopPropagation(); setHovered(true); } : undefined}
+    onPointerOut={interactive ? () => setHovered(false) : undefined}>
     {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
-    <mesh userData={{ focusHitbox: true }}>
+    {interactive && <mesh userData={{ focusHitbox: true }}>
       <boxGeometry args={speaker.isLfe ? [0.3, 0.3, 0.27] : [0.22, 0.28, 0.2]} />
       <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-    </mesh>
-    {hovered && <Html position={[0, 0.23, 0]} center style={{ pointerEvents: "none" }}>
+    </mesh>}
+    {interactive && hovered && <Html position={[0, 0.23, 0]} center style={{ pointerEvents: "none" }}>
       <span className="speaker-tooltip">{speakerLabel(speaker.name)} · {!onFocus ? "请先取消声道静音和独奏" : focused ? "取消聚焦" : "聚焦"}</span>
     </Html>}
   </group>;
 }
 
-const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeakerFocus, hiddenSpeakerNames }: {
+const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeakerFocus, hiddenSpeakerNames, interactive = true }: {
+  interactive?: boolean;
   layout: readonly VirtualSpeaker[];
   focusedSpeakers?: ReadonlySet<string>;
   onSpeakerFocus?: (name: string) => void;
@@ -234,7 +237,7 @@ const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeak
   return (
     <group>
       {speakers.filter(s => !hiddenSpeakerNames?.has(s.name)).map((s) => (
-        <FocusSpeaker key={s.name} speaker={s} dimmed={!!focusedSpeakers?.size && !focusedSpeakers.has(s.name)}
+        <FocusSpeaker key={s.name} interactive={interactive} speaker={s} dimmed={!!focusedSpeakers?.size && !focusedSpeakers.has(s.name)}
           focused={focusedSpeakers?.has(s.name) ?? false} onFocus={onSpeakerFocus} />
       ))}
     </group>
@@ -435,6 +438,7 @@ function HrtfTestMarker({visual,layout}:{visual:HrtfTestVisual;layout:readonly V
 
 export function ObjectView({
   immersive = false,
+  mobile = false,
   objects,
   layout,
   theme = "dark",
@@ -446,6 +450,7 @@ export function ObjectView({
   testVisual,
 }: {
   immersive?: boolean;
+  mobile?: boolean;
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
@@ -473,7 +478,7 @@ export function ObjectView({
   },[immersive]);
   const toggleFullscreen=async()=>{try{setNavigationError("");if(document.fullscreenElement===shell.current)await document.exitFullscreen();else await shell.current?.requestFullscreen();}catch{setNavigationError("无法进入全屏，请重试。");}};
   const rendererMode = window.sdaDesktop?.rendererMode;
-  const isSwiftShader = rendererMode === "swiftshader";
+  const isSwiftShader = mobile || rendererMode === "swiftshader";
   return (
     <div ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
@@ -492,9 +497,9 @@ export function ObjectView({
       <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
         <ObjectListRefresh objects={objects} />
         {testVisual&&<HrtfTestMarker visual={testVisual} layout={layout.filter(s=>!hiddenSpeakerNames?.has(s.name))}/>}
-        {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming />}
+        {immersive ? <ImmersiveCamera view={view} onFlightChange={setFlying}/> : <ViewportFraming mobile={mobile} />}
         {!immersive && <Room p={p} />}
-        <SpeakerRing layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
+        <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
         {objects.map((o) => (
           <ObjectDot key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />

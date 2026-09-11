@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./styles.css";
 import "./workbench.css";
+import "./buttons.css";
+import "./sliders.css";
 
 try {
   document.documentElement.dataset.theme = localStorage.getItem("sda-theme") === "light" ? "light" : "dark";

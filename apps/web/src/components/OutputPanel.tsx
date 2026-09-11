@@ -51,7 +51,7 @@ export default function OutputPanel() {
     </label>
     {draft.remoteCompatible&&<small>跟随系统默认，使用共享混音供远程采集；远程软件切换默认设备时自动跟随。</small>}
     {draft.exclusive&&<small role="note">独占绕过系统混音，UU 等远程软件可能听不到。远程听音请选择「远程兼容」。</small>}
-    <div className="output-manager-actions"><button onClick={()=>void apply()} disabled={!data}>{busy?"处理中…":data?.status.state==="unavailable"?"应用并重试":"应用"}</button><button onClick={()=>void refresh()}>刷新设备</button></div>
+    <div className="output-manager-actions"><button data-button="primary" onClick={()=>void apply()} disabled={!data}>{busy?"处理中…":data?.status.state==="unavailable"?"应用并重试":"应用"}</button><button onClick={()=>void refresh()}>刷新设备</button></div>
     <div className="output-manager-status" aria-live="polite">
       <strong>{data?.status.state==="ready"?data.status.actualName:"输出不可用"}</strong>
       {data?.status.state==="ready"&&<span>{data.status.mode==="exclusive"?"实际独占":"实际共享"} · {(data.status.sampleRate??0)/1000} kHz · {data.status.channels} 声道 · 缓冲 {data.status.bufferMs?.toFixed(1)} ms</span>}

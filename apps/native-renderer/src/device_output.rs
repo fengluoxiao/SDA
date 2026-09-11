@@ -7,6 +7,8 @@ const PHASES: usize = 1024;
 pub(super) struct DeviceOutput {
     source: CallbackOutput,
     rate: u32,
+    lossless: bool,
+    buffering: bool,
     phase: u64,
     history: [[f32; 2]; TAPS],
     cursor: usize,
@@ -36,12 +38,13 @@ impl DeviceOutput {
                 taps
             }).collect()
         };
-        Self { source: CallbackOutput::new(48_000, refill), rate, phase: 0,
+        Self { source: CallbackOutput::new(48_000, refill), rate, lossless:crate::remote_audio::receiver(),buffering:true, phase: 0,
             history: [[0.0; 2]; TAPS], cursor: 0, filters, requested_source: 0 }
     }
 
     pub(super) fn reset(&mut self) {
         self.source.reset();
+        self.buffering=true;
         self.phase = 0;
         self.history.fill([0.0; 2]);
         self.cursor = 0;
@@ -55,6 +58,17 @@ impl DeviceOutput {
             self.reset();
             for i in 0..frames { write(i, [0.0; 2]); }
             return 0;
+        }
+        if self.lossless {
+            self.requested_source=frames;
+            if !enabled || (self.buffering && fifo.available_read()<4*crate::remote_audio::FRAMES) {
+                for i in 0..frames {write(i,[0.0;2]);}return 0;
+            }
+            self.buffering=false;
+            let popped=fifo.pop_frames(frames,|i,frame|write(i,frame));
+            for i in popped..frames {write(i,[0.0;2]);}
+            if popped<frames {self.buffering=true;}
+            return popped;
         }
         if self.rate == 48_000 {
             self.requested_source = frames;
@@ -89,6 +103,23 @@ impl DeviceOutput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lossless_receiver_rebuffers_without_fading_or_dropping_samples() {
+        let fifo=crate::stereo_fifo::StereoFifo::new(4096);
+        let mut output=super::DeviceOutput::new(48000,1920);output.lossless=true;
+        let samples:Vec<f32>=(0..3840).map(|i|(i as f32*0.05).sin()*0.4).collect();
+        fifo.push(&samples[..960]);
+        let mut result=Vec::new();
+        assert_eq!(output.fill(&fifo,true,480,|_,frame|result.extend(frame)),0);
+        assert!(result.iter().all(|v|*v==0.0));assert_eq!(fifo.available_read(),480);
+        fifo.push(&samples[960..]);result.clear();
+        assert_eq!(output.fill(&fifo,true,2000,|_,frame|result.extend(frame)),1920);
+        assert_eq!(&result[..samples.len()],samples.as_slice());
+        assert!(result[samples.len()..].iter().all(|v|*v==0.0));
+        fifo.push(&samples);result.clear();
+        assert_eq!(output.fill(&fifo,true,1920,|_,frame|result.extend(frame)),1920);
+        assert_eq!(result,samples);
+    }
     use super::*;
     fn render(rate: u32, hz: f32, chunk: usize) -> Vec<f32> {
         let fifo = StereoFifo::new(65_536);

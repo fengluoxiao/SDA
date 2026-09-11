@@ -33,3 +33,6 @@ apps/desktop/room-simulator/runtime.json
 apps/native-renderer/target/
 __pycache__/
 *.pyc
+
+# Windows shell redirection artifact.
+/nul

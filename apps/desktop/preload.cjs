@@ -19,6 +19,17 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld("sdaDesktop", {
+  getRemotePairingKey: () => ipcRenderer.invoke("sda:remote-pairing-key"),
+  getRemoteStatus: () => ipcRenderer.invoke("sda:remote-status"),
+  remoteSession: (action, value) => ipcRenderer.invoke("sda:remote-session", action, value),
+  remoteCommand: command => ipcRenderer.invoke("sda:remote-command", command),
+  publishRemoteScene: scene => ipcRenderer.send("sda:remote-scene", scene),
+  publishRemoteState: state => ipcRenderer.send("sda:remote-state", state),
+  completeRemoteControl: (id, error) => ipcRenderer.send("sda:remote-complete", id, error),
+  onRemoteStatus: callback => subscribe("sda:remote-status", callback),
+  onRemoteControl: callback => subscribe("sda:remote-control", callback),
+  onRemoteSuspend: callback => subscribe("sda:remote-suspend", callback),
+  onRemoteResult: callback => subscribe("sda:remote-result", callback),
   electron3D,
   browseMedia: (action, value) => ipcRenderer.invoke("sda:media-browser", action, value),
   browsePersonalHrtf: (action, value) => ipcRenderer.invoke("sda:personal-hrtf-browser", action, value),

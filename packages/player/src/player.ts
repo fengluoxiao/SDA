@@ -101,7 +101,7 @@ export interface PlayerCallbacks {
   /** Measured-loudness balance converged (or applied from cache) for the
    *  current track; the UI persists it so replays balance from sample 0. */
   onMeasuredLoudness?: (integratedLufs: number, peakDbfs?: number) => void;
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; artist?: string; album?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   /** Program-level DBMD metadata. It never follows the sample event timeline. */
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
@@ -1701,7 +1701,7 @@ export class SdaPlayer {
         break;
       case "track": {
         this.trackReported = true;
-        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } };
+        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; artist?: string; album?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } };
         if (track.durationSec && Number.isFinite(track.durationSec)) {
           this.containerDurationSec = track.durationSec;
         }

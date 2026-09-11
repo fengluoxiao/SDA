@@ -62,7 +62,7 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
         <option value="">当前完整 HRTF / BRIR</option>{rooms.map(r=><option key={r.id} value={r.id}>{r.name} · {r.layout}</option>)}
       </Select></label>
       <div className="cinema-actions"><button disabled={busy} onClick={()=>void run(async()=>{const r=await desktop?.importCinemaRoom?.();if(r){setRooms(list=>[...list.filter(v=>v.id!==r.id),r]);setProfileId(r.id);}})}>导入档案</button>
-        <button disabled={busy||!room||room.builtin} onClick={()=>void run(async()=>{if(room&&await desktop?.deleteCinemaRoom?.(room.id)){setRooms(list=>list.filter(r=>r.id!==room.id));setProfileId(null);}})}>删除档案</button></div>
+        <button data-button="danger" disabled={busy||!room||room.builtin} onClick={()=>void run(async()=>{if(room&&await desktop?.deleteCinemaRoom?.(room.id)){setRooms(list=>list.filter(r=>r.id!==room.id));setProfileId(null);}})}>删除档案</button></div>
       {room&&<p className="cinema-status">{room.measurement==="simulated"?"实测音箱 / 模拟房间":room.measurement==="personal"?"个人测量（档案声明）":"人头麦测量"} · {room.sampleRate/1000} kHz</p>}
       {!compatible&&<p className="cinema-warning">档案为 {room?.layout}；当前 {layout} 使用原 HRTF。</p>}
       <div className="cinema-band">
@@ -98,7 +98,7 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
     {error&&<p role="alert" className="cinema-warning">{error}</p>}
     <div className="cinema-footer"><span>{busy?"处理中":current===saved?"已应用":"未应用"}</span>
       <button disabled={busy||!saved} onClick={()=>{const state=JSON.parse(saved);setSettings(state.settings);setProfileId(state.profileId);}}>撤销更改</button>
-      <button disabled={busy||current===saved} onClick={()=>void run(async()=>{if(!await desktop?.nativeRendererCinema?.(settings,profileId))throw new Error("原生渲染器未接受影院设置");setSaved(current);})}>应用</button>
+      <button data-button="primary" disabled={busy||current===saved} onClick={()=>void run(async()=>{if(!await desktop?.nativeRendererCinema?.(settings,profileId))throw new Error("原生渲染器未接受影院设置");setSaved(current);})}>应用</button>
     </div>
   </div>;
 }

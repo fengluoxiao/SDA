@@ -23,6 +23,9 @@ importers:
       h5wasm:
         specifier: 0.10.3
         version: 0.10.3
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
     devDependencies:
       '@sda/web':
         specifier: workspace:*
@@ -85,6 +88,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.8(react@19.2.8)
+      swiper:
+        specifier: 12.0.3
+        version: 12.0.3
       three:
         specifier: ^0.170.0
         version: 0.170.0
@@ -4376,6 +4382,10 @@ packages:
     resolution: {integrity: sha512-aqldKgX9aZqpoDp3e8/BZ8Dm7x1pJl+qI3ZKxDN0i/IQTWUwBx/ManmlVJ3wowqbno6c2bmiIfs+Um6LbsjJyQ==}
     peerDependencies:
       react: '>=17.0'
+
+  swiper@12.0.3:
+    resolution: {integrity: sha512-BHd6U1VPEIksrXlyXjMmRWO0onmdNPaTAFduzqR3pgjvi7KfmUCAm/0cj49u2D7B0zNjMw02TSeXfinC1hDCXg==}
+    engines: {node: '>= 4.7.0'}
 
   tar-stream@2.2.0:
     resolution: {integrity: sha512-ujeqbceABgwMZxEJnk2HDY2DlnUZ+9oEcb1KzTVfYHio0UE6dG71n60d8D2I4qNvleWrrXpmjpt7vZeF1LnMZQ==}
@@ -10124,6 +10134,8 @@ snapshots:
   suspend-react@0.1.3(react@19.2.8):
     dependencies:
       react: 19.2.8
+
+  swiper@12.0.3: {}
 
   tar-stream@2.2.0:
     dependencies:

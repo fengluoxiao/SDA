@@ -46,6 +46,7 @@ pub struct Status {
     sample_rate: Option<u32>,
     channels: Option<u16>,
     buffer_ms: Option<f64>,
+    sample_format: Option<String>,
     state: String,
     detail: String,
 }
@@ -54,6 +55,7 @@ enum Request {
     Set(Settings),
     Devices(Vec<Endpoint>),
     Stop,
+    Remote(Option<(String,String)>),
 }
 struct ComScope;
 impl ComScope {
@@ -100,6 +102,10 @@ pub fn request(settings: Option<Settings>) {
             detail: Some("output manager unavailable"),
         });
     }
+}
+pub fn remote_request(address:Option<String>,token:Option<String>) {
+    let accepted=CONTROL.get().is_some_and(|tx|tx.send(Request::Remote(address.zip(token))).is_ok());
+    if !accepted {write_event(&Event::Ack {command:"setRemoteOutput",accepted:false,detail:Some("output manager unavailable")});}
 }
 pub fn stop() {
     if let Some(tx) = CONTROL.get() {
@@ -195,6 +201,7 @@ struct Output {
     converter: device_output::DeviceOutput,
     monitor: output_monitor::OutputMonitor,
     fade: f32,
+    lossless: bool,
     event: Option<OutputEvent>,
 }
 struct OutputEvent(windows::Win32::Foundation::HANDLE);
@@ -303,8 +310,10 @@ impl Output {
             if settings.exclusive {
                 let mut chosen = None;
                 let mut last_error = String::new();
-                for rate in [48000, 44100, 96000] {
-                    for (tag, bits) in [(1, 24), (1, 16), (3, 32), (1, 32)] {
+                let rates: &[u32]=if remote_audio::receiver(){&[48000]}else{&[48000,44100,96000]};
+                let formats: &[(u16,u32)]=if remote_audio::receiver(){&[(3,32),(1,32),(1,24),(1,16)]}else{&[(1,24),(1,16),(3,32),(1,32)]};
+                for &rate in rates {
+                    for &(tag, bits) in formats {
                         for extensible in [true, false] {
                             let mut candidate = WAVEFORMATEXTENSIBLE::default();
                             candidate.Format = WAVEFORMATEX {
@@ -352,6 +361,7 @@ impl Output {
                 client = initialize_client(&device, &format, false)?;
             }
             let f = format.Format;
+            if remote_audio::receiver() && f.nSamplesPerSec!=48000 {return Err("远程无损收听需要 48 kHz 输出，请在 Windows 声音设置中选择 48 kHz，或使用独占模式".into());}
             let subtype = format.SubFormat;
             let bits = f.wBitsPerSample;
             let float = f.wFormatTag == 3
@@ -401,6 +411,7 @@ impl Output {
                 ),
                 monitor: Default::default(),
                 fade: 0.0,
+                lossless: remote_audio::receiver(),
                 event,
             })
         }
@@ -444,12 +455,14 @@ impl Output {
             let bits = self.bits;
             let float = self.float;
             let fade = &mut self.fade;
+            let lossless=self.lossless;
+            let local_muted=remote_audio::local_muted();
             let monitor = &mut self.monitor;
             let sample_pos = t.callback_consumed_sample_pos.load(Ordering::Relaxed);
             let popped = self
                 .converter
                 .fill(fifo, enabled, count as usize, |i, frame| {
-                    *fade = if fade_out {
+                    *fade = if lossless {1.0} else if fade_out || local_muted {
                         (*fade - step).max(0.0)
                     } else {
                         (*fade + step).min(1.0)
@@ -504,10 +517,15 @@ impl Output {
             sample_rate: Some(self.rate),
             channels: Some(self.channels as u16),
             buffer_ms: Some(self.size as f64 * 1000.0 / self.rate as f64),
+            sample_format:Some(format!("{}-bit {}",self.bits,if self.float {"float"}else{"PCM"})),
             state: "ready".into(),
             detail,
         }
     }
+}
+fn remote_status(requested:&Settings)->Status {
+    Status {requested:requested.clone(),actual_id:None,actual_name:Some("一对一无损远程".into()),
+        mode:Some("remote".into()),sample_rate:Some(48000),channels:Some(2),buffer_ms:None,sample_format:Some("32-bit float".into()),state:"ready".into(),detail:"32-bit float PCM · 远端时钟".into()}
 }
 fn unavailable(requested: &Settings, detail: String) -> Status {
     Status {
@@ -518,6 +536,7 @@ fn unavailable(requested: &Settings, detail: String) -> Status {
         sample_rate: None,
         channels: None,
         buffer_ms: None,
+        sample_format:None,
         state: "unavailable".into(),
         detail,
     }
@@ -578,8 +597,11 @@ pub fn run(
         sample_rate: 48000,
         output_channels: 2,
     });
+    let input_fifo=fifo.clone();let input_t=telemetry.clone();
     thread::spawn(move || {
-        let _ = protocol::read_frames(&mut io::stdin().lock(), &commands);
+        if remote_audio::receiver() {
+            if let Err(error)=remote_audio::read_receiver(input_fifo,input_t) {write_event(&Event::Error{detail:error.to_string()});}
+        }else{let _ = protocol::read_frames(&mut io::stdin().lock(), &commands);}
         stop();
     });
     // Endpoint/property-store enumeration can stall a driver. Keep it away
@@ -604,11 +626,27 @@ pub fn run(
             thread::sleep(Duration::from_secs(1));
         }
     });
+    let mut remote:Option<remote_audio::HostOutput>=None;
+    let mut remote_selected=false;
+    let remote_telemetry=RuntimeTelemetry::default();
+    let _=remote_audio::mirror_fifo();
     let mut last_retry = Instant::now();
     loop {
         let request = rx.recv_timeout(Duration::from_millis(2));
         match request {
             Ok(Request::Stop) => break,
+            Ok(Request::Remote(next)) => {
+                let result=if let Some((address,token))=next {
+                    remote_audio::HostOutput::connect(&address,&token).map(|sink|{remote=Some(sink);remote_selected=true;remote_audio::HOST_SELECTED.store(true,Ordering::Release);})
+                }else{
+                    remote=None;remote_selected=false;remote_audio::HOST_SELECTED.store(false,Ordering::Release);remote_audio::select_mirror(false);
+                    if output.is_some(){Ok(())}else{Output::open(&e,&requested).and_then(|o|{o.start()?;output=Some(o);Ok(())})}
+                };
+                let accepted=result.is_ok();let error=result.err();
+                write_event(&Event::Ack{command:"setRemoteOutput",accepted,detail:error.as_deref()});
+                let status=output.as_ref().map_or_else(||if remote_selected{remote_status(&requested)}else{unavailable(&requested,error.unwrap_or_default())},|o|o.status(&requested,if remote_selected{"本机与远端同时输出".into()}else{String::new()}));
+                publish(status,devices.clone());
+            }
             Ok(Request::List) => {
                 publish(
                     output.as_ref().map_or_else(
@@ -729,6 +767,19 @@ pub fn run(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             _ => {}
+        }
+        remote_audio::select_mirror(remote.is_some()&&output.is_some());
+        if let Some(sink)=&mut remote {
+            remote_telemetry.callback_output_enabled.store(telemetry.callback_output_enabled.load(Ordering::Acquire),Ordering::Release);
+            let result=if output.is_some(){
+                if remote_audio::mirror_overflow(){Err("远程接收超过 6 秒未跟上播放，请重新连接".into())}
+                else if remote_audio::mirror_ready(){sink.tick(remote_audio::mirror_fifo(),&remote_telemetry)}else{Ok(())}
+            }else{sink.tick(&fifo,&telemetry)};
+            if let Err(error)=result {
+                remote=None;remote_selected=false;remote_audio::HOST_SELECTED.store(false,Ordering::Release);remote_audio::select_mirror(false);
+                publish(unavailable(&requested,format!("远程连接中断：{error}")),devices.clone());
+                write_event(&Event::Error{detail:format!("remote audio: {error}")});
+            }
         }
         if let Some(active) = &mut output {
             if let Err(err) = active.tick(&fifo, &telemetry, false) {

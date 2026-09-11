@@ -1,3 +1,4 @@
+import { Slider } from "./Slider";
 import {useState} from "react";
 import "./SourceExtentPanel.css";
 export interface SourceExtentSettings {enabled:boolean;width:number;diffusion:number}
@@ -22,10 +23,10 @@ export default function SourceExtentPanel(){
     <label className="settings-switch"><span>分布声源渲染</span><input type="checkbox" role="switch" checked={value.enabled} onChange={e=>void apply({...value,enabled:e.target.checked})}/></label>
     <details className="settings-details"><summary>高级参数与说明</summary>
     <p className="settings-description">按对象的宽、高和扩散信息展开声音，保留中心定位。仅作用于原生对象轨，不分离合唱，也不修改立体声或固定声床。</p>
-    <label className="source-extent-control"><span>最小宽度 <output>{Math.round(value.width*120)}°</output></span><input aria-label="最小对象宽度" type="range" min="0" max="1" step="0.01" value={value.width} onChange={e=>setValue({...value,width:Number(e.target.value)})}/></label>
-    <label className="source-extent-control"><span>最小扩散 <output>{Math.round(value.diffusion*100)}%</output></span><input aria-label="最小对象扩散" type="range" min="0" max="1" step="0.01" value={value.diffusion} onChange={e=>setValue({...value,diffusion:Number(e.target.value)})}/></label>
+    <label className="source-extent-control"><span>最小宽度 <output>{Math.round(value.width*120)}°</output></span><Slider aria-label="最小对象宽度"  min="0" max="1" step="0.01" value={value.width} onChange={e=>setValue({...value,width:Number(e.target.value)})}/></label>
+    <label className="source-extent-control"><span>最小扩散 <output>{Math.round(value.diffusion*100)}%</output></span><Slider aria-label="最小对象扩散"  min="0" max="1" step="0.01" value={value.diffusion} onChange={e=>setValue({...value,diffusion:Number(e.target.value)})}/></label>
     <p className="settings-description">两个最小值会影响所有对象。设为 0 跟随母版；缺少范围信息的对象仍保持点声源。扩散为去相关能量比例，不是混响量。</p>
-    <div className="cinema-actions"><button onClick={()=>void apply({...value,enabled:true})}>应用范围</button><button onClick={()=>void apply({enabled:true,width:0,diffusion:0})}>按母版</button><button onClick={()=>void apply({enabled:true,width:.25,diffusion:.12})}>宽声源试听</button></div>
+    <div className="cinema-actions"><button data-button="primary" onClick={()=>void apply({...value,enabled:true})}>应用范围</button><button onClick={()=>void apply({enabled:true,width:0,diffusion:0})}>按母版</button><button onClick={()=>void apply({enabled:true,width:.25,diffusion:.12})}>宽声源试听</button></div>
     <small>试听参数是可调整的偏好，不代表录音中的真实合唱面积。关闭即可对照原渲染。</small>
     </details>
     {error&&<p role="alert" className="cinema-warning">{error}</p>}

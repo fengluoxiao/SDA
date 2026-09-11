@@ -1,0 +1,24 @@
+.remote-panel{display:grid;gap:18px;color:var(--text,#e9edf2)}
+.remote-intro,.remote-client-heading{display:flex;align-items:center;gap:14px;justify-content:space-between}
+.remote-intro>div{flex:1}.remote-intro h3,.remote-intro p{margin:0}.remote-intro p{margin-top:6px;opacity:.65;font-size:12px}
+.remote-badge{font-size:11px;letter-spacing:.08em;border:1px solid currentColor;border-radius:20px;padding:6px 10px;white-space:nowrap;opacity:.7}
+.remote-summary{display:grid;gap:7px;padding:15px;border-radius:12px;background:rgba(128,128,128,.09)}
+.remote-summary small,.remote-note,.remote-invites small{opacity:.65;line-height:1.8;font-size:12px}
+.remote-panel .settings-group{display:grid;gap:14px}.remote-panel label{display:grid;gap:8px;font-size:12px}
+.remote-panel input:not([type=range]){width:100%;box-sizing:border-box;background:rgba(128,128,128,.06);color:inherit;border:1px solid rgba(128,128,128,.25);border-radius:8px;padding:10px 12px}
+.remote-panel button,.remote-client button{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.remote-invites{display:grid;gap:10px}.remote-invites h4{margin:0}.remote-invite{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.remote-invite code{font-size:12px}.remote-error{color:#df645e;font-size:13px;overflow-wrap:anywhere}
+.remote-client{overflow:auto!important;color:var(--text)}.remote-client-content{width:min(840px,calc(100% - 48px));margin:48px auto 32px;display:grid;gap:24px}
+.remote-eyebrow{font-size:10px;letter-spacing:.25em;opacity:.5}.remote-client-heading h1{font-size:23px;margin:8px 0 0}
+.remote-now{padding:28px;border-radius:20px;border:1px solid rgba(128,128,128,.2);display:grid;justify-items:center;gap:12px;background:rgba(128,128,128,.045)}
+.remote-now h2{font-size:21px;margin:4px 0;text-align:center;overflow-wrap:anywhere}.remote-now p{margin:0;opacity:.7}.remote-now small{opacity:.55}
+.remote-now progress{width:100%;height:5px;border:0;border-radius:8px;margin-top:16px;accent-color:currentColor}.remote-time{display:flex;width:100%;justify-content:space-between;font-size:11px;opacity:.55}
+.remote-now progress::-webkit-progress-bar{background:var(--border);border-radius:8px}.remote-now progress::-webkit-progress-value{background:var(--accent);border-radius:8px}
+.remote-transport{display:flex;align-items:center;gap:12px;margin:4px 0 12px}.remote-transport button{width:44px;height:44px;border-radius:50%}.remote-transport button[data-button=primary]{width:54px;height:54px}
+.remote-now>label{display:flex;align-items:center;gap:14px;font-size:12px;width:100%;max-width:440px}.remote-now input[type=range]{flex:1;min-width:0}.remote-options{display:flex;gap:18px;width:100%;margin-top:12px}.remote-options label{flex:1;min-width:0;display:grid;gap:8px;font-size:12px}
+.remote-queue h3{font-size:15px;display:flex;justify-content:space-between}.remote-queue small{opacity:.5;font-weight:400}.remote-queue{max-height:340px;overflow:auto}.remote-queue>button{display:flex;width:100%;justify-content:flex-start;text-align:left;gap:16px;padding:13px;border:0;background:transparent;border-radius:9px;color:inherit}.remote-queue>button>span{opacity:.4;font-size:11px}.remote-queue>button>strong{flex:1;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.remote-queue>button.active,.remote-queue>button:hover{background:rgba(128,128,128,.12)}
+.remote-client-footer{display:flex;align-items:center;justify-content:space-between;gap:16px}.remote-client-footer>div{display:grid;gap:6px;font-size:12px}.remote-client-footer small{opacity:.6}.remote-client-footer button{white-space:nowrap}
+@media(max-width:620px){.remote-client-content{width:calc(100% - 28px);margin-top:42px}.remote-now{padding:18px}.remote-options{flex-direction:column}.remote-client-footer{align-items:flex-start;flex-direction:column}}
+
+.remote-local-mute{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}.remote-local-mute small{flex-basis:100%;opacity:.65}.remote-local-mute input{accent-color:var(--accent);width:18px;height:18px}

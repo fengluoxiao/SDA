@@ -1,3 +1,4 @@
+import { Slider } from "./components/Slider";
 import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, type PlaybackMode } from "./playbackOrder";
 import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
 import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
@@ -7,6 +8,12 @@ import Select from "./components/Select";
 import PersonalHrtfPanel from "./components/PersonalHrtfPanel";
 import PlaylistPanel from "./components/PlaylistPanel";
 import OutputPanel from "./components/OutputPanel";
+import RemotePanel, {RemoteClientView} from "./components/RemotePanel";
+import {createMonitorPreset} from "./monitor-presets";
+import {createHardwarePreset} from "./hardware-presets";
+import {alignMonitorToRoom} from "./monitor-alignment";
+import type {RemoteTools} from "./remote-session";
+import {useRemoteSession} from "./remote-session";
 import {ROOM_LISTENING_LEVELS} from "./room-listening";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WindowTitlebar } from "./components/WindowTitlebar";
@@ -1749,6 +1756,140 @@ export function App() {
     setPaused(false);
   }, []);
 
+  const [remoteTools,setRemoteTools]=useState<RemoteTools|null>(null);
+  const remoteToolsFetch=useRef<()=>Promise<void>>(async()=>{});
+  const remoteRoomSettings=(settings:CinemaSettings)=>{const {monitor,...room}=settings;return room;};
+  const remote = useRemoteSession({
+    tools:remoteTools?{...remoteTools,head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,layout:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,
+      locked:personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}:null,
+    scene:{objects,layout:outputSpeakers,muted:[...effectiveMutedIds],sounding:[...soundingObjectIds],hiddenSpeakers:[...effectiveSpeakerMutes],position,trackId:playlistCurrentId??""},
+    source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
+    artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
+    currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,
+    playlist:playlist.map(item=>({id:item.id,title:item.title})),
+  },async command=>{
+    switch(command.action){
+      case "play":
+        if(paused){pausedRef.current=false;setPaused(false);await playerRef.current?.resume();}
+        else if(!playing){
+          if(lastSourceRef.current)replay();
+          else if(playlistRef.current[0])playPlaylistItem(playlistRef.current[0].id);
+          else throw Error("主机播放列表为空，请先在主机添加歌曲");
+        }break;
+      case "pause":pausedRef.current=true;setPaused(true);await playerRef.current?.pause();break;
+      case "next":case "previous":{
+        const items=playlistRef.current;if(!items.length)throw Error("主机播放列表为空");
+        const index=items.findIndex(item=>item.id===playlistCurrentIdRef.current);
+        const next=command.action==="next"?(index+1)%items.length:(Math.max(index,0)-1+items.length)%items.length;
+        playPlaylistItem(items[next]!.id);break;
+      }
+      case "mediaPaths":appendToPlaylist((command.value as string[]).map(path=>({kind:"path",path})));break;
+      case "track":if(!playlistRef.current.some(item=>item.id===command.value))throw Error("歌曲已从主机列表移除");playPlaylistItem(String(command.value));break;
+      case "replay":if(!lastSourceRef.current)throw Error("主机尚未选择歌曲");replay();break;
+      case "volume":changeVolume(Number(command.value));break;
+      case "playbackMode":changePlaybackMode(command.value as PlaybackMode);break;
+      case "stereoMode":await changeStereoRenderMode(command.value as StereoRenderMode);break;
+      case "roomCancel":await window.sdaDesktop?.roomLabCancel?.();break;
+      case "roomGenerate":{
+        if(roomComparison!==null)throw Error("请先退出对照试听");
+        const config=command.value as import("./vite-env").RoomSimulationConfig;
+        if(config.layout!==(layoutId==="auto"?detectedLayout??"7.1.4":layoutId))throw Error("主机布局已经变化，请重新生成");
+        if(!await window.sdaDesktop?.roomLabGenerate?.(config))throw Error("主机仿真接口不可用");
+        await remoteToolsFetch.current();break;
+      }
+      case "roomApply":{
+        const rooms=await window.sdaDesktop?.listCinemaRooms?.();
+        const room=rooms?.find(r=>r.id===command.value);
+        if(!room||room.layout!==(layoutId==="auto"?detectedLayout??"7.1.4":layoutId))throw Error("请选择与当前布局一致的房间");
+        await applyRoomPreset(room.id);setAudioSettingsRevision(v=>v+1);await remoteToolsFetch.current();break;
+      }
+      case "roomDisable":await disableRoomPreset();setAudioSettingsRevision(v=>v+1);await remoteToolsFetch.current();break;
+      case "roomSettings":case "monitorSettings":case "monitorAlign":case "monitorPreset":case "hardwarePreset":{
+        if(roomComparison!==null)throw Error("主机正在对照试听，请先退出对照");
+        const api=window.sdaDesktop,current=await api?.getCinemaSettings?.();
+        if(!current)throw Error("主机音频设置不可用");
+        if(!playerRef.current&&!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw Error("HRTF 未就绪");
+        let next=current.settings;
+        const request=command.value as {expected:string;settings:CinemaSettings & import("./vite-env").MonitorSettings};
+        if(command.action==="roomSettings"){
+          if(request.expected!==JSON.stringify({profileId:current.profileId,settings:remoteRoomSettings(current.settings)}))throw Error("房间已在主机更改，请撤销草稿并重新编辑");
+          next={...request.settings,monitor:current.settings.monitor};
+        }else if(command.action==="monitorSettings"){
+          if(request.expected!==JSON.stringify(current.settings.monitor))throw Error("监听已在主机更改，请撤销草稿并重新编辑");
+          next={...next,monitor:request.settings};
+        }else{
+          const monitor=current.settings.monitor;if(!monitor)throw Error("监听设置不可用");
+          if(command.action==="monitorPreset")next={...next,monitor:createMonitorPreset(String(command.value),monitor,outputSpeakers.map(s=>s.name))};
+          if(command.action==="hardwarePreset")next={...next,monitor:createHardwarePreset(String(command.value),monitor)};
+          if(command.action==="monitorAlign"){
+            const room=(await api?.listCinemaRooms?.())?.find(r=>r.id===current.profileId);
+            if(!room)throw Error("请先应用内置房间");
+            next={...next,monitor:alignMonitorToRoom(room,current.settings,monitor,outputSpeakers.map(s=>s.name),layoutId==="auto"?detectedLayout??"7.1.4":layoutId)};
+          }
+        }
+        if(!await api?.nativeRendererCinema?.(next,current.profileId))throw Error("主机未接受音频设置");
+        setAudioSettingsRevision(v=>v+1);await remoteToolsFetch.current();break;
+      }
+      case "hrtfRename":case "hrtfCopy":{
+        const value=command.value as {id:string;name:string},api=window.sdaDesktop;
+        if(command.action==="hrtfRename")await api?.renamePersonalHrtf?.(value.id,value.name);
+        else await api?.personalHrtfArchive?.("copy",value.id,value.name);
+        await remoteToolsFetch.current();break;
+      }
+      case "hrtfTune":{
+        if(binauralHead!=="ku100"||roomComparison!==null||personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy)throw Error("当前不能修改 KU100 设置");
+        const request=command.value as {dense:boolean;calibrated:boolean};
+        const api=window.sdaDesktop;
+        if(!await api?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",request.dense,request.calibrated),.04))throw Error("主机未接受 KU100 设置");
+        try{
+          await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",request.calibrated));
+          await playerRef.current?.setDenseBinauralObjects(request.dense,denseBinauralBaseUrl(request.calibrated));
+        }catch(e){await api?.nativeRendererHrtf?.(nativeHrtfSetName("ku100",denseBinauralObjects,ku100Calibration),.04);throw e;}
+        setKu100Calibration(request.calibrated);setDenseBinauralObjects(request.dense);
+        localStorage.setItem(KU100_CALIBRATION_KEY,request.calibrated?"1":"0");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,request.dense?"1":"0");break;
+      }
+      case "hrtfGenerate":{
+        if(playing&&!paused)throw Error("请先暂停歌曲，再保存测试结果");
+        if(roomComparison!==null)throw Error("请先退出对照试听");
+        const request=command.value as {parameters:PhrtfParameters;assessment:unknown};
+        await applyPersonalHrtf("generated",request.parameters,request.assessment);await remoteToolsFetch.current();break;
+      }
+      case "hrtf":
+        if(roomComparison!==null)throw Error("主机正在对照试听，请先退出对照");
+        await applyPersonalHrtf(String(command.value));await remoteToolsFetch.current();break;
+      default:throw Error("不支持的远程操作");
+    }
+  },async replaceOutput=>{
+    if(replaceOutput){
+      // A receiver owns a different sidecar. Keep the playlist and source, but
+      // retire the decoder whose native sources are about to disappear.
+      playRequestRef.current++;nativeSessionEpochRef.current++;
+      const active=playerRef.current;const retiring=retiringPlayerRef.current;
+      playerRef.current=null;retiringPlayerRef.current=null;setPlayerReady(null);
+      playingRef.current=false;pausedRef.current=false;setPlaying(false);setPaused(false);
+      await active?.dispose();if(retiring&&retiring!==active)await retiring.dispose();
+    }else{pausedRef.current=true;setPaused(true);await playerRef.current?.pause();}
+  });
+
+  useEffect(()=>{
+    if(remote.role!=="host")return;
+    let alive=true,busy=false;
+    const refresh=async()=>{
+      if(busy)return;busy=true;
+      try{
+        const api=window.sdaDesktop;
+        const [cinema,rooms,personal,generator]=await Promise.all([api?.getCinemaSettings?.(),api?.listCinemaRooms?.(),api?.listPersonalHrtf?.(),api?.roomLabStatus?.()]);
+        if(alive&&cinema)setRemoteTools({cinema,generator,rooms:(rooms??[]).map(r=>({id:r.id,name:r.name,layout:r.layout,builtin:r.builtin})),
+          heads:[...BINAURAL_HEADS.map(h=>({id:h.id,name:h.label})),...(personal??[]).map(h=>({id:h.id,name:h.name}))],
+          speakers:outputSpeakers.map(s=>({name:s.name,label:speakerLabel(s.name),az:s.azimuth,el:s.elevation})),layout:"",head:"",locked:false});
+      }catch(e){if(alive)setRemoteTools(v=>v?{...v,error:String(e)}:null);}finally{busy=false;}
+    };
+    remoteToolsFetch.current=refresh;void refresh();const timer=setInterval(()=>void refresh(),1500);
+    return()=>{alive=false;clearInterval(timer);remoteToolsFetch.current=async()=>{};};
+  },[remote.role,outputSpeakers]);
+
+  if(remote.role==="client")return <RemoteClientView status={remote}/>;
+
   return (
     <div
       className={`app ${dragOver ? "drag" : ""}`}
@@ -1840,6 +1981,7 @@ export function App() {
             <div className="settings-tabs" role="tablist" aria-label="设置分类">
               {[
                 { id: "output", label: "音频输出" },
+                ...(window.sdaDesktop?.remoteSession ? [{id:"remote",label:"无损远程"}] : []),
                 ...(window.sdaDesktop?.startNativeRenderer ? [{ id: "spatial", label: "空间音效" }] : []),
                 { id: "eq", label: "耳机 EQ" },
                 ...(window.sdaDesktop?.getHeadTrackingStatus ? [{ id: "tracking", label: "头部追踪" }] : []),
@@ -1856,6 +1998,9 @@ export function App() {
                   }}
                   onClick={() => setSettingsTab(tab.id)}>{tab.label}</button>
               ))}
+            </div>
+            <div className="settings-content" id="settings-content-remote" role="tabpanel" aria-labelledby="settings-tab-remote" hidden={settingsTab!=="remote"}>
+              {settingsTab==="remote"&&<RemotePanel status={remote}/>}
             </div>
             <div className="settings-content" id="settings-content-output" role="tabpanel" aria-labelledby="settings-tab-output" hidden={settingsTab !== "output"}>
             <OutputPanel />
@@ -1911,6 +2056,7 @@ export function App() {
                   <option value="low-cut">低频诊断</option>
                 </Select>
               </label>
+              <div className="eq-console">
               {([
                 ["low", "低频", "120 Hz"],
                 ["mid", "中频", "1.2 kHz"],
@@ -1918,8 +2064,10 @@ export function App() {
               ] as const).map(([band, label, frequency]) => (
                 <label className="eq-band-control" key={band}>
                   <span className="eq-band-label"><b>{label}</b><small>{frequency}</small></span>
-                  <input
-                    type="range"
+                  <Slider
+                    aria-label={`${label} EQ`}
+                    aria-valuetext={`${binauralEqBands[band].toFixed(1)} dB`}
+                    origin={0}
                     min="-12"
                     max="12"
                     step="0.5"
@@ -1929,8 +2077,10 @@ export function App() {
                     onDoubleClick={() => changeBinauralEqBand(band, 0)}
                   />
                   <output>{binauralEqBands[band] > 0 ? "+" : ""}{binauralEqBands[band].toFixed(1)} dB</output>
+                  <span className="eq-scale" aria-hidden="true"><span>−12</span><span>0</span><span>+12 dB</span></span>
                 </label>
               ))}
+              </div>
             </fieldset>
             </div>
             <div className="settings-content" id="settings-content-tracking" role="tabpanel" aria-labelledby="settings-tab-tracking" hidden={settingsTab !== "tracking"}>
@@ -2101,8 +2251,8 @@ export function App() {
           </div>
         )}
         {floatPanel === "pinna" && (
-          <div className="panel float-panel">
-            <h2>个人 HRTF 生成与导入</h2>
+          <div className="panel float-panel personal-hrtf-panel">
+            <div className="personal-hrtf-heading"><h2>个人 HRTF</h2><button type="button" aria-label="关闭个人 HRTF" onClick={()=>setFloatPanel(null)}><X size={16}/></button></div>
             <PersonalHrtfPanel layout={outputSpeakers} currentHead={binauralHead} playing={playing&&!paused}
               locked={personalHrtfBusy||denseBinauralBusy||ku100CalibrationBusy||nativeRendererBusy||roomComparison!==null}
               onApply={applyPersonalHrtf} onVisual={setHrtfTestVisual}/>

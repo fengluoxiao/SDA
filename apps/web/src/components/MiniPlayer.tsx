@@ -1,3 +1,4 @@
+import { Slider } from "./Slider";
 import PlaybackModeButton from "./PlaybackModeButton";
 import type { PlaybackMode } from "../playbackOrder";
 import { memo } from "react";
@@ -20,6 +21,8 @@ export interface TrackInfo {
   objectChannels?: number;
   /** 歌曲标题：容器元数据（MKV Title / 音轨 Name）或文件名兜底。 */
   title?: string;
+  artist?: string;
+  album?: string;
 }
 
 interface MiniPlayerProps {
@@ -116,8 +119,7 @@ export const MiniPlayer = memo(function MiniPlayer({
             <span className="mp-objs">{objectCount} 对象</span>
             <div className="mp-vol" title="音量">
               <span className="mp-vol-icon"><Volume2 size={18} /></span>
-              <input
-                type="range"
+              <Slider
                 aria-label="音量"
                 min={0}
                 max={100}

@@ -7,12 +7,14 @@
  *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createMediaBrowser } = require("./media-browser.cjs");
+const { RemoteSession } = require("./remote-session.cjs");
+const { loadRemoteCertificate } = require("./remote-certificate.cjs");
 const personalHrtf = require("./personal-hrtf.cjs");
 const personalHrtfDirectory = () => path.join(app.getPath("userData"), "personal-hrtf");
 const cinemaProfiles = require("./cinema-profiles.cjs");
@@ -586,6 +588,7 @@ function clearNativeRendererSession(reason) {
 }
 
 function startNativeRenderer() {
+  if (remoteSession.role === "client") return nativeRendererStatus;
   writeStartupLog(`startNativeRenderer() called; executable=${bundledNativeRendererPath() ?? "missing"}`);
   if (nativeRenderer) return nativeRendererStatus;
   const executable = bundledNativeRendererPath();
@@ -676,6 +679,97 @@ function stopNativeRenderer() {
   clearNativeRendererSession("native renderer stopped");
   return setNativeRendererStatus(false, "已停止，桌面播放不可用");
 }
+
+function remoteBroadcast(channel, value) {
+  for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(channel, value);
+}
+let remoteSleepBlocker = null;
+let remoteLifecycle = "";
+function publishRemoteStatus(value) {
+  // A remote desktop disconnect may turn off the display or lock the session.
+  // Keep audio hosting alive without forcing the monitor to stay on.
+  if (value.role !== "off" && remoteSleepBlocker === null) {
+    remoteSleepBlocker = powerSaveBlocker.start("prevent-app-suspension");
+  } else if (value.role === "off" && remoteSleepBlocker !== null) {
+    powerSaveBlocker.stop(remoteSleepBlocker);
+    remoteSleepBlocker = null;
+  }
+  const lifecycle = `${value.role}/${value.phase}: ${value.detail}`;
+  if (lifecycle !== remoteLifecycle) {
+    remoteLifecycle = lifecycle;
+    writeStartupLog(`[remote] ${lifecycle}`);
+  }
+  remoteBroadcast("sda:remote-status", value);
+}
+const remoteMedia = require("./remote-media.cjs").createRemoteMedia({readSettings,isMediaFile});
+async function setRemoteLocalMute(muted) {
+  if(typeof muted!=="boolean")throw Error("无效静音设置");
+  if(nativeRenderer)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted},"setRemoteLocalMute");
+  writeSettings({remoteLocalMuted:muted});
+  if(remoteSession.state)remoteSession.publishState({...remoteSession.state,artwork:remoteSession.artwork});
+  remoteSession.publish();return remoteSession.status();
+}
+const remoteSession = new RemoteSession({
+  localMuted:()=>readSettings().remoteLocalMuted!==false,
+  savedPairingKey:()=>readSettings().remoteCustomPairingKey??"",
+  rememberPairingKey:pairingKey=>writeSettings({remoteCustomPairingKey:pairingKey}),
+  defaultKey: () => {
+    let key=readSettings().remoteGeneratedPairingKey;
+    if(typeof key!=="string"||!/^[a-f0-9]{64}$/.test(key)){key=crypto.randomBytes(32).toString("hex");writeSettings({remoteGeneratedPairingKey:key});}
+    return Buffer.from(key,"hex");
+  },
+  certificate: () => loadRemoteCertificate(path.join(app.getPath("userData"), "remote-certificate.json")),
+  executable: () => {
+    const executable = bundledNativeRendererPath();
+    if (!executable) throw Error("内置原生音频接收器未构建");
+    return executable;
+  },
+  status: publishRemoteStatus,
+  control: value => {
+    if(value.action==="localMute")void setRemoteLocalMute(value.value).then(()=>remoteSession.completeControl(value.id),error=>remoteSession.completeControl(value.id,String(error)));
+    else if(value.action==="mediaList")void remoteMedia.list(value.value).then(data=>remoteSession.completeControl(value.id,null,data),()=>remoteSession.completeControl(value.id,"无法读取目录，请确认它仍在收藏或最近记录中且可以访问"));
+    else if(value.action==="mediaOpen")void remoteMedia.open(value.value).then(paths=>remoteBroadcast("sda:remote-control",{...value,action:"mediaPaths",value:paths}),()=>remoteSession.completeControl(value.id,"无法打开媒体，请在主机检查目录与文件"));
+    else remoteBroadcast("sda:remote-control", value);
+  },
+  result: value => remoteBroadcast("sda:remote-result", value),
+  disconnected: () => {
+    // Losing a receiver must not pause the independent local playback.
+    if(nativeRenderer)return nativeRendererCommandAck({type:"setRemoteOutput",address:null,token:null},"setRemoteOutput").catch(()=>{});
+  },
+  route: async ({address,token}) => {
+    if (!address && !nativeRenderer) return true;
+    startNativeRenderer();
+    if(address)await nativeRendererCommandAck({type:"setRemoteLocalMute",muted:readSettings().remoteLocalMuted!==false},"setRemoteLocalMute");
+    const changed=nativeRendererCommandAck({type:"setRemoteOutput",address,token},"setRemoteOutput",15000);
+    // Ending remote output succeeds even when no physical endpoint is available.
+    return address?changed:changed.then(()=>true,()=>true);
+  },
+  prepareClient: async () => {
+    remoteBroadcast("sda:remote-suspend", {replaceOutput:true});
+    const renderer = nativeRenderer;
+    if (!renderer) return;
+    const exited = new Promise(resolve => { renderer.once("exit",resolve); setTimeout(resolve,2000).unref(); });
+    stopNativeRenderer(); await exited;
+  },
+});
+ipcMain.handle("sda:remote-pairing-key", () => readSettings().remoteCustomPairingKey??"");
+ipcMain.handle("sda:remote-status", () => remoteSession.status());
+let remoteOperation = Promise.resolve();
+ipcMain.handle("sda:remote-session", (_event, action, value) => {
+  const task = remoteOperation.then(() => {
+    writeStartupLog(`[remote] requested action=${String(action).slice(0, 20)}`);
+    if (action === "localMute") return setRemoteLocalMute(value);
+    if (action === "host") return remoteSession.host(value);
+    if (action === "join") return remoteSession.join(value);
+    if (action === "stop") return remoteSession.stop();
+    throw Error("无效远程操作");
+  });
+  remoteOperation = task.catch(() => {}); return task;
+});
+ipcMain.handle("sda:remote-command", (_event, command) => remoteSession.command(command));
+ipcMain.on("sda:remote-scene", (_event, scene) => remoteSession.publishScene(scene));
+ipcMain.on("sda:remote-state", (_event, state) => remoteSession.publishState(state));
+ipcMain.on("sda:remote-complete", (_event, id, error) => remoteSession.completeControl(id,error));
 
 let headTrackingTimer = null;
 let headTrackingStartedAt = 0;
@@ -1438,7 +1532,7 @@ ipcMain.handle("sda:comparison-gain", async (_event,gainDb)=>{
   if(!Number.isFinite(gainDb)||gainDb < -40||gainDb > 0)return false;
   return nativeRendererCommandAck({type:"setComparisonGain",gainDb},"setComparisonGain");
 });
-const defaultCinemaSettings = () => ({ enabled: false, directDb: 0, earlyDb: 0, lateDb: 0, earlyMs: 50,
+const defaultCinemaSettings = () => cinemaProfiles.validateSettings({ enabled: false, directDb: 0, earlyDb: 0, lateDb: 0, earlyMs: 50,
   bassEnabled: false, crossoverHz: 80, bassDb: 0, speakers: {} });
 function readCinemaProfile(id) {
   if (typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) throw new Error("房间档案 ID 无效");
@@ -1739,6 +1833,11 @@ ipcMain.handle("sda:delete-headphone-profile", (_e, id) => {
 });
 
 app.whenReady().then(() => {
+  for (const event of ["lock-screen", "unlock-screen", "suspend", "resume"]) {
+    powerMonitor.on(event, () => {
+      writeStartupLog(`[remote] system=${event} role=${remoteSession.role} phase=${remoteSession.phase}`);
+    });
+  }
   boostProcessTreePriority();
   setInterval(boostProcessTreePriority, 30_000).unref();
   createWindow();
@@ -1751,6 +1850,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", async () => {
+  await remoteSession.stop();
   await stopHeadTrackingGracefully(false);
   stopNativeRenderer();
   if (process.platform !== "darwin") app.quit();

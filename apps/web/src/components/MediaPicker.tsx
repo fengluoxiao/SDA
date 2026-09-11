@@ -108,7 +108,7 @@ export function MediaPicker({mode,onClose,onSelect,kind="media"}:{mode:"files"|"
         </section>
       </div>
       {error&&<p className="media-picker-error" role="alert">{error}</p>}
-      <footer className="media-picker-footer"><span>{mode==="files"?`已选择 ${selected.length} 个文件`:selected[0]||directory}</span><button disabled={submitting} onClick={onClose}>取消</button><button disabled={busy||submitting||!directory||(mode==="files"&&!selected.length)} onClick={()=>void submit()}><FolderOpen size={16}/>{submitting?"正在导入…":mode==="files"?"打开":kind==="hrtf"?"导出到此目录":"添加此目录"}</button></footer>
+      <footer className="media-picker-footer"><span>{mode==="files"?`已选择 ${selected.length} 个文件`:selected[0]||directory}</span><button disabled={submitting} onClick={onClose}>取消</button><button data-button="primary" disabled={busy||submitting||!directory||(mode==="files"&&!selected.length)} onClick={()=>void submit()}><FolderOpen size={16}/>{submitting?"正在导入…":mode==="files"?"打开":kind==="hrtf"?"导出到此目录":"添加此目录"}</button></footer>
       {menu&&<div role="menu" className="media-picker-menu" style={{left:menu.x,top:menu.y}}>
         <button role="menuitem" onClick={()=>void navigate(menu.path)}><FolderOpen size={15}/>打开目录</button>
         <button role="menuitem" onClick={()=>void changeSaved(favorite(menu.path)?"unfavorite":"favorite",menu.path)}><Star size={15}/>{favorite(menu.path)?"取消收藏":"收藏目录"}</button>
