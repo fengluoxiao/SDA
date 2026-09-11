@@ -1,0 +1,20 @@
+# Remote menu motion reference
+
+Reference: Apple WWDC25, [Meet Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/).
+
+- 2:55: material appears through modulation of light/lensing, rather than ordinary opacity fades.
+- 4:32–5:24: glass morphs between controls; a menu bubble opens in place, preserving the relationship to the tapped button.
+- 7:02: a larger menu acquires thicker material, richer shadow and softer scattering.
+- 18:22: Reduce Motion removes elastic behavior.
+
+The remote menu grows from the source button's circle to the menu bounds. The complete menu deforms with its glass shell; its content becomes clear as the shell approaches full size. Closing reverses this transition while the source button grows back. The timing values are SDA implementation choices, not claimed Apple constants. This is a web approximation; it does not implement Apple's native adaptive optical renderer. Reduced-motion and reduced-transparency preferences remain respected.
+
+Checked in the browser at desktop and 390×844 viewport sizes: opening, closing via Escape, final layout and content readability. Safari on-device rendering still needs user observation.
+
+Motion integration: pinned `motion@13.2.0` in @sda/web. The remote build bundles only the used animation exports into motion.mjs (~64 KB uncompressed), alongside bundled license notices. Menu geometry is driven by a shared MotionValue and physical spring; interrupted transitions preserve velocity. Reduced Motion settles immediately. Glass displacement texture generation is suspended during geometry changes and refreshed once after settling to avoid repeated canvas work. Verified 390×844 browser opening, in-flight close/reopen, convergence to final dimensions and absence of browser errors. No runtime CDN dependency; Apple-native Photos animation parity is not claimed.
+
+User recording revision: inspected the supplied 7.20-second, ~30 fps Photos capture locally, including dense opening/closing frame strips. Its transient form is a tall oval/capsule, and menu content participates in the deformation and soft-to-sharp reveal. Replaced the fixed-radius expanding rectangle and stationary clipped text with anisotropic whole-menu transforms, capsule-to-rounded-rectangle corner relaxation, curved travel from the source, and a short content blur reveal. Menu fill is more translucent and neutral in both themes. The geometry/timing remain fitted approximations, not extracted Apple implementation constants. Verified phone-width opening, interrupted closing/reopening, final identity transform, cleared content blur and no browser errors. User media and frame extracts stay in local temporary files.
+
+Jelly tuning: removed the visual suppression of spring overshoot. Opening now uses stiffness 170, damping 19 and mass 1.05; the Motion spring reaches approximately 1.042 peak and settles in ~816 ms in a sampled run. Overshoot produces a small horizontal stretch with vertical compression, while the main expansion retains its different horizontal/vertical curves. Menu interaction becomes available at 85% expansion instead of waiting through the settling tail. Reduced Motion still snaps immediately.
+
+Frame review: exported the 7.20-second recording at 60 fps (432 frames; the original is approximately 30 fps, so duplicates add no detail), then inspected all nine contact sheets covering repeated opening and closing cycles. At approximately 2.367, 4.067 and 6.467 seconds, lettering disappears before the shrinking lens; the source button grows back before the lens finishes collapsing. At 3.300–3.500 and 5.967–6.167 seconds, the capsule expands before lettering becomes clear. Refined the shared reversible content curve to smoothstep over 60–98% expansion and reduced early centre travel, retaining the existing elastic settling and continuous button/menu size exchange. These are visual fits, not measured native animation constants. Browser checks at 390×844 confirmed interrupted reversal and clean closed-state transforms; on-device Safari appearance remains to be judged.

@@ -1,22 +1,37 @@
 const clone = value => JSON.parse(JSON.stringify(value));
 const roomOnly = settings => { const {monitor, ...room} = settings; return room; };
 const hardwareDefault = {enabled:false,inputDb:0,dacBits:24,lineRms:2,gainDb:26,railV:28,currentA:7,loadOhms:8,outputOhms:.05,bandwidthHz:60000};
+const audioActions=new Set(['roomApply','roomDisable','roomSettings','monitorSettings','monitorAlign','monitorPreset','hardwarePreset','hrtf','hrtfTune']);
+export function settingsWaitView(wait,playback){
+  if(!wait||!playback||wait.track!==playback.track)return null;
+  const remaining=Math.max(0,wait.until-playback.position);
+  if(remaining<=0)return null;
+  return playback.running?`等待音效切换 · 预计还需 ${Math.ceil(remaining)} 秒`:'设置已提交 · 继续播放后等待缓存音频切换';
+}
 function el(tag, text, cls) { const node=document.createElement(tag); if(text)node.textContent=text; if(cls)node.className=cls; return node; }
-export function createTools(send,request) {
+export function createTools(send,request,getPlayback=()=>null) {
   const dialog=document.getElementById("sound-tools"), content=document.getElementById("tools-content"), note=document.getElementById("tools-note");
   let state=null, online=false, page="room", draft=null, expected="", dirty=false, pending=null, signature="";
   let playing=false, test=null;
-  let pendingAction="";
+  let pendingAction="",draftProfileId=null;
+  let audioWait=null;
+  note.setAttribute('role','status');note.setAttribute('aria-live','polite');
   const config={length:6,width:5,height:3.2,earHeight:1.2,placement:.7,listeningDistance:1.2,material:"studio",order:10};
   const cancelGeneration=document.getElementById("tools-cancel-generation");
   cancelGeneration.onclick=()=>{send("roomCancel");report("正在取消房间生成…");};
-  const report=text=>{note.textContent=text;};
-  const mark=()=>{dirty=true;report("尚未应用");};
+  const report=text=>{if(note.textContent!==text)note.textContent=text;};
+  const mark=()=>{dirty=true;audioWait=null;note.removeAttribute('aria-busy');report("尚未应用");};
+  function playbackProgress(){
+    if(!audioWait)return;
+    const text=settingsWaitView(audioWait,getPlayback());
+    if(text){note.setAttribute('aria-busy','true');report(text);}
+    else {audioWait=null;note.removeAttribute('aria-busy');report('主机已应用');}
+  }
   function issue(action,value) {
     if(pending||!online)return;
     const id=send(action,value);
     if(!id){report("尚未连接主机");return;}
-    pending=id;pendingAction=action;cancelGeneration.hidden=action!=="roomGenerate";report(action==="roomGenerate"?"主机正在生成房间…":"等待主机应用…");lock();
+    audioWait=null;note.setAttribute('aria-busy','true');pending=id;pendingAction=action;cancelGeneration.hidden=action!=="roomGenerate";report(action==="roomGenerate"?"主机正在生成房间…":"等待主机应用…");lock();
   }
   function lock() {
     for(const control of content.querySelectorAll("button,input"))control.disabled=!online||!!pending||!!state?.locked;
@@ -42,6 +57,7 @@ export function createTools(send,request) {
   function section(title) {const part=el("fieldset",null,"tool-section");part.append(el("legend",title));content.append(part);return part;}
   function fresh() {
     if(!state)return;
+    if(page==="room")draftProfileId=state.cinema.profileId;
     draft=clone(page==="room"?roomOnly(state.cinema.settings):page==="monitor"?state.cinema.settings.monitor:{head:state.head,dense:state.dense,calibrated:state.calibrated});
     expected=JSON.stringify(page==="room"?{profileId:state.cinema.profileId,settings:draft}:draft);
     dirty=false;render();
@@ -53,7 +69,7 @@ export function createTools(send,request) {
     if(page==="room") {
       const part=section("房间仿真");
       toggle(part,draft,"enabled","启用房间");
-      choice(part,"房间档案",state.rooms.filter(r=>r.layout===state.layout).map(r=>({id:r.id,name:(r.builtin?"内置 · ":"")+r.name})),state.cinema.profileId,id=>issue("roomApply",id));
+      choice(part,"房间档案",state.rooms.filter(r=>r.layout===state.layout).map(r=>({id:r.id,name:(r.builtin?"内置 · ":"")+r.name})),draftProfileId,id=>{draftProfileId=id;mark();});
       choice(part,"反射试听",[{id:"direct",name:"直达声"},{id:"early",name:"直达声与早期反射"},{id:"full",name:"完整房间"}],draft.reflectionMode||"full",id=>{draft.reflectionMode=id;mark();});
       for(const args of [["directDb","直达声",-24,6,.5,"dB"],["earlyDb","早期反射",-40,6,.5,"dB"],["lateDb","晚期混响",-40,6,.5,"dB"],["earlyMs","早期反射分界",10,100,1,"ms"]])number(part,draft,...args);
       const channels=section("音箱校准");
@@ -88,13 +104,14 @@ export function createTools(send,request) {
     }
     const actions=el("div",null,"tool-actions");actions.append(button("撤销更改",()=>{fresh();report("已读取主机当前配置");}),button("应用",()=>{
       if(![...content.querySelectorAll("input")].every(input=>input.reportValidity()))return;
-      issue(page==="room"?"roomSettings":page==="monitor"?"monitorSettings":"hrtf",page==="hrtf"?draft.head:{settings:draft,expected});
+      issue(page==="room"?"roomSettings":page==="monitor"?"monitorSettings":"hrtf",page==="hrtf"?draft.head:{settings:draft,expected,...(page==="room"?{profileId:draftProfileId}:{})});
     },true));content.append(actions);lock();
   }
   document.getElementById("tools-close").onclick=()=>dialog.close();
   dialog.addEventListener("click",e=>{if(e.target===dialog)dialog.close();});
-  for(const b of document.querySelectorAll("[data-tool]"))b.onclick=()=>{document.getElementById("player-settings").open=false;if(page!==b.dataset.tool){page=b.dataset.tool;fresh();report("");}else if(!draft)fresh();if(!dialog.open)dialog.showModal();};
+  for(const b of document.querySelectorAll("[data-tool]"))b.onclick=()=>{document.getElementById("player-settings").dispatchEvent(new Event("menu-close"));if(page!==b.dataset.tool){page=b.dataset.tool;fresh();report("");}else if(!draft)fresh();if(!dialog.open)dialog.showModal();};
   return {
+    playbackProgress,
     update(next,connected,isPlaying=false) {
       playing=isPlaying;
       test?.update(next,connected,isPlaying);
@@ -106,7 +123,19 @@ export function createTools(send,request) {
       else if(pendingAction==="roomGenerate"&&next.generator?.running)report(`主机正在生成房间 · ${next.generator.current} / ${next.generator.total}`);
       else if(next.error)report(next.error);
     },
-    acknowledged(id,error) {if(id!==pending)return;pending=null;const action=pendingAction;pendingAction="";cancelGeneration.hidden=true;if(!error){dirty=false;fresh();}report(error||(action==="roomGenerate"?"房间已生成，请从档案中选择应用":"主机已应用"));lock();},
-    disconnected() {test?.close();test=null;cancelGeneration.hidden=true;pendingAction="";pending=null;online=false;lock();report("连接已断开，重新连接后可继续编辑");for(const b of document.querySelectorAll("[data-tool]"))b.disabled=true;},
+    acknowledged(id,error,data) {
+      if(id!==pending)return;pending=null;const action=pendingAction;pendingAction="";cancelGeneration.hidden=true;note.removeAttribute('aria-busy');
+      if(!error){dirty=false;fresh();}
+      const playback=getPlayback();
+      if(!error&&audioActions.has(action)&&playback?.hasTrack){
+        // Estimate the old rendered audio still in flight, not a wall-clock
+        // timer: pausing/rebuffering must not declare a setting audible.
+        const delay=Number.isFinite(data?.effectPendingSeconds)?Math.min(15,Math.max(0,data.effectPendingSeconds)):8;
+        audioWait={track:playback.track,until:Math.max(playback.position,playback.hostPosition)+delay};
+        playbackProgress();
+      }else report(error||(action==="roomGenerate"?"房间已生成，请从档案中选择应用":"主机已应用"));
+      lock();
+    },
+    disconnected() {audioWait=null;note.removeAttribute('aria-busy');test?.close();test=null;cancelGeneration.hidden=true;pendingAction="";pending=null;online=false;lock();report("连接已断开，重新连接后可继续编辑");for(const b of document.querySelectorAll("[data-tool]"))b.disabled=true;},
   };
 }

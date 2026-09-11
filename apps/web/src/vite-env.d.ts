@@ -92,6 +92,8 @@ declare global {
   }
 
   interface NativeRendererStatus {
+    remoteSynchronized?: boolean;
+    remoteSyncWaiting?: boolean;
     running: boolean;
     referenceMix: boolean;
     detail: string;
@@ -108,7 +110,8 @@ declare global {
     sdaDesktop?: {
       getRemotePairingKey?:()=>Promise<string>;
       getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
-      remoteSession?:(action:"host"|"join"|"stop"|"localMute",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      remoteSession?:(action:"host"|"join"|"stop"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      nativeRendererEnd?:(sample:number)=>Promise<boolean>;
       remoteCommand?:(command:import("./remote-session").RemoteCommand)=>Promise<string>;
       publishRemoteScene?:(scene:import("./remote-session").RemoteScene|undefined)=>void;
       publishRemoteState?:(state:import("./remote-session").RemotePlayback)=>void;
@@ -187,7 +190,7 @@ declare global {
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
       nativeRendererStartAt?: (origin: number) => Promise<boolean>;
       nativeRendererPause?: (paused: boolean) => Promise<boolean>;
-      nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[]) => Promise<{ accepted: boolean; samples: number; reason?: string }>;
+      nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[], events?: readonly import("@sda/core").ObjectEvent[]) => Promise<{ accepted: boolean; samples: number; reason?: string }>;
       onNativeRendererStatus?: (callback: (status: NativeRendererStatus) => void) => () => void;
       onNativeRendererObjectActivity?: (callback: (activity: NativeRendererObjectActivity) => void) => () => void;
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;

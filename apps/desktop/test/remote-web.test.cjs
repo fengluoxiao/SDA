@@ -107,17 +107,25 @@ test("HLS authenticates media, survives control loss, reconnects and releases it
     const before=peer.sequence;await until(()=>peer.sequence>before);assert.equal(f.host.peer,peer,"native media survives without a websocket");
     assert.equal((await hlsHttp(f.port,`/hls/${info.id}/control`,"POST",cookie,{id:"http",command:{action:"pause"}})).status,200);await until(()=>f.commands.some(c=>c.action==="pause"));
     assert.ok(peer.segments.length<=16);
+    peer.write(packet("R",Buffer.alloc(0)));
+    assert.equal((await hlsHttp(f.port,info.stream,"GET",cookie)).status,410);
+    assert.equal((await hlsHttp(f.port,info.stream.replace('index.m3u8','0.m4s'),"GET",cookie)).status,410);
+    await until(()=>peer.segments.length>=3);
+    assert.equal((await hlsHttp(f.port,peer.mediaInfo().stream,"GET",cookie)).status,200);
     assert.equal((await hlsHttp(f.port,`/hls/${info.id}/stop`,"POST",cookie)).status,204);await until(()=>f.host.peer===null);
     assert.equal((await hlsHttp(f.port,info.stream,"GET",cookie)).status,403);
   }finally{control?.terminate();await f.close();}
 });
-test("HLS buffers stay bounded, resets mark discontinuities, expired media lease closes",async()=>{
+test("HLS resets discard old media and use a fresh URL epoch; expired leases close",async()=>{
   const {HlsPeer}=require("../remote-hls.cjs");const peer=new HlsPeer({id:"a".repeat(32),address:"test",packet,decodePackets,onClose:()=>{}});peer.on("data",()=>{});peer.on("error",()=>{});
   try{
     peer.write(packet("H",{protocol:1,sampleRate:48000,channels:2}));
     const pcm=packet("A",Buffer.alloc(3840));for(let i=0;i<1700;i++)peer.write(pcm);
-    peer.write(packet("R",Buffer.alloc(0)));for(let i=0;i<100;i++)peer.write(pcm);
-    assert.equal(peer.segments.length,16);assert.match(peer.playlist().toString(),/#EXT-X-DISCONTINUITY\n/);
+    assert.equal(peer.segments.length,16);const previous=peer.mediaInfo().stream;
+    peer.write(packet("R",Buffer.alloc(0)));assert.equal(peer.segments.length,0);assert.equal(peer.frames.length,0);assert.equal(peer.playlist(),null);
+    assert.notEqual(peer.mediaInfo().stream,previous);assert.equal(peer.header.mediaReady,false);
+    for(let i=0;i<300;i++)peer.write(pcm);
+    assert.equal(peer.segments.length,3);assert.equal(peer.header.mediaReady,true);assert.match(peer.playlist().toString(),/#EXT-X-MEDIA-SEQUENCE:0/);
     peer.activity=Date.now()-91000;await until(()=>peer.destroyed);assert.equal(peer.segments.length,0);
   }finally{peer.destroy();}
 });
@@ -126,6 +134,21 @@ test('remote cover state carries only an ID and rejects URLs, SVG and oversized 
  host.publishState({...base,artwork:'data:image/jpeg;base64,/9j/2Q=='});const id=host.state.artworkId;assert.match(id,/^[a-f0-9]{64}$/);assert.ok(!JSON.stringify(host.state).includes('base64'));
  host.publishState({...base,artwork:'data:image/jpeg;base64,/9j/2Q=='});assert.equal(host.state.artworkId,id);
  for(const artwork of ['https://example.com/cover.jpg','file:///private.jpg','data:image/svg+xml;base64,AAAA','data:image/jpeg;base64,'+'A'.repeat(180000),'']){host.publishState({...base,artwork});assert.equal(host.state.artworkId,'');}
+});
+test('HLS receiver diagnostics validate epochs, bound input and keep credits untouched',()=>{
+ const {HlsPeer}=require('../remote-hls.cjs');const reports=[];
+ const peer=new HlsPeer({id:'b'.repeat(32),address:'test',packet,decodePackets,onClose:()=>{},diagnostic:r=>reports.push(r)});
+ peer.on('data',()=>{});
+ try{
+  peer.latestState={playing:true};peer.lastAudioAt=Date.now()-240;peer.maxAudioGapMs=180;
+  const receiver={epoch:0,aheadMs:20,time:12,readyState:2,waiting:true,paused:false};
+  peer.receiverFeedback(Buffer.from(JSON.stringify({receiver:{...receiver,epoch:1}})));assert.equal(reports.length,0);
+  peer.receiverFeedback(Buffer.from(JSON.stringify({receiver:{...receiver,aheadMs:-1}})));assert.equal(reports.length,0);
+  peer.receiverFeedback(Buffer.from(JSON.stringify({receiver})));assert.equal(reports.length,1);
+  assert.equal(reports[0].aheadMs,20);assert.ok(reports[0].audioAgeMs>=240);assert.equal(reports[0].maxAudioGapMs,180);
+  assert.equal(peer.released,0);assert.equal(peer.encoded,0);
+  peer.receiverFeedback(Buffer.from(JSON.stringify({receiver})));assert.equal(reports.length,1);
+ }finally{peer.destroy();}
 });
 test('HLS reopening replaces only the same browser session and rehosting accepts the existing link',async()=>{
  const f=await setup();try{
@@ -140,4 +163,30 @@ test('HLS reopening replaces only the same browser session and rehosting accepts
 test('initial native reset waits until the browser acknowledges readiness',async()=>{
  const f=await setup(true);const ws=socket(f.port);ws.on('error',()=>{});const messages=[];
  try{ws.on('message',decodePackets((kind)=>messages.push(kind)));await new Promise(r=>ws.once('open',r));ws.send(JSON.stringify({protocol:1,token:f.host.key.toString('hex')}));await until(()=>messages.includes('H'));await delay(100);assert.ok(!messages.includes('R'));ws.send(packet('H',{protocol:1}));await until(()=>messages.includes('A'));assert.ok(messages.indexOf('R')<messages.indexOf('A'));}finally{ws.terminate();await f.close();}
+});
+
+test('low-latency parts preserve full-segment bytes and reset atomically',()=>{
+ const {HlsPeer}=require('../remote-hls.cjs');const p=new HlsPeer({id:'c'.repeat(32),packet,decodePackets,onClose(){}});p.on('data',()=>{});
+ try{
+  for(let i=0;i<320;i++)p.receive('A',Buffer.alloc(3840));
+  assert.equal(p.parts.filter(v=>v.sequence===3).length,1);
+  assert.deepEqual(p.segments[0].bytes,Buffer.concat(p.parts.filter(v=>v.sequence===0).map(v=>v.bytes)));
+  assert.match(p.playlist().toString(),/#EXT-X-PART-INF:PART-TARGET=0.200/);
+  assert.match(p.playlist().toString(),/URI="3.0.m4s"/);
+  assert.match(p.playlist().toString(),/#EXT-X-PRELOAD-HINT:TYPE=PART,URI="3.1.m4s"/);
+  assert.equal(p.parts[1].bytes.readBigUInt64BE(p.parts[1].bytes.indexOf('tfdt')+8),9600n);
+  p.receive('R',Buffer.alloc(0));assert.equal(p.parts.length,0);assert.equal(p.playlist(),null);
+ }finally{p.destroy();}
+});
+
+test('low-latency media queries remain authenticated and bounded',async()=>{
+ const f=await setup();try{
+  const result=await hlsHttp(f.port,'/hls/session','POST','',{token:f.host.key.toString('hex')});
+  const info=JSON.parse(result.body),cookie=result.headers['set-cookie'][0].split(';')[0];
+  const part=info.stream.replace('index.m3u8','0.0.m4s');
+  assert.equal((await hlsHttp(f.port,part,'GET','')).status,403);
+  assert.equal((await hlsHttp(f.port,part,'GET',cookie)).status,200);
+  assert.equal((await hlsHttp(f.port,info.stream+'?_HLS_msn=0&_HLS_part=0','GET',cookie)).status,200);
+  assert.equal((await hlsHttp(f.port,info.stream+'?_HLS_msn=99999999','GET',cookie)).status,400);
+ }finally{await f.close();}
 });

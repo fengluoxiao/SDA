@@ -446,7 +446,7 @@ impl Output {
                 self.converter.reset();
                 self.monitor.reset();
             }
-            let enabled = t.callback_output_enabled.load(Ordering::Acquire);
+            let enabled = t.callback_output_enabled.load(Ordering::Acquire) && remote_sync::output_allowed();
             let stride = self.channels * self.bits as usize / 8;
             let bytes = std::slice::from_raw_parts_mut(ptr, count as usize * stride);
             bytes.fill(0);
@@ -628,6 +628,7 @@ pub fn run(
     });
     let mut remote:Option<remote_audio::HostOutput>=None;
     let mut remote_selected=false;
+    let mut virtual_tick=Instant::now();
     let remote_telemetry=RuntimeTelemetry::default();
     let _=remote_audio::mirror_fifo();
     let mut last_retry = Instant::now();
@@ -768,12 +769,23 @@ pub fn run(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             _ => {}
         }
-        remote_audio::select_mirror(remote.is_some()&&output.is_some());
+        let synchronized=remote_sync::ENABLED.load(Ordering::Acquire);
+        remote_audio::select_mirror(remote.is_some()&&(output.is_some()||synchronized));
+        if output.is_none()&&synchronized {
+            fifo.apply_flush_from_consumer();
+            if virtual_tick.elapsed()>=Duration::from_millis(10){
+                let frames=((virtual_tick.elapsed().as_secs_f64()*48000.0) as usize).min(4800);virtual_tick=Instant::now();
+                if telemetry.callback_output_enabled.load(Ordering::Acquire)&&remote_sync::output_allowed(){
+                    let popped=fifo.pop_frames(frames,|_,_|{});
+                    telemetry.callback_consumed_sample_pos.fetch_add(popped as u64,Ordering::Release);
+                }
+            }
+        }else{virtual_tick=Instant::now();}
         if let Some(sink)=&mut remote {
             remote_telemetry.callback_output_enabled.store(telemetry.callback_output_enabled.load(Ordering::Acquire),Ordering::Release);
-            let result=if output.is_some(){
-                if remote_audio::mirror_overflow(){Err("远程接收超过 6 秒未跟上播放，请重新连接".into())}
-                else if remote_audio::mirror_ready(){sink.tick(remote_audio::mirror_fifo(),&remote_telemetry)}else{Ok(())}
+            let result=if output.is_some()||synchronized{
+                if remote_audio::mirror_overflow(){Err("远程接收超过 8 秒未跟上播放，请重新连接".into())}
+                else if remote_audio::mirror_ready(){sink.tick_positioned(remote_audio::mirror_fifo(),&remote_telemetry,remote_audio::mirror_origin())}else{Ok(())}
             }else{sink.tick(&fifo,&telemetry)};
             if let Err(error)=result {
                 remote=None;remote_selected=false;remote_audio::HOST_SELECTED.store(false,Ordering::Release);remote_audio::select_mirror(false);

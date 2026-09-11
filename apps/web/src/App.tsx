@@ -1,3 +1,4 @@
+import { readAhead } from "./read-ahead";
 import { Slider } from "./components/Slider";
 import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, type PlaybackMode } from "./playbackOrder";
 import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
@@ -375,7 +376,10 @@ export function App() {
   const [debug, setDebug] = useState("");
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null);
   /** Internal adaptive state, persisted before future player construction. */
-  const outputLatencySecondsRef = useRef<OutputLatencySeconds>(readOutputLatencySeconds());
+  // useRef(initializer()) evaluates the initializer on every render. Reading
+  // this setting uses synchronous desktop IPC, so keep it out of visual ticks.
+  const [initialOutputLatencySeconds] = useState(readOutputLatencySeconds);
+  const outputLatencySecondsRef = useRef<OutputLatencySeconds>(initialOutputLatencySeconds);
   /** 运行期错误只进 console，不再在页面上显示日志面板。 */
   const [, setErrors] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -415,6 +419,10 @@ export function App() {
   useEffect(() => window.sdaDesktop?.onOutputDevices?.(value => setOutputUnavailable(value.status.state === "unavailable")), []);
   const nativeRendererRunningRef = useRef(false);
   const nativeRendererSampleRef = useRef(0);
+  const nativeRemoteSyncRef = useRef(false);
+  nativeRemoteSyncRef.current=nativeRendererStatus?.remoteSynchronized===true;
+  const nativeRemoteWaitingRef=useRef(false);
+  nativeRemoteWaitingRef.current=nativeRendererStatus?.remoteSyncWaiting===true;
   /** Invalidates every native sink owned by a replaced player immediately. */
   const nativeSessionEpochRef = useRef(0);
   nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
@@ -638,6 +646,28 @@ export function App() {
               if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
               await enqueueNative(`objectEvents (${events.length})`, () => desktop.nativeRendererEvents?.(events));
             },
+            frameWithEvents: async (samplePos, entries, events, sources) => {
+              if (!ownsNativeSession()) throw new Error("native renderer session unavailable");
+              // Initial/new source declarations still receive metadata first. In
+              // steady state, metadata and PCM share one native queue item/ACK.
+              const changed = sources.some(source => !nativeSourceAcks.has(nativeSourceKey(source)));
+              if (changed) {
+                if (events.length) await nativeRendererSink!.events(events);
+                await Promise.all(sources.map(source => nativeRendererSink!.addSource(source)));
+              }
+              let result = await enqueueNative(`frame+metadata @${samplePos}`,
+                () => desktop.nativeRendererFrame!(samplePos, entries, changed ? [] : events), false);
+              if (!result.accepted && /unknown source|source ring capacity/i.test(result.reason ?? "")) {
+                // Preserve the ordinary frame path's recovery after a sidecar
+                // reset invalidates previously acknowledged declarations.
+                for (const source of sources) nativeSourceAcks.delete(nativeSourceKey(source));
+                if (events.length) await nativeRendererSink!.events(events);
+                await Promise.all(sources.map(source => nativeRendererSink!.addSource(source)));
+                result = await enqueueNative(`frame+metadata retry @${samplePos}`,
+                  () => desktop.nativeRendererFrame!(samplePos, entries, []), false);
+              }
+              return result;
+            },
             frame: async (samplePos, entries) => {
               if (!ownsNativeSession()) return { accepted: false, samples: 0, reason: "native renderer session unavailable" };
               let result = await enqueueNative(
@@ -701,6 +731,8 @@ export function App() {
               }
             },
             getConsumedSamples: () => nativeRendererSampleRef.current,
+            getPrebufferSeconds: () => nativeRemoteSyncRef.current?8:4,
+            endAt:sample=>desktop.nativeRendererEnd?.(sample),
             onConsumedSamples: (callback) => desktop.onNativeRendererStatus?.((status) => {
               const samplePos = status.samplePos;
               if (!ownsNativeSession() || !status.running || typeof samplePos !== "number" || !Number.isSafeInteger(samplePos)) return;
@@ -1315,10 +1347,9 @@ export function App() {
             const readSlice = desktop.readSlice;
             await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
             if (!isCurrent() || playerRef.current !== player) return;
-            for (let offset = 0; offset < opened.size; offset += FILE_CHUNK_SIZE) {
-              const chunk = await desktop.readSlice(opened.id, offset, Math.min(FILE_CHUNK_SIZE, opened.size - offset));
+            for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
+              (offset, length) => readSlice(opened.id, offset, length))) {
               if (!isCurrent() || playerRef.current !== player) return;
-              if (chunk.byteLength === 0) throw new Error(`文件在 ${offset} 字节处提前结束`);
               await player.push(chunk);
             }
             if (isCurrent() && playerRef.current === player) player.end();
@@ -1809,10 +1840,15 @@ export function App() {
         const api=window.sdaDesktop,current=await api?.getCinemaSettings?.();
         if(!current)throw Error("主机音频设置不可用");
         if(!playerRef.current&&!await api?.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,denseBinauralObjects,ku100Calibration),.04))throw Error("HRTF 未就绪");
-        let next=current.settings;
-        const request=command.value as {expected:string;settings:CinemaSettings & import("./vite-env").MonitorSettings};
+        let next=current.settings,nextProfileId=current.profileId;
+        const request=command.value as {expected:string;profileId?:string|null;settings:CinemaSettings & import("./vite-env").MonitorSettings};
         if(command.action==="roomSettings"){
           if(request.expected!==JSON.stringify({profileId:current.profileId,settings:remoteRoomSettings(current.settings)}))throw Error("房间已在主机更改，请撤销草稿并重新编辑");
+          if(request.profileId!==undefined&&request.profileId!==current.profileId){
+            const room=(await api?.listCinemaRooms?.())?.find(r=>r.id===request.profileId);
+            if(!room||room.layout!==(layoutId==="auto"?detectedLayout??"7.1.4":layoutId))throw Error("请选择与当前布局一致的房间");
+            nextProfileId=room.id;
+          }
           next={...request.settings,monitor:current.settings.monitor};
         }else if(command.action==="monitorSettings"){
           if(request.expected!==JSON.stringify(current.settings.monitor))throw Error("监听已在主机更改，请撤销草稿并重新编辑");
@@ -1827,7 +1863,7 @@ export function App() {
             next={...next,monitor:alignMonitorToRoom(room,current.settings,monitor,outputSpeakers.map(s=>s.name),layoutId==="auto"?detectedLayout??"7.1.4":layoutId)};
           }
         }
-        if(!await api?.nativeRendererCinema?.(next,current.profileId))throw Error("主机未接受音频设置");
+        if(!await api?.nativeRendererCinema?.(next,nextProfileId))throw Error("主机未接受音频设置");
         setAudioSettingsRevision(v=>v+1);await remoteToolsFetch.current();break;
       }
       case "hrtfRename":case "hrtfCopy":{
@@ -1869,7 +1905,8 @@ export function App() {
       playingRef.current=false;pausedRef.current=false;setPlaying(false);setPaused(false);
       await active?.dispose();if(retiring&&retiring!==active)await retiring.dispose();
     }else{pausedRef.current=true;setPaused(true);await playerRef.current?.pause();}
-  });
+  },()=>({loading:playingRef.current&&!pausedRef.current&&(!playerRef.current?.hasStartedOutput()||nativeRemoteWaitingRef.current),
+    position:playerRef.current?.positionSeconds()??0}));
 
   useEffect(()=>{
     if(remote.role!=="host")return;

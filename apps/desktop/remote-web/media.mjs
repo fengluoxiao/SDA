@@ -9,7 +9,7 @@ export function createMediaPicker(request){
  if(id)rows(data.entries);else for(const [title,entries] of [['收藏',data.favorites],['最近打开',data.recent]]){const h=document.createElement('h3');h.textContent=title;content.append(h);rows(entries);}
  note.textContent=id?'仅显示支持的媒体文件':'只查看主机的收藏和最近目录';
  }catch(e){if(version===revision)note.textContent=e.message;}finally{if(version===revision)state(false);}}
- $('media-open').onclick=()=>{$('player-settings').open=false;history=[];current=null;dialog.showModal();void load();};
+ $('media-open').onclick=()=>{$('player-settings').dispatchEvent(new Event('menu-close'));history=[];current=null;dialog.showModal();void load();};
  $('media-close').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{revision++;busy=false;});
  $('media-back').onclick=()=>void load(history.pop()??null,true);$('media-add').onclick=()=>void add(current);
  return {close:()=>dialog.close()};

@@ -6,6 +6,11 @@ export class StereoPcmBuffer {
     this.samples = new Float32Array(capacity * 2);
     this.read = 0; this.write = 0; this.queued = 0; this.consumed = 0; this.buffering = true;
   }
+  configure(bufferMs) {
+    // Leave room for feedback latency within the sender's credit window.
+    const ms=[100,300,600,1000].includes(bufferMs)?bufferMs:300;
+    this.refill=Math.min(this.capacity,Math.max(1920,(ms-40)*48));
+  }
   push(samples) {
     if (!(samples instanceof Float32Array) || samples.length % 2) throw Error("Invalid stereo PCM");
     const frames = samples.length / 2;

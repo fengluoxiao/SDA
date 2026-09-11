@@ -5,7 +5,9 @@ class SdaRemotePcm extends AudioWorkletProcessor {
     this.port.onmessage = ({data}) => {
       try {
         if (data.type === "pcm") this.fifo.push(new Float32Array(data.samples));
-        else if (data.type === "reset") this.fifo.reset();
+        else if (data.type === "configure") this.fifo.configure(data.bufferMs);
+        else if (data.type === "reset") {this.fifo.reset();this.hold=false;}
+        else if (data.type === "hold") {this.hold=!!data.enabled;this.fifo.reset();}
         else if (data.type === "stop") this.failed = true;
       } catch (error) { this.failed = true; this.port.postMessage({type:"error", detail:error.message}); }
     };
@@ -14,10 +16,10 @@ class SdaRemotePcm extends AudioWorkletProcessor {
     if (this.failed) return false;
     const [left, right] = outputs[0];
     if (!left || !right) return true;
-    this.fifo.fill(left, right); this.ticks += left.length;
+    if(this.hold){left.fill(0);right.fill(0);}else this.fifo.fill(left, right); this.ticks += left.length;
     if (this.ticks >= 960) {
       this.ticks = 0;
-      this.port.postMessage({type:"progress", consumed:this.fifo.consumed, queued:this.fifo.queued, buffering:this.fifo.buffering});
+      this.port.postMessage({type:"progress", consumed:this.fifo.consumed, queued:this.fifo.queued, buffering:!!this.hold||this.fifo.buffering});
     }
     return true;
   }

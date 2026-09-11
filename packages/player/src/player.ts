@@ -37,6 +37,7 @@ import {
 import type { DecodedFrameData, FrameLoudness, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
 import { BwfDemuxer, readBwfMetadata, type BwfMetadata, type BinauralRenderMetadata } from "@sda/demux";
 import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
+import { NativeFrameQueue } from "./native-frame-queue.js";
 import { PresentationClock } from "./presentation-clock.js";
 
 export interface VisualObject {
@@ -143,6 +144,7 @@ export interface NativeRendererSink {
   events(events: readonly ObjectEvent[]): void | Promise<void>;
   /** Resolves only once the sidecar accepted or rejected the entire codec batch. */
   frame(samplePos: number, entries: readonly { id: string; samples: Float32Array }[]): void | Promise<{ accepted: boolean; samples: number; reason?: string }>;
+  frameWithEvents?(samplePos: number, entries: readonly { id: string; samples: Float32Array }[], events: readonly ObjectEvent[], sources: readonly NativeRendererSourceDeclaration[]): Promise<{ accepted: boolean; samples: number; reason?: string }>;
   reset(origin: number): void | Promise<void>;
   setHeadPose(pose: HeadPose): void | Promise<void>;
   clearHeadPose(): void | Promise<void>;
@@ -152,6 +154,8 @@ export interface NativeRendererSink {
   setLayout(layout: LayoutId): void | Promise<void>;
   /** Optional native DAC consumption cursor on the codec sample clock. */
   getConsumedSamples?(): number;
+  getPrebufferSeconds?(): number;
+  endAt?(sample:number):void|Promise<unknown>;
   /** Subscribe to native consumption cursor updates; returns an optional unsubscribe. */
   onConsumedSamples?(callback: (sample: number) => void): void | (() => void);
   /** DAC-aligned post-source-gain/post-mute object activity from the native worker. */
@@ -258,6 +262,7 @@ export class SdaPlayer {
   /** Non-audible stage-one mirror in Web Audio mode; authoritative PCM owner in native-sidecar mode. */
   private readonly nativeRendererSink: NativeRendererSink | undefined;
   private nativeConsumedSamples = 0;
+  private nativeFrames = new NativeFrameQueue();
   private nativeConsumedUnsubscribe: (() => void) | undefined;
   private nativeObjectActivityUnsubscribe: (() => void) | undefined;
   /** 逐对象精确方向双耳渲染开关与密集 IR 集地址；renderer 重建时恢复。 */
@@ -1200,6 +1205,11 @@ export class SdaPlayer {
     return Math.min(audible, this.durationSeconds());
   }
 
+  /** Startup readiness uses confirmed output, not decoded or visual-clock time. */
+  hasStartedOutput(): boolean {
+    return this.playbackStarted && this.positionSeconds() > 0;
+  }
+
   durationSeconds(): number {
     return this.containerDurationSec ?? Math.max(0, this.acceptedEndSample - (this.startupOrigin ?? 0)) / this.sampleRate;
   }
@@ -1405,7 +1415,8 @@ export class SdaPlayer {
       || this.startupOrigin === null
       || this.pausedState
     ) return;
-    const required = Math.min(STARTUP_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? STARTUP_AHEAD_SECONDS) * this.sampleRate;
+    const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
+    const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
     if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin;
@@ -1615,7 +1626,8 @@ export class SdaPlayer {
   }
 
   private targetAheadSeconds(): number {
-    return Math.min(TARGET_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? TARGET_AHEAD_SECONDS);
+    const target=this.nativeRendererSink?.getPrebufferSeconds?.()??TARGET_AHEAD_SECONDS;
+    return Math.min(target, this.renderer?.maxBufferedSeconds() ?? target);
   }
 
   private observeWorkletHealth(renderer: SpatialRenderer, generation: number): void {
@@ -1743,6 +1755,7 @@ export class SdaPlayer {
           this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.peakDbfs);
         }
         this.ended = true;
+        {let end=this.submittedEndSample();for(const frame of this.pcmQueue)end=Math.max(end,frame.samplePos+(frame.channels[0]?.length??0));void this.nativeRendererSink?.endAt?.(end);}
         this.startPlaybackIfReady(true);
         this.checkEnded();
         break;
@@ -2002,18 +2015,27 @@ export class SdaPlayer {
       this.submittedFrames.add(frame);
       outstandingSamples += frameSamples;
       if (this.outputBackend === "native-sidecar") {
+        const generation=this.rendererGeneration;
+        const current=()=>!this.disposed&&generation===this.rendererGeneration&&this.inFlight.has(sequence);
         const submit = async () => {
-          // OAMD must arrive before its object source declaration. Rust preserves
-          // unknown-object metadata and applies it during addSource, so each decoded
-          // Obj_* PCM route creates its own convolver at its first true direction.
-          if (events.length > 0) await this.nativeRendererSink!.events(events);
-          await Promise.all(sourceDeclarations.map((source) => this.nativeRendererSink!.addSource(source)));
-          const result = await this.nativeRendererSink!.frame(frame.samplePos, entries);
+          if(!current())return;
+          let result;
+          if (this.nativeRendererSink!.frameWithEvents) {
+            result = await this.nativeRendererSink!.frameWithEvents(frame.samplePos, entries, events, sourceDeclarations);
+          } else {
+            if (events.length > 0) await this.nativeRendererSink!.events(events);
+            if(!current())return;
+            await Promise.all(sourceDeclarations.map((source) => this.nativeRendererSink!.addSource(source)));
+            if(!current())return;
+            result = await this.nativeRendererSink!.frame(frame.samplePos, entries);
+          }
+          if(!current())return;
           this.handleBatchResult(this.rendererGeneration, result
             ? { sequence, ...result }
             : { sequence, accepted: false, samples: 0, reason: "native sidecar returned no batch ACK" });
         };
-        void submit().catch((error) => {
+        void this.nativeFrames.submit(submit).catch((error) => {
+          if(!current())return;
           this.handleBatchResult(this.rendererGeneration, {
             sequence,
             accepted: false,
@@ -2045,7 +2067,7 @@ export class SdaPlayer {
   }
 
   private checkEnded(): void {
-    if (this.ended && this.pcmQueue.length === 0 && this.fedBufferedSeconds() <= 0.2) {
+    if (this.ended && this.pcmQueue.length === 0 && this.inFlight.size === 0 && this.fedBufferedSeconds() <= (this.outputBackend === "native-sidecar" ? 0 : 0.2)) {
       this.ended = false;
       if (this.visualTimer) clearInterval(this.visualTimer);
       this.visualTimer = null;

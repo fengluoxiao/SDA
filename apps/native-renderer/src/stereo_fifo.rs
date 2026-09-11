@@ -61,6 +61,15 @@ impl StereoFifo {
     pub fn available_write(&self) -> usize {
         self.capacity.saturating_sub(self.available_read())
     }
+    /// Producer thread only, between pushes. The consumer may read/advance, but
+    /// never writes frame storage. Used once when attaching the remote mirror.
+    pub(super) fn snapshot_from_producer(&self)->Vec<f32>{
+        let write=self.write.load(Ordering::Relaxed);
+        let read=self.effective_read(self.read.load(Ordering::Acquire),write);
+        let count=write.wrapping_sub(read).min(self.capacity);let mut samples=Vec::with_capacity(count*2);
+        for offset in 0..count {samples.extend_from_slice(&unsafe{*self.frames[read.wrapping_add(offset)%self.capacity].0.get()});}
+        samples
+    }
 
     /// Single producer only. Returns the number of whole stereo frames written.
     pub fn push(&self, interleaved: &[f32]) -> usize {
@@ -184,6 +193,14 @@ impl StereoFifo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn producer_snapshot_preserves_unplayed_samples_across_wraparound(){
+        let fifo=super::StereoFifo::new(8);
+        fifo.push(&[1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0,11.0,12.0]);
+        fifo.pop_frames(5,|_,_|{});fifo.push(&[13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0]);
+        let snapshot=fifo.snapshot_from_producer();assert_eq!(snapshot,vec![11.0,12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0]);
+        assert_eq!(fifo.available_read(),5);let mut consumed=Vec::new();fifo.pop_frames(5,|_,v|consumed.extend_from_slice(&v));assert_eq!(snapshot,consumed);
+    }
     use super::*;
 
     #[test]

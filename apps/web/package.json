@@ -14,6 +14,7 @@
     "@sda/player": "workspace:*",
     "@sda/renderer": "workspace:*",
     "lucide-react": "^1.42.0",
+    "motion": "13.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "swiper": "12.0.3",

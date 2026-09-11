@@ -24,6 +24,11 @@ pub(super) enum RenderCommand {
         start: u64,
         entries: Vec<(String, Vec<f32>)>,
     },
+    PcmFrame {
+        start: u64,
+        entries: Vec<(String, Vec<f32>)>,
+        events: Vec<crate::NativeObjectEvent>,
+    },
     HeadphoneFir {
         preamp: f32,
         left: Vec<f32>,
@@ -36,7 +41,7 @@ impl RenderCommand {
         match self {
             Self::Command(Command::Feed { samples, .. }) => samples.len() * size_of::<f32>(),
             Self::Pcm { samples, .. } => samples.len() * size_of::<f32>(),
-            Self::PcmBatch { entries, .. } => entries
+            Self::PcmBatch { entries, .. } | Self::PcmFrame { entries, .. } => entries
                 .iter()
                 .map(|(_, samples)| samples.len() * size_of::<f32>())
                 .sum(),

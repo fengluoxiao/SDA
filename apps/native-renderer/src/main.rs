@@ -35,16 +35,18 @@ const DEFAULT_OBJECT_RAMP: u32 = 128;
 // Calibrated HRTFs and VBAP already define speaker levels. Acoustic reference
 // SPL and a program's LKFS delivery limit do not imply per-source attenuation.
 const ROOM_SPEAKER_REFERENCE_GAIN: f32 = 1.0;
-const STEREO_FIFO_CAPACITY_FRAMES: usize = 32_768;
+const STEREO_FIFO_CAPACITY_FRAMES: usize = 48_000 * 8;
 const STEREO_FIFO_TARGET_FRAMES: usize = 16_384;
 /// Prebuffer before the WASAPI callback may start pulling: 8192 frames is
 /// about 170 ms of program, enough to absorb decode jitter at startup.
 const STEREO_FIFO_START_FRAMES: usize = 8_192;
 /// Keep browser object-activity semantics: −60 dBFS source signal held for 200 ms.
 const OBJECT_ACTIVITY_THRESHOLD: f32 = 0.001;
-const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 16;
+// Preserve DAC-aligned activity through the synchronized prebuffer window.
+const OBJECT_ACTIVITY_QUEUE_CAPACITY: usize = 512;
 
 mod bus_renderer;
+mod remote_sync;
 mod source_extent;
 mod near_field;
 mod directional;
@@ -64,6 +66,7 @@ mod remote_audio;
 mod monitor;
 mod hardware;
 mod pcm_ring;
+mod pcm_coverage;
 mod protocol;
 mod render_command;
 mod spatial;
@@ -181,6 +184,8 @@ enum Command {
     Health,
     ListOutputDevices,
     SetRemoteLocalMute { muted: bool },
+    SetRemoteEnd { sample:u64 },
+    SetRemoteSync { enabled: bool, #[serde(rename="startAtMs",default)] start_at_ms: u64, #[serde(rename="stopAtMs",default)] stop_at_ms: u64, #[serde(rename="bufferMs",default)] buffer_ms: u64 },
     SetRemoteOutput { address: Option<String>, token: Option<String> },
     SetOutputDevice { #[serde(flatten)] settings: output_manager::Settings },
     Shutdown,
@@ -220,6 +225,8 @@ enum Event<'a> {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Health {
+    remote_synchronized: bool,
+    remote_sync_waiting: bool,
     sample_pos: u64,
     render_sample_pos: u64,
     active_sources: usize,
@@ -547,6 +554,7 @@ struct Engine {
     sample_pos: u64,
     paused: bool,
     sources: HashMap<String, Source>,
+    pcm_coverage: pcm_coverage::PcmCoverage,
     underrun_samples: u64,
     output_sample_rate: u32,
     output_channels: u16,
@@ -642,6 +650,7 @@ impl Engine {
             sample_pos: 0,
             paused: false,
             sources: HashMap::new(),
+            pcm_coverage: pcm_coverage::PcmCoverage::default(),
             underrun_samples: 0,
             output_sample_rate: sample_rate,
             output_channels: channels,
@@ -1057,6 +1066,7 @@ impl Engine {
         self.render_epoch = self.render_epoch.wrapping_add(1);
         self.pending_object_events.clear();
         self.sources.clear();
+        self.pcm_coverage=pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
         self.head_pose = None;
         self.lfe_muted = false;
@@ -1080,6 +1090,8 @@ impl Engine {
         let render_blocks = telemetry.render_block_count.load(Ordering::Relaxed);
         let render_total = telemetry.render_block_total_micros.load(Ordering::Relaxed);
         Health {
+            remote_synchronized: remote_sync::ENABLED.load(Ordering::Acquire),
+            remote_sync_waiting: remote_sync::ENABLED.load(Ordering::Acquire)&&!remote_sync::output_allowed(),
             sample_pos: telemetry
                 .callback_consumed_sample_pos
                 .load(Ordering::Relaxed),
@@ -1256,6 +1268,25 @@ impl Engine {
         }
         if self.block_offset==0 {self.bus_renderer.as_mut().unwrap().begin_block();}
         self.mix_continuous_objects(output.len()/channels,speaker_targets,effective_direct,near_active);
+        // Reduce completed object outputs source-major. Reading 108 widely
+        // separated convolver allocations once per sample thrashes the cache;
+        // each source's contiguous block can instead be consumed in one pass.
+        // Only fast-path sources have stable renderer ownership for this chunk.
+        // General-path events can replace a convolver within the chunk.
+        let mut object_output = [[0.0_f32; 2]; convolution::DEFAULT_PARTITION];
+        let range = self.block_offset..self.block_offset + output.len() / channels;
+        for source in self.sources.values().filter(|source| source.fast_mixed) {
+            for index in range.clone() {
+                if let Some(continuous) = &source.continuous {
+                    object_output[index][0] += continuous.frames[index].output[0];
+                    object_output[index][1] += continuous.frames[index].output[1];
+                }
+                if let Some(direct) = &source.direct {
+                    object_output[index][0] += direct.left[index];
+                    object_output[index][1] += direct.right[index];
+                }
+            }
+        }
         for frame in output.chunks_exact_mut(channels) {
             let at = self.sample_pos;
             let block_index = self.block_offset;
@@ -1283,19 +1314,19 @@ impl Engine {
             let original = std::array::from_fn::<_, 2, _>(|ear| self.hardware_stereo[ear].process(self.stereo_delay[block_index][ear]));
             self.stereo_delay[block_index] = [0.0; 2];
             let mut lfe_sum = 0.0_f32;
-            let mut direct_sum = [0.0_f32; 2];
+            let mut direct_sum = object_output[block_index];
             // Fade the excitation, retaining both paths' convolution tails.
             let target_mix = if effective_direct { 1.0 } else { 0.0 };
             self.direct_mix += (target_mix - self.direct_mix).clamp(-1.0 / 9600.0, 1.0 / 9600.0);
-            for source in self.sources.values_mut() {
-                if let Some(continuous)=&source.continuous {
-                    direct_sum[0]+=continuous.frames[block_index].output[0];direct_sum[1]+=continuous.frames[block_index].output[1];
+            for source in self.sources.values_mut().filter(|source| !source.fast_mixed) {
+                if let Some(continuous) = &source.continuous {
+                    direct_sum[0] += continuous.frames[block_index].output[0];
+                    direct_sum[1] += continuous.frames[block_index].output[1];
                 }
                 if let Some(direct) = &source.direct {
                     direct_sum[0] += direct.left[block_index];
                     direct_sum[1] += direct.right[block_index];
                 }
-                if source.fast_mixed {continue;}
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
                     continue;
                 }
@@ -1675,6 +1706,7 @@ fn spawn_render_worker(
             let mut block = vec![0.0_f32; convolution::DEFAULT_PARTITION * 2];
             let mut observed_epoch = 0_u64;
             let mut mirror_epoch = 0_u64;
+            let mut pending_mirror_seed:Option<(usize,Vec<f32>)>=None;
             let mut pending_fifo_flush = None;
             loop {
                 for _ in 0..16 {
@@ -1685,8 +1717,9 @@ fn spawn_render_worker(
                         return;
                     }
                 }
-                remote_audio::prepare_mirror(&mut mirror_epoch,engine.render_epoch != observed_epoch);
+                if let Some(seed)=remote_audio::prepare_mirror_with_seed(&mut mirror_epoch,engine.render_epoch != observed_epoch,engine.sample_pos,&fifo){pending_mirror_seed=Some(seed);}
                 if engine.render_epoch != observed_epoch {
+                    remote_sync::hold();
                     engine.clear_object_activity(engine.sample_pos);
                     pending_fifo_flush = Some(fifo.clear_from_producer());
                     telemetry
@@ -1702,27 +1735,26 @@ fn spawn_render_worker(
                     continue;
                 }
                 pending_fifo_flush = None;
+                if !remote_audio::MIRROR_SELECTED.load(Ordering::Acquire){pending_mirror_seed=None;}
+                if let Some((epoch,_))=&pending_mirror_seed {
+                    if !remote_audio::mirror_fifo().flush_acknowledged(*epoch){commands.wait(Duration::from_millis(2));continue;}
+                    if let Some((_,seed))=pending_mirror_seed.take(){remote_audio::publish_mirror(&seed);}
+                }
                 engine.emit_consumed_object_activity(
                     telemetry
                         .callback_consumed_sample_pos
                         .load(Ordering::Acquire),
                 );
-                // Only stop rendering when there is truly nothing to play and
-                // nothing queued: a source gap at the exact current sample must
-                // not idle the worker, because starving the FIFO makes the
-                // callback drop to zeros and the refill lands as a level-step
-                // crackle. render_into already emits silence for missing
-                // samples through the availability ramp.
-                let all_sources_silent = !engine.has_any_pcm_at(engine.sample_pos)
-                    && !engine
-                        .sources
-                        .values()
-                        .any(|source| source.samples.has_future_pcm_within(engine.sample_pos, 4800));
-                if fifo.available_read() >= STEREO_FIFO_TARGET_FRAMES - 512
+                // Do not synthesize missing decoder batches while the output
+                // FIFO still contains earlier audio: doing so advances the codec
+                // clock and permanently discards the late real samples as stale.
+                let frames=engine.pcm_coverage.available(engine.sample_pos,convolution::DEFAULT_PARTITION);
+                let target=if remote_sync::ENABLED.load(Ordering::Acquire) {remote_sync::buffer_frames()} else {STEREO_FIFO_TARGET_FRAMES};
+                if fifo.available_read() >= target - 512
                     || fifo.available_write() < convolution::DEFAULT_PARTITION
                     || !engine.output_active
                     || engine.paused
-                    || (all_sources_silent && fifo.available_read() == 0)
+                    || frames == 0
                 {
                     // A 500 us idle sleep let a burst of control commands keep
                     // re-waking the loop without crossing the render gate, so
@@ -1733,8 +1765,9 @@ fn spawn_render_worker(
                     continue;
                 }
                 let started = Instant::now();
-                engine.render_into(&mut block, 2);
-                if fifo.push(&block) != convolution::DEFAULT_PARTITION {
+                engine.render_into(&mut block[..frames*2], 2);
+                engine.pcm_coverage.discard_before(engine.sample_pos);
+                if fifo.push(&block[..frames*2]) != frames {
                     // The FIFO is full and the callback is not consuming (or a
                     // flush raced us). Back off instead of spinning: a render-
                     // discard loop burned the core and pushed stale blocks
@@ -1742,13 +1775,14 @@ fn spawn_render_worker(
                     commands.wait(Duration::from_millis(2));
                     continue;
                 }
-                remote_audio::publish_mirror(&block);
+                remote_audio::publish_mirror(&block[..frames*2]);
                 telemetry.render_block_count.fetch_add(1, Ordering::Relaxed);
                 // Start pulling the callback only with a solid prebuffer.
                 // Enabling at a thin watermark made the callback catch up to the
                 // renderer during the start burst, and every catch-up dropped to
                 // zeros and refilled as an audible level step.
-                if fifo.available_read() >= STEREO_FIFO_START_FRAMES {
+                if fifo.available_read() >= STEREO_FIFO_START_FRAMES
+                    || (fifo.available_read()>0 && engine.pcm_coverage.available(engine.sample_pos,1)==0) {
                     telemetry
                         .callback_output_enabled
                         .store(true, Ordering::Release);

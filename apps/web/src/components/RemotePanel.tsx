@@ -16,13 +16,19 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
   const api=window.sdaDesktop;
   useEffect(()=>{let alive=true;Promise.resolve(api?.getRemotePairingKey?.()).then(key=>{if(alive){setPairingKey(key??"");setKeyLoaded(true);}},()=>{if(alive){setError("无法读取已保存的密钥，请重新打开设置");}});return()=>{alive=false;};},[]);
   useEffect(()=>{if(status.role==="off")void api?.getOutputDevices?.().then(v=>setDevices(v.devices)).catch(()=>{});},[status.role]);
-  const run=async(action:"host"|"join"|"stop"|"localMute",value?:unknown)=>{
+  const run=async(action:"host"|"join"|"stop"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>{
     setBusy(true);setError("");
     try{await api?.remoteSession?.(action,value);}catch(e){setError(String(e));}finally{setBusy(false);}
   };
-  return <section className="remote-panel" aria-label="一对一无损远程">
-    <div className="remote-intro"><Radio size={26}/><div><h3>一对一无损远程</h3><p>主机渲染，浏览器打开链接即可控制与收听。</p></div><span className="remote-badge">PCM</span></div>
+  return <section className="remote-panel" aria-label="双设备无损远程">
+    <div className="remote-intro"><Radio size={26}/><div><h3>双设备无损远程</h3><p>主机渲染，浏览器打开链接即可控制与收听。</p></div><span className="remote-badge">PCM</span></div>
     <div className="remote-summary" role="status"><strong>{status.detail}</strong><small>{status.format}</small>{status.peer&&<small>已连接 {status.peer} · 缓冲 {Math.round(status.queuedMs)} ms</small>}</div>
+    {status.role!=="client"&&<section className="remote-device-list" aria-label="设备授权">
+      <h4>设备授权 <small>{status.connectedDevices?.length??0} / {status.capacity??2} 在线</small></h4>
+      {(status.pendingDevices??[]).map(device=><div className="remote-device" key={device.id}><strong>{device.name}</strong><small>{device.address} · 请求连接</small><div><button disabled={busy} onClick={()=>void run("deviceApprove",{id:device.id,canControl:true})}>允许收听与控制</button><button disabled={busy} onClick={()=>void run("deviceApprove",{id:device.id,canControl:false})}>仅收听</button><button disabled={busy} onClick={()=>void run("deviceReject",{id:device.id})}>拒绝</button></div></div>)}
+      {(status.devices??[]).map(device=>{const online=status.connectedDevices?.some(p=>p.id===device.id);return <div className="remote-device" key={device.id}><strong>{device.name} · {online?"在线":"离线"}</strong><div><Select aria-label={`${device.name} 权限`} value={device.canControl?"control":"listen"} disabled={busy} onChange={e=>void run("devicePermission",{id:device.id,canControl:e.target.value==="control"})}><option value="control">收听与控制</option><option value="listen">仅收听</option></Select>{online&&<button disabled={busy} onClick={()=>void run("deviceDisconnect",{id:device.id})}>断开</button>}<button disabled={busy} onClick={()=>void run("deviceRevoke",{id:device.id})}>撤销授权</button></div></div>;})}
+      {!status.devices?.length&&!status.pendingDevices?.length&&<small>首次连接需在这里批准，之后自动识别设备。播放与设置由电脑统一同步。</small>}
+    </section>}
     {status.role!=="client"&&<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.localMuted!==false} disabled={busy} onChange={e=>void run("localMute",e.target.checked)}/>电脑端静音<small>远程连接时静音本机，手机音量不受影响；断开后恢复本机播放。</small></label>}
     {status.role==="off"?<>
       <fieldset className="settings-group" disabled={busy||!keyLoaded}><legend>在这台电脑上发送</legend>
@@ -32,15 +38,15 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
         <small>开启发送后自动记住，下次无需重填。清空后开启发送可恢复自动密钥。</small>
         <button data-button="primary" onClick={()=>void run("host",{port:Number(port),bufferMs:Number(bufferMs),pairingKey})}><Radio size={16}/>开启发送</button>
       </fieldset>
-      <fieldset className="settings-group" disabled={busy}><legend>使用 SDA 原生客户端收听（可选）</legend>
+      <fieldset className="settings-group" disabled={busy}><legend>使用 SDA 原生客户端收听（旧版主机）</legend>
         <label>主机配对地址<input aria-label="主机配对地址" autoComplete="off" spellCheck={false} placeholder="粘贴 sda://… 完整地址" value={invite} onChange={e=>setInvite(e.target.value)}/></label>
         <label>收听设备<Select value={deviceId} onChange={e=>setDeviceId(e.target.value)} aria-label="远程收听设备"><option value="">系统默认设备</option>{devices.filter(d=>d.available).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</Select></label>
         <label>输出方式<Select value={exclusive?"exclusive":"shared"} onChange={e=>setExclusive(e.target.value==="exclusive")} aria-label="远程输出方式"><option value="exclusive">WASAPI 独占 · 推荐</option><option value="shared">WASAPI 共享 · 设备须设为 48 kHz</option></Select></label>
         <button data-button="primary" disabled={!invite.trim()} onClick={()=>void run("join",{invite:invite.trim(),deviceId:deviceId||null,exclusive})}><Headphones size={16}/>连接并收听</button>
       </fieldset>
-      <p className="remote-note">接收端可用新版 Chrome、Edge、Firefox 或 Safari，无需安装 SDA。异地使用组网地址，防火墙允许所选 TCP 端口。网页和原生客户端共用一个连接名额。</p>
+      <p className="remote-note">接收端可用新版 Chrome、Edge、Firefox 或 Safari，无需安装 SDA。异地使用组网地址，防火墙允许所选 TCP 端口。网页和原生客户端最多两台已授权设备同时连接。</p>
     </>:<>
-      {status.role==="host"&&<div className="remote-invites"><h4>在另一台电脑的浏览器打开</h4>{(status.webInvites??[]).map((link,i)=><div className="remote-invite" key={link}><code>https://{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 网页链接`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}><Copy size={15}/>{copied===link?"已复制":"复制网页链接"}</button></div>)}{!status.invites.length&&<p>没有可用的局域网地址，请先连接网络。</p>}<small>首次访问会提示主机自签名 HTTPS 证书，确认地址属于主机后继续。网页内点击「连接并收听」。PCM 原样传输，浏览器和系统可能重采样。</small><details><summary>使用 SDA 原生客户端</summary>{status.invites.map((link,i)=><div className="remote-invite" key={link}><code>{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 原生配对地址`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}>{copied===link?"已复制":"复制原生配对地址"}</button></div>)}</details><small>链接含访问密钥。自动生成的密钥会保存，重新开启仍可使用原链接；复用自定义密钥时旧链接仍可重新连接。关闭电脑端静音可同时播放；远端存在网络缓冲延迟。</small></div>}
+      {status.role==="host"&&<div className="remote-invites"><h4>在另一台电脑的浏览器打开</h4>{(status.webInvites??[]).map((link,i)=><div className="remote-invite" key={link}><code>https://{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 网页链接`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}><Copy size={15}/>{copied===link?"已复制":"复制网页链接"}</button></div>)}{!status.webInvites?.length&&<p>没有可用的局域网地址，请先连接网络。</p>}<small>首次访问会提示主机自签名 HTTPS 证书，确认地址属于主机后继续。网页内点击「连接并收听」。PCM 原样传输，浏览器和系统可能重采样。</small>{status.invites.length>0&&<details><summary>原生客户端</summary>{status.invites.map((link,i)=><div className="remote-invite" key={link}><code>{status.addresses[i]}:{status.port}</code><button aria-label={`复制 ${status.addresses[i]} 原生配对地址`} onClick={()=>void navigator.clipboard.writeText(link).then(()=>setCopied(link)).catch(()=>setError("无法复制到剪贴板"))}>{copied===link?"已复制":"复制原生配对地址"}</button></div>)}</details>}<small>链接含首次配对密钥。自动生成的密钥会保存，重新开启仍可使用原链接；复用自定义密钥时旧链接仍可重新连接。关闭电脑端静音可同时播放；远端存在网络缓冲延迟。</small></div>}
       <button disabled={busy} onClick={()=>void run("stop")}><Unplug size={16}/>{status.role==="host"?"结束发送":"断开连接"}</button>
     </>}
     {busy&&<p role="status">正在连接音频通道…</p>}{error&&<p className="remote-error" role="alert">{error}</p>}
@@ -57,7 +63,7 @@ export function RemoteClientView({status}:{status:RemoteStatus}) {
     setError("");try{const id=await window.sdaDesktop?.remoteCommand?.(command);if(id)setPending(p=>new Set(p).add(id));}catch(e){setError(String(e));}
   };
   return <div className="app remote-client"><WindowTitlebar/><div className="remote-client-content">
-    <header className="remote-client-heading"><div><span className="remote-eyebrow">SDA REMOTE</span><h1>无损远程监听</h1></div><span className="remote-badge">一对一 · PCM</span></header>
+    <header className="remote-client-heading"><div><span className="remote-eyebrow">SDA REMOTE</span><h1>无损远程监听</h1></div><span className="remote-badge">双设备 · PCM</span></header>
     <div className="remote-now"><Headphones size={42}/><h2>{state?.title||"等待主机选择歌曲"}</h2><p>{status.detail}</p><small>{status.format}</small>
       <progress value={state?.position??0} max={Math.max(state?.duration??0,state?.position??0,1)} aria-label="主机播放进度"/><div className="remote-time"><span>{time(state?.position??0)}</span><span>{time(state?.duration??0)}</span></div>
       <div className="remote-transport"><button disabled={!connected} onClick={()=>void send({action:"previous"})} title="上一首" aria-label="上一首"><SkipBack/></button><button data-button="primary" disabled={!connected} onClick={()=>void send({action:state?.playing&&!state.paused?"pause":"play"})} title={state?.playing&&!state.paused?"暂停":"播放"} aria-label={state?.playing&&!state.paused?"暂停":"播放"}>{state?.playing&&!state.paused?<Pause/>:<Play/>}</button><button disabled={!connected} onClick={()=>void send({action:"next"})} title="下一首" aria-label="下一首"><SkipForward/></button><button disabled={!connected} onClick={()=>void send({action:"replay"})} title="从头播放" aria-label="从头播放"><RotateCcw size={19}/></button></div>

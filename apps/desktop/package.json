@@ -19,7 +19,11 @@
     "productName": "SDA",
     "files": [
       "main.cjs",
+      "native-event-batches.cjs",
       "remote-session.cjs",
+      "remote-sync.cjs",
+      "remote-fanout.cjs",
+      "remote-devices.cjs",
       "remote-media.cjs",
       "remote-certificate.cjs",
       "remote-web-server.cjs",

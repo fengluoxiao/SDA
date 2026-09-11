@@ -1,5 +1,38 @@
 use super::*;
 
+fn apply_object_events(state: &mut Engine, events: Vec<NativeObjectEvent>) {
+            for event in events {
+                let id = format!("obj:{}", event.id);
+                if state.sources.contains_key(&id) {
+                    let applies_now = event.sample_pos <= state.sample_pos;
+                    let elapsed = state.sample_pos.saturating_sub(event.sample_pos);
+                    let ramp = event.ramp_duration;
+                    {
+                        let source = state.sources.get_mut(&id).expect("checked above");
+                        apply_object_event(source, state.sample_pos, event);
+                    }
+                    if applies_now {
+                        if elapsed > 0 {
+                            let source = state.sources.get_mut(&id).expect("source still exists");
+                            Engine::advance_source_envelopes(
+                                source,
+                                elapsed.min(u32::MAX as u64) as u32,
+                            );
+                        }
+                        let _ = state.route_source_now(&id, ramp.min(convolution::DEFAULT_PARTITION as u32));
+                    }
+                } else {
+                    // Decoders can emit OAMD before the matching PCM declaration.
+                    // Preserve the codec timestamp and apply it when addSource arrives.
+                    state
+                        .pending_object_events
+                        .entry(id)
+                        .or_default()
+                        .push(event);
+                }
+            }
+}
+
 fn handle_command(
     state: &mut Engine,
     command: Command,
@@ -7,6 +40,12 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     match command {
+        Command::SetRemoteSync {enabled,start_at_ms,stop_at_ms,buffer_ms} => {
+            let accepted=remote_sync::configure(enabled,start_at_ms,stop_at_ms);
+                    if accepted {remote_sync::set_buffer_ms(buffer_ms);}
+            write_event(&Event::Ack {command:"setRemoteSync",accepted,detail:(!accepted).then_some("playout deadline is too late")});
+        },
+        Command::SetRemoteEnd {sample} => {remote_audio::END_SAMPLE.store(sample,Ordering::Release);write_event(&Event::Ack{command:"setRemoteEnd",accepted:true,detail:None});},
         Command::SetRemoteLocalMute {muted} => { remote_audio::LOCAL_MUTED.store(muted,Ordering::Release); write_event(&Event::Ack {command:"setRemoteLocalMute",accepted:true,detail:None}); },
         Command::SetRemoteOutput {address,token} => output_manager::remote_request(address,token),
         Command::ListOutputDevices => output_manager::request(None),
@@ -99,36 +138,7 @@ fn handle_command(
                 write_event(&Event::Ack { command: "objectEvents", accepted: false, detail: Some("invalid ADM exclusion bounds") });
                 return true;
             }
-            for event in events {
-                let id = format!("obj:{}", event.id);
-                if state.sources.contains_key(&id) {
-                    let applies_now = event.sample_pos <= state.sample_pos;
-                    let elapsed = state.sample_pos.saturating_sub(event.sample_pos);
-                    let ramp = event.ramp_duration;
-                    {
-                        let source = state.sources.get_mut(&id).expect("checked above");
-                        apply_object_event(source, state.sample_pos, event);
-                    }
-                    if applies_now {
-                        if elapsed > 0 {
-                            let source = state.sources.get_mut(&id).expect("source still exists");
-                            Engine::advance_source_envelopes(
-                                source,
-                                elapsed.min(u32::MAX as u64) as u32,
-                            );
-                        }
-                        let _ = state.route_source_now(&id, ramp.min(convolution::DEFAULT_PARTITION as u32));
-                    }
-                } else {
-                    // Decoders can emit OAMD before the matching PCM declaration.
-                    // Preserve the codec timestamp and apply it when addSource arrives.
-                    state
-                        .pending_object_events
-                        .entry(id)
-                        .or_default()
-                        .push(event);
-                }
-            }
+            apply_object_events(state, events);
             write_event(&Event::Ack {
                 command: "objectEvents",
                 accepted: true,
@@ -301,7 +311,7 @@ fn handle_command(
                 state.stereo_dry_bus = None;
                 for source in state.sources.values_mut() { source.direct = None; source.continuous=None; source.continuous_mix=0.0; source.bass_split = None; }
                 state.direct_mix = 0.0;
-                state.render_epoch = state.render_epoch.wrapping_add(1);
+                if !remote_sync::ENABLED.load(Ordering::Acquire) {state.render_epoch = state.render_epoch.wrapping_add(1);}
                 Ok(())
             })();
             write_event(&Event::Ack { command: "setCinema", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -310,9 +320,9 @@ fn handle_command(
             match vbap::LayoutId::parse(&layout) {
                 Some(layout) => match state.set_layout(layout) {
                     Ok(()) => {
-                        // The bus graph owns partitioned-convolution history. Isolate
-                        // this graph replacement with the existing FIFO reheat edge.
-                        state.render_epoch = state.render_epoch.wrapping_add(1);
+                        // Keep already synchronized program samples; the new graph
+                        // takes effect on audio that has not been rendered yet.
+                        if !remote_sync::ENABLED.load(Ordering::Acquire) {state.render_epoch = state.render_epoch.wrapping_add(1);}
                         write_event(&Event::Ack {
                             command: "setLayout",
                             accepted: true,
@@ -521,7 +531,7 @@ fn handle_command(
         Command::ClearHeadphoneCompensation => match headphone::HeadphoneCompensation::bypass() {
             Ok(compensation) => {
                 state.headphone.transition_to(compensation, state.output_sample_rate);
-                state.render_epoch = state.render_epoch.wrapping_add(1);
+                if !remote_sync::ENABLED.load(Ordering::Acquire) {state.render_epoch = state.render_epoch.wrapping_add(1);}
                 write_event(&Event::Ack {
                     command: "clearHeadphoneCompensation",
                     accepted: true,
@@ -567,7 +577,10 @@ fn handle_command(
         Command::Pause { paused } => {
             if state.paused != paused {
                 state.paused = paused;
-                if remote_audio::HOST_SELECTED.load(Ordering::Acquire) && !remote_audio::MIRROR_SELECTED.load(Ordering::Acquire) {
+                if remote_sync::ENABLED.load(Ordering::Acquire) {
+                    // Keep both copies of queued program audio. The shared clock
+                    // schedules the real consumers; pausing must not create an epoch.
+                } else if remote_audio::HOST_SELECTED.load(Ordering::Acquire) && !remote_audio::MIRROR_SELECTED.load(Ordering::Acquire) {
                     // Remote pause takes effect after the negotiated network
                     // buffer, preserving both queued program audio and FIFO.
                     telemetry.callback_output_enabled.store(!paused && fifo.available_read() >= remote_audio::FRAMES, Ordering::Release);
@@ -582,6 +595,7 @@ fn handle_command(
             });
         }
         Command::Reset { origin } => {
+            remote_audio::END_SAMPLE.store(u64::MAX,Ordering::Release);
             state.reset_session(origin);
             write_event(&Event::Ack {
                 command: "reset",
@@ -621,6 +635,25 @@ pub(super) fn apply_render_command(
             ingest_pcm_batch(state, start, entries);
             true
         }
+        render_command::RenderCommand::PcmFrame { start, entries, events } => {
+            let samples = entries.first().map_or(0, |(_, pcm)| pcm.len());
+            // Validate the entire transaction before changing metadata or PCM.
+            let valid = events.len() <= 4096
+                && events.iter().all(|event| event.zone_exclusion.iter().all(|zone| zone.valid()))
+                && !entries.is_empty() && entries.len() <= MAX_SOURCES && samples > 0
+                && entries.iter().all(|(id, pcm)| pcm.len() == samples
+                    && pcm.iter().all(|v| v.is_finite())
+                    && state.sources.get(id).is_some_and(|source| source.samples.can_write(state.sample_pos, start, pcm.len())));
+            if !valid {
+                write_event(&Event::BatchAck { start, samples: samples as u32, accepted: false,
+                    detail: Some("invalid metadata/PCM transaction or source ring capacity") });
+            } else {
+                // Do not reapply metadata when acknowledging a completed replay.
+                if start.saturating_add(samples as u64) > state.sample_pos { apply_object_events(state, events); }
+                ingest_pcm_batch(state, start, entries);
+            }
+            true
+        }
         render_command::RenderCommand::HeadphoneFir {
             preamp,
             left,
@@ -629,7 +662,7 @@ pub(super) fn apply_render_command(
             match headphone::HeadphoneCompensation::new(&left, &right, preamp) {
                 Ok(compensation) => {
                     state.headphone.transition_to(compensation, state.output_sample_rate);
-                    state.render_epoch = state.render_epoch.wrapping_add(1);
+                    if !remote_sync::ENABLED.load(Ordering::Acquire) {state.render_epoch = state.render_epoch.wrapping_add(1);}
                     write_event(&Event::Ack {
                         command: "setHeadphoneFir",
                         accepted: true,
@@ -764,6 +797,7 @@ fn ingest_pcm_batch(state: &mut Engine, start: u64, entries: Vec<(String, Vec<f3
         });
         return;
     }
+    state.pcm_coverage.insert(start.max(state.sample_pos),start.saturating_add(samples as u64));
     for (id, pcm) in entries {
         let source = state
             .sources
@@ -800,6 +834,7 @@ fn ingest_pcm(state: &mut Engine, id: &str, start: u64, samples: Vec<f32>) {
         return;
     }
     source.samples.write(state.sample_pos, start, &samples);
+    state.pcm_coverage.insert(start.max(state.sample_pos),start.saturating_add(samples.len() as u64));
     write_event(&Event::Ack {
         command: "feed",
         accepted: true,
@@ -915,6 +950,13 @@ fn read_frame(
                     });
                     return Ok(true);
                 }
+                if let Command::SetRemoteSync {enabled,start_at_ms,stop_at_ms,buffer_ms}=command {
+                    // Clock gates must not wait behind convolution/profile builds.
+                    let accepted=remote_sync::configure(enabled,start_at_ms,stop_at_ms);
+                    if accepted {remote_sync::set_buffer_ms(buffer_ms);}
+                    write_event(&Event::Ack{command:"setRemoteSync",accepted,detail:(!accepted).then_some("playout deadline is too late")});
+                    return Ok(true);
+                }
                 let name = command_name(&command);
                 let shutdown = matches!(command, Command::Shutdown);
                 if !enqueue(commands, render_command::RenderCommand::Command(command)) {
@@ -958,7 +1000,15 @@ fn read_frame(
                     });
                 }
             }
-            FRAME_PCM_BATCH => {
+            FRAME_PCM_BATCH | b'F' => {
+                let events = if kind == b'F' {
+                    let length = read_u32(input)? as usize;
+                    if length > 1024 * 1024 { return Err(io::Error::new(io::ErrorKind::InvalidData, "frame metadata exceeds limit")); }
+                    let mut bytes = vec![0; length];
+                    input.read_exact(&mut bytes)?;
+                    Some(serde_json::from_slice::<Vec<NativeObjectEvent>>(&bytes)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?)
+                } else { None };
                 let start = read_u64(input)?;
                 let entry_count = read_u16(input)? as usize;
                 if entry_count == 0 || entry_count > MAX_SOURCES {
@@ -998,7 +1048,10 @@ fn read_frame(
                     .unwrap_or(u32::MAX);
                 if !enqueue(
                     commands,
-                    render_command::RenderCommand::PcmBatch { start, entries },
+                    match events {
+                        Some(events) => render_command::RenderCommand::PcmFrame { start, entries, events },
+                        None => render_command::RenderCommand::PcmBatch { start, entries },
+                    },
                 ) {
                     write_event(&Event::BatchAck {
                         start,
@@ -1089,6 +1142,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Health => "health",
         Command::Shutdown => "shutdown",
         Command::SetRemoteLocalMute {..} => "setRemoteLocalMute",
+        Command::SetRemoteEnd {..} => "setRemoteEnd",
+        Command::SetRemoteSync {..} => "setRemoteSync",
         Command::SetRemoteOutput {..} => "setRemoteOutput",
         Command::ListOutputDevices => "listOutputDevices",
         Command::SetOutputDevice { .. } => "setOutputDevice",
@@ -1097,6 +1152,14 @@ fn command_name(command: &Command) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_clock_gate_bypasses_the_render_command_queue(){
+        let json=br#"{"type":"setRemoteSync","enabled":false}"#;
+        let mut bytes=(json.len() as u32).to_le_bytes().to_vec();bytes.extend_from_slice(json);
+        let queue=Arc::new(render_command::RenderCommandQueue::new(1));
+        assert!(read_frame(&mut bytes.as_slice(),&queue,|_,_|panic!("clock gate entered DSP queue"),FRAME_JSON).unwrap());
+        assert_eq!(queue.len(),0);
+    }
     #[test]
     fn authored_extent_preserves_axes_and_event_clock() {
         let mut source=crate::Source::default();
@@ -1129,6 +1192,7 @@ mod tests {
         engine.active_hrtf_set = Some(hrtf::NativeHrtfSet::load_calibrated(&root.join("apps/web/public/hrtf/hrtf-set.json")).unwrap());
         engine.rebuild_bus_renderer().unwrap();
         engine.output_active = true;
+        engine.directional_hrtf = std::env::var_os("SDA_ADM_CONTINUOUS").is_some();
         let labels: Vec<String> = serde_json::from_value(metadata["labels"].clone()).unwrap();
         let object_channels = metadata["adm"]["objectChannels"].as_array().unwrap();
         let mut ids = Vec::new();
@@ -1174,6 +1238,7 @@ mod tests {
             assert!(output.iter().all(|v| v.is_finite()));
             checksum += output.iter().map(|v| *v as f64).sum::<f64>();
         }
+        eprintln!("render stages ms: {:?}", engine.profile_ms);
         times.sort_by(f64::total_cmp);
         eprintln!("ADM file sources={} seconds={seconds} mean_us={:.1} p95_us={:.1} max_us={:.1} budget_us={:.1} checksum={checksum:.9}",
             ids.len(), times.iter().sum::<f64>() / times.len() as f64, times[times.len() * 95 / 100], times[times.len() - 1],

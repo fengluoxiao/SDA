@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createMediaBrowser } = require("./media-browser.cjs");
+const { eventBatches } = require("./native-event-batches.cjs");
 const { RemoteSession } = require("./remote-session.cjs");
 const { loadRemoteCertificate } = require("./remote-certificate.cjs");
 const personalHrtf = require("./personal-hrtf.cjs");
@@ -264,7 +265,6 @@ let nativeRendererWritable = true;
 // PCM batches that arrived during pipe backpressure. They are flushed in order
 // on drain so the codec timeline never loses a frame to congestion.
 const nativeRendererBatchQueue = [];
-const nativeRendererBatchWaiters = [];
 let nativeRendererBuffer = "";
 let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
 let nativeRendererObjectActivity = [];
@@ -272,6 +272,7 @@ let nativeRendererHealthTimer = null;
 const nativeRendererPendingBatches = new Map();
 const nativeRendererPendingCommands = new Map();
 let nativeRendererControlChain = Promise.resolve();
+let nativeRendererClockChain = Promise.resolve();
 const NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS = 1500;
 const NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS = 3000;
 
@@ -298,6 +299,8 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     samplePos: Number.isSafeInteger(telemetry.samplePos) ? telemetry.samplePos : nativeRendererStatus.samplePos ?? 0,
     outputActive: telemetry.outputActive === true,
     hrtfReady: telemetry.hrtfReady === true,
+    remoteSynchronized:telemetry.remoteSynchronized===true,
+    remoteSyncWaiting:telemetry.remoteSyncWaiting===true,
   };
   return publishNativeRendererStatus();
 }
@@ -317,8 +320,8 @@ function publishNativeRendererObjectActivity(ids) {
   }
 }
 
-function nativeRendererCommand(command) {
-  if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || !nativeRendererWritable || !command || typeof command !== "object") return false;
+function nativeRendererCommand(command, priority = false) {
+  if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || (!nativeRendererWritable&&!priority) || !command || typeof command !== "object") return false;
   try {
     const json = Buffer.from(JSON.stringify(command), "utf8");
     if (json.length > NATIVE_RENDERER_MAX_LINE_BYTES) return false;
@@ -336,15 +339,15 @@ function nativeRendererCommand(command) {
   }
 }
 
-function nativeRendererCommandAck(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS) {
-  const task = nativeRendererControlChain.then(() => new Promise((resolve) => {
+function nativeRendererCommandAck(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS, priority = false) {
+  const task = (priority?nativeRendererClockChain:nativeRendererControlChain).then(() => new Promise((resolve) => {
     const timeout = setTimeout(() => {
       nativeRendererPendingCommands.delete(ackCommand);
       writeStartupLog(`${ackCommand} ACK timeout`);
       resolve(false);
     }, timeoutMs);
     nativeRendererPendingCommands.set(ackCommand, { resolve, timeout });
-    if (!nativeRendererCommand(command)) {
+    if (!nativeRendererCommand(command,priority)) {
       nativeRendererPendingCommands.delete(ackCommand);
       clearTimeout(timeout);
       writeStartupLog(`${ackCommand} pipe write rejected`);
@@ -352,7 +355,7 @@ function nativeRendererCommandAck(command, ackCommand, timeoutMs = NATIVE_RENDER
     }
   }));
   // A rejected sidecar command must not poison later transport work.
-  nativeRendererControlChain = task.catch(() => {});
+  if(priority)nativeRendererClockChain=task.catch(()=>{});else nativeRendererControlChain = task.catch(() => {});
   return task;
 }
 
@@ -426,27 +429,30 @@ function nativeRendererHeadphoneFir(preamp, left, right) {
   return task;
 }
 
-function nativeRendererBatch(start, entries) {
+function nativeRendererBatch(start, entries, events) {
   if (!nativeRenderer?.stdin || !Number.isSafeInteger(start) || start < 0 || !Array.isArray(entries) || entries.length === 0 || entries.length > 128) return Promise.resolve({ accepted: false, samples: 0, reason: "native renderer unavailable" });
   if (nativeRendererPendingBatches.has(start)) {
     // The batch is still awaiting its ACK, not lost. Report the original outcome
     // once it arrives instead of failing the player's duplicate submission.
     const pending = nativeRendererPendingBatches.get(start);
-    return pending.then((result) => (result?.accepted ? result : { accepted: false, samples: 0, reason: "duplicate codec batch clock" }));
+    return pending.promise.then((result) => (result?.accepted ? result : { accepted: false, samples: 0, reason: "duplicate codec batch clock" }));
   }
   // Backpressure must NOT reject PCM: each rejected batch is a 32 ms silent gap
   // in every object, and the refill lands as an audible level-step crackle.
   // Queue behind the drain instead - order is preserved by the pipe.
   if (!nativeRendererWritable) {
-    nativeRendererBatchQueue.push({ start, entries, queuedAt: Date.now() });
-    if (nativeRendererBatchQueue.length > 512) {
-      const dropped = nativeRendererBatchQueue.shift();
-      writeStartupLog(`sidecar batch queue overflow: dropped start=${dropped.start}`);
-    }
-    const pending = new Promise((resolve) => { nativeRendererBatchWaiters.push(resolve); });
-    return pending;
+    if (nativeRendererBatchQueue.length >= 512) return Promise.resolve({accepted:false,samples:0,reason:"native batch queue full"});
+    return new Promise(resolve => nativeRendererBatchQueue.push({ start, entries, events, resolve }));
   }
   try {
+    let metadata = null;
+    if (events !== undefined) {
+      if (!Array.isArray(events) || events.length > 4096) throw new Error("invalid frame metadata");
+      const json = Buffer.from(JSON.stringify(events));
+      if (json.length > 1024 * 1024) throw new Error("frame metadata exceeds limit");
+      metadata = Buffer.allocUnsafe(5 + json.length);
+      metadata[0] = 70; metadata.writeUInt32LE(json.length, 1); json.copy(metadata, 5);
+    }
     const prepared = entries.map((entry) => {
       if (!/^((obj:\d+)|(bed:\d+))$/.test(entry?.id ?? "") || !ArrayBuffer.isView(entry?.samples) || entry.samples.BYTES_PER_ELEMENT !== 4) throw new Error("invalid source entry");
       const samples = entry.samples instanceof Float32Array ? entry.samples : new Float32Array(entry.samples.buffer, entry.samples.byteOffset, Math.floor(entry.samples.byteLength / 4));
@@ -462,15 +468,19 @@ function nativeRendererBatch(start, entries) {
     header.writeUInt8("B".charCodeAt(0), 0);
     header.writeBigUInt64LE(BigInt(start), 1);
     header.writeUInt16LE(prepared.length, 9);
-    return new Promise((resolve) => {
+    const pending = {};
+    const promise = new Promise((resolve) => {
       const timeout = setTimeout(() => {
         nativeRendererPendingBatches.delete(start);
         resolve({ accepted: false, samples: 0, reason: "native batch ACK timeout" });
       }, NATIVE_RENDERER_BATCH_ACK_TIMEOUT_MS);
-      nativeRendererPendingBatches.set(start, { resolve, timeout });
-      const queued = nativeRenderer.stdin.write(Buffer.concat([header, ...prepared.flat()]));
+      Object.assign(pending, { resolve, timeout });
+      nativeRendererPendingBatches.set(start, pending);
+      const queued = nativeRenderer.stdin.write(Buffer.concat([...(metadata ? [metadata, header.subarray(1)] : [header]), ...prepared.flat()]));
       if (!queued) writeStartupLog(`sidecar PCM pipe backpressure: start=${start}`);
     });
+    pending.promise = promise;
+    return promise;
   } catch (error) {
     return Promise.resolve({ accepted: false, samples: 0, reason: error instanceof Error ? error.message : "invalid native PCM batch" });
   }
@@ -557,7 +567,7 @@ function consumeNativeRendererOutput(chunk) {
           true,
           `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun · ${hrtf} · ${ownership}`,
           Boolean(message.referenceMix),
-          { samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true },
+          { samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true, remoteSynchronized:message.remoteSynchronized===true,remoteSyncWaiting:message.remoteSyncWaiting===true },
         );
       }
     } catch { /* malformed helper output is ignored; stderr still records it */ }
@@ -571,10 +581,7 @@ function clearNativeRendererSession(reason) {
   nativeRendererHealthTimer = null;
   nativeRendererWritable = false;
   nativeRendererBuffer = "";
-  nativeRendererBatchQueue.length = 0;
-  for (const waiter of nativeRendererBatchWaiters.splice(0)) {
-    waiter({ accepted: false, samples: 0, reason: "native renderer pipe closed" });
-  }
+  for (const queued of nativeRendererBatchQueue.splice(0)) queued.resolve({accepted:false,samples:0,reason:"native renderer stopped"});
   for (const pending of nativeRendererPendingBatches.values()) {
     clearTimeout(pending.timeout);
     pending.resolve({ accepted: false, samples: 0, reason });
@@ -617,27 +624,9 @@ function startNativeRenderer() {
   nativeRenderer.stdout.on("data", consumeNativeRendererOutput);
   nativeRenderer.stdin.on("drain", () => {
     nativeRendererWritable = true;
-    // Flush queued PCM batches in order; stop as soon as the pipe backs up again.
-    while (nativeRendererWritable && nativeRendererBatchQueue.length > 0) {
-      const queuedBatch = nativeRendererBatchQueue.shift();
-      const prepared = queuedBatch.entries.map((entry) => {
-        const samples = entry.samples instanceof Float32Array ? entry.samples : new Float32Array(entry.samples.buffer, entry.samples.byteOffset, Math.floor(entry.samples.byteLength / 4));
-        const id = Buffer.from(entry.id, "utf8");
-        const entryHeader = Buffer.allocUnsafe(6);
-        entryHeader.writeUInt16LE(id.length, 0);
-        entryHeader.writeUInt32LE(samples.length, 2);
-        return [entryHeader, id, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)];
-      });
-      const header = Buffer.allocUnsafe(11);
-      header.writeUInt8("B".charCodeAt(0), 0);
-      header.writeBigUInt64LE(BigInt(queuedBatch.start), 1);
-      header.writeUInt16LE(prepared.length, 9);
-      nativeRendererWritable = nativeRenderer.stdin.write(Buffer.concat([header, ...prepared.flat()]));
-      const done = { accepted: true, samples: prepared.reduce((sum, p) => sum + p[2].length / 4, 0) };
-      for (const waiter of nativeRendererBatchWaiters.splice(0)) waiter(done);
-    }
-    if (nativeRendererBatchQueue.length === 0) {
-      for (const waiter of nativeRendererBatchWaiters.splice(0)) waiter({ accepted: true, samples: 1536 });
+    // Preserve each frame's own backend ACK; a writable pipe is not an ACK.
+    for (const queued of nativeRendererBatchQueue.splice(0)) {
+      nativeRendererBatch(queued.start, queued.entries, queued.events).then(queued.resolve);
     }
   });
   // A pipe can close between a writable check and write(); swallow EPIPE here
@@ -710,6 +699,12 @@ async function setRemoteLocalMute(muted) {
   remoteSession.publish();return remoteSession.status();
 }
 const remoteSession = new RemoteSession({
+  gate:async settings=>{if(!nativeRenderer&&!settings.enabled)return true;startNativeRenderer();return nativeRendererCommandAck({type:'setRemoteSync',...settings},'setRemoteSync',3000,true);},
+  position:()=>Number(nativeRendererStatus.samplePos??0)/48000,
+  diagnostic:health=>writeStartupLog(`remote-receiver ${JSON.stringify(health)}`),
+  maxPeers:2,
+  readDevices:()=>readSettings().remoteAuthorizedDevices??[],
+  writeDevices:devices=>writeSettings({remoteAuthorizedDevices:devices}),
   localMuted:()=>readSettings().remoteLocalMuted!==false,
   savedPairingKey:()=>readSettings().remoteCustomPairingKey??"",
   rememberPairingKey:pairingKey=>writeSettings({remoteCustomPairingKey:pairingKey}),
@@ -758,6 +753,7 @@ let remoteOperation = Promise.resolve();
 ipcMain.handle("sda:remote-session", (_event, action, value) => {
   const task = remoteOperation.then(() => {
     writeStartupLog(`[remote] requested action=${String(action).slice(0, 20)}`);
+    if (["deviceApprove","deviceReject","deviceRevoke","devicePermission","deviceDisconnect"].includes(action))return remoteSession.manageDevice(action,value);
     if (action === "localMute") return setRemoteLocalMute(value);
     if (action === "host") return remoteSession.host(value);
     if (action === "join") return remoteSession.join(value);
@@ -1328,6 +1324,7 @@ ipcMain.handle("sda:native-renderer-start", () => {
   return status;
 });
 ipcMain.handle("sda:native-renderer-stop", () => stopNativeRenderer());
+ipcMain.handle('sda:native-renderer-end',(_event,sample)=>Number.isSafeInteger(sample)&&sample>=0&&nativeRendererCommandAck({type:'setRemoteEnd',sample},'setRemoteEnd'));
 ipcMain.handle("sda:native-renderer-health", () => {
   nativeRendererCommand({ type: "health" });
   writeStartupLog(`health -> ${JSON.stringify(nativeRendererStatus)}`);
@@ -1356,21 +1353,13 @@ ipcMain.handle("sda:native-renderer-remove-source", async (_event, id, atSample)
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
-  if (!Array.isArray(events) || events.length > 4096) return false;
-  // Zone metadata varies in size; bound both event count and encoded bytes.
-  let accepted = true;
-  let batch = [];
-  for (const event of events) {
-    const candidate = [...batch, event];
-    if (candidate.length > 32 || Buffer.byteLength(JSON.stringify({ type: "objectEvents", events: candidate }), "utf8") > 16000) {
-      if (!batch.length) return false;
-      if (!await nativeRendererCommandAck({ type: "objectEvents", events: batch }, "objectEvents")) return false;
-      batch = [];
-    }
-    if (Buffer.byteLength(JSON.stringify({ type: "objectEvents", events: [event] }), "utf8") > 16000) return false;
-    batch.push(event);
+  const batches=eventBatches(events);
+  if(!batches)return false;
+  let accepted=true;
+  for(const batch of batches){
+    accepted=await nativeRendererCommandAck({type:"objectEvents",events:batch},"objectEvents");
+    if(!accepted)return false;
   }
-  if (batch.length) accepted = await nativeRendererCommandAck({ type: "objectEvents", events: batch }, "objectEvents");
   writeStartupLog(`objectEvents count=${events.length} ACK -> ${accepted}`);
   return accepted;
 });
@@ -1640,11 +1629,11 @@ ipcMain.handle("sda:native-renderer-pause", (_event, paused) => {
   if (paused) publishNativeRendererObjectActivity([]);
   return nativeRendererCommand({ type: "pause", paused });
 });
-ipcMain.handle("sda:native-renderer-frame", async (_event, samplePos, entries) => {
-  let result = await nativeRendererBatch(samplePos, entries);
+ipcMain.handle("sda:native-renderer-frame", async (_event, samplePos, entries, events) => {
+  let result = await nativeRendererBatch(samplePos, entries, events);
   if (!result.accepted && /unknown source|duplicate codec batch clock/i.test(result.reason ?? "")) {
     await new Promise((resolve) => setTimeout(resolve, 25));
-    result = await nativeRendererBatch(samplePos, entries);
+    result = await nativeRendererBatch(samplePos, entries, events);
   }
   writeStartupLog(`frame ${samplePos} entries=${entries?.length ?? 0} -> accepted=${result.accepted} samples=${result.samples} reason=${result.reason ?? ""}`);
   return result;
@@ -1733,19 +1722,19 @@ ipcMain.handle("sda:open-path", (_e, filePath) => {
   return { id, size: stat.size, name: path.basename(filePath) };
 });
 
-ipcMain.handle("sda:read-slice", (_e, id, offset, length) => {
+ipcMain.handle("sda:read-slice", async (_e, id, offset, length) => {
   const filePath = openFiles.get(id);
   if (!filePath) throw new Error("unknown file id");
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > MAX_SLICE_BYTES) {
     throw new Error("invalid file slice");
   }
-  const fd = fs.openSync(filePath, "r");
+  const file = await fs.promises.open(filePath, "r");
   try {
     const buf = Buffer.alloc(length);
-    const read = fs.readSync(fd, buf, 0, length, offset);
-    return buf.subarray(0, read);
+    const { bytesRead } = await file.read(buf, 0, length, offset);
+    return buf.subarray(0, bytesRead);
   } finally {
-    fs.closeSync(fd);
+    await file.close();
   }
 });
 
