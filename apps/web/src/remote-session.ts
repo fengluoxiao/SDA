@@ -20,6 +20,7 @@ export interface RemotePlayback {
 export interface RemoteStatus {
   capacity?:number;connectedDevices?:{id:string;name:string;canControl:boolean}[];devices?:{id:string;name:string;canControl:boolean;createdAt:number}[];pendingDevices?:{id:string;name:string;address:string;expires:number}[];
   localMuted?:boolean;
+  hlsAllowed?:boolean;
   role:"off"|"host"|"client"; phase:string; detail:string; peer:string|null;
   port:number|null; addresses:string[]; invites:string[]; webInvites?:string[]; format:string;
   bufferMs:number; queuedMs:number; bytes:number;

@@ -16,7 +16,7 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
   const api=window.sdaDesktop;
   useEffect(()=>{let alive=true;Promise.resolve(api?.getRemotePairingKey?.()).then(key=>{if(alive){setPairingKey(key??"");setKeyLoaded(true);}},()=>{if(alive){setError("无法读取已保存的密钥，请重新打开设置");}});return()=>{alive=false;};},[]);
   useEffect(()=>{if(status.role==="off")void api?.getOutputDevices?.().then(v=>setDevices(v.devices)).catch(()=>{});},[status.role]);
-  const run=async(action:"host"|"join"|"stop"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>{
+  const run=async(action:"host"|"join"|"stop"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>{
     setBusy(true);setError("");
     try{await api?.remoteSession?.(action,value);}catch(e){setError(String(e));}finally{setBusy(false);}
   };
@@ -29,6 +29,7 @@ export default function RemotePanel({status}:{status:RemoteStatus}) {
       {(status.devices??[]).map(device=>{const online=status.connectedDevices?.some(p=>p.id===device.id);return <div className="remote-device" key={device.id}><strong>{device.name} · {online?"在线":"离线"}</strong><div><Select aria-label={`${device.name} 权限`} value={device.canControl?"control":"listen"} disabled={busy} onChange={e=>void run("devicePermission",{id:device.id,canControl:e.target.value==="control"})}><option value="control">收听与控制</option><option value="listen">仅收听</option></Select>{online&&<button disabled={busy} onClick={()=>void run("deviceDisconnect",{id:device.id})}>断开</button>}<button disabled={busy} onClick={()=>void run("deviceRevoke",{id:device.id})}>撤销授权</button></div></div>;})}
       {!status.devices?.length&&!status.pendingDevices?.length&&<small>首次连接需在这里批准，之后自动识别设备。播放与设置由电脑统一同步。</small>}
     </section>}
+    {status.role!=="client"&&<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.hlsAllowed===true} disabled={busy} onChange={e=>void run("hlsAllowed",e.target.checked)}/>允许 HLS 原生播放<small>默认关闭，使用低延迟 PCM。开启后 Safari 可使用原生无损 HLS；请刷新网页并重新连接。关闭会断开现有 HLS 收听。</small></label>}
     {status.role!=="client"&&<label className="remote-local-mute"><input type="checkbox" role="switch" checked={status.localMuted!==false} disabled={busy} onChange={e=>void run("localMute",e.target.checked)}/>电脑端静音<small>远程连接时静音本机，手机音量不受影响；断开后恢复本机播放。</small></label>}
     {status.role==="off"?<>
       <fieldset className="settings-group" disabled={busy||!keyLoaded}><legend>在这台电脑上发送</legend>

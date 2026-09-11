@@ -110,7 +110,7 @@ declare global {
     sdaDesktop?: {
       getRemotePairingKey?:()=>Promise<string>;
       getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
-      remoteSession?:(action:"host"|"join"|"stop"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      remoteSession?:(action:"host"|"join"|"stop"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
       nativeRendererEnd?:(sample:number)=>Promise<boolean>;
       remoteCommand?:(command:import("./remote-session").RemoteCommand)=>Promise<string>;
       publishRemoteScene?:(scene:import("./remote-session").RemoteScene|undefined)=>void;

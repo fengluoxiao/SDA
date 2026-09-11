@@ -110,7 +110,7 @@ class RemoteSession {
       port: this.port, addresses: this.role === "host" ? addresses() : [],
       invites: this.role === "host" && this.key && !this.devices ? addresses().map(a => this.invite(a)) : [],
       webInvites: this.role === "host" && this.key ? addresses().map(a => this.webInvite(a)) : [],
-      format: this.peer?.header?.sampleFormat === "hls-flac24" ? "48 kHz · 24-bit FLAC · 双声道" : "48 kHz · 32-bit float PCM · 双声道", localMuted:this.hooks.localMuted?.()??true, bufferMs: this.bufferMs, queuedMs: this.queued / 48,
+      format: this.peer?.header?.sampleFormat === "hls-flac24" ? "48 kHz · 24-bit FLAC · 双声道" : "48 kHz · 32-bit float PCM · 双声道", localMuted:this.hooks.localMuted?.()??true, hlsAllowed:this.hooks.hlsAllowed?.()===true, bufferMs: this.bufferMs, queuedMs: this.queued / 48,
       bytes: this.bytes, output: this.output ?? null, state: this.role === "client" ? this.state : null };
   }
   invite(address) { return `sda://${address}:${this.port}#${this.key.toString("hex")}.${this.certificate.fingerprint}`; }
@@ -184,6 +184,10 @@ class RemoteSession {
       }else if(kind==="K"){
         if(!p.ready||!Number.isSafeInteger(message.consumed)||message.consumed<p.consumed||message.consumed>p.sent)throw Error("无效音频确认");
         p.consumed=message.consumed;p.lastFeedback=Date.now();this.queued=Math.max(0,...[...hub.peers.values()].map(v=>v.sent-v.consumed));hub.pump();
+        if(message.mediaState&&Date.now()-(p.mediaReportAt??0)>1000){
+          const m=message.mediaState;p.mediaReportAt=Date.now();
+          this.hooks.diagnostic?.({transport:'pcm',hidden:m.hidden===true,context:['running','suspended','interrupted','closed'].includes(m.context)?m.context:'unknown',playback:['none','paused','playing','unavailable'].includes(m.playback)?m.playback:'unknown',buffering:m.buffering===true,mediaElement:m.mediaElement===true,mediaPaused:m.mediaPaused===true,mediaReadyState:Number.isInteger(m.mediaReadyState)&&m.mediaReadyState>=0&&m.mediaReadyState<=4?m.mediaReadyState:undefined});
+        }
       }else if(kind==="C"){
         if(!p.ready||typeof message.id!=="string"||message.id.length>64)throw Error("无效远程控制");
         const own=[...this.pendingControls.values()].filter(v=>v.socket===socket).length;

@@ -1,3 +1,4 @@
+import {hlsAllowedByHost} from "/playback-policy.mjs";
 import {createScene} from "./scene.mjs";
 import {createPages} from "./pages.mjs";
 import {syncHostPlayback,receiverView,beginTrackSwitch,acceptHlsMedia,cancelTrackSwitch} from "./playback-sync.mjs";
@@ -5,6 +6,7 @@ import {localClock,bufferedAhead,mediaRanges,prepareSynchronizedMedia,recoverSyn
 import {createMediaPicker} from "./media.mjs";
 import {createTools} from "./tools.mjs";
 import {PausePrefetch} from "./pause-prefetch.mjs";
+import {createPcmMediaOutput} from './pcm-media-output.mjs';
 import {calibrateStartup} from './startup-calibration.mjs';
 import {installMoreMenu} from "./more-menu.mjs";
 const $ = id => document.getElementById(id);
@@ -36,14 +38,14 @@ function requestCommand(action,value) {
 }
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const FRAMES = 480, MAX_PACKET = 262144;
-let forcePcm=false;let disconnecting=Promise.resolve();
+let disconnecting=Promise.resolve();
 let session = null, playback = null, playlistSignature = "", lastVolumeEdit = 0;
 const mediaActions = ["play", "pause", "previoustrack", "nexttrack", "stop"];
-function updateSystemPlayback() {
+function updateSystemPlayback(force=false) {
   if (!navigator.mediaSession) return;
   try {
-    navigator.mediaSession.playbackState = !session?.ready ? "none" :
-      receiverView(session,playback).audible ? "playing" : "paused";
+    const state=!session?.ready||!session?.mediaActivated ? "none" : receiverView(session,playback).audible ? "playing" : "paused";
+    if(force||navigator.mediaSession.playbackState!==state)navigator.mediaSession.playbackState=state;
   } catch { /* Optional platform integration must not break PCM playback. */ }
 }
 function startSystemPlayback(owner) {
@@ -58,7 +60,7 @@ function startSystemPlayback(owner) {
   if (!navigator.mediaSession) return;
   const actions = {
     play: () => { if (session === owner) { void resumeAudio(owner).catch(() => stats(owner)); command("play"); } },
-    pause: () => { if (session === owner) { owner.audio?.pause(); command("pause"); } },
+    pause: () => { if (session === owner) { owner.audio?.pause(); owner.pcmOutput?.pause();command("pause"); } },
     previoustrack: () => { if (session === owner) command("previous"); },
     nexttrack: () => { if (session === owner) command("next"); },
     stop: () => { if (session === owner) stop(); },
@@ -163,6 +165,7 @@ function renderState(state) {
     session.trackKey=key;
   }
   playback = state;
+  if(session&&state.playing)session.mediaActivated=true;
   if(session)session.songDuration=Number(state.duration)||0;
   if(session&&state.playing&&!state.loading)session.pendingStart=false;
   const source=state.source;
@@ -175,10 +178,14 @@ function renderState(state) {
   $("format-badge").textContent=fields.join(" · ")||"等待歌曲信息";
   $("local-mute").checked=state.localMuted!==false;
   syncHostPlayback(session,state,resumeAudio,()=>{if(session)stats(session);});
+  if(session?.pcmOutput){
+    const owner=session,running=!!state.playing&&!state.paused;
+    if(owner.pcmHostRunning!==running){owner.pcmHostRunning=running;if(running)void owner.pcmOutput.play().catch(()=>stats(owner));else owner.pcmOutput.pause();}
+  }
   updateCover(state,session);
   soundTools.update(state.tools&&session?.canControl===false?{...state.tools,locked:true}:state.tools, !!session?.ready, state.playing&&!state.paused);
   try {
-    if (navigator.mediaSession && typeof MediaMetadata !== "undefined" && session?.mediaTitle !== JSON.stringify([state.currentId,state.title,state.artist,state.album])) {
+    if (session?.mediaActivated && navigator.mediaSession && typeof MediaMetadata !== "undefined" && session?.mediaTitle !== JSON.stringify([state.currentId,state.title,state.artist,state.album])) {
       navigator.mediaSession.metadata = new MediaMetadata({title:state.title || "SDA 远程收听", artist:state.artist || "", album:state.album || "",artwork:session?.coverSrc?[{src:session.coverSrc,type:"image/jpeg"}]:[]});
       if (session) session.mediaTitle = JSON.stringify([state.currentId,state.title,state.artist,state.album]);
     }
@@ -212,7 +219,7 @@ function renderState(state) {
   }
 }
 function browserNeedsPlay() {
-  return !!session && (session.audio ? session.audio.paused : session.context?.state !== "running");
+  return !!session && (session.audio ? session.audio.paused : session.context?.state !== "running"||session.pcmOutput?.audio.paused);
 }
 function updatePlayButton() {
   const playing=!!playback?.playing&&!playback.paused&&!browserNeedsPlay();
@@ -313,7 +320,7 @@ async function tokenFrom(value) {
 }
 async function resumeAudio(owner) {
   if(owner.synchronized){send('K',{resync:true,clock:localClock()},owner);return;}
-  if(!owner.audio)return owner.context.resume();
+  if(!owner.audio){await owner.context.resume();await owner.pcmOutput?.play();return;}
   const audio=owner.audio;
   if(owner.mediaPending||!audio.getAttribute("src"))return;
   // A paused live stream resumes near the live edge, never stale music.
@@ -369,7 +376,7 @@ async function connectHls(enteredKey){
     if(owner.closed||session!==owner)return;
     await disconnecting;
     const response=await fetch("/hls/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:owner.key})});
-    if(!response.ok)throw Error(response.status===409?"已达到两台设备上限，或此设备已在其他页面收听":"无法建立无损媒体流，请检查配对密钥和主机");
+    if(!response.ok)throw Error(response.status===403?"主机未允许 HLS 或配对已失效，请刷新网页重新连接":response.status===409?"已达到两台设备上限，或此设备已在其他页面收听":"无法建立无损媒体流，请检查配对密钥和主机");
     const info=await response.json();owner.hls=info.id;
     if(owner.closed||session!==owner){void fetch(`/hls/${info.id}/stop`,{method:"POST",keepalive:true});return;}
     try{sessionStorage.setItem("sda-web-pairing",owner.key);}catch{}
@@ -391,7 +398,7 @@ async function connect() {
   if (session) return;
   const enteredKey = $("invite").value;
   $("invite").blur();
-  const nativeHls = !forcePcm && !!document.createElement("audio").canPlayType("application/vnd.apple.mpegurl");
+  const nativeHls = hlsAllowedByHost && !!document.createElement("audio").canPlayType("application/vnd.apple.mpegurl");
   if (!window.isSecureContext || (!nativeHls && !window.AudioWorkletNode)) { message("此浏览器未提供安全音频环境。请使用 HTTPS 链接，在 Chrome、Edge、Firefox 或 Safari 新版中打开。", true); return; }
   $("connect").disabled = true; message("正在连接音频…");
   let owner;
@@ -400,22 +407,31 @@ async function connect() {
     const context = new AudioContext({sampleRate:48000, latencyHint:"playback"});
     owner = session = {context, node:null, socket:null, closed:false, ready:false, consumed:0, queued:0, bytes:0, buffering:true, pending:new Map(), lastHost:Date.now()};
     startSystemPlayback(owner);
+    owner.pcmOutput=createPcmMediaOutput(context,()=>{if(session===owner)stats(owner);});
     $("disconnect").hidden = false;
     // Called within the click gesture, before asynchronous module/network work.
     const resumed = context.resume();
+    // Connecting is not playback. The primary play gesture or an already
+    // playing host starts the media element; idle connections stay out of Now Playing.
     const key = await authorizeDevice(owner,enteredKey);
     if (context.sampleRate !== 48000) throw Error("当前浏览器无法创建 48 kHz 音频输出，请换用新版 Chrome 或 Edge");
     await context.audioWorklet.addModule("/pcm-worklet.mjs"); await resumed;
     if (session !== owner || owner.closed) return;
     const node = owner.node = new AudioWorkletNode(context, "sda-remote-pcm", {numberOfInputs:0, numberOfOutputs:1, outputChannelCount:[2], channelCount:2, channelCountMode:"explicit", channelInterpretation:"discrete"});
-    node.connect(context.destination);
+    node.connect(owner.pcmOutput.destination);
     node.onprocessorerror = () => { if (session === owner) stop("浏览器音频处理已中断，请重新连接", true); };
     node.port.onmessage = ({data}) => {
       if (owner.closed || session !== owner) return;
       if (data.type === "error") { stop(data.detail || "音频缓冲异常", true); return; }
       if (data.type === "progress") {
+        const changed=owner.buffering!==data.buffering;
         owner.consumed = data.consumed; owner.queued = data.queued; owner.buffering = data.buffering;
-        if (owner.ready) send("K", {consumed:owner.consumed}, owner);
+        if(changed)updateSystemPlayback();
+        if (owner.ready){
+          const report=changed||Date.now()-(owner.mediaReportAt??0)>5000;
+          if(report)owner.mediaReportAt=Date.now();
+          send("K", {consumed:owner.consumed,...(report?{mediaState:{hidden:document.hidden,context:context.state,playback:navigator.mediaSession?.playbackState??'unavailable',buffering:owner.buffering,mediaElement:true,mediaPaused:owner.pcmOutput.audio.paused,mediaReadyState:owner.pcmOutput.audio.readyState}}:{})}, owner);
+        }
       }
     };
     context.onstatechange = () => stats(owner);
@@ -459,6 +475,7 @@ function stop(reason = "已断开连接", error = false) {
     endSystemPlayback(owner);
     owner.closed = true; owner.startupProbe?.cancel(); clearInterval(owner.timer);clearTimeout(owner.syncTimer);
     owner.prefetch?.cancel();
+    owner.pcmOutput?.close();
     for (const timer of owner.pending.values()) clearTimeout(timer);
     if (!owner.audio && owner.socket?.readyState === WebSocket.OPEN) owner.socket.send(wire("Q", {}));
     owner.socket?.close(1000); owner.node?.port.postMessage({type:"stop"}); owner.node?.disconnect();
@@ -471,10 +488,6 @@ function stop(reason = "已断开连接", error = false) {
   $("connect").disabled = false; $("pairing").hidden = false; $("disconnect").hidden = true;
   $("connection").textContent = "未连接"; setControls(false); message(reason, error);
 }
-$("stream-mode").addEventListener("click",()=>{
-  if(session)return;forcePcm=!forcePcm;$("stream-mode").setAttribute("aria-pressed",String(forcePcm));
-  $("stream-mode").textContent=forcePcm?"播放方式：低延迟 float32 PCM · 不保证后台":"播放方式：自动 · 优先原生无损 HLS";
-});
 $("connect").addEventListener("click", () => void connect());
 $("disconnect").addEventListener("click", () => stop());
 $("play").addEventListener("click", () => {
@@ -491,7 +504,9 @@ document.addEventListener("visibilitychange", () => {
   const owner = session;
   // Hiding/locking is not a request to disconnect. On return, allow queued
   // socket events to arrive before checking a timer delayed by the OS.
-  if (!owner || document.hidden) return;
+  if (!owner) return;
+  updateSystemPlayback(true);
+  if(document.hidden)return;
   owner.lastHost = Date.now();
   if(owner.audio){openHlsControl(owner);stats(owner);return;}
   if (owner.ready) send("K", {consumed:owner.consumed}, owner);

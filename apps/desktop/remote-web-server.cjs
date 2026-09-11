@@ -26,6 +26,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     const requestId=/^\/hls\/([a-f0-9]{32})\//.exec(req.url||"")?.[1];
     const hls=requestId?hlsPeers.get(requestId):[...hlsPeers.values()].find(peer=>cookieMatches(req,peer));
     if(session.role!=="host"){res.writeHead(404);res.end();return;}
+    if(session.hooks.hlsAllowed?.()!==true){res.writeHead(403);res.end("电脑端未允许 HLS 原生播放，请刷新网页使用 PCM");return;}
     if(req.url==="/hls/session"&&req.method==="POST"){
       if(req.headers.origin!==`https://${req.headers.host}`){res.writeHead(403);res.end();return;}
       let bytes=Buffer.alloc(0);
@@ -39,6 +40,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
         await session.detaching;
         if(session.role!=="host"||session.generation!==generation){res.writeHead(409);res.end();return;}
       }
+      if(session.hooks.hlsAllowed?.()!==true){res.writeHead(403);res.end("电脑端已关闭 HLS 原生播放");return;}
       if(!session.canAccept()||device.id&&[...session.hostPeers].some(p=>p.deviceId===device.id&&!p.destroyed)){res.writeHead(409);res.end("设备连接数量已达上限，或该设备已在收听");return;}
       const peer=new HlsPeer({id:crypto.randomBytes(16).toString("hex"),address:req.socket.remoteAddress,packet,decodePackets,sync:session.sync,onClose:()=>{hlsPeers.delete(peer.id);session.sync?.remove(peer);},diagnostic:health=>session.hooks.diagnostic?.({deviceId:peer.deviceId??"legacy",...health})});
       session.sync?.add(peer);
@@ -124,6 +126,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     ["/pcm-buffer.mjs", ["pcm-buffer.mjs", "text/javascript; charset=utf-8"]],
   ]);
   files.set("/startup-calibration.mjs",["startup-calibration.mjs","text/javascript; charset=utf-8"]);
+  files.set("/pcm-media-output.mjs",["pcm-media-output.mjs","text/javascript; charset=utf-8"]);
   const cache = new Map();
   const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -134,6 +137,10 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     if(req.url?.startsWith("/hls/")){void hlsRequest(req,res).catch(()=>{if(!res.headersSent)res.writeHead(500);res.end();});return;}
     if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); res.end(); return; }
     if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }
+    if(req.url==="/playback-policy.mjs"&&session.role==="host"){
+      res.writeHead(200,{"Content-Type":"text/javascript; charset=utf-8"});
+      res.end(`export const hlsAllowedByHost = ${session.hooks.hlsAllowed?.()===true};`);return;
+    }
     const asset = files.get(req.url);
     if (!asset || session.role !== "host") { res.writeHead(404); res.end(); return; }
     try {
@@ -180,6 +187,7 @@ function createRemoteWeb(session, {packet,decodePackets}) {
     });
   });
   return {
+    disableHls() { for(const peer of hlsPeers.values())peer.destroy(); },
     accept(socket) { server.emit("connection", socket); },
     close() { for(const peer of hlsPeers.values())peer.destroy();hlsPeers.clear();for (const client of wsServer.clients) client.terminate(); wsServer.close(); server.close(); cache.clear(); },
   };

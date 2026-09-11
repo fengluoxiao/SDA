@@ -706,6 +706,7 @@ const remoteSession = new RemoteSession({
   readDevices:()=>readSettings().remoteAuthorizedDevices??[],
   writeDevices:devices=>writeSettings({remoteAuthorizedDevices:devices}),
   localMuted:()=>readSettings().remoteLocalMuted!==false,
+  hlsAllowed:()=>readSettings().remoteHlsAllowed===true,
   savedPairingKey:()=>readSettings().remoteCustomPairingKey??"",
   rememberPairingKey:pairingKey=>writeSettings({remoteCustomPairingKey:pairingKey}),
   defaultKey: () => {
@@ -754,6 +755,12 @@ ipcMain.handle("sda:remote-session", (_event, action, value) => {
   const task = remoteOperation.then(() => {
     writeStartupLog(`[remote] requested action=${String(action).slice(0, 20)}`);
     if (["deviceApprove","deviceReject","deviceRevoke","devicePermission","deviceDisconnect"].includes(action))return remoteSession.manageDevice(action,value);
+    if (action === "hlsAllowed") {
+      if(typeof value!=="boolean")throw Error("无效 HLS 设置");
+      writeSettings({remoteHlsAllowed:value});
+      if(!value)remoteSession.web?.disableHls();
+      remoteSession.publish();return remoteSession.status();
+    }
     if (action === "localMute") return setRemoteLocalMute(value);
     if (action === "host") return remoteSession.host(value);
     if (action === "join") return remoteSession.join(value);

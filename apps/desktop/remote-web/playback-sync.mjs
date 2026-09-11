@@ -45,7 +45,7 @@ export function syncHostPlayback(owner,state,resume,onError){
 // Hold presentation while the receiver cannot produce audio.
 export function receiverView(owner, state) {
   const running=!!state?.playing&&!state.paused;
-  const blocked=!!owner&&(owner.audio?owner.audio.paused:owner.context?.state!=="running");
+  const blocked=!!owner&&(owner.audio?owner.audio.paused:owner.context?.state!=="running"||owner.pcmOutput?.audio.paused);
   const loading=!!owner?.pendingStart||!state?.paused&&(!!state?.loading||
     !!owner?.mediaPending&&(running||!!owner?.switchingTrack)||running&&!!owner?.syncWaiting);
   const buffering=!owner?.testing&&(loading||running&&!blocked&&(!owner?.ready||

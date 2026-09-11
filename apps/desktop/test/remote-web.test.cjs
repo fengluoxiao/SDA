@@ -12,7 +12,7 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn) { const end=Date.now()+5000; while(!fn()){if(Date.now()>end)throw Error("timeout");await delay(10);} }
 async function setup(earlyReset=false) {
   let local; const sent = [], commands = [];
-  const host = new RemoteSession({status:()=>{}, disconnected:()=>{}, control:command=>{commands.push(command);host.completeControl(command.id);}, route:async value=>{
+  const host = new RemoteSession({hlsAllowed:()=>true,status:()=>{}, disconnected:()=>{}, control:command=>{commands.push(command);host.completeControl(command.id);}, route:async value=>{
     local?.destroy(); if(!value.address)return true;
     const [address,port]=value.address.split(":");local=net.connect(+port,address);local.on("error",()=>{});
     await new Promise(r=>local.once("connect",r));local.write(value.token);if(earlyReset)local.write(packet("R"));
@@ -188,5 +188,27 @@ test('low-latency media queries remain authenticated and bounded',async()=>{
   assert.equal((await hlsHttp(f.port,part,'GET',cookie)).status,200);
   assert.equal((await hlsHttp(f.port,info.stream+'?_HLS_msn=0&_HLS_part=0','GET',cookie)).status,200);
   assert.equal((await hlsHttp(f.port,info.stream+'?_HLS_msn=99999999','GET',cookie)).status,400);
+ }finally{await f.close();}
+});
+
+
+test("HLS is desktop opt-in, denied by default and revoked immediately",async()=>{
+ const f=await setup();try{
+  delete f.host.hooks.hlsAllowed;
+  assert.equal(f.host.status().hlsAllowed,false);
+  assert.match((await request(f.port,'/playback-policy.mjs')).body,/= false;/);
+  const token=f.host.key.toString('hex');
+  assert.equal((await hlsHttp(f.port,'/hls/session','POST','',{token})).status,403);
+  assert.equal(f.host.hostPeers.size,0);
+  assert.throws(()=>require('../remote-session.cjs').validateControl({action:'hlsAllowed',value:true}),/不支持/);
+  f.host.hooks.hlsAllowed=()=>true;
+  assert.equal(f.host.status().hlsAllowed,true);
+  assert.match((await request(f.port,'/playback-policy.mjs')).body,/= true;/);
+  const created=await hlsHttp(f.port,'/hls/session','POST','',{token});assert.equal(created.status,200);
+  const info=JSON.parse(created.body),cookie=created.headers['set-cookie'][0].split(';')[0];
+  f.host.hooks.hlsAllowed=()=>false;f.host.web.disableHls();
+  await until(()=>f.host.hostPeers.size===0);
+  assert.equal((await hlsHttp(f.port,info.stream,'GET',cookie)).status,403);
+  assert.equal((await hlsHttp(f.port,'/hls/session','POST','',{token})).status,403);
  }finally{await f.close();}
 });
