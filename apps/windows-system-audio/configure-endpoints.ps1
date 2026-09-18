@@ -46,17 +46,38 @@ public static class SdaEndpointNames {
 }
 '@
 $shared=$null;$dedicated=$null
+$knownSdaIds=@()
 Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render' | ForEach-Object {
  $p=Get-ItemProperty -LiteralPath ($_.PSPath+'\Properties')
  $topology=$p.'{b3f8fa53-0004-438e-9003-51a46e139bfc},11'
  if($p.'{a8b865dd-2e3d-4094-ad97-e593a70c75d6},8' -ne 'Root\SdaSystemAudio'){return}
  $id='{0.0.0.00000000}.'+$_.PSChildName
+ $script:knownSdaIds += $id
+ # Updates leave stale endpoint records. Never pick one merely because its
+ # friendly name/topology matches; DEVICE_STATE_ACTIVE is required.
+ $state=(Get-ItemProperty -LiteralPath $_.PSPath).DeviceState
+ if($state -ne 1){return}
  if($topology -match '\\topologysdabitstream$'){$script:dedicated=$id}
  elseif($topology -match '\\topologyhdmi$'){$script:shared=$id}
 }
 if(!$shared -or !$dedicated){throw 'SDA dual endpoints not found'}
 if($DiscoverOnly){@{shared=$shared;dedicated=$dedicated}|ConvertTo-Json -Compress;exit}
-try {[SdaEndpointNames]::Rename($shared,'SDA Spatial Bitstream Input (System / Remote)')} catch {Write-Warning $_}
-try {[SdaEndpointNames]::Rename($dedicated,'SDA Spatial Bitstream Input - Dedicated')} catch {Write-Warning $_}
+try {[SdaEndpointNames]::Rename($shared,'SDA HDMI (System / Remote)')} catch {[Console]::Error.WriteLine($_)}
+try {[SdaEndpointNames]::Rename($dedicated,'SDA HDMI (Dedicated)')} catch {[Console]::Error.WriteLine($_)}
 [SdaEndpointNames]::DefaultFromDedicated($dedicated,$shared)
-@{shared=$shared;dedicated=$dedicated}|ConvertTo-Json -Compress
+# Repair only explicit SDA selections in supported registry-backed players.
+# Never replace a physical device or the user's generic default selection.
+# A running player owns its in-memory settings, so defer instead of racing it.
+$repairs=@();$pending=@()
+foreach($player in @(@{key='PotPlayerMini64';process='PotPlayerMini64'},@{key='PotPlayerMini';process='PotPlayerMini'})) {
+ $settings="HKCU:\Software\DAUM\$($player.key)\Settings"
+ if(!(Test-Path -LiteralPath $settings)){continue}
+ $values=Get-ItemProperty -LiteralPath $settings
+ $selected=$values.IntAudioRenWSId
+ if(!$selected -or $selected -eq $dedicated -or $selected -notin $knownSdaIds){continue}
+ if($selected -eq $shared -and $values.IntAudioRenWSExclusive -ne 1){continue}
+ if(Get-Process -Name $player.process -ErrorAction SilentlyContinue){$pending+=$player.key;continue}
+ Set-ItemProperty -LiteralPath $settings -Name IntAudioRenWSId -Value $dedicated
+ $repairs+=$player.key
+}
+@{shared=$shared;dedicated=$dedicated;repairedPlayers=$repairs;pendingPlayers=$pending}|ConvertTo-Json -Compress

@@ -3,7 +3,7 @@ Signature="$Windows NT$"
 Class=MEDIA
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider=%Provider%
-DriverVer=09/18/2026,0.1.0.11
+DriverVer=09/18/2026,0.1.0.12
 CatalogFile=SdaSystemAudio.cat
 PnpLockDown=1
 [Manufacturer]
@@ -80,8 +80,8 @@ KmdfService=SdaSystemAudio,Wdf
 KmdfLibraryVersion=1.33
 [Strings]
 Provider="Spatial Decoder Atelier"
-Description="SDA Spatial Bitstream Input (Experimental)"
-BitstreamDescription="SDA Spatial Bitstream Input - Dedicated"
+Description="SDA Virtual HDMI Audio (Experimental)"
+BitstreamDescription="SDA HDMI (Dedicated)"
 Audio="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
 Render="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
 Realtime="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"

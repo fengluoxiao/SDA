@@ -4,7 +4,7 @@ function sharedSystemOutput(status, requested, devices = []) {
   const selected = requested?.deviceId ? devices.find(d=>d.id===requested.deviceId) : null;
   const id = selected?.id ?? (requested?.deviceId || status?.actualId);
   const name = selected?.name ?? (id===status?.actualId ? status?.actualName : null);
-  if (!id || !name || /SDA Spatial Bitstream/i.test(name)) {
+  if (!id || !name || /SDA (?:Spatial Bitstream|HDMI|Virtual HDMI)/i.test(name)) {
     throw Error('请先选择实际耳机或音箱，不能将 SDA 虚拟输入作为输出');
   }
   if (id.startsWith('asio:') || id.startsWith('dsound:')) {

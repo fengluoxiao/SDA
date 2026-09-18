@@ -6,6 +6,10 @@ assert.deepEqual(sharedSystemOutput(current),{deviceId:'realtek',exclusive:false
 assert.deepEqual(sharedSystemOutput(current,{deviceId:null,remoteCompatible:true,exclusive:true}),sharedSystemOutput(current));
 assert.equal(sharedSystemOutput(current,{deviceId:'headphones',exclusive:true},[{id:'headphones',name:'Headphones'}]).deviceId,'headphones');
 assert.throws(()=>sharedSystemOutput(current,{deviceId:'virtual'},[{id:'virtual',name:'SDA Spatial Bitstream Input'}]));
+for (const name of ['SDA HDMI (System / Remote)', 'SDA HDMI (Dedicated)', 'SDA Virtual HDMI Audio (Experimental)']) {
+  assert.throws(()=>sharedSystemOutput(current,{deviceId:'virtual'},[{id:'virtual',name}]));
+  assert.throws(()=>sharedSystemOutput({actualId:'virtual',actualName:name}));
+}
 assert.throws(()=>sharedSystemOutput({actualId:'asio:test',actualName:'ASIO test'}));
 assert.throws(()=>sharedSystemOutput(current,{deviceId:'missing'},[]));
 console.log('PASS system audio output: auto shared, physical endpoint pinned, feedback rejected');

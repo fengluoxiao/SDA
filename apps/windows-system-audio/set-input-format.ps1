@@ -81,5 +81,5 @@ public static class SdaInputFormat {
 $endpointKey=$DeviceId -replace '^\{0\.0\.0\.00000000\}\.',''
 if($endpointKey -notmatch '^\{[0-9a-fA-F-]{36}\}$'){throw 'Invalid render endpoint ID'}
 $properties=Get-ItemProperty -LiteralPath "HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/MMDevices/Audio/Render/$endpointKey/Properties"
-if(!($properties.PSObject.Properties.Value | Where-Object { $_ -is [string] -and $_ -like '*SDA Spatial Bitstream*' })){throw 'Refusing to modify a non-SDA endpoint'}
+if(!($properties.PSObject.Properties.Value | Where-Object { $_ -is [string] -and $_ -match 'SDA (Spatial Bitstream|HDMI|Virtual HDMI)' })){throw 'Refusing to modify a non-SDA endpoint'}
 [SdaInputFormat]::Apply($DeviceId,$Channels,$Mask)

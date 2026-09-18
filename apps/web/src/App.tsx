@@ -2621,7 +2621,7 @@ export function App() {
           <SheetHeading title="系统音频" onClose={()=>setFloatPanel(null)}/>
           <div className="system-audio-body" style={{padding:"16px",overflowY:"auto",display:"flex",flexDirection:"column",gap:16}}>
             <h3>让其他播放器使用 SDA 渲染</h3>
-            <p>在播放器中选择 SDA Spatial Bitstream Input 输出设备。播放 Atmos 时，开启播放器的 DD+ 音频直通。</p>
+            <p>普通播放器选择 SDA HDMI (System / Remote)，接收方式选 PCM / 自动识别即可。立体声和多声道均可接入，不需要对象或音频直通。</p>
             <p>开始接收会自动将当前耳机或音箱切为共享输出，并停止当前文件播放。接收期间切换输出设备不会停止接收。</p>
             <details><summary>选择输出耳机或音箱</summary><OutputPanel/></details>
             <label>接收方式
@@ -2646,7 +2646,7 @@ export function App() {
                 {(Object.keys(LAYOUTS) as LayoutId[]).map(id=><option key={id} value={id}>{id} · {LAYOUTS[id].length} 路离散输入</option>)}
               </select>
             </label>
-            <small>带标准声道标识的输入自动映射；离散输入按所选布局的顺序连接。输入布局与渲染布局独立，不会把较少声道上混成更多声道。</small>
+            <small>开始接收时自动配置 Windows 输入格式和声道布局，无需再打开系统的 5.1 / 7.1 配置。带标准声道标识的输入自动映射；离散输入按所选布局连接。不会把较少声道上混成更多声道。</small>
             {systemInputLayout!=="standard" && LAYOUTS[systemInputLayout].length>12 && <p>此布局使用独占离散直连，需要发送端支持对应格式；Windows 共享输入不会自动扩展到该布局。</p>}
             {systemInputLayout!=="standard" && <details><summary>输入通道顺序</summary><ol>{LAYOUTS[systemInputLayout].map(s=><li key={s.name}>{speakerLabel(s.name)}</li>)}</ol></details>}
             </>}

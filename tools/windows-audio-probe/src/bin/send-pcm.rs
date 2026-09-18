@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .GetValue(&DEVPKEY_Device_FriendlyName as *const _ as *const _)?
     }
     .to_string();
-    if !name.contains("SDA Spatial Bitstream Input") {
+    if !name.contains("SDA Spatial Bitstream Input") && !name.contains("SDA HDMI") {
         return Err("Refusing to send test tones to a non-SDA device".into());
     }
     let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };

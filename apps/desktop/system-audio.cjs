@@ -106,7 +106,16 @@ class SystemAudio {
     const decoder = new SystemDecoder({ createDecoder: codec => new SdaDecoder(codec), discreteLayout: session.discreteLayout, inputMode: session.inputMode,
       onReset: info => steps.push({ reset: info }),
       onFrame: frame => steps.push({ frame: { ...frame, channels: frame.channels.map(c => new Float32Array(c)) } }),
-      onDiagnostic: message => { throw Error(message); },
+      onDiagnostic: message => {
+        // The decoder already recovered this frame to its valid core PCM.
+        // Attaching mid-stream can lack JOC state; do not tear down the
+        // receiver and discard the recovered frame (and all later frames).
+        if (String(message).startsWith('E-AC-3 object frame rejected, using core PCM: ')) {
+          this.update({ diagnostic: String(message) });
+          return;
+        }
+        throw Error(message);
+      },
     });
     const records = new CaptureRecords(record => { this.status.returnStreams = record.returnStreams ?? 0; decoder.accept(record); });
     try {

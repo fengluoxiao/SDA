@@ -137,6 +137,37 @@ Exit:
 
 edit('TabletAudioSample/hdmitoptable.h', '    KSAUDIO_SPEAKER_STEREO,', '    0x2d63f, // 7.1.4; do not collapse shared system playback to stereo.')
 
+# Report a real virtual HDMI sink identity rather than the sample monitor.
+# Keep the two topology identities distinct so Windows does not name both
+# endpoints "SinkDescription Sample" regardless of their INF friendly names.
+edit('TabletAudioSample/hdmitopo.h', '    DECLARE_STD_UNKNOWN();',
+     '    DECLARE_STD_UNKNOWN();\n    bool SdaDedicated = false;')
+edit('TabletAudioSample/hdmitopo.cpp', '    obj->AddRef();',
+     '    obj->SdaDedicated = (wcscmp(MiniportPair->TopoName, L"TopologySdaBitstream") == 0);\n    obj->AddRef();')
+edit('TabletAudioSample/hdmitopo.cpp', '#define SINK_DESC_STR L"SinkDescription Sample"',
+     '#define SINK_DESC_STR (SdaDedicated ? L"SDA HDMI (Dedicated)" : L"SDA HDMI (System / Remote)")')
+edit('TabletAudioSample/hdmitopo.cpp', 'cchLength = sizeof(SINK_DESC_STR)/sizeof(WCHAR) - 1; // -1 to remove the null wchar.',
+     'cchLength = wcslen(SINK_DESC_STR);')
+edit('TabletAudioSample/hdmitopo.cpp', 'sinkInfo->HDCPCapable           = TRUE;',
+     'sinkInfo->HDCPCapable           = FALSE; // Software sink has no HDCP transport.')
+edit('TabletAudioSample/hdmitopo.cpp', 'sinkInfo->AICapable             = TRUE;',
+     'sinkInfo->AICapable             = FALSE; // No auxiliary HDMI information packets.')
+
+# The topology bridge is also queried for encoded capability. Do not retain
+# sample AC3/MLP/DTS declarations that the receiver cannot decode.
+topology = base / 'TabletAudioSample/hdmitoptable.h'
+topo = topology.read_text()
+start = topo.index('static\nKSDATARANGE HdmiTopoPinDataRangesBridge[]')
+end = topo.index('static\nPCPIN_DESCRIPTOR HdmiTopoMiniportPins[]', start)
+bridge_subtypes = ['ANALOG', 'IEC61937_DOLBY_DIGITAL_PLUS', 'IEC61937_DOLBY_DIGITAL_PLUS_ATMOS']
+bridge = 'static KSDATARANGE HdmiTopoPinDataRangesBridge[] = {\n'
+for sub in bridge_subtypes:
+    bridge += f'{{sizeof(KSDATARANGE),0,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub}),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_NONE)}},\n'
+bridge += '};\nstatic PKSDATARANGE HdmiTopoPinDataRangePointersBridge[] = {\n'
+bridge += ',\n'.join(f'&HdmiTopoPinDataRangesBridge[{i}]' for i in range(len(bridge_subtypes)))
+bridge += '\n};\n\n'
+topology.write_text(topo[:start] + bridge + topo[end:])
+
 # Replace the sample's advertised codecs: only formats this prototype handles.
 table = base / 'TabletAudioSample/hdmiwavtable.h'
 text = table.read_text()

@@ -80,6 +80,24 @@ function record(epoch, payload, encoded) {
   assert.equal(service.status.objects, 15);
   assert.ok(commands.some(c => c.type === 'addSource' && c.id.startsWith('obj:') && !c.bedLabel));
   console.log(`PASS bitstream mode: PCM blocked, seek reset, automatic recovery; ${batches.length} native batches match direct object PCM and metadata`);
+  // A recoverable object diagnostic must not drop valid frames or stop input.
+  class RecoveringDecoder {
+    constructor(codec) { this.inner = new SdaDecoder(codec); this.warned = false; }
+    push(bytes) { this.inner.push(bytes); }
+    drainErrors() {
+      const messages = this.inner.drainErrors();
+      if (!this.warned) { this.warned = true; messages.push('E-AC-3 object frame rejected, using core PCM: short-packet'); }
+      return messages;
+    }
+    nextFrame() { return this.inner.nextFrame(); }
+    free() { this.inner.free(); }
+  }
+  batches.length = 0;
+  await service.consume(session, Readable.from([record(1, carrier, true)]), CaptureRecords,
+    require('../windows-system-audio/decoder.cjs').SystemDecoder, RecoveringDecoder);
+  assert.deepEqual(batches.map(digest), expected.map(digest));
+  assert.match(service.status.diagnostic, /using core PCM/);
+  console.log('PASS recovered object diagnostic preserves valid PCM and subsequent frames');
   if (process.argv[2]) {
     batches.length = 0;
     await service.consume(session, fs.createReadStream(process.argv[2]), CaptureRecords,

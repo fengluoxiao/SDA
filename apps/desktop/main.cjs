@@ -1487,11 +1487,11 @@ ipcMain.handle('sda:system-audio', async (_event, action, layout, inputMode = 'a
   if (app.isPackaged) throw Error('系统音频目前仅在已安装实验驱动的开发版中可用');
   if (!nativeRenderer) throw Error('请先初始化双耳渲染器');
   if (!await nativeRendererCommandAck({ type: 'listOutputDevices' }, 'listOutputDevices')) throw Error('无法确认音频输出设备');
-  if (!outputDevicesState?.status?.actualName || /SDA Spatial Bitstream/i.test(outputDevicesState.status.actualName)) throw Error('请在输出设置中选择实际耳机或音箱，不能选择 SDA 虚拟输入');
+  if (!outputDevicesState?.status?.actualName || /SDA (?:Spatial Bitstream|HDMI|Virtual HDMI)/i.test(outputDevicesState.status.actualName)) throw Error('请在输出设置中选择实际耳机或音箱，不能选择 SDA 虚拟输入');
   if (remoteSession.role === 'client') throw Error('远程客户端模式不能接收本机系统音频');
   if (systemAudio.session) return systemAudio.status;
   const inputLayout = layout ?? '7.1.4';
-  const endpoints = await require('./system-audio-input.cjs').discoverEndpoints();
+  const endpoints = await require('./system-audio-input.cjs').discoverEndpoints({repair:true});
   const inputDevice = outputDevicesState.devices?.find(d=>d.available && d.id === endpoints.shared);
   if (!inputDevice) throw Error('未找到 SDA 虚拟输入设备');
   if (inputMode === 'bitstream' && !outputDevicesState.devices?.some(d=>d.available && d.id === endpoints.dedicated)) {
@@ -2041,6 +2041,20 @@ ipcMain.handle("sda:delete-headphone-profile", (_e, id) => {
 });
 
 app.whenReady().then(() => {
+  // Repair known stale SDA bindings before a player is launched. A running
+  // player owns its settings; retry after it exits without killing playback.
+  if (process.platform === 'win32' && !app.isPackaged) {
+    const maintainEndpoints = async () => {
+      try {
+        const result = await require('./system-audio-input.cjs').discoverEndpoints({repair:true});
+        if (result.repairedPlayers?.length) writeStartupLog(`system input: repaired ${result.repairedPlayers.join(', ')}`);
+        if (result.pendingPlayers?.length) {
+          const timer = setTimeout(maintainEndpoints, 10000); timer.unref();
+        }
+      } catch (error) { writeStartupLog(`system input endpoint preparation: ${error.message}`); }
+    };
+    void maintainEndpoints();
+  }
   for (const event of ["lock-screen", "unlock-screen", "suspend", "resume"]) {
     powerMonitor.on(event, () => {
       writeStartupLog(`[remote] system=${event} role=${remoteSession.role} phase=${remoteSession.phase}`);

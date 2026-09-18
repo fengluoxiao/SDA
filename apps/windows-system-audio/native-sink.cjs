@@ -4,7 +4,7 @@ const path = require('node:path');
 
 class NativeSink {
   constructor({ root, outputDevice, volume = 0.5 }) {
-    if (!outputDevice || /SdaSystemAudio|SDA Spatial Bitstream/i.test(outputDevice)) throw new Error('Select an explicit physical output device');
+    if (!outputDevice || /SdaSystemAudio|SDA (?:Spatial Bitstream|HDMI|Virtual HDMI)/i.test(outputDevice)) throw new Error('Select an explicit physical output device');
     this.pending = new Map(); this.sources = new Map(); this.started = false; this.volume = volume; this.outputDevice = outputDevice;
     this.child = spawn(path.join(root, 'apps/desktop/native-renderer/SdaNativeRenderer.exe'), [], {
       windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -53,7 +53,7 @@ class NativeSink {
     await this.command({ type: 'listOutputDevices' });
     const devices = await response;
     if (devices.status?.actualId !== this.outputDevice) throw new Error('Requested output was not opened; refusing silent fallback');
-    if (/SDA Spatial Bitstream/i.test(devices.status?.actualName ?? '')) throw new Error('Output would feed back into the system input');
+    if (/SDA (?:Spatial Bitstream|HDMI|Virtual HDMI)/i.test(devices.status?.actualName ?? '')) throw new Error('Output would feed back into the system input');
     await this.command({ type: 'setHrtf', set: 'hrtf', wetWeight: 0.04 });
     await this.command({ type: 'setVolume', volume: this.volume });
     await this.command({ type: 'setObjectHrtf', enabled: true });
