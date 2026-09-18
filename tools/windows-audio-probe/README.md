@@ -2,6 +2,8 @@
 
 独立的第一阶段验证工具，不接入 SDA 播放流程。仅枚举活动的输出端点，调用 WASAPI `IAudioClient::IsFormatSupported` 查询独占格式支持。不会初始化或启动音频流，不会修改默认设备。
 
+同一 crate 现在也提供 `capture`（读取 SDA 驱动）和 `send`（向 SDA 虚拟端点发送已知 IEC61937 测试载波）两个独立命令。后者会启动流，仅允许 SDA 命名的端点。构建和使用方法见 [Windows 实验工程](../../apps/windows-system-audio/README.md)。默认 `cargo run` 仍只做无播放的格式查询。
+
 Windows 上运行：
 
 ```powershell

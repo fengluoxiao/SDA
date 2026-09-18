@@ -129,3 +129,5 @@ WASAPI 的 `IAudioClient::IsFormatSupported` / `Initialize` 和 `IAudioRenderCli
 macOS 同样有 Core Audio 流格式查询/设置、AudioDevice IO 回调和 AudioServerPlugIn 虚拟端点机制，且 macOS 15 已确认 Dolby HDMI 原始直通。不能把“Windows 有这些接口”与“Windows 已证实能接收对象”画等号，也不能提前否定 macOS；详见配套 Mac 文档的 API 对照。
 
 Windows 开发分支首先进行无副作用的端点编码格式探测和最小码流收发原型。探测返回支持，只说明端点接受格式查询，不说明播放器会选择直通，更不说明已经收到或解码对象。先完成完整载荷和对象时间线对照，再扩展完整产品功能。
+
+2026-09-18 Windows 分支已加入 [可构建的实验工程](../apps/windows-system-audio/README.md)：WaveRT 接收驱动、受限读取器、DD+ IEC61937 解包和原生渲染接收程序。离线载荷、对象事件和 PCM 对照已通过；尚未完成管理员安装后的实际播放器直通验收，不应将这部分写成已发布的系统对象捕获功能。
