@@ -21,6 +21,7 @@ const personalHrtfDirectory = () => path.join(app.getPath("userData"), "personal
 const cinemaProfiles = require("./cinema-profiles.cjs");
 const { createRoomLab } = require("./room-lab.cjs");
 const { exec, spawn } = require("node:child_process");
+const { sharedSystemOutput } = require('./system-audio-output.cjs');
 const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
 let startupLogPending = "";
 let startupLogWriting = false;
@@ -1458,8 +1459,10 @@ ipcMain.handle("sda:open-asio-control-panel", () => {
 });
 ipcMain.handle("sda:set-output-device", (_event, value) => {
   if (!validOutputSettings(value)) throw new Error("无效的输出设置");
-  const settings = normalizeOutputSettings(value);
   const task = outputSettingsChain.then(async () => {
+    const settings = systemAudio.session
+      ? sharedSystemOutput(outputDevicesState.status, normalizeOutputSettings(value), outputDevicesState.devices)
+      : normalizeOutputSettings(value);
     await ensureNativeRenderer();
     const accepted = await nativeRendererCommandAck({type:"setOutputDevice",...settings},"setOutputDevice",15000);
     if (accepted) writeSettings({audioOutput:settings});
@@ -1468,12 +1471,52 @@ ipcMain.handle("sda:set-output-device", (_event, value) => {
   outputSettingsChain = task.catch(() => {});
   return task;
 });
+const { SystemAudio } = require('./system-audio.cjs');
+const systemAudio = new SystemAudio({
+  root: path.resolve(__dirname, '../..'),
+  command: command => nativeRendererCommandAck(command, command.type),
+  batch: nativeRendererBatch,
+  publish: status => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('sda:system-audio-status', status); },
+});
+ipcMain.handle('sda:system-audio', async (_event, action, layout, inputMode = 'auto') => {
+  if (action === 'status') return systemAudio.status;
+  if (action === 'stop') return systemAudio.stop();
+  if (action !== 'start' || process.platform !== 'win32') throw Error('不支持的系统音频操作');
+  if (!['auto', 'bitstream'].includes(inputMode)) throw Error('无效的系统音频输入模式');
+  if (layout !== undefined && !Object.hasOwn(require('../windows-system-audio/layouts.json'),layout)) throw Error('无效的系统音频输入布局');
+  if (app.isPackaged) throw Error('系统音频目前仅在已安装实验驱动的开发版中可用');
+  if (!nativeRenderer) throw Error('请先初始化双耳渲染器');
+  if (!await nativeRendererCommandAck({ type: 'listOutputDevices' }, 'listOutputDevices')) throw Error('无法确认音频输出设备');
+  if (!outputDevicesState?.status?.actualName || /SDA Spatial Bitstream/i.test(outputDevicesState.status.actualName)) throw Error('请在输出设置中选择实际耳机或音箱，不能选择 SDA 虚拟输入');
+  if (remoteSession.role === 'client') throw Error('远程客户端模式不能接收本机系统音频');
+  if (systemAudio.session) return systemAudio.status;
+  const inputLayout = layout ?? '7.1.4';
+  const endpoints = await require('./system-audio-input.cjs').discoverEndpoints();
+  const inputDevice = outputDevicesState.devices?.find(d=>d.available && d.id === endpoints.shared);
+  if (!inputDevice) throw Error('未找到 SDA 虚拟输入设备');
+  if (inputMode === 'bitstream' && !outputDevicesState.devices?.some(d=>d.available && d.id === endpoints.dedicated)) {
+    throw Error('需要更新 SDA 双端点驱动：默认设备保留 SDA，播放器直通请选择 SDA Dedicated 端点');
+  }
+  // IEC61937 is negotiated by the sender in exclusive mode. Publishing a PCM
+  // mix here neither enables passthrough nor preserves its object metadata.
+  const inputFormat = inputMode === 'bitstream' ? {shared:false}
+    : await require('./system-audio-input.cjs').configureInput(inputDevice,inputLayout);
+  // Keep the selected physical endpoint; following the system default here
+  // would route the renderer straight back into the SDA virtual input.
+  const shared = sharedSystemOutput(outputDevicesState.status);
+  if (!await nativeRendererCommandAck({type:'setOutputDevice',...shared},'setOutputDevice',15000)) throw Error('无法切换共享输出，请关闭占用耳机或音箱的其他程序后重试');
+  writeSettings({audioOutput:shared});
+  await nativeRendererCommandAck({ type: 'reset', origin: 0 }, 'reset');
+  const status = await systemAudio.start(inputLayout,inputMode);
+  return systemAudio.update({...status,inputTransport:inputMode==='bitstream'?'exclusive-bitstream':inputFormat.shared?'shared':'exclusive-discrete'});
+});
+app.on('before-quit', () => { systemAudio.session?.socket?.destroy(); systemAudio.session?.server.close(); systemAudio.session?.returnSocket?.destroy(); systemAudio.session?.returnServer?.close(); });
 ipcMain.handle("sda:native-renderer-start", async () => {
   const status = await ensureNativeRenderer();
   writeStartupLog(`ipc startNativeRenderer -> ${JSON.stringify(status)}`);
   return status;
 });
-ipcMain.handle("sda:native-renderer-stop", () => stopNativeRenderer());
+ipcMain.handle("sda:native-renderer-stop", async () => { await systemAudio.stop(); return stopNativeRenderer(); });
 ipcMain.handle('sda:native-renderer-end',(_event,sample)=>Number.isSafeInteger(sample)&&sample>=0&&nativeRendererCommandAck({type:'setRemoteEnd',sample},'setRemoteEnd'));
 ipcMain.handle("sda:native-renderer-health", () => {
   nativeRendererCommand({ type: "health" });
@@ -1514,6 +1557,7 @@ ipcMain.handle("sda:native-renderer-events", async (_event, events) => {
   return accepted;
 });
 ipcMain.handle("sda:native-renderer-reset", async (_event, origin) => {
+  if (systemAudio.session) await systemAudio.stop();
   if (!Number.isSafeInteger(origin) || origin < 0) return false;
   const accepted = await nativeRendererCommandAck({ type: "reset", origin }, "reset");
   if (accepted) publishNativeRendererObjectActivity([]);
@@ -1531,6 +1575,7 @@ ipcMain.handle("sda:native-renderer-speaker-mutes", async (_event, names, focus)
   if (!Array.isArray(names) || names.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
   const focusedNames = focus == null ? [] : typeof focus === "string" ? [focus] : focus;
   if (!Array.isArray(focusedNames) || focusedNames.some(name => typeof name !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(name))) return false;
+  systemAudio.setSpeakerMonitor(names, focusedNames);
   return nativeRendererCommandAck({ type: "setSpeakerMutes", names, focus: focusedNames }, "setSpeakerMutes");
 });
 ipcMain.handle("sda:native-renderer-lfe-muted", async (_event, muted) => {

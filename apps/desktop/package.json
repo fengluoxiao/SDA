@@ -20,6 +20,10 @@
     "files": [
       "assets/**",
       "main.cjs",
+      "system-audio.cjs",
+      "system-audio-output.cjs",
+      "system-audio-input.cjs",
+      "system-audio-reader.ps1",
       "native-event-batches.cjs",
       "remote-session.cjs",
       "remote-rtc.cjs",

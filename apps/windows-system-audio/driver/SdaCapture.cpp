@@ -32,10 +32,22 @@ BOOLEAN dispatchInstalled;
 PDRIVER_DISPATCH previous[IRP_MJ_MAXIMUM_FUNCTION + 1];
 KSPIN_LOCK lock;
 PUCHAR ring;
+constexpr ULONG ReturnFrames = 9600;
+LONG returnRing[ReturnFrames * 2];
+ULONGLONG returnProduced, returnUpdated;
+ULONG returnStreams;
 ULONG head, size;
 PVOID source;
 BOOLEAN connected, protectedSource;
 SDA_CAPTURE_HEADER snapshot;
+struct InputStream {
+    PVOID stream;
+    KSSTATE state;
+    ULONG formatBytes;
+    UCHAR format[64];
+    BOOLEAN encoded, protectedContent;
+};
+InputStream inputs[8];
 UNICODE_STRING link = RTL_CONSTANT_STRING(L"\\DosDevices\\SdaSystemAudio");
 
 // Caller holds lock. Never splice bytes across a lost interval.
@@ -43,6 +55,24 @@ void Reset() {
     head = size = 0;
     ++snapshot.epoch;
     snapshot.offset = snapshot.produced = 0;
+}
+// Caller holds lock. A default-device loopback client may start a shared PCM
+// render stream; it must not replace a running dedicated encoded sender.
+void SelectInput() {
+    InputStream* selected = nullptr;
+    for (auto& input : inputs) {
+        if (!input.stream || input.state != KSSTATE_RUN) continue;
+        if (!selected || (input.encoded && !selected->encoded) ||
+            (input.encoded == selected->encoded && input.stream == source)) selected = &input;
+    }
+    PVOID next = selected ? selected->stream : nullptr;
+    if (source != next) Reset();
+    source = next;
+    protectedSource = selected ? selected->protectedContent : FALSE;
+    snapshot.state = selected ? KSSTATE_RUN : KSSTATE_STOP;
+    snapshot.formatBytes = selected ? selected->formatBytes : 0;
+    RtlZeroMemory(snapshot.format, sizeof(snapshot.format));
+    if (selected) RtlCopyMemory(snapshot.format, selected->format, selected->formatBytes);
 }
 NTSTATUS Complete(PIRP irp, NTSTATUS status, ULONG_PTR bytes = 0) {
     irp->IoStatus.Status = status;
@@ -71,11 +101,28 @@ NTSTATUS Dispatch(PDEVICE_OBJECT target, PIRP irp) {
     }
     if (major == IRP_MJ_CLEANUP) {
         KeAcquireSpinLock(&lock, &irql);
-        if (target == device) { connected = FALSE; Reset(); }
+        if (target == device) { connected = FALSE; returnUpdated = returnProduced = 0; Reset(); }
         KeReleaseSpinLock(&lock, irql);
         return Complete(irp, STATUS_SUCCESS);
     }
     if (major == IRP_MJ_CLOSE) return Complete(irp, STATUS_SUCCESS);
+    if (major == IRP_MJ_DEVICE_CONTROL && stack->Parameters.DeviceIoControl.IoControlCode == SDA_RETURN) {
+        const ULONG bytes = stack->Parameters.DeviceIoControl.InputBufferLength;
+        if (bytes > 3840 || bytes % 8) return Complete(irp, STATUS_INVALID_BUFFER_SIZE);
+        KeAcquireSpinLock(&lock, &irql);
+        if (!ring || protectedSource) { KeReleaseSpinLock(&lock, irql); return Complete(irp, STATUS_ACCESS_DENIED); }
+        if (!bytes) { returnProduced = returnUpdated = 0; }
+        else {
+            auto samples = static_cast<const LONG*>(irp->AssociatedIrp.SystemBuffer);
+            for (ULONG i=0; i<bytes/8; ++i) {
+                const ULONG at = ULONG(returnProduced++ % ReturnFrames)*2;
+                returnRing[at]=samples[i*2]; returnRing[at+1]=samples[i*2+1];
+            }
+            returnUpdated=KeQueryInterruptTime();
+        }
+        KeReleaseSpinLock(&lock, irql);
+        return Complete(irp, STATUS_SUCCESS);
+    }
     if (major != IRP_MJ_DEVICE_CONTROL || stack->Parameters.DeviceIoControl.IoControlCode != SDA_READ)
         return Complete(irp, STATUS_INVALID_DEVICE_REQUEST);
     const ULONG capacity = stack->Parameters.DeviceIoControl.OutputBufferLength;
@@ -89,6 +136,7 @@ NTSTATUS Dispatch(PDEVICE_OBJECT target, PIRP irp) {
         return Complete(irp, STATUS_ACCESS_DENIED);
     }
     const ULONG count = min(16384ul, min(size, capacity - sizeof(SDA_CAPTURE_HEADER)));
+    snapshot.reserved = returnStreams;
     snapshot.payloadBytes = count;
     *output = snapshot;
     auto payload = reinterpret_cast<PUCHAR>(output + 1);
@@ -135,6 +183,8 @@ VOID SdaCaptureShutdown() {
     KeAcquireSpinLock(&lock, &irql);
     connected = FALSE;
     source = nullptr;
+    RtlZeroMemory(inputs, sizeof(inputs));
+    protectedSource = FALSE;
     snapshot.state = KSSTATE_STOP;
     Reset();
     PUCHAR retired = ring;
@@ -151,34 +201,32 @@ VOID SdaCaptureShutdown() {
 VOID SdaCaptureState(PVOID stream, KSSTATE state, PWAVEFORMATEX format) {
     KIRQL irql;
     KeAcquireSpinLock(&lock, &irql);
-    if (source != stream) {
-        source = stream;
-        protectedSource = FALSE;
-        Reset();
+    InputStream* slot = nullptr;
+    for (auto& input : inputs) if (input.stream == stream) { slot = &input; break; }
+    if (!slot) for (auto& input : inputs) if (!input.stream) { slot = &input; break; }
+    if (slot) {
+        if (source == stream && state != KSSTATE_RUN && slot->state != state) Reset();
+        slot->stream = stream; slot->state = state;
+        slot->formatBytes = min(ULONG(sizeof(WAVEFORMATEX) + format->cbSize), ULONG(sizeof(slot->format)));
+        RtlZeroMemory(slot->format, sizeof(slot->format));
+        RtlCopyMemory(slot->format, format, slot->formatBytes);
+        // This driver's only 192 kHz formats are the two DD+ IEC subtypes.
+        slot->encoded = format->nSamplesPerSec == 192000 && format->nChannels == 2 && format->wBitsPerSample == 16;
+        SelectInput();
     }
-    // Pause/stop discard buffered audio, so the receiver never plays stale music.
-    if (state != KSSTATE_RUN && ULONG(state) != snapshot.state) Reset();
-    snapshot.state = state;
-    snapshot.formatBytes = min(ULONG(sizeof(WAVEFORMATEX) + format->cbSize), ULONG(sizeof(snapshot.format)));
-    RtlZeroMemory(snapshot.format, sizeof(snapshot.format));
-    RtlCopyMemory(snapshot.format, format, snapshot.formatBytes);
     KeReleaseSpinLock(&lock, irql);
 }
 VOID SdaCaptureClose(PVOID stream) {
     KIRQL irql;
     KeAcquireSpinLock(&lock, &irql);
-    if (source == stream) {
-        source = nullptr;
-        protectedSource = FALSE;
-        snapshot.state = KSSTATE_STOP;
-        snapshot.formatBytes = 0;
-        Reset();
-    }
+    for (auto& input : inputs) if (input.stream == stream) RtlZeroMemory(&input, sizeof(input));
+    SelectInput();
     KeReleaseSpinLock(&lock, irql);
 }
 VOID SdaCaptureProtected(PVOID stream, BOOLEAN value) {
     KIRQL irql;
     KeAcquireSpinLock(&lock, &irql);
+    for (auto& input : inputs) if (input.stream == stream) input.protectedContent = value;
     if (source == stream) { protectedSource = value; Reset(); }
     KeReleaseSpinLock(&lock, irql);
 }
@@ -201,4 +249,54 @@ VOID SdaCaptureWrite(PVOID stream, const UCHAR* bytes, ULONG count) {
         bytes += chunk;
         count -= chunk;
     }
+}
+
+// Only the post-render return IOCTL writes this ring. Original input never does.
+// Keep independent cursors for each loopback stream, and never replay old audio.
+VOID SdaReturnState(KSSTATE previousState, KSSTATE state) {
+    KIRQL irql; KeAcquireSpinLock(&lock,&irql);
+    if(previousState!=KSSTATE_RUN && state==KSSTATE_RUN) ++returnStreams;
+    if(previousState==KSSTATE_RUN && state!=KSSTATE_RUN && returnStreams) --returnStreams;
+    KeReleaseSpinLock(&lock,irql);
+}
+ULONGLONG SdaReturnPosition() {
+    KIRQL irql; KeAcquireSpinLock(&lock, &irql);
+    const auto position=returnProduced;
+    KeReleaseSpinLock(&lock, irql); return position;
+}
+static ULONG Q31FloatBits(LONG value) {
+    if (!value) return 0;
+    const ULONG sign=value<0 ? 0x80000000ul : 0;
+    ULONG magnitude=value<0 ? ULONG(-LONGLONG(value)) : ULONG(value);
+    ULONG highest=0, n=magnitude;
+    while (n>>=1) ++highest;
+    const ULONG mantissa=highest>23 ? magnitude>>(highest-23) : magnitude<<(23-highest);
+    return sign | ((highest+96)<<23) | (mantissa&0x7fffff);
+}
+VOID SdaReturnRead(ULONGLONG* cursor, PUCHAR bytes, ULONG count, PWAVEFORMATEX format) {
+    RtlZeroMemory(bytes,count);
+    if (format->nSamplesPerSec!=48000 || !format->nChannels || format->nChannels>24 ||
+        (format->wBitsPerSample!=16 && format->wBitsPerSample!=24 && format->wBitsPerSample!=32) ||
+        format->nBlockAlign!=format->nChannels*(format->wBitsPerSample/8)) return;
+    const BOOLEAN floating=format->wFormatTag==WAVE_FORMAT_IEEE_FLOAT ||
+        (format->wFormatTag==WAVE_FORMAT_EXTENSIBLE && format->cbSize>=22 &&
+         reinterpret_cast<PWAVEFORMATEXTENSIBLE>(format)->SubFormat.Data1==3);
+    const ULONG frames=count/format->nBlockAlign, width=format->wBitsPerSample/8;
+    KIRQL irql; KeAcquireSpinLock(&lock,&irql);
+    if (!connected || protectedSource || !returnUpdated || KeQueryInterruptTime()-returnUpdated>1000000) {
+        *cursor=returnProduced; KeReleaseSpinLock(&lock,irql); return;
+    }
+    if (*cursor>returnProduced) *cursor=returnProduced;
+    if (returnProduced-*cursor>4800) *cursor=returnProduced-960;
+    const ULONG available=ULONG(min(ULONGLONG(frames),returnProduced-*cursor));
+    for (ULONG i=0; i<available; ++i) {
+        const ULONG at=ULONG((*cursor)++ % ReturnFrames)*2;
+        for (ULONG channel=0; channel<min(ULONG(format->nChannels),2ul); ++channel) {
+            LONG value=returnRing[at+channel];
+            if (format->nChannels==1) value=LONG((LONGLONG(returnRing[at])+returnRing[at+1])/2);
+            const ULONG encoded=floating ? Q31FloatBits(value) : ULONG(value)>>(32-format->wBitsPerSample);
+            for (ULONG b=0;b<width;++b) bytes[i*format->nBlockAlign+channel*width+b]=UCHAR(encoded>>(8*b));
+        }
+    }
+    KeReleaseSpinLock(&lock,irql);
 }

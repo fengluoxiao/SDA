@@ -3,7 +3,7 @@ Signature="$Windows NT$"
 Class=MEDIA
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider=%Provider%
-DriverVer=09/18/2026,0.1.0.2
+DriverVer=09/18/2026,0.1.0.11
 CatalogFile=SdaSystemAudio.cat
 PnpLockDown=1
 [Manufacturer]
@@ -37,6 +37,23 @@ AddInterface=%Render%,WaveHdmi,Wave
 AddInterface=%Realtime%,WaveHdmi,Wave
 AddInterface=%Audio%,TopologyHdmi,Topology
 AddInterface=%Topology%,TopologyHdmi,Topology
+AddInterface=%Audio%,WaveSdaBitstream,BitstreamWave
+AddInterface=%Render%,WaveSdaBitstream,BitstreamWave
+AddInterface=%Realtime%,WaveSdaBitstream,BitstreamWave
+AddInterface=%Audio%,TopologySdaBitstream,BitstreamTopology
+AddInterface=%Topology%,TopologySdaBitstream,BitstreamTopology
+[BitstreamWave]
+AddReg=BitstreamWaveReg
+[BitstreamWaveReg]
+HKR,,CLSID,,%Proxy%
+HKR,,FriendlyName,,%BitstreamDescription%
+[BitstreamTopology]
+AddReg=BitstreamTopologyReg
+[BitstreamTopologyReg]
+HKR,,CLSID,,%Proxy%
+HKR,,FriendlyName,,%BitstreamDescription%
+HKR,EP\0,"{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2",,"{00000000-0000-0000-0000-000000000000}"
+HKR,EP\0,"{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7",0x00010001,1
 [Wave]
 AddReg=WaveReg
 [WaveReg]
@@ -64,6 +81,7 @@ KmdfLibraryVersion=1.33
 [Strings]
 Provider="Spatial Decoder Atelier"
 Description="SDA Spatial Bitstream Input (Experimental)"
+BitstreamDescription="SDA Spatial Bitstream Input - Dedicated"
 Audio="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
 Render="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
 Realtime="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"

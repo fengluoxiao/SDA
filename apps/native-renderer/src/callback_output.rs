@@ -3,6 +3,7 @@
 use crate::stereo_fifo::StereoFifo;
 
 pub(super) struct CallbackOutput {
+    return_epoch: usize,
     previous: [f32; 2],
     fade_out_start: [f32; 2],
     fade_frames: usize,
@@ -15,6 +16,7 @@ pub(super) struct CallbackOutput {
 impl CallbackOutput {
     pub(super) fn new(sample_rate: u32, refill_frames: usize) -> Self {
         Self {
+            return_epoch: 0,
             previous: [0.0; 2],
             fade_out_start: [0.0; 2],
             fade_frames: (sample_rate as usize / 500).max(1),
@@ -26,6 +28,7 @@ impl CallbackOutput {
     }
 
     pub(super) fn reset(&mut self) {
+        self.return_epoch = 0;
         self.previous = [0.0; 2];
         self.fade_out_start = [0.0; 2];
         self.fade_out_remaining = 0;
@@ -48,6 +51,22 @@ impl CallbackOutput {
     /// Only returned, real FIFO frames advance the codec clock; recovery output
     /// is synthetic and leaves all queued program samples intact.
     pub(super) fn fill(
+        &mut self,
+        fifo: &StereoFifo,
+        output_enabled: bool,
+        requested: usize,
+        mut write: impl FnMut(usize, [f32; 2]),
+    ) -> usize {
+        let mut epoch = self.return_epoch;
+        let popped = self.fill_source(fifo, output_enabled, requested, |offset, frame| {
+            crate::system_loopback::publish(&mut epoch, frame);
+            write(offset, frame);
+        });
+        self.return_epoch = if output_enabled { epoch } else { 0 };
+        popped
+    }
+
+    fn fill_source(
         &mut self,
         fifo: &StereoFifo,
         output_enabled: bool,

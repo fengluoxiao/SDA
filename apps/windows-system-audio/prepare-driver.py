@@ -5,6 +5,7 @@ Does not install a driver, change boot settings, or change the source checkout.
 from pathlib import Path
 import argparse
 import io
+import json
 import re
 import shutil
 import subprocess
@@ -37,9 +38,34 @@ for name in ['SdaCapture.cpp', 'SdaCapture.h']:
     shutil.copyfile(Path(__file__).parent / 'driver' / name, base / name)
 
 edit('adapter.cpp', '#include <sysvad.h>', '#include <sysvad.h>\n#include "SdaCapture.h"')
+# Keep endpoint registration errors intact: the upstream sample overwrites them
+# with optional interface queries and executes demonstration resource tests.
+adapter_path = base / 'adapter.cpp'
+adapter_text = adapter_path.read_text()
+start = adapter_text.index('    PPORTCLSETWHELPER', adapter_text.index('InstallEndpointRenderFilters('))
+end = adapter_text.index('    PAGED_CODE();', start)
+adapter_text = adapter_text[:start] + adapter_text[end:]
+start = adapter_text.index('    if (unknownWave) // IID_IPortClsEtwHelper')
+end = adapter_text.index('    SAFE_RELEASE(unknownTopology);', start)
+adapter_text = adapter_text[:start] + '''    SdaCaptureStartup(40, ntStatus);
+    if (NT_SUCCESS(ntStatus) && unknownWave)
+    {
+        PPORTCLSETWHELPER helper = NULL;
+        if (NT_SUCCESS(unknownWave->QueryInterface(IID_IPortClsEtwHelper, (PVOID*)&helper)))
+        {
+            _pAdapterCommon->SetEtwHelper(helper);
+            helper->Release();
+        }
+    }
+
+''' + adapter_text[end:]
+adapter_path.write_text(adapter_text)
 edit('adapter.cpp', 'DPF(D_TERSE, ("[DriverEntry]"));', 'DPF(D_TERSE, ("[DriverEntry]"));\n    SdaCaptureStartup(0, STATUS_SUCCESS);')
 edit('adapter.cpp', 'return ntStatus;\n} // AddDevice', 'SdaCaptureStartup(10, ntStatus);\n    return ntStatus;\n} // AddDevice')
 edit('common.cpp', '#include <sysvad.h>', '#include <sysvad.h>\n#include "SdaCapture.h"')
+edit('common.cpp', 'ntStatus = CreateAudioInterfaceWithProperties(Name, TemplateName, cPropertyCount, pProperties, &symbolicLink);', 'ntStatus = CreateAudioInterfaceWithProperties(Name, TemplateName, cPropertyCount, pProperties, &symbolicLink);\n    SdaCaptureStartup(41, ntStatus);')
+edit('common.cpp', 'ntStatus = PcNewPort(&port, PortClassId);', 'ntStatus = PcNewPort(&port, PortClassId);\n        SdaCaptureStartup(42, ntStatus);')
+edit('common.cpp', '#pragma warning (pop)', '#pragma warning (pop)\n        SdaCaptureStartup(43, ntStatus);')
 edit('common.cpp', 'ntStatus = PcGetPhysicalDeviceObject(DeviceObject, &m_pPhysicalDeviceObject);', 'ntStatus = PcGetPhysicalDeviceObject(DeviceObject, &m_pPhysicalDeviceObject);\n    SdaCaptureStartup(31, ntStatus);')
 edit('common.cpp', '&m_WdfDevice);', '&m_WdfDevice);\n    SdaCaptureStartup(32, ntStatus);')
 edit('adapter.cpp', 'if (gPCDriverUnloadRoutine != NULL)', 'SdaCaptureShutdown();\n    if (gPCDriverUnloadRoutine != NULL)')
@@ -58,13 +84,15 @@ edit('adapter.cpp', 'case IRP_MN_REMOVE_DEVICE:\n    case IRP_MN_SURPRISE_REMOVA
 
 file = 'EndpointsCommon/minwavertstream.cpp'
 edit(file, '#include <limits.h>', '#include <limits.h>\n#include "SdaCapture.h"')
-edit(file, 'm_KsState = State_;', 'if (!m_bCapture) SdaCaptureState(this, State_, &m_pWfExt->Format);\n    m_KsState = State_;')
+edit('EndpointsCommon/minwavertstream.h', '    VOID WriteBytes', '    ULONGLONG m_SdaReturnCursor = 0;\n    VOID WriteBytes')
+edit(file, 'm_ToneGenerator.GenerateSine(m_pDmaBuffer + bufferOffset, runWrite);', 'SdaReturnRead(&m_SdaReturnCursor, m_pDmaBuffer + bufferOffset, runWrite, &m_pWfExt->Format);')
+edit(file, 'm_KsState = State_;', 'if (!m_bCapture) SdaCaptureState(this, State_, &m_pWfExt->Format);\n    else { SdaReturnState(m_KsState, State_); if (State_ == KSSTATE_RUN && m_KsState != KSSTATE_RUN) m_SdaReturnCursor = SdaReturnPosition(); }\n    m_KsState = State_;')
 edit(file, 'm_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);',
      'SdaCaptureWrite(this, m_pDmaBuffer + bufferOffset, runWrite);')
 edit(file, 'if (!g_DoNotCreateDataFiles)\n        {\n            // Read from buffer and write to a file.',
      'if (true)\n        {\n            // Transfer unchanged carrier bytes to the bounded receiver queue.')
 edit(file, 'DPF_ENTER(("[CMiniportWaveRTStream::~CMiniportWaveRTStream]"));',
-     'SdaCaptureClose(this);\n    DPF_ENTER(("[CMiniportWaveRTStream::~CMiniportWaveRTStream]"));')
+     'if (m_bCapture) SdaReturnState(m_KsState, KSSTATE_STOP);\n    SdaCaptureClose(this);\n    DPF_ENTER(("[CMiniportWaveRTStream::~CMiniportWaveRTStream]"));')
 edit(file, 'm_SaveData.Disable(drmRights->CopyProtect);',
      'm_SaveData.Disable(drmRights->CopyProtect);\n    SdaCaptureProtected(this, drmRights->CopyProtect || drmRights->DigitalOutputDisable);\n    if (drmRights->CopyProtect || drmRights->DigitalOutputDisable) return STATUS_ACCESS_DENIED;')
 # If the timer missed an entire DMA buffer, those bytes were overwritten. Do
@@ -73,7 +101,18 @@ edit(file, 'ULONG bufferOffset = m_ullLinearPosition % m_ulDmaBufferSize;\n\n   
      'if (ByteDisplacement > m_ulDmaBufferSize) {\n        SdaCaptureState(this, KSSTATE_PAUSE, &m_pWfExt->Format);\n        SdaCaptureState(this, KSSTATE_RUN, &m_pWfExt->Format);\n        return;\n    }\n    ULONG bufferOffset = m_ullLinearPosition % m_ulDmaBufferSize;\n    while (ByteDisplacement > 0)\n    {\n        ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);\n        SdaCaptureWrite')
 
 # A single output, no dummy microphones, Bluetooth takeover, or loopback tone.
+# Hardware loopback returns the rendered stereo mix, never the input carrier.
 edit('TabletAudioSample/minipairs.h', '    &SpeakerMiniports,\n    &SpeakerHpMiniports,\n    &HdmiMiniports,\n    &SpdifMiniports,', '    &HdmiMiniports,')
+# Keep the system-default endpoint shared while a separate endpoint receives
+# exclusive IEC61937. Both loopback pins read only SDA's rendered return ring.
+pairs = base / 'TabletAudioSample/minipairs.h'
+pair_text = pairs.read_text()
+start = pair_text.index('static\nENDPOINT_MINIPAIR HdmiMiniports =')
+end = pair_text.index('\n};', start) + 3
+dedicated = pair_text[start:end].replace('HdmiMiniports =', 'SdaBitstreamMiniports =').replace('L"TopologyHdmi"', 'L"TopologySdaBitstream"').replace('L"WaveHdmi"', 'L"WaveSdaBitstream"')
+pair_text = pair_text[:end] + '\n\n' + dedicated + pair_text[end:]
+pair_text = pair_text.replace('    &HdmiMiniports,', '    &HdmiMiniports,\n    &SdaBitstreamMiniports,')
+pairs.write_text(pair_text)
 edit('TabletAudioSample/minipairs.h', '    &MicInMiniports,\n    &MicArray1Miniports,\n    &MicArray2Miniports,\n    &MicArray3Miniports,', '    nullptr,')
 edit('TabletAudioSample/minipairs.h', '#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))', '#define g_cCaptureEndpoints 0')
 edit('adapter.cpp', '''    NTSTATUS            ntStatus;
@@ -96,6 +135,8 @@ Exit:
     UNREFERENCED_PARAMETER(_pAdapterCommon);
     return STATUS_SUCCESS;''')
 
+edit('TabletAudioSample/hdmitoptable.h', '    KSAUDIO_SPEAKER_STEREO,', '    0x2d63f, // 7.1.4; do not collapse shared system playback to stereo.')
+
 # Replace the sample's advertised codecs: only formats this prototype handles.
 table = base / 'TabletAudioSample/hdmiwavtable.h'
 text = table.read_text()
@@ -103,38 +144,56 @@ suffix = text[text.index('static\nPCPIN_DESCRIPTOR HdmiWaveMiniportPins[]'):]
 prefix = '''// SDA experimental endpoint; remaining topology from Microsoft SysVAD.
 #ifndef _SYSVAD_HDMIWAVTABLE_H_
 #define _SYSVAD_HDMIWAVTABLE_H_
-#define HDMI_DEVICE_MAX_CHANNELS 2
+#define HDMI_DEVICE_MAX_CHANNELS 24
 #define HDMI_MAX_INPUT_SYSTEM_STREAMS 1
-#define HDMI_MAX_OUTPUT_LOOPBACK_STREAMS 0
+#define HDMI_MAX_OUTPUT_LOOPBACK_STREAMS 8
 '''
-subtypes = ['PCM', 'IEC61937_DOLBY_DIGITAL_PLUS', 'IEC61937_DOLBY_DIGITAL_PLUS_ATMOS']
+formats = [('PCM', 12, 48000, 32, '0x2d63f')]
+for channels, mask in [(1, '0x4'), (2, '0x3'), (6, '0x3f'), (6, '0x60f'), (8, '0x63f'), (12, '0x2d63f')]:
+    for subtype, bits in [('PCM',16), ('PCM',24), ('PCM',32), ('IEEE_FLOAT',32)]:
+        entry = (subtype, channels, 48000, bits, mask)
+        if entry not in formats:
+            formats.append(entry)
+# Mask zero means discrete channels; the selected SDA input layout defines order.
+layouts = json.loads((ROOT / 'apps/windows-system-audio/layouts.json').read_text())
+for count in sorted({len(labels) for labels in layouts.values()}):
+    for subtype, bits in [('PCM',16), ('PCM',24), ('PCM',32), ('IEEE_FLOAT',32)]:
+        formats.append((subtype,count,48000,bits,'0'))
+pcm_format_count = len(formats)
+# The two-channel IEC carrier is not the decoded 5.1 speaker layout.
+# Senders can describe the carrier as stereo/unspecified or use the content mask.
+formats += [(sub, 2, 192000, 16, mask)
+            for sub in ['IEC61937_DOLBY_DIGITAL_PLUS', 'IEC61937_DOLBY_DIGITAL_PLUS_ATMOS']
+            for mask in ['0', 'KSAUDIO_SPEAKER_STEREO', 'KSAUDIO_SPEAKER_5POINT1', '0x60f', '0x63f']]
 prefix += 'static KSDATAFORMAT_WAVEFORMATEXTENSIBLE HdmiHostPinSupportedDeviceFormats[] = {\n'
-for i, sub in enumerate(subtypes):
-    rate = 48000 if i == 0 else 192000
-    mask = 'KSAUDIO_SPEAKER_STEREO' if i == 0 else 'KSAUDIO_SPEAKER_5POINT1'
+for sub, channels, rate, bits, mask in formats:
+    block = channels * bits // 8
     prefix += f'''{{{{sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE),0,0,0,
 STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub}),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)}},
-{{{{WAVE_FORMAT_EXTENSIBLE,2,{rate},{rate*4},4,16,22}},16,{mask},STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub})}}}},
+{{{{WAVE_FORMAT_EXTENSIBLE,{channels},{rate},{rate*block},{block},{bits},22}},{bits},{mask},STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub})}}}},
 '''
 prefix += '''};
 static MODE_AND_DEFAULT_FORMAT HdmiHostPinSupportedDeviceModes[] = {{STATIC_AUDIO_SIGNALPROCESSINGMODE_RAW,NULL}};
 static PIN_DEVICE_FORMATS_AND_MODES HdmiPinDeviceFormatsAndModes[] = {
 {SystemRenderPin,HdmiHostPinSupportedDeviceFormats,SIZEOF_ARRAY(HdmiHostPinSupportedDeviceFormats),HdmiHostPinSupportedDeviceModes,1},
-{RenderLoopbackPin,NULL,0,NULL,0},{BridgePin,NULL,0,NULL,0}};
+{RenderLoopbackPin,HdmiHostPinSupportedDeviceFormats,SDA_PCM_FORMAT_COUNT,NULL,0},{BridgePin,NULL,0,NULL,0}};
 static KSDATARANGE_AUDIO HdmiPinDataRangesStream[] = {
 '''
-for i, sub in enumerate(subtypes):
-    rate = 48000 if i == 0 else 192000
-    prefix += f'{{{{sizeof(KSDATARANGE_AUDIO),KSDATARANGE_ATTRIBUTES,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub}),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)}},2,16,16,{rate},{rate}}},\n'
+ranges = [('PCM',24,16,32,48000), ('IEEE_FLOAT',24,32,32,48000), ('IEC61937_DOLBY_DIGITAL_PLUS',2,16,16,192000), ('IEC61937_DOLBY_DIGITAL_PLUS_ATMOS',2,16,16,192000)]
+for sub, channels, low, high, rate in ranges:
+    prefix += f'{{{{sizeof(KSDATARANGE_AUDIO),KSDATARANGE_ATTRIBUTES,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_{sub}),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)}},{channels},{low},{high},{rate},{rate}}},\n'
 prefix += '};\nstatic PKSDATARANGE HdmiPinDataRangePointersStream[] = {\n'
-for i in range(3):
+for i in range(len(ranges)):
     prefix += f'PKSDATARANGE(&HdmiPinDataRangesStream[{i}]),PKSDATARANGE(&PinDataRangeAttributeList),\n'
 prefix += '''};
-static PKSDATARANGE HdmiPinDataRangePointersLoopbackStream[] = {PKSDATARANGE(&HdmiPinDataRangesStream[0])};
+static KSDATARANGE_AUDIO HdmiLoopbackRanges[] = {
+{{sizeof(KSDATARANGE_AUDIO),0,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)},24,16,32,48000,48000},
+{{sizeof(KSDATARANGE_AUDIO),0,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)},24,32,32,48000,48000}};
+static PKSDATARANGE HdmiPinDataRangePointersLoopbackStream[] = {PKSDATARANGE(&HdmiLoopbackRanges[0]),PKSDATARANGE(&HdmiLoopbackRanges[1])};
 static KSDATARANGE HdmiPinDataRangesBridge[] = {{sizeof(KSDATARANGE),0,0,0,STATICGUIDOF(KSDATAFORMAT_TYPE_AUDIO),STATICGUIDOF(KSDATAFORMAT_SUBTYPE_ANALOG),STATICGUIDOF(KSDATAFORMAT_SPECIFIER_NONE)}};
 static PKSDATARANGE HdmiPinDataRangePointersBridge[] = {&HdmiPinDataRangesBridge[0]};
 '''
-table.write_text(prefix + suffix)
+table.write_text(prefix.replace('SDA_PCM_FORMAT_COUNT', str(pcm_format_count)) + suffix)
 # Strictly bound the caller's extension before sample format comparison reads it.
 edit('EndpointsCommon/minwavert.cpp', 'cPinFormats = GetPinSupportedDeviceFormats(_ulPin, &pPinFormats);',
      '''if (_pDataFormat->FormatSize < sizeof(KSDATAFORMAT_WAVEFORMATEX)) return STATUS_INVALID_PARAMETER;
@@ -143,7 +202,7 @@ edit('EndpointsCommon/minwavert.cpp', 'cPinFormats = GetPinSupportedDeviceFormat
     if (wf->cbSize != 0 && wf->cbSize != 22 && wf->cbSize != 34) return STATUS_NO_MATCH;
     if (wf->cbSize == 34) {
         const auto encoded = reinterpret_cast<const ULONG*>(reinterpret_cast<const UCHAR*>(wf) + sizeof(WAVEFORMATEXTENSIBLE));
-        if (encoded[0] != 48000 || encoded[1] != 6) return STATUS_NO_MATCH;
+        if (encoded[0] != 48000 || (encoded[1] != 2 && encoded[1] != 6 && encoded[1] != 8)) return STATUS_NO_MATCH;
     }
     if (wf->nAvgBytesPerSec != wf->nSamplesPerSec * wf->nBlockAlign) return STATUS_NO_MATCH;
     cPinFormats = GetPinSupportedDeviceFormats(_ulPin, &pPinFormats);''')

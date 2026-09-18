@@ -25,6 +25,8 @@ fn main() -> windows::core::Result<()> {
     let candidates = [
         ("E-AC-3 / 48k / 5.1", format(0x0a, 2, 6, 0x3f)),
         ("E-AC-3 Atmos / 48k / 5.1", format(0x10a, 2, 6, 0x3f)),
+        ("E-AC-3 / stereo carrier mask", format(0x0a, 2, 6, 3)),
+        ("E-AC-3 / unspecified carrier mask", format(0x0a, 2, 6, 0)),
         ("MLP MAT 1 / 48k / 7.1", format(0x0c, 8, 8, 0x63f)),
     ];
     for index in 0..unsafe { devices.GetCount()? } {

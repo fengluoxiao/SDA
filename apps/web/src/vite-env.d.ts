@@ -111,6 +111,9 @@ declare global {
       getRemotePairingKey?:()=>Promise<string>;
       getRemoteStatus?:()=>Promise<import("./remote-session").RemoteStatus>;
       remoteSession?:(action:"host"|"join"|"stop"|"playbackOrigin"|"maxPeers"|"hlsAllowed"|"localMute"|"deviceApprove"|"deviceReject"|"deviceRevoke"|"devicePermission"|"deviceDisconnect",value?:unknown)=>Promise<import("./remote-session").RemoteStatus>;
+      systemAudioAvailable?: boolean;
+      systemAudio?: (action: 'status'|'start'|'stop', layout?: string, inputMode?: 'auto'|'bitstream') => Promise<{active:boolean;phase:string;detail:string;frames:number;objects:number;inputChannels?:{label:string;peak:number}[]}>;
+      onSystemAudioStatus?: (callback: (status: {active:boolean;phase:string;detail:string;frames:number;objects:number;inputChannels?:{label:string;peak:number}[]}) => void) => () => void;
       nativeRendererEnd?:(sample:number)=>Promise<boolean>;
       remoteCommand?:(command:import("./remote-session").RemoteCommand)=>Promise<string>;
       publishRemoteScene?:(scene:import("./remote-session").RemoteScene|undefined)=>void;

@@ -54,6 +54,7 @@ mod object_mixer;
 mod adm_zone;
 mod direct_renderer;
 mod callback_output;
+mod system_loopback;
 mod convolution;
 mod dsp;
 #[allow(dead_code)]
@@ -187,6 +188,7 @@ enum Command {
     SetRemoteLocalMute { muted: bool },
     SetRemoteEnd { sample:u64 },
     SetRemoteSync { enabled: bool, #[serde(rename="startAtMs",default)] start_at_ms: u64, #[serde(rename="stopAtMs",default)] stop_at_ms: u64, #[serde(rename="bufferMs",default)] buffer_ms: u64 },
+    SetSystemLoopback { address: Option<String>, token: Option<String> },
     SetRemoteOutput { address: Option<String>, token: Option<String> },
     SetOutputDevice { #[serde(flatten)] settings: output_manager::Settings },
     Shutdown,

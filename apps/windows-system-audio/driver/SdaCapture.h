@@ -4,6 +4,7 @@
 
 // Buffered, bounded snapshots. Only SYSTEM/administrators may open the device.
 #define SDA_READ CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_READ_DATA)
+#define SDA_RETURN CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_DATA)
 struct SDA_CAPTURE_HEADER {
     ULONG magic;                 // "SDAC"
     ULONG version;
@@ -25,3 +26,6 @@ VOID SdaCaptureClose(PVOID stream);
 VOID SdaCaptureWrite(PVOID stream, const UCHAR* bytes, ULONG count);
 VOID SdaCaptureProtected(PVOID stream, BOOLEAN protectedContent);
 VOID SdaCaptureStartup(ULONG stage, NTSTATUS status);
+VOID SdaReturnState(KSSTATE previousState, KSSTATE state);
+ULONGLONG SdaReturnPosition();
+VOID SdaReturnRead(ULONGLONG* cursor, PUCHAR bytes, ULONG count, PWAVEFORMATEX format);

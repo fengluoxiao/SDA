@@ -44,6 +44,9 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld("sdaDesktop", {
+  systemAudioAvailable: process.platform === 'win32',
+  systemAudio: (action, layout, inputMode) => ipcRenderer.invoke('sda:system-audio', action, layout, inputMode),
+  onSystemAudioStatus: callback => subscribe('sda:system-audio-status', callback),
   getRemotePairingKey: () => ipcRenderer.invoke("sda:remote-pairing-key"),
   getRemoteStatus: () => ipcRenderer.invoke("sda:remote-status"),
   remoteSession: (action, value) => ipcRenderer.invoke("sda:remote-session", action, value),

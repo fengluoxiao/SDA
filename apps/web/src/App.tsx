@@ -440,13 +440,29 @@ export function App() {
   nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
   nativeRendererSampleRef.current = nativeRendererStatus?.samplePos ?? nativeRendererSampleRef.current;
   const [nativeRendererBusy, setNativeRendererBusy] = useState(false);
+  const [systemAudio, setSystemAudio] = useState<{active:boolean;phase:string;detail:string;frames:number;objects:number;inputChannels?:{label:string;peak:number}[]}>({active:false,phase:"stopped",detail:"未启动",frames:0,objects:0});
+  const [systemAudioBusy, setSystemAudioBusy] = useState(false);
+  const [systemInputMode, setSystemInputMode] = useState<'auto'|'bitstream'>(() =>
+    localStorage.getItem('sda-system-input-mode') === 'auto' ? 'auto' : 'bitstream');
+  const [systemInputLayout, setSystemInputLayout] = useState<LayoutId | "standard">(() => {
+    const saved = localStorage.getItem("sda-system-input-layout");
+    return saved && Object.hasOwn(LAYOUTS, saved) ? saved as LayoutId : "standard";
+  });
+  const systemAudioRef = useRef(false);
+  const systemLayoutQueueRef = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    const accept = (status: typeof systemAudio) => { systemAudioRef.current = status.active; setSystemAudio(status); };
+    void window.sdaDesktop?.systemAudio?.("status").then(accept);
+    return window.sdaDesktop?.onSystemAudioStatus?.(accept);
+  }, []);
+
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
   const [headTrackingTelemetry, setHeadTrackingTelemetry] = useState<HeadTrackingTelemetrySample[]>([]);
   const headTrackingSessionRef = useRef(new HeadTrackingSession({yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}));
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"remote" | "roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"system-audio" | "remote" | "roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [hrtfTestVisual,setHrtfTestVisual]=useState<HrtfTestVisual|null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
@@ -1173,6 +1189,41 @@ export function App() {
     }
   }, [nativeRendererStatus?.running]);
 
+  const toggleSystemAudio = async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.systemAudio) return;
+    setSystemAudioBusy(true);
+    try {
+      if (systemAudioRef.current) { setSystemAudio(await desktop.systemAudio("stop")); return; }
+      ++playRequestRef.current; ++seekRequestRef.current; ++nativeSessionEpochRef.current;
+      const previous = playerRef.current; playerRef.current = null;
+      await previous?.dispose();
+      setPlayerReady(null); playingRef.current = false; pausedRef.current = false;
+      setPlaying(false); setPaused(false); setTrack(null); setObjects([]); objectsRef.current = [];
+      await desktop.startNativeRenderer?.();
+      if (!await desktop.nativeRendererReset?.(0)) throw Error("无法初始化渲染器");
+      if (!await desktop.nativeRendererHrtf?.(nativeHrtfSetName(readBinauralHead()), 0.04)) throw Error("无法加载耳廓设置");
+      if (desktop.getCinemaSettings && desktop.nativeRendererCinema) {
+        const cinema = await desktop.getCinemaSettings();
+        if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw Error("无法恢复房间和监听设置");
+      }
+      // System input has no file Player to forward layout changes. The virtual
+      // render layout is independent of the Windows PCM input channel mask.
+      const systemLayout = layoutIdRef.current === "auto" ? (systemInputLayout === "standard" ? "7.1.4" : systemInputLayout) : layoutIdRef.current;
+      if (!await desktop.nativeRendererLayout?.(systemLayout)) throw Error("无法应用系统音频渲染布局");
+      setDetectedLayout(systemInputLayout === "standard" ? null : systemInputLayout);
+      await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true");
+      await desktop.nativeRendererDirectionalHrtf?.(readDirectionalHrtf());
+      await desktop.nativeRendererNearField?.(readNearField());
+      await desktop.nativeRendererSourceExtent?.(readSourceExtent());
+      await desktop.nativeRendererStereoMode?.(readStereoRenderMode());
+      await desktop.nativeRendererVolume?.(volumeRef.current);
+      await desktop.nativeRendererClearPose?.();
+      setSystemAudio(await desktop.systemAudio("start", systemInputLayout === "standard" ? systemLayout : systemInputLayout, systemInputMode));
+    } catch (error) { setSystemAudio(s => ({...s, detail:String(error).replace(/^Error: Error invoking remote method '[^']+': Error: /, ''),phase:"error"})); }
+    finally { setSystemAudioBusy(false); }
+  };
+
   const changeDirectObjectHrtf = async (enabled: boolean) => {
     if (directObjectHrtfBusy) return;
     setDirectObjectHrtfBusy(true);
@@ -1269,8 +1320,18 @@ export function App() {
     .filter(speaker => mutedSpeakerNames.has(speaker.name) || (activeSpeakerSolo && !soloSpeakerNames.has(speaker.name)))
     .map(speaker => speaker.name)), [outputSpeakers, mutedSpeakerNames, soloSpeakerNames, activeSpeakerSolo]);
   useEffect(() => {
-    playerReady?.syncSpeakerMutes(effectiveSpeakerMutes, activeSpeakerFocus);
-  }, [playerReady, effectiveSpeakerMutes, activeSpeakerFocus]);
+    if (systemAudio.active) {
+      // System input has no file Player. Send the same output-speaker mask
+      // straight to its native renderer, including Solo's effective mutes.
+      void window.sdaDesktop?.nativeRendererSpeakerMutes?.(
+        [...effectiveSpeakerMutes], [...activeSpeakerFocus],
+      ).then(accepted => {
+        if (!accepted) throw new Error("原生渲染器未接受声道控制");
+      }).catch(error => setErrors(previous => [...previous.slice(-19), `系统音频声道控制失败：${String(error)}`]));
+    } else {
+      playerReady?.syncSpeakerMutes(effectiveSpeakerMutes, activeSpeakerFocus);
+    }
+  }, [playerReady, systemAudio.active, effectiveSpeakerMutes, activeSpeakerFocus]);
 
   // React state and worker frames are asynchronous. Keep the player's durable
   // mute set synchronized whenever either the active player or the UI set changes.
@@ -1329,6 +1390,7 @@ export function App() {
 
   const play = useCallback(
     async (source: PlaybackSource) => {
+      if (systemAudioRef.current) await window.sdaDesktop?.systemAudio?.("stop");
       const feedRequest = ++seekRequestRef.current;
       const request = ++playRequestRef.current;
       // Claim playback before any await. The preload can synchronously drain a
@@ -1523,6 +1585,23 @@ export function App() {
   }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
+    if (systemAudioRef.current) {
+      const apply = async () => {
+        if (!systemAudioRef.current) return;
+        const layout = next === "auto" ? (systemInputLayout === "standard" ? "7.1.4" : systemInputLayout) : next;
+        if (!await window.sdaDesktop?.nativeRendererLayout?.(layout)) throw Error("系统音频布局切换失败");
+        if (!systemAudioRef.current) return;
+        layoutIdRef.current = next;
+        if (next === "2.0" || next === "2.1") stereoLayoutRef.current = next;
+        else immersiveLayoutRef.current = next;
+        setDetectedLayout(systemInputLayout === "standard" ? null : systemInputLayout);
+        setLayoutId(next);
+      };
+      systemLayoutQueueRef.current = systemLayoutQueueRef.current.then(apply).catch(error => {
+        setErrors(previous => [...previous.slice(-19), String(error)]);
+      });
+      return;
+    }
     if (next === "2.0" || next === "2.1") stereoLayoutRef.current = next;
     else immersiveLayoutRef.current = next;
     layoutIdRef.current = next;
@@ -1533,11 +1612,12 @@ export function App() {
     }
     setDetectedLayout(null);
     playerRef.current?.setLayout(LAYOUTS[next]);
-  }, []);
+  }, [systemInputLayout]);
 
   const changeVolume = useCallback((v: number) => {
     setVolume(v);
     playerRef.current?.setVolume(v);
+    if (systemAudioRef.current) void window.sdaDesktop?.nativeRendererVolume?.(v);
   }, []);
 
   const recallLayoutMemory=(memory:LayoutMemory)=>{
@@ -2537,7 +2617,52 @@ export function App() {
           <SheetHeading title="无线远程" onClose={()=>setFloatPanel(null)}/>
           <RemotePanel status={remote}/>
         </section>}
+        {floatPanel === "system-audio" && <section className="panel float-panel desktop-sheet remote-sheet" aria-label="系统音频">
+          <SheetHeading title="系统音频" onClose={()=>setFloatPanel(null)}/>
+          <div className="system-audio-body" style={{padding:"16px",overflowY:"auto",display:"flex",flexDirection:"column",gap:16}}>
+            <h3>让其他播放器使用 SDA 渲染</h3>
+            <p>在播放器中选择 SDA Spatial Bitstream Input 输出设备。播放 Atmos 时，开启播放器的 DD+ 音频直通。</p>
+            <p>开始接收会自动将当前耳机或音箱切为共享输出，并停止当前文件播放。接收期间切换输出设备不会停止接收。</p>
+            <details><summary>选择输出耳机或音箱</summary><OutputPanel/></details>
+            <label>接收方式
+              <select aria-label="系统音频接收方式" value={systemInputMode} disabled={systemAudio.active || systemAudioBusy} onChange={event=>{
+                const value=event.target.value as 'auto'|'bitstream';
+                setSystemInputMode(value); localStorage.setItem('sda-system-input-mode',value);
+              }}>
+                <option value="bitstream">DD+ / Atmos 原始码流</option>
+                <option value="auto">PCM / 自动识别</option>
+              </select>
+            </label>
+            {systemInputMode==='bitstream' ? <>
+              <p>由 SDA 解码并渲染 Atmos 对象。播放器需开启 E-AC-3 / DD+ 直通，通过 WASAPI 选择名称带 Dedicated 的 SDA 专用端点；Windows 默认设备保留不带 Dedicated 的 SDA 端点。</p>
+              <small>双端点驱动将独占码流与共享采集分开，远程软件从默认 SDA 端点采集渲染后的声音。收到普通 PCM 时会等待码流。目前支持 DD+，不含 TrueHD / DTS:X 直通。</small>
+            </> : <>
+            <label>输入声道映射
+              <select aria-label="系统音频输入声道映射" value={systemInputLayout} disabled={systemAudio.active || systemAudioBusy} onChange={event=>{
+                const value=event.target.value as LayoutId|"standard";
+                setSystemInputLayout(value); localStorage.setItem("sda-system-input-layout",value);
+              }}>
+                <option value="standard">跟随当前渲染布局配置输入</option>
+                {(Object.keys(LAYOUTS) as LayoutId[]).map(id=><option key={id} value={id}>{id} · {LAYOUTS[id].length} 路离散输入</option>)}
+              </select>
+            </label>
+            <small>带标准声道标识的输入自动映射；离散输入按所选布局的顺序连接。输入布局与渲染布局独立，不会把较少声道上混成更多声道。</small>
+            {systemInputLayout!=="standard" && LAYOUTS[systemInputLayout].length>12 && <p>此布局使用独占离散直连，需要发送端支持对应格式；Windows 共享输入不会自动扩展到该布局。</p>}
+            {systemInputLayout!=="standard" && <details><summary>输入通道顺序</summary><ol>{LAYOUTS[systemInputLayout].map(s=><li key={s.name}>{speakerLabel(s.name)}</li>)}</ol></details>}
+            </>}
+            <p role="status" aria-live="polite">{systemAudio.detail}</p>
+            {systemAudio.active && <p>已接收 {systemAudio.frames} 帧 · {systemAudio.objects} 个对象</p>}
+            {systemAudio.active && systemAudio.inputChannels && <details><summary>实际输入信号 · {systemAudio.inputChannels.length} 路</summary>
+              <ul>{systemAudio.inputChannels.map((c,i)=><li key={i}>{i+1}. {speakerLabel(c.label)} <meter aria-label={`${c.label} 输入电平`} min={0} max={1} value={Math.min(1,c.peak)}/></li>)}</ul>
+              <small>电平表示播放器实际送入的信号。输入静音时，绑定相应音箱也不会产生声音。</small>
+            </details>}
+            <button type="button" disabled={systemAudioBusy} onClick={()=>void toggleSystemAudio()}>{systemAudioBusy?"正在处理…":systemAudio.active?"停止接收":"开始接收"}</button>
+            <small>实验功能 · 支持 48 kHz PCM 全部 SDA 布局（最高 22.2 / 24 路），以及 DD+ / Atmos 码流。离散输入需要发送端支持对应通道数及顺序；已混成 PCM 的声音无法恢复原始对象。</small>
+          </div>
+        </section>}
         <nav className="float-buttons" aria-label="音频工具">
+          {window.sdaDesktop?.systemAudioAvailable && <button className={floatPanel==="system-audio"?"active":""} aria-expanded={floatPanel==="system-audio"} title="系统音频" onClick={()=>setFloatPanel(floatPanel==="system-audio"?null:"system-audio")}><AudioLines size={19}/><span>系统音频</span></button>}
+
           {window.sdaDesktop?.remoteSession && <button className={floatPanel==="remote"?"active":""} aria-expanded={floatPanel==="remote"} title="无线远程" onClick={()=>{setSettingsOpen(false);setFloatPanel(floatPanel==="remote"?null:"remote");}}><Wifi size={19}/><span>无线远程</span></button>}
           {window.sdaDesktop?.electron3D !== false && <button className={immersiveView ? "active" : ""} aria-pressed={immersiveView} title={immersiveView ? "退出沉浸视角" : "进入沉浸视角"} onClick={() => { setRoomVisual(null); setImmersiveView(value => !value); }}><ScanFace size={19} /><span>沉浸</span></button>}
           {roomVisual&&floatPanel!=="roomlab"&&<button onClick={()=>setRoomVisual(null)}><RotateCcw size={19} /><span>返回声场</span></button>}

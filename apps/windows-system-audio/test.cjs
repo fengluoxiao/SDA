@@ -18,6 +18,10 @@ function wave() {
   w.writeUInt32LE(48000, 40); w.writeUInt32LE(6, 44); return w;
 }
 assert.equal(classifyFormat(wave()), 'eac3');
+for (const channels of [2,6,8]) for (const mask of [0,3,0x3f,0x60f,0x63f]) {
+  const descriptor = wave(); descriptor.writeUInt32LE(channels,44); descriptor.writeUInt32LE(mask,20);
+  assert.equal(classifyFormat(descriptor),'eac3');
+}
 function record(payload, offset = 0n, epoch = 1n, state = 3) {
   return { epoch, state, offset, produced: offset + BigInt(payload.length), overflows: 0n, format: wave(), payload };
 }
