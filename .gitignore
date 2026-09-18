@@ -45,3 +45,4 @@ apps/desktop/native-renderer/SdaNativeRenderer.exe
 
 # Web build staged inside Electron appDir before ASAR packaging.
 /apps/desktop/web/
+/tools/windows-audio-probe/target/
