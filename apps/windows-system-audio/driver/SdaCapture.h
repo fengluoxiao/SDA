@@ -24,3 +24,4 @@ VOID SdaCaptureState(PVOID stream, KSSTATE state, PWAVEFORMATEX format);
 VOID SdaCaptureClose(PVOID stream);
 VOID SdaCaptureWrite(PVOID stream, const UCHAR* bytes, ULONG count);
 VOID SdaCaptureProtected(PVOID stream, BOOLEAN protectedContent);
+VOID SdaCaptureStartup(ULONG stage, NTSTATUS status);

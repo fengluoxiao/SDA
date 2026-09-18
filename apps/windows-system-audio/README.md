@@ -1,6 +1,6 @@
 # Windows 系统音频输入（实验工程）
 
-本分支包含 WaveRT 虚拟输出端点、受限用户态读取器、IEC61937 DD+ 解包、SDA 对象解码和原生双耳渲染接收程序。**目前不是经过安装验收的桌面功能。** 本机已完成编译、离线完整性和原生渲染回放验证；尚未在已加载的虚拟驱动上证明真实播放器直通。
+本分支包含 WaveRT 虚拟输出端点、受限用户态读取器、IEC61937 DD+ 解包、SDA 对象解码和原生双耳渲染接收程序。**目前不是经过安装验收的桌面功能。** 本机已完成编译、离线完整性和原生渲染回放验证，开发包已通过 UAC 安装；设备启动尚未通过，不能宣称真实播放器直通成功。
 
 路径：支持直通的播放器 → SDA 虚拟端点 → 有界原始数据队列 → capture.exe → IEC61937 解包 → SDA E-AC-3/JOC 解码 → PCM + 对象事件 → SdaNativeRenderer → 明确指定的实际输出设备。
 
@@ -33,13 +33,15 @@ node apps/windows-system-audio/test.cjs
 
 ## 驱动安装与实际收发验证
 
-仅在具备管理员权限和适当开发签名配置的测试系统完成这一阶段。本次会话不是管理员会话，尚未安装驱动，也未更改测试签名、Secure Boot 或默认音频设备。安装应使用 Windows 支持的 root-enumerated 开发设备工具（例如 WDK DevCon）注册硬件 ID `Root\SdaSystemAudio`，而不是仅向驱动仓库添加 INF。
+仅在具备管理员权限和适当开发签名配置的测试系统完成这一阶段。安装脚本会自行调起 UAC，通过后使用 WDK DevCon 注册硬件 ID `Root\SdaSystemAudio`；已有设备则更新，不重复创建。不会改变测试签名或 Secure Boot。
+
+本机安装记录（2026-09-18）：初版包注册成功，但设备报 Code 10 / `0xC0000184`；更新版本后 Windows 报需重启，单独移除设备并停止服务返回 1052，旧内核映像未卸载。`0.1.0.2` 已调整控制设备的创建/移除生命周期，并加入服务 Parameters 下的 `StartupXX`、`StartupResult` 初始化诊断。最新版安装的 UAC 请求被取消，当前设备版本仍为 `0.1.0.1`；需先安装 `0.1.0.2`，再重启加载新版后继续验收；编译成功及 DevCon 的“安装成功”不能代替设备启动成功。
 
 1. 检查开发证书/已签 CAT、安装并确认设备管理器没有 Code 52 等错误。
 2. 用 probe 查询新端点，记录格式协商的实际 HRESULT。
 3. 管理员终端运行接收器（控制设备 ACL 只允许 SYSTEM/管理员；只允许一个接收器）。指定**实际输出设备 ID**，不允许静默回退或送回虚拟端点。
 
-`powershell -File apps/windows-system-audio/install-driver.ps1` 可在上述测试环境注册设备；`-Remove` 删除该设备实例（保留 DriverStore 包，便于重装）。脚本不修改启动安全设置、不安装证书、不自动重启；管理员和签名条件不满足会直接报错。
+`powershell -File apps/windows-system-audio/install-driver.ps1` 可在上述测试环境注册设备并自动请求 UAC；`-Remove` 删除该设备实例（保留 DriverStore 包，便于重装）。脚本不修改启动安全设置、不安装证书、不自动重启；UAC 被取消、签名检查或设备启动失败时会报错，需要重启时明确报告。
 
 ```powershell
 cargo run --manifest-path tools/windows-audio-probe/Cargo.toml --bin sda-windows-audio-probe

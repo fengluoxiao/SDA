@@ -37,9 +37,24 @@ for name in ['SdaCapture.cpp', 'SdaCapture.h']:
     shutil.copyfile(Path(__file__).parent / 'driver' / name, base / name)
 
 edit('adapter.cpp', '#include <sysvad.h>', '#include <sysvad.h>\n#include "SdaCapture.h"')
-edit('adapter.cpp', 'gPCDriverUnloadRoutine = DriverObject->DriverUnload;',
-     'ntStatus = SdaCaptureInitialize(DriverObject);\n    if (!NT_SUCCESS(ntStatus)) goto Done;\n    gPCDriverUnloadRoutine = DriverObject->DriverUnload;')
+edit('adapter.cpp', 'DPF(D_TERSE, ("[DriverEntry]"));', 'DPF(D_TERSE, ("[DriverEntry]"));\n    SdaCaptureStartup(0, STATUS_SUCCESS);')
+edit('adapter.cpp', 'return ntStatus;\n} // AddDevice', 'SdaCaptureStartup(10, ntStatus);\n    return ntStatus;\n} // AddDevice')
+edit('common.cpp', '#include <sysvad.h>', '#include <sysvad.h>\n#include "SdaCapture.h"')
+edit('common.cpp', 'ntStatus = PcGetPhysicalDeviceObject(DeviceObject, &m_pPhysicalDeviceObject);', 'ntStatus = PcGetPhysicalDeviceObject(DeviceObject, &m_pPhysicalDeviceObject);\n    SdaCaptureStartup(31, ntStatus);')
+edit('common.cpp', '&m_WdfDevice);', '&m_WdfDevice);\n    SdaCaptureStartup(32, ntStatus);')
 edit('adapter.cpp', 'if (gPCDriverUnloadRoutine != NULL)', 'SdaCaptureShutdown();\n    if (gPCDriverUnloadRoutine != NULL)')
+for stage, anchor in enumerate([
+    'ntStatus = pUnknownCommon->QueryInterface( IID_IAdapterCommon,(PVOID *) &pAdapterCommon);',
+    'ntStatus = pAdapterCommon->Init(DeviceObject);',
+    'ntStatus = PcRegisterAdapterPowerManagement( PUNKNOWN(pAdapterCommon), DeviceObject);',
+    'ntStatus = InstallAllRenderFilters(DeviceObject, Irp, pAdapterCommon);',
+    'ntStatus = InstallAllCaptureFilters(DeviceObject, Irp, pAdapterCommon);',
+], 1):
+    edit('adapter.cpp', anchor, anchor + f'\n    SdaCaptureStartup({stage}, ntStatus);')
+edit('adapter.cpp', 'SdaCaptureStartup(5, ntStatus);\n    IF_FAILED_JUMP(ntStatus, Exit);',
+     'SdaCaptureStartup(5, ntStatus);\n    IF_FAILED_JUMP(ntStatus, Exit);\n    ntStatus = SdaCaptureInitialize(DeviceObject->DriverObject);\n    SdaCaptureStartup(6, ntStatus);\n    IF_FAILED_JUMP(ntStatus, Exit);')
+edit('adapter.cpp', 'case IRP_MN_REMOVE_DEVICE:\n    case IRP_MN_SURPRISE_REMOVAL:\n    case IRP_MN_STOP_DEVICE:',
+     'case IRP_MN_REMOVE_DEVICE:\n    case IRP_MN_SURPRISE_REMOVAL:\n    case IRP_MN_STOP_DEVICE:\n        SdaCaptureShutdown();')
 
 file = 'EndpointsCommon/minwavertstream.cpp'
 edit(file, '#include <limits.h>', '#include <limits.h>\n#include "SdaCapture.h"')
