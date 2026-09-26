@@ -13,20 +13,17 @@ assert.match(main, /function bundledNativeRendererPath\(\)/);
 const rendererPathFunction = main.match(/function bundledNativeRendererPath\(\) \{[\s\S]*?\r?\n\}/)?.[0];
 assert.ok(rendererPathFunction);
 for (const isPackaged of [false, true]) {
-  for (const isDev of [false, true]) {
-    const resourcesPath = join(root, "electron-resources");
-    const expected = join(isPackaged ? resourcesPath : root, "native-renderer", "SdaNativeRenderer.exe");
-    for (const exists of [false, true]) {
-      const actual = runInNewContext(`${rendererPathFunction}\nbundledNativeRendererPath()`, {
-        app: { isPackaged },
-        isDev,
-        process: { resourcesPath },
-        __dirname: root,
-        path: { join },
-        fs: { existsSync: (candidate) => exists && candidate === expected },
-      });
-      assert.equal(actual, exists ? expected : null, `isPackaged=${isPackaged}, isDev=${isDev}, exists=${exists}`);
-    }
+  const resourcesPath = join(root, "electron-resources");
+  const expected = join(isPackaged ? resourcesPath : root, "native-renderer", "SdaNativeRenderer.exe");
+  for (const exists of [false, true]) {
+    const actual = runInNewContext(`${rendererPathFunction}\nbundledNativeRendererPath()`, {
+      app: { isPackaged },
+      process: { resourcesPath, platform: "win32" },
+      __dirname: root,
+      path: { join },
+      fs: { existsSync: (candidate) => exists && candidate === expected },
+    });
+    assert.equal(actual, exists ? expected : null, `isPackaged=${isPackaged}, exists=${exists}`);
   }
 }
 assert.match(main, /function startNativeRenderer\(\)/);
@@ -34,7 +31,9 @@ assert.match(main, /function stopNativeRenderer\(\)/);
 assert.match(main, /native object renderer owns desktop audible output/i);
 assert.match(main, /ipcMain\.handle\("sda:native-renderer-start"/);
 assert.match(main, /ipcMain\.handle\("sda:native-renderer-health"/);
-assert.match(main, /function nativeRendererBatch\(start, entries\)/);
+assert.match(main, /function nativeRendererBatch\(start, entries, events\)/);
+assert.match(main, /function recordNativeRendererBackpressure\(start\)/);
+assert.match(main, /if \(!queued\) recordNativeRendererBackpressure\(start\);/);
 assert.match(main, /sda:native-renderer-remove-source/);
 assert.match(main, /sda:native-renderer-source/);
 assert.match(main, /bedLabel/);
@@ -59,7 +58,7 @@ assert.match(main, /sda:native-renderer-start-at/);
 assert.match(main, /sda:native-renderer-pause/);
 assert.match(main, /nativeRendererPendingBatches/);
 assert.match(main, /message\?\.type === "ack"/);
-assert.match(main, /function nativeRendererCommandAck\(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS\)/);
+assert.match(main, /function nativeRendererCommandAck\(command, ackCommand, timeoutMs = NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS, priority = false\)/);
 assert.match(main, /message\?\.type === "batchAck"/);
 assert.match(main, /message\?\.type === "objectActivity"/);
 assert.match(main, /function publishNativeRendererObjectActivity\(ids\)/);

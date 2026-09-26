@@ -9,7 +9,7 @@ export class DecoderDiagnostics {
     if(!this.enabled())return;
     const fields:Record<string,unknown>={};
     // This list is intentionally closed. No arbitrary decoder state dumps.
-    for(const key of ['bytes','units','sample','samples','rate','channels','objects','epoch','seekSeconds','sequence','bit','declared','used','code','checkpointDropped']){
+    for(const key of ['bytes','units','sample','samples','rate','channels','objects','epoch','sequence','bit','declared','used','code','checkpointDropped']){
       const value=values[key];if(typeof value==='number'&&Number.isFinite(value))fields[key]=value;
     }
     if(typeof values.codec==='string'&&/^[a-z0-9_-]{1,24}$/i.test(values.codec))fields.codec=values.codec;

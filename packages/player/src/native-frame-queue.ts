@@ -5,9 +5,7 @@ export class NativeFrameQueue {
   private generation = 0;
 
   /**
-   * Drop work which has not begun yet. A seek cannot safely interrupt a frame
-   * that is already writing to the sidecar pipe, but it must not wait for every
-   * old decoded frame that is still sitting behind it.
+   * Drop work which has not begun yet when a renderer generation is replaced.
    */
   invalidatePending(): void {
     this.generation++;

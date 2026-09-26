@@ -19,8 +19,8 @@ export class AlacResampler {
     let prefixSamples = 0;
     if (!this.template) {
       // Start SRC on the same rational phase as decoding from sample zero.
-      // Rounding an arbitrary seek origin would shift audio by a fraction of
-      // a sample (44.1 -> 48 kHz needs a 147-input-sample phase period).
+      // Preserve the rational phase: 44.1 -> 48 kHz needs a 147-input-sample
+      // period to avoid fractional-sample drift.
       let a = frame.sampleRate, b = this.targetRate;
       while (b) { const remainder = a % b; a = b; b = remainder; }
       const period = frame.sampleRate / a;

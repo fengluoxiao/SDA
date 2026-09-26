@@ -33,6 +33,17 @@ export interface Mp4Packet {
   data: Uint8Array;
 }
 
+/** MP4Box's extracted samples omit `timescale` in some builds. The track
+ * header remains authoritative, so use it whenever a sample does not carry
+ * its own valid clock. */
+export function mp4PacketTimestampMs(cts: number, sampleTimescale: number | undefined, trackTimescale: number): number {
+  const timescale = Number.isFinite(sampleTimescale) && sampleTimescale! > 0
+    ? sampleTimescale!
+    : trackTimescale;
+  if (!Number.isFinite(cts) || !Number.isFinite(timescale) || timescale <= 0) return 0;
+  return (cts / timescale) * 1000;
+}
+
 export interface Mp4DemuxerCallbacks {
   onTrack?: (track: Mp4AudioTrack) => void;
   onPacket?: (packet: Mp4Packet) => void;
@@ -194,6 +205,7 @@ export class Mp4Demuxer {
   private offset = 0;
   private wantedTrackId: number | null = null;
   private wantedCodec: string | null = null;
+  private wantedTimescale = 0;
   /** MP4Box keeps sample payloads until this cursor is released. */
   private deliveredSamples = 0;
   private cb: Mp4DemuxerCallbacks;
@@ -232,6 +244,8 @@ export class Mp4Demuxer {
         if (this.wantedTrackId === null && track.trackId > 0) {
           this.wantedTrackId = track.trackId;
           this.wantedCodec = track.codec;
+          const mp4Track = this.file.getTrackById?.(track.trackId) as { mdia?: { mdhd?: { timescale?: number } } } | undefined;
+          this.wantedTimescale = mp4Track?.mdia?.mdhd?.timescale ?? track.sampleRate;
           this.file.setExtractionOptions(track.trackId, null, { nbSamples: MP4_EXTRACTION_BATCH_SAMPLES });
           this.file.start();
         }
@@ -244,7 +258,7 @@ export class Mp4Demuxer {
         // because the E-AC-3/JOC pipeline expects raw syncframes.
         this.cb.onPacket?.({
           trackId: this.wantedTrackId ?? 0,
-          timestampMs: (s.cts / s.timescale) * 1000,
+          timestampMs: mp4PacketTimestampMs(s.cts, s.timescale, this.wantedTimescale),
           data: this.wantedCodec === "ac-4" ? ac4SyncFrame(s.data) : s.data,
         });
       }
@@ -264,10 +278,10 @@ export class Mp4Demuxer {
     );
   }
 
-  push(chunk: Uint8Array): void {
+  push(chunk: Uint8Array, fileStart = this.offset): void {
     const buf = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer & { fileStart: number };
-    buf.fileStart = this.offset;
-    this.offset += chunk.byteLength;
+    buf.fileStart = fileStart;
+    this.offset = Math.max(this.offset, fileStart + chunk.byteLength);
     this.file.appendBuffer(buf);
   }
 

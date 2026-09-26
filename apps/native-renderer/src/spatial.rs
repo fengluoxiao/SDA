@@ -43,7 +43,12 @@ pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     };
     let (sin_a, sin_b_weight) = if dot > 0.9995 {
         // Nearly identical: fall back to normalized lerp for stability.
-        let w = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3])];
+        let w = [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            a[2] + t * (b[2] - a[2]),
+            a[3] + t * (b[3] - a[3]),
+        ];
         return normalize_quaternion(w).unwrap_or(b);
     } else {
         (dot.acos(), ((1.0 - t) * dot.acos()).sin())
@@ -100,15 +105,15 @@ mod tests {
     fn head_rotation_preserves_height_and_world_locked_direction() {
         for degrees in [-90.0_f32, -45.0, 0.0, 45.0, 90.0] {
             let angle = degrees.to_radians();
-            let q = [0.0, 0.0, (angle/2.0).sin(), (angle/2.0).cos()];
+            let q = [0.0, 0.0, (angle / 2.0).sin(), (angle / 2.0).cos()];
             let local = head_relative_adm([0.0, 1.0, 0.4], Some(q));
-            assert!((local[0]-angle.sin()).abs()<1e-5);
-            assert!((local[1]-angle.cos()).abs()<1e-5);
-            assert!((local[2]-0.4).abs()<1e-5);
+            assert!((local[0] - angle.sin()).abs() < 1e-5);
+            assert!((local[1] - angle.cos()).abs() < 1e-5);
+            assert!((local[2] - 0.4).abs() < 1e-5);
         }
-        let half=std::f32::consts::FRAC_1_SQRT_2;
-        let local=head_relative_adm([0.0,1.0,0.0],Some([half,0.0,0.0,half]));
-        assert!((local[2]+1.0).abs()<1e-5);
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let local = head_relative_adm([0.0, 1.0, 0.0], Some([half, 0.0, 0.0, half]));
+        assert!((local[2] + 1.0).abs() < 1e-5);
     }
 
     #[test]

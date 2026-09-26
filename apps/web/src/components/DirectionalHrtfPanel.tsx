@@ -9,7 +9,7 @@ export default function DirectionalHrtfPanel({codec}:{codec?:string}={}){
     const check=async()=>{try{
       const api=window.sdaDesktop;
       const [output,cinema]=await Promise.all([api?.getNativeRendererStatus?.(),api?.getCinemaSettings?.()]);
-      if(alive)setStatus(!output?.running?"已保存 · 等待播放":output.hrtfReady===false?"已保存 · 等待 HRTF 就绪":is360Ra?(enabled?"360RA 13 · 对象连续方向 HRTF":"360RA 13 · 虚拟扬声器 HRTF"):cinema?.settings.monitor?.hardware?.enabled?"已启用 · 独立对象硬件链 + 方向 HRTF":"已启用 · 对象方向直达声 + 独立房间反射");
+      if(alive)setStatus(!output?.running?"已保存 · 等待播放":output.hrtfReady===false?"已保存 · 等待 HRTF 就绪":!enabled&&output?.directionalHrtf?"高密度 ADM · 自动连续方向 + 共享房间":is360Ra?(enabled?"360RA 13 · 对象连续方向 HRTF":"360RA 13 · 虚拟扬声器 HRTF"):cinema?.settings.monitor?.hardware?.enabled?"已启用 · 独立对象硬件链 + 方向 HRTF":"已启用 · 对象方向直达声 + 独立房间反射");
     }catch{if(alive)setStatus("等待输出状态");}};
     void check();const timer=setInterval(()=>void check(),1500);return()=>{alive=false;clearInterval(timer);};
   },[enabled,is360Ra]);

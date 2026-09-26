@@ -1,21 +1,70 @@
 //! Opt-in profiling. Audio threads never wait for a log writer or disk.
-use std::{collections::{BTreeMap,VecDeque},sync::{OnceLock,mpsc::{sync_channel,SyncSender},atomic::{AtomicBool,AtomicU64,Ordering}},time::{Instant,Duration,SystemTime,UNIX_EPOCH},io::Write};
-static ENABLED:AtomicBool=AtomicBool::new(false);
-static DROPPED:AtomicU64=AtomicU64::new(0);
-static CALLBACK_SAMPLE:AtomicU64=AtomicU64::new(0);
-static CALLBACK_TIME:AtomicU64=AtomicU64::new(0);
-static WORKLOAD_AT:AtomicU64=AtomicU64::new(0);
-static CHANNEL:OnceLock<SyncSender<Message>>=OnceLock::new();
-enum Message { Workload(serde_json::Value), Configure(Option<std::fs::File>), Sample(&'static str,String,f64,u64,u64), Ingress(String,u64,u64), Reset }
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io::Write,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{SyncSender, sync_channel},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+static CALLBACK_SAMPLE: AtomicU64 = AtomicU64::new(0);
+static CALLBACK_TIME: AtomicU64 = AtomicU64::new(0);
+static WORKLOAD_AT: AtomicU64 = AtomicU64::new(0);
+static CHANNEL: OnceLock<SyncSender<Message>> = OnceLock::new();
+enum Message {
+    Workload(serde_json::Value),
+    Configure(Option<std::fs::File>),
+    Sample(&'static str, String, f64, u64, u64),
+    Ingress(String, u64, u64),
+    Reset,
+}
 #[derive(serde::Serialize)]
-#[serde(rename_all="camelCase")]
-struct Row {stage:String,id:String,count:u64,total_ms:f64,min_ms:f64,max_ms:f64,max_at_ms:u64,units:u64}
-pub fn enabled()->bool{ENABLED.load(Ordering::Relaxed)}
-pub fn now_us()->u64{SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64}
-fn send(message:Message){if let Some(tx)=CHANNEL.get(){if tx.try_send(message).is_err(){DROPPED.fetch_add(1,Ordering::Relaxed);}}}
-pub fn configure(active:bool,path:Option<String>)->Result<(),String>{
-    if active && path.as_ref().is_none_or(|p|p.is_empty()){return Err("performance log path required".into());}
-    let opened=if active {Some(std::fs::OpenOptions::new().create(true).append(true).open(path.as_ref().unwrap()).map_err(|e|format!("performance log: {e}"))?)}else{None};
+#[serde(rename_all = "camelCase")]
+struct Row {
+    stage: String,
+    id: String,
+    count: u64,
+    total_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+    max_at_ms: u64,
+    units: u64,
+}
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+pub fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+fn send(message: Message) {
+    if let Some(tx) = CHANNEL.get() {
+        if tx.try_send(message).is_err() {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+pub fn configure(active: bool, path: Option<String>) -> Result<(), String> {
+    if active && path.as_ref().is_none_or(|p| p.is_empty()) {
+        return Err("performance log path required".into());
+    }
+    let opened = if active {
+        Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.as_ref().unwrap())
+                .map_err(|e| format!("performance log: {e}"))?,
+        )
+    } else {
+        None
+    };
     let tx=CHANNEL.get_or_init(||{let(tx,rx)=sync_channel::<Message>(8192);std::thread::Builder::new().name("sda-performance-writer".into()).spawn(move||{
         let mut file:Option<std::fs::File>=None;let mut rows=BTreeMap::<(String,String),Row>::new();let mut pending=VecDeque::new();let mut last=Instant::now();let mut bytes=0usize;let mut generation=0u64;let mut reset_at=now_us()/1000;let mut workload=None;
         loop {
@@ -49,41 +98,124 @@ pub fn configure(active:bool,path:Option<String>)->Result<(),String>{
             }
         }
     }).expect("performance writer thread");tx});
-    tx.try_send(Message::Configure(opened)).map_err(|_|"performance writer busy".to_string())?;
-    ENABLED.store(active,Ordering::Release);Ok(())
+    tx.try_send(Message::Configure(opened))
+        .map_err(|_| "performance writer busy".to_string())?;
+    ENABLED.store(active, Ordering::Release);
+    Ok(())
 }
-fn add(rows:&mut BTreeMap<(String,String),Row>,stage:&str,id:String,ms:f64,units:u64,at:u64){
-    if rows.len()>2048{return;}let row=rows.entry((stage.into(),id.clone())).or_insert(Row{stage:stage.into(),id,count:0,total_ms:0.0,min_ms:f64::INFINITY,max_ms:0.0,max_at_ms:at,units:0});
-    row.count+=1;row.total_ms+=ms;row.min_ms=row.min_ms.min(ms);if ms>=row.max_ms {row.max_ms=ms;row.max_at_ms=at;}row.units+=units;
+fn add(
+    rows: &mut BTreeMap<(String, String), Row>,
+    stage: &str,
+    id: String,
+    ms: f64,
+    units: u64,
+    at: u64,
+) {
+    if rows.len() > 2048 {
+        return;
+    }
+    let row = rows.entry((stage.into(), id.clone())).or_insert(Row {
+        stage: stage.into(),
+        id,
+        count: 0,
+        total_ms: 0.0,
+        min_ms: f64::INFINITY,
+        max_ms: 0.0,
+        max_at_ms: at,
+        units: 0,
+    });
+    row.count += 1;
+    row.total_ms += ms;
+    row.min_ms = row.min_ms.min(ms);
+    if ms >= row.max_ms {
+        row.max_ms = ms;
+        row.max_at_ms = at;
+    }
+    row.units += units;
 }
-pub fn sample(stage:&'static str,id:&str,ms:f64,units:u64){if enabled(){send(Message::Sample(stage,id.into(),ms,units,now_us()/1000));}}
-pub fn start()->Option<Instant>{enabled().then(Instant::now)}
-pub fn finish(start:Option<Instant>,stage:&'static str,id:&str,units:u64){if let Some(at)=start{sample(stage,id,at.elapsed().as_secs_f64()*1000.0,units);}}
-pub fn ingress(id:&str,sample:u64){if enabled(){send(Message::Ingress(id.into(),sample,now_us()));}}
-pub fn reset(){if enabled(){send(Message::Reset);}}
-pub fn callback(sample:u64){if enabled(){CALLBACK_SAMPLE.store(sample,Ordering::Release);CALLBACK_TIME.store(now_us(),Ordering::Release);}}
-pub struct Span {start:Option<Instant>,stage:&'static str,id:String,units:u64}
-pub fn span(stage:&'static str,id:&str,units:u64)->Span{Span{start:start(),stage,id:if enabled(){id.into()}else{String::new()},units}}
-impl Drop for Span{fn drop(&mut self){finish(self.start,self.stage,&self.id,self.units);}}
+pub fn sample(stage: &'static str, id: &str, ms: f64, units: u64) {
+    if enabled() {
+        send(Message::Sample(
+            stage,
+            id.into(),
+            ms,
+            units,
+            now_us() / 1000,
+        ));
+    }
+}
+pub fn start() -> Option<Instant> {
+    enabled().then(Instant::now)
+}
+pub fn finish(start: Option<Instant>, stage: &'static str, id: &str, units: u64) {
+    if let Some(at) = start {
+        sample(stage, id, at.elapsed().as_secs_f64() * 1000.0, units);
+    }
+}
+pub fn ingress(id: &str, sample: u64) {
+    if enabled() {
+        send(Message::Ingress(id.into(), sample, now_us()));
+    }
+}
+pub fn reset() {
+    if enabled() {
+        send(Message::Reset);
+    }
+}
+pub fn callback(sample: u64) {
+    if enabled() {
+        CALLBACK_SAMPLE.store(sample, Ordering::Release);
+        CALLBACK_TIME.store(now_us(), Ordering::Release);
+    }
+}
+pub struct Span {
+    start: Option<Instant>,
+    stage: &'static str,
+    id: String,
+    units: u64,
+}
+pub fn span(stage: &'static str, id: &str, units: u64) -> Span {
+    Span {
+        start: start(),
+        stage,
+        id: if enabled() { id.into() } else { String::new() },
+        units,
+    }
+}
+impl Drop for Span {
+    fn drop(&mut self) {
+        finish(self.start, self.stage, &self.id, self.units);
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn aggregate_keeps_the_time_of_the_slowest_call() {
-        let mut rows=BTreeMap::new();
-        add(&mut rows,"hrtf.test","obj:1".into(),4.0,128,1000);
-        add(&mut rows,"hrtf.test","obj:1".into(),2.0,128,2000);
-        let row=rows.get(&("hrtf.test".into(),"obj:1".into())).unwrap();
-        assert_eq!(row.count,2);assert_eq!(row.units,256);
-        assert_eq!(row.min_ms,2.0);assert_eq!(row.max_ms,4.0);
-        assert_eq!(row.max_at_ms,1000);
+        let mut rows = BTreeMap::new();
+        add(&mut rows, "hrtf.test", "obj:1".into(), 4.0, 128, 1000);
+        add(&mut rows, "hrtf.test", "obj:1".into(), 2.0, 128, 2000);
+        let row = rows.get(&("hrtf.test".into(), "obj:1".into())).unwrap();
+        assert_eq!(row.count, 2);
+        assert_eq!(row.units, 256);
+        assert_eq!(row.min_ms, 2.0);
+        assert_eq!(row.max_ms, 4.0);
+        assert_eq!(row.max_at_ms, 1000);
     }
 }
 
-pub fn workload_due()->bool {
-    if !enabled(){return false;}
-    let now=now_us()/1000;let previous=WORKLOAD_AT.load(Ordering::Relaxed);
-    now.saturating_sub(previous)>=1000 && WORKLOAD_AT.compare_exchange(previous,now,Ordering::Relaxed,Ordering::Relaxed).is_ok()
+pub fn workload_due() -> bool {
+    if !enabled() {
+        return false;
+    }
+    let now = now_us() / 1000;
+    let previous = WORKLOAD_AT.load(Ordering::Relaxed);
+    now.saturating_sub(previous) >= 1000
+        && WORKLOAD_AT
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
 }
-pub fn workload(value:serde_json::Value){send(Message::Workload(value));}
+pub fn workload(value: serde_json::Value) {
+    send(Message::Workload(value));
+}

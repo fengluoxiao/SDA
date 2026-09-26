@@ -18,6 +18,9 @@ const esbuild = require('esbuild');
       b.onResolve({ filter: /^@sda\/(core|demux)$/ }, a => ({ path: a.path, namespace: 'fixture' }));
       b.onLoad({ filter: /.*/, namespace: 'fixture' }, a => ({ contents: a.path.endsWith('core') ? `
         export async function initCore() {}
+        export const decoderDiagnosticBuild = {};
+        export function configureDecoderDiagnostics() {}
+        export function drainDecoderCheckpoints() { return { events: [], dropped: 0 }; }
         export class SdaDecoder {
           frames = []; free() {} drainErrors() { return []; }
           push(frame) { this.frames.push(frame); }
@@ -40,7 +43,10 @@ const esbuild = require('esbuild');
     } }],
   });
   const self = { postMessage: message => output.push(message) };
-  vm.runInNewContext(build.outputFiles[0].text, { self, output, probe, module: { exports: {} }, exports: {}, require, console, Float32Array });
+  vm.runInNewContext(build.outputFiles[0].text, {
+    self, output, probe, module: { exports: {} }, exports: {}, require, console, Float32Array,
+    performance, setInterval: () => 0, clearInterval: () => {}, setTimeout, clearTimeout,
+  });
   self.onmessage({ data: { type: 'open', codec: 'eac3', outputSampleRate: 48000 } });
   self.onmessage({ data: { type: 'push', chunk: new ArrayBuffer(16), sequence: 7 } });
   await new Promise(resolve => setImmediate(resolve));

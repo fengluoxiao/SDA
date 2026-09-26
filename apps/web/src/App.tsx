@@ -1,3 +1,4 @@
+import {LiveObjectView, createObjectViewStore} from "./components/LiveObjectView";
 import {formatAutoLayout, resolveAutoLayout, uses360RaLowerLayer} from "./auto-layout";
 import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
 import {GlassRefraction} from "./components/GlassRefraction";
@@ -42,7 +43,7 @@ import {
 } from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
-import { ObjectView, type Theme } from "./components/ObjectView";
+import { type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 import { ObjectPanel } from "./components/ObjectPanel";
 import CinemaPanel from "./components/CinemaPanel";
@@ -60,6 +61,41 @@ import {
 import { HeadTrackingSession } from "./head-tracking-session";
 
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string; version?: string };
+
+function isFlacFile(name: string): boolean {
+  return /\.flac$/i.test(name);
+}
+
+async function decodeFlac(source: PlaybackSource): Promise<AudioBuffer> {
+  return decodeBrowserPcm(source);
+}
+
+/** Decode a discrete, browser-supported stream to PCM. */
+async function decodeBrowserPcm(source: PlaybackSource): Promise<AudioBuffer> {
+  let bytes: ArrayBuffer;
+  if (source.kind === "file") {
+    bytes = await source.file.arrayBuffer();
+  } else {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.openPath || !desktop.readSlice || !desktop.close) throw new Error("桌面文件读取接口不可用");
+    const opened = await desktop.openPath(source.path);
+    try {
+      if (!Number.isSafeInteger(opened.size) || opened.size < 0) throw new Error("音频文件大小无效");
+      const data = new Uint8Array(opened.size);
+      for (let offset = 0; offset < opened.size; offset += FILE_CHUNK_SIZE) {
+        const chunk = await desktop.readSlice(opened.id, offset, Math.min(FILE_CHUNK_SIZE, opened.size - offset));
+        data.set(chunk, offset);
+      }
+      bytes = data.buffer;
+    } finally {
+      await desktop.close(opened.id);
+    }
+  }
+  // Chromium's decoder preserves each discrete channel. Decode at the sidecar
+  // clock so the native PCM path has no implicit rate conversion.
+  return new OfflineAudioContext(1, 1, 48_000).decodeAudioData(bytes);
+}
+
 type HeadTrackingPlayer = {
   setHeadPose?: (pose: HeadPose) => void;
   clearHeadPose?: () => void;
@@ -205,6 +241,12 @@ function readDenseBinauralObjects(): boolean {
 function denseBinauralBaseUrl(calibrated = readKu100Calibration(), head = readBinauralHead()): string {
   return assetUrl(nativeHrtfSetName(head, true, calibrated));
 }
+
+const ALAC_STEREO_UPMIX_STORAGE_KEY = "sda-alac-stereo-upmix";
+function readAlacStereoUpmixEnabled(): boolean {
+  try { return localStorage.getItem(ALAC_STEREO_UPMIX_STORAGE_KEY) === "1"; }
+  catch { return false; }
+}
 function effectiveDenseBinauralObjects(codec: string | undefined, manualDense: boolean, head: BinauralHead): boolean {
   return !head.startsWith("personal-") && (manualDense || uses360RaLowerLayer(codec));
 }
@@ -270,7 +312,8 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
  *  metadata-less content such as ALAC). */
 function measuredLoudnessStorageKey(info: { codec: string; channels: number; sampleRate: number }, source: PlaybackSource): string {
   const identity = source.kind === "path" ? `${source.path}:${source.version ?? "unknown"}` : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
-  return `sda-measured-lufs-v5:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
+  // v6 replaces a sample-peak cache with the BS.1770-style true-peak estimate.
+  return `sda-measured-lufs-v6:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
 }
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
@@ -332,6 +375,7 @@ export function App() {
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [binauralMetadata, setBinauralMetadata] = useState<BinauralRenderMetadata | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
+  const liveObjectView = useMemo(createObjectViewStore, []);
   const [soundingObjectIds, setSoundingObjectIds] = useState<ReadonlySet<number>>(new Set());
   const [diagnosticObjects, setDiagnosticObjects] = useState<VisualObject[]>([]);
   const lastDiagnosticUpdateRef = useRef(0);
@@ -384,9 +428,6 @@ export function App() {
   }, [speakerMixLocked]);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
-  /** seekTo 设置后，阻止 onVisualState 回写旧位置，直到播放恢复。 */
-  const seekTargetRef = useRef<number | null>(null);
-  const [seeking, setSeeking] = useState(false);
   const [debug, setDebug] = useState("");
   const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null);
   /** Internal adaptive state, persisted before future player construction. */
@@ -430,6 +471,9 @@ export function App() {
   const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
   const [stereoRenderMode, setStereoRenderMode] = useState(readStereoRenderMode);
   const [stereoRenderBusy, setStereoRenderBusy] = useState(false);
+  const [alacStereoUpmixEnabled, setAlacStereoUpmixEnabled] = useState(readAlacStereoUpmixEnabled);
+  const alacStereoUpmixEnabledRef = useRef(alacStereoUpmixEnabled);
+  alacStereoUpmixEnabledRef.current = alacStereoUpmixEnabled;
   const [headTrackingStatus, setHeadTrackingStatus] = useState<HeadTrackingStatus | null>(null);
   /** Desktop playback is owned by the WASAPI native object renderer. */
   const [nativeRendererStatus, setNativeRendererStatus] = useState<NativeRendererStatus | null>(null);
@@ -438,13 +482,9 @@ export function App() {
   const nativeRendererRunningRef = useRef(false);
   const nativeRendererSampleRef = useRef(0);
   const nativeRemoteSyncRef = useRef(false);
-  nativeRemoteSyncRef.current=nativeRendererStatus?.remoteSynchronized===true;
   const nativeRemoteWaitingRef=useRef(false);
-  nativeRemoteWaitingRef.current=nativeRendererStatus?.remoteSyncWaiting===true;
   /** Invalidates every native sink owned by a replaced player immediately. */
   const nativeSessionEpochRef = useRef(0);
-  nativeRendererRunningRef.current = nativeRendererStatus?.running === true;
-  nativeRendererSampleRef.current = nativeRendererStatus?.samplePos ?? nativeRendererSampleRef.current;
   const [nativeRendererBusy, setNativeRendererBusy] = useState(false);
   const [headTrackingHelper, setHeadTrackingHelper] = useState<HeadTrackingHelperConfiguration | null>(null);
   const [headTrackingBusy, setHeadTrackingBusy] = useState(false);
@@ -452,7 +492,7 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession({yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}));
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"remote" | "roomcalibration" | "roomlab" | "stream" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"remote" | "roomcalibration" | "roomlab" | "stream" | "metadata" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [hrtfTestVisual,setHrtfTestVisual]=useState<HrtfTestVisual|null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
@@ -482,7 +522,7 @@ export function App() {
   const coverUrlRef = useRef<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const lastSourceRef = useRef<PlaybackSource | null>(null);
-  const seekRequestRef = useRef(0);
+  const feedRequestRef = useRef(0);
   /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
@@ -810,7 +850,7 @@ export function App() {
           const formatLayout = formatAutoLayout(t.codec);
           const keep360Layout = formatLayout === "360RA-13"
             && (layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2");
-          if (!keep360Layout && (formatLayout || layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2")) {
+          if (!keep360Layout && (formatLayout || t.codec === "flac" || layoutIdRef.current === "360RA-13" || layoutIdRef.current === "22.2")) {
             layoutIdRef.current = "auto";
             immersiveLayoutRef.current = "auto";
             setLayoutId("auto");
@@ -830,27 +870,25 @@ export function App() {
           try {
             const stored = localStorage.getItem(key);
             const cached = stored ? JSON.parse(stored) : null;
-            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.peakDbfs) ? cached.peakDbfs : null);
+            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.truePeakDbtp) ? cached.truePeakDbtp : null);
           } catch {
             createdPlayer?.setMeasuredLoudness(null);
           }
         },
         onBalanceAnalysis: progress => { if (isCurrent()) setBalanceAnalysisProgress(progress); },
-        onMeasuredLoudness: (integratedLufs, peakDbfs) => {
+        onMeasuredLoudness: (integratedLufs, truePeakDbtp) => {
           const key = measuredLoudnessKeyRef.current;
           if (!isCurrent() || !key) return;
           try {
-            localStorage.setItem(key, JSON.stringify({integratedLufs, peakDbfs}));
+            localStorage.setItem(key, JSON.stringify({integratedLufs, truePeakDbtp}));
           } catch {
             // Persistence failures must not affect playback.
           }
         },
-        onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => {
+        onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels, stereoSource, upmixed }) => {
           if (!isCurrent()) return;
-          setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels });
-          const stereo = objectChannels === 0 && bedLabels.length === 2
-            && bedLabels.some(label => ["L", "Left", "FrontLeft"].includes(label))
-            && bedLabels.some(label => ["R", "Right", "FrontRight"].includes(label));
+          setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels, stereoSource, upmixed });
+          const stereo = stereoSource && !upmixed;
           const current = layoutIdRef.current;
           const stereoLayout = current === "2.0" || current === "2.1";
           // Queue layout changes before this decoded frame's PCM is submitted.
@@ -884,15 +922,13 @@ export function App() {
           // Deliver positions at the player's 30 Hz display cadence. Keep
           // diagnostic text/list work at 5 Hz so it does not compete with 3D.
           const now = performance.now();
-          // Seek 期间：跳过旧位置，由 onPlaybackReady 回调解除锁定。
-          const seekTarget = seekTargetRef.current;
-          if (seekTarget !== null) t = seekTarget;
           if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
-            setObjects(objs);
-            setSoundingObjectIds(sounding);
+            liveObjectView.publish(objs, sounding);
             if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
               lastDiagnosticUpdateRef.current = t;
+              setObjects(objs);
+              setSoundingObjectIds(sounding);
               setDiagnosticObjects(objs);
               setProgramLoudness(playerRef.current?.programLoudnessInfo() ?? null);
               setPosition(t);
@@ -926,16 +962,13 @@ export function App() {
           else {
             playingRef.current = false;
             setPlaying(false);
-            setSeeking(false);
           }
         },
         onPlaybackReady: () => {
           if (isCurrent()) {
-            seekTargetRef.current = null;
-            setSeeking(false);
+            setPosition(playerRef.current?.positionSeconds() ?? 0);
           }
         },
-        onSeekBuffered: () => { if (isCurrent()) { seekTargetRef.current = null; setSeeking(false); } },
       }, {
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: !readBinauralHead().startsWith("personal-") && readDenseBinauralObjects(),
@@ -957,9 +990,10 @@ export function App() {
         },
       });
       createdPlayer = player;
+      player.setAlacStereoUpmixEnabled(alacStereoUpmixEnabledRef.current);
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = (labels: readonly string[], hasDynamics: boolean, codec?: string) => {
-        const id = resolveAutoLayout(labels, hasDynamics, codec);
+        const id = resolveAutoLayout(labels, hasDynamics, codec, alacStereoUpmixEnabledRef.current);
         if (isCurrent()) setDetectedLayout(id);
         return LAYOUTS[id];
       };
@@ -1085,10 +1119,33 @@ export function App() {
   useEffect(() => {
     const desktop = window.sdaDesktop;
     if (!desktop?.getNativeRendererStatus) return;
-    void desktop.getNativeRendererStatus().then(setNativeRendererStatus).catch((error) => {
+    const applyNativeRendererStatus = (next: NativeRendererStatus) => {
+      // Playback needs each 100 ms sample position to keep the native PCM
+      // producer ahead of the DAC. The visible UI only needs state changes;
+      // storing every sample here re-rendered the entire Three.js interface
+      // ten times per second and competed with remote-desktop video encoding.
+      nativeRendererRunningRef.current = next.running === true;
+      if (Number.isSafeInteger(next.samplePos)) nativeRendererSampleRef.current = next.samplePos;
+      nativeRemoteSyncRef.current = next.remoteSynchronized === true;
+      nativeRemoteWaitingRef.current = next.remoteSyncWaiting === true;
+      setNativeRendererStatus((previous) => {
+        if (
+          previous?.running === next.running &&
+          previous.referenceMix === next.referenceMix &&
+          previous.outputActive === next.outputActive &&
+          previous.hrtfReady === next.hrtfReady &&
+          previous.directionalHrtf === next.directionalHrtf &&
+          previous.programCodecSupported === next.programCodecSupported &&
+          previous.remoteSynchronized === next.remoteSynchronized &&
+          previous.remoteSyncWaiting === next.remoteSyncWaiting
+        ) return previous;
+        return next;
+      });
+    };
+    void desktop.getNativeRendererStatus().then(applyNativeRendererStatus).catch((error) => {
       console.warn("[SDA] 读取 native renderer 状态失败:", error);
     });
-    return desktop.onNativeRendererStatus?.(setNativeRendererStatus);
+    return desktop.onNativeRendererStatus?.(applyNativeRendererStatus);
   }, []);
 
   useEffect(() => {
@@ -1234,6 +1291,27 @@ export function App() {
     } finally { setStereoRenderBusy(false); }
   };
 
+  const changeAlacStereoUpmix = (enabled: boolean) => {
+    alacStereoUpmixEnabledRef.current = enabled;
+    try { localStorage.setItem(ALAC_STEREO_UPMIX_STORAGE_KEY, enabled ? "1" : "0"); } catch { /* Playback remains usable without storage. */ }
+    setAlacStereoUpmixEnabled(enabled);
+    const player = playerRef.current;
+    player?.setAlacStereoUpmixEnabled(enabled);
+    if (enabled) {
+      layoutIdRef.current = "auto";
+      immersiveLayoutRef.current = "auto";
+      setLayoutId("auto");
+      setDetectedLayout("7.1.4");
+      player?.setAutoLayout();
+      return;
+    }
+    layoutIdRef.current = "2.0";
+    stereoLayoutRef.current = "2.0";
+    setLayoutId("2.0");
+    setDetectedLayout(null);
+    player?.setLayout(LAYOUTS["2.0"], false);
+  };
+
   const recenterHeadTracking = useCallback(async () => {
     const desktop = window.sdaDesktop;
     if (!desktop?.recenterHeadTracking) return;
@@ -1357,15 +1435,13 @@ export function App() {
 
   const play = useCallback(
     async (source: PlaybackSource) => {
-      const feedRequest = ++seekRequestRef.current;
+      const feedRequest = ++feedRequestRef.current;
       const request = ++playRequestRef.current;
       // Claim playback before any await. The preload can synchronously drain a
       // burst of open-file events, and every later append must see this request
       // as active instead of constructing another player/session.
       playingRef.current = true;
       setPlaying(true);
-      setSeeking(false);
-      seekTargetRef.current = null;
       nativeSessionEpochRef.current++;
       const playbackPlaylistRevision = playlistRevisionRef.current;
       const isCurrent = () => playRequestRef.current === request;
@@ -1386,6 +1462,7 @@ export function App() {
       setBinauralMetadata(null);
       objectsRef.current = [];
       setObjects([]);
+      liveObjectView.publish([], new Set());
       setSoundingObjectIds(new Set());
       setDiagnosticObjects([]);
       lastDiagnosticUpdateRef.current = 0;
@@ -1426,10 +1503,12 @@ export function App() {
           // A newer request now owns this player as its outgoing context.
           if (!isCurrent()) return;
         }
-        if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
+        if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
-        if (source.kind === "file") {
+        if (isFlacFile(sourceName)) {
+          await player.playDecodedPcm(await decodeFlac(source), "flac");
+        } else if (source.kind === "file") {
           await player.playFile(source.file, "auto");
         } else {
           const desktop = window.sdaDesktop;
@@ -1439,30 +1518,28 @@ export function App() {
           const opened = await desktop.openPath(source.path);
           source.version = `${opened.size}:${opened.mtimeMs ?? Date.now()}`;
           try {
-            if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
+            if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
             const readSlice = desktop.readSlice;
-            await player.openSeekable((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
-            if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
+            await player.prepareFileStream((offset, length) => readSlice(opened.id, offset, length), opened.size, "auto");
+            if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
             for await (const chunk of readAhead(opened.size, FILE_CHUNK_SIZE,
               (offset, length) => readSlice(opened.id, offset, length))) {
-              if (!isCurrent() || playerRef.current !== player || feedRequest !== seekRequestRef.current) return;
+              if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
               await player.push(chunk);
             }
-            if (isCurrent() && playerRef.current === player && feedRequest === seekRequestRef.current) player.end();
+            if (isCurrent() && playerRef.current === player && feedRequest === feedRequestRef.current) player.end();
           } finally {
             await desktop.close(opened.id);
           }
         }
       } catch (e) {
-        if (!isCurrent() || feedRequest !== seekRequestRef.current) return;
+        if (!isCurrent() || feedRequest !== feedRequestRef.current) return;
         const outgoing = retiringPlayerRef.current;
         retiringPlayerRef.current = null;
         if (outgoing) await outgoing.dispose().catch(() => {});
         setErrors((prev) => [...prev, String(e)]);
         playingRef.current = false;
         setPlaying(false);
-        seekTargetRef.current = null;
-        setSeeking(false);
       }
     },
     [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, binauralLowFrequencyDiagnostic, headphoneProfileId, applyMutes, effectiveMutedIds],
@@ -1803,11 +1880,13 @@ export function App() {
   }, []);
 
   const selectedHeadphoneProfile = headphoneProfiles.find((profile) => profile.id === headphoneProfileId) ?? null;
-  const stereoProgram = track?.objectChannels === 0
+  const stereoProgram = track?.stereoSource === true || (track?.objectChannels === 0
     && track.bedLabels?.length === 2
     && new Set(track.bedLabels).size === 2
     && track.bedLabels.some((label) => label === "L" || label === "FrontLeft")
-    && track.bedLabels.some((label) => label === "R" || label === "FrontRight");
+    && track.bedLabels.some((label) => label === "R" || label === "FrontRight"));
+  const alacStereoProgram = stereoProgram && track?.codec === "alac";
+  const alacUpmixActive = alacStereoProgram && alacStereoUpmixEnabled;
   useEffect(() => {
     if (!stereoProgram) setFloatPanel(current => current === "stereo" ? null : current);
   }, [stereoProgram]);
@@ -1816,41 +1895,6 @@ export function App() {
     const source = lastSourceRef.current;
     if (source) void play(source);
   }, [play]);
-
-  const seekTo = useCallback((seconds: number) => {
-    const source = lastSourceRef.current, player = playerRef.current;
-    if (!source || !player || !Number.isFinite(seconds)) return;
-    const duration = player.durationSeconds();
-    const target = Math.max(0, Math.min(seconds, Math.max(0, duration - 1 / 48000)));
-    const request = ++seekRequestRef.current;
-    const current = () => request === seekRequestRef.current && playerRef.current === player;
-    seekTargetRef.current = target;setPosition(target);setSeeking(true);
-    void (async () => {
-      await player.prepareSeek(target);
-      if (!current()) return;
-      if (source.kind === "file") await player.playFile(source.file, "auto");
-      else {
-        const api=window.sdaDesktop;
-        if (!api?.openPath || !api.readSlice || !api.close) throw Error("桌面文件读取接口不可用");
-        const opened=await api.openPath(source.path);
-        try {
-          if (!current()) return;
-          const read=(offset:number,length:number)=>api.readSlice!(opened.id,offset,length);
-          const startOffset = await player.openSeekable(read,opened.size,"auto");
-          if (!current()) return;
-          for await (const chunk of readAhead(opened.size,FILE_CHUNK_SIZE,read,startOffset)) {
-            if (!current()) return;
-            await player.push(chunk);
-          }
-          if (current()) player.end();
-        } finally { await api.close(opened.id); }
-      }
-    })().catch(error=>{
-      if (!current()) return;
-      setSeeking(false);seekTargetRef.current=null;
-      setErrors(previous=>[...previous,`跳转失败：${String(error)}`]);
-    });
-  }, []);
 
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;
@@ -1907,7 +1951,6 @@ export function App() {
       pausedRef.current = false;
       setPlaying(false);
       setPaused(false);
-      setSeeking(false);
     }
   }, []);
 
@@ -1929,13 +1972,18 @@ export function App() {
     pausedRef.current = false;
     setPlaying(false);
     setPaused(false);
-    setSeeking(false);
   }, []);
 
-  const layoutOptions = [
-    ...(!stereoProgram && mode !== "stereo" ? [{value:"auto",label:`自动${detectedLayout ? `（${detectedLayout}）` : ""}`}] : []),
+  const authoredDiscreteLayout = track?.codec === "flac" && track.rawBedLabels && track.rawBedLabels.length > 2
+    ? resolveAutoLayout(track.rawBedLabels, false, track.codec)
+    : null;
+  const stereoLayoutOnly = (stereoProgram && !alacUpmixActive) || (mode === "stereo" && !alacUpmixActive);
+  const layoutOptions = authoredDiscreteLayout
+    ? [{ value: "auto", label: `Dolby ${authoredDiscreteLayout}（源元数据）` }]
+    : [
+    ...(!stereoLayoutOnly ? [{value:"auto",label:`自动${detectedLayout ? `（${detectedLayout === "360RA-13" ? "360RA 13" : detectedLayout === "22.2" ? "22.2" : `Dolby ${detectedLayout}`}）` : ""}`}] : []),
     ...(Object.keys(LAYOUTS) as LayoutId[])
-              .filter((id) => !track || ((stereoProgram || mode === "stereo")
+              .filter((id) => !track || (stereoLayoutOnly
                 ? id === "2.0" || id === "2.1"
                 : id !== "2.0" && id !== "2.1"))
               .filter((id) => id === "2.0" || id === "2.1" ||
@@ -2194,9 +2242,11 @@ export function App() {
             </div>
             <div className="settings-content" id="settings-content-output" role="tabpanel" aria-labelledby="settings-tab-output" hidden={settingsTab !== "output"}>
             <OutputPanel />
-            <fieldset className="settings-group" disabled={mode === "multichannel"}>
+            <fieldset className="settings-group" disabled={mode === "multichannel" && !alacUpmixActive}>
               <legend>输出</legend>
-              <label className="settings-switch" title="适用于纯立体声和 360RA。360RA 播放时累计分析固定参考混音，以 −18 LUFS 为本软件对齐目标，仅衰减偏响曲目，不放大安静曲目，平滑更新统一增益，保留对象相对音量。其它空间格式保持旁路；此目标不代表 Dolby 母版认证。">
+              <label className="settings-switch" title={alacUpmixActive
+                ? "先按原始 ALAC L/R 的 BS.1770-4 响度与真峰值估计，再将同一节目增益联动应用到生成的全部 7.1.4 声道。以 Apple Music Atmos music 的 -18 LKFS、-1 dBTP 上限作监听安全参考；不会逐声道归一化或改变声像，也不代表 Dolby 交付认证。"
+                : "适用于纯立体声和 360RA。360RA 播放时累计分析固定参考混音，以 −18 LUFS 为本软件对齐目标，仅衰减偏响曲目，不放大安静曲目，平滑更新统一增益，保留对象相对音量。其它空间格式保持旁路；此目标不代表 Dolby 母版认证。"}>
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
@@ -2206,7 +2256,16 @@ export function App() {
                 />
               </label>
             </fieldset>
-            {mode === "multichannel" && <p className="settings-disabled">音量平衡适用于立体声和 360RA，在双耳或立体声输出下生效。</p>}
+            {alacStereoProgram && <fieldset className="settings-group">
+              <legend>ALAC 立体声</legend>
+              <label className="settings-switch" title="由 SDA 已解码的 L/R PCM 生成伪 7.1.4 监听床层。它不会修改文件，也不是 Dolby Atmos 母版或可交付的 Atmos 文件。开启后自动布局显示 Dolby 7.1.4；关闭后恢复 2.0。">
+                <span>上混为 7.1.4 <small>SDA 伪上混，使用 Dolby 布局，不改写源文件</small></span>
+                <input type="checkbox" role="switch" checked={alacStereoUpmixEnabled}
+                  onChange={(event) => changeAlacStereoUpmix(event.target.checked)} />
+              </label>
+            </fieldset>}
+            {mode === "multichannel" && !alacUpmixActive && <p className="settings-disabled">音量平衡适用于立体声和 360RA；真实多声道与沉浸式节目保持原始声道关系。</p>}
+            {mode === "multichannel" && alacUpmixActive && <p className="settings-disabled">按原始 ALAC 立体声的 -18 LKFS / -1 dBTP 监听参考测量，使用一个联动增益作用于生成的全部 7.1.4 声道。</p>}
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.startNativeRenderer && (
@@ -2325,7 +2384,7 @@ export function App() {
       <main>
         <section className="view">
         {balanceAnalysisProgress !== null && <p role="status" className="settings-disabled" style={{position:"absolute",top:58,left:24,zIndex:4,pointerEvents:"none"}}>正在分析整曲响度 · {Math.round(balanceAnalysisProgress * 100)}%</p>}
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<ObjectView spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} objects={objects} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} soundingIds={soundingObjectIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<LiveObjectView store={liveObjectView} spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
           <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
           <MiniPlayer
             track={track}
@@ -2343,9 +2402,8 @@ export function App() {
             onPlaybackModeChange={changePlaybackMode}
             playlistOpen={miniPlaylistOpen}
             onTogglePlaylist={() => {setMiniPlaylistOpen(open=>!open);setFloatPanel(current=>current==="playlist"?null:current);}}
+            onShowMetadata={() => setFloatPanel("metadata")}
             onReplay={()=>void claimPlayback("local").then(replay).catch(error=>setErrors(prev=>[...prev,String(error)]))}
-            onSeek={seekTo}
-            seeking={seeking}
             onVolume={changeVolume}
           >
             <PlaylistPanel embedded playbackMode={playbackMode} onPlaybackModeChange={changePlaybackMode} items={playlist} currentId={playlistCurrentId} paused={paused} onPlay={id=>void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]))} onRemove={removePlaylistItem} onClear={clearPlaylist} onClose={()=>setMiniPlaylistOpen(false)}/>
@@ -2416,6 +2474,31 @@ export function App() {
             ) : (
               <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .dts / .iamf / .mhas 文件开始</p>
             )}
+          </div>
+        )}
+        {floatPanel === "metadata" && track && (
+          <div className="panel float-panel desktop-sheet" aria-label="歌曲元数据">
+            <SheetHeading title="歌曲元数据" onClose={()=>setFloatPanel(null)}/>
+            <dl>
+              <dt>文件名</dt>
+              <dd>{fileNameRef.current ?? "—"}</dd>
+              <dt>标题</dt>
+              <dd>{track.title ?? "未写入"}</dd>
+              <dt>艺人</dt>
+              <dd>{track.artist ?? "未写入"}</dd>
+              <dt>专辑</dt>
+              <dd>{track.album ?? "未写入"}</dd>
+              <dt>容器</dt>
+              <dd>{track.container.toUpperCase()}</dd>
+              <dt>编码</dt>
+              <dd>{track.codec}</dd>
+              <dt>采样率</dt>
+              <dd>{track.sampleRate.toLocaleString()} Hz</dd>
+              <dt>声道</dt>
+              <dd>{track.channels} 声道</dd>
+              <dt>文件时长</dt>
+              <dd>{track.durationSec === undefined ? "未写入" : `${Math.floor(track.durationSec / 60)}:${String(Math.floor(track.durationSec % 60)).padStart(2, "0")}`}</dd>
+            </dl>
           </div>
         )}
         {floatPanel === "binaural" && (

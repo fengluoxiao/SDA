@@ -1,5 +1,5 @@
 import Performance3D from "./Performance3D";
-import {spatialRenderer} from '../spatial-renderer';
+import {spatialRenderer, spatialShadows} from '../spatial-renderer';
 import AvatarSkinControl from "./AvatarSkinControl";
 import { type HrtfTestVisual, testVisualPosition } from "../phrtf";
 /**
@@ -536,6 +536,7 @@ export function ObjectView({
   return (
     <div data-field-shape={spherical ? "sphere" : "room"} ref={shell} className={`object-scene${immersive?" is-immersive":""}`} style={{background:p.bg}}>
     <Canvas
+      shadows={spatialShadows}
       frameloop="demand"
       camera={{ position: [5, 4.2, 6], fov: 50 }}
       style={{ background: p.bg }}

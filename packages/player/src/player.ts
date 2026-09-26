@@ -1,5 +1,6 @@
 import {connectPerformanceWorker} from "./performance-sink";
 import { isStereoMasterFrame } from "./stereo-master.js";
+import { AlacStereoUpmixer, isAlacStereoFrame } from "./alac-stereo-upmix.js";
 import { masterBalanceGainDb } from "./bs1770.js";
 /**
  * SdaPlayer — glues everything together:
@@ -53,6 +54,23 @@ export interface VisualObject {
   distanceInfinite: boolean;
 }
 
+/** Standard FLAC/WAVE channel order for decoded discrete PCM. A decoded
+ * AudioBuffer carries planes but not a portable channel-layout tag, so retain
+ * the conventional order instead of treating it as object audio. */
+export function discretePcmChannelLabels(channelCount: number): string[] {
+  const layouts: Record<number, string[]> = {
+    1: ["C"],
+    2: ["L", "R"],
+    3: ["L", "R", "C"],
+    4: ["L", "R", "Ls", "Rs"],
+    5: ["L", "R", "C", "Ls", "Rs"],
+    6: ["L", "R", "C", "LFE", "Ls", "Rs"],
+    7: ["L", "R", "C", "LFE", "Ls", "Rs", "Cb"],
+    8: ["L", "R", "C", "LFE", "Lb", "Rb", "Ls", "Rs"],
+  };
+  return layouts[channelCount] ?? Array.from({ length: channelCount }, (_, channel) => `Bed_${channel + 1}`);
+}
+
 export interface PlayerHealthSnapshot {
   /** AudioContext output FIFO requested by the active playback session. */
   requestedOutputLatencySeconds: number;
@@ -103,12 +121,12 @@ export type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 export interface PlayerCallbacks {
   /** Measured-loudness balance converged (or applied from cache) for the
    *  current track; the UI persists it so replays balance from sample 0. */
-  onMeasuredLoudness?: (integratedLufs: number, peakDbfs?: number) => void;
+  onMeasuredLoudness?: (integratedLufs: number, truePeakDbtp?: number) => void;
   onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; artist?: string; album?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   /** Program-level DBMD metadata. It never follows the sample event timeline. */
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
-  onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number }) => void;
+  onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number; stereoSource: boolean; upmixed: boolean }) => void;
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
   onVisualState?: (objects: VisualObject[], streamTimeSec: number, soundingIds: ReadonlySet<number>) => void;
   onError?: (message: string) => void;
@@ -120,9 +138,8 @@ export interface PlayerCallbacks {
   /** A sustained callback-gap pattern upgrades the active AudioContext and
    * persists this latency for the next playback session. */
   onOutputLatencyRecommendation?: (seconds: OutputLatencySeconds) => void;
-  /** Fired when playback starts or resumes (including after seek). */
+  /** Fired when playback starts or resumes. */
   onPlaybackReady?: () => void;
-  onSeekBuffered?: () => void;
 }
 
 export interface NativeRendererSourceDeclaration {
@@ -323,10 +340,7 @@ export class SdaPlayer {
   private binauralMetadata: BinauralRenderMetadata | null = null;
   /** Visual metadata waits for the same codec sample clock as audio gains. */
   private pendingVisualEvents: ObjectEvent[] = [];
-  /** Most recent spatial event per object id. Native `reset` wipes source
-   * positions, and sparse object streams may not publish a new position for
-   * seconds, so a seek must replay these or every silent object collapses
-   * onto the default [0, 1, 0] placement until its next movement. */
+  /** Most recent spatial event per object id for renderer recovery. */
   private lastObjectEvents = new Map<number, ObjectEvent>();
   private pendingVisualCursor = 0;
   private pendingVisualTargets = new Map<number, ObjectEvent>();
@@ -361,6 +375,9 @@ export class SdaPlayer {
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
   private stereoBalanceEligible = false;
+  /** Optional ALAC-only pseudo-upmix. The source PCM stays identifiable as stereo. */
+  private alacStereoUpmixEnabled = false;
+  private alacStereoUpmixer = new AlacStereoUpmixer();
   private mpeghMeasurement: FrameLoudness | null = null;
   private balanceAnalysisAbort = new AbortController();
   private nonStereoProgrammeSeen = false;
@@ -375,7 +392,7 @@ export class SdaPlayer {
   private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
-  private cachedMeasuredPeakDbfs: number | null = null;
+  private cachedMeasuredTruePeakDbtp: number | null = null;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
    *  UI 固定"近"，mid/far 暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
@@ -389,8 +406,6 @@ export class SdaPlayer {
   private headphoneProfileId: string | null = null;
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
-  /** Seek target sample — set by seekToSample, consumed by the startup gate. */
-  private pendingSeekSample: number | null = null;
   /** Blocks PCM submission and startAt until the initial stream-rate renderer is
    * fully ready. This prevents a default-rate context from audibly starting
    * before a 44.1 → 48 kHz alignment rebuild completes. */
@@ -546,6 +561,21 @@ export class SdaPlayer {
     if (next) this.setLayout(next, false);
     this.layoutChecked = true;
     this.layoutHadDynamics = hasDyn;
+  }
+
+  /** Enable the reversible 2.0 -> 7.1.4 listening transform for ALAC masters. */
+  setAlacStereoUpmixEnabled(enabled: boolean): void {
+    if (this.alacStereoUpmixEnabled === enabled) return;
+    this.alacStereoUpmixEnabled = enabled;
+    this.alacStereoUpmixer.reset();
+    // A channel-layout change must not leave the native renderer with a stale
+    // program-balance state. Reassert the one linked gain immediately so the
+    // first generated 7.1.4 frame has the same protection as its 2.0 source.
+    this.setVolumeBalance(this.volumeBalanceEnabled);
+    if (this.programLoudnessGainDb != null) {
+      this.renderer?.setProgramLoudnessGainDb(this.programLoudnessGainDb);
+      this.setNativeProgramGainDb(this.programLoudnessGainDb);
+    }
   }
 
   /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
@@ -967,10 +997,10 @@ export class SdaPlayer {
     if (this.disposed) return;
     console.log(`[SDA] player#${this.id} playFile`);
     const epoch=this.decodeEpoch;
-    const startOffset = await this.openSeekable(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
+    await this.prepareFileStream(async (offset, length) => new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()), file.size, codec);
     if (this.disposed || epoch !== this.decodeEpoch) return;
 
-    const stream = file.slice(startOffset).stream();
+    const stream = file.stream();
     const reader = stream.getReader();
     try {
       for (;;) {
@@ -985,61 +1015,112 @@ export class SdaPlayer {
     }
   }
 
+  /** Feed browser-decoded, non-object PCM. The
+   * AudioBuffer retains its separate channels; no downmix or object conversion
+   * occurs before the normal bed/layout pipeline sees it. */
+  async playDecodedPcm(
+    audio: Pick<AudioBuffer, "numberOfChannels" | "length" | "sampleRate" | "duration" | "getChannelData">,
+    codec = "flac",
+    container = "flac",
+  ): Promise<void> {
+    if (!Number.isInteger(audio.numberOfChannels) || audio.numberOfChannels < 1 || audio.numberOfChannels > 32) {
+      throw new Error(`Unsupported decoded channel count: ${audio.numberOfChannels}`);
+    }
+    if (!Number.isFinite(audio.sampleRate) || audio.sampleRate <= 0 || !Number.isInteger(audio.length)) {
+      throw new Error("Invalid decoded PCM format");
+    }
+    this.resetOutputLatencyProtection(true);
+    this.resetHealth();
+    this.containerDurationSec = audio.duration;
+    this.trackReported = true;
+    this.trackCodec = codec;
+    this.ensureStreamRate(audio.sampleRate);
+    this.cb.onTrack?.({
+      codec,
+      sampleRate: audio.sampleRate,
+      channels: audio.numberOfChannels,
+      container,
+      durationSec: audio.duration,
+    });
+    this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
+
+    const labels = discretePcmChannelLabels(audio.numberOfChannels);
+    const frameSamples = 4096;
+    const epoch = this.decodeEpoch;
+    for (let samplePos = 0; samplePos < audio.length && !this.disposed && epoch === this.decodeEpoch; samplePos += frameSamples) {
+      const end = Math.min(audio.length, samplePos + frameSamples);
+      const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) =>
+        Float32Array.from(audio.getChannelData(channel).subarray(samplePos, end)),
+      );
+      this.handleFrame({
+        codec,
+        sampleRate: audio.sampleRate,
+        samplePos,
+        channels,
+        labels,
+        rawBedLabels: labels,
+        events: [],
+        objectChannels: [],
+        programLoudness: null,
+        rampDuration: 0,
+      });
+      await this.pace(epoch);
+    }
+    if (this.disposed || epoch !== this.decodeEpoch) return;
+    this.ended = true;
+    void this.nativeRendererSink?.endAt?.(audio.length);
+    this.startPlaybackIfReady(true);
+    this.checkEnded();
+  }
+
   /** Read BWF metadata before PCM, including ADM chunks after a multi-GB data chunk. */
-  private sourceBwfMetadata?: BwfMetadata;
-  async openSeekable(
+  async prepareFileStream(
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
     codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
-  ): Promise<number> {
+  ): Promise<void> {
     this.balanceAnalysisAbort.abort();
     const analysisAbort = this.balanceAnalysisAbort = new AbortController();
     if (this.decodeEpoch === 0) {
       this.mpeghMeasurement = null;
       this.cachedMeasuredLufs = null;
-      this.cachedMeasuredPeakDbfs = null;
+      this.cachedMeasuredTruePeakDbtp = null;
     }
     const header = await readRange(0, Math.min(12, size));
-    const cachedMetadata = this.seekSeconds > 0 && this.sourceBwfMetadata?.fileSize === size
-      ? this.sourceBwfMetadata : undefined;
-    const metadata = BwfDemuxer.sniffs(header) ? cachedMetadata ?? await readBwfMetadata(readRange, size) : undefined;
-    // PCM/ADM has a fixed byte stride; retain 100 ms for SRC filter warm-up.
-    const startSample = metadata && this.seekSeconds > 0
-      ? Math.floor(Math.max(0, this.seekSeconds - 0.1) * metadata.format.sampleRate) : 0;
-    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata, startSample);
-    return metadata && startSample > 0 ? metadata.dataOffset + startSample * metadata.format.blockAlign : 0;
+    const metadata = BwfDemuxer.sniffs(header) ? await readBwfMetadata(readRange, size) : undefined;
+    if (!this.disposed && !analysisAbort.signal.aborted) this.open(codec, metadata);
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata, startSample = 0): void {
-    this.sourceBwfMetadata = bwfMetadata;
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
     this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, startSample, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined, seekSeconds:this.seekSeconds });
+    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
-  private pushWorkerChunk(chunk: ArrayBuffer): Promise<void> {
+  private pushWorkerChunk(chunk: ArrayBuffer, fileStart?: number): Promise<void> {
     if (this.disposed) return Promise.resolve();
     const sequence = this.nextWorkerPushSequence++;
     return new Promise<void>((resolve, reject) => {
       this.pendingWorkerPushes.set(sequence, { resolve, reject });
-      this.worker.postMessage({ type: "push", epoch:this.decodeEpoch, chunk, sequence }, [chunk]);
+      this.worker.postMessage({ type: "push", epoch:this.decodeEpoch, chunk, sequence, fileStart }, [chunk]);
     });
   }
 
   private decodeChunkSize = COMPRESSED_DECODE_CHUNK_SIZE;
 
-  async push(chunk: Uint8Array): Promise<void> {
+  async push(chunk: Uint8Array, fileStart?: number): Promise<void> {
     // Bound decode bursts independently of filesystem/network read sizes.
     // Pace each part so queued PCM cannot hide a multi-second decode gap.
     const epoch=this.decodeEpoch;
-    for (let offset = 0; offset < chunk.length && !this.disposed && epoch === this.decodeEpoch; offset += this.decodeChunkSize) {
+    for (let offset = 0; offset < chunk.length && !this.disposed && epoch === this.decodeEpoch;) {
       const copy = Uint8Array.from(chunk.subarray(offset, offset + this.decodeChunkSize)).buffer;
-      await this.pushWorkerChunk(copy);
+      await this.pushWorkerChunk(copy, fileStart === undefined ? undefined : fileStart + offset);
       await this.pace(epoch);
+      offset += this.decodeChunkSize;
     }
   }
 
@@ -1109,6 +1190,7 @@ export class SdaPlayer {
     this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
     this.cachedMeasuredLufs = null;
+    this.cachedMeasuredTruePeakDbtp = null;
     this.renderer?.setProgramLoudnessGainDb(null);
     this.ended = false;
     this.rateChecked = false;
@@ -1196,9 +1278,9 @@ export class SdaPlayer {
 
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
-  setMeasuredLoudness(integratedLufs: number | null, peakDbfs: number | null = null): void {
+  setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
     if (this.mpeghMeasurement) return;
-    this.cachedMeasuredPeakDbfs = peakDbfs;
+    this.cachedMeasuredTruePeakDbtp = truePeakDbtp;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
       : null;
@@ -1217,8 +1299,8 @@ export class SdaPlayer {
     }
   }
 
-  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, peakDbfs: number | null = null): void {
-    const gainDb = masterBalanceGainDb(integratedLufs, peakDbfs);
+  private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, truePeakDbtp: number | null = null): void {
+    const gainDb = masterBalanceGainDb(integratedLufs, truePeakDbtp);
     const previous = this.scheduledProgramLoudnessGainDb ?? 0;
     console.info(`[SDA balance] codec=${this.trackCodec} enabled=${this.volumeBalanceEnabled} lufs=${integratedLufs.toFixed(2)} targetDb=${gainDb.toFixed(2)} at=${atSample}`);
     this.scheduledProgramLoudnessGainDb = gainDb;
@@ -1489,70 +1571,7 @@ export class SdaPlayer {
     this.nativeStartPending = false;
   }
 
-  /** Reuse the worker and output connection; invalidate only old media work. */
-  async prepareSeek(seconds: number): Promise<void> {
-    if (!Number.isFinite(seconds) || seconds < 0) throw new Error("Invalid seek time");
-    const epoch=++this.decodeEpoch;
-    console.log(`[SDA] player#${this.id} seek ${seconds}s epoch=${epoch}`);
-    // Keep a currently writing codec batch ordered with the sidecar pipe, but
-    // discard every older batch that has not begun. Otherwise reset can sit
-    // behind seconds of obsolete PCM (and an earlier failed ACK) indefinitely.
-    this.nativeFrames.invalidatePending();
-    this.seekSeconds = seconds;
-    const sample = Math.round(seconds * this.sampleRate);
-    this.pendingSeekSample = sample;this.seekBufferedNotified=false;
-    this.rendererGeneration++;
-    this.rejectPendingWorkerPushes("seek superseded old read");
-    this.pcmQueue=[];this.queuedSamples=0;this.acceptedFrames=[];this.acceptedEndSample=sample;
-    this.inFlight.clear();this.submittedFrames.clear();this.batchResults.clear();
-    this.ended=false;
-    this.resetStartupGate();
-    this.pendingVisualEvents=[];this.pendingVisualCursor=0;this.pendingVisualTargets.clear();
-    this.objects.clear();this.objectChannels.clear();this.knownBedLabels=[];
-    // onTrack publishes container-only information again. Re-publish the
-    // decoded bed/object format on the first accepted seek frame as well.
-    this.decodedFormatKey = "";
-    this.soundingObjectIds.clear();this.visualSnapshotDirty=true;
-    this.nativeConsumedSamples = sample;this.presentationClock.init(sample);
-    this.renderer?.resetBuffers();
-    await this.nativeFrames.submit(async()=>{
-      if (epoch!==this.decodeEpoch || this.disposed) return;
-      // Pause the native renderer before resetting to avoid audio discontinuity
-      // (stutter / silence) when seeking backward while playback is active.
-      try { await this.nativeRendererSink?.pause(true); } catch {}
-      await this.nativeRendererSink?.reset(sample);
-      if (epoch!==this.decodeEpoch || this.disposed) return;
-      // Resume if not intentionally paused — reset() may or may not clear
-      // the pause state, so explicitly unpause for active playback seeks.
-      if (!this.pausedState) try { await this.nativeRendererSink?.pause(false); } catch {}
-      // Native reset clears programme gain along with queued audio. Seeking
-      // within the same song must not temporarily bypass its loudness balance.
-      await this.nativeRendererSink?.setProgramGainDb(this.programLoudnessGainDb, sample);
-      // Native reset also wipes every source position. Sparse object streams
-      // may not publish a fresh position for seconds, so replay each object's
-      // last known event at the seek target (ramp 0 = immediate) — otherwise
-      // silent objects sit at the default [0,1,0] placement with wrong
-      // distance/panning until their next movement.
-      if (this.lastObjectEvents.size) {
-        const replay: ObjectEvent[] = [];
-        for (const event of this.lastObjectEvents.values()) {
-          replay.push({ ...event, samplePos: sample, rampDuration: 0 });
-        }
-        replay.sort((a, b) => a.id - b.id);
-        await this.nativeRendererSink?.events(replay);
-      }
-    });
-    if (epoch===this.decodeEpoch) {
-      this.installNativeConsumedClock();this.installNativeObjectActivity();
-      this.nativeConsumedSamples=sample;this.presentationClock.init(sample);
-      this.renderer?.setProgramLoudnessGainDb(this.programLoudnessGainDb, sample);
-      this.setLfeMuted(this.lfeMuted);
-    }
-  }
   private decodeEpoch = 0;
-
-  private seekSeconds = 0;
-  private seekBufferedNotified = false;
 
   private startPlaybackIfReady(force = false): void {
     if (
@@ -1564,13 +1583,6 @@ export class SdaPlayer {
     const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
     const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
     if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
-    if (this.pendingSeekSample !== null && !this.seekBufferedNotified) {
-      this.seekBufferedNotified = true;
-      // Publish the restored pose snapshot before releasing the seeking UI,
-      // including paused seeks where no native consumption tick will follow.
-      this.emitVisual();
-      this.cb.onSeekBuffered?.();
-    }
     if (this.pausedState) return;
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin;
@@ -1584,7 +1596,6 @@ export class SdaPlayer {
           if (accepted === true) {
             this.nativeStartPending = false;
             this.playbackStarted = true;
-            this.pendingSeekSample = null;
             this.updateNativeConsumedCursor(this.nativeRendererSink!.getConsumedSamples?.() ?? origin);
             this.cb.onPlaybackReady?.();
             this.pumpPcm();
@@ -1616,7 +1627,6 @@ export class SdaPlayer {
       console.warn(`[SDA] player#${this.id} native startAt failed:`, error);
     }
     this.playbackStarted = true;
-    this.pendingSeekSample = null;
     this.cb.onPlaybackReady?.();
   }
 
@@ -1658,7 +1668,7 @@ export class SdaPlayer {
     this.nativeConsumedUnsubscribe = undefined;
     const sink = this.nativeRendererSink;
     if (!sink) return;
-    this.nativeConsumedSamples = this.pendingSeekSample ?? sink.getConsumedSamples?.() ?? 0;
+    this.nativeConsumedSamples = sink.getConsumedSamples?.() ?? 0;
     const unsubscribe = sink.onConsumedSamples?.((sample) => this.updateNativeConsumedCursor(sample));
     if (typeof unsubscribe === "function") this.nativeConsumedUnsubscribe = unsubscribe;
   }
@@ -1677,9 +1687,7 @@ export class SdaPlayer {
    * and the sample-clock visual timeline without creating an AudioContext. */
   private updateNativeConsumedCursor(sample: number): void {
     if (this.outputBackend !== "native-sidecar" || !Number.isFinite(sample)) return;
-    if (this.pendingSeekSample !== null && !this.playbackStarted || sample > this.submittedEndSample()) return;
-    // After seek, ignore stale IPC reports below the seek target.
-    if (this.pendingSeekSample !== null && sample < this.pendingSeekSample) return;
+    if (!this.playbackStarted || sample > this.submittedEndSample()) return;
     this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(sample));
     this.consumeAcceptedFrames();
     this.pumpPcm();
@@ -1689,9 +1697,8 @@ export class SdaPlayer {
   private consumedSamples(): number {
     if (this.outputBackend === "native-sidecar") {
       const reported = this.nativeRendererSink?.getConsumedSamples?.();
-      // After seek, ignore stale IPC reports below the seek target.
       if (this.playbackStarted && typeof reported === "number" && Number.isFinite(reported) && reported <= this.submittedEndSample()
-          && (this.pendingSeekSample === null || reported >= this.pendingSeekSample)) {
+      ) {
         this.nativeConsumedSamples = Math.max(this.nativeConsumedSamples, Math.trunc(reported));
       }
       return this.nativeConsumedSamples;
@@ -1735,9 +1742,7 @@ export class SdaPlayer {
       this.acceptedEndSample = Math.max(this.acceptedEndSample, end);
       if (!this.playbackStarted) {
         if (this.startupOrigin === null) {
-          // After a seek, use the seek target as the startup origin so
-          // startPlaybackIfReady sends startAt at the correct sample.
-          this.startupOrigin = this.pendingSeekSample ?? accepted.samplePos;
+          this.startupOrigin = accepted.samplePos;
           this.startupAcceptedEnd = end;
         } else if (accepted.samplePos <= this.startupAcceptedEnd) {
           // Accept overlapping or already-covered frames; advance the cursor.
@@ -1926,10 +1931,10 @@ export class SdaPlayer {
       case "flushed":
         // Only a complete decode is a track measurement. A stopped intro must
         // never replace a complete cached value or freeze the next playback.
-        if (this.seekSeconds === 0 && this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
             && this.measuredLoudness?.integratedLufs != null
             && Number.isFinite(this.measuredLoudness.integratedLufs)) {
-          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.peakDbfs);
+          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp);
         }
         this.ended = true;
         {let end=this.submittedEndSample();for(const frame of this.pcmQueue)end=Math.max(end,frame.samplePos+(frame.channels[0]?.length??0));void this.nativeRendererSink?.endAt?.(end);}
@@ -1947,14 +1952,20 @@ export class SdaPlayer {
     // 否则窗口内解码的帧被静默丢弃（采样率对齐重建 + pace 同时失灵时，
     // 整个文件会在窗口内解完扔光 → 提前 onEnded，卡在第几秒）。
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
+    // Measure eligibility from the decoded master before an optional ALAC
+    // listening transform. Its single program gain must stay linked across
+    // the generated bed, never be calculated separately per copied channel.
+    const stereoMaster = isStereoMasterFrame(frame);
+    const alacStereoSource = isAlacStereoFrame(frame);
+    const upmixed = this.alacStereoUpmixEnabled && alacStereoSource;
+    if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);
     this.sampleRate = frame.sampleRate;
-    if (!this.playbackStarted && this.seekSeconds > 0) this.pendingSeekSample = Math.round(this.seekSeconds * frame.sampleRate);
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
-    if (!mpegh && !isStereoMasterFrame(frame)) this.nonStereoProgrammeSeen = true;
+    if (!mpegh && !stereoMaster) this.nonStereoProgrammeSeen = true;
     const eligible = !this.nonStereoProgrammeSeen && (mpegh
       ? true
-      : isStereoMasterFrame(frame));
+      : stereoMaster);
     if (eligible !== this.stereoBalanceEligible) {
       this.stereoBalanceEligible = eligible;
       this.setVolumeBalance(this.volumeBalanceEnabled);
@@ -2026,7 +2037,7 @@ export class SdaPlayer {
         const stereoMaster = frame.codec !== "mpegh";
         if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
           // A cached complete-track measurement applies from the first submitted sample.
-          const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredPeakDbfs : null);
+          const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredTruePeakDbtp : null);
           this.scheduledProgramLoudnessGainDb = gainDb;
           this.programLoudnessGainDb = gainDb;
           renderer?.setProgramLoudnessGainDb(gainDb, frame.samplePos);
@@ -2040,7 +2051,7 @@ export class SdaPlayer {
           // intro must not freeze the correction for the whole programme.
           this.measuredLoudnessSettled = true;
           this.balancedLoudnessBlocks = frame.loudness.blocks;
-          this.applyMeasuredLoudnessBalance(frame.loudness.integratedLufs, frame.samplePos, stereoMaster ? frame.loudness.peakDbfs ?? null : null);
+          this.applyMeasuredLoudnessBalance(frame.loudness.integratedLufs, frame.samplePos, stereoMaster ? frame.loudness.truePeakDbtp ?? null : null);
         }
       }
 
@@ -2091,10 +2102,25 @@ export class SdaPlayer {
       // Object declarations are sparse after their first frame. Labels remain on
       // every PCM frame, so they are the durable decoded-format signal for UI.
       const objectChannelCount = frame.labels.filter((label) => label.startsWith("Obj_")).length;
-      const decodedFormatKey = `${frame.rawBedLabels.join(",")}|${bedLabels.join(",")}|${objectChannelCount}`;
+      // The ALAC upmixer preserves the source labels in rawBedLabels while
+      // replacing labels/channels with its generated 7.1.4 bed. Re-derive the
+      // origin here because this is the queueing scope that reports the UI
+      // format, not handleFrame's earlier decode scope.
+      const sourceStereoLabels = frame.codec === "alac" && frame.rawBedLabels.length === 2
+        && ["L", "Left", "FrontLeft"].includes(frame.rawBedLabels[0]!)
+        && ["R", "Right", "FrontRight"].includes(frame.rawBedLabels[1]!);
+      const upmixed = sourceStereoLabels && frame.labels.length > frame.rawBedLabels.length;
+      const stereoSource = sourceStereoLabels || isStereoMasterFrame(frame);
+      const decodedFormatKey = `${frame.rawBedLabels.join(",")}|${bedLabels.join(",")}|${objectChannelCount}|${sourceStereoLabels}|${upmixed}`;
       if (decodedFormatKey !== this.decodedFormatKey) {
         this.decodedFormatKey = decodedFormatKey;
-        this.cb.onDecodedFormat?.({ rawBedLabels: frame.rawBedLabels, bedLabels, objectChannels: objectChannelCount });
+        this.cb.onDecodedFormat?.({
+          rawBedLabels: frame.rawBedLabels,
+          bedLabels,
+          objectChannels: objectChannelCount,
+          stereoSource,
+          upmixed,
+        });
       }
       let visualChanged = false;
       if (declarations.length > 0) {
@@ -2286,16 +2312,10 @@ export class SdaPlayer {
   }
 
   private emitVisual(): void {
-    // Declarations arrive before their initial pose events during rebuffering.
-    // Keep the previous complete snapshot rather than showing transient dots
-    // stacked at the listener while the new seek state is being assembled.
-    if (this.pendingSeekSample !== null && !this.seekBufferedNotified) return;
     if (this.outputBackend === "native-sidecar") {
       const consumed = this.nativeRendererSink?.getConsumedSamples?.();
-      // After seek, ignore stale IPC reports below the seek target.
       if (typeof consumed === "number" && Number.isFinite(consumed)
-          && consumed > this.nativeConsumedSamples
-          && (this.pendingSeekSample === null || consumed >= this.pendingSeekSample)) {
+          && consumed > this.nativeConsumedSamples) {
         this.updateNativeConsumedCursor(consumed);
       }
     }

@@ -11,7 +11,7 @@ export default function ObjectRenderingStatus({direct}:{direct:boolean}) {
       try {
         const api=window.sdaDesktop;
         const [output,cinema]=await Promise.all([api?.getNativeRendererStatus?.(),api?.getCinemaSettings?.()]);
-        const directional=readDirectionalHrtf(),near=readNearField().enabled;
+        const directional=output?.directionalHrtf===true||readDirectionalHrtf(),near=readNearField().enabled;
         const features=[directional?"连续方向":null,near?"近场距离":null].filter(Boolean);
         const mode=direct||directional||near?`逐对象处理${features.length?` · ${features.join(" + ")}`:""}`:"虚拟扬声器处理";
         const status=!output?.running?`已保存：${mode}，等待播放`:!output.hrtfReady?`已保存：${mode}，等待 HRTF 就绪`:cinema?.settings.monitor?.hardware?.enabled?(directional?`当前：${mode} · 独立对象硬件链`:"硬件仿真开启，当前使用虚拟扬声器处理"):`当前：${mode}`;

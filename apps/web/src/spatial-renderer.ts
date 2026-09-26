@@ -1,7 +1,11 @@
-import {WebGLRenderer} from 'three';
+import {PCFShadowMap, WebGLRenderer} from 'three';
 import type {GLProps} from '@react-three/fiber';
 import type {WebGPURenderer} from 'three/webgpu';
 type DefaultGLProps=Parameters<Extract<GLProps,(defaults:never)=>unknown>>[0];
+
+// R3F's boolean default selects removed PCFSoftShadowMap on every configure.
+// Keep shadows disabled without repeatedly invoking WebGPU's warning setter.
+export const spatialShadows = {enabled: false, type: PCFShadowMap};
 
 /** Keep the explicit software renderer usable on machines without WebGPU. */
 export function spatialRenderer(software=false,lowPower=software){

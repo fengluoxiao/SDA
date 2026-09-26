@@ -16,11 +16,20 @@ pub(super) struct Biquad {
 
 impl Biquad {
     pub(super) fn butterworth_highpass(sample_rate: u32, frequency: f32) -> Result<Self, String> {
-        if frequency <= 0.0 || !frequency.is_finite() || frequency >= sample_rate as f32 * 0.5 { return Err("invalid high-pass configuration".into()); }
+        if frequency <= 0.0 || !frequency.is_finite() || frequency >= sample_rate as f32 * 0.5 {
+            return Err("invalid high-pass configuration".into());
+        }
         let omega = std::f32::consts::TAU * frequency / sample_rate as f32;
         let c = omega.cos();
         let alpha = omega.sin() * std::f32::consts::FRAC_1_SQRT_2;
-        Ok(Self::normalized((1.0+c)*0.5, -(1.0+c), (1.0+c)*0.5, 1.0+alpha, -2.0*c, 1.0-alpha))
+        Ok(Self::normalized(
+            (1.0 + c) * 0.5,
+            -(1.0 + c),
+            (1.0 + c) * 0.5,
+            1.0 + alpha,
+            -2.0 * c,
+            1.0 - alpha,
+        ))
     }
     fn normalized(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Self {
         Self {
@@ -397,14 +406,26 @@ mod tests {
             let lookahead = guard.left.len();
             let frames = sample_rate as usize * 2;
             let signal = |index: usize| {
-                let level = if index < sample_rate as usize { 0.6 } else { 0.03 };
+                let level = if index < sample_rate as usize {
+                    0.6
+                } else {
+                    0.03
+                };
                 let left = level * (index as f32 * 0.13).sin();
                 [left, -left * 0.5]
             };
             for index in 0..frames + lookahead {
-                let input = if index < frames { signal(index) } else { [0.0; 2] };
+                let input = if index < frames {
+                    signal(index)
+                } else {
+                    [0.0; 2]
+                };
                 let output = guard.process(input[0], input[1]);
-                let expected = if index >= lookahead { signal(index - lookahead) } else { [0.0; 2] };
+                let expected = if index >= lookahead {
+                    signal(index - lookahead)
+                } else {
+                    [0.0; 2]
+                };
                 assert_eq!(output, expected, "sample {index} at {sample_rate} Hz");
             }
         }

@@ -13,7 +13,9 @@ impl BackgroundFilter {
         self.low += alpha * (input - self.low);
         // Silent IIR tails otherwise stick at subnormal values and make both
         // live DSP and the prepared background spectra much slower on x86.
-        if self.low.abs() < 1e-20 { self.low = 0.0; }
+        if self.low.abs() < 1e-20 {
+            self.low = 0.0;
+        }
         0.25 * input + 0.75 * self.low
     }
 }
@@ -24,12 +26,16 @@ mod tests {
     #[test]
     fn background_preserves_dc_and_reduces_high_frequency_energy() {
         let mut filter = BackgroundFilter::default();
-        for _ in 0..4096 { filter.process(1.0); }
+        for _ in 0..4096 {
+            filter.process(1.0);
+        }
         assert!((filter.process(1.0) - 1.0).abs() < 1e-6);
         let mut energy = 0.0;
         for i in 0..8192 {
             let y = filter.process(if i % 2 == 0 { 1.0 } else { -1.0 });
-            if i >= 4096 { energy += y * y; }
+            if i >= 4096 {
+                energy += y * y;
+            }
         }
         assert!(energy / 4096.0 < 0.12);
     }
@@ -38,7 +44,9 @@ mod tests {
     fn silent_tail_reaches_exact_zero_before_subnormal_arithmetic() {
         let mut filter = BackgroundFilter::default();
         filter.process(1.0);
-        for _ in 0..512 { filter.process(0.0); }
+        for _ in 0..512 {
+            filter.process(0.0);
+        }
         assert_eq!(filter.low, 0.0);
         assert_eq!(filter.process(0.0), 0.0);
     }

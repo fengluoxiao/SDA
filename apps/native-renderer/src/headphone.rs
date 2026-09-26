@@ -71,13 +71,17 @@ impl HeadphoneCompensation {
             self.pending = self.queued.take();
             self.transition_frame = 0;
         }
-        if let Some(next) = &mut self.pending { next.begin_block(); }
+        if let Some(next) = &mut self.pending {
+            next.begin_block();
+        }
         self.input_left.fill(0.0);
         self.input_right.fill(0.0);
     }
 
     pub(super) fn add(&mut self, frame: usize, input: [f32; 2]) {
-        if let Some(next) = &mut self.pending { next.add(frame, input); }
+        if let Some(next) = &mut self.pending {
+            next.add(frame, input);
+        }
         self.input_left[frame] = input[0];
         self.input_right[frame] = input[1];
     }
@@ -117,7 +121,9 @@ impl HeadphoneCompensation {
         if let Some(next) = &mut self.pending {
             next.finish_block()?;
             self.transition_frame += convolution::DEFAULT_PARTITION;
-            if self.transition_frame >= next.history_frames + convolution::DEFAULT_PARTITION + next.fade_frames {
+            if self.transition_frame
+                >= next.history_frames + convolution::DEFAULT_PARTITION + next.fade_frames
+            {
                 let queued = self.queued.take();
                 *self = *self.pending.take().unwrap();
                 self.queued = queued;
@@ -157,17 +163,24 @@ mod tests {
                 // A delayed FIR must fill its history before it becomes audible.
                 let mut fir = vec![0.0; 8192];
                 fir[8191] = 0.25;
-                compensation.transition_to(HeadphoneCompensation::new(&fir, &fir, 1.0).unwrap(), 48000);
+                compensation
+                    .transition_to(HeadphoneCompensation::new(&fir, &fir, 1.0).unwrap(), 48000);
             }
             if block == 5 {
-                compensation.transition_to(HeadphoneCompensation::new(&[0.5, 0.0], &[0.5, 0.0], 1.0).unwrap(), 48000);
+                compensation.transition_to(
+                    HeadphoneCompensation::new(&[0.5, 0.0], &[0.5, 0.0], 1.0).unwrap(),
+                    48000,
+                );
                 compensation.transition_to(HeadphoneCompensation::bypass().unwrap(), 48000);
             }
             compensation.begin_block();
             for frame in 0..convolution::DEFAULT_PARTITION {
                 let output = compensation.output_at(frame);
                 if block > 0 {
-                    assert!((output[0] - previous).abs() < 0.001, "discontinuity at {block}:{frame}");
+                    assert!(
+                        (output[0] - previous).abs() < 0.001,
+                        "discontinuity at {block}:{frame}"
+                    );
                     assert!((output[0] - output[1]).abs() < 1e-5);
                     previous = output[0];
                 }

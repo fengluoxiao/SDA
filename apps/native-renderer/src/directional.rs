@@ -18,6 +18,64 @@ type Route = (
     [f32; crate::vbap::MAX_BUS_COUNT],
     [f32; crate::vbap::MAX_BUS_COUNT],
 );
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct DiffuseFieldKey {
+    horizontal_only: bool,
+    head: Option<[u32; 4]>,
+}
+
+struct DiffuseField {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    reference_energy: f64,
+}
+
+// The continuous renderer receives authoritative ADM coordinates every 128
+// samples, while its HRTF convolver runs in 1024-sample partitions. Rebuilding
+// an interpolated KU100 filter for sub-degree updates spends a full extra FFT
+// transition without reaching a distinct measured response. Keep the last
+// filter until motion has accumulated one degree; explicit spatial properties
+// and listener changes still retarget immediately.
+const CONTINUOUS_DIRECTION_DEADBAND_COS: f32 = 0.999_847_7;
+const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
+
+fn equivalent_direction(a: Direction, b: Direction) -> bool {
+    if a.diffuse != b.diffuse
+        || a.horizontal_only != b.horizontal_only
+        || a.head != b.head
+        || a.width != b.width
+        || a.height != b.height
+        || a.depth != b.depth
+    {
+        return false;
+    }
+    let length = |position: [f32; 3]| position.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    let (a_length, b_length) = (length(a.position), length(b.position));
+    if a_length <= f32::EPSILON || b_length <= f32::EPSILON {
+        return a.position == b.position;
+    }
+    let dot = a
+        .position
+        .iter()
+        .zip(b.position)
+        .map(|(a, b)| a * b)
+        .sum::<f32>()
+        / (a_length * b_length);
+    dot >= CONTINUOUS_DIRECTION_DEADBAND_COS
+}
+
+fn equivalent_route(current: &Route, next: &Route) -> bool {
+    current.1 == next.1
+        && current.3 == next.3
+        && current
+            .2
+            .iter()
+            .zip(next.2)
+            .all(|(current, next)| (current - next).abs() <= CONTINUOUS_GAIN_DEADBAND)
+        && equivalent_direction(current.0, next.0)
+}
+
 #[derive(Clone, Copy)]
 pub struct Frame {
     pub input: f32,
@@ -81,27 +139,41 @@ impl ContinuousSource {
         amounts: [f32; crate::vbap::MAX_BUS_COUNT],
     ) {
         let route = (direction, layout, gains, amounts);
-        self.pending = (self.route != Some(route)).then_some(route);
+        let current = self.pending.as_ref().or(self.route.as_ref());
+        self.pending = current
+            .is_none_or(|current| !equivalent_route(current, &route))
+            .then_some(route);
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
-        let _perf=crate::performance::span("hrtf.object.convolution",&self.perf_id,crate::convolution::DEFAULT_PARTITION as u64);
+        let _perf = crate::performance::span(
+            "hrtf.object.convolution",
+            &self.perf_id,
+            crate::convolution::DEFAULT_PARTITION as u64,
+        );
         for (input, frame) in self.input.iter_mut().zip(&self.frames) {
             *input = self.hardware.process(frame.input);
         }
         if self.input.iter().any(|x| *x != 0.0) || !self.convolver.tail_is_silent() {
             if let Some((direction, layout, gains, amounts)) = self.pending.take() {
-                let _filter_perf=crate::performance::span("hrtf.object.filter_update",&self.perf_id,(set.directional_filter_len()*2) as u64);
+                let _filter_perf = crate::performance::span(
+                    "hrtf.object.filter_update",
+                    &self.perf_id,
+                    (set.directional_filter_len() * 2) as u64,
+                );
                 let (left, right) =
                     set.directional_dry_compact(direction, layout, gains, amounts)?;
-                let filter = self.convolver.prepare_pair(&left, &right);
                 if self.route.is_none() {
+                    let filter = self.convolver.prepare_pair(&left, &right);
                     self.convolver.set_prepared_filter(filter);
                 } else {
                     // Two valid HRTFs can have opposing narrow-band phase.
                     // Keep the click-free handoff short so motion does not
                     // dwell in their destructive output sum for a full block.
-                    self.convolver
-                        .transition_to(filter, crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES);
+                    self.convolver.transition_to_pair(
+                        &left,
+                        &right,
+                        crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES,
+                    );
                 }
                 self.route = Some((direction, layout, gains, amounts));
             }
@@ -128,12 +200,15 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
-    if let Some(pool) = crate::direct_renderer::workers().filter(|_| sources.len() >= 8) {
+    let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());
+    if let Some(pool) =
+        crate::direct_renderer::workers().filter(|_| sources.len() >= 8 && worker_count > 1)
+    {
+        let chunk = sources.len().div_ceil(worker_count);
         pool.install(|| {
-            sources
-                .par_iter_mut()
-                .with_min_len(2)
-                .try_for_each(|s| s.finish(set))
+            sources.par_chunks_mut(chunk).try_for_each(|sources| {
+                sources.iter_mut().try_for_each(|source| source.finish(set))
+            })
         })
     } else {
         sources.iter_mut().try_for_each(|s| s.finish(set))
@@ -157,6 +232,15 @@ pub struct Grid {
     /// lower-index anchor timeline,
     /// computed lazily per pair.
     alignment_lags: std::sync::Mutex<std::collections::HashMap<(usize, usize), [f64; 2]>>,
+    // The 12-point diffuse field is object-position independent. Its only
+    // variable is listener orientation, so sharing it keeps dense ADM scenes
+    // from regenerating the same measured field once per object and block.
+    // Horizontal-only and spherical diffuse fields have different measured
+    // directions. Keep one lock-free slot for each while static head pose is
+    // active; the rendering hot path then only performs an atomic read.
+    diffuse_static: [std::sync::OnceLock<std::sync::Arc<DiffuseField>>; 2],
+    diffuse_fields:
+        std::sync::Mutex<std::collections::HashMap<DiffuseFieldKey, std::sync::Arc<DiffuseField>>>,
 }
 impl Clone for Grid {
     fn clone(&self) -> Self {
@@ -165,6 +249,8 @@ impl Clone for Grid {
             arrivals: self.arrivals.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
+            diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            diffuse_fields: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -173,7 +259,22 @@ impl std::fmt::Debug for Grid {
         f.debug_struct("Grid")
             .field("directions", &self.directions.len())
             .field("ku100_notch_guard", &self.ku100_notch_guard)
-            .field("cached_lags", &self.alignment_lags.lock().map(|c| c.len()).unwrap_or(0))
+            .field(
+                "cached_lags",
+                &self.alignment_lags.lock().map(|c| c.len()).unwrap_or(0),
+            )
+            .field(
+                "cached_static_diffuse_fields",
+                &self
+                    .diffuse_static
+                    .iter()
+                    .filter(|field| field.get().is_some())
+                    .count(),
+            )
+            .field(
+                "cached_diffuse_fields",
+                &self.diffuse_fields.lock().map(|c| c.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -186,12 +287,21 @@ impl std::fmt::Debug for Grid {
 /// avoids a small phase jump when a moving object crosses a measurement point.
 fn waveform_alignment_lag(a: &[f32], b: &[f32], max_lag: isize) -> f64 {
     let energy_a: f64 = a.iter().map(|v| (*v as f64).powi(2)).sum();
-    if energy_a <= 1e-20 { return 0.0; }
+    if energy_a <= 1e-20 {
+        return 0.0;
+    }
     let score = |lag: isize| -> f64 {
         // After applying `lag` to b, compare the overlapping region.
         // lag >= 0: b[t] aligns with a[t + lag]. lag < 0: b[t - lag] with a[t].
-        let (a_start, b_start) = if lag >= 0 { (lag as usize, 0usize) } else { (0usize, (-lag) as usize) };
-        let overlap = a.len().saturating_sub(a_start).min(b.len().saturating_sub(b_start));
+        let (a_start, b_start) = if lag >= 0 {
+            (lag as usize, 0usize)
+        } else {
+            (0usize, (-lag) as usize)
+        };
+        let overlap = a
+            .len()
+            .saturating_sub(a_start)
+            .min(b.len().saturating_sub(b_start));
         let mut correlation = 0.0_f64;
         let mut energy_b = 0.0_f64;
         for t in 0..overlap {
@@ -200,12 +310,18 @@ fn waveform_alignment_lag(a: &[f32], b: &[f32], max_lag: isize) -> f64 {
             correlation += av * bv;
             energy_b += bv * bv;
         }
-        if energy_b <= 1e-20 { f64::NEG_INFINITY } else { correlation / (energy_a * energy_b).sqrt() }
+        if energy_b <= 1e-20 {
+            f64::NEG_INFINITY
+        } else {
+            correlation / (energy_a * energy_b).sqrt()
+        }
     };
     let mut best = (0_isize, f64::NEG_INFINITY);
     for lag in -max_lag..=max_lag {
         let normalized = score(lag);
-        if normalized > best.1 { best = (lag, normalized); }
+        if normalized > best.1 {
+            best = (lag, normalized);
+        }
     }
     if best.1.is_finite() && best.0 > -max_lag && best.0 < max_lag {
         let left = score(best.0 - 1);
@@ -231,10 +347,18 @@ impl Grid {
         if anchor == neighbour {
             return [0.0; 2];
         }
-        let key = if anchor < neighbour { (anchor, neighbour) } else { (neighbour, anchor) };
+        let key = if anchor < neighbour {
+            (anchor, neighbour)
+        } else {
+            (neighbour, anchor)
+        };
         if let Ok(cached) = self.alignment_lags.lock() {
             if let Some(lags) = cached.get(&key) {
-                return if anchor < neighbour { *lags } else { [-lags[0], -lags[1]] };
+                return if anchor < neighbour {
+                    *lags
+                } else {
+                    [-lags[0], -lags[1]]
+                };
             }
         }
         let (first, second) = key;
@@ -245,10 +369,14 @@ impl Grid {
             let b_slice = &irs[second].dry[ear * n..(ear + 1) * n];
             *slot = waveform_alignment_lag(a_slice, b_slice, 40);
         }
-        if let Ok(mut cache) = self.alignment_lags.lock() {
-            cache.insert(key, lags);
+        if let Ok(mut cached) = self.alignment_lags.lock() {
+            cached.insert(key, lags);
         }
-        if anchor < neighbour { lags } else { [-lags[0], -lags[1]] }
+        if anchor < neighbour {
+            lags
+        } else {
+            [-lags[0], -lags[1]]
+        }
     }
 }
 fn unit(az: f64, el: f64) -> [f64; 3] {
@@ -294,12 +422,108 @@ impl Grid {
                 .collect(),
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
+            diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            diffuse_fields: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn ku100_notch_guard_enabled(&self) -> bool {
         self.ku100_notch_guard
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diffuse_field_cache_len(&self) -> usize {
+        self.diffuse_static
+            .iter()
+            .filter(|field| field.get().is_some())
+            .count()
+            + self.diffuse_fields.lock().map_or(0, |cache| cache.len())
+    }
+
+    fn build_diffuse_field(
+        &self,
+        irs: &[StereoIr],
+        horizontal_only: bool,
+        head: Option<[f32; 4]>,
+    ) -> DiffuseField {
+        let length = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + 4 + 127;
+        let mut field = (vec![0.0; length], vec![0.0; length]);
+        let mut reference_energy = 0.0;
+        for i in 0..12 {
+            let az = i as f64 * 137.507764;
+            let el = if horizontal_only {
+                0.0
+            } else {
+                (1.0 - 2.0 * (i as f64 + 0.5) / 12.0).asin().to_degrees()
+            };
+            let position = unit(az, el).map(|value| value as f32);
+            let relative = spatial::adm_to_spherical(spatial::head_relative_adm(position, head));
+            let pair = self.interpolate(irs, relative.azimuth as f64, relative.elevation as f64);
+            reference_energy += pair
+                .0
+                .iter()
+                .chain(&pair.1)
+                .map(|value| (*value as f64).powi(2))
+                .sum::<f64>()
+                / 12.0;
+            let delay = (i * 37 % 128) as isize;
+            add_shifted(&mut field.0, &pair.0, delay, 1.0 / 12.0_f32.sqrt());
+            add_shifted(&mut field.1, &pair.1, delay, 1.0 / 12.0_f32.sqrt());
+        }
+        let field_energy: f64 = field
+            .0
+            .iter()
+            .chain(&field.1)
+            .map(|value| (*value as f64).powi(2))
+            .sum();
+        let scale = if field_energy > 1e-20 {
+            (reference_energy / field_energy).sqrt() as f32
+        } else {
+            0.0
+        };
+        for value in field.0.iter_mut().chain(&mut field.1) {
+            *value *= scale;
+        }
+        DiffuseField {
+            left: field.0,
+            right: field.1,
+            reference_energy,
+        }
+    }
+
+    fn diffuse_field(
+        &self,
+        irs: &[StereoIr],
+        horizontal_only: bool,
+        head: Option<[f32; 4]>,
+    ) -> std::sync::Arc<DiffuseField> {
+        if head.is_none() {
+            return self.diffuse_static[usize::from(horizontal_only)]
+                .get_or_init(|| {
+                    std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, None))
+                })
+                .clone();
+        }
+        let key = DiffuseFieldKey {
+            horizontal_only,
+            head: head.map(|orientation| orientation.map(f32::to_bits)),
+        };
+        let mut cache = self
+            .diffuse_fields
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(field) = cache.get(&key) {
+            return field.clone();
+        }
+        // Head tracking may report every frame. Exact keys retain precision;
+        // the small bound only limits retained historic poses.
+        if cache.len() >= 8 {
+            cache.clear();
+        }
+        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
+        cache.insert(key, field.clone());
+        field
     }
 
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
@@ -317,9 +541,16 @@ impl Grid {
                 )
             })
             .collect();
-        distances.sort_by(|a, b| a.1.total_cmp(&b.1));
-        if distances[0].1 < 1e-7 {
-            let count = distances.iter().take_while(|x| x.1 < 1e-7).count();
+        // Only the eighth neighbour defines support. Sorting the entire dense
+        // measurement grid for every moving object wasted the render deadline.
+        // Keep stable-sort tie order explicitly after the partial selection.
+        let compare = |a: &(usize, f64), b: &(usize, f64)| {
+            a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
+        };
+        if distances.iter().any(|x| x.1 < 1e-7) {
+            distances.retain(|x| x.1 < 1e-7);
+            distances.sort_by(compare);
+            let count = distances.len();
             return distances
                 .iter()
                 .take(count)
@@ -328,7 +559,10 @@ impl Grid {
         }
         // Include all tied neighbours. Weights vanish at the support boundary,
         // avoiding discontinuities when nearest-neighbour membership changes.
-        let radius = distances[(distances.len() - 1).min(7)].1 * 1.05 + 1e-6;
+        let neighbour = (distances.len() - 1).min(7);
+        let radius = distances.select_nth_unstable_by(neighbour, compare).1.1 * 1.05 + 1e-6;
+        distances.retain(|x| x.1 < radius);
+        distances.sort_by(compare);
         let mut weights: Vec<_> = distances
             .into_iter()
             .take_while(|x| x.1 < radius)
@@ -373,8 +607,8 @@ impl Grid {
                 .iter()
                 .map(|&(index, weight)| self.arrivals[index][ear] as f64 * weight)
                 .sum();
-            let timeline_shift = (target_arrival - self.arrivals[dominant][ear] as f64)
-                .clamp(-16.0, 16.0);
+            let timeline_shift =
+                (target_arrival - self.arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
             for &(index, weight) in &weights {
                 let len = irs[index].dry.len() / 2;
                 let alignment_shift = if index == dominant {
@@ -392,21 +626,18 @@ impl Grid {
                     base,
                     weight as f32 * (1.0 - fraction),
                 );
-                add_shifted(
-                    &mut output[ear],
-                    input,
-                    base + 1,
-                    weight as f32 * fraction,
-                );
+                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
             }
         }
         // Delay alignment prevents duplicated onsets, but interpolation of
         // different waveforms (including fractional shifts) loses energy. Use
         // the weighted measurement energy as a layout-independent reference.
         // Both ears receive the same scalar: preserve ITD and interaural level.
-        let target: f64 = weights.iter().map(|(i,w)|
-            irs[*i].dry.iter().map(|v|(*v as f64).powi(2)).sum::<f64>() * w).sum();
-        let actual: f64 = output.iter().flatten().map(|v|(*v as f64).powi(2)).sum();
+        let target: f64 = weights
+            .iter()
+            .map(|(i, w)| irs[*i].dry.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() * w)
+            .sum();
+        let actual: f64 = output.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
         if target > 1e-20 {
             // A pinna notch can make two perfectly valid neighbouring HRIRs
             // cancel at one intermediate angle. Total-energy compensation
@@ -452,10 +683,18 @@ impl Grid {
                     }
                 }
             }
-            let actual = output.iter().flatten().map(|v|(*v as f64).powi(2)).sum::<f64>();
+            let actual = output
+                .iter()
+                .flatten()
+                .map(|v| (*v as f64).powi(2))
+                .sum::<f64>();
             if actual > 1e-20 {
-                let scale=(target/actual).sqrt() as f32;
-                for ear in &mut output {for v in ear {*v *= scale;}}
+                let scale = (target / actual).sqrt() as f32;
+                for ear in &mut output {
+                    for v in ear {
+                        *v *= scale;
+                    }
+                }
             }
         }
         let [left, right] = output;
@@ -467,37 +706,28 @@ impl Grid {
     pub fn footprint(&self, irs: &[StereoIr], direction: Direction) -> (Vec<f32>, Vec<f32>) {
         let mut direct = self.direct_footprint(irs, direction);
         let diffuse = direction.diffuse.clamp(0.0, 1.0);
-        if diffuse == 0.0 { return direct; }
-        let energy = |p: &(Vec<f32>,Vec<f32>)| -> f64 {
+        if diffuse == 0.0 {
+            return direct;
+        }
+        let energy = |p: &(Vec<f32>, Vec<f32>)| -> f64 {
             p.0.iter().chain(&p.1).map(|v| (*v as f64).powi(2)).sum()
         };
-        let n = direct.0.len() + 127;
-        let mut field = (vec![0.0; n], vec![0.0; n]);
-        let mut reference_energy = 0.0;
-        for i in 0..12 {
-            let az = i as f64 * 137.507764;
-            let el = if direction.horizontal_only {0.0} else {
-                (1.0 - 2.0 * (i as f64 + 0.5) / 12.0).asin().to_degrees()
-            };
-            let p = unit(az, el).map(|v|v as f32);
-            let relative = spatial::adm_to_spherical(spatial::head_relative_adm(p, direction.head));
-            let pair = self.interpolate(irs, relative.azimuth as f64, relative.elevation as f64);
-            reference_energy += energy(&pair) / 12.0;
-            let delay = (i * 37 % 128) as isize;
-            add_shifted(&mut field.0, &pair.0, delay, 1.0 / 12.0_f32.sqrt());
-            add_shifted(&mut field.1, &pair.1, delay, 1.0 / 12.0_f32.sqrt());
-        }
-        let field_energy = energy(&field);
-        let scale = if field_energy > 1e-20 {(reference_energy / field_energy).sqrt() as f32}else{0.0};
-        let target_energy = energy(&direct) * (1.0-diffuse) as f64 + reference_energy * diffuse as f64;
-        direct.0.resize(n,0.0); direct.1.resize(n,0.0);
-        for (out, spread) in [(&mut direct.0, &field.0), (&mut direct.1, &field.1)] {
-            for (a,b) in out.iter_mut().zip(spread) {*a = *a * (1.0-diffuse).sqrt() + *b * scale * diffuse.sqrt();}
+        let field = self.diffuse_field(irs, direction.horizontal_only, direction.head);
+        let target_energy =
+            energy(&direct) * (1.0 - diffuse) as f64 + field.reference_energy * diffuse as f64;
+        direct.0.resize(field.left.len(), 0.0);
+        direct.1.resize(field.right.len(), 0.0);
+        for (out, spread) in [(&mut direct.0, &field.left), (&mut direct.1, &field.right)] {
+            for (a, b) in out.iter_mut().zip(spread) {
+                *a = *a * (1.0 - diffuse).sqrt() + *b * diffuse.sqrt();
+            }
         }
         let mixed_energy = energy(&direct);
         if mixed_energy > 1e-20 {
             let scale = (target_energy / mixed_energy).sqrt() as f32;
-            for v in direct.0.iter_mut().chain(&mut direct.1) {*v *= scale;}
+            for v in direct.0.iter_mut().chain(&mut direct.1) {
+                *v *= scale;
+            }
         }
         direct
     }
@@ -554,11 +784,141 @@ mod tests {
     use super::*;
 
     #[test]
+    fn partial_neighbour_selection_matches_full_sort() {
+    fn reference(grid: &Grid, az: f64, el: f64) -> Vec<(usize, f64)> {
+        let u = unit(az, el);
+        let mut distances: Vec<_> = grid
+            .directions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                (
+                    i,
+                    (2.0 - 2.0 * p.iter().zip(u).map(|(a, b)| a * b).sum::<f64>())
+                        .max(0.0)
+                        .sqrt(),
+                )
+            })
+            .collect();
+        distances.sort_by(|a,b|a.1.total_cmp(&b.1));
+        if distances[0].1 < 1e-7 {
+            let count=distances.iter().take_while(|x|x.1<1e-7).count();
+            return distances.iter().take(count).map(|x|(x.0,1.0/count as f64)).collect();
+        }
+        // Include all tied neighbours. Weights vanish at the support boundary,
+        // avoiding discontinuities when nearest-neighbour membership changes.
+        let radius=distances[(distances.len()-1).min(7)].1*1.05+1e-6;
+        let mut weights: Vec<_> = distances
+            .into_iter()
+            .take_while(|x| x.1 < radius)
+            .map(|(i, d)| {
+                let t = d / radius;
+                (i, (1.0 - t).powi(4) * (1.0 + 4.0 * t) / (d * d))
+            })
+            .collect();
+        let sum: f64 = weights.iter().map(|x| x.1).sum();
+        for w in &mut weights {
+            w.1 /= sum;
+        }
+        weights
+    }
+        for n in [1, 2, 7, 8, 9, 360, 1800] {
+            let mut grid = Grid::new(&[]);
+            grid.directions = (0..n).map(|i| unit((i % 120) as f64 * 3.0, (i / 120) as f64 * 10.0 - 60.0)).collect();
+            for az in [-180.0, -90.0, 0.0, 0.001, 0.5, 45.0, 90.0, 179.9] {
+                for el in [-90.0, -60.0, 0.0, 45.0, 90.0] {
+                    assert_eq!(grid.weights(az, el), reference(&grid, az, el));
+                }
+            }
+        }
+        let mut grid = Grid::new(&[]);
+        grid.directions = vec![unit(0.0, 0.0); 20];
+        assert_eq!(grid.weights(0.0, 0.0), reference(&grid, 0.0, 0.0));
+    }
+
+
+
+    #[test]
+    fn continuous_schedule_accumulates_subdegree_motion_but_keeps_explicit_changes() {
+        let set = crate::hrtf::NativeHrtfSet::synthetic(12, 64, 0).unwrap();
+        let mut source = ContinuousSource::new(&set).unwrap();
+        let direction = |degrees: f32| Direction {
+            position: [degrees.to_radians().sin(), degrees.to_radians().cos(), 0.0],
+            head: None,
+            diffuse: 0.0,
+            horizontal_only: false,
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+        };
+        let gains = [0.0; crate::vbap::MAX_BUS_COUNT];
+        let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
+        source.route = Some((
+            direction(0.0),
+            crate::vbap::LayoutId::Dolby7_1_4,
+            gains,
+            amounts,
+        ));
+
+        source.schedule(
+            direction(0.7),
+            crate::vbap::LayoutId::Dolby7_1_4,
+            gains,
+            amounts,
+        );
+        assert!(
+            source.pending.is_none(),
+            "sub-degree motion must retain the active filter"
+        );
+
+        source.schedule(
+            direction(1.1),
+            crate::vbap::LayoutId::Dolby7_1_4,
+            gains,
+            amounts,
+        );
+        assert!(
+            source.pending.is_some(),
+            "motion must accumulate against the applied filter"
+        );
+
+        let mut focused = amounts;
+        focused[0] = 1.0;
+        source.pending = None;
+        source.schedule(
+            direction(0.2),
+            crate::vbap::LayoutId::Dolby7_1_4,
+            gains,
+            focused,
+        );
+        assert!(
+            source.pending.is_some(),
+            "speaker focus changes cannot be delayed by direction deadband"
+        );
+
+        source.pending = None;
+        let mut muted = gains;
+        muted[0] = 0.02;
+        source.schedule(
+            direction(0.2),
+            crate::vbap::LayoutId::Dolby7_1_4,
+            muted,
+            amounts,
+        );
+        assert!(
+            source.pending.is_some(),
+            "audible speaker gain changes cannot be delayed by direction deadband"
+        );
+    }
+
+    #[test]
     #[ignore = "offline diagnostic using the installed KU100 and H13 dense assets"]
     fn diagnose_dense_hrtf_motion_transition() {
         let asset_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../desktop/native-renderer/hrtf-assets");
-        let positions = [-135.0_f32, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0, -30.0, -15.0, 0.0];
+        let positions = [
+            -135.0_f32, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0, -30.0, -15.0, 0.0,
+        ];
         let frequencies = [500.0_f32, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
         let to_direction = |azimuth: f32| Direction {
             // ADM x is right, and adm_to_spherical maps it to negative azimuth.
@@ -573,12 +933,16 @@ mod tests {
         let gains = std::array::from_fn(|index| if index == 0 { 1.0 } else { 0.0 });
         let silence = [0.0; crate::vbap::MAX_BUS_COUNT];
         let rms = |samples: &[f32]| {
-            (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+            (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32)
+                .sqrt()
         };
 
         let mut datasets = vec![("KU100", "hrtf-dense"), ("H13", "hrtf-h13-dense")];
         if asset_root.join("hrtf-ku100-clarity-experimental").exists() {
-            datasets.push(("KU100-clarity-experiment", "hrtf-ku100-clarity-experimental"));
+            datasets.push((
+                "KU100-clarity-experiment",
+                "hrtf-ku100-clarity-experimental",
+            ));
         }
         for (name, directory) in datasets {
             let set = crate::hrtf::NativeHrtfSet::load_calibrated(
@@ -605,7 +969,8 @@ mod tests {
                                 silence,
                             )
                             .unwrap();
-                        convolver.transition_to(convolver.prepare_pair(&left, &right), duration);
+                        let filter = convolver.prepare_pair(&left, &right);
+                        convolver.transition_to(filter, duration);
                         let input: Vec<_> = (0..1024)
                             .map(|_| {
                                 let value = phase.sin() * 0.1;
@@ -615,7 +980,9 @@ mod tests {
                             .collect();
                         let mut left = vec![0.0; 1024];
                         let mut right = vec![0.0; 1024];
-                        convolver.process_block(&input, &mut left, &mut right).unwrap();
+                        convolver
+                            .process_block(&input, &mut left, &mut right)
+                            .unwrap();
                         (rms(&left), rms(&right))
                     };
                     // Establish the first target and clear its convolution latency.
@@ -628,13 +995,15 @@ mod tests {
                         let stable = render(position);
                         let ratio = ((transition.0 * transition.0 + transition.1 * transition.1)
                             / (stable.0 * stable.0 + stable.1 * stable.1).max(1e-12))
-                            .sqrt();
+                        .sqrt();
                         if ratio < worst_ratio {
                             worst_ratio = ratio;
                             worst_at = position;
                         }
                     }
-                    eprintln!("{name} {frequency:.0} Hz, {duration} samples: worst transition/stable ratio {worst_ratio:.3} at {worst_at:.0} degrees");
+                    eprintln!(
+                        "{name} {frequency:.0} Hz, {duration} samples: worst transition/stable ratio {worst_ratio:.3} at {worst_at:.0} degrees"
+                    );
                 }
             }
         }
@@ -652,7 +1021,9 @@ mod tests {
         let layout = crate::vbap::LayoutId::Dolby7_1_4;
         let solver = crate::vbap::VbapSolver::with_layout(layout);
         let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
-        let frequencies = [50.0_f32, 80.0, 120.0, 160.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
+        let frequencies = [
+            50.0_f32, 80.0, 120.0, 160.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0,
+        ];
         let directions = [(-90.0_f32, 45.0_f32), (-90.0, 0.0), (0.0, 45.0)];
         let response = |ir: &[f32], frequency: f32| {
             let mut real = 0.0_f64;
@@ -666,7 +1037,11 @@ mod tests {
             (real, imaginary)
         };
         let magnitude = |pair: [(f64, f64); 2]| {
-            (pair.iter().map(|(real, imaginary)| real * real + imaginary * imaginary).sum::<f64>()).sqrt()
+            (pair
+                .iter()
+                .map(|(real, imaginary)| real * real + imaginary * imaginary)
+                .sum::<f64>())
+            .sqrt()
         };
         let direction = |azimuth: f32, elevation: f32| Direction {
             // ADM x is right, and adm_to_spherical maps it to negative azimuth.
@@ -686,24 +1061,35 @@ mod tests {
         for (azimuth, elevation) in directions {
             let direction = direction(azimuth, elevation);
             let gains = solver.pan(direction.position, 0.0);
-            let direct = set.directional_dry_compact(direction, layout, gains, amounts).unwrap();
-            let mut residual = (vec![0.0_f32; set.speaker_filter_len()], vec![0.0_f32; set.speaker_filter_len()]);
+            let direct = set
+                .directional_dry_compact(direction, layout, gains, amounts)
+                .unwrap();
+            let mut residual = (
+                vec![0.0_f32; set.speaker_filter_len()],
+                vec![0.0_f32; set.speaker_filter_len()],
+            );
             for (bus, speaker) in crate::vbap::speakers(layout).iter().enumerate() {
-                if gains[bus] == 0.0 { continue; }
-                let (wet_left, wet_right) = set.mixed_speaker(
-                    speaker.name,
-                    layout.as_str(),
-                    speaker.azimuth as f64,
-                    speaker.elevation as f64,
-                    0.04,
-                ).unwrap();
-                let (dry_left, dry_right) = set.mixed_speaker(
-                    speaker.name,
-                    layout.as_str(),
-                    speaker.azimuth as f64,
-                    speaker.elevation as f64,
-                    0.0,
-                ).unwrap();
+                if gains[bus] == 0.0 {
+                    continue;
+                }
+                let (wet_left, wet_right) = set
+                    .mixed_speaker(
+                        speaker.name,
+                        layout.as_str(),
+                        speaker.azimuth as f64,
+                        speaker.elevation as f64,
+                        0.04,
+                    )
+                    .unwrap();
+                let (dry_left, dry_right) = set
+                    .mixed_speaker(
+                        speaker.name,
+                        layout.as_str(),
+                        speaker.azimuth as f64,
+                        speaker.elevation as f64,
+                        0.0,
+                    )
+                    .unwrap();
                 for ((out, wet), dry) in residual.0.iter_mut().zip(wet_left).zip(dry_left) {
                     *out += (wet - dry) * gains[bus];
                 }
@@ -712,14 +1098,23 @@ mod tests {
                 }
             }
             for frequency in frequencies {
-                let direct_response = [response(&direct.0, frequency), response(&direct.1, frequency)];
-                let reflection_response = [response(&residual.0, frequency), response(&residual.1, frequency)];
-                let summed_response = std::array::from_fn(|ear| (
-                    direct_response[ear].0 + reflection_response[ear].0,
-                    direct_response[ear].1 + reflection_response[ear].1,
-                ));
+                let direct_response = [
+                    response(&direct.0, frequency),
+                    response(&direct.1, frequency),
+                ];
+                let reflection_response = [
+                    response(&residual.0, frequency),
+                    response(&residual.1, frequency),
+                ];
+                let summed_response = std::array::from_fn(|ear| {
+                    (
+                        direct_response[ear].0 + reflection_response[ear].0,
+                        direct_response[ear].1 + reflection_response[ear].1,
+                    )
+                });
                 let direct_magnitude = magnitude(direct_response).max(1e-12);
-                let residual_db = 20.0 * (magnitude(reflection_response) / direct_magnitude).log10();
+                let residual_db =
+                    20.0 * (magnitude(reflection_response) / direct_magnitude).log10();
                 let summed_db = 20.0 * (magnitude(summed_response) / direct_magnitude).log10();
                 eprintln!(
                     "KU100 reflection diagnostic az={azimuth:>6.1} el={elevation:>5.1} freq={frequency:>7.0}Hz residual={residual_db:>6.2}dB summed/direct={summed_db:>6.2}dB"
@@ -739,8 +1134,19 @@ mod tests {
         // The affected program's moving rear synthesizer is concentrated near
         // 1.1 and 1.4 kHz, so retain those bands instead of inferring its
         // behaviour from octave-spaced probe tones alone.
-        let frequencies = [250.0_f32, 500.0, 1_000.0, 1_100.0, 1_400.0, 2_000.0, 3_000.0, 4_000.0, 6_000.0, 8_000.0];
-        let azimuths: Vec<_> = (135..=225).map(|angle| if angle > 180 { angle as f32 - 360.0 } else { angle as f32 }).collect();
+        let frequencies = [
+            250.0_f32, 500.0, 1_000.0, 1_100.0, 1_400.0, 2_000.0, 3_000.0, 4_000.0, 6_000.0,
+            8_000.0,
+        ];
+        let azimuths: Vec<_> = (135..=225)
+            .map(|angle| {
+                if angle > 180 {
+                    angle as f32 - 360.0
+                } else {
+                    angle as f32
+                }
+            })
+            .collect();
         let response_magnitude = |ir: &[f32], frequency: f32| {
             let mut real = 0.0_f64;
             let mut imaginary = 0.0_f64;
@@ -764,23 +1170,39 @@ mod tests {
 
         let mut datasets = vec![("KU100", "hrtf-dense"), ("H13", "hrtf-h13-dense")];
         if asset_root.join("hrtf-ku100-clarity-experimental").exists() {
-            datasets.push(("KU100-clarity-experiment", "hrtf-ku100-clarity-experimental"));
+            datasets.push((
+                "KU100-clarity-experiment",
+                "hrtf-ku100-clarity-experimental",
+            ));
         }
         for (name, directory) in datasets {
             let set = crate::hrtf::NativeHrtfSet::load_calibrated(
                 &asset_root.join(directory).join("hrtf-set.json"),
-            ).unwrap();
+            )
+            .unwrap();
             for frequency in frequencies {
                 let mut levels = Vec::new();
                 for &azimuth in &azimuths {
                     let direction = direction(azimuth);
                     let gains = solver.pan(direction.position, 0.0);
-                    let pair = set.directional_dry_compact(direction, layout, gains, amounts).unwrap();
-                    let magnitude = (response_magnitude(&pair.0, frequency) + response_magnitude(&pair.1, frequency)).sqrt();
+                    let pair = set
+                        .directional_dry_compact(direction, layout, gains, amounts)
+                        .unwrap();
+                    let magnitude = (response_magnitude(&pair.0, frequency)
+                        + response_magnitude(&pair.1, frequency))
+                    .sqrt();
                     levels.push(20.0 * magnitude.max(1e-12).log10());
                 }
-                let (min_index, min) = levels.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)).unwrap();
-                let (max_index, max) = levels.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+                let (min_index, min) = levels
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap();
+                let (max_index, max) = levels
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap();
                 let right_rear = levels[0];
                 let left_rear = levels[azimuths.len() - 1];
                 let center = levels[45];
@@ -801,15 +1223,30 @@ mod tests {
             for (azimuth, anchors) in [(-135.0_f32, [-140.0, -130.0]), (135.0, [140.0, 130.0])] {
                 let target = direction(azimuth);
                 let gains = solver.pan(target.position, 0.0);
-                let pair = set.directional_dry_compact(target, layout, gains, amounts).unwrap();
+                let pair = set
+                    .directional_dry_compact(target, layout, gains, amounts)
+                    .unwrap();
                 for frequency in [1_100.0_f32, 1_400.0] {
-                    let current = (response_magnitude(&pair.0, frequency) + response_magnitude(&pair.1, frequency)).sqrt();
-                    let reference = anchors.into_iter().map(|anchor| {
-                        let measured = set.nearest(anchor as f64, 0.0).unwrap();
-                        (response_magnitude(&measured.dry[..measured.dry.len() / 2], frequency)
-                            + response_magnitude(&measured.dry[measured.dry.len() / 2..], frequency)).sqrt()
-                    }).sum::<f64>() / anchors.len() as f64;
-                    eprintln!("{name} rear interpolation az={azimuth:>6.1} freq={frequency:>7.0}Hz midpoint-vs-anchor={:.2}dB", 20.0 * (current / reference.max(1e-12)).log10());
+                    let current = (response_magnitude(&pair.0, frequency)
+                        + response_magnitude(&pair.1, frequency))
+                    .sqrt();
+                    let reference = anchors
+                        .into_iter()
+                        .map(|anchor| {
+                            let measured = set.nearest(anchor as f64, 0.0).unwrap();
+                            (response_magnitude(&measured.dry[..measured.dry.len() / 2], frequency)
+                                + response_magnitude(
+                                    &measured.dry[measured.dry.len() / 2..],
+                                    frequency,
+                                ))
+                            .sqrt()
+                        })
+                        .sum::<f64>()
+                        / anchors.len() as f64;
+                    eprintln!(
+                        "{name} rear interpolation az={azimuth:>6.1} freq={frequency:>7.0}Hz midpoint-vs-anchor={:.2}dB",
+                        20.0 * (current / reference.max(1e-12)).log10()
+                    );
                 }
             }
         }
@@ -817,17 +1254,40 @@ mod tests {
 
     #[test]
     fn interpolation_preserves_measured_energy_between_directions() {
-        let mut a=vec![0.0;64];let mut b=a.clone();
-        a[4]=1.0;a[5]=0.5;a[36]=0.7;a[37]=0.35;
-        b[5]=1.0;b[6]=-0.5;b[37]=0.7;b[38]=-0.35;
-        let irs=vec![StereoIr{azimuth:-30.0,elevation:0.0,dry:a,wet:vec![]},StereoIr{azimuth:30.0,elevation:0.0,dry:b,wet:vec![]}];
-        let grid=Grid::new(&irs);
-        let expected: f64=irs[0].dry.iter().map(|v|(*v as f64).powi(2)).sum();
-        for az in [-30.0,-15.0,0.0,15.0,30.0] {
-            let (l,r)=grid.interpolate(&irs,az,0.0);
-            let energy:f64=l.iter().chain(&r).map(|v|(*v as f64).powi(2)).sum();
-            assert!((energy/expected-1.0).abs()<1e-6,"energy dip at {az}");
-            assert!(l.iter().zip(&r).all(|(l,r)|(r-l*0.7).abs()<1e-6),"interaural balance changed");
+        let mut a = vec![0.0; 64];
+        let mut b = a.clone();
+        a[4] = 1.0;
+        a[5] = 0.5;
+        a[36] = 0.7;
+        a[37] = 0.35;
+        b[5] = 1.0;
+        b[6] = -0.5;
+        b[37] = 0.7;
+        b[38] = -0.35;
+        let irs = vec![
+            StereoIr {
+                azimuth: -30.0,
+                elevation: 0.0,
+                dry: a,
+                wet: vec![],
+            },
+            StereoIr {
+                azimuth: 30.0,
+                elevation: 0.0,
+                dry: b,
+                wet: vec![],
+            },
+        ];
+        let grid = Grid::new(&irs);
+        let expected: f64 = irs[0].dry.iter().map(|v| (*v as f64).powi(2)).sum();
+        for az in [-30.0, -15.0, 0.0, 15.0, 30.0] {
+            let (l, r) = grid.interpolate(&irs, az, 0.0);
+            let energy: f64 = l.iter().chain(&r).map(|v| (*v as f64).powi(2)).sum();
+            assert!((energy / expected - 1.0).abs() < 1e-6, "energy dip at {az}");
+            assert!(
+                l.iter().zip(&r).all(|(l, r)| (r - l * 0.7).abs() < 1e-6),
+                "interaural balance changed"
+            );
         }
     }
     #[test]
@@ -838,14 +1298,31 @@ mod tests {
         }
         let right = left.iter().map(|sample| -*sample).collect::<Vec<_>>();
         let irs = vec![
-            StereoIr { azimuth: -30.0, elevation: 0.0, dry: left.clone(), wet: vec![] },
-            StereoIr { azimuth: 30.0, elevation: 0.0, dry: right, wet: vec![] },
+            StereoIr {
+                azimuth: -30.0,
+                elevation: 0.0,
+                dry: left.clone(),
+                wet: vec![],
+            },
+            StereoIr {
+                azimuth: 30.0,
+                elevation: 0.0,
+                dry: right,
+                wet: vec![],
+            },
         ];
         let grid = Grid::new(&irs);
         let (out_left, out_right) = grid.interpolate(&irs, 0.0, 0.0);
         let target: f64 = irs[0].dry.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() * 2.0;
-        let actual: f64 = out_left.iter().chain(&out_right).map(|v| (*v as f64).powi(2)).sum();
-        assert!(actual > target * 0.45, "direct anchor was lost during cancellation: {actual} / {target}");
+        let actual: f64 = out_left
+            .iter()
+            .chain(&out_right)
+            .map(|v| (*v as f64).powi(2))
+            .sum();
+        assert!(
+            actual > target * 0.45,
+            "direct anchor was lost during cancellation: {actual} / {target}"
+        );
         assert!(out_left.iter().chain(&out_right).all(|v| v.is_finite()));
     }
 
@@ -860,36 +1337,52 @@ mod tests {
         let mut cancelled = waveform.iter().map(|sample| -*sample).collect::<Vec<_>>();
         cancelled.extend(waveform.iter().map(|sample| -*sample));
         let irs = vec![
-            StereoIr { azimuth: -30.0, elevation: 0.0, dry: anchor.clone(), wet: vec![] },
-            StereoIr { azimuth: 30.0, elevation: 0.0, dry: cancelled, wet: vec![] },
+            StereoIr {
+                azimuth: -30.0,
+                elevation: 0.0,
+                dry: anchor.clone(),
+                wet: vec![],
+            },
+            StereoIr {
+                azimuth: 30.0,
+                elevation: 0.0,
+                dry: cancelled,
+                wet: vec![],
+            },
         ];
         let grid = Grid::new_with_notch_guard(&irs, true);
         let (left, right) = grid.interpolate(&irs, 0.0, 0.0);
         let expected_energy: f64 = waveform.iter().map(|sample| (*sample as f64).powi(2)).sum();
         let left_energy: f64 = left.iter().map(|sample| (*sample as f64).powi(2)).sum();
         let right_energy: f64 = right.iter().map(|sample| (*sample as f64).powi(2)).sum();
-        assert!((left_energy / expected_energy - 1.0).abs() < 1e-6,
-            "expected={expected_energy} left={left_energy} right={right_energy}");
+        assert!(
+            (left_energy / expected_energy - 1.0).abs() < 1e-6,
+            "expected={expected_energy} left={left_energy} right={right_energy}"
+        );
         assert!((right_energy / expected_energy - 1.0).abs() < 1e-6);
         assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
     }
     #[test]
     fn waveform_alignment_refines_subsample_arrival() {
         let sample = |position: f64| {
-            if !(0.0..127.0).contains(&position) { return 0.0; }
+            if !(0.0..127.0).contains(&position) {
+                return 0.0;
+            }
             let left = position.floor() as usize;
             let fraction = position - left as f64;
             let shape = |index: usize| {
                 let x = index as f64;
-                (-((x - 80.0) / 8.0).powi(2)).exp()
-                    + 0.3 * (-((x - 119.0) / 3.5).powi(2)).exp()
+                (-((x - 80.0) / 8.0).powi(2)).exp() + 0.3 * (-((x - 119.0) / 3.5).powi(2)).exp()
             };
             (shape(left) * (1.0 - fraction) + shape(left + 1) * fraction) as f32
         };
         let a: Vec<_> = (0..128).map(|i| sample(i as f64)).collect();
         let b: Vec<_> = (0..128).map(|i| sample(i as f64 - 2.35)).collect();
         let lag = waveform_alignment_lag(&a, &b, 20);
-        assert!((lag + 2.35).abs() < 0.08, "expected fractional lag near -2.35, got {lag}");
+        assert!(
+            (lag + 2.35).abs() < 0.08,
+            "expected fractional lag near -2.35, got {lag}"
+        );
     }
     #[test]
     fn cached_neighbour_shift_reverses_when_the_anchor_changes() {
@@ -899,7 +1392,12 @@ mod tests {
             dry[left + 1] = 0.4;
             dry[64 + right] = 1.0;
             dry[64 + right + 1] = 0.4;
-            StereoIr { azimuth, elevation: 0.0, dry, wet: vec![] }
+            StereoIr {
+                azimuth,
+                elevation: 0.0,
+                dry,
+                wet: vec![],
+            }
         };
         let irs = vec![make(20, 22, -30.0), make(25, 28, 30.0)];
         let grid = Grid::new(&irs);
@@ -907,8 +1405,10 @@ mod tests {
         let forward = grid.neighbour_shift(&irs, 0, 1);
         let reverse = grid.neighbour_shift(&irs, 1, 0);
         assert!((forward[0] + 5.0).abs() < 0.1 && (forward[1] + 6.0).abs() < 0.1);
-        assert!((reverse[0] - 5.0).abs() < 0.1 && (reverse[1] - 6.0).abs() < 0.1,
-            "reverse cache lookup must invert the time alignment: {reverse:?}");
+        assert!(
+            (reverse[0] - 5.0).abs() < 0.1 && (reverse[1] - 6.0).abs() < 0.1,
+            "reverse cache lookup must invert the time alignment: {reverse:?}"
+        );
     }
     #[test]
     fn interpolation_keeps_the_timeline_continuous_when_dominant_changes() {
@@ -918,7 +1418,12 @@ mod tests {
                 dry[left + offset] = amplitude;
                 dry[64 + right + offset] = amplitude;
             }
-            StereoIr { azimuth: 0.0, elevation: 0.0, dry: dry.clone(), wet: dry }
+            StereoIr {
+                azimuth: 0.0,
+                elevation: 0.0,
+                dry: dry.clone(),
+                wet: dry,
+            }
         };
         let mut first = make(32, 36);
         let mut second = make(44, 48);
@@ -927,10 +1432,18 @@ mod tests {
         let grid = Grid::new(&[first, second]);
         let left = grid.interpolate(&[make_at(-30.0, 32, 36), make_at(30.0, 44, 48)], -0.01, 0.0);
         let right = grid.interpolate(&[make_at(-30.0, 32, 36), make_at(30.0, 44, 48)], 0.01, 0.0);
-        let peak = |p: &[f32]| p.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).map(|x| x.0).unwrap();
+        let peak = |p: &[f32]| {
+            p.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .map(|x| x.0)
+                .unwrap()
+        };
         let (left_peak, right_peak) = (peak(&left.0), peak(&right.0));
-        assert!(left_peak.abs_diff(right_peak) <= 1,
-            "dominant-anchor switch moved the direct arrival: peaks {left_peak} and {right_peak}");
+        assert!(
+            left_peak.abs_diff(right_peak) <= 1,
+            "dominant-anchor switch moved the direct arrival: peaks {left_peak} and {right_peak}"
+        );
 
         fn make_at(azimuth: f64, left: usize, right: usize) -> StereoIr {
             let mut dry = vec![0.0; 256];
@@ -938,78 +1451,202 @@ mod tests {
                 dry[left + offset] = amplitude;
                 dry[64 + right + offset] = amplitude;
             }
-            StereoIr { azimuth, elevation: 0.0, dry: dry.clone(), wet: dry }
+            StereoIr {
+                azimuth,
+                elevation: 0.0,
+                dry: dry.clone(),
+                wet: dry,
+            }
         }
     }
     #[test]
     fn hardware_objects_keep_direction_and_match_parallel_mixing() {
-        let render = |hardware: bool, fast: bool, position: [f32;3]| {
+        let render = |hardware: bool, fast: bool, position: [f32; 3]| {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../web/public/hrtf/hrtf-set.json");
-            let mut e = crate::Engine::new(48000,2);
+            let mut e = crate::Engine::new(48000, 2);
             e.cinema.monitor.hardware.enabled = hardware;
             e.cinema.monitor.hardware.rail_v = 1.0;
             e.directional_hrtf = true;
             e.disable_fast_objects = !fast;
-            e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+            e.replace_hrtf(
+                crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),
+                0.0,
+            )
+            .unwrap();
             e.direct_mix = 1.0;
-            e.paused = false; e.output_active = true;
+            e.paused = false;
+            e.output_active = true;
             for id in 0..8 {
-                let mut source = crate::Source { kind: crate::SourceKind::Object,
-                    position, diffuse: if id==0 {0.25}else{0.0},
-                    gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default() };
-                let pcm:Vec<_>=(0..16384).map(|i|0.08*(i as f32*0.13+id as f32).sin()).collect();
-                source.samples.write(0,0,&pcm);
-                let key=format!("obj:{id}");e.sources.insert(key.clone(),source);e.route_source_now(&key,0).unwrap();
+                let mut source = crate::Source {
+                    kind: crate::SourceKind::Object,
+                    position,
+                    diffuse: if id == 0 { 0.25 } else { 0.0 },
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
+                    ..Default::default()
+                };
+                let pcm: Vec<_> = (0..16384)
+                    .map(|i| 0.08 * (i as f32 * 0.13 + id as f32).sin())
+                    .collect();
+                source.samples.write(0, 0, &pcm);
+                let key = format!("obj:{id}");
+                e.sources.insert(key.clone(), source);
+                e.route_source_now(&key, 0).unwrap();
             }
-            let mut out=vec![0.0;32768];e.render_into(&mut out,2);
-            assert!(e.sources.values().all(|s|s.continuous_active && s.continuous.is_some() && s.direct.is_none()));
-            if fast {assert!(e.fast_object_blocks>0);}
-            assert!(out.iter().all(|v|v.is_finite()));
+            let mut out = vec![0.0; 32768];
+            e.render_into(&mut out, 2);
+            assert!(
+                e.sources
+                    .values()
+                    .all(|s| s.continuous_active && s.continuous.is_some() && s.direct.is_none())
+            );
+            if fast {
+                assert!(e.fast_object_blocks > 0);
+            }
+            assert!(out.iter().all(|v| v.is_finite()));
             if hardware && fast {
                 for source in e.sources.values_mut() {
                     source.zone_exclusion = vec![crate::adm_zone::Zone::Polar {
-                        min:[-180.0,80.0],max:[180.0,90.0]
-                    }].into();
-                    let pcm:Vec<_>=(0..32768).map(|i|0.01*(i as f32*0.13).sin()).collect();
-                    source.samples.write(16384,16384,&pcm);
+                        min: [-180.0, 80.0],
+                        max: [180.0, 90.0],
+                    }]
+                    .into();
+                    let pcm: Vec<_> = (0..32768).map(|i| 0.01 * (i as f32 * 0.13).sin()).collect();
+                    source.samples.write(16384, 16384, &pcm);
                 }
-                let mut tail=vec![0.0;65536]; e.render_into(&mut tail,2);
-                assert!(tail[49152..].iter().any(|v|v.abs()>1e-5),"hardware exclusion fallback lost audio");
-                assert!(e.sources.values().all(|s|!s.continuous_active && s.direct.is_none()));
+                let mut tail = vec![0.0; 65536];
+                e.render_into(&mut tail, 2);
+                assert!(
+                    tail[49152..].iter().any(|v| v.abs() > 1e-5),
+                    "hardware exclusion fallback lost audio"
+                );
+                assert!(
+                    e.sources
+                        .values()
+                        .all(|s| !s.continuous_active && s.direct.is_none())
+                );
             }
             out
         };
-        let left=render(true,true,[-0.8,0.5,0.0]);
-        let slow=render(true,false,[-0.8,0.5,0.0]);
-        assert!(left.iter().zip(&slow).all(|(a,b)|(a-b).abs()<2e-6));
-        let right=render(true,true,[0.8,0.5,0.0]);
-        let dry=render(false,true,[-0.8,0.5,0.0]);
-        let energy=|v:&[f32]|v[8192..].iter().map(|v|v*v).sum::<f32>();
-        assert!(energy(&left)>1e-8);
-        assert!(energy(&left)<energy(&dry)*0.5,"hardware must affect object PCM");
-        let delta:f32=left.iter().zip(&right).map(|(a,b)|(a-b).abs()).sum();
-        assert!(delta>0.01,"hardware must not disable spatial direction");
+        let left = render(true, true, [-0.8, 0.5, 0.0]);
+        let slow = render(true, false, [-0.8, 0.5, 0.0]);
+        assert!(left.iter().zip(&slow).all(|(a, b)| (a - b).abs() < 2e-6));
+        let right = render(true, true, [0.8, 0.5, 0.0]);
+        let dry = render(false, true, [-0.8, 0.5, 0.0]);
+        let energy = |v: &[f32]| v[8192..].iter().map(|v| v * v).sum::<f32>();
+        assert!(energy(&left) > 1e-8);
+        assert!(
+            energy(&left) < energy(&dry) * 0.5,
+            "hardware must affect object PCM"
+        );
+        let delta: f32 = left.iter().zip(&right).map(|(a, b)| (a - b).abs()).sum();
+        assert!(delta > 0.01, "hardware must not disable spatial direction");
     }
     #[test]
     fn diffuse_response_preserves_energy_and_partial_sources_keep_direction() {
-        let irs: Vec<_> = (0..12).map(|i| {
-            let mut dry = vec![0.0; 64];
-            dry[4 + i % 4] = 1.0;
-            dry[32 + 7 - i % 4] = 1.0;
-            StereoIr { azimuth: i as f64 * 30.0, elevation: 0.0,
-                dry, wet: vec![] }
-        }).collect();
+        let irs: Vec<_> = (0..12)
+            .map(|i| {
+                let mut dry = vec![0.0; 64];
+                dry[4 + i % 4] = 1.0;
+                dry[32 + 7 - i % 4] = 1.0;
+                StereoIr {
+                    azimuth: i as f64 * 30.0,
+                    elevation: 0.0,
+                    dry,
+                    wet: vec![],
+                }
+            })
+            .collect();
         let grid = Grid::new(&irs);
-        let base = Direction { position: [0.0,1.0,0.0], head: None,
-            width: 0.0, height: 0.0, depth: 0.0, diffuse: 0.0, horizontal_only: true };
-        let energy = |p: &(Vec<f32>,Vec<f32>)| p.0.iter().chain(&p.1).map(|v|v*v).sum::<f32>();
-        for diffuse in [0.25,0.5,1.0] {
-            let a = grid.footprint(&irs,Direction { diffuse, ..base });
-            let b = grid.footprint(&irs,Direction { diffuse, position:[1.0,0.0,0.0], ..base });
+        let base = Direction {
+            position: [0.0, 1.0, 0.0],
+            head: None,
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+            diffuse: 0.0,
+            horizontal_only: true,
+        };
+        let energy = |p: &(Vec<f32>, Vec<f32>)| p.0.iter().chain(&p.1).map(|v| v * v).sum::<f32>();
+        for diffuse in [0.25, 0.5, 1.0] {
+            let a = grid.footprint(&irs, Direction { diffuse, ..base });
+            let b = grid.footprint(
+                &irs,
+                Direction {
+                    diffuse,
+                    position: [1.0, 0.0, 0.0],
+                    ..base
+                },
+            );
             assert!(energy(&a) > 0.5 && energy(&a) < 2.01);
-            if diffuse < 1.0 { assert_ne!(a,b); }
-            else { assert_eq!(a,b, "fully diffuse field has no authored point direction"); }
+            if diffuse < 1.0 {
+                assert_ne!(a, b);
+            } else {
+                assert_eq!(a, b, "fully diffuse field has no authored point direction");
+            }
+        }
+    }
+
+    #[test]
+    fn cached_diffuse_field_matches_an_independent_full_calculation() {
+        let irs: Vec<_> = (0..12)
+            .map(|index| {
+                let mut dry = vec![0.0; 256];
+                for sample in 0..128 {
+                    dry[sample] = ((sample as f32 + index as f32 * 3.0) * 0.19).sin() * 0.04;
+                    dry[128 + sample] = ((sample as f32 + index as f32 * 5.0) * 0.23).cos() * 0.03;
+                }
+                StereoIr {
+                    azimuth: index as f64 * 30.0,
+                    elevation: 0.0,
+                    dry,
+                    wet: vec![],
+                }
+            })
+            .collect();
+        let direction = |position| Direction {
+            position,
+            head: None,
+            diffuse: 0.35,
+            horizontal_only: false,
+            width: 0.2,
+            height: 0.0,
+            depth: 0.0,
+        };
+        let cached = Grid::new(&irs);
+        let isolated = Grid::new(&irs);
+        cached.footprint(&irs, direction([0.0, 1.0, 0.2]));
+        let from_cache = cached.footprint(&irs, direction([0.7, 0.5, 0.3]));
+        let independent = isolated.footprint(&irs, direction([0.7, 0.5, 0.3]));
+        assert_eq!(cached.diffuse_field_cache_len(), 1);
+        for (cached, independent) in from_cache
+            .0
+            .iter()
+            .chain(&from_cache.1)
+            .zip(independent.0.iter().chain(&independent.1))
+        {
+            assert!((cached - independent).abs() < 1e-6);
+        }
+
+        // A static spherical field must not be reused for a horizontal-only
+        // source merely because neither source has head tracking enabled.
+        let horizontal = Direction {
+            horizontal_only: true,
+            ..direction([0.4, -0.6, 0.1])
+        };
+        let from_second_cache = cached.footprint(&irs, horizontal);
+        let second_independent = Grid::new(&irs).footprint(&irs, horizontal);
+        assert_eq!(cached.diffuse_field_cache_len(), 2);
+        for (cached, independent) in from_second_cache
+            .0
+            .iter()
+            .chain(&from_second_cache.1)
+            .zip(second_independent.0.iter().chain(&second_independent.1))
+        {
+            assert!((cached - independent).abs() < 1e-6);
         }
     }
     #[test]
@@ -1017,8 +1654,9 @@ mod tests {
     fn benchmark_shared_engine_108() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../web/public/hrtf/hrtf-set.json");
-        let blocks=400_usize;
-        let total_frames=(blocks*crate::convolution::DEFAULT_PARTITION) as u32;
+        let blocks = 400_usize;
+        let total_frames = (blocks * crate::convolution::DEFAULT_PARTITION) as u32;
+        let moving = std::env::var_os("SDA_BENCH_STATIC").is_none();
         let mut e = crate::Engine::new(48000, 2);
         e.set_layout(crate::vbap::LayoutId::Dolby9_1_6).unwrap();
         if let Ok(path) = std::env::var("SDA_BENCH_ROOM") {
@@ -1079,7 +1717,7 @@ mod tests {
                 .map(|i| ((i + id * 17) as f32 * 0.013).sin() * 0.001)
                 .collect();
             source.samples.write(0, 0, &samples);
-            if object {
+            if object && moving {
                 source.spatial_events.insert(
                     0,
                     crate::SpatialEvent {
@@ -1107,7 +1745,7 @@ mod tests {
         let mut output = vec![0.0; crate::convolution::DEFAULT_PARTITION * 2];
         for block in 0..blocks {
             if block == 16 {
-                e.profile_ms = [0.0; 4];
+                e.profile_ms = [0.0; 7];
             }
             let start = std::time::Instant::now();
             e.render_into(&mut output, 2);
@@ -1120,20 +1758,20 @@ mod tests {
             }
         }
         eprintln!(
-            "stage ms route / directional / legacy / buses: {:?}",
-            e.profile_ms.map(|v| v / (blocks-16) as f64)
+            "stage ms route / directional / legacy / buses / fast-mix / fast-reduce / output-reduce: {:?}",
+            e.profile_ms.map(|v| v / (blocks - 16) as f64)
         );
         eprintln!("source-major object blocks={}", e.fast_object_blocks);
         times.sort_by(f64::total_cmp);
         eprintln!(
-            "FULL 108 moving objects + 10 beds + reflections + near: mean={:.2} p95={:.2} max={:.2}ms budget=21.33ms; first 16 blocks={cold:.2}ms (audio 341.33ms)",
+            "FULL 108 objects moving={moving} + 10 beds + reflections + near: mean={:.2} p95={:.2} max={:.2}ms budget=21.33ms; first 16 blocks={cold:.2}ms (audio 341.33ms)",
             times.iter().sum::<f64>() / times.len() as f64,
             times[times.len() * 95 / 100],
             times[times.len() - 1]
         );
     }
     #[test]
-    fn source_major_matches_sample_major_pcm_events_and_activity() {
+    fn source_major_matches_sample_major_pcm_events_activity_and_bass_management() {
         let build = |reference| {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../web/public/hrtf/hrtf-set.json");
@@ -1145,6 +1783,10 @@ mod tests {
             .unwrap();
             e.disable_fast_objects = reference;
             e.directional_hrtf = true;
+            e.cinema.monitor.enabled = true;
+            e.cinema.monitor.bass_enabled = true;
+            e.cinema.monitor.crossover_hz = 80.0;
+            e.cinema.monitor.bass_db = -3.0;
             e.near_field.enabled = true;
             e.source_extent = crate::source_extent::Settings {
                 enabled: true,
@@ -1172,11 +1814,11 @@ mod tests {
                     availability_target: 1.0,
                     ..Default::default()
                 };
-                let samples: Vec<_> = (0..32000)
+                let samples: Vec<_> = (0..8192)
                     .map(|i| ((i + id * 13) as f32 * 0.027).sin() * 0.001)
                     .collect();
-                source.samples.write(0, 0, &samples[..8000]);
-                source.samples.write(0, 10000, &samples[10000..]);
+                source.samples.write(0, 0, &samples[..2048]);
+                source.samples.write(0, 4096, &samples[4096..]);
                 source.gain_events.insert(
                     57,
                     crate::GainEvent {
@@ -1217,7 +1859,7 @@ mod tests {
                     );
                 }
                 if id == 3 {
-                    source.remove_at = Some(28003);
+                    source.remove_at = Some(7003);
                 }
                 let name = format!("source:{id}");
                 e.sources.insert(name.clone(), source);
@@ -1229,8 +1871,8 @@ mod tests {
         let mut reference = build(true);
         let chunks = [31, 993, 17, 1024, 511, 2048];
         let mut step = 0;
-        while actual.sample_pos < 32000 {
-            let frames = chunks[step % chunks.len()].min((32000 - actual.sample_pos) as usize);
+        while actual.sample_pos < 8192 {
+            let frames = chunks[step % chunks.len()].min((8192 - actual.sample_pos) as usize);
             let mut a = vec![0.0; frames * 2];
             let mut b = a.clone();
             actual.render_into(&mut a, 2);
@@ -1340,18 +1982,29 @@ mod tests {
                 let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("../web/public/hrtf/hrtf-set.json");
                 let mut e = crate::Engine::new(48000, 2);
-                e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.04).unwrap();
+                e.replace_hrtf(
+                    crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),
+                    0.04,
+                )
+                .unwrap();
                 e.directional_hrtf = enabled;
                 e.direct_objects = true;
                 e.direct_mix = 1.0;
                 e.paused = false;
                 e.output_active = true;
                 let mut source = crate::Source {
-                    kind: crate::SourceKind::Object, position: [-0.22, 1.0, 0.19], diffuse,
-                    gain: 1.0, target_gain: 1.0, availability: 1.0, availability_target: 1.0,
+                    kind: crate::SourceKind::Object,
+                    position: [-0.22, 1.0, 0.19],
+                    diffuse,
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
                     ..Default::default()
                 };
-                let pcm: Vec<_> = (0..65536).map(|i| (i as f32 * 0.031).sin() * 0.01).collect();
+                let pcm: Vec<_> = (0..65536)
+                    .map(|i| (i as f32 * 0.031).sin() * 0.01)
+                    .collect();
                 source.samples.write(0, 0, &pcm);
                 e.sources.insert("obj:11".into(), source);
                 e.route_source_now("obj:11", 0).unwrap();
@@ -1361,15 +2014,28 @@ mod tests {
             let mut reference = build(false);
             let mut difference = 0.0_f32;
             for block in 0..64 {
-                if block == 16 { actual.directional_hrtf = false; }
-                if block == 32 { actual.directional_hrtf = true; }
-                let mut a = [0.0; 2048]; let mut b = a;
-                actual.render_into(&mut a, 2); reference.render_into(&mut b, 2);
-                if block > 48 { difference += a.iter().zip(b).map(|(a,b)|(a-b).abs()).sum::<f32>(); }
-                assert!(a.iter().all(|x|x.is_finite()));
-                if block > 4 { assert!(a.iter().any(|x| x.abs()>1e-5)); }
+                if block == 16 {
+                    actual.directional_hrtf = false;
+                }
+                if block == 32 {
+                    actual.directional_hrtf = true;
+                }
+                let mut a = [0.0; 2048];
+                let mut b = a;
+                actual.render_into(&mut a, 2);
+                reference.render_into(&mut b, 2);
+                if block > 48 {
+                    difference += a.iter().zip(b).map(|(a, b)| (a - b).abs()).sum::<f32>();
+                }
+                assert!(a.iter().all(|x| x.is_finite()));
+                if block > 4 {
+                    assert!(a.iter().any(|x| x.abs() > 1e-5));
+                }
             }
-            assert!(difference > 0.01, "directional must not fall back to layout");
+            assert!(
+                difference > 0.01,
+                "directional must not fall back to layout"
+            );
             assert!(actual.sources["obj:11"].continuous_active);
             assert!(actual.sources["obj:11"].direct.is_none());
             assert_eq!(actual.sources["obj:11"].diffusion_mix, 0.0);
@@ -1403,7 +2069,8 @@ mod tests {
                 let direction = Direction {
                     position: [(block as f32 * 0.04 + id as f32).sin() * 0.6, 0.5, 0.3],
                     head: None,
-                    diffuse: 0.0, horizontal_only: false,
+                    diffuse: 0.0,
+                    horizontal_only: false,
                     width: 30.0,
                     height: 20.0,
                     depth: 0.3,
@@ -1465,20 +2132,22 @@ mod tests {
             .map(|_| ContinuousSource::new(&set).unwrap())
             .collect();
         let mut buses = crate::bus_renderer::BusRenderer::new(&set, &solver, 0.04).unwrap();
+        let moving = std::env::var_os("SDA_BENCH_STATIC").is_none();
         for width in [0.0, 30.0] {
             let mut times = Vec::new();
             for block in 0..80 {
                 let start = std::time::Instant::now();
                 buses.begin_block();
                 for (id, source) in sources.iter_mut().enumerate() {
-                    let angle = id as f32 * 0.13 + block as f32 * 0.01;
+                    let angle = id as f32 * 0.13 + if moving { block as f32 * 0.01 } else { 0.0 };
                     let position = [angle.cos() * 0.7, angle.sin() * 0.7, 0.3];
                     let gains = solver.pan(position, 0.0);
                     source.schedule(
                         Direction {
                             position,
                             head: None,
-                    diffuse: 0.0, horizontal_only: false,
+                            diffuse: 0.0,
+                            horizontal_only: false,
                             width,
                             height: 0.0,
                             depth: 0.0,
@@ -1506,7 +2175,7 @@ mod tests {
             }
             times.sort_by(f64::total_cmp);
             eprintln!(
-                "108 moving + shared room + near, width={width}: mean={:.2} p95={:.2} max={:.2} ms; budget=21.33ms",
+                "108 objects moving={moving} + shared room + near, width={width}: mean={:.2} p95={:.2} max={:.2} ms; budget=21.33ms",
                 times.iter().sum::<f64>() / times.len() as f64,
                 times[times.len() * 95 / 100],
                 times[times.len() - 1]
@@ -1532,7 +2201,8 @@ mod tests {
                     source.direction = Some(Direction {
                         position,
                         head: None,
-                    diffuse: 0.0, horizontal_only: false,
+                        diffuse: 0.0,
+                        horizontal_only: false,
                         width,
                         height: 0.0,
                         depth: 0.0,
@@ -1631,9 +2301,18 @@ mod tests {
             .into_iter()
             .map(|(az, l, r)| {
                 let mut dry = vec![0.0; 128];
-                for (i, v) in burst(l, 0).iter().enumerate() { dry[i] += *v; }
-                for (i, v) in burst(r, 64).iter().enumerate() { dry[i] += *v; }
-                StereoIr { azimuth: az, elevation: 0.0, wet: dry.clone(), dry }
+                for (i, v) in burst(l, 0).iter().enumerate() {
+                    dry[i] += *v;
+                }
+                for (i, v) in burst(r, 64).iter().enumerate() {
+                    dry[i] += *v;
+                }
+                StereoIr {
+                    azimuth: az,
+                    elevation: 0.0,
+                    wet: dry.clone(),
+                    dry,
+                }
             })
             .collect();
         let grid = Grid::new(&irs);
@@ -1643,9 +2322,16 @@ mod tests {
         assert!(l.iter().chain(&r).all(|v| v.is_finite()));
         let l_energy: f32 = l.iter().map(|v| v * v).sum();
         let r_energy: f32 = r.iter().map(|v| v * v).sum();
-        assert!((l_energy - r_energy).abs() < 0.35 * l_energy, "centred source must stay balanced: {l_energy} vs {r_energy}");
-        let late_tail: f32 = l[45..64].iter().map(|v| v * v).sum::<f32>() + r[45..64].iter().map(|v| v * v).sum::<f32>();
-        assert!(late_tail < 0.05 * (l_energy + r_energy), "neighbour onset leaked as echo: {late_tail}");
+        assert!(
+            (l_energy - r_energy).abs() < 0.35 * l_energy,
+            "centred source must stay balanced: {l_energy} vs {r_energy}"
+        );
+        let late_tail: f32 = l[45..64].iter().map(|v| v * v).sum::<f32>()
+            + r[45..64].iter().map(|v| v * v).sum::<f32>();
+        assert!(
+            late_tail < 0.05 * (l_energy + r_energy),
+            "neighbour onset leaked as echo: {late_tail}"
+        );
         let (l, r) = grid.interpolate(&irs, -30.0, 0.0);
         assert_eq!(l[10], 1.0);
         assert_eq!(r[20], 1.0);
@@ -1659,6 +2345,9 @@ mod tests {
             p.0.iter().chain(&p.1).map(|v| (*v as f64).powi(2)).sum()
         };
         let (ea, eb) = (energy(&a), energy(&b));
-        assert!(ea > 0.0 && eb > 0.0 && (ea / eb - 1.0).abs() < 0.1, "rear pole energy must match: {ea} vs {eb}");
+        assert!(
+            ea > 0.0 && eb > 0.0 && (ea / eb - 1.0).abs() < 0.1,
+            "rear pole energy must match: {ea} vs {eb}"
+        );
     }
 }

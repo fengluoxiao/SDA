@@ -13,6 +13,23 @@
   --mp-track: color-mix(in srgb, var(--text) 16%, transparent);
   --mp-shimmer: var(--accent);
 }
+:root .app .miniplayer button.mp-info {
+  width: 20px;
+  min-width: 0;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 50%;
+  --action-fill: transparent;
+  --action-line: transparent;
+  --action-hover: color-mix(in srgb, var(--text) 9%, transparent);
+}
+:root .app .miniplayer button.mp-info:hover,
+:root .app .miniplayer button.mp-info:focus-visible {
+  background: var(--action-hover);
+  border-color: transparent;
+}
 .monitor-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
 .monitor-controls:disabled { opacity: .65; }
 .media-picker-layer { position: fixed; inset: 0; z-index: 80; background: #0007; display: grid; place-items: center; padding: 20px; }

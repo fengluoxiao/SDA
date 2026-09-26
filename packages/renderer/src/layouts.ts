@@ -132,8 +132,10 @@ export const LAYOUTS = {
   "5.1": BED_5_1,
   "5.1.2": [...BED_5_1, ...TOP_MIDDLE],
   "5.1.4": [...BED_5_1, ...TOP_FRONT, ...TOP_REAR],
+  "7.1": BED_7_1,
   "7.1.2": [...BED_7_1, ...TOP_MIDDLE],
   "7.1.4": LAYOUT_7_1_4,
+  "9.1": BED_9_1,
   "9.1.2": [...BED_9_1, ...TOP_MIDDLE],
   "9.1.4": [...BED_9_1, ...TOP_FRONT, ...TOP_REAR],
   "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_MIDDLE, ...TOP_REAR],
@@ -292,8 +294,7 @@ export function isLfeLabel(label: string): boolean {
 /** 从码流床标签 + 是否有动态对象推断最合适的虚拟扬声器布局。
  *  规则（杜比双耳惯例）：
  *  - 有动态对象 → 至少 7.1.4（杜比双耳渲染的标准中间层；床本身更大则跟上床）
- *  - 纯声道内容 → 能装下全部床音箱的最小布局
- *  无顶箱的 7.1/9.1 内容映射到同床的 .2 变体（顶层音箱闲置，声学上等价）。 */
+ *  - 纯声道内容 → 能装下全部床音箱的最小布局；绝不虚构顶层声道。 */
 export function detectLayoutId(labels: readonly string[], hasDynamics: boolean): LayoutId {
   const names = new Set(
     labels
@@ -312,14 +313,14 @@ export function detectLayoutId(labels: readonly string[], hasDynamics: boolean):
   const hasTopFront = has("TopFrontLeft", "TopFrontRight") || names.has("TopFrontCenter");
   let tops: 0 | 2 | 4 | 6 = 0;
   if (hasTopMiddle && (hasTopFront || hasTopRear)) tops = 6;
-  else if (hasTopRear || hasTopFront) tops = 4;
-  else if (hasTopMiddle || names.has("TopCenter")) tops = 2;
+  else if (hasTopFront && hasTopRear) tops = 4;
+  else if (hasTopMiddle || hasTopFront || hasTopRear || names.has("TopCenter")) tops = 2;
 
   if (hasDynamics) {
     if (base < 7) base = 7;
     if (tops < 4) tops = 4;
   }
-  if (tops === 0) return base === 5 ? "5.1" : base === 7 ? "7.1.2" : "9.1.2";
+  if (tops === 0) return base === 5 ? "5.1" : base === 7 ? "7.1" : "9.1";
   const id = `${base}.1.${tops}` as LayoutId;
   if (id in LAYOUTS) return id;
   // 非法组合（如 5.1.6）：顶层收窄到该床存在的最大档

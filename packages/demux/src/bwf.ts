@@ -164,12 +164,7 @@ export class BwfDemuxer {
   private scanId = "";
   private scanPad = 0;
   private binauralFound = false;
-  constructor(private cb: BwfDemuxerCallbacks = {}, private metadata?: BwfMetadata, startSample = 0) {
-    if (metadata && startSample > 0) {
-      this.samplePos = Math.min(Math.floor(startSample), Math.floor(metadata.dataSize / metadata.format.blockAlign));
-      this.position = metadata.dataOffset + this.samplePos * metadata.format.blockAlign;
-    }
-  }
+  constructor(private cb: BwfDemuxerCallbacks = {}, private metadata?: BwfMetadata) {}
   static sniffs(bytes: Uint8Array): boolean {
     return bytes.length >= 12 && ["RIFF", "RF64", "BW64"].includes(text(bytes.subarray(0, 4))) && text(bytes.subarray(8, 12)) === "WAVE";
   }

@@ -11,7 +11,6 @@ export function isIamf(b:Uint8Array):boolean{if(b[0]!==0xf8)return false;const n
 const beds=['L','R','C','LFE','Ls','Rs','Lb','Rb','Tfl','Tfr','Tbl','Tbr'];
 /** Raw IAMF, pinned Advanced-2 reference decoder. Objects stay separate from the 7.1.4 bed. */
 export class IamfDecoder{
- discardBeforeSeconds=0;
  private pending=new Uint8Array(0);private frames:DecodedFrameData[]=[];private samplePos=0;private dead=false;private ids=new Map<string,number>();
  constructor(){if(!runtime)throw codecFailure("iamf.failure_01",'IAMF runtime not initialized');if(runtime._sda_open())throw codecFailure("iamf.failure_02",'IAMF initialization failed');}
  private id(element:number,index:number):number{const key=`${element}:${index}`;if(!this.ids.has(key))this.ids.set(key,this.ids.size);return this.ids.get(key)!;}
@@ -36,17 +35,17 @@ export class IamfDecoder{
   this.pending=b.slice(cursor);if(this.pending.length>32*1024*1024)throw codecFailure("iamf.failure_13",'IAMF decoder stalled');
  }
  private takeFrame():void{
-  const m=runtime,n=m._sda_info(1);if(n<=0)return;const discard=this.samplePos+n<=this.discardBeforeSeconds*48000;const trim=m._sda_info(5),labels=[...beds],channels=beds.map(()=>new Float32Array(discard?0:n)),objectChannels:{id:number;channel:number}[]=[],events:ObjectEvent[]=[];
-  const pcm=m._sda_output()/4;for(let s=0;!discard&&s<n;s++)for(let c=0;c<12;c++)channels[c]![s]=m.HEAP32[pcm+s*12+c]/2147483648;
+  const m=runtime,n=m._sda_info(1);if(n<=0)return;const trim=m._sda_info(5),labels=[...beds],channels=beds.map(()=>new Float32Array(n)),objectChannels:{id:number;channel:number}[]=[],events:ObjectEvent[]=[];
+  const pcm=m._sda_output()/4;for(let s=0;s<n;s++)for(let c=0;c<12;c++)channels[c]![s]=m.HEAP32[pcm+s*12+c]/2147483648;
   for(let i=0;i<m._sda_info(2);i++){const element=m._sda_object_info(i,0)>>>0,count=m._sda_object_info(i,1),length=m._sda_object_info(i,2),p=m._sda_object_pcm(i)/4;if(trim+n>length)throw codecFailure("iamf.failure_14",'IAMF object trim mismatch');
-   for(let c=0;c<count;c++){const id=this.id(element,c);objectChannels.push({id,channel:channels.length});labels.push(`Obj_${id}`);channels.push(discard?new Float32Array(0):m.HEAPF32.slice(p+c*length+trim,p+c*length+trim+n));}
+   for(let c=0;c<count;c++){const id=this.id(element,c);objectChannels.push({id,channel:channels.length});labels.push(`Obj_${id}`);channels.push(m.HEAPF32.slice(p+c*length+trim,p+c*length+trim+n));}
   }
   const ep=m._sda_events()/4;
   for(let i=0;i<m._sda_info(3);i++){const p=ep+i*7,e=m.HEAPF32,offset=e[p+2]-trim,duration=e[p+3];if(offset>=n||offset+duration<=0)continue;const id=this.id(m.HEAP32[p]>>>0,e[p+1]),az=e[p+4]*Math.PI/180,el=e[p+5]*Math.PI/180,r=e[p+6];
    events.push({id,samplePos:this.samplePos+Math.max(0,offset),hasPos:true,pos:[-Math.sin(az)*Math.cos(el)*r,Math.cos(az)*Math.cos(el)*r,Math.sin(el)*r],gainDb:0,size:[0,0,0],anchor:'room',distanceM:null,distanceInfinite:false,screenFactor:null,depthFactor:null,rampDuration:0});
   }
   if(objectChannels.some(o=>!events.some(e=>e.id===o.id)))throw codecFailure("iamf.failure_15",'IAMF object audio has no position metadata');
-  this.frames.push({discardedSamples:discard?n:undefined,codec:'iamf',sampleRate:48000,samplePos:this.samplePos,channels,labels,rawBedLabels:[...beds],events,objectChannels,programLoudness:null,rampDuration:0});this.samplePos+=n;
+  this.frames.push({codec:'iamf',sampleRate:48000,samplePos:this.samplePos,channels,labels,rawBedLabels:[...beds],events,objectChannels,programLoudness:null,rampDuration:0});this.samplePos+=n;
  }
  nextFrame():DecodedFrameData|null{return this.frames.shift()??null;}
  drainErrors():string[]{return [];}

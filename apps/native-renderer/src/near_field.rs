@@ -217,7 +217,10 @@ mod tests {
     }
     #[test]
     fn frontal_and_rear_near_sources_keep_proximity_presence() {
-        let s = Settings { enabled: true, ..Default::default() };
+        let s = Settings {
+            enabled: true,
+            ..Default::default()
+        };
         let frontal = gains([0.0, 0.25, 0.0], None, s);
         let rear = gains([0.0, -0.25, 0.0], None, s);
         assert!(frontal.iter().all(|gain| *gain > 1.0));

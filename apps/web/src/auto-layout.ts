@@ -10,6 +10,9 @@ export function formatAutoLayout(codec?: string): LayoutId | undefined {
   if (["truehd", "eac3", "ac4", "iamf"].includes(codec ?? "")) return "7.1.4";
   return undefined;
 }
-export function resolveAutoLayout(labels: readonly string[], hasDynamics: boolean, codec?: string): LayoutId {
+/** ALAC upmix is an opt-in listening transform, not a container/codec claim. */
+export function resolveAutoLayout(labels: readonly string[], hasDynamics: boolean, codec?: string, alacStereoUpmix = false): LayoutId {
+  if (alacStereoUpmix && codec === "alac" && !hasDynamics
+      && labels.length === 2 && labels[0] === "L" && labels[1] === "R") return "7.1.4";
   return formatAutoLayout(codec) ?? detectLayoutId(labels, hasDynamics);
 }

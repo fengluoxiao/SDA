@@ -5,7 +5,26 @@ use crate::{
     RouteGains, Source, SourceKind, bus_renderer, convolution, source_extent, vbap,
 };
 use rayon::prelude::*;
-pub type Controls = ([f32; vbap::MAX_BUS_COUNT], [f32; vbap::MAX_BUS_COUNT], f32);
+pub type Controls = (
+    [f32; vbap::MAX_BUS_COUNT],
+    [f32; vbap::MAX_BUS_COUNT],
+    f32,
+    f32,
+);
+
+/// ADM events are inserted in presentation order. Avoid a tree lookup for
+/// every sample while the next event is still in the future; retain the keyed
+/// fallback for an out-of-order/stale event so legacy seek semantics remain
+/// unchanged.
+fn take_due<T>(events: &mut std::collections::BTreeMap<u64, T>, at: u64) -> Option<T> {
+    match events.first_key_value().map(|(timestamp, _)| *timestamp) {
+        Some(timestamp) if timestamp == at => events.pop_first().map(|(_, event)| event),
+        Some(timestamp) if timestamp > at => None,
+        None => None,
+        Some(_) => events.remove(&at),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Context {
     pub layout: vbap::LayoutId,
@@ -16,21 +35,24 @@ pub struct Context {
     pub sample_rate: u32,
     pub start: u64,
     pub offset: usize,
+    pub bass_crossover_hz: Option<f32>,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
     pub main: [f32; vbap::MAX_BUS_COUNT],
     pub reflections: [f32; vbap::MAX_BUS_COUNT],
     pub diffuse: [f32; vbap::MAX_BUS_COUNT],
+    pub bass: f32,
 }
 pub struct Buffer {
     pub frames: Vec<Frame>,
     pub activity: Vec<ObjectActivitySnapshot>,
     pub underruns: u64,
     pub route_updates: u64,
-    /// Accumulated (sum of squares, count) keyed by is_bed, folded into the
-    /// engine's level probe for the bed-vs-object balance diagnostic.
-    pub level_probe: std::collections::HashMap<bool, (f64, u64)>,
+    /// Accumulated (sum of squares, count), folded into the engine's
+    /// bed-vs-object balance diagnostic after the worker joins.
+    pub level_probe_bed: (f64, u64),
+    pub level_probe_object: (f64, u64),
 }
 impl Buffer {
     pub fn new() -> Self {
@@ -39,28 +61,51 @@ impl Buffer {
             activity: Vec::new(),
             underruns: 0,
             route_updates: 0,
-            level_probe: std::collections::HashMap::new(),
+            level_probe_bed: (0.0, 0),
+            level_probe_object: (0.0, 0),
         }
     }
     fn reset(&mut self, activity: &[ObjectActivitySnapshot]) {
         self.frames.fill(Frame::default());
         self.activity.clear();
         self.activity.extend_from_slice(activity);
+        self.level_probe_bed = (0.0, 0);
+        self.level_probe_object = (0.0, 0);
         self.underruns = 0;
         self.route_updates = 0;
     }
-    fn add(&mut self, sample: f32, gains: &[f32; vbap::MAX_BUS_COUNT], frame: usize) {
-        for (out, gain) in self.frames[frame].main.iter_mut().zip(gains) {
-            *out += sample * gain;
-        }
-    }
-    fn add_reflections(&mut self, sample: f32, gains: &[f32; vbap::MAX_BUS_COUNT], frame: usize) {
-        for (out, gain) in self.frames[frame].reflections.iter_mut().zip(gains) {
-            *out += sample * gain;
+    fn add_main_and_reflections_scaled(
+        &mut self,
+        main: f32,
+        reflections: f32,
+        route: &[f32; vbap::MAX_BUS_COUNT],
+        levels: &[f32; vbap::MAX_BUS_COUNT],
+        frame: usize,
+        bus_count: usize,
+    ) {
+        // Both paths use the same object route. Walking the buses together
+        // halves the route/level cache traffic for dense scenes while each
+        // destination keeps its original source-order accumulation.
+        for bus in 0..bus_count {
+            // VBAP routes only drive their active simplex speakers. Avoid
+            // rewriting the other bus inputs with an exact zero for every
+            // object/sample; nonzero buses retain the same add order.
+            if route[bus] == 0.0 {
+                continue;
+            }
+            if main != 0.0 {
+                self.frames[frame].main[bus] += main * route[bus] * levels[bus];
+            }
+            if reflections != 0.0 {
+                self.frames[frame].reflections[bus] += reflections * route[bus] * levels[bus];
+            }
         }
     }
     fn add_diffuse(&mut self, bus: usize, sample: f32, frame: usize) {
         self.frames[frame].diffuse[bus] += sample;
+    }
+    fn add_bass(&mut self, sample: f32, frame: usize) {
+        self.frames[frame].bass += sample;
     }
 }
 pub fn mix(
@@ -72,8 +117,8 @@ pub fn mix(
     activity: &[ObjectActivitySnapshot],
 ) -> usize {
     let pool = crate::direct_renderer::workers();
-    let groups = pool
-        .map_or(1, |pool| pool.current_num_threads())
+    let groups = crate::direct_renderer::worker_count_for_sources(sources.len())
+        .min(pool.map_or(1, |pool| pool.current_num_threads()))
         .min(sources.len());
     let chunk = sources.len().div_ceil(groups);
     let used = sources.len().div_ceil(chunk);
@@ -108,10 +153,17 @@ fn mix_source(
     ctx: Context,
     vbap: &vbap::VbapSolver,
 ) {
-    let perf_id=if crate::performance::enabled(){source.object_id.map_or_else(||"object".into(),|id|format!("obj:{id}"))}else{String::new()};
-    let _perf=crate::performance::span("object.routing_and_mix",&perf_id,controls.len() as u64);
+    let perf_id = if crate::performance::enabled() {
+        source
+            .object_id
+            .map_or_else(|| "object".into(), |id| format!("obj:{id}"))
+    } else {
+        String::new()
+    };
+    let _perf = crate::performance::span("object.routing_and_mix", &perf_id, controls.len() as u64);
     let head_pose = ctx.head;
-    for (offset, &(levels, background, mix)) in controls.iter().enumerate() {
+    let bus_count = vbap.bus_count();
+    for (offset, &(levels, background, mix, bass_mix)) in controls.iter().enumerate() {
         let at = ctx.start + offset as u64;
         let block_index = ctx.offset + offset;
         if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
@@ -120,7 +172,7 @@ fn mix_source(
         }
         // Mute/unmute events must land even while suspended: an unmute
         // is what wakes the source back up.
-        if let Some(muted) = source.mute_events.remove(&at) {
+        if let Some(muted) = take_due(&mut source.mute_events, at) {
             source.muted = muted;
             if !muted {
                 source.suspended = false;
@@ -130,7 +182,7 @@ fn mix_source(
         // suspended; its next audible sample must use the current state.
         if source.kind == SourceKind::Object {
             let mut changed = false;
-            if let Some(event) = source.spatial_events.remove(&at) {
+            if let Some(event) = take_due(&mut source.spatial_events, at) {
                 changed = Engine::start_source_motion(source, event);
             }
             // Preserve the authored motion resolution independently of
@@ -190,7 +242,7 @@ fn mix_source(
                 buffer.route_updates = buffer.route_updates.saturating_add(1);
             }
         }
-        if let Some(event) = source.gain_events.remove(&at) {
+        if let Some(event) = take_due(&mut source.gain_events, at) {
             source.target_gain = event.gain;
             source.ramp_remaining = event.ramp;
             source.ramp_step = if event.ramp == 0 {
@@ -217,7 +269,13 @@ fn mix_source(
         // object start one step ahead of its scheduled codec sample.
         let raw = source.samples.take(at);
         if let Some(value) = raw {
-            buffer.level_probe.entry(source.kind == crate::SourceKind::Bed).and_modify(|p| { p.0 += (value as f64) * (value as f64); p.1 += 1; }).or_insert(((value as f64) * (value as f64), 1u64));
+            let probe = if source.kind == crate::SourceKind::Bed {
+                &mut buffer.level_probe_bed
+            } else {
+                &mut buffer.level_probe_object
+            };
+            probe.0 += (value as f64) * (value as f64);
+            probe.1 += 1;
         }
         let target = if raw.is_some() { 1.0 } else { 0.0 };
         if target != source.availability_target {
@@ -262,6 +320,28 @@ fn mix_source(
             * source.gain
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
+        if bass_mix > 1e-6 {
+            if let Some(crossover_hz) = ctx.bass_crossover_hz {
+                if source
+                    .bass_split
+                    .as_ref()
+                    .is_none_or(|filter| filter.frequency != crossover_hz)
+                {
+                    source.bass_split = crate::cinema::BassSplit::new(crossover_hz).ok();
+                }
+                if let Some(filter) = &mut source.bass_split {
+                    let (low, high) = filter.process(sample);
+                    let contribution: f32 = source
+                        .bus_gains
+                        .iter()
+                        .zip(&levels)
+                        .map(|(gain, level)| gain * level)
+                        .sum();
+                    buffer.add_bass(low * contribution * bass_mix, block_index);
+                    sample += (high - sample) * bass_mix;
+                }
+            }
+        }
         if source.object_id.is_some() && sample.abs() >= OBJECT_ACTIVITY_THRESHOLD {
             source.activity_until =
                 at.saturating_add((ctx.sample_rate as f32 * 0.2).round() as u64);
@@ -305,13 +385,6 @@ fn mix_source(
         // ADM masters carry silent PCM for inactive objects. Keep their
         // clocks, filters and envelopes running, but avoid zero bus work.
         let bus_sample = sample * ROOM_SPEAKER_REFERENCE_GAIN * (1.0 - mix);
-        if bus_sample != 0.0 {
-            buffer.add(
-                bus_sample,
-                &std::array::from_fn(|bus| source.bus_gains[bus] * levels[bus]),
-                block_index,
-            );
-        }
         if block_index == 0 {
             let mut position = source.position;
             if source.horizontal_only {
@@ -320,7 +393,11 @@ fn mix_source(
             let direction = crate::directional::Direction {
                 position,
                 head: head_pose,
-                diffuse: source.diffuse.max(if ctx.extent.enabled {ctx.extent.diffusion}else{0.0}),
+                diffuse: source.diffuse.max(if ctx.extent.enabled {
+                    ctx.extent.diffusion
+                } else {
+                    0.0
+                }),
                 horizontal_only: source.horizontal_only,
                 // Square the spread/extent the same way as the general path
                 // (Engine::route): the continuous footprint renders the authored
@@ -368,19 +445,44 @@ fn mix_source(
         }
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
-        if block_index == 0 { continuous.occlusion_targets = source.occlusion_targets; }
+        if block_index == 0 {
+            continuous.occlusion_targets = source.occlusion_targets;
+        }
         continuous.frames[block_index].input = input;
         continuous.frames[block_index].near = source.near_target;
-        if input != 0.0 {
+        let reflection_sample = if input != 0.0 {
             // Near sources sit outside the reverberant field: fade their room
             // contribution as they close in (mirror of the general path).
-            let norm = if ctx.near_active { source.position.iter().map(|axis| axis * axis).sum::<f32>().sqrt() }
-                else { source.distance_m.map(|distance| distance / ctx.near_field.metres_per_unit).unwrap_or(1.0) };
-            let proximity_dry = if norm < 1.0 { (0.25 + 0.75 * norm).max(0.25) } else { 1.0 };
-            buffer.add_reflections(
-                input * proximity_dry,
-                &std::array::from_fn(|bus| source.bus_gains[bus] * levels[bus]),
+            let norm = if ctx.near_active {
+                source
+                    .position
+                    .iter()
+                    .map(|axis| axis * axis)
+                    .sum::<f32>()
+                    .sqrt()
+            } else {
+                source
+                    .distance_m
+                    .map(|distance| distance / ctx.near_field.metres_per_unit)
+                    .unwrap_or(1.0)
+            };
+            let proximity_dry = if norm < 1.0 {
+                (0.25 + 0.75 * norm).max(0.25)
+            } else {
+                1.0
+            };
+            input * proximity_dry
+        } else {
+            0.0
+        };
+        if bus_sample != 0.0 || reflection_sample != 0.0 {
+            buffer.add_main_and_reflections_scaled(
+                bus_sample,
+                reflection_sample,
+                &source.bus_gains,
+                &levels,
                 block_index,
+                bus_count,
             );
         }
         Engine::advance_source_envelopes(source, 1);

@@ -45,11 +45,11 @@ export interface DemuxerCallbacks {
 
 export interface Demuxer {
   readonly kind: ContainerKind;
-  push(chunk: Uint8Array): void;
+  push(chunk: Uint8Array, fileStart?: number): void;
   flush(): void;
 }
 
-export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMetadata?: BwfMetadata, startSample = 0): Demuxer {
+export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMetadata?: BwfMetadata): Demuxer {
   if (kind === "mkv") {
     const mkv = new MkvDemuxer({
       onTrack: (t: MkvAudioTrack) =>
@@ -66,7 +66,7 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMeta
       onPacket: (p) => cb.onPacket?.({ timestampMs: p.timestampMs, frames: [p.data] }),
       onError: cb.onError,
     });
-    return { kind, push: (c) => mp4.push(c), flush: () => mp4.flush() };
+    return { kind, push: (c, fileStart) => mp4.push(c, fileStart), flush: () => mp4.flush() };
   }
   if (kind === "bwf") {
     const bwf = new BwfDemuxer({
@@ -74,7 +74,7 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks, bwfMeta
       onPcmFrame: cb.onPcmFrame,
       onBinauralMetadata: cb.onBinauralMetadata,
       onError: cb.onError,
-    }, bwfMetadata, startSample);
+    }, bwfMetadata);
     return { kind, push: (c) => bwf.push(c), flush: () => bwf.flush() };
   }
   // Raw elementary stream: pass bytes straight through; the decoder's own

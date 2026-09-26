@@ -100,6 +100,7 @@ declare global {
     samplePos?: number;
     outputActive?: boolean;
     hrtfReady?: boolean;
+    directionalHrtf?: boolean;
     programCodecSupported?: boolean | null;
   }
 

@@ -81,6 +81,62 @@ export interface IntegratedLoudness {
   blocks: number;
   /** Maximum unweighted sample peak of the stereo master, in dBFS. */
   peakDbfs: number;
+  /** Maximum inter-sample peak using the libebur128 49-tap interpolation, in dBTP. */
+  truePeakDbtp: number;
+}
+
+/**
+ * Streaming true-peak estimate matching libebur128's 49-tap Hanning-windowed
+ * polyphase interpolator. BS.1770 workflows use 4x below 96 kHz and 2x below
+ * 192 kHz; sample peaks are sufficient at higher rates.
+ */
+export class TruePeakMeter {
+  private readonly factor: number;
+  private readonly delay: number;
+  private readonly filters: readonly { offset: number; coefficient: number }[][];
+  private readonly history: Float32Array[];
+  private write = 0;
+  private peak = 0;
+
+  constructor(sampleRate: number, channelCount: number) {
+    this.factor = sampleRate < 96_000 ? 4 : sampleRate < 192_000 ? 2 : 1;
+    this.delay = Math.ceil(49 / this.factor);
+    this.history = Array.from({ length: channelCount }, () => new Float32Array(this.delay));
+    this.filters = Array.from({ length: this.factor }, () => [] as { offset: number; coefficient: number }[]);
+    for (let tap = 0; tap < 49; tap++) {
+      const offset = tap - 24;
+      let coefficient = offset === 0 ? 1 : Math.sin((offset * Math.PI) / this.factor) / ((offset * Math.PI) / this.factor);
+      coefficient *= 0.5 * (1 - Math.cos((2 * Math.PI * tap) / 48));
+      if (Math.abs(coefficient) > 1e-6) this.filters[tap % this.factor]!.push({
+        offset: Math.floor(tap / this.factor),
+        coefficient,
+      });
+    }
+  }
+
+  push(channels: readonly Float32Array[]): void {
+    const samples = channels[0]?.length ?? 0;
+    for (let sample = 0; sample < samples; sample++) {
+      for (let channel = 0; channel < this.history.length; channel++) {
+        const line = this.history[channel]!;
+        const value = channels[channel]?.[sample] ?? 0;
+        line[this.write] = value;
+        for (const phase of this.filters) {
+          let interpolated = 0;
+          for (const { offset, coefficient } of phase) {
+            const index = (this.write - offset + this.delay) % this.delay;
+            interpolated += line[index]! * coefficient;
+          }
+          this.peak = Math.max(this.peak, Math.abs(interpolated));
+        }
+      }
+      this.write = (this.write + 1) % this.delay;
+    }
+  }
+
+  dbtp(): number {
+    return this.peak > 0 ? 20 * Math.log10(this.peak) : -Infinity;
+  }
 }
 
 export class LoudnessMeter {
@@ -91,6 +147,7 @@ export class LoudnessMeter {
   /** Ring accumulator for the current 400 ms block, per channel. */
   private readonly block: Float32Array[];
   private readonly scratch: Float32Array;
+  private readonly truePeak: TruePeakMeter;
   private fill = 0;
   private samplePeak = 0;
   /** Mean-square energy per completed 400 ms block (sum over weighted channels). */
@@ -103,6 +160,7 @@ export class LoudnessMeter {
     this.hopSamples = Math.round(sampleRate * 0.1);
     this.block = Array.from({ length: channelCount }, () => new Float32Array(this.blockSamples));
     this.scratch = new Float32Array(this.blockSamples);
+    this.truePeak = new TruePeakMeter(sampleRate, channelCount);
   }
 
   /** Feed one frame of planar audio; all channels must share one length. */
@@ -110,6 +168,7 @@ export class LoudnessMeter {
     const first = channels[0];
     if (!first?.length) return;
     for (const channel of channels) for (const value of channel) this.samplePeak = Math.max(this.samplePeak, Math.abs(value));
+    this.truePeak.push(channels);
     for (let offset = 0; offset < first.length;) {
       const take = Math.min(this.blockSamples - this.fill, first.length - offset);
       for (let ch = 0; ch < this.filters.length; ch++) {
@@ -147,22 +206,30 @@ export class LoudnessMeter {
   integrated(): IntegratedLoudness {
     const peakDbfs = this.samplePeak > 0 ? 20 * Math.log10(this.samplePeak) : -Infinity;
     const aboveAbsolute = this.blockEnergy.filter((energy) => energy > 0 && 10 * Math.log10(energy) > -69.309);
-    if (aboveAbsolute.length === 0) return { integratedLufs: null, blocks: 0, peakDbfs };
+    if (aboveAbsolute.length === 0) return { integratedLufs: null, blocks: 0, peakDbfs, truePeakDbtp: this.truePeak.dbtp() };
     const ungatedMean = aboveAbsolute.reduce((a, b) => a + b, 0) / aboveAbsolute.length;
     const relativeGateLufs = -0.691 + 10 * Math.log10(ungatedMean) - 10;
     const aboveRelative = aboveAbsolute.filter(
       (energy) => -0.691 + 10 * Math.log10(energy) > relativeGateLufs,
     );
     const gatedMean = aboveRelative.reduce((a, b) => a + b, 0) / aboveRelative.length;
-    return { integratedLufs: -0.691 + 10 * Math.log10(gatedMean), blocks: aboveAbsolute.length, peakDbfs };
+    return {
+      integratedLufs: -0.691 + 10 * Math.log10(gatedMean),
+      blocks: aboveAbsolute.length,
+      peakDbfs,
+      truePeakDbtp: this.truePeak.dbtp(),
+    };
   }
 }
 
-/** One linked master gain. A sample-peak ceiling leaves 1 dB of headroom;
- * the final linked guard still catches peaks introduced by rendering. */
-export function masterBalanceGainDb(integratedLufs: number, peakDbfs: number | null): number {
+/** One linked master gain. The -1 dBTP ceiling follows Apple Music's Atmos
+ * delivery upper bound; it is a listening safety reference, not certification. */
+export function masterBalanceGainDb(integratedLufs: number, truePeakDbtp: number | null): number {
   if (!Number.isFinite(integratedLufs)) return 0;
   const target = Math.max(-60, Math.min(60, -18 - integratedLufs));
-  if (peakDbfs == null || !Number.isFinite(peakDbfs)) return Math.min(0, target);
-  return Math.min(target, -1 - peakDbfs);
+  if (truePeakDbtp == null || !Number.isFinite(truePeakDbtp)) return Math.min(0, target);
+  // Playback balancing is protective: a pseudo-upmix must never make a quiet
+  // ALAC master louder than its source. The true-peak bound can only request
+  // additional attenuation, never authorise positive programme gain.
+  return Math.min(0, target, -1 - truePeakDbtp);
 }

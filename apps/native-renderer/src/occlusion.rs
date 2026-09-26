@@ -16,7 +16,9 @@ pub struct Shadow {
 
 impl Shadow {
     pub fn is_bypassed(&self, amount: [f32; 2]) -> bool {
-        amount[0] >= 1.0 - 1e-3 && amount[1] >= 1.0 - 1e-3 && self.state.iter().all(|s| s.abs() < 1e-20)
+        amount[0] >= 1.0 - 1e-3
+            && amount[1] >= 1.0 - 1e-3
+            && self.state.iter().all(|s| s.abs() < 1e-20)
     }
 
     /// `amount[ear]` in `[0, 1]`: how open the ear is (1 = unoccluded).
@@ -27,14 +29,18 @@ impl Shadow {
             let open = amount[ear].clamp(0.0, 1.0);
             if open >= 0.999 {
                 self.state[ear] += (input[ear] - self.state[ear]) * 0.087557;
-                if self.state[ear].abs() < 1e-20 { self.state[ear] = 0.0; }
+                if self.state[ear].abs() < 1e-20 {
+                    self.state[ear] = 0.0;
+                }
                 return input[ear];
             }
             // Corner frequency from 20 kHz (open) down to ~500 Hz (fully blocked).
-            let corner = (500.0 * 40.0_f32.powf(open)) .max(500.0).min(20_000.0);
+            let corner = (500.0 * 40.0_f32.powf(open)).max(500.0).min(20_000.0);
             let alpha = 1.0 - (-std::f32::consts::TAU * corner / 48_000.0).exp();
             self.state[ear] += alpha * (input[ear] - self.state[ear]);
-            if self.state[ear].abs() < 1e-20 { self.state[ear] = 0.0; }
+            if self.state[ear].abs() < 1e-20 {
+                self.state[ear] = 0.0;
+            }
             input[ear] * (0.55 + 0.45 * open) + self.state[ear] * (1.0 - (0.55 + 0.45 * open))
         })
     }
@@ -69,12 +75,7 @@ pub fn ear_openness(
         if other_norm >= norm * 0.6 || other_norm >= 0.7 || other_norm < 1e-5 {
             continue; // the other must sit clearly in front of this source
         }
-        let dot = position
-            .iter()
-            .zip(other)
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
-            / (norm * other_norm);
+        let dot = position.iter().zip(other).map(|(a, b)| a * b).sum::<f32>() / (norm * other_norm);
         if dot <= 0.0 {
             continue;
         }
@@ -113,13 +114,26 @@ pub fn ear_openness_prepared(
     }
     let mut occluded = 0.0_f32;
     for (other_index, other) in all_positions.iter().enumerate() {
-        if other_index == self_index { continue; }
+        if other_index == self_index {
+            continue;
+        }
         let other_norm = other.iter().map(|a| a * a).sum::<f32>().sqrt();
-        if other_norm >= norm * 0.6 || other_norm >= 0.7 || other_norm < 1e-5 { continue; }
-        let dot = position.iter().zip(other.iter()).map(|(a, b)| a * b).sum::<f32>() / (norm * other_norm);
-        if dot <= 0.0 { continue; }
+        if other_norm >= norm * 0.6 || other_norm >= 0.7 || other_norm < 1e-5 {
+            continue;
+        }
+        let dot = position
+            .iter()
+            .zip(other.iter())
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+            / (norm * other_norm);
+        if dot <= 0.0 {
+            continue;
+        }
         let angle = dot.clamp(-1.0, 1.0).acos();
-        if angle >= 8.0_f32.to_radians() { continue; }
+        if angle >= 8.0_f32.to_radians() {
+            continue;
+        }
         let bearing = 1.0 - angle / 8.0_f32.to_radians();
         let nearness = (1.0 - other_norm / (norm * 0.6)).clamp(0.0, 1.0);
         occluded = occluded.max(bearing * nearness);
@@ -138,16 +152,30 @@ mod tests {
     fn near_same_bearing_object_shadows_far_ear() {
         // A centred source remains centred when a nearer object shadows it.
         let openness = ear_openness([0.0, 1.0, 0.0], None, &[(0.25, [0.0, 0.25, 0.0])]);
-        assert!(openness[0] < 0.99 && openness[1] < 0.99, "occlusion must engage: {openness:?}");
-        assert!((openness[0] - openness[1]).abs() < 1e-6, "front shadow must remain centred: {openness:?}");
+        assert!(
+            openness[0] < 0.99 && openness[1] < 0.99,
+            "occlusion must engage: {openness:?}"
+        );
+        assert!(
+            (openness[0] - openness[1]).abs() < 1e-6,
+            "front shadow must remain centred: {openness:?}"
+        );
         // ADM x is negative on the left. Shade the ear farther from each
         // lateral source; the two cases must be mirror images.
         let left = ear_openness([-1.0, 0.0, 0.0], None, &[(0.25, [-0.25, 0.0, 0.0])]);
         let right = ear_openness([1.0, 0.0, 0.0], None, &[(0.25, [0.25, 0.0, 0.0])]);
-        assert!(left[1] < left[0], "left source must shade the right ear: {left:?}");
-        assert!(right[0] < right[1], "right source must shade the left ear: {right:?}");
-        assert!((left[0] - right[1]).abs() < 1e-6 && (left[1] - right[0]).abs() < 1e-6,
-            "lateral shadows must mirror: left={left:?} right={right:?}");
+        assert!(
+            left[1] < left[0],
+            "left source must shade the right ear: {left:?}"
+        );
+        assert!(
+            right[0] < right[1],
+            "right source must shade the left ear: {right:?}"
+        );
+        assert!(
+            (left[0] - right[1]).abs() < 1e-6 && (left[1] - right[0]).abs() < 1e-6,
+            "lateral shadows must mirror: left={left:?} right={right:?}"
+        );
         let positions = [[0.0, 1.0, 0.0], [0.0, 0.25, 0.0]];
         assert_eq!(
             ear_openness_prepared(&positions[0], &positions[0], &positions, &positions, 0),
@@ -165,7 +193,8 @@ mod tests {
     fn shadow_filters_low_passes_and_bypasses_cleanly() {
         let mut shadow = Shadow::default();
         // Fully blocked ear: high frequencies must collapse relative to lows.
-        let mut low_energy = 0.0; let mut high_energy = 0.0;
+        let mut low_energy = 0.0;
+        let mut high_energy = 0.0;
         for i in 0..4800 {
             let low = (i as f32 * 0.02).sin() * 0.1;
             let high = (i as f32 * 0.9).sin() * 0.1;
@@ -173,9 +202,16 @@ mod tests {
             low_energy += out[0] * out[0];
             high_energy += out[1] * out[1];
         }
-        let open_low = low_energy; let open_reference = 2400.0 * 0.005;
-        assert!(open_low > 0.2 * open_reference, "low band must survive diffraction: {low_energy}");
-        assert!(high_energy < open_low, "blocked ear must attenuate highs more: {high_energy} vs {low_energy}");
+        let open_low = low_energy;
+        let open_reference = 2400.0 * 0.005;
+        assert!(
+            open_low > 0.2 * open_reference,
+            "low band must survive diffraction: {low_energy}"
+        );
+        assert!(
+            high_energy < open_low,
+            "blocked ear must attenuate highs more: {high_energy} vs {low_energy}"
+        );
         // Back to open: exact passthrough after settling.
         let mut shadow = Shadow::default();
         for i in 0..4800 {

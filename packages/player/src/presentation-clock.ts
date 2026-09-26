@@ -12,8 +12,7 @@ export class PresentationClock {
     this.running = false;
   }
 
-  /** Initialize clock at a seek target so the first read() returns the target
-   *  position rather than 0, even if the native renderer hasn't reported yet. */
+  /** Initialize the display clock from the latest confirmed renderer sample. */
   init(sample: number): void {
     this.confirmed = sample;
     this.reportedAt = performance.now();

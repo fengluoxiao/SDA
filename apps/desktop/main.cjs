@@ -25,6 +25,9 @@ const startupLogPath = path.join(process.cwd(), "tmp", "sda-startup.log");
 let startupLogPending = "";
 let startupLogWriting = false;
 let startupLogTimer = null;
+let nativeRendererBackpressureCount = 0;
+let nativeRendererBackpressureLastStart = null;
+let nativeRendererBackpressureTimer = null;
 function flushStartupLog() {
   startupLogTimer = null;
   if (startupLogWriting || !startupLogPending) return;
@@ -46,6 +49,19 @@ function writeStartupLog(line) {
 }
 function logRenderer(_level, sourceId, line, message) {
   writeStartupLog(`[SDA renderer] ${sourceId}:${line} ${message}`);
+}
+function recordNativeRendererBackpressure(start) {
+  nativeRendererBackpressureCount += 1;
+  nativeRendererBackpressureLastStart = start;
+  if (nativeRendererBackpressureTimer) return;
+  nativeRendererBackpressureTimer = setTimeout(() => {
+    const count = nativeRendererBackpressureCount;
+    const lastStart = nativeRendererBackpressureLastStart;
+    nativeRendererBackpressureCount = 0;
+    nativeRendererBackpressureLastStart = null;
+    nativeRendererBackpressureTimer = null;
+    writeStartupLog(`sidecar PCM pipe backpressure: ${count} batches; last start=${lastStart}`);
+  }, 1000);
 }
 
 /**
@@ -271,7 +287,7 @@ const performanceMonitor = require('./performance-monitor.cjs').createPerformanc
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
 });
-let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false };
+let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启动", samplePos: 0, outputActive: false, hrtfReady: false, directionalHrtf: false };
 // Older bundled sidecars do not advertise the codec gate. Keep this tri-state
 // until ready/first use so an old binary cannot hold the PCM queue on timeout.
 let nativeRendererProgramCodecSupported = null;
@@ -307,6 +323,7 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     samplePos: Number.isSafeInteger(telemetry.samplePos) ? telemetry.samplePos : nativeRendererStatus.samplePos ?? 0,
     outputActive: telemetry.outputActive === true,
     hrtfReady: telemetry.hrtfReady === true,
+    directionalHrtf: telemetry.directionalHrtf === true,
     programCodecSupported: typeof telemetry.programCodecSupported === "boolean"
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
@@ -488,7 +505,7 @@ function nativeRendererBatch(start, entries, events) {
       Object.assign(pending, { resolve, timeout, perfAt: performanceMonitor.active?performance.now():null, perfIds:performanceMonitor.active?entries.map(e=>e.id):[] });
       nativeRendererPendingBatches.set(start, pending);
       const queued = nativeRenderer.stdin.write(Buffer.concat([...(metadata ? [metadata, header.subarray(1)] : [header]), ...prepared.flat()]));
-      if (!queued) writeStartupLog(`sidecar PCM pipe backpressure: start=${start}`);
+      if (!queued) recordNativeRendererBackpressure(start);
     });
     pending.promise = promise;
     return promise;
@@ -578,6 +595,10 @@ function consumeNativeRendererOutput(chunk) {
           `fifoFrames=${message.fifoFramesAvailable ?? 0} callbacks=${message.callbackCount} ` +
           `callbackMaxUs=${message.callbackMaxMicros} renderBlocks=${message.renderBlockCount ?? 0} routes=${message.routeUpdateCount ?? 0} ` +
           `renderMeanUs=${message.renderBlockMeanMicros ?? 0} renderMaxUs=${message.renderBlockMaxMicros ?? 0} ` +
+          `worstPrepareUs=${message.renderWorstPrepareMicros ?? 0} worstFastMixUs=${message.renderWorstFastMixMicros ?? 0} ` +
+          `worstFastReduceUs=${message.renderWorstFastReduceMicros ?? 0} worstSampleUs=${message.renderWorstSampleMicros ?? 0} ` +
+          `worstDirectionalUs=${message.renderWorstDirectionalMicros ?? 0} worstDirectUs=${message.renderWorstDirectMicros ?? 0} worstBusUs=${message.renderWorstBusMicros ?? 0} ` +
+          `continuousObjects=${message.continuousObjectCount ?? 0} directObjects=${message.directObjectCount ?? 0} fastObjects=${message.fastObjectCount ?? 0} ` +
           `controlLockMaxUs=${message.controlLockMaxMicros ?? 0} renderLockWaitUs=${message.renderWaitLockMicros ?? 0} ` +
           `rate=${message.outputSampleRate} active=${message.outputActive === true} paused=${message.paused === true}` +
           ` distGainMean=${Number(message.distanceGainMean ?? 0).toFixed(3)} occluded=${message.occlusionShadedSources ?? 0}` + ` bedRms=${Number(message.bedRmsDb ?? -200).toFixed(1)}dB objRms=${Number(message.objectRmsDb ?? -200).toFixed(1)}dB`,
@@ -1313,6 +1334,15 @@ function createWindow() {
       backgroundThrottling: false,
       additionalArguments: [`--sda-electron-renderer=${rendererMode}`, `--sda-native-backdrop=${nativeBackdrop ? "acrylic" : "none"}`],
     },
+  });
+  // A dev launch can inherit a hidden shell window state. Explicitly show and
+  // focus the finished BrowserWindow so the desktop app is never left running
+  // invisibly after a restart.
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) {
+      win.show();
+      win.focus();
+    }
   });
 
   const updateBackdrop = () => {

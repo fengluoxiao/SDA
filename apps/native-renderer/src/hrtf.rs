@@ -40,7 +40,10 @@ pub struct Position {
 pub struct NativeHrtfSet {
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
-    speaker_prepared: std::collections::HashMap<(String, String, u32), std::sync::Arc<crate::convolution::PreparedStereoFilter>>,
+    speaker_prepared: std::collections::HashMap<
+        (String, String, u32),
+        std::sync::Arc<crate::convolution::PreparedStereoFilter>,
+    >,
     pub sample_rate: u32,
     pub subject_id: Option<String>,
     pub complete_subject: bool,
@@ -61,22 +64,90 @@ pub struct StereoIr {
 }
 
 impl NativeHrtfSet {
-    pub fn simulation_shape(&self)->(usize,usize,usize) {
-        (self.positions.len(),self.cache.iter().map(|ir|ir.dry.len()/2).max().unwrap_or(0),self.cache.iter().map(|ir|ir.wet.len()/2).max().unwrap_or(0))
+    pub fn simulation_shape(&self) -> (usize, usize, usize) {
+        (
+            self.positions.len(),
+            self.cache
+                .iter()
+                .map(|ir| ir.dry.len() / 2)
+                .max()
+                .unwrap_or(0),
+            self.cache
+                .iter()
+                .map(|ir| ir.wet.len() / 2)
+                .max()
+                .unwrap_or(0),
+        )
     }
     /// Deterministic, non-musical coefficients used only in offline load tests.
     /// No source recording or user HRIR data is stored or required.
-    pub fn synthetic(directions:usize,dry_len:usize,wet_len:usize)->Result<Self,String>{
-        if directions==0 || directions>4096 || dry_len==0 || dry_len>131072 || wet_len>262144 || directions.saturating_mul(dry_len+wet_len)>16_000_000 {return Err("synthetic HRTF workload exceeds safe limits".into());}
-        let mut cache=Vec::new();let mut positions=Vec::new();
-        for i in 0..directions {
-            let azimuth=i as f64*137.507764%360.0-180.0;
-            let elevation=if directions==1{0.0}else{((1.0-2.0*(i as f64+0.5)/directions as f64).asin()).to_degrees()};
-            let make=|len:usize| (0..len*2).map(|j|{let n=j%len;let sign=if (j.wrapping_mul(1664525).wrapping_add(i.wrapping_mul(1013904223)))&8==0 {1.0}else{-1.0};sign*0.015*(-5.0*n as f32/len as f32).exp()}).collect();
-            positions.push(Position{azimuth,elevation,dry:String::new(),wet:String::new()});
-            cache.push(StereoIr{azimuth,elevation,dry:make(dry_len),wet:if wet_len==0{vec![0.0;2]}else{make(wet_len)}});
+    pub fn synthetic(directions: usize, dry_len: usize, wet_len: usize) -> Result<Self, String> {
+        if directions == 0
+            || directions > 4096
+            || dry_len == 0
+            || dry_len > 131072
+            || wet_len > 262144
+            || directions.saturating_mul(dry_len + wet_len) > 16_000_000
+        {
+            return Err("synthetic HRTF workload exceeds safe limits".into());
         }
-        Ok(Self{cinema:crate::cinema::Settings::default(),room_profile:None,speaker_prepared:Default::default(),sample_rate:48000,subject_id:Some("performance-synthetic".into()),complete_subject:true,positions,directional_grid:crate::directional::Grid::new(&cache),cache,speaker_set:None,prepared:Default::default()})
+        let mut cache = Vec::new();
+        let mut positions = Vec::new();
+        for i in 0..directions {
+            let azimuth = i as f64 * 137.507764 % 360.0 - 180.0;
+            let elevation = if directions == 1 {
+                0.0
+            } else {
+                ((1.0 - 2.0 * (i as f64 + 0.5) / directions as f64).asin()).to_degrees()
+            };
+            let make = |len: usize| {
+                (0..len * 2)
+                    .map(|j| {
+                        let n = j % len;
+                        let sign = if (j
+                            .wrapping_mul(1664525)
+                            .wrapping_add(i.wrapping_mul(1013904223)))
+                            & 8
+                            == 0
+                        {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        sign * 0.015 * (-5.0 * n as f32 / len as f32).exp()
+                    })
+                    .collect()
+            };
+            positions.push(Position {
+                azimuth,
+                elevation,
+                dry: String::new(),
+                wet: String::new(),
+            });
+            cache.push(StereoIr {
+                azimuth,
+                elevation,
+                dry: make(dry_len),
+                wet: if wet_len == 0 {
+                    vec![0.0; 2]
+                } else {
+                    make(wet_len)
+                },
+            });
+        }
+        Ok(Self {
+            cinema: crate::cinema::Settings::default(),
+            room_profile: None,
+            speaker_prepared: Default::default(),
+            sample_rate: 48000,
+            subject_id: Some("performance-synthetic".into()),
+            complete_subject: true,
+            positions,
+            directional_grid: crate::directional::Grid::new(&cache),
+            cache,
+            speaker_set: None,
+            prepared: Default::default(),
+        })
     }
 
     fn direction_key(azimuth: f64, elevation: f64) -> (i32, i32) {
@@ -92,14 +163,27 @@ impl NativeHrtfSet {
                 .map_err(|error| error.to_string())?;
         let raw_ku100 = manifest.subject_id.as_deref() == Some("ku100")
             && manifest.calibration_version == Some(0)
-            && !manifest.processing.calibrated && manifest.processing.preserve_measurements;
+            && !manifest.processing.calibrated
+            && manifest.processing.preserve_measurements;
         let personal_sofa = manifest.personal_sofa_version == Some(1)
-            && manifest.complete_subject == Some(true) && manifest.processing.preserve_measurements
-            && manifest.subject_id.as_deref().is_some_and(|s| s.starts_with("personal-"));
+            && manifest.complete_subject == Some(true)
+            && manifest.processing.preserve_measurements
+            && manifest
+                .subject_id
+                .as_deref()
+                .is_some_and(|s| s.starts_with("personal-"));
         let parametric = manifest.parametric_hrtf_version == Some(1)
-            && manifest.complete_subject == Some(true) && manifest.processing.preserve_samples
-            && manifest.subject_id.as_deref().is_some_and(|s| s.starts_with("personal-"));
-        if !raw_ku100 && !personal_sofa && !parametric && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated) {
+            && manifest.complete_subject == Some(true)
+            && manifest.processing.preserve_samples
+            && manifest
+                .subject_id
+                .as_deref()
+                .is_some_and(|s| s.starts_with("personal-"));
+        if !raw_ku100
+            && !personal_sofa
+            && !parametric
+            && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated)
+        {
             return Err("native object renderer requires calibrated HRTF v4".into());
         }
         let is_dense_ku100 = manifest.positions.len() == 61;
@@ -131,12 +215,19 @@ impl NativeHrtfSet {
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
             Some("hrtf-dense") => Some("hrtf"),
             Some("hrtf-dense-raw") => Some("hrtf-raw"),
-            Some(name) if name.ends_with("-dense") && (name.starts_with("hrtf-h") || name == "hrtf-d2-dense") => name.strip_suffix("-dense"),
+            Some(name)
+                if name.ends_with("-dense")
+                    && (name.starts_with("hrtf-h") || name == "hrtf-d2-dense") =>
+            {
+                name.strip_suffix("-dense")
+            }
             _ => None,
-        }.map(|name| {
+        }
+        .map(|name| {
             let parent = root.parent().ok_or("HRTF asset root has no parent")?;
             Self::load_calibrated(&parent.join(name).join("hrtf-set.json")).map(Box::new)
-        }).transpose()?;
+        })
+        .transpose()?;
         // KU100 is a complete dummy-head measurement set, not an individual
         // subject profile. Its measured pinna notches remain valid at both the
         // standard and dense resolutions, but a time-domain mix of adjacent
@@ -155,7 +246,10 @@ impl NativeHrtfSet {
             subject_id: manifest.subject_id,
             complete_subject,
             positions: manifest.positions,
-            directional_grid: crate::directional::Grid::new_with_notch_guard(&cache, ku100_notch_guard),
+            directional_grid: crate::directional::Grid::new_with_notch_guard(
+                &cache,
+                ku100_notch_guard,
+            ),
             cache,
             speaker_set,
             prepared: std::collections::HashMap::new(),
@@ -188,103 +282,228 @@ impl NativeHrtfSet {
     /// substituting the coarser companion set used only for absent anchors.
     pub fn has_exact_measurement(&self, azimuth: f64, elevation: f64) -> bool {
         let key = Self::direction_key(azimuth, elevation);
-        self.positions.iter().any(|position| Self::direction_key(position.azimuth, position.elevation) == key)
+        self.positions
+            .iter()
+            .any(|position| Self::direction_key(position.azimuth, position.elevation) == key)
     }
 
     fn speaker_ir(&self, azimuth: f64, elevation: f64) -> Result<StereoIr, String> {
         if self.has_exact_measurement(azimuth, elevation) {
             return self.nearest(azimuth, elevation);
         }
-        self.speaker_set.as_deref().unwrap_or(self).nearest(azimuth, elevation)
+        self.speaker_set
+            .as_deref()
+            .unwrap_or(self)
+            .nearest(azimuth, elevation)
     }
 
-    pub fn directional_dry(&self, direction: crate::directional::Direction, layout: crate::vbap::LayoutId,
-        gains: [f32;crate::vbap::MAX_BUS_COUNT], amounts: [f32;crate::vbap::MAX_BUS_COUNT]) -> Result<(Vec<f32>,Vec<f32>),String> {
-        self.directional_dry_length(direction,layout,gains,amounts,self.speaker_filter_len()+crate::convolution::DEFAULT_PARTITION)
+    pub fn directional_dry(
+        &self,
+        direction: crate::directional::Direction,
+        layout: crate::vbap::LayoutId,
+        gains: [f32; crate::vbap::MAX_BUS_COUNT],
+        amounts: [f32; crate::vbap::MAX_BUS_COUNT],
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        self.directional_dry_length(
+            direction,
+            layout,
+            gains,
+            amounts,
+            self.speaker_filter_len() + crate::convolution::DEFAULT_PARTITION,
+        )
     }
-    pub fn directional_filter_len(&self)->usize {
-        let base=self.cache.iter().map(|ir|ir.dry.len()/2).max().unwrap_or(512)+4;
-        let calibration=if self.cinema.enabled {self.cinema.speakers.values().map(|s|
-            (s.delay_ms*48.0).round() as usize + if s.low_db!=0.0||s.high_db!=0.0 {2048}else{0}).max().unwrap_or(0)}else{0};
+    pub fn directional_filter_len(&self) -> usize {
+        let base = self
+            .cache
+            .iter()
+            .map(|ir| ir.dry.len() / 2)
+            .max()
+            .unwrap_or(512)
+            + 4;
+        let calibration = if self.cinema.enabled {
+            self.cinema
+                .speakers
+                .values()
+                .map(|s| {
+                    (s.delay_ms * 48.0).round() as usize
+                        + if s.low_db != 0.0 || s.high_db != 0.0 {
+                            2048
+                        } else {
+                            0
+                        }
+                })
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
         // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
         // when a 512-tap HRIR also needs four fractional-delay padding samples.
-        base+127+calibration+self.output_max_delay()+480
+        base + 127 + calibration + self.output_max_delay() + 480
     }
-    pub fn directional_dry_compact(&self,direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
-        gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT])->Result<(Vec<f32>,Vec<f32>),String>{
-        self.directional_dry_length(direction,layout,gains,amounts,self.directional_filter_len())
+    pub fn directional_dry_compact(
+        &self,
+        direction: crate::directional::Direction,
+        layout: crate::vbap::LayoutId,
+        gains: [f32; crate::vbap::MAX_BUS_COUNT],
+        amounts: [f32; crate::vbap::MAX_BUS_COUNT],
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        self.directional_dry_length(
+            direction,
+            layout,
+            gains,
+            amounts,
+            self.directional_filter_len(),
+        )
     }
-    fn directional_dry_length(&self, direction:crate::directional::Direction,layout:crate::vbap::LayoutId,
-        gains:[f32;crate::vbap::MAX_BUS_COUNT],amounts:[f32;crate::vbap::MAX_BUS_COUNT],length:usize)->Result<(Vec<f32>,Vec<f32>),String>{
-        let mut pair=self.directional_grid.footprint(&self.cache,direction);
-        let mut output=(vec![0.0;length],vec![0.0;length]);
-        let norm=gains.iter().map(|g|g*g).sum::<f32>().sqrt();
-        if norm<1e-8{return Ok(output);}
+    fn directional_dry_length(
+        &self,
+        direction: crate::directional::Direction,
+        layout: crate::vbap::LayoutId,
+        gains: [f32; crate::vbap::MAX_BUS_COUNT],
+        amounts: [f32; crate::vbap::MAX_BUS_COUNT],
+        length: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let mut pair = self.directional_grid.footprint(&self.cache, direction);
+        let mut output = (vec![0.0; length], vec![0.0; length]);
+        let norm = gains.iter().map(|g| g * g).sum::<f32>().sqrt();
+        if norm < 1e-8 {
+            return Ok(output);
+        }
         if direction.diffuse > 0.0 {
             // Preserve the existing authored diffuse level, using the old dry
             // response only as a scalar calibration reference. No source PCM
             // is sent to these speakers: it retains its own spatial filter.
-            let mut reference = vec![0.0_f32; self.cache.iter().map(|ir|ir.dry.len()).max().unwrap_or(0)];
-            for (bus,speaker) in crate::vbap::speakers(layout).iter().enumerate() {
-                if let Ok(ir) = self.nearest(speaker.azimuth as f64,speaker.elevation as f64) {
-                    for (out,input) in reference.iter_mut().zip(&ir.dry) {*out += input*gains[bus]/norm;}
+            let mut reference =
+                vec![0.0_f32; self.cache.iter().map(|ir| ir.dry.len()).max().unwrap_or(0)];
+            for (bus, speaker) in crate::vbap::speakers(layout).iter().enumerate() {
+                if let Ok(ir) = self.nearest(speaker.azimuth as f64, speaker.elevation as f64) {
+                    for (out, input) in reference.iter_mut().zip(&ir.dry) {
+                        *out += input * gains[bus] / norm;
+                    }
                 }
             }
-            let old_energy: f64 = reference.iter().map(|v|(*v as f64).powi(2)).sum();
-            let new_energy: f64 = pair.0.iter().chain(&pair.1).map(|v|(*v as f64).powi(2)).sum();
+            let old_energy: f64 = reference.iter().map(|v| (*v as f64).powi(2)).sum();
+            let new_energy: f64 = pair
+                .0
+                .iter()
+                .chain(&pair.1)
+                .map(|v| (*v as f64).powi(2))
+                .sum();
             if old_energy > 1e-20 && new_energy > 1e-20 {
-                let scale = 1.0 + ((old_energy/new_energy).sqrt() as f32 - 1.0) * direction.diffuse.clamp(0.0,1.0);
-                for v in pair.0.iter_mut().chain(&mut pair.1) {*v *= scale;}
+                let scale = 1.0
+                    + ((old_energy / new_energy).sqrt() as f32 - 1.0)
+                        * direction.diffuse.clamp(0.0, 1.0);
+                for v in pair.0.iter_mut().chain(&mut pair.1) {
+                    *v *= scale;
+                }
             }
         }
         // With no per-speaker processing all routes use the same dry pair.
         // Sum their scalar weights once instead of allocating/filtering a copy
         // for each speaker. Muting still reaches this path through `gains`.
         if (!self.cinema.enabled || self.cinema.speakers.is_empty())
-            && !self.cinema.monitor.enabled && amounts.iter().all(|x|*x==0.0) {
-            let weight=gains.iter().take(crate::vbap::speakers(layout).len()).filter(|g|**g>0.0)
-                .map(|g|g*g/norm).sum::<f32>()
-                * if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0};
-            for (out,input) in [(&mut output.0,pair.0),(&mut output.1,pair.1)] {
-                for (a,b) in out.iter_mut().zip(input) {*a=weight*b;}
+            && !self.cinema.monitor.enabled
+            && amounts.iter().all(|x| *x == 0.0)
+        {
+            let weight = gains
+                .iter()
+                .take(crate::vbap::speakers(layout).len())
+                .filter(|g| **g > 0.0)
+                .map(|g| g * g / norm)
+                .sum::<f32>()
+                * if self.cinema.enabled {
+                    crate::cinema::db(self.cinema.direct_db)
+                } else {
+                    1.0
+                };
+            for (out, input) in [(&mut output.0, pair.0), (&mut output.1, pair.1)] {
+                for (a, b) in out.iter_mut().zip(input) {
+                    *a = weight * b;
+                }
             }
             return Ok(output);
         }
-        for (bus,speaker) in crate::vbap::speakers(layout).iter().enumerate() {
-            if gains[bus]<=0.0{continue;}
-            let scaled=(pair.0.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect(),
-                pair.1.iter().map(|x|x*if self.cinema.enabled {crate::cinema::db(self.cinema.direct_db)}else{1.0}).collect());
-            let calibrated=self.output_filter(speaker.name,layout.as_str(),self.cinema.calibrate(speaker.name,scaled)?);
+        for (bus, speaker) in crate::vbap::speakers(layout).iter().enumerate() {
+            if gains[bus] <= 0.0 {
+                continue;
+            }
+            let scaled = (
+                pair.0
+                    .iter()
+                    .map(|x| {
+                        x * if self.cinema.enabled {
+                            crate::cinema::db(self.cinema.direct_db)
+                        } else {
+                            1.0
+                        }
+                    })
+                    .collect(),
+                pair.1
+                    .iter()
+                    .map(|x| {
+                        x * if self.cinema.enabled {
+                            crate::cinema::db(self.cinema.direct_db)
+                        } else {
+                            1.0
+                        }
+                    })
+                    .collect(),
+            );
+            let calibrated = self.output_filter(
+                speaker.name,
+                layout.as_str(),
+                self.cinema.calibrate(speaker.name, scaled)?,
+            );
             // Preserve speaker mute/trim/focus controls after common object-level
             // calibration, without mixing their directional HRIRs into the PCM.
-            let weight=gains[bus]*gains[bus]/norm;
-            for (out,input) in [(&mut output.0,calibrated.0),(&mut output.1,calibrated.1)] {
-                if amounts[bus]==0.0 {
-                    for (a,b) in out.iter_mut().zip(input) { *a+=weight*b; }
+            let weight = gains[bus] * gains[bus] / norm;
+            for (out, input) in [(&mut output.0, calibrated.0), (&mut output.1, calibrated.1)] {
+                if amounts[bus] == 0.0 {
+                    for (a, b) in out.iter_mut().zip(input) {
+                        *a += weight * b;
+                    }
                     continue;
                 }
-                let mut filter=crate::focus::BackgroundFilter::default();
-                let active=input.len()+512;
-                for (a,b) in out.iter_mut().take(active).zip(input.into_iter().chain(std::iter::repeat(0.0))) {
-                    *a+=weight*(b+(filter.process(b)-b)*amounts[bus]);
+                let mut filter = crate::focus::BackgroundFilter::default();
+                let active = input.len() + 512;
+                for (a, b) in out
+                    .iter_mut()
+                    .take(active)
+                    .zip(input.into_iter().chain(std::iter::repeat(0.0)))
+                {
+                    *a += weight * (b + (filter.process(b) - b) * amounts[bus]);
                 }
             }
         }
         Ok(output)
     }
 
-    pub fn configure_cinema(&mut self, settings: crate::cinema::Settings, profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>) {
+    pub fn configure_cinema(
+        &mut self,
+        settings: crate::cinema::Settings,
+        profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
+    ) {
         self.cinema = settings;
         self.room_profile = profile;
         self.speaker_prepared.clear();
     }
 
     fn room_alignment_active(&self, layout: &str) -> bool {
-        self.cinema.enabled && self.room_profile.as_ref().is_some_and(|profile| profile.layout == layout)
+        self.cinema.enabled
+            && self
+                .room_profile
+                .as_ref()
+                .is_some_and(|profile| profile.layout == layout)
     }
 
-    fn output_filter(&self, name: &str, layout: &str, pair: (Vec<f32>, Vec<f32>)) -> (Vec<f32>, Vec<f32>) {
+    fn output_filter(
+        &self,
+        name: &str,
+        layout: &str,
+        pair: (Vec<f32>, Vec<f32>),
+    ) -> (Vec<f32>, Vec<f32>) {
         if self.cinema.monitor.enabled {
             self.cinema.monitor.filter(name, pair)
         } else if self.room_alignment_active(layout) {
@@ -305,111 +524,272 @@ impl NativeHrtfSet {
     }
 
     pub fn speaker_filter_len(&self) -> usize {
-        let base = self.cache.iter().map(|ir| ir.wet.len() / 2).max().unwrap_or(8192)
-            .max(self.speaker_set.as_ref().map_or(0, |set| set.speaker_filter_len()));
+        let base = self
+            .cache
+            .iter()
+            .map(|ir| ir.wet.len() / 2)
+            .max()
+            .unwrap_or(8192)
+            .max(
+                self.speaker_set
+                    .as_ref()
+                    .map_or(0, |set| set.speaker_filter_len()),
+            );
         let monitor_delay = self.output_max_delay();
-        if !self.cinema.enabled { return base + monitor_delay; }
-        let room = self.room_profile.as_ref().map_or(0, |p| p.speakers.iter().map(|s| s.room_left.len()).max().unwrap_or(0));
-        let delay = self.cinema.speakers.values().map(|s| (s.delay_ms * 48.0).round() as usize).max().unwrap_or(0);
-        let tail = if self.cinema.speakers.values().any(|s| s.low_db != 0.0 || s.high_db != 0.0) { 2048 } else { 0 };
-        let preserve_direct = self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-"))
-            || self.room_profile.as_ref().is_some_and(|p| p.measurement == "simulated"
-                && p.simulation.as_ref().and_then(|v| v.get("sourceModel")).and_then(|v| v.as_str()) == Some("ideal-omnidirectional"));
-        let length = if preserve_direct { base + room } else { base.max(room) };
+        if !self.cinema.enabled {
+            return base + monitor_delay;
+        }
+        let room = self.room_profile.as_ref().map_or(0, |p| {
+            p.speakers
+                .iter()
+                .map(|s| s.room_left.len())
+                .max()
+                .unwrap_or(0)
+        });
+        let delay = self
+            .cinema
+            .speakers
+            .values()
+            .map(|s| (s.delay_ms * 48.0).round() as usize)
+            .max()
+            .unwrap_or(0);
+        let tail = if self
+            .cinema
+            .speakers
+            .values()
+            .any(|s| s.low_db != 0.0 || s.high_db != 0.0)
+        {
+            2048
+        } else {
+            0
+        };
+        let preserve_direct = self
+            .subject_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("personal-"))
+            || self.room_profile.as_ref().is_some_and(|p| {
+                p.measurement == "simulated"
+                    && p.simulation
+                        .as_ref()
+                        .and_then(|v| v.get("sourceModel"))
+                        .and_then(|v| v.as_str())
+                        == Some("ideal-omnidirectional")
+            });
+        let length = if preserve_direct {
+            base + room
+        } else {
+            base.max(room)
+        };
         length + delay + tail + monitor_delay
     }
 
-    pub fn mixed_speaker(&self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32) -> Result<(Vec<f32>, Vec<f32>), String> {
-        let profile = self.room_profile.as_ref().filter(|profile| self.cinema.enabled && profile.layout == layout);
+    pub fn mixed_speaker(
+        &self,
+        name: &str,
+        layout: &str,
+        azimuth: f64,
+        elevation: f64,
+        wet: f32,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let profile = self
+            .room_profile
+            .as_ref()
+            .filter(|profile| self.cinema.enabled && profile.layout == layout);
         let pair = if let Some(profile) = profile {
-            let speaker = profile.speakers.iter().find(|s| s.name == name).ok_or("room profile missing speaker")?;
+            let speaker = profile
+                .speakers
+                .iter()
+                .find(|s| s.name == name)
+                .ok_or("room profile missing speaker")?;
             // Ideal-source simulations supply room acoustics, not a replacement
             // listener. Their independent HRIR/distance reference must not change
             // the selected HRTF's front/rear direct-sound balance.
             let simulated_room = profile.measurement == "simulated"
-                && profile.simulation.as_ref().and_then(|v| v.get("sourceModel"))
-                    .and_then(|v| v.as_str()) == Some("ideal-omnidirectional");
-            if simulated_room || self.subject_id.as_deref().is_some_and(|id| id.starts_with("personal-")) {
-                let ir = if simulated_room { self.speaker_ir(azimuth, elevation)? } else {
+                && profile
+                    .simulation
+                    .as_ref()
+                    .and_then(|v| v.get("sourceModel"))
+                    .and_then(|v| v.as_str())
+                    == Some("ideal-omnidirectional");
+            if simulated_room
+                || self
+                    .subject_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("personal-"))
+            {
+                let ir = if simulated_room {
+                    self.speaker_ir(azimuth, elevation)?
+                } else {
                     self.nearest(azimuth, elevation)?
                 };
                 let n = ir.dry.len() / 2;
                 let dry = (&ir.dry[..n], &ir.dry[n..]);
                 // Keep the accepted personal direct response. The room contributes only
                 // its measured residual; align the shared arrival reference, never each ear.
-                let peak = |v: &[f32]| v.iter().enumerate().fold((0,0.0_f32), |best,(i,x)| if x.abs()>best.1 {(i,x.abs())}else{best}).0;
+                let peak = |v: &[f32]| {
+                    v.iter()
+                        .enumerate()
+                        .fold((0, 0.0_f32), |best, (i, x)| {
+                            if x.abs() > best.1 { (i, x.abs()) } else { best }
+                        })
+                        .0
+                };
                 let onset = peak(dry.0).min(peak(dry.1));
                 let shift = onset as isize - speaker.onset_sample as isize;
                 // One scalar for both ears retains the simulated reflection ILD
                 // and its direct-to-reverberant ratio; never normalize ears alone.
-                let energy = |a: &[f32], b: &[f32]| a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>();
+                let energy = |a: &[f32], b: &[f32]| {
+                    a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>()
+                };
                 let residual_gain = if simulated_room {
                     let reference = energy(&speaker.direct_left, &speaker.direct_right);
-                    if reference <= 1e-20 { return Err("simulated room has no direct reference".into()); }
+                    if reference <= 1e-20 {
+                        return Err("simulated room has no direct reference".into());
+                    }
                     (energy(dry.0, dry.1) / reference).sqrt() as f32
-                } else { 1.0 };
+                } else {
+                    1.0
+                };
                 let length = n.max(speaker.room_left.len().saturating_add_signed(shift));
-                let mut left = vec![0.0; length]; let mut right = vec![0.0; length];
-                left[..n].copy_from_slice(dry.0); right[..n].copy_from_slice(dry.1);
-                for (out, room, original) in [(&mut left,&speaker.room_left,&speaker.direct_left),(&mut right,&speaker.room_right,&speaker.direct_right)] {
-                    for (i,(r,d)) in room.iter().zip(original).enumerate() {
+                let mut left = vec![0.0; length];
+                let mut right = vec![0.0; length];
+                left[..n].copy_from_slice(dry.0);
+                right[..n].copy_from_slice(dry.1);
+                for (out, room, original) in [
+                    (&mut left, &speaker.room_left, &speaker.direct_left),
+                    (&mut right, &speaker.room_right, &speaker.direct_right),
+                ] {
+                    for (i, (r, d)) in room.iter().zip(original).enumerate() {
                         let target = i as isize + shift;
-                        if target >= 0 && (target as usize) < length { out[target as usize] += (r-d) * residual_gain; }
+                        if target >= 0 && (target as usize) < length {
+                            out[target as usize] += (r - d) * residual_gain;
+                        }
                     }
                 }
-                self.cinema.mix(dry, (&left,&right), if wet == 0.0 {0.0}else{1.0}, onset)
+                self.cinema.mix(
+                    dry,
+                    (&left, &right),
+                    if wet == 0.0 { 0.0 } else { 1.0 },
+                    onset,
+                )
             } else {
-                self.cinema.mix((&speaker.direct_left, &speaker.direct_right), (&speaker.room_left, &speaker.room_right),
-                    if wet == 0.0 { 0.0 } else { 1.0 }, speaker.onset_sample)
+                self.cinema.mix(
+                    (&speaker.direct_left, &speaker.direct_right),
+                    (&speaker.room_left, &speaker.room_right),
+                    if wet == 0.0 { 0.0 } else { 1.0 },
+                    speaker.onset_sample,
+                )
             }
         } else {
             let ir = self.speaker_ir(azimuth, elevation)?;
             let d = ir.dry.len() / 2;
             let r = ir.wet.len() / 2;
-            self.cinema.mix((&ir.dry[..d], &ir.dry[d..]), (&ir.wet[..r], &ir.wet[r..]), wet, 128)
+            self.cinema.mix(
+                (&ir.dry[..d], &ir.dry[d..]),
+                (&ir.wet[..r], &ir.wet[r..]),
+                wet,
+                128,
+            )
         };
-        let (mut left, mut right) = self.output_filter(name, layout, self.cinema.calibrate(name, pair)?);
+        let (mut left, mut right) =
+            self.output_filter(name, layout, self.cinema.calibrate(name, pair)?);
         left.resize(self.speaker_filter_len(), 0.0);
         right.resize(self.speaker_filter_len(), 0.0);
         Ok((left, right))
     }
 
-    pub fn prepared_speaker(&mut self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32) -> Result<crate::convolution::PreparedStereoFilter, String> {
+    pub fn prepared_speaker(
+        &mut self,
+        name: &str,
+        layout: &str,
+        azimuth: f64,
+        elevation: f64,
+        wet: f32,
+    ) -> Result<crate::convolution::PreparedStereoFilter, String> {
         let key = (name.to_string(), layout.to_string(), wet.to_bits());
-        if let Some(filter) = self.speaker_prepared.get(&key) { return Ok((**filter).clone()); }
+        if let Some(filter) = self.speaker_prepared.get(&key) {
+            return Ok((**filter).clone());
+        }
         let (left, right) = self.mixed_speaker(name, layout, azimuth, elevation, wet)?;
-        let convolver = crate::convolution::StereoPartitionedConvolver::new(&left, &right, crate::convolution::DEFAULT_PARTITION)?;
+        let convolver = crate::convolution::StereoPartitionedConvolver::new(
+            &left,
+            &right,
+            crate::convolution::DEFAULT_PARTITION,
+        )?;
         let filter = convolver.prepared_filter();
-        self.speaker_prepared.insert(key, std::sync::Arc::new(filter.clone()));
+        self.speaker_prepared
+            .insert(key, std::sync::Arc::new(filter.clone()));
         Ok(filter)
     }
 
-    pub fn prepared_focus_speaker(&mut self, name: &str, layout: &str, azimuth: f64, elevation: f64, wet: f32, background: bool) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>, String> {
-        let key = (format!("focus:{background}:{name}"), layout.to_string(), wet.to_bits());
-        if let Some(filter) = self.speaker_prepared.get(&key) { return Ok(filter.clone()); }
+    pub fn prepared_focus_speaker(
+        &mut self,
+        name: &str,
+        layout: &str,
+        azimuth: f64,
+        elevation: f64,
+        wet: f32,
+        background: bool,
+    ) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>, String> {
+        let key = (
+            format!("focus:{background}:{name}"),
+            layout.to_string(),
+            wet.to_bits(),
+        );
+        if let Some(filter) = self.speaker_prepared.get(&key) {
+            return Ok(filter.clone());
+        }
         let (mut left, mut right) = self.mixed_speaker(name, layout, azimuth, elevation, wet)?;
         // The 1.5 kHz one-pole tail falls below 2e-11 within 128 samples.
         // Reserve the same partition for both paths so focus can crossfade.
         for ear in [&mut left, &mut right] {
-            ear.resize(self.speaker_filter_len() + crate::convolution::DEFAULT_PARTITION, 0.0);
+            ear.resize(
+                self.speaker_filter_len() + crate::convolution::DEFAULT_PARTITION,
+                0.0,
+            );
             if background {
                 let mut filter = crate::focus::BackgroundFilter::default();
-                for tap in ear { *tap = filter.process(*tap); }
+                for tap in ear {
+                    *tap = filter.process(*tap);
+                }
             }
         }
-        let filter = crate::convolution::StereoPartitionedConvolver::new(&left, &right, crate::convolution::DEFAULT_PARTITION)?.prepared_filter();
+        let filter = crate::convolution::StereoPartitionedConvolver::new(
+            &left,
+            &right,
+            crate::convolution::DEFAULT_PARTITION,
+        )?
+        .prepared_filter();
         let filter = std::sync::Arc::new(filter);
         self.speaker_prepared.insert(key, filter.clone());
         Ok(filter)
     }
 
-    pub fn prepared_reflection_speaker(&mut self, name:&str, layout:&str, azimuth:f64,elevation:f64,wet:f32,background:bool) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>,String> {
-        let key=(format!("residual:{background}:{name}"),layout.to_string(),wet.to_bits());
-        if let Some(filter)=self.speaker_prepared.get(&key){return Ok(filter.clone());}
-        let mut filter=(*self.prepared_focus_speaker(name,layout,azimuth,elevation,wet,background)?).clone();
-        let dry=self.prepared_focus_speaker(name,layout,azimuth,elevation,0.0,background)?;
-        filter.add_scaled(&dry,-1.0);
-        let filter=std::sync::Arc::new(filter);self.speaker_prepared.insert(key,filter.clone());Ok(filter)
+    pub fn prepared_reflection_speaker(
+        &mut self,
+        name: &str,
+        layout: &str,
+        azimuth: f64,
+        elevation: f64,
+        wet: f32,
+        background: bool,
+    ) -> Result<std::sync::Arc<crate::convolution::PreparedStereoFilter>, String> {
+        let key = (
+            format!("residual:{background}:{name}"),
+            layout.to_string(),
+            wet.to_bits(),
+        );
+        if let Some(filter) = self.speaker_prepared.get(&key) {
+            return Ok(filter.clone());
+        }
+        let mut filter = (*self
+            .prepared_focus_speaker(name, layout, azimuth, elevation, wet, background)?)
+        .clone();
+        let dry = self.prepared_focus_speaker(name, layout, azimuth, elevation, 0.0, background)?;
+        filter.add_scaled(&dry, -1.0);
+        let filter = std::sync::Arc::new(filter);
+        self.speaker_prepared.insert(key, filter.clone());
+        Ok(filter)
     }
 
     pub fn nearest_direction(&self, azimuth: f64, elevation: f64) -> Result<(f64, f64), String> {
@@ -585,10 +965,18 @@ mod raw_tests {
 
     #[test]
     fn personal_sofa_preserves_bilateral_samples_without_invented_room() {
-        let root = std::env::temp_dir().join(format!("sda-personal-test-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = std::env::temp_dir().join(format!(
+            "sda-personal-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&root).unwrap();
-        let mut samples = vec![0.0_f32; 128]; samples[18] = 1.0; samples[64 + 21] = 0.5;
+        let mut samples = vec![0.0_f32; 128];
+        samples[18] = 1.0;
+        samples[64 + 21] = 0.5;
         let bytes: Vec<u8> = samples.iter().flat_map(|x| x.to_le_bytes()).collect();
         std::fs::write(root.join("ir.f32"), bytes).unwrap();
         let mut manifest = serde_json::json!({"sampleRate":48000,"calibrationVersion":0,
@@ -608,103 +996,259 @@ mod raw_tests {
         manifest["parametricHrtfVersion"] = serde_json::json!(1);
         manifest["processing"]["preserveSamples"] = serde_json::json!(true);
         manifest["processing"]["preserveMeasurements"] = serde_json::json!(false);
-        std::fs::write(root.join("hrtf-set.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(
+            root.join("hrtf-set.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         let generated = NativeHrtfSet::load_calibrated(&root.join("hrtf-set.json")).unwrap();
         assert_eq!(generated.cache[0].dry, set.cache[0].dry);
 
         // A room has its own direct response; it must not replace the personal one.
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Stereo2_0);
         let room = std::sync::Arc::new(crate::cinema::RoomProfile {
-            version:1,name:"test room".into(),source:"synthetic test".into(),license:"test".into(),measurement:"test".into(),
-            sample_rate:48000,layout:"2.0".into(),simulation:None,
-            speakers:crate::vbap::speakers(solver.layout()).iter().map(|spk| {
-                let mut dl=vec![0.0;512];dl[128]=0.1;
-                let dr=dl.clone();let mut rl=dl.clone();let mut rr=dr.clone();rl[400]=0.1;rr[400]=0.05;
-                crate::cinema::RoomSpeaker{name:spk.name.into(),azimuth:spk.azimuth,elevation:spk.elevation,onset_sample:128,
-                    direct_left:dl,direct_right:dr,room_left:rl,room_right:rr}
-            }).collect(),
+            version: 1,
+            name: "test room".into(),
+            source: "synthetic test".into(),
+            license: "test".into(),
+            measurement: "test".into(),
+            sample_rate: 48000,
+            layout: "2.0".into(),
+            simulation: None,
+            speakers: crate::vbap::speakers(solver.layout())
+                .iter()
+                .map(|spk| {
+                    let mut dl = vec![0.0; 512];
+                    dl[128] = 0.1;
+                    let dr = dl.clone();
+                    let mut rl = dl.clone();
+                    let mut rr = dr.clone();
+                    rl[400] = 0.1;
+                    rr[400] = 0.05;
+                    crate::cinema::RoomSpeaker {
+                        name: spk.name.into(),
+                        azimuth: spk.azimuth,
+                        elevation: spk.elevation,
+                        onset_sample: 128,
+                        direct_left: dl,
+                        direct_right: dr,
+                        room_left: rl,
+                        room_right: rr,
+                    }
+                })
+                .collect(),
         });
-        let settings=crate::cinema::Settings{enabled:true,..Default::default()};
-        let mut a=generated.clone();a.configure_cinema(settings.clone(),Some(room.clone()));
-        let full=a.mixed_speaker("FrontLeft","2.0",30.0,0.0,0.04).unwrap();
-        let dry=a.mixed_speaker("FrontLeft","2.0",30.0,0.0,0.0).unwrap();
-        assert_eq!(&dry.0[..64],&samples[..64]);assert_eq!(&dry.1[..64],&samples[64..]);
-        assert_eq!(&full.0[..64],&samples[..64]);assert_eq!(&full.1[..64],&samples[64..]);
-        assert_eq!(full.0[290],0.1);assert_eq!(full.1[290],0.05);
-        assert_eq!(full.0[128],0.0,"old room direct must be removed");
-        let mut b=a.clone();b.subject_id=Some("personal-other".into());
-        for ir in &mut b.cache {let n=ir.dry.len()/2;let mut swapped=ir.dry[n..].to_vec();swapped.extend_from_slice(&ir.dry[..n]);ir.dry=swapped.clone();ir.wet=swapped;}
-        let render=|set:NativeHrtfSet,object:bool| {
-            let mut engine=crate::Engine::new(48000,2);engine.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
-            engine.cinema=settings.clone();engine.room_profile=Some(room.clone());engine.replace_hrtf(set,0.04).unwrap();
-            engine.paused=false;engine.output_active=true;
-            let pcm:Vec<f32>=(0..8192).map(|i|0.01*(i as f32*0.173).sin()).collect();
-            let mut source=crate::Source{kind:if object{crate::SourceKind::Object}else{crate::SourceKind::Bed},bed_label:(!object).then(||"FrontLeft".into()),
-                gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
-            crate::Engine::set_source_route(&mut source,crate::bed_route("FrontLeft",&engine.vbap),0);
-            source.samples.write(0,0,&pcm);engine.sources.insert("test".into(),source);engine.set_direct_objects(object).unwrap();
-            let mut out=vec![0.0;16384];engine.render_into(&mut out,2);assert!(out.iter().all(|v|v.is_finite()));out
+        let settings = crate::cinema::Settings {
+            enabled: true,
+            ..Default::default()
         };
-        for object in [false,true]{
-            let left=render(a.clone(),object);let right=render(b.clone(),object);
-            let energy:f32=left[8192..].iter().map(|v|v*v).sum();
-            let delta:f32=left[8192..].iter().zip(&right[8192..]).map(|(a,b)|(a-b)*(a-b)).sum();
-            assert!(energy>1e-8&&delta/energy>0.1,"personal response must change final PCM, object={object}");
-            eprintln!("personal HRTF offline output object={object} difference/energy={:.4}",delta/energy);
+        let mut a = generated.clone();
+        a.configure_cinema(settings.clone(), Some(room.clone()));
+        let full = a
+            .mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.04)
+            .unwrap();
+        let dry = a.mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0).unwrap();
+        assert_eq!(&dry.0[..64], &samples[..64]);
+        assert_eq!(&dry.1[..64], &samples[64..]);
+        assert_eq!(&full.0[..64], &samples[..64]);
+        assert_eq!(&full.1[..64], &samples[64..]);
+        assert_eq!(full.0[290], 0.1);
+        assert_eq!(full.1[290], 0.05);
+        assert_eq!(full.0[128], 0.0, "old room direct must be removed");
+        let mut b = a.clone();
+        b.subject_id = Some("personal-other".into());
+        for ir in &mut b.cache {
+            let n = ir.dry.len() / 2;
+            let mut swapped = ir.dry[n..].to_vec();
+            swapped.extend_from_slice(&ir.dry[..n]);
+            ir.dry = swapped.clone();
+            ir.wet = swapped;
+        }
+        let render = |set: NativeHrtfSet, object: bool| {
+            let mut engine = crate::Engine::new(48000, 2);
+            engine.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
+            engine.cinema = settings.clone();
+            engine.room_profile = Some(room.clone());
+            engine.replace_hrtf(set, 0.04).unwrap();
+            engine.paused = false;
+            engine.output_active = true;
+            let pcm: Vec<f32> = (0..8192).map(|i| 0.01 * (i as f32 * 0.173).sin()).collect();
+            let mut source = crate::Source {
+                kind: if object {
+                    crate::SourceKind::Object
+                } else {
+                    crate::SourceKind::Bed
+                },
+                bed_label: (!object).then(|| "FrontLeft".into()),
+                gain: 1.0,
+                target_gain: 1.0,
+                availability: 1.0,
+                availability_target: 1.0,
+                ..Default::default()
+            };
+            crate::Engine::set_source_route(
+                &mut source,
+                crate::bed_route("FrontLeft", &engine.vbap),
+                0,
+            );
+            source.samples.write(0, 0, &pcm);
+            engine.sources.insert("test".into(), source);
+            engine.set_direct_objects(object).unwrap();
+            let mut out = vec![0.0; 16384];
+            engine.render_into(&mut out, 2);
+            assert!(out.iter().all(|v| v.is_finite()));
+            out
+        };
+        for object in [false, true] {
+            let left = render(a.clone(), object);
+            let right = render(b.clone(), object);
+            let energy: f32 = left[8192..].iter().map(|v| v * v).sum();
+            let delta: f32 = left[8192..]
+                .iter()
+                .zip(&right[8192..])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            assert!(
+                energy > 1e-8 && delta / energy > 0.1,
+                "personal response must change final PCM, object={object}"
+            );
+            eprintln!(
+                "personal HRTF offline output object={object} difference/energy={:.4}",
+                delta / energy
+            );
         }
         // Replace a personal response after rendering has started: keep the clock,
         // source PCM and play state, and observe the new response in subsequent PCM.
-        for object in [false,true] {
-            let live=|swap:bool| {
-                let mut e=crate::Engine::new(48000,2);e.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
-                e.cinema=settings.clone();e.room_profile=Some(room.clone());e.replace_hrtf(a.clone(),0.04).unwrap();
-                e.paused=false;e.output_active=true;
-                let mut source=crate::Source{kind:if object{crate::SourceKind::Object}else{crate::SourceKind::Bed},gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
-                crate::Engine::set_source_route(&mut source,crate::bed_route("FrontLeft",&e.vbap),0);
-                let pcm:Vec<f32>=(0..16384).map(|i|0.01*(i as f32*0.173).sin()).collect();
-                source.samples.write(0,0,&pcm);e.sources.insert("live".into(),source);e.set_direct_objects(object).unwrap();
-                e.render_into(&mut vec![0.0;8192],2);let clock=e.sample_pos;assert!(clock>0);
-                if swap {e.replace_hrtf(b.clone(),0.04).unwrap();}
-                assert_eq!(e.sample_pos,clock);assert!(!e.paused);assert!(e.sources.contains_key("live"));
-                let mut out=vec![0.0;16384];e.render_into(&mut out,2);assert!(e.sample_pos>clock);assert!(out.iter().all(|v|v.is_finite()));out
+        for object in [false, true] {
+            let live = |swap: bool| {
+                let mut e = crate::Engine::new(48000, 2);
+                e.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
+                e.cinema = settings.clone();
+                e.room_profile = Some(room.clone());
+                e.replace_hrtf(a.clone(), 0.04).unwrap();
+                e.paused = false;
+                e.output_active = true;
+                let mut source = crate::Source {
+                    kind: if object {
+                        crate::SourceKind::Object
+                    } else {
+                        crate::SourceKind::Bed
+                    },
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
+                    ..Default::default()
+                };
+                crate::Engine::set_source_route(
+                    &mut source,
+                    crate::bed_route("FrontLeft", &e.vbap),
+                    0,
+                );
+                let pcm: Vec<f32> = (0..16384)
+                    .map(|i| 0.01 * (i as f32 * 0.173).sin())
+                    .collect();
+                source.samples.write(0, 0, &pcm);
+                e.sources.insert("live".into(), source);
+                e.set_direct_objects(object).unwrap();
+                e.render_into(&mut vec![0.0; 8192], 2);
+                let clock = e.sample_pos;
+                assert!(clock > 0);
+                if swap {
+                    e.replace_hrtf(b.clone(), 0.04).unwrap();
+                }
+                assert_eq!(e.sample_pos, clock);
+                assert!(!e.paused);
+                assert!(e.sources.contains_key("live"));
+                let mut out = vec![0.0; 16384];
+                e.render_into(&mut out, 2);
+                assert!(e.sample_pos > clock);
+                assert!(out.iter().all(|v| v.is_finite()));
+                out
             };
-            let unchanged=live(false);let switched=live(true);
-            let energy:f32=unchanged[8192..].iter().map(|v|v*v).sum();
-            let delta:f32=unchanged[8192..].iter().zip(&switched[8192..]).map(|(a,b)|(a-b)*(a-b)).sum();
-            assert!(energy>1e-8&&delta/energy>0.1,"live personal switch must affect PCM, object={object}");
+            let unchanged = live(false);
+            let switched = live(true);
+            let energy: f32 = unchanged[8192..].iter().map(|v| v * v).sum();
+            let delta: f32 = unchanged[8192..]
+                .iter()
+                .zip(&switched[8192..])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            assert!(
+                energy > 1e-8 && delta / energy > 0.1,
+                "live personal switch must affect PCM, object={object}"
+            );
         }
-        let mut engine=crate::Engine::new(48000,2);engine.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
-        engine.replace_hrtf(a.clone(),0.04).unwrap();let previous=engine.active_hrtf_set.as_ref().unwrap().subject_id.clone();
-        engine.cinema=settings;let mut invalid=(*room).clone();invalid.speakers.clear();engine.room_profile=Some(std::sync::Arc::new(invalid));
-        assert!(engine.replace_hrtf(b,0.9).is_err());assert_eq!(engine.active_hrtf_set.as_ref().unwrap().subject_id,previous);
-        assert_eq!(engine.hrtf_wet_weight,0.04);assert!(engine.bus_renderer.is_some());
+        let mut engine = crate::Engine::new(48000, 2);
+        engine.set_layout(crate::vbap::LayoutId::Stereo2_0).unwrap();
+        engine.replace_hrtf(a.clone(), 0.04).unwrap();
+        let previous = engine.active_hrtf_set.as_ref().unwrap().subject_id.clone();
+        engine.cinema = settings;
+        let mut invalid = (*room).clone();
+        invalid.speakers.clear();
+        engine.room_profile = Some(std::sync::Arc::new(invalid));
+        assert!(engine.replace_hrtf(b, 0.9).is_err());
+        assert_eq!(
+            engine.active_hrtf_set.as_ref().unwrap().subject_id,
+            previous
+        );
+        assert_eq!(engine.hrtf_wet_weight, 0.04);
+        assert!(engine.bus_renderer.is_some());
 
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn ku100_reflection_stages_preserve_direct_and_separate_actual_room_tail() {
-        use crate::cinema::{Settings,ReflectionMode};
-        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
-        for name in ["hrtf-raw","hrtf"] {
-            let mut set=NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
-            let ir=set.nearest(30.0,0.0).unwrap();
-            let baseline=set.mixed_speaker("FrontLeft","7.1.4",30.0,0.0,0.04).unwrap();
-            let mut outputs=Vec::new();
-            for mode in [ReflectionMode::Direct,ReflectionMode::Early,ReflectionMode::Full] {
-                set.configure_cinema(Settings{enabled:true,reflection_mode:mode,..Default::default()},None);
-                outputs.push(set.mixed_speaker("FrontLeft","7.1.4",30.0,0.0,0.04).unwrap());
+        use crate::cinema::{ReflectionMode, Settings};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for name in ["hrtf-raw", "hrtf"] {
+            let mut set =
+                NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
+            let ir = set.nearest(30.0, 0.0).unwrap();
+            let baseline = set
+                .mixed_speaker("FrontLeft", "7.1.4", 30.0, 0.0, 0.04)
+                .unwrap();
+            let mut outputs = Vec::new();
+            for mode in [
+                ReflectionMode::Direct,
+                ReflectionMode::Early,
+                ReflectionMode::Full,
+            ] {
+                set.configure_cinema(
+                    Settings {
+                        enabled: true,
+                        reflection_mode: mode,
+                        ..Default::default()
+                    },
+                    None,
+                );
+                outputs.push(
+                    set.mixed_speaker("FrontLeft", "7.1.4", 30.0, 0.0, 0.04)
+                        .unwrap(),
+                );
             }
-            let dry_len=ir.dry.len()/2;
-            for (ear,dry) in [&ir.dry[..dry_len],&ir.dry[dry_len..]].iter().enumerate() {
-                let channels:Vec<&Vec<f32>>=outputs.iter().map(|p|if ear==0{&p.0}else{&p.1}).collect();
-                assert_eq!(&channels[0][..dry_len],*dry);
-                assert!(channels[0][dry_len..].iter().all(|v|*v==0.0));
-                assert!(channels[1][2768..].iter().all(|v|*v==0.0));
-                assert!(channels[2][2768..].iter().any(|v|v.abs()>1e-8));
-                assert!(channels[1].iter().zip(channels[0]).any(|(a,b)|(a-b).abs()>1e-8));
+            let dry_len = ir.dry.len() / 2;
+            for (ear, dry) in [&ir.dry[..dry_len], &ir.dry[dry_len..]].iter().enumerate() {
+                let channels: Vec<&Vec<f32>> = outputs
+                    .iter()
+                    .map(|p| if ear == 0 { &p.0 } else { &p.1 })
+                    .collect();
+                assert_eq!(&channels[0][..dry_len], *dry);
+                assert!(channels[0][dry_len..].iter().all(|v| *v == 0.0));
+                assert!(channels[1][2768..].iter().all(|v| *v == 0.0));
+                assert!(channels[2][2768..].iter().any(|v| v.abs() > 1e-8));
+                assert!(
+                    channels[1]
+                        .iter()
+                        .zip(channels[0])
+                        .any(|(a, b)| (a - b).abs() > 1e-8)
+                );
             }
-            assert_eq!(outputs[2],baseline,"full stage must keep the existing room amount");
+            assert_eq!(
+                outputs[2], baseline,
+                "full stage must keep the existing room amount"
+            );
         }
     }
 
@@ -712,7 +1256,8 @@ mod raw_tests {
     fn raw_ku100_preserves_samples_and_room_tail() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
         for name in ["hrtf-raw", "hrtf-dense-raw"] {
-            let set = NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
+            let set =
+                NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
             let original = set.nearest(0.0, 0.0).unwrap();
             assert_eq!(original.dry.len(), 512);
             assert_eq!(original.wet.len(), 28800);
@@ -732,10 +1277,12 @@ mod raw_tests {
     fn ku100_notch_guard_covers_complete_standard_and_dense_measurement_sets() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
         for name in ["hrtf", "hrtf-dense"] {
-            let set = NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
+            let set =
+                NativeHrtfSet::load_calibrated(&root.join(name).join("hrtf-set.json")).unwrap();
             assert!(set.directional_grid.ku100_notch_guard_enabled(), "{name}");
         }
-        let other = NativeHrtfSet::load_calibrated(&root.join("hrtf-h13").join("hrtf-set.json")).unwrap();
+        let other =
+            NativeHrtfSet::load_calibrated(&root.join("hrtf-h13").join("hrtf-set.json")).unwrap();
         assert!(!other.directional_grid.ku100_notch_guard_enabled());
     }
 
@@ -763,27 +1310,46 @@ mod raw_tests {
                 room_right: response,
             }],
         });
-        let mut settings = crate::cinema::Settings { enabled: true, ..Default::default() };
-        settings.monitor.outputs.insert("FrontLeft".into(), crate::monitor::Output {
-            trim_db: -6.0,
-            delay_ms: 1.0,
-            invert: true,
-            muted: true,
-        });
+        let mut settings = crate::cinema::Settings {
+            enabled: true,
+            ..Default::default()
+        };
+        settings.monitor.outputs.insert(
+            "FrontLeft".into(),
+            crate::monitor::Output {
+                trim_db: -6.0,
+                delay_ms: 1.0,
+                invert: true,
+                muted: true,
+            },
+        );
         let mut set = NativeHrtfSet::synthetic(1, 512, 512).unwrap();
         set.configure_cinema(settings.clone(), Some(room.clone()));
 
-        let (left, right) = set.mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0).unwrap();
+        let (left, right) = set
+            .mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0)
+            .unwrap();
         assert!(left[..176].iter().all(|sample| *sample == 0.0));
         assert!((left[176] - crate::cinema::db(-6.0)).abs() < 1e-6);
         assert!((right[176] - crate::cinema::db(-6.0)).abs() < 1e-6);
-        assert!(set.speaker_filter_len() >= 560, "room alignment delay must fit in the FIR");
-        assert_eq!(set.output_filter("FrontLeft", "7.1.4", (vec![1.0], vec![1.0])), (vec![1.0], vec![1.0]));
+        assert!(
+            set.speaker_filter_len() >= 560,
+            "room alignment delay must fit in the FIR"
+        );
+        assert_eq!(
+            set.output_filter("FrontLeft", "7.1.4", (vec![1.0], vec![1.0])),
+            (vec![1.0], vec![1.0])
+        );
 
         settings.monitor.enabled = true;
         set.configure_cinema(settings, Some(room));
-        let (left, right) = set.mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0).unwrap();
-        assert!(left.iter().all(|sample| *sample == 0.0), "monitor mute must still apply when monitoring is enabled");
+        let (left, right) = set
+            .mixed_speaker("FrontLeft", "2.0", 30.0, 0.0, 0.0)
+            .unwrap();
+        assert!(
+            left.iter().all(|sample| *sample == 0.0),
+            "monitor mute must still apply when monitoring is enabled"
+        );
         assert!(right.iter().all(|sample| *sample == 0.0));
     }
 }
@@ -792,23 +1358,70 @@ mod simulated_room_balance_tests {
     use super::*;
     #[test]
     fn ideal_room_preserves_selected_direct_balance_and_matches_reflection_reference() {
-        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf/hrtf-set.json");
-        let base=NativeHrtfSet::load_calibrated(&root).unwrap();
-        for (name,az,scale) in [("FrontLeft",30.0,2.0),("RearLeft",150.0,0.25),("RearRight",-150.0,0.5)] {
-            let ir=base.nearest(az,0.0).unwrap();let n=ir.dry.len()/2;
-            let length=n+2048;
-            let mut dl=vec![0.0;length];let mut dr=dl.clone();
-            for i in 0..n {dl[i]=ir.dry[i]*scale;dr[i]=ir.dry[n+i]*scale;}
-            let peak=|v:&[f32]|v.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
-            let onset=peak(&dl).min(peak(&dr));
-            let mut rl=dl.clone();let mut rr=dr.clone();rl[n+1000]=0.01*scale;rr[n+1000]=0.02*scale;
-            let room=std::sync::Arc::new(crate::cinema::RoomProfile{version:1,name:"ideal test".into(),source:"test".into(),license:"test".into(),measurement:"simulated".into(),sample_rate:48000,layout:"7.1.4".into(),simulation:Some(serde_json::json!({"sourceModel":"ideal-omnidirectional"})),speakers:vec![crate::cinema::RoomSpeaker{name:name.into(),azimuth:az as f32,elevation:0.0,onset_sample:onset,direct_left:dl,direct_right:dr,room_left:rl,room_right:rr}]});
-            let mut set=base.clone();set.configure_cinema(crate::cinema::Settings{enabled:true,..Default::default()},Some(room));
-            let direct=set.mixed_speaker(name,"7.1.4",az,0.0,0.0).unwrap();
-            assert_eq!(&direct.0[..n],&ir.dry[..n]);assert_eq!(&direct.1[..n],&ir.dry[n..]);
-            let full=set.mixed_speaker(name,"7.1.4",az,0.0,0.04).unwrap();
-            assert_eq!(&full.0[..n],&ir.dry[..n]);assert_eq!(&full.1[..n],&ir.dry[n..]);
-            assert!((full.0[n+1000]-0.01).abs()<1e-6);assert!((full.1[n+1000]-0.02).abs()<1e-6);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf/hrtf-set.json");
+        let base = NativeHrtfSet::load_calibrated(&root).unwrap();
+        for (name, az, scale) in [
+            ("FrontLeft", 30.0, 2.0),
+            ("RearLeft", 150.0, 0.25),
+            ("RearRight", -150.0, 0.5),
+        ] {
+            let ir = base.nearest(az, 0.0).unwrap();
+            let n = ir.dry.len() / 2;
+            let length = n + 2048;
+            let mut dl = vec![0.0; length];
+            let mut dr = dl.clone();
+            for i in 0..n {
+                dl[i] = ir.dry[i] * scale;
+                dr[i] = ir.dry[n + i] * scale;
+            }
+            let peak = |v: &[f32]| {
+                v.iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                    .unwrap()
+                    .0
+            };
+            let onset = peak(&dl).min(peak(&dr));
+            let mut rl = dl.clone();
+            let mut rr = dr.clone();
+            rl[n + 1000] = 0.01 * scale;
+            rr[n + 1000] = 0.02 * scale;
+            let room = std::sync::Arc::new(crate::cinema::RoomProfile {
+                version: 1,
+                name: "ideal test".into(),
+                source: "test".into(),
+                license: "test".into(),
+                measurement: "simulated".into(),
+                sample_rate: 48000,
+                layout: "7.1.4".into(),
+                simulation: Some(serde_json::json!({"sourceModel":"ideal-omnidirectional"})),
+                speakers: vec![crate::cinema::RoomSpeaker {
+                    name: name.into(),
+                    azimuth: az as f32,
+                    elevation: 0.0,
+                    onset_sample: onset,
+                    direct_left: dl,
+                    direct_right: dr,
+                    room_left: rl,
+                    room_right: rr,
+                }],
+            });
+            let mut set = base.clone();
+            set.configure_cinema(
+                crate::cinema::Settings {
+                    enabled: true,
+                    ..Default::default()
+                },
+                Some(room),
+            );
+            let direct = set.mixed_speaker(name, "7.1.4", az, 0.0, 0.0).unwrap();
+            assert_eq!(&direct.0[..n], &ir.dry[..n]);
+            assert_eq!(&direct.1[..n], &ir.dry[n..]);
+            let full = set.mixed_speaker(name, "7.1.4", az, 0.0, 0.04).unwrap();
+            assert_eq!(&full.0[..n], &ir.dry[..n]);
+            assert_eq!(&full.1[..n], &ir.dry[n..]);
+            assert!((full.0[n + 1000] - 0.01).abs() < 1e-6);
+            assert!((full.1[n + 1000] - 0.02).abs() < 1e-6);
         }
     }
 }
@@ -818,33 +1431,65 @@ mod subject_dense_tests {
     use super::*;
     #[test]
     fn dense_subjects_use_exact_speaker_measurements_and_fallback_for_missing_anchors() {
-        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
-        for head in std::iter::once("d2".to_string()).chain((3..=20).map(|n|format!("h{n}"))) {
-            let dense=NativeHrtfSet::load_calibrated(&root.join(format!("hrtf-{head}-dense/hrtf-set.json"))).unwrap();
-            assert_eq!(dense.subject_id.as_deref(),Some(head.as_str()));
-            assert_eq!(dense.positions.len(),61);
-            let standard=dense.speaker_set.as_ref().unwrap();
-            assert_eq!(standard.subject_id,dense.subject_id);
-            assert_eq!(standard.positions.len(),17);
-            assert!(dense.cache.iter().all(|ir|ir.dry.iter().chain(&ir.wet).all(|x|x.is_finite())));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public");
+        for head in std::iter::once("d2".to_string()).chain((3..=20).map(|n| format!("h{n}"))) {
+            let dense = NativeHrtfSet::load_calibrated(
+                &root.join(format!("hrtf-{head}-dense/hrtf-set.json")),
+            )
+            .unwrap();
+            assert_eq!(dense.subject_id.as_deref(), Some(head.as_str()));
+            assert_eq!(dense.positions.len(), 61);
+            let standard = dense.speaker_set.as_ref().unwrap();
+            assert_eq!(standard.subject_id, dense.subject_id);
+            assert_eq!(standard.positions.len(), 17);
+            assert!(
+                dense
+                    .cache
+                    .iter()
+                    .all(|ir| ir.dry.iter().chain(&ir.wet).all(|x| x.is_finite()))
+            );
             // 70 degrees is present only in the dense 61-point subject set;
             // the standard 17-point speaker anchors must fall back to a neighbor.
-            assert_eq!(dense.nearest(70.0,0.0).unwrap().azimuth,70.0);
-            assert_ne!(standard.nearest(70.0,0.0).unwrap().azimuth,70.0);
+            assert_eq!(dense.nearest(70.0, 0.0).unwrap().azimuth, 70.0);
+            assert_ne!(standard.nearest(70.0, 0.0).unwrap().azimuth, 70.0);
 
-            for (name,azimuth) in [("FrontLeft",30.0),("Center",0.0),("SurroundLeft",110.0)] {
-                assert!(dense.has_exact_measurement(azimuth,0.0));
-                let ir=dense.nearest(azimuth,0.0).unwrap();
-                let dry=ir.dry.len()/2; let wet=ir.wet.len()/2;
-                let mut expected=dense.cinema.mix((&ir.dry[..dry],&ir.dry[dry..]),(&ir.wet[..wet],&ir.wet[wet..]),0.04,128);
-                expected.0.resize(dense.speaker_filter_len(),0.0);expected.1.resize(dense.speaker_filter_len(),0.0);
-                assert_eq!(dense.mixed_speaker(name,"5.1",azimuth,0.0,0.04).unwrap(),expected,"{head} {name}");
+            for (name, azimuth) in [
+                ("FrontLeft", 30.0),
+                ("Center", 0.0),
+                ("SurroundLeft", 110.0),
+            ] {
+                assert!(dense.has_exact_measurement(azimuth, 0.0));
+                let ir = dense.nearest(azimuth, 0.0).unwrap();
+                let dry = ir.dry.len() / 2;
+                let wet = ir.wet.len() / 2;
+                let mut expected = dense.cinema.mix(
+                    (&ir.dry[..dry], &ir.dry[dry..]),
+                    (&ir.wet[..wet], &ir.wet[wet..]),
+                    0.04,
+                    128,
+                );
+                expected.0.resize(dense.speaker_filter_len(), 0.0);
+                expected.1.resize(dense.speaker_filter_len(), 0.0);
+                assert_eq!(
+                    dense
+                        .mixed_speaker(name, "5.1", azimuth, 0.0, 0.04)
+                        .unwrap(),
+                    expected,
+                    "{head} {name}"
+                );
             }
 
-            assert!(!dense.has_exact_measurement(45.0,45.0));
-            let fallback=dense.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
-            let expected=standard.mixed_speaker("TopFrontLeft","7.1.4",45.0,45.0,0.04).unwrap();
-            assert_eq!(fallback,expected,"{head} absent dense anchor must use standard HRTF");
+            assert!(!dense.has_exact_measurement(45.0, 45.0));
+            let fallback = dense
+                .mixed_speaker("TopFrontLeft", "7.1.4", 45.0, 45.0, 0.04)
+                .unwrap();
+            let expected = standard
+                .mixed_speaker("TopFrontLeft", "7.1.4", 45.0, 45.0, 0.04)
+                .unwrap();
+            assert_eq!(
+                fallback, expected,
+                "{head} absent dense anchor must use standard HRTF"
+            );
         }
     }
 }

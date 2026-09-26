@@ -2,8 +2,8 @@
 use super::*;
 use cpal::traits::DeviceTrait;
 use std::sync::{
-    atomic::{AtomicBool, AtomicI32, AtomicU64},
     Mutex,
+    atomic::{AtomicBool, AtomicI32, AtomicU64},
 };
 
 pub(super) fn endpoints() -> Vec<Endpoint> {
@@ -174,11 +174,18 @@ impl AsioOutput {
     pub(super) fn control_panel(&self) -> Result<(), String> {
         // ASIO drivers may require controlPanel on the same STA that loaded them.
         let code = unsafe { asio_sys::bindings::asio_import::show_control_panel() };
-        if code == 0 || code == 0x3f4847a0 { Ok(()) }
-        else { Err(format!("ASIO 控制面板打开失败（{code}）")) }
+        if code == 0 || code == 0x3f4847a0 {
+            Ok(())
+        } else {
+            Err(format!("ASIO 控制面板打开失败（{code}）"))
+        }
     }
     pub(super) fn pump_panel() -> bool {
-        use windows::Win32::{Foundation::{BOOL, HWND, LPARAM}, System::Threading::GetCurrentProcessId, UI::WindowsAndMessaging::*};
+        use windows::Win32::{
+            Foundation::{BOOL, HWND, LPARAM},
+            System::Threading::GetCurrentProcessId,
+            UI::WindowsAndMessaging::*,
+        };
         unsafe extern "system" fn visible_window(hwnd: HWND, param: LPARAM) -> BOOL {
             unsafe {
                 let mut pid = 0;
@@ -197,7 +204,12 @@ impl AsioOutput {
             }
         }
         let mut visible = false;
-        unsafe { let _ = EnumWindows(Some(visible_window), LPARAM((&mut visible as *mut bool) as isize)); }
+        unsafe {
+            let _ = EnumWindows(
+                Some(visible_window),
+                LPARAM((&mut visible as *mut bool) as isize),
+            );
+        }
         visible
     }
     pub(super) fn drain(&self) {
@@ -209,21 +221,45 @@ impl AsioOutput {
     fn drain_silence(&self, shutdown: bool) {
         let mut input_latency = 0;
         let mut output_latency = 0;
-        let result = unsafe { asio_sys::bindings::asio_import::ASIOGetLatencies(&mut input_latency, &mut output_latency) };
-        if result != 0 && result != 0x3f4847a0 { output_latency = 0; }
-        let target = drain_frames(self.rate, self.frames, output_latency.max(0) as u64, shutdown);
+        let result = unsafe {
+            asio_sys::bindings::asio_import::ASIOGetLatencies(
+                &mut input_latency,
+                &mut output_latency,
+            )
+        };
+        if result != 0 && result != 0x3f4847a0 {
+            output_latency = 0;
+        }
+        let target = drain_frames(
+            self.rate,
+            self.frames,
+            output_latency.max(0) as u64,
+            shutdown,
+        );
         let before = self.silent_frames.load(Ordering::Acquire);
         self.fading.store(true, Ordering::Release);
         // ASIO4ALL may have a WDM/Bluetooth queue beyond its two ASIO buffers.
         // Feed actual silence through that queue while the driver is still
         // running. Sleeping after ASIOStop cannot replace its retained audio.
-        let deadline = Instant::now() + Duration::from_secs_f64(target as f64 / self.rate as f64 + 1.0);
-        while self.silent_frames.load(Ordering::Acquire).saturating_sub(before) < target
-            && Instant::now() < deadline && !self.failed.load(Ordering::Acquire) {
+        let deadline =
+            Instant::now() + Duration::from_secs_f64(target as f64 / self.rate as f64 + 1.0);
+        while self
+            .silent_frames
+            .load(Ordering::Acquire)
+            .saturating_sub(before)
+            < target
+            && Instant::now() < deadline
+            && !self.failed.load(Ordering::Acquire)
+        {
             thread::sleep(Duration::from_millis(2));
         }
-        eprintln!("ASIO silence drain: shutdown={shutdown} frames={}/{} latency={output_latency}",
-            self.silent_frames.load(Ordering::Acquire).saturating_sub(before), target);
+        eprintln!(
+            "ASIO silence drain: shutdown={shutdown} frames={}/{} latency={output_latency}",
+            self.silent_frames
+                .load(Ordering::Acquire)
+                .saturating_sub(before),
+            target
+        );
     }
     pub(super) fn status(&self, requested: &Settings, detail: String) -> Status {
         Status {
@@ -320,17 +356,19 @@ fn drain_frames(rate: u32, buffer_frames: usize, latency: u64, shutdown: bool) -
     // Some Bluetooth bridges under-report their downstream queue (~1 second
     // observed on reconnect). This guard affects teardown only, never playback.
     let minimum = rate as u64 * if shutdown { 1500 } else { 20 } / 1000;
-    latency.saturating_add((buffer_frames as u64).saturating_mul(2))
-        .max(minimum).min(rate as u64 * 3)
+    latency
+        .saturating_add((buffer_frames as u64).saturating_mul(2))
+        .max(minimum)
+        .min(rate as u64 * 3)
 }
 
 #[cfg(test)]
 mod shutdown_tests {
     #[test]
     fn silence_covers_downstream_latency_and_both_driver_buffers() {
-        assert_eq!(super::drain_frames(48000,512,0,true),72000);
-        assert_eq!(super::drain_frames(48000,4096,96000,true),104192);
-        assert_eq!(super::drain_frames(48000,512,1024,false),2048);
-        assert_eq!(super::drain_frames(48000,512,u64::MAX,true),144000);
+        assert_eq!(super::drain_frames(48000, 512, 0, true), 72000);
+        assert_eq!(super::drain_frames(48000, 4096, 96000, true), 104192);
+        assert_eq!(super::drain_frames(48000, 512, 1024, false), 2048);
+        assert_eq!(super::drain_frames(48000, 512, u64::MAX, true), 144000);
     }
 }

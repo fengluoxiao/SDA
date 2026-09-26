@@ -70,6 +70,33 @@ function player() {
   return p;
 }
 
+// Toggling the ALAC listening transform changes the source topology. A stored
+// attenuation must be reasserted at that boundary, rather than waiting for a
+// subsequent layout toggle or a future loudness measurement.
+{
+  const p = player();
+  const web = [];
+  const native = [];
+  p.alacStereoUpmixEnabled = false;
+  p.alacStereoUpmixer = { reset: () => web.push("reset") };
+  p.volumeBalanceEnabled = true;
+  p.stereoBalanceEligible = true;
+  p.programLoudnessGainDb = -6;
+  p.renderer = {
+    setVolumeBalance: (enabled) => web.push(`enabled:${enabled}`),
+    setProgramLoudnessGainDb: (gain) => web.push(`gain:${gain}`),
+  };
+  p.nativeRendererSink = {
+    setProgramEnabled: (enabled) => native.push(`enabled:${enabled}`),
+    setProgramGainDb: (gain) => native.push(`gain:${gain}`),
+  };
+
+  p.setAlacStereoUpmixEnabled(true);
+
+  assert.deepEqual(web, ["reset", "enabled:true", "gain:-6"]);
+  assert.deepEqual(native, ["enabled:true", "gain:-6"]);
+}
+
 // Construction uses an approved persisted 300ms setting before init creates its
 // first AudioContext; unsupported values safely return to the 100ms default.
 {
@@ -126,11 +153,14 @@ function player() {
   const p = player();
   const started = [];
   p.renderer = {
+    ctx: { baseLatency: 0 },
     maxBufferedSeconds: () => 1,
     startAt: (sample) => started.push(sample),
     consumedSamples: 0,
+    consumedSeconds: () => 0,
   };
   p.sampleRate = 10;
+  p.emitVisual = () => {};
   const accepted = frame(10, [1, 2, 3, 4, 5]);
   const gap = frame(20, [6, 7, 8, 9, 10]);
   p.pcmQueue = [accepted, gap];
@@ -232,10 +262,12 @@ function player() {
   let pumpCalls = 0;
   let recreateRate = 0;
   let starts = 0;
+  p.emitVisual = () => {};
   p.renderer = {
-    ctx: { sampleRate: 44_100 },
+    ctx: { sampleRate: 44_100, baseLatency: 0 },
     maxBufferedSeconds: () => 1,
     startAt: () => { starts++; },
+    consumedSeconds: () => 0,
   };
   p.initArgs = {};
   p.initialRendererReady = false;

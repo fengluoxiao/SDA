@@ -19,55 +19,91 @@ pub(super) struct DeviceOutput {
 impl DeviceOutput {
     pub(super) fn new(rate: u32, refill: usize) -> Self {
         let cutoff = (rate as f64 / 48_000.0).min(1.0) * 0.94;
-        let filters = if rate == 48_000 { Vec::new() } else {
-            (0..PHASES).map(|phase| {
-                let mut taps = [0.0; TAPS];
-                let delay = (TAPS / 2) as f64 + phase as f64 / PHASES as f64;
-                let mut sum = 0.0;
-                for (i, tap) in taps.iter_mut().enumerate() {
-                    let x = (i as f64 - delay) * cutoff;
-                    let sinc = if x.abs() < 1e-12 { 1.0 } else {
-                        (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-                    };
-                    let window = 0.42 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (TAPS - 1) as f64).cos()
-                        + 0.08 * (4.0 * std::f64::consts::PI * i as f64 / (TAPS - 1) as f64).cos();
-                    *tap = (sinc * cutoff * window) as f32;
-                    sum += *tap;
-                }
-                for tap in &mut taps { *tap /= sum; }
-                taps
-            }).collect()
+        let filters = if rate == 48_000 {
+            Vec::new()
+        } else {
+            (0..PHASES)
+                .map(|phase| {
+                    let mut taps = [0.0; TAPS];
+                    let delay = (TAPS / 2) as f64 + phase as f64 / PHASES as f64;
+                    let mut sum = 0.0;
+                    for (i, tap) in taps.iter_mut().enumerate() {
+                        let x = (i as f64 - delay) * cutoff;
+                        let sinc = if x.abs() < 1e-12 {
+                            1.0
+                        } else {
+                            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+                        };
+                        let window = 0.42
+                            - 0.5
+                                * (2.0 * std::f64::consts::PI * i as f64 / (TAPS - 1) as f64).cos()
+                            + 0.08
+                                * (4.0 * std::f64::consts::PI * i as f64 / (TAPS - 1) as f64).cos();
+                        *tap = (sinc * cutoff * window) as f32;
+                        sum += *tap;
+                    }
+                    for tap in &mut taps {
+                        *tap /= sum;
+                    }
+                    taps
+                })
+                .collect()
         };
-        Self { source: CallbackOutput::new(48_000, refill), rate, lossless:crate::remote_audio::receiver(),buffering:true, phase: 0,
-            history: [[0.0; 2]; TAPS], cursor: 0, filters, requested_source: 0 }
+        Self {
+            source: CallbackOutput::new(48_000, refill),
+            rate,
+            lossless: crate::remote_audio::receiver(),
+            buffering: true,
+            phase: 0,
+            history: [[0.0; 2]; TAPS],
+            cursor: 0,
+            filters,
+            requested_source: 0,
+        }
     }
 
     pub(super) fn reset(&mut self) {
         self.source.reset();
-        self.buffering=true;
+        self.buffering = true;
         self.phase = 0;
         self.history.fill([0.0; 2]);
         self.cursor = 0;
         self.requested_source = 0;
     }
 
-    pub(super) fn fill(&mut self, fifo: &StereoFifo, enabled: bool, frames: usize,
-        mut write: impl FnMut(usize, [f32; 2])) -> usize {
+    pub(super) fn fill(
+        &mut self,
+        fifo: &StereoFifo,
+        enabled: bool,
+        frames: usize,
+        mut write: impl FnMut(usize, [f32; 2]),
+    ) -> usize {
         self.requested_source = 0;
         if !enabled {
             self.reset();
-            for i in 0..frames { write(i, [0.0; 2]); }
+            for i in 0..frames {
+                write(i, [0.0; 2]);
+            }
             return 0;
         }
         if self.lossless {
-            self.requested_source=frames;
-            if !enabled || (self.buffering && fifo.available_read()<4*crate::remote_audio::FRAMES) {
-                for i in 0..frames {write(i,[0.0;2]);}return 0;
+            self.requested_source = frames;
+            if !enabled
+                || (self.buffering && fifo.available_read() < 4 * crate::remote_audio::FRAMES)
+            {
+                for i in 0..frames {
+                    write(i, [0.0; 2]);
+                }
+                return 0;
             }
-            self.buffering=false;
-            let popped=fifo.pop_frames(frames,|i,frame|write(i,frame));
-            for i in popped..frames {write(i,[0.0;2]);}
-            if popped<frames {self.buffering=true;}
+            self.buffering = false;
+            let popped = fifo.pop_frames(frames, |i, frame| write(i, frame));
+            for i in popped..frames {
+                write(i, [0.0; 2]);
+            }
+            if popped < frames {
+                self.buffering = true;
+            }
             return popped;
         }
         if self.rate == 48_000 {
@@ -105,28 +141,43 @@ impl DeviceOutput {
 mod tests {
     #[test]
     fn lossless_receiver_rebuffers_without_fading_or_dropping_samples() {
-        let fifo=crate::stereo_fifo::StereoFifo::new(4096);
-        let mut output=super::DeviceOutput::new(48000,1920);output.lossless=true;
-        let samples:Vec<f32>=(0..3840).map(|i|(i as f32*0.05).sin()*0.4).collect();
+        let fifo = crate::stereo_fifo::StereoFifo::new(4096);
+        let mut output = super::DeviceOutput::new(48000, 1920);
+        output.lossless = true;
+        let samples: Vec<f32> = (0..3840).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
         fifo.push(&samples[..960]);
-        let mut result=Vec::new();
-        assert_eq!(output.fill(&fifo,true,480,|_,frame|result.extend(frame)),0);
-        assert!(result.iter().all(|v|*v==0.0));assert_eq!(fifo.available_read(),480);
-        fifo.push(&samples[960..]);result.clear();
-        assert_eq!(output.fill(&fifo,true,2000,|_,frame|result.extend(frame)),1920);
-        assert_eq!(&result[..samples.len()],samples.as_slice());
-        assert!(result[samples.len()..].iter().all(|v|*v==0.0));
-        fifo.push(&samples);result.clear();
-        assert_eq!(output.fill(&fifo,true,1920,|_,frame|result.extend(frame)),1920);
-        assert_eq!(result,samples);
+        let mut result = Vec::new();
+        assert_eq!(
+            output.fill(&fifo, true, 480, |_, frame| result.extend(frame)),
+            0
+        );
+        assert!(result.iter().all(|v| *v == 0.0));
+        assert_eq!(fifo.available_read(), 480);
+        fifo.push(&samples[960..]);
+        result.clear();
+        assert_eq!(
+            output.fill(&fifo, true, 2000, |_, frame| result.extend(frame)),
+            1920
+        );
+        assert_eq!(&result[..samples.len()], samples.as_slice());
+        assert!(result[samples.len()..].iter().all(|v| *v == 0.0));
+        fifo.push(&samples);
+        result.clear();
+        assert_eq!(
+            output.fill(&fifo, true, 1920, |_, frame| result.extend(frame)),
+            1920
+        );
+        assert_eq!(result, samples);
     }
     use super::*;
     fn render(rate: u32, hz: f32, chunk: usize) -> Vec<f32> {
         let fifo = StereoFifo::new(65_536);
-        let samples: Vec<f32> = (0..48_000).flat_map(|i| {
-            let v = (i as f32 * std::f32::consts::TAU * hz / 48_000.0).sin();
-            [v, v]
-        }).collect();
+        let samples: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let v = (i as f32 * std::f32::consts::TAU * hz / 48_000.0).sin();
+                [v, v]
+            })
+            .collect();
         fifo.push(&samples);
         let mut output = DeviceOutput::new(rate, 16);
         let mut result = Vec::new();
@@ -174,10 +225,12 @@ mod tests {
     fn device_rates_preserve_codec_clock_and_tone() {
         for rate in [16_000, 22_050, 44_100, 48_000, 96_000] {
             let fifo = StereoFifo::new(65_536);
-            let samples: Vec<f32> = (0..48_000).flat_map(|i| {
-                let v = (i as f32 * std::f32::consts::TAU * 1000.0 / 48_000.0).sin() * 0.5;
-                [v, -v]
-            }).collect();
+            let samples: Vec<f32> = (0..48_000)
+                .flat_map(|i| {
+                    let v = (i as f32 * std::f32::consts::TAU * 1000.0 / 48_000.0).sin() * 0.5;
+                    [v, -v]
+                })
+                .collect();
             assert_eq!(fifo.push(&samples), 48_000);
             let mut output = DeviceOutput::new(rate, 16);
             let mut rendered = Vec::new();
@@ -187,9 +240,14 @@ mod tests {
                 consumed += output.fill(&fifo, true, count, |_, frame| rendered.push(frame));
             }
             assert_eq!(consumed, 48_000, "rate={rate}");
-            let crossings = rendered[rate as usize / 10..].windows(2)
-                .filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0).count();
-            assert!((crossings as i32 - 900).abs() <= 2, "rate={rate} crossings={crossings}");
+            let crossings = rendered[rate as usize / 10..]
+                .windows(2)
+                .filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0)
+                .count();
+            assert!(
+                (crossings as i32 - 900).abs() <= 2,
+                "rate={rate} crossings={crossings}"
+            );
             assert!(rendered.iter().all(|f| (f[0] + f[1]).abs() < 1e-6));
             output.fill(&fifo, false, 256, |_, f| assert_eq!(f, [0.0; 2]));
             assert_eq!(output.requested_source, 0);

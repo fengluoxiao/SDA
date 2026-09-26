@@ -73,14 +73,22 @@ impl OutputMonitor {
                 self.previous[channel] = sample;
             }
         }
-        telemetry.peak.fetch_max((peak * SCALE) as u64, Ordering::Relaxed);
+        telemetry
+            .peak
+            .fetch_max((peak * SCALE) as u64, Ordering::Relaxed);
         let scaled_step = (max_step * SCALE) as u64;
         if scaled_step > telemetry.max_step.fetch_max(scaled_step, Ordering::Relaxed) {
-            telemetry.max_step_sample.store(max_step_sample, Ordering::Relaxed);
+            telemetry
+                .max_step_sample
+                .store(max_step_sample, Ordering::Relaxed);
         }
         if large_steps > 0 {
-            telemetry.large_steps.fetch_add(large_steps, Ordering::Relaxed);
-            telemetry.last_large_step_sample.store(last_large_step_sample, Ordering::Relaxed);
+            telemetry
+                .large_steps
+                .fetch_add(large_steps, Ordering::Relaxed);
+            telemetry
+                .last_large_step_sample
+                .store(last_large_step_sample, Ordering::Relaxed);
         }
     }
 }

@@ -6,7 +6,7 @@ function sanitizeDiagnostic(value){
  for(const item of value.events.slice(-96)){
   if(!['open','packet','frame','flush','failure','checkpoint'].includes(item?.step))continue;
   const event={step:item.step};
-  for(const key of ['sequence','time','bytes','units','sample','samples','rate','channels','objects','epoch','seekSeconds','bit','declared','used','code','checkpointDropped'])if(Number.isFinite(item[key]))event[key]=item[key];
+  for(const key of ['sequence','time','bytes','units','sample','samples','rate','channels','objects','epoch','bit','declared','used','code','checkpointDropped'])if(Number.isFinite(item[key]))event[key]=item[key];
   if(typeof item.codec==='string'&&/^[a-z0-9_-]{1,24}$/i.test(item.codec))event.codec=item.codec;
   if(typeof item.checkpoint==='string'&&/^[a-z0-9_.]{1,80}$/.test(item.checkpoint))event.checkpoint=item.checkpoint;
   if(typeof item.errorTag==='string'&&/^[a-f0-9]{16}$/.test(item.errorTag))event.errorTag=item.errorTag;

@@ -1175,6 +1175,37 @@ aside {
   text-overflow: ellipsis;
 }
 
+.mp-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mp-title-row .mp-title {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.mp-info {
+  display: grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  color: var(--mp-subtext);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+
+.mp-info:hover,
+.mp-info:focus-visible {
+  color: var(--mp-text);
+  background: var(--mp-btn-hover);
+}
+
 .mp-sub {
   font-size: 11px;
   color: var(--mp-subtext);
@@ -1258,24 +1289,7 @@ aside {
   background: var(--mp-track);
   overflow: hidden;
 }
-:root .app .mp-track-line.mp-track-seekable {
-  touch-action: none;
-  user-select: none;
-  cursor: pointer;
-  height: 5px;
-  border-radius: 99px;
-  transition: height .15s ease;
-}
-:root .app .mp-track-line.mp-track-seekable:hover,
-:root .app .mp-track-line.mp-track-dragging {
-  height: 8px;
-}
-:root .app .mp-track-line.mp-track-seekable:hover .mp-track-fill {
-  opacity: 0.85;
-}
-
 /* 已知总时长：实心进度填充 */
-:root .app .mp-track-dragging .mp-track-fill { transition: none; }
 .mp-track-fill {
   position: absolute;
   left: 0;
