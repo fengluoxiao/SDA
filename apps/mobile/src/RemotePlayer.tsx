@@ -18,6 +18,7 @@ interface Props {
   fileName: string; positionMs: number; decodedMs: number; durationMs: number; objects: MobileObjectPoint[];
   headYaw: number; error: string | null; directObjects: boolean; directionalObjects: boolean;
   renderingStatus: string; volume: number;
+  volumeBalanceEnabled: boolean; setVolumeBalance(enabled: boolean): void;
   chooseFile(): void; play(): void; togglePause(): void; stop(): void;
   adjustYaw(delta: number): void; resetYaw(): void; setVolume(value: number): void;
   setRendering(direct: boolean, directional: boolean): void;
@@ -232,6 +233,10 @@ export function RemotePlayer(p: Props) {
           <Pressable accessibilityRole="button" disabled={p.busy} onPress={() => { setSettings(false); p.chooseFile(); }} style={[s.settingsCard, s.settingRow, { backgroundColor: c.panel }]}>
             <View style={s.settingCopy}>{label("打开本机媒体", false, s.settingTitle)}{label("添加歌曲到播放列表", true, s.settingDescription)}</View>{label("›", true, { fontSize: 26 })}
           </Pressable>
+          {label("音量", true, s.groupTitle)}
+          <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+          </View>
           {label("空间渲染", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label("61 方向 HRTF", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>

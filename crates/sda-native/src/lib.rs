@@ -28,6 +28,7 @@
 
 mod frame_router;
 pub mod mpegh;
+pub mod balance;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -107,6 +108,9 @@ pub struct PlaybackStatus {
     pub continuous_object_count: u64,
     pub near_field_enabled: bool,
     pub room_enabled: bool,
+    pub volume_balance_enabled: bool,
+    pub volume_balance_eligible: bool,
+    pub program_gain_db: f64,
 }
 
 /// Latest object snapshot per id (plan T1.10): UI polls at its own cadence
@@ -159,7 +163,8 @@ pub struct MobileEngine {
     pipeline: Option<RenderPipeline>,
     startup: Mutex<StartupGate>,
     /// Decoded frames waiting to be handed to the renderer worker.
-    pending: Mutex<VecDeque<FrameData>>,
+    pending: Mutex<VecDeque<balance::PendingFrame>>,
+    balance: balance::VolumeBalance,
     /// Desktop-compatible channel mapping, source lifecycle and event compaction.
     frame_router: frame_router::FrameRouter,
     /// Codec clock of the newest queued frame (presentation clock base).
@@ -198,6 +203,7 @@ impl MobileEngine {
             pipeline: None,
             startup: Mutex::new(StartupGate::default()),
             pending: Mutex::new(VecDeque::new()),
+            balance: balance::VolumeBalance::default(),
             frame_router: frame_router::FrameRouter::default(),
             newest_sample_pos: Mutex::new(0),
             last_poll: Mutex::new(None),
@@ -319,7 +325,7 @@ impl MobileEngine {
                 raw_bed_labels: vec!["FrontLeft".into(), "FrontRight".into()],
                 events: Vec::new(), object_channels: Vec::new(), program_loudness: None, ramp_duration: 0,
             };
-            self.pending.lock().expect("pending lock").push_back(frame);
+            self.pending.lock().expect("pending lock").push_back(self.balance.measure(frame, None));
             *self.newest_sample_pos.lock().expect("clock lock") = start + frames as u64;
             self.drain_pending_into_pipeline()?;
         }
@@ -336,6 +342,7 @@ impl MobileEngine {
         self.decoder = StreamingDecoder::new("auto").expect("known decoder type");
         self.pending.lock().expect("pending lock").clear();
         self.frame_router = frame_router::FrameRouter::default();
+        self.balance.reset();
         self.announced_codec = None;
         *self.startup.lock().expect("startup lock") = StartupGate::default();
         self.object_events.lock().expect("object events lock").clear();
@@ -380,7 +387,9 @@ impl MobileEngine {
         let mut sample_pos = self.decoded_sample_pos();
         {
             let mut pending = self.pending.lock().expect("pending lock");
-            while let Some(frame) = if let Some(decoder) = &mut self.mpegh_decoder { decoder.next_frame() } else { self.decoder.next_frame() } {
+            while let Some((frame, reference)) = if let Some(decoder) = &mut self.mpegh_decoder {
+                decoder.next_frame_with_reference().map(|(frame, reference)| (frame, Some(reference)))
+            } else { self.decoder.next_frame().map(|frame| (frame, None)) } {
                 if frame.sample_rate != self.config.sample_rate {
                     return Err(format!("Native {} Hz output requires sample-clock conversion for {} {} Hz", self.config.sample_rate, frame.codec, frame.sample_rate));
                 }
@@ -395,7 +404,7 @@ impl MobileEngine {
                     }
                     timeline.extend(frame.events.iter().cloned());
                 }
-                pending.push_back(frame);
+                pending.push_back(self.balance.measure(frame, reference));
                 frames_pushed += 1;
             }
         }
@@ -412,6 +421,7 @@ impl MobileEngine {
     pub fn finish(&mut self) -> EngineResult<DecodeStatus> {
         if let Some(decoder) = &self.mpegh_decoder { decoder.flush()?; } else { self.decoder.flush(); }
         let status = self.feed(&[])?;
+        self.balance.finish();
         self.startup.lock().expect("startup lock").ended = true;
         self.start_playback_if_ready()?;
         Ok(status)
@@ -452,6 +462,9 @@ impl MobileEngine {
             object_convolver_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.object_convolver_count.load(std::sync::atomic::Ordering::Acquire)),
             continuous_object_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.continuous_object_count.load(std::sync::atomic::Ordering::Acquire)),
             near_field_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.near_field_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            volume_balance_enabled: self.balance.enabled,
+            volume_balance_eligible: self.balance.eligible,
+            program_gain_db: self.balance.gain_db,
             room_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.room_enabled.load(std::sync::atomic::Ordering::Acquire)),
         }
     }
@@ -468,6 +481,7 @@ impl MobileEngine {
         self.object_events.lock().expect("object events lock").clear();
         self.active_objects.lock().expect("active objects lock").clear();
         self.frame_router = frame_router::FrameRouter::default();
+        self.balance.reset();
         *self.startup.lock().expect("startup lock") = StartupGate::default();
         if let Some(pipeline) = &self.pipeline {
             pipeline.commands.push(render_command::RenderCommand::Command(Command::Reset { origin: 0 }))
@@ -481,6 +495,24 @@ impl MobileEngine {
                 .store(0, std::sync::atomic::Ordering::Release);
         }
         Ok(())
+    }
+
+    pub fn set_volume_balance(&mut self, enabled: bool) -> EngineResult<()> {
+        if let Some(pipeline) = &self.pipeline {
+            pipeline.commands.push(render_command::RenderCommand::Command(
+                Command::SetProgramEnabled {enabled:enabled && self.balance.eligible}
+            )).map_err(|_| "volume balance command queue full")?;
+        }
+        self.balance.enabled=enabled;
+        Ok(())
+    }
+    pub fn set_measured_loudness(&mut self, json: &str) -> EngineResult<()> {
+        let measurement: balance::Measurement=serde_json::from_str(json).map_err(|e|e.to_string())?;
+        self.balance.set_cached(measurement);
+        Ok(())
+    }
+    pub fn complete_loudness_json(&self) -> String {
+        serde_json::to_string(&self.balance.complete_measurement()).unwrap_or_else(|_|"null".into())
     }
 
     pub fn set_volume(&self, volume: f32) -> EngineResult<()> {
@@ -637,7 +669,12 @@ impl MobileEngine {
     fn drain_pending_into_pipeline(&mut self) -> EngineResult<()> {
         let Some(pipeline) = &self.pipeline else { return Ok(()) };
         let mut pending = self.pending.lock().expect("pending lock");
-        while let Some(frame) = pending.pop_front() {
+        while let Some(pending_frame) = pending.pop_front() {
+            for command in self.balance.route(&pending_frame) {
+                pipeline.commands.push(render_command::RenderCommand::Command(command))
+                    .map_err(|_| "volume balance command queue full")?;
+            }
+            let frame = pending_frame.frame;
             let origin = frame.sample_pos;
             let end = origin + frame.channels.first().map_or(0, Vec::len) as u64;
             for command in self.frame_router.route(frame)? {
@@ -687,7 +724,7 @@ impl MobileEngine {
     /// Drains queued frames (test accessor; FFI hosts do not see PCM).
     pub fn take_pending_frames(&self) -> Vec<FrameData> {
         let mut pending = self.pending.lock().expect("pending lock");
-        pending.drain(..).collect()
+        pending.drain(..).map(|pending| pending.frame).collect()
     }
 }
 
@@ -790,6 +827,48 @@ mod tests {
         let mut engine = MobileEngine::new(EngineConfig { direct_object_hrtf: true,
             directional_hrtf: true, ..EngineConfig::default() }, None).unwrap();
         assert!(engine.start(Arc::new(MobileTestOutput)).unwrap_err().contains("HRTF"));
+    }
+
+    #[test]
+    fn mobile_balance_routes_cached_master_gain_and_bypasses_object_programs() {
+        let mut engine = MobileEngine::new(EngineConfig::default(), None).unwrap();
+        engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/mobile/android/app/src/main/assets/hrtf-dense/hrtf-set.json")).unwrap();
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        engine.set_volume_balance(true).unwrap();
+        engine.set_measured_loudness(r#"{"integratedLufs":-10,"blocks":100,"truePeakDbtp":-2}"#).unwrap();
+        let mut frame = FrameData {
+            codec: "mp3", sample_rate: 48000, sample_pos: 0,
+            channels: vec![vec![0.0; 1024]; 2], labels: vec!["L".into(), "R".into()],
+            raw_bed_labels: vec![], events: vec![], object_channels: vec![],
+            program_loudness: None, ramp_duration: 128,
+        };
+        let stereo_frame = FrameData { channels: frame.channels.clone(), labels: frame.labels.clone(),
+            raw_bed_labels: vec![], events: vec![], object_channels: vec![], codec: "mp3",
+            sample_rate: 48000, sample_pos: 0, program_loudness: None, ramp_duration: 128 };
+        let pending = engine.balance.measure(stereo_frame, None);
+        engine.pending.lock().unwrap().push_back(pending);
+        engine.drain_pending_into_pipeline().unwrap();
+        let status = engine.playback_status();
+        assert!(status.volume_balance_enabled && status.volume_balance_eligible);
+        assert_eq!(status.program_gain_db, -8.0);
+        engine.set_volume_balance(false).unwrap();
+        assert!(!engine.playback_status().volume_balance_enabled);
+        assert_eq!(engine.playback_status().program_gain_db, -8.0);
+        engine.set_volume_balance(true).unwrap();
+        frame.codec = "eac3";
+        frame.sample_pos = 1024;
+        frame.labels[0] = "Obj_0".into();
+        let pending = engine.balance.measure(frame, None);
+        engine.pending.lock().unwrap().push_back(pending);
+        engine.drain_pending_into_pipeline().unwrap();
+        assert!(!engine.playback_status().volume_balance_eligible);
+        engine.seek(0).unwrap();
+        let status = engine.playback_status();
+        assert!(status.volume_balance_enabled);
+        assert!(!status.volume_balance_eligible);
+        assert_eq!(status.program_gain_db, 0.0);
+        engine.stop();
     }
 
     #[test]

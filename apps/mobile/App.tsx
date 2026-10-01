@@ -26,7 +26,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   contentHash(uri: string): Promise<string>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
-  playUri(uri: string, displayName: string, headYawDegrees: number): Promise<string>;
+  playUri(uri: string, displayName: string, headYawDegrees: number, contentHash: string): Promise<string>;
   pause(): boolean;
   resume(): boolean;
   stop(): boolean;
@@ -37,6 +37,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   feedError(): string | null;
   feedDone(): boolean;
   setVolume(volume: number): void;
+  setVolumeBalance(enabled: boolean): void;
   hrtfStatus(): string;
   renderingSettings(): string;
   setObjectRendering(direct: boolean, directional: boolean): void;
@@ -68,6 +69,7 @@ interface State {
   directionalObjects: boolean;
   renderingStatus: string;
   volume: number;
+  volumeBalanceEnabled: boolean;
   rooms: { id: string; name: string; layout: string }[];
   roomId: string;
   roomBusy: boolean;
@@ -83,6 +85,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     queue: [],
     queueIndex: -1,
     volume: 1,
+    volumeBalanceEnabled: false,
     rooms: [], roomId: "", roomBusy: false,
     nearField: false, metresPerUnit: 1, nearFieldBusy: false,
     busy: false,
@@ -112,6 +115,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ directObjects: settings.direct, directionalObjects: settings.directional,
+        volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
         nearField: settings.nearField === true, metresPerUnit: settings.metresPerUnit ?? 1 });
     } catch (error) {
@@ -223,10 +227,11 @@ export default class App extends React.Component<Record<string, never>, State> {
       engine.stop();
       const imported = await prepare360RaMp4(engine, track.uri, track.name);
       try {
-        await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw);
+        await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
         if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
         const settings = JSON.parse(engine.renderingSettings());
-        this.setState({ roomId: settings.roomId || "", layout: settings.layout });
+        this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+          roomId: settings.roomId || "", layout: settings.layout });
       } finally {
         // playUri has opened its InputStream. Android keeps that descriptor valid
         // after unlinking the temporary extraction, including while paused.
@@ -314,6 +319,15 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
+  private setVolumeBalance = (volumeBalanceEnabled: boolean) => {
+    try {
+      this.getEngine().setVolumeBalance(volumeBalanceEnabled);
+      this.setState({ volumeBalanceEnabled, error: null });
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   private setVolume = (volume: number) => {
     try {
       this.getEngine().setVolume(volume);
@@ -327,6 +341,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
   }
 }

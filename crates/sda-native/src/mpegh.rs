@@ -22,7 +22,7 @@ const MAX_PENDING: usize = 1024 * 1024;
 
 pub struct MpeghDecoder {
     pending: Vec<u8>,
-    frames: VecDeque<FrameData>,
+    frames: VecDeque<(FrameData, Vec<Vec<f32>>)>,
     sample_pos: u64,
 }
 impl MpeghDecoder {
@@ -55,7 +55,12 @@ impl MpeghDecoder {
             }
             if error != 0 { return Err(format!("MPEG-H decode: 0x{:x}", error as u32)); }
             if used < 0 || used as usize > n { return Err("MPEG-H invalid consumption".into()); }
-            if let Some(frame) = self.take_frame()? { self.frames.push_back(frame); }
+            if let Some(frame) = self.take_frame()? {
+                // bridge output is overwritten by the next access unit. Capture
+                // the matching reference here, not after an entire input chunk.
+                let reference = self.reference_stereo()?;
+                self.frames.push_back((frame, reference));
+            }
             if used == 0 { break; }
             cursor += used as usize;
         }
@@ -63,7 +68,8 @@ impl MpeghDecoder {
         if self.pending.len() > MAX_PENDING { return Err("MPEG-H input stalled".into()); }
         Ok(())
     }
-    pub fn next_frame(&mut self) -> Option<FrameData> { self.frames.pop_front() }
+    pub fn next_frame(&mut self) -> Option<FrameData> { self.frames.pop_front().map(|(frame, _)| frame) }
+    pub fn next_frame_with_reference(&mut self) -> Option<(FrameData, Vec<Vec<f32>>)> { self.frames.pop_front() }
     pub fn flush(&self) -> Result<(), String> {
         if self.pending.is_empty() { Ok(()) } else { Err(format!("MPEG-H truncated stream ({} bytes remain)", self.pending.len())) }
     }
@@ -189,13 +195,18 @@ fn access_unit(bytes: &[u8], start: usize) -> Result<Option<usize>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn capture(bytes: &[u8], chunk: usize) -> (Vec<f32>, Vec<String>) {
+    fn capture(bytes: &[u8], chunk: usize) -> (Vec<f32>, Vec<String>, Vec<f32>) {
         let mut decoder = MpeghDecoder::new().unwrap();
         assert!(MpeghDecoder::new().is_err(), "singleton cannot acquire a second owner");
-        let mut pcm = Vec::new(); let mut events = Vec::new();
+        let mut pcm = Vec::new(); let mut events = Vec::new(); let mut references = Vec::new();
         for bytes in bytes.chunks(chunk) {
             decoder.push(bytes).unwrap();
-            while let Some(frame) = decoder.next_frame() {
+            while let Some((frame, reference)) = decoder.next_frame_with_reference() {
+                assert_eq!(reference.len(), 2);
+                // Reference PCM includes decoder trimming; source capture uses full access units.
+                assert_eq!(reference[0].len(), reference[1].len());
+                assert!(!reference[0].is_empty() && reference[0].len() <= 4096);
+                references.extend(reference.into_iter().flatten());
                 assert_eq!(frame.codec, "mpegh"); assert_eq!(frame.sample_rate, 48000);
                 assert_eq!(frame.labels, ["Obj_0", "Obj_1"]);
                 assert_eq!(frame.object_channels.len(), 2);
@@ -206,7 +217,7 @@ mod tests {
             }
         }
         decoder.flush().unwrap();
-        (pcm, events)
+        (pcm, events, references)
     }
     #[test]
     fn windows_fixture_is_chunk_invariant_with_exclusive_ownership_and_strict_eof() {

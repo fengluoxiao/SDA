@@ -66,6 +66,10 @@ pub mod monitor;
 pub mod near_field;
 #[cfg(test)]
 mod mix_parity_probe;
+#[cfg(test)]
+mod ku100_song_probe;
+#[cfg(test)]
+mod ku100_motion_probe;
 pub mod object_mixer;
 pub mod occlusion;
 pub mod output_monitor;

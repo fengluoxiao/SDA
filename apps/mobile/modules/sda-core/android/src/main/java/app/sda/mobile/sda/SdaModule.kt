@@ -149,6 +149,18 @@ class SdaModule : Module() {
             Eac3Input.durationMs(context, Uri.parse(uriString))
         }
 
+        Function("setVolumeBalance") { enabled: Boolean ->
+            synchronized(nativeLock) {
+                if (handle != 0L) {
+                    val error = SdaEngine.nativeSetVolumeBalance(handle, enabled)
+                    check(error.isEmpty()) { error }
+                }
+                val context = appContext.reactContext ?: error("no react context")
+                context.getSharedPreferences("sda-rendering", 0).edit()
+                    .putBoolean("volumeBalanceEnabled", enabled).apply()
+            }
+        }
+
         Function("renderingSettings") { -> renderingSettings().toString() }
 
         AsyncFunction("setNearField") { enabled: Boolean, metresPerUnit: Double ->
@@ -201,8 +213,9 @@ class SdaModule : Module() {
         AsyncFunction("finishMp4Import") { token: String -> mpeghImport.finish(token) }
         AsyncFunction("discardMp4Import") { token: String -> mpeghImport.discard(token) }
 
-        AsyncFunction("playUri") { uriString: String, displayName: String, headYawDegrees: Double ->
+        AsyncFunction("playUri") { uriString: String, displayName: String, headYawDegrees: Double, contentHash: String ->
             require(headYawDegrees.isFinite() && headYawDegrees in -180.0..180.0) { "Head yaw must be finite and between -180 and 180 degrees" }
+            require(contentHash.matches(Regex("[0-9a-f]{64}"))) { "Invalid track content hash" }
             stopFeedThread()
             val context = appContext?.reactContext ?: throw RuntimeException("no react context")
             val uri = Uri.parse(uriString)
@@ -213,6 +226,10 @@ class SdaModule : Module() {
                     handle = 0L
                 }
             }
+            // Versioned full-content identity survives temporary MP4 -> MHAS
+            // imports and cannot reuse a result for a changed source file.
+            val cacheKey = "sda-measured-lufs-v6:$contentHash:48000"
+            val loudnessCache = context.getSharedPreferences("sda-loudness", 0)
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
             val mp3Cache = if (isMp3) java.io.File.createTempFile("sda-mp3-", ".mp3", context.cacheDir) else null
@@ -233,6 +250,17 @@ class SdaModule : Module() {
                     }
                     if (mp3Cache != null) check(SdaEngine.nativeOpenMp3(it, mp3Cache.absolutePath) > 0) {
                         "MP3 打开失败: ${SdaEngine.nativeLastError()}"
+                    }
+                    val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
+                    check(balanceError.isEmpty()) { balanceError }
+                    loudnessCache.getString(cacheKey, null)?.let { cached ->
+                        // A damaged/stale cache is a miss, never a playback failure.
+                        val valid = runCatching {
+                            val m = JSONObject(cached)
+                            m.getDouble("integratedLufs").isFinite() && m.getInt("blocks") >= 57
+                        }.getOrDefault(false)
+                        if (valid) SdaEngine.nativeSetMeasuredLoudness(it, cached)
+                        else loudnessCache.edit().remove(cacheKey).apply()
                     }
                     check(SdaEngine.nativeSetHeadYaw(it, headYawDegrees.toFloat()) == 0) {
                         "Native head yaw command failed during startup"
@@ -318,6 +346,10 @@ class SdaModule : Module() {
                                 if (generation == workerGeneration && handle == ptr && !stopped) {
                                     val result = SdaEngine.nativeFinish(ptr)
                                     check(result >= 0) { "nativeFinish failed: ${SdaEngine.nativeLastError()}" }
+                                    // Match Windows: save only successfully flushed full
+                                    // decodes, not a stopped intro or a failed feed.
+                                    val measurement = SdaEngine.nativeCompleteLoudness(ptr)
+                                    if (measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
                                 }
                             }
                             while (!stopped) {
@@ -458,6 +490,7 @@ class SdaModule : Module() {
         val context = appContext.reactContext ?: throw RuntimeException("no react context")
         val preferences = context.getSharedPreferences("sda-rendering", 0)
         return JSONObject().put("layout", activeLayout).put("direct", preferences.getBoolean("direct", true))
+            .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
             .put("directional", preferences.getBoolean("directional", true))
             .put("roomId", preferences.getString("roomId", "") ?: "")
             .put("nearField", preferences.getBoolean("nearField", false))

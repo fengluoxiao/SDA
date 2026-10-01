@@ -344,3 +344,28 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeClose(
         drop(unsafe { Box::from_raw(ptr as *mut MobileEngine) });
     }
 }
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetVolumeBalance(
+    env: JNIEnv, _class: JClass, ptr: jlong, enabled: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result=take_engine(ptr).ok_or("engine unavailable".to_string()).and_then(|engine|engine.set_volume_balance(enabled!=0));
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetMeasuredLoudness(
+    mut env: JNIEnv, _class: JClass, ptr: jlong, json: JString,
+) -> jni::sys::jstring {
+    let result=(|| -> Result<(),String> {
+        let json: String=env.get_string(&json).map_err(|e|e.to_string())?.into();
+        take_engine(ptr).ok_or("engine unavailable")?.set_measured_loudness(&json)
+    })();
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeCompleteLoudness(
+    env: JNIEnv, _class: JClass, ptr: jlong,
+) -> jni::sys::jstring {
+    let json=take_engine(ptr).map_or_else(||"null".into(),|engine|engine.complete_loudness_json());
+    env.new_string(json).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}

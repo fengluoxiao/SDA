@@ -23,6 +23,9 @@ object SdaEngine {
     external fun nativeResetHeadPose(ptr: Long): Int
     external fun nativeFinish(ptr: Long): Int
     external fun nativePause(ptr: Long, paused: Boolean): Int
+    external fun nativeSetVolumeBalance(ptr: Long, enabled: Boolean): String
+    external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
+    external fun nativeCompleteLoudness(ptr: Long): String
     external fun nativeSetVolume(ptr: Long, volume: Float): Int
     external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
     external fun nativeSetRoom(ptr: Long, path: String): String
