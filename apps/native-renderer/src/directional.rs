@@ -45,14 +45,11 @@ const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
 /// numerical tie must not select a different ear response on Android/Windows.
 fn dominant_measurement(weights: &[(usize, f64)], irs: &[StereoIr]) -> usize {
     let peak = weights.iter().map(|(_, weight)| *weight).fold(0.0_f64, f64::max);
-    // Preserve the established horizontal path: those full-mix channels already
-    // match the desktop reference. Limit this correction to elevated ties;
-    // changing the horizontal convention also changes dominant music channels.
-    if weights.iter().filter(|(_, weight)| peak - *weight <= 1e-6)
-        .all(|(index, _)| irs[*index].elevation.abs() < 1e-6) {
-        return weights.iter().filter(|(_, weight)| peak - *weight <= 1e-6)
-            .map(|(index, _)| *index).max().unwrap_or(0);
-    }
+    // Horizontal ties need the same geometric convention as elevated ties.
+    // Manifest order is not spatial: at +/-45 degrees, choosing the last row
+    // can anchor one ear pair at 40 degrees and its mirror at 50 degrees.
+    // That breaks the calibrated set's bilateral symmetry for the dominant
+    // front music objects even though each input HRIR pair is valid.
     // Collapse only f32-scale weight ties. Compare measured geometry in a
     // canonical hemisphere, not manifest indices: mirrored inputs must select
     // mirrored HRIRs. Larger absolute azimuth preserves the established left
@@ -184,11 +181,45 @@ mod dominant_measurement_tests {
     }
 
     #[test]
-    fn horizontal_boundary_selection_keeps_the_existing_desktop_path() {
+    fn horizontal_boundary_selection_is_mirrored_and_order_independent() {
         for sign in [-1.0, 1.0] {
-            let mut irs = vec![measured(sign * 50.0), measured(sign * 40.0)];
-            for ir in &mut irs { ir.elevation = 0.0; }
-            assert_eq!(dominant_measurement(&[(0, 0.5), (1, 0.5 + 1e-7)], &irs), 1);
+            for reversed in [false, true] {
+                let mut irs = vec![measured(sign * 50.0), measured(sign * 40.0)];
+                for ir in &mut irs { ir.elevation = 0.0; }
+                if reversed { irs.reverse(); }
+                for epsilon in [-1e-7, 0.0, 1e-7] {
+                    let index = dominant_measurement(&[(0, 0.5), (1, 0.5 + epsilon)], &irs);
+                    assert_eq!(irs[index].azimuth, sign * 50.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ku100_front_horizontal_midpoints_preserve_left_right_mirror_symmetry() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        // Test the bilateral frontal grid used by the dominant music pair.
+        // The rear seam includes a single unpaired -180-degree measurement;
+        // its measured ears are not required to be identical.
+        for azimuth in [5.0_f64, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0] {
+            let position = |az: f64| [-az.to_radians().sin() as f32,
+                az.to_radians().cos() as f32, 0.0];
+            let pair = |az| set.directional_dry_compact(super::Direction {
+                position: position(az), head: None, diffuse: 0.0,
+                horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+            }, crate::vbap::LayoutId::Dolby7_1_4,
+                [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+            let left = pair(azimuth);
+            let right = pair(-azimuth);
+            let energy: f64 = left.0.iter().chain(&left.1)
+                .map(|v| f64::from(*v).powi(2)).sum();
+            let error: f64 = left.0.iter().chain(&left.1)
+                .zip(right.1.iter().chain(&right.0))
+                .map(|(a,b)| f64::from(a-b).powi(2)).sum();
+            assert!((error/energy).sqrt() < 1e-3,
+                "horizontal KU100 mirror at {azimuth} degrees: {}", (error/energy).sqrt());
         }
     }
 

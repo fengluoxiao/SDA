@@ -52,7 +52,7 @@ class SdaModule : Module() {
         // opt-in native PCM diagnostic builds), rather than creating it via adb.
         context.getExternalFilesDir(null)
         // The dense KU100 set uses the sibling standard set for speaker anchors.
-        for (assetDirectory in listOf("hrtf", "hrtf-dense")) {
+        for (assetDirectory in listOf("hrtf", "hrtf-dense", "hrtf-raw", "hrtf-dense-raw")) {
             val hrtfDir = java.io.File(context.filesDir, assetDirectory)
             check(hrtfDir.mkdirs() || hrtfDir.isDirectory) { "Cannot create KU100 asset directory: $hrtfDir" }
             val names = context.assets.list(assetDirectory)?.toList().orEmpty()
@@ -77,8 +77,16 @@ class SdaModule : Module() {
         val settings = renderingSettings()
         val config = JSONObject().put("sampleRate", 48000).put("outputChannels", 2)
             .put("layout", layout).put("directObjectHrtf", settings.getBoolean("direct"))
-            .put("directionalHrtf", settings.getBoolean("directional")).toString()
-        val ptr = SdaEngine.nativeInit(config, java.io.File(context.filesDir, "hrtf-dense/hrtf-set.json").absolutePath)
+            .put("directionalHrtf", settings.getBoolean("directional"))
+            .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
+        val assetDirectory = when (settings.getString("hrtfSet")) {
+            "standard" -> "hrtf"
+            "dense-raw" -> "hrtf-dense-raw"
+            else -> "hrtf-dense"
+        }
+        val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
+        val directionCount = JSONObject(manifest.readText()).getJSONArray("positions").length()
+        val ptr = SdaEngine.nativeInit(config, manifest.absolutePath)
         if (ptr == 0L) {
             val detail = SdaEngine.nativeInitError()
             hrtfLoadStatus = "KU100 加载失败: ${if (detail.isBlank()) "nativeInit failed" else detail}"
@@ -102,7 +110,9 @@ class SdaModule : Module() {
             handle = 0L
             throw error
         }
-        hrtfLoadStatus = "已加载 KU100 D1 · 61 方向 (Apache-2.0)"
+        val flavor = if (settings.getString("hrtfSet") == "dense-raw") "原始测量" else "校准资产"
+        val wet = if (settings.getDouble("hrtfWetWeight") == 0.0) "无附加 HRTF 混响" else "HRTF 混响 ${settings.getDouble("hrtfWetWeight") }"
+        hrtfLoadStatus = "已加载 KU100 D1 · $directionCount 方向 · $flavor · $wet (Apache-2.0)"
         val result = SdaEngine.nativeStart(ptr)
         if (result != 0) {
             val detail = SdaEngine.nativeLastError().ifBlank { "unknown native output error" }
@@ -162,6 +172,40 @@ class SdaModule : Module() {
         }
 
         Function("renderingSettings") { -> renderingSettings().toString() }
+
+        // Keep the live decoder and audio sink; acknowledge the new graph before saving.
+        AsyncFunction("setRenderingPreset") { id: String ->
+            val context = appContext.reactContext ?: error("no react context")
+            val profiles = org.json.JSONArray(context.assets.open("rendering-presets.json").bufferedReader().use { it.readText() })
+            val profile = (0 until profiles.length()).map { profiles.getJSONObject(it) }
+                .firstOrNull { it.getString("id") == id } ?: error("未知空间渲染预设")
+            val set = profile.getString("hrtfSet")
+            require(set in listOf("standard", "dense", "dense-raw")) { "无效 HRTF 预设" }
+            val wetWeight = profile.getDouble("hrtfWetWeight")
+            require(wetWeight.isFinite() && wetWeight in 0.0..1.0) { "无效 HRTF 混响权重" }
+            synchronized(nativeLock) {
+                require(!profile.getBoolean("nearField") && profile.getString("roomId").isEmpty()) { "不支持的预设房间配置" }
+                if (handle != 0L) {
+                    val directory = when (set) {
+                        "standard" -> "hrtf"
+                        "dense-raw" -> "hrtf-dense-raw"
+                        else -> "hrtf-dense"
+                    }
+                    val manifest = java.io.File(context.filesDir, "$directory/hrtf-set.json")
+                    val error = SdaEngine.nativeSetHrtfPreset(handle, manifest.absolutePath,
+                        wetWeight.toFloat(), profile.getBoolean("direct"), profile.getBoolean("directional"))
+                    check(error.isEmpty()) { error }
+                }
+                check(context.getSharedPreferences("sda-rendering", 0).edit()
+                    .putString("hrtfSet", set)
+                    .putFloat("hrtfWetWeight", wetWeight.toFloat())
+                    .putBoolean("direct", profile.getBoolean("direct"))
+                    .putBoolean("directional", profile.getBoolean("directional"))
+                    .putBoolean("nearField", profile.getBoolean("nearField"))
+                    .putString("roomId", profile.getString("roomId")).commit()) { "无法保存空间渲染预设" }
+                hrtfLoadStatus = "${profile.getString("label")} · ${if (handle != 0L) "已加载" else "等待播放加载"}"
+            }
+        }
 
         AsyncFunction("setNearField") { enabled: Boolean, metresPerUnit: Double ->
             require(metresPerUnit.isFinite() && metresPerUnit in 0.25..4.0) { "近场距离映射必须在 0.25–4 米之间" }
@@ -489,7 +533,15 @@ class SdaModule : Module() {
     private fun renderingSettings(): JSONObject {
         val context = appContext.reactContext ?: throw RuntimeException("no react context")
         val preferences = context.getSharedPreferences("sda-rendering", 0)
-        return JSONObject().put("layout", activeLayout).put("direct", preferences.getBoolean("direct", true))
+        return JSONObject().put("layout", activeLayout)
+            // No silent migration: retain legacy dense/custom settings until selected.
+            .put("hrtfSet", when (preferences.getString("hrtfSet", "dense")) {
+                "standard" -> "standard"
+                "dense-raw" -> "dense-raw"
+                else -> "dense"
+            })
+            .put("hrtfWetWeight", preferences.getFloat("hrtfWetWeight", 0.04f).toDouble())
+            .put("direct", preferences.getBoolean("direct", true))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
             .put("directional", preferences.getBoolean("directional", true))
             .put("roomId", preferences.getString("roomId", "") ?: "")

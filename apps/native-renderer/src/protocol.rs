@@ -753,6 +753,12 @@ pub(super) fn apply_render_command(
             handle_command(state, Command::SetDirectionalHrtf { enabled: directional }, fifo, telemetry);
             handle_command(state, Command::SetObjectHrtf { enabled: direct }, fifo, telemetry)
         }
+        render_command::RenderCommand::HrtfPreset { set, wet, direct, directional, reply } => {
+            let result = state.configure_hrtf_preset(*set, wet, direct, directional);
+            telemetry.publish_rendering_state(state);
+            let _ = reply.send(result);
+            true
+        }
         render_command::RenderCommand::Room { settings, profile, reply } => {
             let result = state.configure_room(settings, profile);
             telemetry.publish_rendering_state(state);
@@ -1439,6 +1445,40 @@ fn command_name(command: &Command) -> &'static str {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn live_hrtf_preset_preserves_clock_pause_pcm_and_epoch() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/native-renderer/hrtf-assets");
+        let mut engine = Engine::new(48000, 2);
+        engine.sample_pos = 12345;
+        engine.render_epoch = 77;
+        engine.paused = true;
+        engine.head_pose = Some([0.0, 0.2, 0.0, 0.98]);
+        engine.output_gain = 0.72;
+        engine.near_field.enabled = true;
+        engine.sources.insert("obj:7".into(), Source { gain: 0.8, target_gain: 0.8, ..Source::default() });
+        engine.sources.get_mut("obj:7").unwrap().samples.write(12345, 12345, &[0.3, -0.2]);
+        let fifo = stereo_fifo::StereoFifo::new(4096);
+        let telemetry = RuntimeTelemetry::default();
+        for (directory, wet, direct, directional) in [("hrtf-dense-raw", 0.0, true, true), ("hrtf", 0.04, true, true), ("hrtf-dense", 0.04, true, true)] {
+            let set = hrtf::NativeHrtfSet::load_calibrated(&root.join(directory).join("hrtf-set.json")).unwrap();
+            let (reply, ack) = std::sync::mpsc::channel();
+            assert!(apply_render_command(&mut engine, render_command::RenderCommand::HrtfPreset { set: Box::new(set), wet, direct, directional, reply }, &fifo, &telemetry));
+            ack.recv().unwrap().unwrap();
+            assert_eq!(engine.sample_pos, 12345);
+            assert_eq!(engine.render_epoch, 77, "preset must not trigger a FIFO flush or rebase");
+            assert!(engine.paused);
+            assert_eq!(engine.head_pose, Some([0.0, 0.2, 0.0, 0.98]));
+            assert_eq!(engine.output_gain, 0.72);
+            assert_eq!(engine.sources["obj:7"].gain, 0.8);
+            assert!(engine.sources["obj:7"].samples.has_at(12345));
+            assert!(engine.sources["obj:7"].samples.has_at(12346));
+            assert!(!engine.near_field.enabled && !engine.cinema.enabled && engine.room_profile.is_none());
+            assert_eq!(engine.hrtf_wet_weight, wet);
+            assert_eq!(engine.direct_objects, direct);
+            assert_eq!(engine.directional_hrtf, directional);
+        }
+    }
+
+    #[test]
     fn clear_pose_removes_old_throttle_and_accepts_new_reference_immediately() {
         let mut engine = Engine::new(48_000, 2);
         let fifo = stereo_fifo::StereoFifo::new(4096);
@@ -1911,12 +1951,37 @@ mod mobile_frame_ack_tests {
 // Shared by the desktop protocol and mobile commands; retain one room DSP graph.
 impl Engine {
     pub fn configure_room(&mut self, settings: cinema::Settings, room: Option<Arc<cinema::RoomProfile>>) -> Result<(), String> {
+        let candidate = self.active_hrtf_set.clone().ok_or("HRTF is not ready")?;
+        self.configure_room_with_hrtf(settings, room, candidate, self.hrtf_wet_weight)
+    }
+
+    /// Existing mobile presets all disable room/near-field. Build the complete
+    /// replacement graph before publishing; retain sources, PCM, pause and clocks.
+    pub fn configure_hrtf_preset(&mut self, candidate: crate::hrtf::NativeHrtfSet,
+        wet: f32, direct: bool, directional: bool) -> Result<(), String> {
+        if !wet.is_finite() || !(0.0..=1.0).contains(&wet) {
+            return Err("invalid HRTF wet weight".into());
+        }
+        let epoch = self.render_epoch;
+        self.configure_room_with_hrtf(cinema::Settings::default(), None, candidate, wet)?;
+        // A preset swap is not a seek: do not flush PCM or rebase callback clocks.
+        self.render_epoch = epoch;
+        self.near_field.enabled = false;
+        self.set_directional_hrtf(directional);
+        // Source renderers are rebuilt lazily at the next audio block, just as
+        // after configure_room. No fallible mutation after publishing the graph.
+        self.direct_objects = direct;
+        self.lfe_path.reset();
+        Ok(())
+    }
+
+    fn configure_room_with_hrtf(&mut self, settings: cinema::Settings,
+        room: Option<Arc<cinema::RoomProfile>>, mut candidate: crate::hrtf::NativeHrtfSet,
+        wet: f32) -> Result<(), String> {
         settings.validate()?;
-        // Build on a clone first so invalid assets cannot damage the active graph.
-        let mut candidate = self.active_hrtf_set.clone().ok_or("HRTF is not ready")?;
         candidate.configure_cinema(settings.clone(), room.clone());
-        let bus =
-            bus_renderer::BusRenderer::new(&candidate, &self.vbap, self.hrtf_wet_weight)?;
+        let bus = bus_renderer::BusRenderer::new(&candidate, &self.vbap, wet)?;
+        self.hrtf_wet_weight = wet;
         self.cinema = settings;
         self.hardware_lfe = crate::hardware::Chain::new(&self.cinema.monitor.hardware);
         self.hardware_stereo = std::array::from_fn(|_| {

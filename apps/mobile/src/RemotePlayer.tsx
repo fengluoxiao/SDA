@@ -1,4 +1,5 @@
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "../../web/src/playbackOrder";
+import renderingPresets from "../rendering-presets.json";
 import React, { useMemo, useRef, useState } from "react";
 import { Animated, Image, Modal, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
@@ -21,6 +22,7 @@ interface Props {
   volumeBalanceEnabled: boolean; setVolumeBalance(enabled: boolean): void;
   chooseFile(): void; play(): void; togglePause(): void; stop(): void;
   adjustYaw(delta: number): void; resetYaw(): void; setVolume(value: number): void;
+  hrtfSet: "standard" | "dense" | "dense-raw"; hrtfWetWeight: number; setRenderingPreset(id: string): void;
   setRendering(direct: boolean, directional: boolean): void;
   rooms: { id: string; name: string; layout: string }[]; roomId: string; roomBusy: boolean;
   setRoom(id: string): void;
@@ -239,7 +241,16 @@ export function RemotePlayer(p: Props) {
           </View>
           {label("空间渲染", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label("61 方向 HRTF", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
+            <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label(p.hrtfSet === "standard" ? "标准 KU100 HRTF" : p.hrtfSet === "dense-raw" ? "原始 KU100 · 61 方向测量" : "61 方向 HRTF", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
+            <View style={[s.cardDivider, { backgroundColor: c.line }]} />
+            {renderingPresets.map(profile => {
+              const selected = p.hrtfSet === profile.hrtfSet && p.directObjects === profile.direct && p.directionalObjects === profile.directional && p.nearField === profile.nearField && p.roomId === profile.roomId && Math.abs(p.hrtfWetWeight - profile.hrtfWetWeight) < 1e-6;
+              const disabled = p.busy || p.roomBusy || p.nearFieldBusy;
+              return <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? "#167d72" : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
+                <View style={s.settingCopy}>{label(profile.label, false, s.settingTitle)}{label(profile.description, true, s.settingDescription)}</View>{label(selected ? "●" : "○", !selected, { fontSize: 20 })}
+              </Pressable>;
+            })}
+            {label("切换预设会保留播放进度和播放／暂停状态，并重置下方空间选项；加载时可能短暂缓冲。", true, s.groupHint)}
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directObjects} disabled={p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />

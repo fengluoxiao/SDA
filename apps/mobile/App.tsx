@@ -1,4 +1,5 @@
 import React from "react";
+import renderingPresets from "./rendering-presets.json";
 import { prepare360RaMp4, type MpeghMp4Host } from "./src/mpeghMp4";
 import { nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "../web/src/playbackOrder";
 import * as DocumentPicker from "expo-document-picker";
@@ -41,6 +42,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   hrtfStatus(): string;
   renderingSettings(): string;
   setObjectRendering(direct: boolean, directional: boolean): void;
+  setRenderingPreset(id: string): Promise<void>;
   rooms(): string;
   setRoom(id: string): Promise<void>;
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
@@ -65,6 +67,8 @@ interface State {
   hrtfStatus: string;
   headYaw: number;
   error: string | null;
+  hrtfSet: "standard" | "dense" | "dense-raw";
+  hrtfWetWeight: number;
   directObjects: boolean;
   directionalObjects: boolean;
   renderingStatus: string;
@@ -103,6 +107,8 @@ export default class App extends React.Component<Record<string, never>, State> {
     hrtfStatus: "KU100 尚未加载",
     headYaw: 0,
     error: null,
+    hrtfSet: "dense",
+    hrtfWetWeight: 0.04,
     directObjects: true,
     directionalObjects: true,
     renderingStatus: "KU100 · 等待播放",
@@ -114,7 +120,8 @@ export default class App extends React.Component<Record<string, never>, State> {
   componentDidMount() {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
-      this.setState({ directObjects: settings.direct, directionalObjects: settings.directional,
+      this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
+        hrtfWetWeight: settings.hrtfWetWeight ?? 0.04, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
         nearField: settings.nearField === true, metresPerUnit: settings.metresPerUnit ?? 1 });
@@ -122,6 +129,29 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  private setRenderingPreset = async (id: string) => {
+    if (this.changingTrack || this.state.busy || this.state.roomBusy || this.state.nearFieldBusy) return;
+    if (!renderingPresets.some(profile => profile.id === id)) return;
+    this.changingTrack = true;
+    this.setState({ busy: true, error: null });
+    try {
+      const engine = this.getEngine();
+      // Replace only the live DSP graph; never stop/reopen or reset playback.
+      await engine.setRenderingPreset(id);
+      const settings = JSON.parse(engine.renderingSettings());
+      this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
+        hrtfWetWeight: settings.hrtfWetWeight ?? 0.04,
+        directObjects: settings.direct, directionalObjects: settings.directional,
+        nearField: settings.nearField, roomId: settings.roomId,
+        hrtfStatus: engine.hrtfStatus() });
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      this.changingTrack = false;
+      this.setState({ busy: false });
+    }
+  };
 
   private setObjectRendering = (direct: boolean, directional: boolean) => {
     try {
@@ -341,6 +371,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
   }
 }

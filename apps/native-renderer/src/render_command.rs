@@ -17,6 +17,14 @@ pub enum RenderCommand {
     Command(Command),
     /// One queue entry so mobile settings cannot be only partially enqueued.
     ObjectRendering { direct: bool, directional: bool },
+    /// Live asset replacement: no decoder restart, PCM flush or clock reset.
+    HrtfPreset {
+        set: Box<crate::hrtf::NativeHrtfSet>,
+        wet: f32,
+        direct: bool,
+        directional: bool,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
     NearField {
         settings: crate::near_field::Settings,
         reply: std::sync::mpsc::Sender<Result<(), String>>,

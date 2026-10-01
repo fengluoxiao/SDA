@@ -63,6 +63,19 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetObjectRender
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetHrtfPreset(
+    mut env: JNIEnv, _class: JClass, ptr: jlong, path: JString,
+    wet: jni::sys::jfloat, direct: jni::sys::jboolean, directional: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<(), String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        take_engine(ptr).ok_or("engine unavailable")?
+            .set_hrtf_preset(&path, wet, direct != 0, directional != 0)
+    })();
+    env.new_string(result.err().unwrap_or_default()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// `nativeInit(configJson: String, hrtfPath: String): Long` — engine handle,
 /// or 0 on failure. Empty `hrtfPath` skips HRTF (renders without
 /// spatialization rather than failing).

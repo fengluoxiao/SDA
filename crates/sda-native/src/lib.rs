@@ -57,7 +57,13 @@ pub struct EngineConfig {
     pub direct_object_hrtf: bool,
     #[serde(default)]
     pub directional_hrtf: bool,
+    /// Contribution of the HRTF's separate wet response, independent of room
+    /// simulation. Zero selects dry HRIR only; omitted retains legacy 0.04.
+    #[serde(default = "default_hrtf_wet_weight")]
+    pub hrtf_wet_weight: f32,
 }
+
+fn default_hrtf_wet_weight() -> f32 { 0.04 }
 
 fn default_layout() -> String {
     "7.1.4".to_string()
@@ -65,7 +71,7 @@ fn default_layout() -> String {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { sample_rate: 48000, output_channels: 2, layout: default_layout(), direct_object_hrtf: false, directional_hrtf: false }
+        Self { sample_rate: 48000, output_channels: 2, layout: default_layout(), direct_object_hrtf: false, directional_hrtf: false, hrtf_wet_weight: default_hrtf_wet_weight() }
     }
 }
 
@@ -188,6 +194,9 @@ impl MobileEngine {
     /// Create the engine. `hrtf_dir` is reserved for T1.12 (HRTF asset
     /// loading); the renderer's current defaults apply until then.
     pub fn new(config: EngineConfig, _hrtf_dir: Option<&str>) -> EngineResult<MobileEngine> {
+        if !config.hrtf_wet_weight.is_finite() || !(0.0..=1.0).contains(&config.hrtf_wet_weight) {
+            return Err("HRTF wet weight must be finite and in 0..=1".into());
+        }
         if config.output_channels != 2 {
             return Err(format!(
                 "mobile engine currently renders stereo only, got {} channels",
@@ -289,7 +298,7 @@ impl MobileEngine {
             .map_err(|error| format!("HRTF load failed: {error}"))?;
         let directions = set.simulation_shape().0;
         renderer
-            .replace_hrtf(set, 0.04)
+            .replace_hrtf(set, self.config.hrtf_wet_weight)
             .map_err(|error| format!("HRTF apply failed: {error}"))?;
         self.hrtf_directions = directions;
         self.hrtf_loaded = true;
@@ -297,6 +306,35 @@ impl MobileEngine {
     }
 
     pub fn hrtf_loaded(&self) -> bool { self.hrtf_loaded }
+
+    /// Acknowledged live switch for room/near-field-off mobile presets. Asset
+    /// parsing happens on the caller, not the render worker. Decoder/FIFO intact.
+    pub fn set_hrtf_preset(&mut self, path: &str, wet: f32, direct: bool,
+        directional: bool) -> EngineResult<()> {
+        if !wet.is_finite() || !(0.0..=1.0).contains(&wet) {
+            return Err("invalid HRTF wet weight".into());
+        }
+        let set = sda_native_renderer::hrtf::NativeHrtfSet::load_calibrated(std::path::Path::new(path))
+            .map_err(|e| format!("HRTF load failed: {e}"))?;
+        let directions = set.simulation_shape().0;
+        if let Some(pipeline) = &self.pipeline {
+            let (reply, received) = std::sync::mpsc::channel();
+            pipeline.commands.push(render_command::RenderCommand::HrtfPreset {
+                set: Box::new(set), wet, direct, directional, reply,
+            }).map_err(|_| "HRTF preset command queue is full")?;
+            received.recv_timeout(Duration::from_secs(30))
+                .map_err(|_| "HRTF preset acknowledgement timed out".to_string())??;
+        } else {
+            self.renderer.as_mut().ok_or("renderer unavailable")?
+                .configure_hrtf_preset(set, wet, direct, directional)?;
+        }
+        self.config.hrtf_wet_weight = wet;
+        self.config.direct_object_hrtf = direct;
+        self.config.directional_hrtf = directional;
+        self.hrtf_directions = directions;
+        self.hrtf_loaded = true;
+        Ok(())
+    }
 
     /// Open a seekable MP3 file. Decoded PCM enters the shared 48 kHz renderer as a stereo bed.
     pub fn open_mp3(&mut self, path: &str) -> EngineResult<u32> {
@@ -749,6 +787,73 @@ pub mod jni;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_live_hrtf_preset_keeps_pipeline_decoder_and_pause() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/native-renderer/hrtf-assets");
+        let mut engine = MobileEngine::new(EngineConfig::default(), None).unwrap();
+        engine.load_hrtf(root.join("hrtf/hrtf-set.json").to_str().unwrap()).unwrap();
+        engine.feed(&joc_fixture()).unwrap();
+        let decoded = engine.decoded_sample_pos();
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        engine.set_paused(true).unwrap();
+        wait_mobile_status(&engine, |s| s.paused);
+        let commands = engine.pipeline.as_ref().unwrap().commands.clone();
+        let fifo = engine.pipeline.as_ref().unwrap().fifo.clone();
+        for (directory, wet, direct, directions) in [("hrtf-dense-raw", 0.0, true, 61), ("hrtf", 0.04, true, 17), ("hrtf-dense", 0.04, true, 61)] {
+            engine.set_hrtf_preset(root.join(directory).join("hrtf-set.json").to_str().unwrap(), wet, direct, direct).unwrap();
+            assert!(Arc::ptr_eq(&commands, &engine.pipeline.as_ref().unwrap().commands));
+            assert!(Arc::ptr_eq(&fifo, &engine.pipeline.as_ref().unwrap().fifo));
+            assert_eq!(engine.decoded_sample_pos(), decoded);
+            let status = engine.playback_status();
+            assert!(status.paused && status.hrtf_ready);
+            assert_eq!(status.direct_object_hrtf, direct);
+            assert_eq!(status.directional_hrtf, direct);
+            assert_eq!(engine.hrtf_directions, directions);
+            assert_eq!(engine.config.hrtf_wet_weight, wet);
+        }
+        assert!(engine.set_hrtf_preset("missing-file", 0.0, false, false).is_err());
+        assert!(engine.set_hrtf_preset("missing-file", f32::NAN, false, false).is_err());
+        assert_eq!(engine.hrtf_directions, 61);
+        assert_eq!(engine.decoded_sample_pos(), decoded);
+        assert!(engine.playback_status().paused);
+        engine.set_paused(false).unwrap();
+        wait_mobile_status(&engine, |s| !s.paused);
+        engine.stop();
+    }
+
+    #[test]
+    fn mobile_hrtf_wet_config_defaults_roundtrips_zero_and_rejects_invalid() {
+        let legacy: EngineConfig = serde_json::from_str(r#"{"sampleRate":48000,"outputChannels":2}"#).unwrap();
+        assert_eq!(legacy.hrtf_wet_weight, 0.04);
+        assert_eq!(EngineConfig::default().hrtf_wet_weight, legacy.hrtf_wet_weight);
+        let dry: EngineConfig = serde_json::from_str(r#"{"sampleRate":48000,"outputChannels":2,"directObjectHrtf":true,"directionalHrtf":true,"hrtfWetWeight":0}"#).unwrap();
+        let roundtrip: EngineConfig = serde_json::from_str(&serde_json::to_string(&dry).unwrap()).unwrap();
+        assert_eq!(roundtrip.hrtf_wet_weight, 0.0);
+        assert!(roundtrip.direct_object_hrtf && roundtrip.directional_hrtf);
+        assert_eq!(MobileEngine::new(roundtrip, None).unwrap().config().hrtf_wet_weight, 0.0);
+        for wet in [0.0, 0.04, 1.0] {
+            assert!(MobileEngine::new(EngineConfig { hrtf_wet_weight: wet, ..EngineConfig::default() }, None).is_ok());
+        }
+        for wet in [-0.01, 1.01, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let result = MobileEngine::new(EngineConfig { hrtf_wet_weight: wet, ..EngineConfig::default() }, None);
+            assert!(matches!(result, Err(error) if error.contains("wet weight")));
+        }
+    }
+
+    #[test]
+    fn mobile_raw_dry_hrtf_loads_and_starts_without_room_or_near_field() {
+        let mut engine = MobileEngine::new(EngineConfig { hrtf_wet_weight: 0.0,
+            direct_object_hrtf: true, directional_hrtf: true, ..EngineConfig::default() }, None).unwrap();
+        engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/desktop/native-renderer/hrtf-assets/hrtf-dense-raw/hrtf-set.json")).unwrap();
+        assert_eq!(engine.hrtf_directions, 61);
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        let status = wait_mobile_status(&engine, |s| s.direct_object_hrtf && s.directional_hrtf);
+        assert!(status.hrtf_ready);
+        assert!(!status.room_enabled && !status.near_field_enabled);
+        engine.stop();
+    }
 
     #[test]
     fn desktop_startup_waits_for_all_batches_and_respects_pause_and_short_eof() {

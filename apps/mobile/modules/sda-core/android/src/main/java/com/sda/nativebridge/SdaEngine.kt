@@ -27,6 +27,7 @@ object SdaEngine {
     external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
     external fun nativeCompleteLoudness(ptr: Long): String
     external fun nativeSetVolume(ptr: Long, volume: Float): Int
+    external fun nativeSetHrtfPreset(ptr: Long, path: String, wet: Float, direct: Boolean, directional: Boolean): String
     external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
     external fun nativeSetRoom(ptr: Long, path: String): String
     external fun nativeSetNearField(ptr: Long, enabled: Boolean, metresPerUnit: Float): String
