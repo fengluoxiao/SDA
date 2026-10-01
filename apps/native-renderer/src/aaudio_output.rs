@@ -1,7 +1,7 @@
 //! Android stereo output using the NDK's typed AAudio bindings.
 
 use std::ffi::CString;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -35,19 +35,35 @@ impl Drop for Builder {
 
 struct Stream(*mut aaudio::AAudioStream);
 
+// The stream is opened before the renderer starts and then moved exactly once
+// into the dedicated output thread. AAudio permits this ownership transfer;
+// no pointer is shared with the producer thread.
+unsafe impl Send for Stream {}
+
 impl Drop for Stream {
     fn drop(&mut self) {
         unsafe { aaudio::AAudioStream_close(self.0); }
     }
 }
 
-/// The renderer's FIFO contains interleaved f32 stereo at 48 kHz. A different
-/// granted format must be rejected before any bytes are passed to AAudio.
-#[derive(Default)]
-pub struct AAudioWriterSink;
+/// Prepared AAudio device for the renderer's interleaved f32 stereo at 48 kHz.
+/// The stream is negotiated on the caller thread so
+/// startup can fail synchronously instead of leaving the render worker alive
+/// with no device consumer.
+pub struct AAudioWriterSink {
+    stream: Mutex<Option<(Stream, usize)>>,
+}
 
 impl AAudioWriterSink {
-    fn open() -> Result<(Stream, usize), String> {
+    /// Opens and starts the device before the renderer starts producing PCM.
+    /// Keeping the output contract exact prevents an Android mixer conversion
+    /// from silently changing the calibrated 48 kHz KU100 render.
+    pub fn open() -> Result<Self, String> {
+        let stream = Self::open_stream()?;
+        Ok(Self { stream: Mutex::new(Some(stream)) })
+    }
+
+    fn open_stream() -> Result<(Stream, usize), String> {
         unsafe {
             let mut builder = std::ptr::null_mut();
             let result = aaudio::AAudio_createStreamBuilder(&mut builder);
@@ -103,7 +119,10 @@ impl AudioOutput for AAudioWriterSink {
         telemetry: Arc<RuntimeTelemetry>,
         _commands: Arc<render_command::RenderCommandQueue>,
     ) {
-        let result = Self::open().and_then(|(stream, burst)| writer_loop(stream, burst, fifo, telemetry));
+        let prepared = self.stream.lock().ok().and_then(|mut stream| stream.take());
+        let result = prepared
+            .ok_or_else(|| "AAudio output stream was not prepared".to_string())
+            .and_then(|(stream, burst)| writer_loop(stream, burst, fifo, telemetry));
         if let Err(error) = result {
             android_log(&error);
         }

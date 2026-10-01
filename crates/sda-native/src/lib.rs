@@ -617,11 +617,15 @@ impl MobileEngine {
             .map_err(|_| "command queue full".into())
     }
 
-        /// Start with the platform output: AAudio blocking-write sink (T2.2).
+    /// Start with the platform output: AAudio blocking-write sink (T2.2).
     /// Android only; hosts elsewhere construct their own AudioOutput.
     #[cfg(target_os = "android")]
     pub fn start_android(&mut self) -> EngineResult<()> {
-        self.start(Arc::new(sda_native_renderer::aaudio_output::AAudioWriterSink::default()))
+        // Negotiate the device before spinning up the renderer. A previous
+        // asynchronous open could fail after Java had reported success, which
+        // left Android feeding an engine whose FIFO had no consumer.
+        let output = sda_native_renderer::aaudio_output::AAudioWriterSink::open()?;
+        self.start(Arc::new(output))
     }
 
     /// Codec in use (meaningful after auto-detection).
@@ -704,9 +708,6 @@ fn native_object_event(event: &ObjectEvent) -> EngineResult<NativeObjectEvent> {
 
 #[cfg(target_os = "android")]
 pub mod jni;
-
-#[cfg(target_os = "android")]
-mod media3_output;
 
 #[cfg(test)]
 mod tests {

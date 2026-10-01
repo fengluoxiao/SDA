@@ -13,7 +13,6 @@ class SdaModule : Module() {
     private val mpeghImport = MpeghImport()
     private var handle: Long = 0L
     private var activeLayout = "7.1.4"
-    private var media3Output: Media3Output? = null
     @Volatile private var activeIsMp3 = false
     private var feedThread: Thread? = null
     @Volatile
@@ -104,14 +103,12 @@ class SdaModule : Module() {
             throw error
         }
         hrtfLoadStatus = "已加载 KU100 D1 · 61 方向 (Apache-2.0)"
-        val output = Media3Output(context.applicationContext)
-        media3Output = output
-        val result = SdaEngine.nativeStart(ptr, output)
+        val result = SdaEngine.nativeStart(ptr)
         if (result != 0) {
-            output.close()
+            val detail = SdaEngine.nativeLastError().ifBlank { "unknown native output error" }
             SdaEngine.nativeClose(ptr)
             handle = 0L
-            throw RuntimeException("nativeStart failed: $result")
+            throw RuntimeException("nativeStart failed: $detail ($result)")
         }
         ptr
     }
@@ -432,7 +429,7 @@ class SdaModule : Module() {
 
         Function("hrtfStatus") { -> hrtfLoadStatus }
 
-        Function("feedError") { -> media3Output?.error ?: feedError }
+        Function("feedError") { -> feedError }
 
         Function("feedDone") { -> feedDone }
 

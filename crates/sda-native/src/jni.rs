@@ -226,16 +226,21 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeResetHeadPose(
 /// `nativeStart(ptr: Long): Int` — 0 on success.
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStart(
-    env: JNIEnv,
+    _env: JNIEnv,
     _class: JClass,
     ptr: jlong,
-    output: jni::objects::JObject,
 ) -> jint {
-    let (Ok(vm), Ok(output)) = (env.get_java_vm(), env.new_global_ref(output)) else { return -3; };
     match take_engine(ptr) {
-        Some(engine) => match engine.start(std::sync::Arc::new(crate::media3_output::Media3Output { vm, output })) {
-            Ok(()) => 0,
-            Err(_) => -1,
+        Some(engine) => match engine.start_android() {
+            Ok(()) => {
+                set_last_error("");
+                0
+            }
+            Err(error) => {
+                android_log(&format!("AAudio startup failed: {error}"));
+                set_last_error(&error);
+                -1
+            }
         },
         None => -2,
     }
