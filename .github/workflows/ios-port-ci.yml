@@ -29,6 +29,7 @@ jobs:
       CI: '1'
       EXPO_NO_TELEMETRY: '1'
       RCT_NEW_ARCH_ENABLED: '0'
+      CACHE_ON_FAILURE: 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +47,11 @@ jobs:
           xcodebuild -version | tee ios-artifacts/xcode.txt
           xcodebuild -showsdks | tee ios-artifacts/sdks.txt
           xcrun simctl list runtimes | tee ios-artifacts/runtimes.txt
+      - name: Type-check Apple playback host before full React Native build
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
       - uses: actions/setup-node@v4
         if: steps.sdk.outputs.available == 'true'
         with:

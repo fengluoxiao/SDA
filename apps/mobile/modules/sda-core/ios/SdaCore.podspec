@@ -8,13 +8,13 @@ Pod::Spec.new do |s|
  s.homepage = 'https://github.com/fengluoxiao/SDA'
  s.source = { :git => 'https://github.com/fengluoxiao/SDA.git' }
  s.platform = :ios, '16.0'
- s.swift_version = '5.9'
+ s.swift_version = '5.0'
  s.static_framework = true
  s.dependency 'ExpoModulesCore'
  s.source_files = '*.{h,swift}'
  s.public_header_files = 'SdaBridge.h'
  s.vendored_frameworks = 'SdaNative.xcframework'
- s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf', 'Resources/hrtf-dense', 'Resources/hrtf-raw', 'Resources/hrtf-dense-raw', 'Resources/rooms', 'Resources/rendering-presets.json'] }
+ s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf', 'Resources/hrtf-dense', 'Resources/hrtf-raw', 'Resources/hrtf-dense-raw', 'Resources/rooms', 'Resources/rendering-presets.json', 'Resources/ci-stereo-tones.m4a'] }
  s.frameworks = 'AVFoundation', 'MediaPlayer', 'AudioToolbox'
  s.libraries = 'c++'
  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }

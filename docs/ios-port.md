@@ -17,3 +17,9 @@ AVAudioSourceNode consumes the same Rust stereo FIFO at 48 kHz, planar Float32. 
 Native decode continues independently of JavaScript. Current-track background audio, lock-screen pause/resume and interruptions are implemented. Unplugging pauses playback. In-app preset changes replace the renderer without reopening the stream. Background automatic playlist advance and physical AirPods/device listening remain validation items, not claimed completed features.
 
 Run host callback tests with cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests. Resource staging: node scripts/prepare-ios-assets.mjs. Native Mac build: bash scripts/build-ios-native.sh. Generated Xcode projects, XCFrameworks and assets are ignored rather than committed.
+
+## Automated validation
+
+The iOS bridge tests include FIFO stereo/pause/flush/clock checks, null-pointer error ownership, and a generated E-AC-3 stereo tone through the actual KU100 renderer and pull callback. The tone test verifies nonzero, non-identical left/right output and that a live HRTF preset change preserves decoded and consumed clocks. It is not an Atmos listening comparison. No user recordings are included in CI.
+
+The simulator smoke test explicitly sets SDA_IOS_SMOKE=1 to exercise a bundled generated E-AC-3 M4A via AVAssetReader and the real AVAudioEngine pull callback, including pause/resume and a live preset update. It writes audio-smoke.json with clocks and hardware route sample rate. Ordinary launches do not auto-play this fixture. A simulator callback check does not establish physical-device/AirPods listening quality.

@@ -24,6 +24,8 @@ for(const p of catalog.profiles) {
  writeFileSync(join(out,'rooms',p.id+'.json'),data);
 }
 cpSync(join(rooms,'catalog.json'),join(out,'rooms/catalog.json'));
-for(const file of ['NOTICE','LICENSE-SADIE','MATERIAL-SOURCES']) if(existsSync(join(rooms,file))) cpSync(join(rooms,file),join(out,'rooms',file));
+for(const file of ['NOTICE.txt','LICENSE-SADIE.txt','MATERIAL-SOURCES.md']) if(existsSync(join(rooms,file))) cpSync(join(rooms,file),join(out,'rooms',file));
 cpSync(join(root,'apps/mobile/rendering-presets.json'),join(out,'rendering-presets.json'));
 console.log('Staged KU100 assets and '+catalog.profiles.length+' verified room profiles');
+
+cpSync(join(root,'crates/sda-native/tests/fixtures/ios-stereo-tones.m4a'),join(out,'ci-stereo-tones.m4a'));

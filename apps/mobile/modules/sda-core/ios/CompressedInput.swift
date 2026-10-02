@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
+import CoreMedia
 
 /// No Apple decoder/downmix: compressed access units are passed to SDA Rust.
 final class CompressedInput {
