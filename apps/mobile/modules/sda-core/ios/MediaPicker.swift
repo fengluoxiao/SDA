@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// Keeps the provider URL, not the imported cache URL, as the next picker location.
 /// directoryURL is a navigation hint; it does not grant access to the parent folder.
-final class MediaPicker: NSObject, UIDocumentPickerDelegate {
+final class MediaPicker: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
  private var pending: Promise?
  private let prefs = UserDefaults.standard
  private let directoryKey = "sda.mediaPicker.directory"
@@ -17,6 +17,8 @@ final class MediaPicker: NSObject, UIDocumentPickerDelegate {
   let picker = UIDocumentPickerViewController(forOpeningContentTypes:[.item], asCopy:false)
   picker.allowsMultipleSelection = true
   picker.delegate = self
+  picker.modalPresentationStyle = .pageSheet
+  picker.presentationController?.delegate = self
   if let saved = prefs.string(forKey:directoryKey), let directory = URL(string:saved), directory.isFileURL {
    picker.directoryURL = directory
   }
@@ -24,7 +26,15 @@ final class MediaPicker: NSObject, UIDocumentPickerDelegate {
   presenter.present(picker, animated:true)
  }
 
+ func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+  resolveCancellation()
+ }
+
  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+  resolveCancellation()
+ }
+
+ private func resolveCancellation() {
   let promise = pending; pending = nil
   promise?.resolve(["canceled":true,"assets":[]] as [String:Any])
  }

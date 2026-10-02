@@ -233,8 +233,8 @@ export default class App extends React.Component<Record<string, never>, State> {
     this.changingTrack = true;
     this.setState({ busy: true, error: null });
     try {
-      const picker = this.getEngine().pickMedia;
-      const result = Platform.OS === "ios" && picker ? await picker() : await DocumentPicker.getDocumentAsync({
+      const engine = this.getEngine();
+      const result = Platform.OS === "ios" && engine.pickMedia ? await engine.pickMedia() : await DocumentPicker.getDocumentAsync({
         type: "*/*",
         copyToCacheDirectory: true,
         multiple: true,
