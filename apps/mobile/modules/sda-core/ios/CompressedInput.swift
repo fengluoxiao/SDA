@@ -37,17 +37,27 @@ final class CompressedInput {
  func next() throws -> Data? {
   if let f = file { let d = try f.read(upToCount: 24 * 1024); return d?.isEmpty == false ? d : nil }
   guard let output = trackOutput, let r = reader else { return nil }
+  while true {
   guard let sample = output.copyNextSampleBuffer() else {
    if r.status == .failed { throw r.error ?? SdaError.message("音轨读取失败") }
    return nil
   }
-  guard let block = CMSampleBufferGetDataBuffer(sample) else { throw SdaError.message("音频包没有压缩数据") }
+  // AVAssetReader may emit empty marker samples or deferred compressed data.
+  if CMSampleBufferGetNumSamples(sample) == 0 { continue }
+  if !CMSampleBufferDataIsReady(sample) {
+   let ready = CMSampleBufferMakeDataReady(sample)
+   guard ready == noErr else { throw SdaError.message("压缩样本加载失败: \(ready)") }
+  }
+  guard let block = CMSampleBufferGetDataBuffer(sample) else {
+   throw SdaError.message("音频包没有压缩数据: samples=\(CMSampleBufferGetNumSamples(sample)), bytes=\(CMSampleBufferGetTotalSampleSize(sample)), ready=\(CMSampleBufferDataIsReady(sample)), format=\(String(describing: CMSampleBufferGetFormatDescription(sample)))")
+  }
   let count = CMBlockBufferGetDataLength(block)
   guard count > 0 && count <= 1024 * 1024 else { throw SdaError.message("音频包长度无效") }
   var data = Data(count: count)
   let status = data.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count, destination: $0.baseAddress!) }
   guard status == kCMBlockBufferNoErr else { throw SdaError.message("音频包复制失败") }
   return data
+  }
  }
  deinit { reader?.cancelReading(); try? file?.close(); if scoped { url.stopAccessingSecurityScopedResource() } }
 }
