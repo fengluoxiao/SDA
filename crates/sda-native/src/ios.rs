@@ -445,7 +445,8 @@ mod tests {
             let mut out = [0.0;1024*12];
             assert_eq!(sda_ios_speakers_read(h,out.as_mut_ptr(),1024),1024);
             for frame in out.chunks_exact(12) { assert!(frame.iter().all(|v| *v==frame[0])); }
-            assert!(out[0] < 0.8 && out[1023*12] < out[0] && out[1023*12] >= 0.4);
+            assert_eq!(out[0], 0.4);
+            assert_eq!(out[1023*12], out[0]); // Balanced from sample zero, no loud startup ramp.
             let before = (*h.cast::<SpeakerHost>()).gain;
             sda_ios_speakers_balance(h,false);
             assert_eq!((*h.cast::<SpeakerHost>()).gain,before);
@@ -469,13 +470,14 @@ struct SpeakerHost {
     measured_frames: usize,
     target_gain: f32,
     gain: f32,
+    read_started: bool,
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
         Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default(), events: Default::default(), active: Default::default(),
-            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0 })).cast(),
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
 }
@@ -493,7 +495,7 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
             host.events.make_contiguous().sort_by_key(|e| e.sample_pos);
             host.meter.push(&frame.channels);
             host.measured_frames += 1;
-            if host.measured_frames % 8 == 0 {
+            if !host.read_started || host.measured_frames % 8 == 0 {
                 let m = host.meter.integrated();
                 if m.blocks >= crate::balance::MIN_BLOCKS {
                     if let Some(lufs) = m.integrated_lufs { host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32; }
@@ -501,6 +503,12 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
             }
             if host.pcm.len() + frames*12 > 8*48000*12 { return Err("speaker PCM backlog exceeded".into()); }
             for i in 0..frames { for channel in &frame.channels { host.pcm.push_back(channel[i]); } }
+        }
+        if finish {
+            let m = host.meter.integrated();
+            if let Some(lufs) = m.integrated_lufs {
+                host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32;
+            }
         }
         Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000}))
     })
@@ -510,6 +518,10 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
     if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
     let host = unsafe { &mut *p.cast::<SpeakerHost>() };
     let frames = capacity_frames.min(host.pcm.len()/12);
+    if frames > 0 && !host.read_started {
+        host.gain = if host.balance_enabled { host.target_gain } else { 1.0 };
+        host.read_started = true;
+    }
     for i in 0..frames {
         let target = if host.balance_enabled { host.target_gain } else { 1.0 };
         // A single smooth gain for all 12 channels, including LFE. No remapping.

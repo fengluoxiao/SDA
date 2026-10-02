@@ -140,6 +140,8 @@ final class SdaPlayer {
    MPNowPlayingInfoPropertyElapsedPlaybackTime:(s["positionMs"] as? Double ?? 0)/1000,
    MPNowPlayingInfoPropertyPlaybackRate:isPaused ? 0.0 : 1.0,
    MPNowPlayingInfoPropertyDefaultPlaybackRate:1.0,
+   MPNowPlayingInfoPropertyIsLiveStream:false,
+   MPNowPlayingInfoPropertyExternalContentIdentifier:trackHash,
    MPNowPlayingInfoPropertyMediaType:MPNowPlayingInfoMediaType.audio.rawValue]) { _, new in new }
   MPNowPlayingInfoCenter.default().nowPlayingInfo = info
   MPNowPlayingInfoCenter.default().playbackState = isPaused ? .paused : .playing
@@ -159,6 +161,11 @@ final class SdaPlayer {
   updateNowPlaying()
  }
  func installSystemControls() {
+  for notification in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
+   observers.append(NotificationCenter.default.addObserver(forName: notification, object:nil, queue:nil) { [weak self] _ in
+    guard let self else { return }; self.locked { self.updateNowPlaying() }
+   })
+  }
   let center = MPRemoteCommandCenter.shared()
   remoteTargets.append((center.pauseCommand, center.pauseCommand.addTarget { [weak self] _ in
    guard let self else { return .commandFailed }; return self.locked { (try? self.setPaused(true)) == true ? .success : .commandFailed }
@@ -237,6 +244,7 @@ final class SdaPlayer {
      if decoded > 0 && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据") }
      if Date().timeIntervalSince(lastInfo) > 1 { updateNowPlaying(); lastInfo = Date() }
      if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true; isPaused = true; updateNowPlaying(); return nil }; return true }
+     if status["preparingAudio"] as? Bool == true { return false }
      return decoded > consumed + 4*48000 || (status["fifoFrames"] as? Int ?? 0) > 4*48000
     }
     guard let wait = shouldWait else { return }

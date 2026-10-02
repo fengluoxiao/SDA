@@ -10,6 +10,7 @@ export interface TrackMetadata {
 }
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
 interface Props {
+  preparingAudio?: boolean;
   systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
   setSystemSpatial360RA(enabled: boolean): void;
   layout: "7.1.4" | "360RA-13";
@@ -118,6 +119,8 @@ export function RemotePlayer(p: Props) {
       {label(glyph, false, { fontSize: large ? 27 : 22 })}
     </Pressable>
   );
+  const [sceneVisited, setSceneVisited] = useState(false);
+  React.useEffect(() => { if (page === 2) setSceneVisited(true); }, [page]);
   const navigate = (index: number) => { setPage(index); pager.current?.scrollTo({ x: index * pageWidth, animated: true }); };
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
@@ -132,7 +135,7 @@ export function RemotePlayer(p: Props) {
     <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
     <View style={s.header}>
       {button("＋", "打开本机媒体", p.chooseFile, p.busy)}
-      <View style={{ flex: 1, alignItems: "center" }}>{label(page === 0 ? "正在播放" : page === 1 ? "音乐资料库" : "空间音频", true, s.eyebrow)}
+      <View style={{ flex: 1, alignItems: "center" }}>{label(page === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : page === 1 ? "音乐资料库" : "空间音频", true, s.eyebrow)}
         <Text numberOfLines={1} style={{ color: c.ink, fontSize: 12, marginTop: 5 }}>{p.metadata.album || "SDA · 本地音乐"}</Text>
       </View>
       {button("···", "更多设置", showSettings)}
@@ -219,7 +222,7 @@ export function RemotePlayer(p: Props) {
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
-          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{page === 2 && <MobileObjectScene layout={p.layout} objects={p.objects} onInteractionChange={sceneInteraction} />}</View>
+          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} onInteractionChange={sceneInteraction} />}</View>
           {label("单指旋转 · 双指缩放", true, s.help)}
         </View>
       </ScrollView>
@@ -227,7 +230,6 @@ export function RemotePlayer(p: Props) {
     <View style={s.tabs}>{["播放", "列表", "空间"].map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={s.tab}>
       <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: page === index ? c.field : "transparent" }}>{label(name, page !== index, { fontSize: 12, fontWeight: page === index ? "600" : "400" })}</View></Pressable>)}</View>
     {p.error && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-    {p.busy && label(playback, true, s.centerHint)}
     <Modal transparent visible={settings} animationType="slide" onRequestClose={() => setSettings(false)}>
       <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
       <Animated.View style={[s.backdrop, { opacity: sheetDrag.interpolate({ inputRange: [0, height], outputRange: [1, 0], extrapolate: "clamp" }) }]}>
@@ -251,7 +253,7 @@ export function RemotePlayer(p: Props) {
           </Pressable>
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播后需积累测量" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360 Reality Audio", true, s.groupTitle)}

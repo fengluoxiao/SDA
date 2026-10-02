@@ -59,6 +59,7 @@ interface State {
   queue: QueueTrack[];
   queueIndex: number;
   busy: boolean;
+  preparingAudio: boolean;
   playing: boolean;
   ended: boolean;
   paused: boolean;
@@ -100,6 +101,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     rooms: [], roomId: "", roomBusy: false,
     nearField: false, metresPerUnit: 1, nearFieldBusy: false,
     busy: false,
+    preparingAudio: false,
     playing: false,
     ended: false,
     paused: false,
@@ -267,7 +269,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     if (this.changingTrack || this.state.busy || !track) return;
     this.changingTrack = true;
     this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
-      durationMs: track.metadata.durationMs ?? 0, busy: true, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
     try {
       const engine = this.getEngine();
       if (!this.poller) this.poller = setInterval(() => this.pollStatus(), 80);
@@ -305,6 +307,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       const feedDone = engine.feedDone();
       const objects = JSON.parse(engine.objects()) as Record<string, ObjectPoint>;
       this.setState({
+        preparingAudio: (value as Partial<PlaybackStatus> & { preparingAudio?: boolean }).preparingAudio === true,
         positionMs: value.positionMs ?? 0,
         decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
         fifoFrames: value.fifoFrames ?? 0,

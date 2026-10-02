@@ -22,3 +22,10 @@
 - Local native regression: 39 passed, 1 ignored, 4 diagnostic dump tests excluded. Includes 544 KiB decoder-stack regression, speaker PCM chunk/interleave invariance, object timeline polling, smooth uniform gain/toggle preservation and multichannel/stereo loudness calibration.
 - Simulator assertions added for both production routes showing two real fixture objects; system Now Playing title/artist/album/artwork and stale-track rejection; balance control and uninterrupted next-play switch behavior.
 - macOS compilation and simulator assertions must pass in GitHub Actions before an IPA is called verified. A simulator cannot verify Dynamic Island presentation, iPhone gesture feel, AirPods spatialization or subjective loudness.
+
+## Follow-up: startup / viewport / background (2026-10-02)
+
+- System balance now pre-decodes six seconds (or the entire shorter input) before the first Apple PCM submission. The feeder bypasses its ordinary four-second backpressure only during this bounded pre-roll; the native eight-second cap remains. Initial gain is applied at sample zero; subsequent live changes retain the common smooth ramp. This is initial-window measurement, not whole-track advance analysis, so later integrated gain can still change.
+- The native Canvas waits for nonzero viewport dimensions, receives explicit width/height, and stays mounted after the spatial page is first visited. A render error now reports a message instead of leaving an unlabelled blank. This mitigates GL layout/recreation failures; the reported Dolby-only blank still needs device reproduction and visual verification.
+- Now Playing refreshes on entering background and returning foreground, adds local content identity and non-live status. This does not implement custom Live Activities or establish that the system Dynamic Island animation is fixed.
+- Preparation status moved to the top Now Playing heading, including native system-balance pre-roll; the lower duplicate was removed.

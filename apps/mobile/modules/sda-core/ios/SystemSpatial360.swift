@@ -15,6 +15,8 @@ final class SystemSpatial360 {
  var paused = false
  var buffering = false
  var closed = false
+ var balanceEnabled = false
+ var inputFinished = false
  var pcm = [Float](repeating: 0, count: 1024*12)
  init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float) throws {
   // Explicit labels match CICP19, whose rear channels precede its side channels.
@@ -62,6 +64,7 @@ final class SystemSpatial360 {
   if let data { value = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,finish)) } }
   else { value = try decodeReply(sda_ios_speakers_feed(decoder,nil,0,finish)) }
   queued = ((value as? [String:Any])?["queuedFrames"] as? NSNumber)?.uint64Value ?? 0
+  if finish { inputFinished = true }
   try pump()
  }
  func pump() throws {
@@ -71,6 +74,8 @@ final class SystemSpatial360 {
   if started && !paused && !buffering && consumed >= enqueued {
    synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true
   }
+  // Decode bounded pre-roll before the first submission so balance starts at sample zero.
+  if preparingAudio { return }
   while !paused && queued > 0 && renderer.isReadyForMoreMediaData {
    // Bound system queue as well as decoder queue, including when renderer stays ready.
    if enqueued > consumed + 48000 { break }
@@ -109,12 +114,13 @@ final class SystemSpatial360 {
  func objects(_ decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
- func setBalance(_ enabled: Bool) { sda_ios_speakers_balance(decoder,enabled) }
+ var preparingAudio: Bool { !started && balanceEnabled && !inputFinished && queued < 6*48000 }
+ func setBalance(_ enabled: Bool) { balanceEnabled = enabled; sda_ios_speakers_balance(decoder,enabled) }
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
    "fifoFrames":decoded-clock,"outputChannels":12,"outputLayout":"7.1.4","systemSpatial360RAActive":true,
-   "paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
+   "preparingAudio":preparingAudio,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
    "channelOrder":["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]]
  }
 }

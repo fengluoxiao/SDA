@@ -1,5 +1,5 @@
 import React, { useMemo, useRef } from "react";
-import { PanResponder, View, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { PanResponder, View, Text, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
@@ -51,10 +51,17 @@ function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13";
   </>;
 }
 
+class SceneBoundary extends React.Component<React.PropsWithChildren, { error: string | null }> {
+  state: { error: string | null } = { error: null };
+  static getDerivedStateFromError(error: Error) { return { error: error.message }; }
+  render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
+}
+
 export function MobileObjectScene({ objects, layout, onInteractionChange }: { layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
   interaction.current = onInteractionChange;
+  const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
   const input = useRef({ rotation: { x: 0.72, y: 0.25 }, distance: 7 });
   const previousPinch = useRef(0);
   const previousDrag = useRef<{ x: number; y: number } | null>(null);
@@ -90,9 +97,13 @@ export function MobileObjectScene({ objects, layout, onInteractionChange }: { la
     onPanResponderRelease: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
     onPanResponderTerminate: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
   })).current;
-  return <View style={{ flex: 1, overflow: "hidden" }} onLayout={event => { viewportHeight.current = event.nativeEvent.layout.height; }} {...pan.panHandlers}>
-    <Canvas camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }}>
+  return <View style={{ flex: 1, overflow: "hidden" }} onLayout={event => {
+    const { width, height } = event.nativeEvent.layout;
+    viewportHeight.current = height;
+    setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
+  }} {...pan.panHandlers}>
+    {viewport.width > 0 && viewport.height > 0 && <SceneBoundary><Canvas style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }}>
       <Scene layout={layout} objects={objects} cameraInput={input.current} />
-    </Canvas>
+    </Canvas></SceneBoundary>}
   </View>;
 }
