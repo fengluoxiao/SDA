@@ -98,7 +98,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 build 2>&1 | tee ios-artifacts/simulator-build.log
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.0 build 2>&1 | tee ios-artifacts/simulator-build.log
       - name: Boot simulator and smoke test
         if: steps.sdk.outputs.available == 'true'
         run: |
