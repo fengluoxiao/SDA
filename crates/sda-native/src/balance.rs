@@ -81,18 +81,24 @@ fn filters(rate: u32) -> [Biquad; 2] {
     ]
 }
 pub struct LoudnessMeter {
-    filters: [[Biquad; 2]; 2],
-    block: [Vec<f32>; 2],
+    filters: Vec<[Biquad; 2]>,
+    weights: Vec<f64>,
+    block: Vec<Vec<f32>>,
     fill: usize,
     hop: usize,
     energy: Vec<f64>,
-    history: [Vec<f32>; 2],
+    history: Vec<Vec<f32>>,
     write: usize,
     phases: Vec<Vec<(usize, f64)>>,
     peak: f64,
 }
 impl LoudnessMeter {
-    pub fn new(rate: u32) -> Self {
+    pub fn new(rate: u32) -> Self { Self::with_weights(rate, vec![1.0, 1.0]) }
+    /// CICP19: exclude LFE, weight horizontal surround channels by 1.41.
+    pub fn speakers_7_1_4() -> Self {
+        Self::with_weights(48000, vec![1.0,1.0,1.0,0.0,1.41,1.41,1.41,1.41,1.0,1.0,1.0,1.0])
+    }
+    fn with_weights(rate: u32, weights: Vec<f64>) -> Self {
         let factor = if rate < 96000 {
             4
         } else if rate < 192000 {
@@ -113,12 +119,13 @@ impl LoudnessMeter {
             }
         }
         Self {
-            filters: [filters(rate), filters(rate)],
-            block: std::array::from_fn(|_| vec![0.0; (rate as f64 * 0.4).round() as usize]),
+            filters: (0..weights.len()).map(|_| filters(rate)).collect(),
+            block: (0..weights.len()).map(|_| vec![0.0; (rate as f64 * 0.4).round() as usize]).collect(),
             fill: 0,
             hop: (rate as f64 * 0.1).round() as usize,
             energy: vec![],
-            history: std::array::from_fn(|_| vec![0.0; delay]),
+            history: (0..weights.len()).map(|_| vec![0.0; delay]).collect(),
+            weights,
             write: 0,
             phases,
             peak: 0.0,
@@ -126,7 +133,7 @@ impl LoudnessMeter {
     }
     pub fn push(&mut self, channels: &[Vec<f32>]) {
         for i in 0..channels[0].len() {
-            for ch in 0..2 {
+            for ch in 0..self.weights.len() {
                 let x = channels[ch][i];
                 self.history[ch][self.write] = x;
                 for phase in &self.phases {
@@ -150,7 +157,8 @@ impl LoudnessMeter {
                 self.energy.push(
                     self.block
                         .iter()
-                        .map(|ch| ch.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n as f64)
+                        .zip(&self.weights)
+                        .map(|(ch, weight)| weight * ch.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n as f64)
                         .sum(),
                 );
                 for block in &mut self.block {
@@ -319,6 +327,19 @@ impl VolumeBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speaker_meter_excludes_lfe_and_retains_stereo_calibration() {
+        let tone: Vec<f32> = (0..48000).map(|i| 0.5*(i as f32*std::f32::consts::TAU*1000.0/48000.0).sin()).collect();
+        let mut lfe_only = vec![vec![0.0;48000];12]; lfe_only[3] = tone.clone();
+        let mut meter = LoudnessMeter::speakers_7_1_4(); meter.push(&lfe_only);
+        assert!(meter.integrated().integrated_lufs.is_none());
+        let mut speakers = vec![vec![0.0;48000];12]; speakers[0] = tone.clone(); speakers[1] = tone.clone();
+        let mut multichannel = LoudnessMeter::speakers_7_1_4(); multichannel.push(&speakers);
+        let mut stereo = LoudnessMeter::new(48000); stereo.push(&[tone.clone(),tone]);
+        assert_eq!(multichannel.integrated().integrated_lufs,stereo.integrated().integrated_lufs);
+        assert_eq!(multichannel.integrated().true_peak_dbtp,stereo.integrated().true_peak_dbtp);
+    }
     fn frame(codec: &'static str, at: u64) -> FrameData {
         FrameData {
             codec,

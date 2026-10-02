@@ -92,7 +92,7 @@ impl MpeghDecoder {
         let mut events = Vec::new();
         let mut declarations = Vec::new();
         let channels;
-        if objects > 0 {
+        if objects > 0 || (beds > 0 && hoa == 0) {
             if hoa != 0 { return Err("MPEG-H mixed objects/HOA is not supported yet".into()); }
             if info(4) != beds + objects { return Err("MPEG-H source mapping mismatch".into()); }
             let mut bed_targets = Vec::new();
@@ -113,27 +113,7 @@ impl MpeghDecoder {
                 for s in 0..n { mapped[target][s] += pcm[c*n+s]; }
             }
             channels = mapped;
-            let rows = info(9);
-            if !(1..=1024).contains(&rows) { return Err("MPEG-H object PCM has no matching metadata".into()); }
-            let metadata = unsafe { slice::from_raw_parts(sda_metadata(), rows as usize*12) };
-            for row in metadata.chunks_exact(12) {
-                if row.iter().any(|v| !v.is_finite()) || row[0] < 0.0 || row[0] >= objects as f32 || row[1] < 0.0 {
-                    return Err("MPEG-H invalid object metadata".into());
-                }
-                let az = row[2] as f64 * std::f64::consts::PI / 180.0;
-                let el = row[3] as f64 * std::f64::consts::PI / 180.0;
-                events.push(ObjectEvent {
-                    id: row[0] as u32, sample_pos: self.sample_pos + row[1] as u64, has_pos: true,
-                    pos: [-az.sin()*el.cos(), az.cos()*el.cos(), el.sin()],
-                    gain_db: 20.0*(row[5] as f64).max(1e-10).log10(),
-                    size: [(row[6] as f64/180.0).min(1.0), (row[8] as f64).min(1.0), (row[7] as f64/180.0).min(1.0)],
-                    diffuse: (row[9] as f64).clamp(0.0,1.0),
-                    anchor: if row[10] != 0.0 { "screen" } else { "room" }.into(),
-                    // OAM radius is relative, exactly as Windows: never invent metres.
-                    distance_m: None, distance_infinite: false, screen_factor: None, depth_factor: None,
-                    ramp_duration: row[11] as u32,
-                });
-            }
+            events = Self::capture_events(objects, self.sample_pos)?;
         } else {
             labels = vec!["L".into(), "R".into()];
             channels = self.reference_stereo()?;
@@ -144,6 +124,33 @@ impl MpeghDecoder {
             channels, labels, events, object_channels: declarations, program_loudness: None, ramp_duration: 0 };
         self.sample_pos += frames as u64;
         Ok(Some(frame))
+    }
+    fn capture_events(objects: i32, at: u64) -> Result<Vec<ObjectEvent>, String> {
+        if objects == 0 { return Ok(vec![]); }
+        if !(1..=64).contains(&objects) { return Err("MPEG-H invalid object count".into()); }
+        let mut events = Vec::new();
+        let rows = unsafe { sda_info(9) };
+        if !(1..=1024).contains(&rows) { return Err("MPEG-H object PCM has no matching metadata".into()); }
+        let metadata = unsafe { slice::from_raw_parts(sda_metadata(), rows as usize*12) };
+        for row in metadata.chunks_exact(12) {
+            if row.iter().any(|v| !v.is_finite()) || row[0] < 0.0 || row[0] >= objects as f32 || row[1] < 0.0 {
+                return Err("MPEG-H invalid object metadata".into());
+            }
+            let az = row[2] as f64 * std::f64::consts::PI / 180.0;
+            let el = row[3] as f64 * std::f64::consts::PI / 180.0;
+            events.push(ObjectEvent {
+                id: row[0] as u32, sample_pos: at + row[1] as u64, has_pos: true,
+                pos: [-az.sin()*el.cos(), az.cos()*el.cos(), el.sin()],
+                gain_db: 20.0*(row[5] as f64).max(1e-10).log10(),
+                size: [(row[6] as f64/180.0).min(1.0), (row[8] as f64).min(1.0), (row[7] as f64/180.0).min(1.0)],
+                diffuse: (row[9] as f64).clamp(0.0,1.0),
+                anchor: if row[10] != 0.0 { "screen" } else { "room" }.into(),
+                // OAM radius is relative, exactly as Windows: never invent metres.
+                distance_m: None, distance_infinite: false, screen_factor: None, depth_factor: None,
+                ramp_duration: row[11] as u32,
+            });
+        }
+        Ok(events)
     }
     fn take_speakers(&mut self) -> Result<Option<FrameData>, String> {
         let (count, bytes, rate) = unsafe { (sda_info(11), sda_info(10), sda_info(2)) };
@@ -162,7 +169,7 @@ impl MpeghDecoder {
         // impeg hd_cicp_2_geometry_rom.c: CICP19 is rear BEFORE side.
         let labels: Vec<String> = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s| s.to_string()).collect();
         let frame = FrameData { codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
-            raw_bed_labels: labels.clone(), channels, labels, events: vec![], object_channels: vec![], program_loudness: None, ramp_duration: 0 };
+            raw_bed_labels: labels.clone(), channels, labels, events: Self::capture_events(unsafe { sda_info(5) }, self.sample_pos)?, object_channels: vec![], program_loudness: None, ramp_duration: 0 };
         self.sample_pos += (bytes/36) as u64;
         Ok(Some(frame))
     }
@@ -293,7 +300,7 @@ mod tests {
                 while let Some(frame) = decoder.next_frame() {
                     assert_eq!(frame.labels, ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]);
                     assert_eq!(frame.sample_rate, 48000);
-                    assert!(frame.events.is_empty() && frame.object_channels.is_empty());
+                    assert!(!frame.events.is_empty() && frame.object_channels.is_empty());
                     assert_eq!(frame.channels.len(), 12);
                     assert!(frame.channels.iter().all(|c| c.len() == frame.channels[0].len()));
                     pcm.extend(frame.channels.into_iter().flatten());

@@ -44,6 +44,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   hrtfStatus(): string;
   renderingSettings(): string;
   set360RaSystemSpatialAudio?(enabled: boolean): boolean;
+  setNowPlayingMetadata?(contentHash: string, metadataJson: string): void;
   setObjectRendering(direct: boolean, directional: boolean): void;
   setRenderingPreset(id: string): Promise<void>;
   rooms(): string;
@@ -275,6 +276,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       const imported = await prepare360RaMp4(engine, track.uri, track.name);
       try {
         await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
+        engine.setNowPlayingMetadata?.(track.contentHash, JSON.stringify({ ...track.metadata, durationMs: imported?.durationMs || track.metadata.durationMs }));
         if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
         const settings = JSON.parse(engine.renderingSettings());
         this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,

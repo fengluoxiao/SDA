@@ -419,18 +419,63 @@ mod tests {
             }
             assert_eq!(value(sda_ios_speakers_feed(h,std::ptr::null(),0,true))["queuedFrames"],0);
             assert_eq!(actual,expected); assert!(!actual.is_empty());
+            let host = &mut *h.cast::<SpeakerHost>();
+            assert!(!host.events.is_empty());
+            let first = host.events.front().unwrap().sample_pos;
+            if first > 0 { assert_eq!(value(sda_ios_speakers_objects(h,first-1)),json!({})); }
+            let objects = value(sda_ios_speakers_objects(h,first));
+            assert_eq!(objects.as_object().unwrap().len(),2);
+            assert!(objects.as_object().unwrap().values().all(|v| v["hasPos"]==true && v["samplePos"].as_u64().unwrap()<=first));
+            let final_objects = value(sda_ios_speakers_objects(h,u64::MAX));
+            assert_eq!(final_objects.as_object().unwrap().len(),2);
+            assert!((*h.cast::<SpeakerHost>()).events.is_empty());
+        }
+    }
+
+    #[test]
+    fn speaker_balance_is_uniform_smooth_and_toggle_does_not_reset() {
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let h = sda_ios_speakers_create(&mut error);
+            assert!(!h.is_null());
+            let host = &mut *h.cast::<SpeakerHost>();
+            host.target_gain = 0.5;
+            host.pcm.extend(std::iter::repeat_n(0.8, 1024*12));
+            sda_ios_speakers_balance(h,true);
+            let mut out = [0.0;1024*12];
+            assert_eq!(sda_ios_speakers_read(h,out.as_mut_ptr(),1024),1024);
+            for frame in out.chunks_exact(12) { assert!(frame.iter().all(|v| *v==frame[0])); }
+            assert!(out[0] < 0.8 && out[1023*12] < out[0] && out[1023*12] >= 0.4);
+            let before = (*h.cast::<SpeakerHost>()).gain;
+            sda_ios_speakers_balance(h,false);
+            assert_eq!((*h.cast::<SpeakerHost>()).gain,before);
+            (*h.cast::<SpeakerHost>()).pcm.extend(std::iter::repeat_n(0.8,12));
+            assert_eq!(sda_ios_speakers_read(h,out.as_mut_ptr(),1),1);
+            assert!(out[0] > before*0.8 && out[0] <= 0.8);
+            sda_ios_speakers_close(h);
         }
     }
 
 }
 
 // Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
-struct SpeakerHost { decoder: mpegh::MpeghDecoder, pcm: std::collections::VecDeque<f32> }
+struct SpeakerHost {
+    decoder: mpegh::MpeghDecoder,
+    pcm: std::collections::VecDeque<f32>,
+    events: std::collections::VecDeque<sda_core::ObjectEvent>,
+    active: crate::ObjectSnapshot,
+    meter: crate::balance::LoudnessMeter,
+    balance_enabled: bool,
+    measured_frames: usize,
+    target_gain: f32,
+    gain: f32,
+}
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
-        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default() })).cast(),
+        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default(), events: Default::default(), active: Default::default(),
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0 })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
 }
@@ -443,6 +488,17 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
         else { host.decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
         while let Some(frame) = host.decoder.next_frame() {
             let frames = frame.channels[0].len();
+            if host.events.len() + frame.events.len() > 262144 { return Err("speaker object timeline backlog exceeded".into()); }
+            host.events.extend(frame.events);
+            host.events.make_contiguous().sort_by_key(|e| e.sample_pos);
+            host.meter.push(&frame.channels);
+            host.measured_frames += 1;
+            if host.measured_frames % 8 == 0 {
+                let m = host.meter.integrated();
+                if m.blocks >= crate::balance::MIN_BLOCKS {
+                    if let Some(lufs) = m.integrated_lufs { host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32; }
+                }
+            }
             if host.pcm.len() + frames*12 > 8*48000*12 { return Err("speaker PCM backlog exceeded".into()); }
             for i in 0..frames { for channel in &frame.channels { host.pcm.push_back(channel[i]); } }
         }
@@ -454,8 +510,25 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
     if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
     let host = unsafe { &mut *p.cast::<SpeakerHost>() };
     let frames = capacity_frames.min(host.pcm.len()/12);
-    for i in 0..frames*12 { unsafe { *out.add(i) = host.pcm.pop_front().unwrap_or(0.0); } }
+    for i in 0..frames {
+        let target = if host.balance_enabled { host.target_gain } else { 1.0 };
+        // A single smooth gain for all 12 channels, including LFE. No remapping.
+        host.gain += (target - host.gain).clamp(-1.0/12000.0, 1.0/12000.0);
+        for ch in 0..12 { unsafe { *out.add(i*12+ch) = host.pcm.pop_front().unwrap_or(0.0) * host.gain; } }
+    }
     frames
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_objects(p: *mut std::ffi::c_void, clock: u64) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() { return Err("invalid speaker handle".into()); }
+        let host = unsafe { &mut *p.cast::<SpeakerHost>() };
+        serde_json::to_value(crate::snapshot_at_clock(&mut host.events, &mut host.active, clock)).map_err(|e| e.to_string())
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_balance(p: *mut std::ffi::c_void, enabled: bool) {
+    if !p.is_null() { unsafe { (*p.cast::<SpeakerHost>()).balance_enabled = enabled; } }
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_close(p: *mut std::ffi::c_void) {

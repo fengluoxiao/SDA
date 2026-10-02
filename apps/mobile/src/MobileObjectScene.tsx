@@ -51,15 +51,22 @@ function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13";
   </>;
 }
 
-export function MobileObjectScene({ objects, layout }: { layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[] }) {
+export function MobileObjectScene({ objects, layout, onInteractionChange }: { layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+  const interaction = useRef(onInteractionChange);
+  React.useEffect(() => () => interaction.current?.(false), []);
+  interaction.current = onInteractionChange;
   const input = useRef({ rotation: { x: 0.72, y: 0.25 }, distance: 7 });
   const previousPinch = useRef(0);
   const previousDrag = useRef<{ x: number; y: number } | null>(null);
   const viewportHeight = useRef(300);
   const pan = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponderCapture: () => true,
+    onPanResponderTerminationRequest: () => false,
+    onShouldBlockNativeResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderGrant: (event: GestureResponderEvent) => {
+      interaction.current?.(true);
       const touches = event.nativeEvent.touches;
       previousDrag.current = touches.length === 1 ? { x: touches[0]!.pageX, y: touches[0]!.pageY } : null;
       previousPinch.current = touches.length >= 2 ? Math.hypot(touches[0]!.pageX - touches[1]!.pageX, touches[0]!.pageY - touches[1]!.pageY) : 0;
@@ -80,8 +87,8 @@ export function MobileObjectScene({ objects, layout }: { layout: "7.1.4" | "360R
         previousPinch.current = 0;
       }
     },
-    onPanResponderRelease: () => { previousDrag.current = null; previousPinch.current = 0; },
-    onPanResponderTerminate: () => { previousDrag.current = null; previousPinch.current = 0; },
+    onPanResponderRelease: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
+    onPanResponderTerminate: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
   })).current;
   return <View style={{ flex: 1, overflow: "hidden" }} onLayout={event => { viewportHeight.current = event.nativeEvent.layout.height; }} {...pan.panHandlers}>
     <Canvas camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }}>

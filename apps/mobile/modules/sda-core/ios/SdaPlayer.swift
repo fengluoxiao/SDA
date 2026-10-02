@@ -3,6 +3,7 @@ import AVFoundation
 import MediaPlayer
 import CryptoKit
 import AudioToolbox
+import UIKit
 
 enum SdaError: LocalizedError {
  case message(String)
@@ -28,6 +29,8 @@ final class SdaPlayer {
  var observers: [NSObjectProtocol] = []
  var remoteTargets: [(MPRemoteCommand, Any)] = []
  var title = "SDA"
+ var trackHash = ""
+ var mediaInfo: [String:Any] = [:]
  var duration: Double = 0
  var interruptionWasPlaying = false
  let prefs = UserDefaults.standard
@@ -44,14 +47,15 @@ final class SdaPlayer {
  func command(_ op: String, _ args: [String: Any] = [:]) throws -> Any {
   if let system = systemSpatial {
    switch op {
-   case "status": return system.status()
-   case "objects": return [String:Any]()
+   case "status": _ = try system.objects(decodeReply); return system.status()
+   case "objects": return try system.objects(decodeReply)
+   case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
    case "volume": system.renderer.volume = (args["volume"] as? NSNumber)?.floatValue ?? 1; return true
    case "finish": try system.feed(nil,finish:true,decodeReply:decodeReply); return ["errors":[]]
    case "loudness": return "null"
    // Saved SDA preferences never enter the system-rendered path.
-   case "yaw", "resetPose", "measured", "balance", "near", "room", "preset", "rendering": return ["bypassed":true]
+   case "yaw", "resetPose", "measured", "near", "room", "preset", "rendering": return ["bypassed":true]
    default: throw SdaError.message("系统空间音频不支持该命令: \(op)")
    }
   }
@@ -69,7 +73,7 @@ final class SdaPlayer {
    "hrtfWetWeight": prefs.object(forKey: "sda.wet") ?? 0.04,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": prefs.bool(forKey: "sda.near"), "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
-   "roomId": prefs.string(forKey: "sda.room") ?? "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
+   "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
  }
  func hrtfPath(_ set: String) throws -> String {
   let directory = set == "standard" ? "hrtf" : set == "dense-raw" ? "hrtf-dense-raw" : "hrtf-dense"
@@ -128,12 +132,31 @@ final class SdaPlayer {
   _ = try command("pause",["paused":paused]); isPaused = paused; updateNowPlaying(); return true
  }
  func updateNowPlaying() {
-  guard handle != nil else { return }
+  guard hasPlayback else { return }
   let s = (try? command("status")) as? [String: Any] ?? [:]
-  MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyTitle:title,
+  var info = mediaInfo
+  info.merge([MPMediaItemPropertyTitle:title,
    MPMediaItemPropertyPlaybackDuration:duration/1000,
    MPNowPlayingInfoPropertyElapsedPlaybackTime:(s["positionMs"] as? Double ?? 0)/1000,
-   MPNowPlayingInfoPropertyPlaybackRate:isPaused ? 0.0 : 1.0]
+   MPNowPlayingInfoPropertyPlaybackRate:isPaused ? 0.0 : 1.0,
+   MPNowPlayingInfoPropertyDefaultPlaybackRate:1.0,
+   MPNowPlayingInfoPropertyMediaType:MPNowPlayingInfoMediaType.audio.rawValue]) { _, new in new }
+  MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+  MPNowPlayingInfoCenter.default().playbackState = isPaused ? .paused : .playing
+ }
+ func setMediaMetadata(_ hash: String, _ metadata: [String:Any]) {
+  guard hasPlayback, hash == trackHash else { return }
+  if let value = metadata["title"] as? String, !value.isEmpty { title = value }
+  if let value = metadata["artist"] as? String { mediaInfo[MPMediaItemPropertyArtist] = value }
+  if let value = metadata["album"] as? String { mediaInfo[MPMediaItemPropertyAlbumTitle] = value }
+  if let value = metadata["albumArtist"] as? String { mediaInfo[MPMediaItemPropertyAlbumArtist] = value }
+  if let value = metadata["durationMs"] as? Double, value.isFinite, value > 0 { duration = value }
+  if let uri = metadata["coverUri"] as? String, uri.hasPrefix("data:image/"),
+     let comma = uri.firstIndex(of:","), uri.count <= 16*1024*1024,
+     let data = Data(base64Encoded:String(uri[uri.index(after:comma)...])), let image = UIImage(data:data) {
+   mediaInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize:image.size) { _ in image }
+  }
+  updateNowPlaying()
  }
  func installSystemControls() {
   let center = MPRemoteCommandCenter.shared()
@@ -181,9 +204,10 @@ final class SdaPlayer {
      try session.setCategory(.playback, mode:.default, options:[])
      try session.setPreferredSampleRate(48000); try session.setActive(true)
      systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1)
+     systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative() }
-    title = name; duration = mediaDuration(url)
+    title = name; trackHash = hash; mediaInfo = [:]; duration = mediaDuration(url)
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     _ = try command("yaw",["degrees":yaw])
@@ -239,6 +263,25 @@ final class SdaPlayer {
  func roomCatalog() throws -> [[String:Any]] {
   let d = try Data(contentsOf:assetRoot().appendingPathComponent("rooms/catalog.json"))
   return (try JSONSerialization.jsonObject(with:d) as? [String:Any])?["profiles"] as? [[String:Any]] ?? []
+ }
+ // Room preferences belong to the SOURCE layout, not the Apple output layout.
+ func savedRoom() -> String {
+  if let id = prefs.string(forKey:"sda.room."+layout) { return id }
+  let legacy = prefs.string(forKey:"sda.room") ?? ""
+  return (try? roomCatalog().contains(where:{ item in
+   guard let summary = item["summary"] as? [String:Any] else { return false }
+   return summary["id"] as? String == legacy && summary["layout"] as? String == layout
+  })) == true ? legacy : ""
+ }
+ func saveRoom(_ id: String) throws {
+  if !id.isEmpty {
+   guard try roomCatalog().contains(where:{ item in
+    guard let s = item["summary"] as? [String:Any] else { return false }
+    return s["id"] as? String == id && s["layout"] as? String == layout
+   }) else { throw SdaError.message("房间布局与当前音源不匹配") }
+  }
+  if handle != nil { _ = try command("room",["path":id.isEmpty ? "" : try roomPath(id)]) }
+  prefs.set(id,forKey:"sda.room."+layout)
  }
  func roomPath(_ id: String) throws -> String {
   guard try roomCatalog().contains(where:{ ($0["summary"] as? [String:Any])?["id"] as? String == id }) else { throw SdaError.message("未知房间资源") }
@@ -319,17 +362,20 @@ final class SdaPlayer {
   prefs.set(false,forKey:"sda.systemSpatial360RA")
   let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
   _ = try play(uri,"ci-360ra.mhas",0,"ci-native-360ra")
+  guard layout == "360RA-13", try roomCatalog().contains(where:{ ($0["summary"] as? [String:Any])?["layout"] as? String == "360RA-13" }) else { throw SdaError.message("360RA 源房间目录缺失") }
   let deadline = Date().addingTimeInterval(30)
+  var displayedObjects = 0
   while Date() < deadline {
    let complete: [String:Any]? = try locked {
     if let failure { throw SdaError.message(failure) }
     guard handle != nil, systemSpatial == nil else { throw SdaError.message("360RA 默认 KU100 路由缺失") }
     let status = try command("status") as! [String:Any]
+    displayedObjects = max(displayedObjects,(try command("objects") as? [String:Any])?.count ?? 0)
     if done {
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
-     guard decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
-     return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode"]
+     guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
+     return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects]
     }
     return nil
    }
@@ -344,22 +390,36 @@ final class SdaPlayer {
   _ = try play(uri,"ci-360ra.mhas",0,"ci-360ra")
   let deadline = Date().addingTimeInterval(30)
   var checkedPause = false
+  var displayedObjects = 0
+  try locked {
+   let cover = UIGraphicsImageRenderer(size:CGSize(width:16,height:16)).image { context in
+    UIColor.red.setFill(); context.fill(CGRect(x:0,y:0,width:16,height:16))
+   }.pngData()!
+   setMediaMetadata("ci-360ra",["title":"360RA test","artist":"SDA CI","album":"Spatial test","durationMs":3000.0,"coverUri":"data:image/png;base64,"+cover.base64EncodedString()])
+   setMediaMetadata("stale-track",["title":"wrong track"])
+   updateNowPlaying()
+   let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+   guard info[MPMediaItemPropertyArtist] as? String == "SDA CI", info[MPMediaItemPropertyTitle] as? String == "360RA test",
+     info[MPMediaItemPropertyAlbumTitle] as? String == "Spatial test", info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork else { throw SdaError.message("系统路径媒体元数据未发送") }
+   _ = try command("balance",["enabled":true])
+  }
   while Date() < deadline {
    let complete: [String:Any]? = try locked {
     if let failure { throw SdaError.message(failure) }
     guard let system = systemSpatial else { throw SdaError.message("360RA 未进入系统输出路径") }
     let s = system.status()
+    displayedObjects = max(displayedObjects, (try command("objects") as? [String:Any])?.count ?? 0)
     if !checkedPause && system.enqueued > 0 && !done {
      _ = try setPaused(true)
      prefs.set(false,forKey:"sda.systemSpatial360RA")
      return nil
     }
     if done {
-     guard checkedPause, system.enqueued > 0, system.queued == 0,
+     guard checkedPause, displayedObjects == 2, system.enqueued > 0, system.queued == 0,
        s["outputChannels"] as? Int == 12 else { throw SdaError.message("360RA 系统输出未完成") }
      return ["ok":true,"status":s,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
       "allowedMultichannel":system.renderer.allowedAudioSpatializationFormats.contains(.multichannel),
-      "physicalSpatialListeningVerified":false]
+      "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true]
     }
     return nil
    }

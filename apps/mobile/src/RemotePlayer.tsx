@@ -69,11 +69,22 @@ export function RemotePlayer(p: Props) {
   const playerScroll = useRef<ScrollView>(null);
   const pagerLayoutWidth = useRef(0);
   const [adjustingVolume, setAdjustingVolume] = useState(false);
+  const [interactingScene, setInteractingScene] = useState(false);
+  const scrollLocks = useRef({ volume: false, scene: false });
+  const sceneInteraction = (active: boolean) => {
+    scrollLocks.current.scene = active;
+    const enabled = !scrollLocks.current.scene && !scrollLocks.current.volume;
+    pager.current?.setNativeProps({ scrollEnabled: enabled });
+    playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
+    setInteractingScene(active);
+  };
   const volumeGesture = useMemo(() => {
     const lockScrolling = (locked: boolean) => {
       // Block native scrolling immediately, then keep the rendered props in sync.
-      pager.current?.setNativeProps({ scrollEnabled: !locked });
-      playerScroll.current?.setNativeProps({ scrollEnabled: !locked });
+      scrollLocks.current.volume = locked;
+      const enabled = !scrollLocks.current.scene && !scrollLocks.current.volume;
+      pager.current?.setNativeProps({ scrollEnabled: enabled });
+      playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
       setAdjustingVolume(locked);
     };
     let sliderLeft = 0;
@@ -128,7 +139,7 @@ export function RemotePlayer(p: Props) {
     </View>
     <ScrollView ref={pager} horizontal pagingEnabled snapToInterval={pageWidth} snapToAlignment="start"
       decelerationRate="fast" disableIntervalMomentum bounces={false} overScrollMode="never"
-      scrollEnabled={!adjustingVolume} showsHorizontalScrollIndicator={false}
+      scrollEnabled={!adjustingVolume && !interactingScene} showsHorizontalScrollIndicator={false}
       onMomentumScrollEnd={event => setPage(Math.max(0, Math.min(2, Math.round(event.nativeEvent.contentOffset.x / pageWidth))))}
       onLayout={event => {
         const layoutWidth = event.nativeEvent.layout.width;
@@ -136,7 +147,7 @@ export function RemotePlayer(p: Props) {
         pagerLayoutWidth.current = layoutWidth;
         pager.current?.scrollTo({ x: page * pageWidth, animated: false });
       }}>
-      <ScrollView ref={playerScroll} scrollEnabled={!adjustingVolume} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView ref={playerScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.player, { width: coverSize, alignSelf: "center" }]}>
           <View style={[s.art, { height: coverSize, width: coverSize, alignSelf: "center", backgroundColor: c.panel }]}>
             {p.metadata.coverUri ? <Image source={{ uri: p.metadata.coverUri }} accessibilityLabel={`${p.metadata.album || title} 封面`}
@@ -208,7 +219,7 @@ export function RemotePlayer(p: Props) {
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
-          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{page === 2 && <MobileObjectScene layout={p.layout} objects={p.objects} />}</View>
+          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{page === 2 && <MobileObjectScene layout={p.layout} objects={p.objects} onInteractionChange={sceneInteraction} />}</View>
           {label("单指旋转 · 双指缩放", true, s.help)}
         </View>
       </ScrollView>
@@ -240,14 +251,14 @@ export function RemotePlayer(p: Props) {
           </Pressable>
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播后需积累测量" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360 Reality Audio", true, s.groupTitle)}
             <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 KU100、近场、房间与 SDA 响度平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:"#167d72"}} thumbColor="#ffffff" /></View>
+              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 KU100、近场与房间；支持统一音量平衡，不改变声道方向。关闭后恢复 SDA／KU100 双耳空间渲染，并非普通立体声下混。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:"#167d72"}} thumbColor="#ffffff" /></View>
               {label("修改后下一次播放生效，不中断当前歌曲。实际空间化／头部跟踪由兼容耳机及系统设置决定。", true, s.groupHint)}
-              {label(p.systemSpatial360RAActive ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
+              {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 360RA-13／KU100，可先选择房间" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
             </View>
           </>}
           {label("空间渲染", true, s.groupTitle)}
@@ -281,8 +292,8 @@ export function RemotePlayer(p: Props) {
             </View>
           </View>
           <View style={[s.settingsCard, { backgroundColor: c.panel, marginTop: 12 }]}>
-            <View style={s.profileHeader}>{label("房间仿真", false, s.settingTitle)}{label(p.roomBusy ? "切换中…" : p.roomId ? "已开启" : "已关闭", true, s.settingDescription)}</View>
-            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: p.systemSpatial360RAActive || p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={p.systemSpatial360RAActive || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
+            <View style={s.profileHeader}>{label(`房间仿真 · ${p.layout}`, false, s.settingTitle)}{label(p.roomBusy ? "切换中…" : p.systemSpatial360RAActive ? p.systemSpatial360RA ? "系统输出已旁路" : "下次 SDA 播放应用" : p.roomId ? "已开启" : "已关闭", true, s.settingDescription)}</View>
+            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: (p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={(p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
               <View style={s.settingCopy}>{label(room.id && room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name, false, s.settingTitle)}{!!room.id && label(`${room.layout} · Windows 房间资产`, true, s.settingDescription)}</View>{label(room.id === p.roomId ? "●" : "○", room.id !== p.roomId, { fontSize: 20 })}
             </Pressable>)}
           </View>

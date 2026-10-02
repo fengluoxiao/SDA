@@ -16,29 +16,34 @@ public final class SdaModule: Module {
   }
   OnDestroy { player.locked { player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
+  Function("setNowPlayingMetadata") { (hash: String, text: String) in try player.locked {
+   guard let data = text.data(using:.utf8), let metadata = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { throw SdaError.message("媒体元数据无效") }
+   player.setMediaMetadata(hash,metadata)
+  }
   Function("renderingSettings") { try player.locked { try player.json(player.settings()) } }
   Function("hrtfStatus") { player.locked { player.hrtfState } }
   Function("feedError") { player.locked { player.failure } }
   Function("feedDone") { player.locked { player.done } }
   Function("status") { try player.locked { try player.json(!player.hasPlayback ? [:] : player.command("status")) } }
-  Function("objects") { try player.locked { try player.json(player.handle == nil ? [:] : player.command("objects")) } }
+  Function("objects") { try player.locked { try player.json(!player.hasPlayback ? [:] : player.command("objects")) } }
   Function("pause") { try player.locked { try player.setPaused(true) } }
   Function("resume") { try player.locked { try player.setPaused(false) } }
   Function("stop") { player.locked { player.stopNative(); return true } }
   Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]) } }
   Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose") } }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
-  Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.handle != nil { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
+  Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setObjectRendering") { (direct: Bool, directional: Bool) in try player.locked { if player.handle != nil { _ = try player.command("rendering",["direct":direct,"directional":directional]) }; player.prefs.set(direct,forKey:"sda.direct");player.prefs.set(directional,forKey:"sda.directional") } }
   Function("rooms") { try player.json(player.roomCatalog().compactMap { $0["summary"] }) }
   AsyncFunction("setNearField") { (enabled: Bool, scale: Double) in try player.locked { guard scale.isFinite && scale >= 0.25 && scale <= 4 else { throw SdaError.message("近场距离映射无效") }; if player.handle != nil { _ = try player.command("near",["enabled":enabled,"scale":scale]) }; player.prefs.set(enabled,forKey:"sda.near"); player.prefs.set(scale,forKey:"sda.scale") } }
-  AsyncFunction("setRoom") { (id: String) in try player.locked { let path = id.isEmpty ? "" : try player.roomPath(id); if player.handle != nil { _ = try player.command("room",["path":path]) }; player.prefs.set(id,forKey:"sda.room") } }
+  AsyncFunction("setRoom") { (id: String) in try player.locked { try player.saveRoom(id) } }
   AsyncFunction("setRenderingPreset") { (id: String) in try player.locked {
    let data = try Data(contentsOf:player.assetRoot().appendingPathComponent("rendering-presets.json"))
    let presets = try JSONSerialization.jsonObject(with:data) as! [[String:Any]]
    guard let p = presets.first(where:{$0["id"] as? String == id}) else { throw SdaError.message("未知渲染预设") }
    if player.handle != nil { _ = try player.command("preset",["path":try player.hrtfPath(p["hrtfSet"] as! String),"wet":p["hrtfWetWeight"]!,"direct":p["direct"]!,"directional":p["directional"]!]); _ = try player.command("near",["enabled":false,"scale":1.0]); _ = try player.command("room",["path":""]) }
    for (k,v) in [("sda.hrtfSet",p["hrtfSet"]!),("sda.wet",p["hrtfWetWeight"]!),("sda.direct",p["direct"]!),("sda.directional",p["directional"]!),("sda.near",false),("sda.room","")] as [(String,Any)] { player.prefs.set(v,forKey:k) }
+   player.prefs.set("",forKey:"sda.room."+player.layout)
    if player.systemSpatial == nil { player.hrtfState = (p["label"] as? String ?? "KU100")+" · 完整 HRTF" }
   } }
   AsyncFunction("playUri") { (uri:String,name:String,yaw:Double,hash:String) in try player.play(uri,name,yaw,hash) }

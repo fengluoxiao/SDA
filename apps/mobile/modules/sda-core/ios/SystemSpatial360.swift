@@ -106,6 +106,10 @@ final class SystemSpatial360 {
   paused = value
   if started { synchronizer.setRate(value || buffering ? 0 : 1, time:synchronizer.currentTime()) }
  }
+ func objects(_ decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
+  try decodeReply(sda_ios_speakers_objects(decoder,consumed))
+ }
+ func setBalance(_ enabled: Bool) { sda_ios_speakers_balance(decoder,enabled) }
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,

@@ -39,10 +39,10 @@ try:
  (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
  if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
  native=result.get('native360RA',{})
- if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode':
+ if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2:
   raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
  spatial=result.get('system360RA',{})
- if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True:
+ if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
  phase=result.get('phase360RA',{})
  if (phase.get('ok') is not True or phase.get('objects')!=2 or phase.get('renderedObjectStreams')!=2
