@@ -6,13 +6,14 @@ license = "GPL-3.0-or-later"
 description = "Mobile engine facade: wires the sda-core decoders to the sda-native-renderer engine for Android/iOS hosts (JNI/UniFFI boundary lives above this crate)."
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 # Desktop host output (cpal). Mobile hosts build with --no-default-features
 # and supply their own AudioOutput (AAudio sink on Android, T2.2).
 default = ["desktop-output"]
 desktop-output = ["sda-native-renderer/cpal-output"]
+ios-host = []
 pcm-diagnostic = ["sda-native-renderer/pcm-diagnostic"]
 
 [dependencies]

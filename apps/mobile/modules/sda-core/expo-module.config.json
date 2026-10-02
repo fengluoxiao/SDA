@@ -1,6 +1,16 @@
 {
-  "platforms": ["android"],
+  "platforms": [
+    "android",
+    "apple"
+  ],
   "android": {
-    "modules": ["app.sda.mobile.sda.SdaModule"]
+    "modules": [
+      "app.sda.mobile.sda.SdaModule"
+    ]
+  },
+  "apple": {
+    "modules": [
+      "SdaModule"
+    ]
   }
 }

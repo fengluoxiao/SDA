@@ -1,0 +1,117 @@
+name: iOS port CI
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/android-port]
+    paths:
+      - '.github/workflows/ios-port-ci.yml'
+      - 'apps/mobile/**'
+      - 'crates/sda-native/**'
+      - 'apps/native-renderer/**'
+      - 'packages/core/**'
+      - 'scripts/*ios*'
+      - 'pnpm-lock.yaml'
+permissions:
+  contents: read
+concurrency:
+  group: ios-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios:
+    name: iOS SDK ${{ matrix.sdk }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ['26', '27']
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+      RCT_NEW_ARCH_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Select and record actual SDK
+        id: sdk
+        shell: bash
+        run: |
+          mkdir -p ios-artifacts
+          python3 scripts/select-ios-sdk.py '${{ matrix.sdk }}'
+          sw_vers | tee ios-artifacts/host.txt
+      - name: Record Xcode and runtimes
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          xcodebuild -version | tee ios-artifacts/xcode.txt
+          xcodebuild -showsdks | tee ios-artifacts/sdks.txt
+          xcrun simctl list runtimes | tee ios-artifacts/runtimes.txt
+      - uses: actions/setup-node@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          version: '9.15.9'
+      - uses: dtolnay/rust-toolchain@master
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          workspaces: crates/sda-native
+          key: ios-${{ matrix.sdk }}
+      - name: Install JS dependencies and stage verified assets
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          pnpm install --frozen-lockfile --config.node-linker=hoisted
+          node scripts/prepare-ios-assets.mjs
+      - name: Host callback tests
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          node scripts/prepare-ac4.mjs
+          export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests 2>&1 | tee ios-artifacts/rust-tests.log
+      - name: Build shared Rust engine XCFramework
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+      - name: Generate Xcode project and install CocoaPods
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cd apps/mobile
+          pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
+          cd ios
+          pod install 2>&1 | tee ../../../ios-artifacts/pods.log
+      - name: Build simulator app
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 build 2>&1 | tee ios-artifacts/simulator-build.log
+      - name: Boot simulator and smoke test
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          python3 scripts/test-ios-simulator.py ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts
+      - name: Archive unsigned device app
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 archive 2>&1 | tee ios-artifacts/device-build.log
+          mkdir -p ios-build/package/Payload
+          cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
+          cd ios-build/package
+          zip -qry ../../ios-artifacts/SDA-unsigned-ios16-arm64.ipa Payload
+          cd ../..
+          ditto -c -k --keepParent ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts/SDA-simulator-arm64.zip
+          printf 'Unsigned IPA: requires valid Apple signing/provisioning before device installation. Minimum deployment target iOS 16. SDK 27 validation is unavailable unless that SDK is installed.\n' > ios-artifacts/README.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-iOS-SDK${{ matrix.sdk }}-${{ github.run_number }}
+          path: ios-artifacts/
+          retention-days: 14

@@ -27,6 +27,8 @@
 //! `obj:{codec object id}`, bed channels are `bed:{channel index}`.
 
 mod frame_router;
+#[cfg(feature = "ios-host")]
+pub mod ios;
 pub mod mpegh;
 pub mod balance;
 

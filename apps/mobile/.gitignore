@@ -6,3 +6,7 @@ node_modules/
 /android/build/
 /android/local.properties
 /android/gradle-build.log
+
+/ios/
+/modules/*/ios/SdaNative.xcframework*/
+/modules/*/ios/Resources/
