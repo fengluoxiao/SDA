@@ -1,5 +1,5 @@
 """Release launch smoke test; not a substitute for physical-device listening."""
-import json,os,pathlib,subprocess,sys,time
+import json,os,pathlib,re,subprocess,sys,time
 app=pathlib.Path(sys.argv[1]).resolve();out=pathlib.Path(sys.argv[2]).resolve()
 def run(*args,check=True):
  return subprocess.run(args,check=check,text=True,capture_output=True)
@@ -8,8 +8,20 @@ ios=[r for r in runtimes if r.get('isAvailable') and '.iOS-' in r['identifier']]
 if not ios: raise SystemExit('No available iOS simulator runtime')
 runtime=max(ios,key=lambda r:tuple(map(int,r['version'].split('.'))))
 types=json.loads(run('xcrun','simctl','list','devicetypes','-j').stdout)['devicetypes']
-phone=next(t for t in reversed(types) if t['name'].startswith('iPhone'))
-udid=run('xcrun','simctl','create','SDA-CI',phone['identifier'],runtime['identifier']).stdout.strip()
+# simctl returns newest phones first on current images; never assume reverse order.
+# Try newest numbered phones and let CoreSimulator check runtime compatibility.
+phones=[t for t in types if t['name'].startswith('iPhone')]
+phones.sort(key=lambda t:(int(re.search(r'iPhone (\d+)',t['name']).group(1)) if re.search(r'iPhone (\d+)',t['name']) else 0,t['name']),reverse=True)
+udid=None
+attempts=[]
+for phone in phones:
+ created=run('xcrun','simctl','create','SDA-CI',phone['identifier'],runtime['identifier'],check=False)
+ attempts.append({'device':phone['name'],'returncode':created.returncode,'stderr':created.stderr})
+ if created.returncode==0:
+  udid=created.stdout.strip()
+  (out/'simulator-selection.json').write_text(json.dumps({'device':phone['name'],'runtime':runtime['name'],'attempts':attempts},indent=2))
+  break
+if not udid:raise RuntimeError('No compatible iPhone simulator: '+json.dumps(attempts))
 try:
  run('xcrun','simctl','boot',udid)
  run('xcrun','simctl','bootstatus',udid,'-b')
