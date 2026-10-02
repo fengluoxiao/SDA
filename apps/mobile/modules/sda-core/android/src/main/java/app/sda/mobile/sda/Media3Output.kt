@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import androidx.annotation.Keep
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
@@ -48,12 +49,17 @@ class Media3Output(private val context: Context) {
     fun open(): Boolean = operation {
         capture = SubmittedPcmCapture.arm(context)
         sink = DefaultAudioSink.Builder(context).setEnableFloatOutput(true).build().also {
+            // Only this app's stream is affected; never change global OEM sound settings.
+            it.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .setSpatializationBehavior(C.SPATIALIZATION_BEHAVIOR_NEVER)
+                .build())
             it.configure(Format.Builder().setSampleMimeType(MimeTypes.AUDIO_RAW)
                 .setSampleRate(48000).setChannelCount(2).setPcmEncoding(C.ENCODING_PCM_FLOAT)
                 .build(), 32768, null)
             it.play()
         }
-        Log.i("SdaMedia3", "output=Media3 DefaultAudioSink PCM_FLOAT stereo 48000Hz; native KU100 PCM")
+        Log.i("SdaMedia3", "output=Media3 DefaultAudioSink PCM_FLOAT stereo 48000Hz; native KU100 PCM; requested spatialization=NEVER")
     }
 
     /** 1 = buffer accepted, 0 = retry same buffer, -1 = terminal output error. */

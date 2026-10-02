@@ -58,12 +58,15 @@ pub mod direct_renderer;
 pub mod directional;
 pub mod dsp;
 pub mod focus;
+mod front_common;
 pub mod hardware;
 #[allow(dead_code)]
 pub mod headphone;
 pub mod hrtf;
 pub mod monitor;
 pub mod near_field;
+#[cfg(test)]
+mod atmos_front_pair_probe;
 #[cfg(test)]
 mod mix_parity_probe;
 #[cfg(test)]
@@ -950,6 +953,7 @@ pub struct RenderStageMicros {
 
 
 pub struct Engine {
+    front_common: front_common::FrontCommon,
     fast_activity: Vec<ObjectActivitySnapshot>,
     fast_mix_buffers: Vec<object_mixer::Buffer>,
     last_render_stages: RenderStageMicros,
@@ -1078,6 +1082,7 @@ impl Engine {
         Self {
             #[cfg(test)]
             profile_ms: [0.0; 7],
+            front_common: Default::default(),
             fast_activity: Vec::new(),
             fast_mix_buffers: Vec::new(),
             last_render_stages: RenderStageMicros::default(),
@@ -1230,6 +1235,7 @@ impl Engine {
     }
 
     fn reset_object_renderers(&mut self) {
+        self.front_common.reset();
         for source in self.sources.values_mut() {
             if source.kind == SourceKind::Object {
                 source.direct = None;
@@ -1271,6 +1277,7 @@ impl Engine {
         let bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
         direct_renderer::warm_banks(&mut set, &self.vbap, wet)?;
         // Publish all related state only after every speaker filter is ready.
+        self.front_common.reset();
         self.active_hrtf_set = Some(set);
         self.hrtf_wet_weight = wet;
         self.bus_renderer = Some(bus);
@@ -1286,6 +1293,7 @@ impl Engine {
     }
 
     fn rebuild_bus_renderer(&mut self) -> Result<(), String> {
+        self.front_common.reset();
         self.stereo_dry_bus = None;
         if let Some(set) = &mut self.active_hrtf_set {
             set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
@@ -1797,6 +1805,7 @@ impl Engine {
 
     fn reset_session(&mut self, origin: u64) {
         performance::reset();
+        self.front_common.reset();
         self.fast_activity.clear();
         self.cinema_bass_delay.fill(0.0);
         self.cinema_sub_delay.fill(0.0);
@@ -2410,6 +2419,11 @@ impl Engine {
             self.stereo_delay[block_index] = [0.0; 2];
             let mut lfe_sum = 0.0_f32;
             let mut direct_sum = object_output[block_index];
+            if let Some(center) = &self.front_common.center {
+                for ear in 0..2 {
+                    direct_sum[ear] += center.frames[block_index].output[ear];
+                }
+            }
             // Fade the excitation, retaining both paths' convolution tails.
             let target_mix = if effective_direct { 1.0 } else { 0.0 };
             self.direct_mix += (target_mix - self.direct_mix).clamp(-1.0 / 9600.0, 1.0 / 9600.0);
@@ -2954,13 +2968,25 @@ impl Engine {
             if block_index + 1 == convolution::DEFAULT_PARTITION {
                 sample_micros = stage_started.elapsed().as_micros() as u64;
                 if let Some(set) = &mut self.active_hrtf_set {
+                    // Work on completed excitation, after both object mixers.
+                    // Center and original paths have identical partition latency.
+                    self.front_common.prepare(
+                        &mut self.sources, set, self.bus_renderer.as_mut().unwrap(),
+                        self.layout, &self.vbap, head_pose, self.near_field,
+                        self.directional_hrtf
+                            && Self::is_dolby_object_codec(self.program_codec.as_deref())
+                            && !self.cinema.monitor.hardware.enabled
+                            && self.speaker_mutes.is_empty() && self.focused_speakers.is_empty()
+                            && self.speaker_levels.iter().all(|v| (*v - 1.0).abs() < 1e-6),
+                    );
                     let finish_started = Instant::now();
                     #[cfg(test)]
                     let profile_start = std::time::Instant::now();
                     let _ = directional::finish_sources(
                         self.sources
                             .values_mut()
-                            .filter_map(|source| source.continuous.as_deref_mut()),
+                            .filter_map(|source| source.continuous.as_deref_mut())
+                            .chain(self.front_common.center.as_deref_mut()),
                         set,
                     );
                     #[cfg(test)]

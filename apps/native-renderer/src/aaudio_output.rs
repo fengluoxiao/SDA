@@ -25,6 +25,41 @@ fn android_log(message: &str) {
     }
 }
 
+// These symbols were introduced in API 32. Resolve them at runtime rather
+// than linking directly: our APK must still load on Android API 26-31.
+#[link(name = "dl")]
+unsafe extern "C" {
+    fn dlopen(name: *const std::ffi::c_char, flags: i32) -> *mut std::ffi::c_void;
+    fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn dlclose(handle: *mut std::ffi::c_void) -> i32;
+}
+
+unsafe fn disable_system_spatialization(builder: *mut aaudio::AAudioStreamBuilder) {
+    // Keep the library handle alive until both optional calls have completed.
+    let handle = unsafe { dlopen(c"libaaudio.so".as_ptr(), 2) }; // RTLD_NOW
+    if handle.is_null() {
+        android_log("spatialization_policy=unavailable library=libaaudio.so");
+        return;
+    }
+    let behavior = unsafe { dlsym(handle, c"AAudioStreamBuilder_setSpatializationBehavior".as_ptr()) };
+    let spatialized = unsafe { dlsym(handle, c"AAudioStreamBuilder_setIsContentSpatialized".as_ptr()) };
+    if !behavior.is_null() {
+        let set: unsafe extern "C" fn(*mut aaudio::AAudioStreamBuilder, i32) =
+            unsafe { std::mem::transmute(behavior) };
+        unsafe { set(builder, 2) }; // AAUDIO_SPATIALIZATION_BEHAVIOR_NEVER
+    }
+    if !spatialized.is_null() {
+        let set: unsafe extern "C" fn(*mut aaudio::AAudioStreamBuilder, bool) =
+            unsafe { std::mem::transmute(spatialized) };
+        unsafe { set(builder, true) }; // SDA has already rendered binaural PCM.
+    }
+    android_log(&format!(
+        "spatialization_policy requested_never={} requested_content_spatialized={}; vendor_global_effects_not_controlled",
+        !behavior.is_null(), !spatialized.is_null(),
+    ));
+    unsafe { dlclose(handle) };
+}
+
 struct Builder(*mut aaudio::AAudioStreamBuilder);
 
 impl Drop for Builder {
@@ -81,6 +116,7 @@ impl AAudioWriterSink {
             aaudio::AAudioStreamBuilder_setChannelCount(builder.0, CHANNELS as i32);
             aaudio::AAudioStreamBuilder_setFormat(builder.0, aaudio::AAUDIO_FORMAT_PCM_FLOAT as i32);
             aaudio::AAudioStreamBuilder_setSampleRate(builder.0, SAMPLE_RATE);
+            disable_system_spatialization(builder.0);
 
             let mut stream = std::ptr::null_mut();
             let result = aaudio::AAudioStreamBuilder_openStream(builder.0, &mut stream);

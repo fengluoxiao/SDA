@@ -95,6 +95,12 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "0.1.0"
+        // RN's architecture property alone does not filter prebuilt AAR/JNI libraries.
+        // Keep the final APK restricted to the requested native engine ABI(s).
+        ndk {
+            abiFilters(*((findProperty('reactNativeArchitectures') ?: 'x86_64')
+                .split(',').collect { it.trim() }))
+        }
     }
     signingConfigs {
         debug {

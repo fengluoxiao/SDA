@@ -12,7 +12,7 @@ pub struct Direction {
     pub depth: f32,
 }
 
-type Route = (
+pub(crate) type Route = (
     Direction,
     crate::vbap::LayoutId,
     [f32; crate::vbap::MAX_BUS_COUNT],
@@ -363,6 +363,10 @@ impl ContinuousSource {
             right: [0.0; crate::convolution::DEFAULT_PARTITION],
         })
     }
+    pub(crate) fn effective_route(&self) -> Option<Route> {
+        self.pending.or(self.route)
+    }
+
     pub fn schedule(
         &mut self,
         direction: Direction,
