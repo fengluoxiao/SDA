@@ -1,6 +1,8 @@
 # iOS port
 
-The mobile UI and Rust decoder/KU100 renderer are shared with Android and desktop, including the front-common centre-HRTF vocal clarity correction. Apple only receives the rendered two-channel PCM: AVAssetReader retrieves compressed E-AC-3 access units, not Apple's Atmos downmix. MPEG-H MP4 import uses the existing JS demuxer, MHAS and MP3 use the native decoders. DRM files are unsupported.
+The mobile UI and Rust decoder/KU100 renderer are shared with Android and desktop, including the front-common centre-HRTF vocal clarity correction. By default Apple receives the rendered two-channel PCM: AVAssetReader retrieves compressed E-AC-3 access units, not Apple's Atmos downmix. MPEG-H MP4 import uses the existing JS demuxer, MHAS and MP3 use the native decoders. DRM files are unsupported.
+
+An iOS-only 360RA switch can instead render MPEG-H to actual 7.1.4 speaker PCM and use Apple system spatialization. This route bypasses SDA KU100, room/near-field and loudness balancing, and preference changes apply on the next playback without interrupting the current track. See `ios-360ra-system-spatial.md` for scope, channel order and validation limits.
 
 ## Build without a Mac
 
@@ -12,7 +14,7 @@ The unsigned IPA is NOT directly installable. Physical installation requires an 
 
 ## Audio/lifecycle
 
-AVAudioSourceNode consumes the same Rust stereo FIFO at 48 kHz, planar Float32. AVAudioEngine converts to the hardware route sample rate. It does not request an Apple Atmos renderer. This cannot guarantee that user-enabled OS/AirPods processing is bypassed; listen with OS Spatialize Stereo off when comparing.
+AVAudioSourceNode consumes the same Rust stereo FIFO at 48 kHz, planar Float32. AVAudioEngine converts to the hardware route sample rate. The default KU100 path does not request an Apple Atmos renderer; the opt-in 360RA system route instead uses AVSampleBufferAudioRenderer with explicit 12-channel PCM and multichannel spatialization allowed. This cannot guarantee that user-enabled OS/AirPods processing is bypassed; listen with OS Spatialize Stereo off when comparing.
 
 Native decode continues independently of JavaScript. Current-track background audio, lock-screen pause/resume and interruptions are implemented. Unplugging pauses playback. In-app preset changes replace the renderer without reopening the stream. Background automatic playlist advance and physical AirPods/device listening remain validation items, not claimed completed features.
 
