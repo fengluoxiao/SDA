@@ -153,7 +153,8 @@ final class Phase360Prototype {
    transform.columns.3 = SIMD4(direction.x,direction.y,direction.z,1)
    source.transform = transform
    try engine.rootObject.addChild(source)
-   let mixer = PHASESpatialMixerDefinition(spatialPipeline:PHASESpatialPipeline(flags:[.directPathTransmission]),identifier:"object-\(track.id)")
+   guard let pipeline = PHASESpatialPipeline(flags:[.directPathTransmission]) else { throw SdaError.message("PHASE direct pipeline unavailable") }
+   let mixer = PHASESpatialMixerDefinition(spatialPipeline:pipeline,identifier:"object-\(track.id)")
    // No distance/directivity model, reflections or late reverb.
    mixer.distanceModelParameters = nil
    let node = PHASEPushStreamNodeDefinition(mixerDefinition:mixer,format:format,identifier:"pcm-\(track.id)")
