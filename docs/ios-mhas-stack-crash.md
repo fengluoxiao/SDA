@@ -43,3 +43,26 @@ must be checked from CI; local compilation is not real-device validation.
 
 The original crash report contains device/user identifiers and is intentionally
 not committed. Physical-device replay of the affected track is still needed.
+
+## Verified CI package
+
+Source commit: `a878ca07412bbd0eb4f5949c85228f29368f44b9`.
+GitHub Actions run: `37007949181`, SDK26 job `110840567976` completed successfully.
+Artifact: `SDA-iOS-SDK26-13` (ID `11228027829`). SDK27 is an unavailable-SDK
+skip, not iOS27 validation.
+
+- Apple ARM64 device compiler: upstream 997,456 bytes; fixed 22,032 bytes.
+- Native 544 KiB thread tests passed on the macOS host.
+- Default MPEG-H/KU100 simulator playback: decoded = consumed = 144,384
+  samples, FIFO drained. Real `sda.ios.decode` queue exercised.
+- System 7.1.4 playback: decoded = consumed = 144,144 samples, 12 channels,
+  pause/resume and non-interrupting preference toggle passed.
+- E-AC-3/KU100 and isolated PHASE prototype smoke checks also passed.
+- Device IPA inspected: ARM64, minimum iOS16.0, built with SDK26.5. Unsigned;
+  existing valid signing/provisioning is still required for installation.
+- Matching app dSYM was archived and downloaded. Device executable UUID:
+  `72084B86-8663-3CF2-A076-221052C3479C`.
+- IPA SHA256: `ac5bd98d358012f430bdc37eed6f300845a6778fb1553be617d799986249518f`.
+
+These checks do not replace physical replay of the user's affected track,
+AirPods listening, or iOS27 testing.
