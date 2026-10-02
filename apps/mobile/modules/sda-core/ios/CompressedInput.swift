@@ -53,7 +53,7 @@ final class CompressedInput {
   guard let sample = output.copyNextSampleBuffer() else {
    if r.status == .failed {
     if let error = r.error as NSError?, error.domain == AVFoundationErrorDomain,
-       error.code == AVError.operationInterrupted.rawValue, retries < 3 {
+       error.code == AVError.Code.operationInterrupted.rawValue, retries < 3 {
      retries += 1; try reopenAfterInterruption(); return try next(chunkBytes:chunkBytes)
     }
     throw r.error ?? SdaError.message("音轨读取失败")

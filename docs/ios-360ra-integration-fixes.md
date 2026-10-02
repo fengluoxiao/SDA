@@ -37,3 +37,18 @@
 - EOF derives the real decoded duration; queue drain marks Now Playing stopped with zero rate and final elapsed time. Native remote resume cannot revive an exhausted decoder. Added end-state smoke assertion.
 - Foreground re-entry opens the playback page and refreshes state; registered `sda://now-playing` routing provides an explicit playback entry. This is not a custom Dynamic Island activity or proof that the system's own tap launches the sideloaded app.
 - AVFoundation operationInterrupted (-11847) is recoverable, not generic EOF. Compressed MP4 reader can reopen at the last delivered packet end (bounded retries), without restarting Rust; CI compares compressed bytes before/after reopen. Invalid timestamps still play normally but disallow unsafe resume. System renderer retains only its bounded submitted queue for replay following recoverable interruption; other errors remain visible. Real device interruption recovery remains unverified.
+
+
+## Remembered iOS media directory
+
+The iOS import path uses a retained UIDocumentPicker delegate with `directoryURL`
+set to the previous original file-provider parent, persisted in UserDefaults.
+Android still uses Expo DocumentPicker. Imported cache paths are never used as
+the starting directory. Provider files are security-scoped only during a
+coordinated copy; saving a parent URL does not grant directory access. Missing
+providers or inaccessible directories may fall back to the OS default. Cancel
+does not overwrite the saved location. Real-device provider navigation remains
+to be verified (local Files and iCloud, including app relaunch).
+
+CI also corrected the AVFoundation interrupted-operation enum to
+`AVError.Code.operationInterrupted`; the previous revision did not compile.

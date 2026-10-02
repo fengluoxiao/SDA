@@ -5,9 +5,13 @@ import CryptoKit
 
 public final class SdaModule: Module {
  private let player = SdaPlayer()
+ private let mediaPicker = MediaPicker()
  public func definition() -> ModuleDefinition {
   let player = self.player
   Name("SdaEngine")
+  AsyncFunction("pickMedia") { (promise: Promise) in
+   self.mediaPicker.present(from:self.appContext?.utilities?.currentViewController(),promise:promise)
+  }.runOnQueue(.main)
   OnCreate {
    player.installSystemControls()
    if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {

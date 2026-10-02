@@ -73,7 +73,7 @@ final class SystemSpatial360 {
   if paused { return }
   if renderer.status == .failed {
    guard let error = renderer.error as NSError?, error.domain == AVFoundationErrorDomain,
-     error.code == AVError.operationInterrupted.rawValue, interruptionRecoveries < 3 else {
+     error.code == AVError.Code.operationInterrupted.rawValue, interruptionRecoveries < 3 else {
     throw SdaError.message(renderer.error?.localizedDescription ?? "系统多声道输出失败")
    }
    interruptionRecoveries += 1; restorePendingSamples()
