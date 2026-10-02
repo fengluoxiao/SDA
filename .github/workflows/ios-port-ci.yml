@@ -29,7 +29,6 @@ jobs:
       CI: '1'
       EXPO_NO_TELEMETRY: '1'
       RCT_NEW_ARCH_ENABLED: '0'
-      CACHE_ON_FAILURE: 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +68,7 @@ jobs:
         with:
           workspaces: crates/sda-native
           key: ios-${{ matrix.sdk }}
+          cache-on-failure: true
       - name: Install JS dependencies and stage verified assets
         if: steps.sdk.outputs.available == 'true'
         run: |
