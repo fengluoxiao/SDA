@@ -19,7 +19,7 @@ public final class SdaModule: Module {
   Function("setNowPlayingMetadata") { (hash: String, text: String) in try player.locked {
    guard let data = text.data(using:.utf8), let metadata = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { throw SdaError.message("媒体元数据无效") }
    player.setMediaMetadata(hash,metadata)
-  }
+  } }
   Function("renderingSettings") { try player.locked { try player.json(player.settings()) } }
   Function("hrtfStatus") { player.locked { player.hrtfState } }
   Function("feedError") { player.locked { player.failure } }

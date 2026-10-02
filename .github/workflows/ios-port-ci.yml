@@ -51,6 +51,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
+          xcrun swiftc -frontend -parse apps/mobile/modules/sda-core/ios/SdaModule.swift
           xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
       - name: Verify Apple compressed MP4 extraction before full app build
         if: steps.sdk.outputs.available == 'true'
