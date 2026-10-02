@@ -299,6 +299,11 @@ final class SdaPlayer {
    }
    if report["ok"] as? Bool != true { throw SdaError.message("模拟器音频冒烟测试超时") }
    report["system360RA"] = try smokeSystem360()
+   locked { stopNative() }
+   if #available(iOS 26.0, *) {
+    let output = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first!
+    report["phase360RA"] = try Phase360Prototype.run(try assetRoot().appendingPathComponent("ci-360ra.mhas"),output:output,decodeReply:decodeReply)
+   } else { throw SdaError.message("PHASE 原型需要 iOS 26 模拟器") }
   } catch { report["ok"] = false; report["error"] = error.localizedDescription }
   locked { stopNative() }
   if let dir = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first,

@@ -14,4 +14,9 @@ void *sda_ios_speakers_create(char **error);
 char *sda_ios_speakers_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
 size_t sda_ios_speakers_read(void *decoder, float *pcm, size_t capacity_frames);
 void sda_ios_speakers_close(void *decoder);
+// Experimental bounded source frames + OAM. Serialized non-realtime calls only.
+void *sda_ios_sources_create(char **error);
+char *sda_ios_sources_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
+char *sda_ios_sources_next(void *decoder);
+void sda_ios_sources_close(void *decoder);
 #endif

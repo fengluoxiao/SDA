@@ -339,6 +339,53 @@ mod tests {
         assert!(switched && energy > 0.001 && difference > 0.001);
     }
     #[test]
+    fn source_abi_preserves_pcm_and_subframe_metadata() {
+        let bytes = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        let expected = {
+            let mut decoder = mpegh::MpeghDecoder::new().unwrap();
+            decoder.push(bytes).unwrap(); decoder.flush().unwrap();
+            let mut frames = vec![];
+            while let Some(f) = decoder.next_frame() {
+                frames.push(json!({"sampleRate":f.sample_rate,"samplePos":f.sample_pos,
+                    "channels":f.channels,"labels":f.labels,"bedLabels":f.raw_bed_labels,
+                    "objects":f.object_channels,"events":f.events}));
+            }
+            // Canonicalize through the same JSON boundary as the C ABI.
+            serde_json::from_str::<Vec<Value>>(&serde_json::to_string(&frames).unwrap()).unwrap()
+        };
+        unsafe fn value(p: *mut c_char) -> Value {
+            let v: Value = serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_str().unwrap()).unwrap();
+            unsafe { sda_ios_string_free(p); }
+            assert_eq!(v["ok"],true,"{v}"); v["value"].clone()
+        }
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let host = sda_ios_sources_create(&mut error);
+            assert!(!host.is_null()); assert!(error.is_null());
+            struct Close(*mut std::ffi::c_void);
+            impl Drop for Close { fn drop(&mut self) { unsafe { sda_ios_sources_close(self.0); } } }
+            let _close = Close(host);
+            assert!(mpegh::MpeghDecoder::new_7_1_4().is_err());
+            let mut actual = vec![];
+            for chunk in bytes.chunks(997) {
+                value(sda_ios_sources_feed(host,chunk.as_ptr(),chunk.len(),false));
+                loop {
+                    let frame = value(sda_ios_sources_next(host));
+                    if frame.is_null() { break; }
+                    actual.push(frame);
+                }
+            }
+            assert_eq!(value(sda_ios_sources_feed(host,std::ptr::null(),0,true))["queuedFrames"],0);
+            assert!(actual == expected, "source PCM/OAM differs across chunk boundaries");
+            assert!(actual.iter().all(|f| f["objects"].as_array().unwrap().len()==2));
+            assert!(actual.iter().map(|f| f["events"].as_array().unwrap().len()).sum::<usize>() > 2);
+            let p = sda_ios_sources_feed(host,std::ptr::null(),0,false);
+            let rejected: Value = serde_json::from_str(CStr::from_ptr(p).to_str().unwrap()).unwrap();
+            sda_ios_string_free(p); assert_eq!(rejected["ok"],false);
+        }
+    }
+
+    #[test]
     fn speaker_abi_preserves_twelve_channel_interleaving_and_drains() {
         let bytes = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
         let expected = {
@@ -413,4 +460,63 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_close(p: *mut std::ffi::c_void) {
     if !p.is_null() { drop(unsafe { Box::from_raw(p.cast::<SpeakerHost>()) }); }
+}
+
+
+// Experimental source-frame ABI, control thread only. No HRTF or speaker rendering.
+// Caller serializes all calls and owns exactly one decoder; JSON is never used on RT.
+struct SourceHost {
+    decoder: mpegh::MpeghDecoder,
+    frames: std::collections::VecDeque<sda_core::FrameData>,
+    queued: usize,
+    finished: bool,
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_sources_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(mpegh::MpeghDecoder::new)
+        .unwrap_or_else(|_| Err("source decoder panic".into()));
+    match result {
+        Ok(decoder) => Box::into_raw(Box::new(SourceHost { decoder, frames: Default::default(), queued: 0, finished: false })).cast(),
+        Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_sources_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, finish: bool) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() || (len > 0 && bytes.is_null()) || len > 65536 || (finish && len != 0) {
+            return Err("invalid source input".into());
+        }
+        let host = unsafe { &mut *p.cast::<SourceHost>() };
+        if host.finished { return Err("source decoder already finished".into()); }
+        if finish { host.decoder.flush()?; host.finished = true; }
+        else { host.decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
+        while let Some(frame) = host.decoder.next_frame() {
+            if frame.sample_rate != 48000 || frame.channels.is_empty() || frame.channels.len() > 64 {
+                return Err("invalid source format".into());
+            }
+            let n = frame.channels[0].len();
+            if n == 0 || n > 4096 || frame.channels.iter().any(|c| c.len() != n || c.iter().any(|v| !v.is_finite())) {
+                return Err("invalid source PCM".into());
+            }
+            if host.queued + n > 8*48000 { return Err("source PCM backlog exceeded".into()); }
+            host.queued += n;
+            host.frames.push_back(frame);
+        }
+        Ok(json!({"queuedFrames":host.queued,"finished":host.finished}))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_sources_next(p: *mut std::ffi::c_void) -> *mut c_char {
+    guarded(|| {
+        let host = unsafe { p.cast::<SourceHost>().as_mut() }.ok_or("source decoder unavailable")?;
+        let Some(frame) = host.frames.pop_front() else { return Ok(Value::Null); };
+        host.queued -= frame.channels[0].len();
+        Ok(json!({"sampleRate":frame.sample_rate,"samplePos":frame.sample_pos,
+            "channels":frame.channels,"labels":frame.labels,"bedLabels":frame.raw_bed_labels,
+            "objects":frame.object_channels,"events":frame.events}))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_sources_close(p: *mut std::ffi::c_void) {
+    if !p.is_null() { drop(unsafe { Box::from_raw(p.cast::<SourceHost>()) }); }
 }

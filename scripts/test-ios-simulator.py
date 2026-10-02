@@ -41,6 +41,14 @@ try:
  spatial=result.get('system360RA',{})
  if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
+ phase=result.get('phase360RA',{})
+ if (phase.get('ok') is not True or phase.get('objects')!=2 or phase.get('renderedObjectStreams')!=2
+     or phase.get('coordinateMappingVerified') is not True or phase.get('gainRampVerified') is not True
+     or phase.get('pauseStateVerified') is not True or phase.get('poseUpdates',0)<100):
+  raise RuntimeError('PHASE object prototype failed: '+str(phase))
+ motion=container/'Documents/phase-object-motion.csv'
+ if not motion.is_file():raise RuntimeError('Missing PHASE object motion trace')
+ (out/'phase-object-motion.csv').write_bytes(motion.read_bytes())
  alive=run('xcrun','simctl','spawn',udid,'launchctl','list').stdout
  if not any(pid==line.split()[0] and 'app.sda.mobile' in line for line in alive.splitlines() if line.split()):
   raise RuntimeError('SDA exited after launch; inspect device logs')
