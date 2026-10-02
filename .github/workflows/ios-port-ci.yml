@@ -10,6 +10,7 @@ on:
       - 'apps/native-renderer/**'
       - 'packages/core/**'
       - 'scripts/*ios*'
+      - 'scripts/prepare-mpegh.mjs'
       - 'pnpm-lock.yaml'
 permissions:
   contents: read
@@ -80,6 +81,9 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
+      - name: Verify MHAS stack budget with Apple device compiler
+        if: steps.sdk.outputs.available == 'true'
+        run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts
       - name: Host callback tests
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -122,6 +126,8 @@ jobs:
           xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
+          ditto -c -k --keepParent ios-build/SDA.xcarchive/dSYMs ios-artifacts/SDA-device-dSYMs.zip
+          xcrun dwarfdump --uuid ios-build/SDA.xcarchive/Products/Applications/SDA.app/SDA > ios-artifacts/device-uuid.txt
           cd ios-build/package
           zip -qry ../../ios-artifacts/SDA-unsigned-ios16-arm64.ipa Payload
           cd ../..

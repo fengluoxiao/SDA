@@ -298,6 +298,8 @@ final class SdaPlayer {
     Thread.sleep(forTimeInterval: 0.02)
    }
    if report["ok"] as? Bool != true { throw SdaError.message("模拟器音频冒烟测试超时") }
+   report["native360RA"] = try smokeNative360()
+   prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
    locked { stopNative() }
    if #available(iOS 26.0, *) {
@@ -310,6 +312,31 @@ final class SdaPlayer {
      let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
    try? data.write(to:dir.appendingPathComponent("sda-ci-smoke.json"),options:.atomic)
   }
+ }
+
+ // Use the real default KU100 route and sda.ios.decode dispatch queue.
+ func smokeNative360() throws -> [String:Any] {
+  prefs.set(false,forKey:"sda.systemSpatial360RA")
+  let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
+  _ = try play(uri,"ci-360ra.mhas",0,"ci-native-360ra")
+  let deadline = Date().addingTimeInterval(30)
+  while Date() < deadline {
+   let complete: [String:Any]? = try locked {
+    if let failure { throw SdaError.message(failure) }
+    guard handle != nil, systemSpatial == nil else { throw SdaError.message("360RA 默认 KU100 路由缺失") }
+    let status = try command("status") as! [String:Any]
+    if done {
+     let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+     let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+     guard decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
+     return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode"]
+    }
+    return nil
+   }
+   if let complete { return complete }
+   Thread.sleep(forTimeInterval:0.01)
+  }
+  throw SdaError.message("360RA KU100 冒烟测试超时")
  }
 
  func smokeSystem360() throws -> [String:Any] {

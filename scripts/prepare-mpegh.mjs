@@ -17,6 +17,18 @@ writeFileSync(types,readFileSync(types,'utf8')
   .replace(/^typedef .*\b(?:size_t|ptrdiff_t|intptr_t);.*$/gm,'')
   .replace('#define IMPEGHD_TYPE_DEF_H','#define IMPEGHD_TYPE_DEF_H\n#include <stddef.h>\n#include <stdint.h>'));
 
+// The upstream MHAS parser reserves the entire ~1 MiB DRC payload on every
+// call, including packets without loudness metadata. Only str_loud_info is used.
+// Keep the exact same parser/member type, but not its unrelated config/gain data:
+// iOS dispatch workers can have a 544 KiB stack (confirmed in a device crash).
+let mhas=readFileSync(join(dec,'impeghd_mhas_parse.c'),'utf8').replaceAll('\r\n','\n');
+const drcLocal='      ia_drc_payload_struct str_drc_payload;';
+const drcMember='&str_drc_payload.str_loud_info,';
+if(mhas.split(drcLocal).length!==2 || mhas.split(drcMember).length!==2)throw Error('MHAS stack patch anchor changed');
+mhas=mhas.replace(drcLocal,'      ia_drc_loudness_info_set_struct str_loud_info;')
+  .replace(drcMember,'&str_loud_info,');
+writeFileSync(join(dec,'impeghd_mhas_parse.c'),mhas);
+
 let source=readFileSync(join(upstream,'decoder/ia_core_coder_decode_main.c'),'utf8').replaceAll('\r\n','\n');
 source=source.replace('#include <math.h>',`/* SDA capture hooks added 2026-09-14; original license retained. */
 void sda_capture_pcm(int,int,int,int,int,int,float (*)[1024]);

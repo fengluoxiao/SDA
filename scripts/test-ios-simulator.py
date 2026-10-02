@@ -38,6 +38,9 @@ try:
  result=json.loads(report.read_text())
  (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
  if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
+ native=result.get('native360RA',{})
+ if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode':
+  raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
  spatial=result.get('system360RA',{})
  if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))

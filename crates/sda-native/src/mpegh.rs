@@ -245,6 +245,42 @@ mod tests {
         decoder.flush().unwrap();
         (pcm, events, references)
     }
+    // A real iPhone crash had a 544 KiB GCD worker stack. This must exercise
+    // MHAS config/frame parsing, not just construction or an empty feed. The
+    // old ~1 MiB DRC local aborts this process with stack overflow.
+    #[test]
+    fn mhas_decode_fits_ios_dispatch_stack_without_changing_pcm_or_metadata() {
+        let fixture = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        let baseline = capture(fixture, fixture.len());
+        // MHAS packet type 22, label 0, length 1: zero loudness entries,
+        // no album entries or extensions. Exercise the changed branch too.
+        let mut with_loudness = vec![0xe1, 0xe0, 0x01, 0x00];
+        with_loudness.extend_from_slice(fixture);
+        assert!(capture(&with_loudness, 997) == baseline, "loudness packet changes PCM/OAM");
+        for layout in [2, 19] {
+            let with_loudness = with_loudness.clone();
+            let result = std::thread::Builder::new()
+                .name("ios-544k-decode-regression".into())
+                .stack_size(544 * 1024)
+                .spawn(move || {
+                    if layout == 2 { return Some(capture(&with_loudness, 997)); }
+                    let mut decoder = MpeghDecoder::new_7_1_4().unwrap();
+                    let mut samples = 0;
+                    for bytes in with_loudness.chunks(997) {
+                        decoder.push(bytes).unwrap();
+                        while let Some(frame) = decoder.next_frame() {
+                            assert_eq!(frame.channels.len(), 12);
+                            assert!(frame.channels.iter().flatten().all(|s| s.is_finite()));
+                            samples += frame.channels[0].len();
+                        }
+                    }
+                    decoder.flush().unwrap();
+                    assert!(samples > 48000);
+                    None
+                }).unwrap().join().unwrap();
+            if let Some(result) = result { assert!(result == baseline, "small-stack PCM/OAM differs"); }
+        }
+    }
     #[test]
     fn speakers_7_1_4_are_real_chunk_invariant_pcm_and_exclusive() {
         let fixture = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
