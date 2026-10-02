@@ -50,5 +50,6 @@ providers or inaccessible directories may fall back to the OS default. Cancel
 does not overwrite the saved location. Real-device provider navigation remains
 to be verified (local Files and iCloud, including app relaunch).
 
-CI also corrected the AVFoundation interrupted-operation enum to
-`AVError.Code.operationInterrupted`; the previous revision did not compile.
+CI confirmed the iOS SDK does not expose the interrupted-operation enum.
+Recovery therefore matches AVFoundationErrorDomain plus the reported code
+-11847 explicitly (rather than referencing a non-existent Swift enum case).
