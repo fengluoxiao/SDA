@@ -17,6 +17,8 @@ final class SystemSpatial360 {
  var closed = false
  var balanceEnabled = false
  var inputFinished = false
+ var pendingSamples: [(sample: CMSampleBuffer, end: UInt64)] = []
+ var interruptionRecoveries = 0
  var pcm = [Float](repeating: 0, count: 1024*12)
  init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float) throws {
   // Explicit labels match CICP19, whose rear channels precede its side channels.
@@ -55,7 +57,7 @@ final class SystemSpatial360 {
  func close() {
   guard !closed else { return }; closed = true
   synchronizer.setRate(0, time:synchronizer.currentTime())
-  renderer.stopRequestingMediaData(); renderer.flush()
+  renderer.stopRequestingMediaData(); renderer.flush(); pendingSamples.removeAll()
   sda_ios_speakers_close(decoder)
  }
  deinit { close() }
@@ -68,7 +70,15 @@ final class SystemSpatial360 {
   try pump()
  }
  func pump() throws {
-  if renderer.status == .failed { throw SdaError.message(renderer.error?.localizedDescription ?? "系统多声道输出失败") }
+  if paused { return }
+  if renderer.status == .failed {
+   guard let error = renderer.error as NSError?, error.domain == AVFoundationErrorDomain,
+     error.code == AVError.operationInterrupted.rawValue, interruptionRecoveries < 3 else {
+    throw SdaError.message(renderer.error?.localizedDescription ?? "系统多声道输出失败")
+   }
+   interruptionRecoveries += 1; restorePendingSamples()
+  }
+  pendingSamples.removeAll { $0.end <= consumed }
   // Freeze the presentation clock at the end of submitted PCM on underrun.
   // Otherwise newly decoded buffers would carry timestamps already in the past.
   if started && !paused && !buffering && consumed >= enqueued {
@@ -95,11 +105,22 @@ final class SystemSpatial360 {
     sampleCount:frames, sampleTimingEntryCount:1, sampleTimingArray:&timing,
     sampleSizeEntryCount:1, sampleSizeArray:&sampleSize, sampleBufferOut:&sample)
    guard result == noErr, let sample else { throw SdaError.message("7.1.4 音频样本创建失败: \(result)") }
+   pendingSamples.append((sample:sample,end:enqueued + UInt64(frames)))
    renderer.enqueue(sample)
    enqueued += UInt64(frames); queued -= UInt64(frames)
    if !started { synchronizer.setRate(1, time:.zero); started = true }
    else if buffering { synchronizer.setRate(1,time:synchronizer.currentTime()); buffering = false }
   }
+ }
+ // Replay only the bounded, not-yet-consumed Apple queue after a recoverable interruption.
+ // The compressed decoder, object clock and balance meter are not restarted.
+ func restorePendingSamples() {
+  let clock = consumed
+  synchronizer.setRate(0,time:CMTime(value:Int64(clock),timescale:48000))
+  renderer.flush()
+  pendingSamples.removeAll { $0.end <= clock }
+  for pending in pendingSamples { renderer.enqueue(pending.sample) }
+  if started && !paused && !buffering { synchronizer.setRate(1,time:CMTime(value:Int64(clock),timescale:48000)) }
  }
  var consumed: UInt64 {
   guard started else { return 0 }

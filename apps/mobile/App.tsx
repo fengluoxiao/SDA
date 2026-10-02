@@ -1,5 +1,5 @@
 import React from "react";
-import { Platform } from "react-native";
+import { Platform, Linking, AppState, type NativeEventSubscription } from "react-native";
 import renderingPresets from "./rendering-presets.json";
 import { prepare360RaMp4, type MpeghMp4Host } from "./src/mpeghMp4";
 import { nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "../web/src/playbackOrder";
@@ -60,6 +60,7 @@ interface State {
   queueIndex: number;
   busy: boolean;
   preparingAudio: boolean;
+  playbackPageRequest: number;
   playing: boolean;
   ended: boolean;
   paused: boolean;
@@ -102,6 +103,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     nearField: false, metresPerUnit: 1, nearFieldBusy: false,
     busy: false,
     preparingAudio: false,
+    playbackPageRequest: 0,
     playing: false,
     ended: false,
     paused: false,
@@ -122,11 +124,19 @@ export default class App extends React.Component<Record<string, never>, State> {
     directionalObjects: true,
     renderingStatus: "KU100 · 等待播放",
   };
+  private lifecycleSubscriptions: NativeEventSubscription[] = [];
   private engine?: SdaEngineModule;
   private changingTrack = false;
   private poller?: ReturnType<typeof setInterval>;
 
   componentDidMount() {
+    const showPlayback = () => this.setState(previous => ({ playbackPageRequest: previous.playbackPageRequest + 1 }));
+    this.lifecycleSubscriptions.push(Linking.addEventListener("url", ({ url }) => {
+      if (/^(sda|app\.sda\.mobile):\/\/now-playing(?:[/?#]|$)/.test(url)) showPlayback();
+    }));
+    this.lifecycleSubscriptions.push(AppState.addEventListener("change", state => {
+      if (state === "active" && (this.state.playing || this.state.ended)) { showPlayback(); this.pollStatus(); }
+    }));
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
@@ -205,6 +215,8 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   componentWillUnmount() {
+    for (const subscription of this.lifecycleSubscriptions) subscription.remove();
+    this.lifecycleSubscriptions = [];
     if (this.poller) clearInterval(this.poller);
   }
 

@@ -38,11 +38,15 @@ try:
  result=json.loads(report.read_text())
  (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
  if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
+ recovery=result.get('compressedReaderRecovery',{})
+ if recovery.get('byteIdentical') is not True:raise RuntimeError('Compressed reader recovery duplicated/lost packets: '+str(recovery))
+ restored=result.get('native360RAAfterSystem',{})
+ if restored.get('ok') is not True or restored.get('status',{}).get('volumeBalanceEnabled') is not True:raise RuntimeError('System -> KU100 lost balance preference: '+str(restored))
  native=result.get('native360RA',{})
  if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2:
   raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
  spatial=result.get('system360RA',{})
- if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True:
+ if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True or spatial.get('endedStateVerified') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
  phase=result.get('phase360RA',{})
  if (phase.get('ok') is not True or phase.get('objects')!=2 or phase.get('renderedObjectStreams')!=2

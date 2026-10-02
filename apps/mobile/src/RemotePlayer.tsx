@@ -11,6 +11,7 @@ export interface TrackMetadata {
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
 interface Props {
   preparingAudio?: boolean;
+  playbackPageRequest?: number;
   systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
   setSystemSpatial360RA(enabled: boolean): void;
   layout: "7.1.4" | "360RA-13";
@@ -68,6 +69,7 @@ export function RemotePlayer(p: Props) {
   const [volumeWidth, setVolumeWidth] = useState(1);
   const pager = useRef<ScrollView>(null);
   const playerScroll = useRef<ScrollView>(null);
+  const sceneScroll = useRef<ScrollView>(null);
   const pagerLayoutWidth = useRef(0);
   const [adjustingVolume, setAdjustingVolume] = useState(false);
   const [interactingScene, setInteractingScene] = useState(false);
@@ -77,6 +79,7 @@ export function RemotePlayer(p: Props) {
     const enabled = !scrollLocks.current.scene && !scrollLocks.current.volume;
     pager.current?.setNativeProps({ scrollEnabled: enabled });
     playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
+    sceneScroll.current?.setNativeProps({ scrollEnabled: enabled });
     setInteractingScene(active);
   };
   const volumeGesture = useMemo(() => {
@@ -86,6 +89,7 @@ export function RemotePlayer(p: Props) {
       const enabled = !scrollLocks.current.scene && !scrollLocks.current.volume;
       pager.current?.setNativeProps({ scrollEnabled: enabled });
       playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
+      sceneScroll.current?.setNativeProps({ scrollEnabled: enabled });
       setAdjustingVolume(locked);
     };
     let sliderLeft = 0;
@@ -119,6 +123,9 @@ export function RemotePlayer(p: Props) {
       {label(glyph, false, { fontSize: large ? 27 : 22 })}
     </Pressable>
   );
+  React.useEffect(() => {
+    if (p.playbackPageRequest) { setPage(0); pager.current?.scrollTo({ x: 0, animated: false }); setSettings(false); }
+  }, [p.playbackPageRequest]);
   const [sceneVisited, setSceneVisited] = useState(false);
   React.useEffect(() => { if (page === 2) setSceneVisited(true); }, [page]);
   const navigate = (index: number) => { setPage(index); pager.current?.scrollTo({ x: index * pageWidth, animated: true }); };
@@ -207,7 +214,7 @@ export function RemotePlayer(p: Props) {
           </View>
         </View>
       </ScrollView>
-      <ScrollView style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label("播放列表", false, s.sectionTitle)}{label(`${p.queue.length} 首`, true, s.small)}</View>
           {p.queue.map((track, index) => <Pressable key={`${track.uri}-${index}`} accessibilityRole="button" accessibilityLabel={`播放 ${track.metadata.title || track.name}`} accessibilityState={{ selected: index === p.queueIndex }} onPress={() => index === p.queueIndex && p.playing ? p.togglePause() : p.selectTrack(index)} disabled={p.busy} style={[s.queueItem, { backgroundColor: index === p.queueIndex ? c.soft : "transparent" }]}>
@@ -218,7 +225,7 @@ export function RemotePlayer(p: Props) {
           {label(`可多选文件加入列表。当前：${PLAYBACK_MODE_LABELS[p.playbackMode]}。`, true, s.help)}
         </View>
       </ScrollView>
-      <ScrollView style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}

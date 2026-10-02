@@ -29,3 +29,11 @@
 - The native Canvas waits for nonzero viewport dimensions, receives explicit width/height, and stays mounted after the spatial page is first visited. A render error now reports a message instead of leaving an unlabelled blank. This mitigates GL layout/recreation failures; the reported Dolby-only blank still needs device reproduction and visual verification.
 - Now Playing refreshes on entering background and returning foreground, adds local content identity and non-live status. This does not implement custom Live Activities or establish that the system Dynamic Island animation is fixed.
 - Preparation status moved to the top Now Playing heading, including native system-balance pre-roll; the lower duplicate was removed.
+
+### Additional device reports
+
+- Balance preference is re-applied after opening the selected source/route. Simulator regression explicitly plays system -> native KU100 with balance retained, without touching its switch.
+- Both horizontal pager and the spatial page's own vertical ScrollView now share the interaction lock (the latter was missing). OS edge gestures remain system-owned.
+- EOF derives the real decoded duration; queue drain marks Now Playing stopped with zero rate and final elapsed time. Native remote resume cannot revive an exhausted decoder. Added end-state smoke assertion.
+- Foreground re-entry opens the playback page and refreshes state; registered `sda://now-playing` routing provides an explicit playback entry. This is not a custom Dynamic Island activity or proof that the system's own tap launches the sideloaded app.
+- AVFoundation operationInterrupted (-11847) is recoverable, not generic EOF. Compressed MP4 reader can reopen at the last delivered packet end (bounded retries), without restarting Rust; CI compares compressed bytes before/after reopen. Invalid timestamps still play normally but disallow unsafe resume. System renderer retains only its bounded submitted queue for replay following recoverable interruption; other errors remain visible. Real device interruption recovery remains unverified.

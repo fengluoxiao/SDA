@@ -90,6 +90,7 @@ final class SdaPlayer {
   audio = nil; source = nil
   if let h = handle { sda_ios_close(h); handle = nil }
   isPaused = false; done = false
+  MPNowPlayingInfoCenter.default().playbackState = .stopped
   MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
  }
  func startNative() throws {
@@ -127,24 +128,25 @@ final class SdaPlayer {
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {
-  guard hasPlayback else { return false }
+  guard hasPlayback, paused || !done else { return false }
   if !paused { try AVAudioSession.sharedInstance().setActive(true); if audio?.isRunning == false { try audio?.start() } }
   _ = try command("pause",["paused":paused]); isPaused = paused; updateNowPlaying(); return true
  }
  func updateNowPlaying() {
   guard hasPlayback else { return }
   let s = (try? command("status")) as? [String: Any] ?? [:]
+  let endedPosition = done ? ((s["decodedSamplePos"] as? NSNumber)?.doubleValue ?? 0)/48 : nil
   var info = mediaInfo
   info.merge([MPMediaItemPropertyTitle:title,
    MPMediaItemPropertyPlaybackDuration:duration/1000,
-   MPNowPlayingInfoPropertyElapsedPlaybackTime:(s["positionMs"] as? Double ?? 0)/1000,
-   MPNowPlayingInfoPropertyPlaybackRate:isPaused ? 0.0 : 1.0,
+   MPNowPlayingInfoPropertyElapsedPlaybackTime:(endedPosition ?? (s["positionMs"] as? Double ?? 0))/1000,
+   MPNowPlayingInfoPropertyPlaybackRate:(isPaused || done || s["preparingAudio"] as? Bool == true) ? 0.0 : 1.0,
    MPNowPlayingInfoPropertyDefaultPlaybackRate:1.0,
    MPNowPlayingInfoPropertyIsLiveStream:false,
    MPNowPlayingInfoPropertyExternalContentIdentifier:trackHash,
    MPNowPlayingInfoPropertyMediaType:MPNowPlayingInfoMediaType.audio.rawValue]) { _, new in new }
   MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-  MPNowPlayingInfoCenter.default().playbackState = isPaused ? .paused : .playing
+  MPNowPlayingInfoCenter.default().playbackState = done ? .stopped : isPaused ? .paused : .playing
  }
  func setMediaMetadata(_ hash: String, _ metadata: [String:Any]) {
   guard hasPlayback, hash == trackHash else { return }
@@ -214,9 +216,11 @@ final class SdaPlayer {
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative() }
-    title = name; trackHash = hash; mediaInfo = [:]; duration = mediaDuration(url)
+    title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
+    // Apply persisted balance after the new route/source is fully selected.
+    _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
     _ = try command("yaw",["degrees":yaw])
     if let cached = prefs.string(forKey:"sda.loudness."+hash) { _ = try? command("measured",["json":cached]) }
     let token = generation; updateNowPlaying()
@@ -261,6 +265,8 @@ final class SdaPlayer {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
       if let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:"sda.loudness."+hash) }
+      let finalStatus = try command("status") as! [String:Any]
+      if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
       finished = true
      }
     }
@@ -299,9 +305,10 @@ final class SdaPlayer {
  /// Only enabled by the explicit simulator CI environment; never on ordinary launch.
  func runCISmoke() {
   var report: [String: Any] = ["ok": false]
+  let savedBalance = prefs.bool(forKey:"sda.balance")
   let savedSystemPreference = prefs.bool(forKey:"sda.systemSpatial360RA")
   prefs.set(false,forKey:"sda.systemSpatial360RA")
-  defer { prefs.set(savedSystemPreference,forKey:"sda.systemSpatial360RA") }
+  defer { prefs.set(savedSystemPreference,forKey:"sda.systemSpatial360RA"); prefs.set(savedBalance,forKey:"sda.balance") }
   do {
    let uri = try assetRoot().appendingPathComponent("ci-stereo-tones.m4a").absoluteString
    _ = try play(uri, "ci-stereo-tones.m4a", 0, "ci-generated-tone")
@@ -349,9 +356,12 @@ final class SdaPlayer {
     Thread.sleep(forTimeInterval: 0.02)
    }
    if report["ok"] as? Bool != true { throw SdaError.message("模拟器音频冒烟测试超时") }
+   report["compressedReaderRecovery"] = try smokeReaderRecovery()
    report["native360RA"] = try smokeNative360()
    prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
+   prefs.set(true,forKey:"sda.balance")
+   report["native360RAAfterSystem"] = try smokeNative360()
    locked { stopNative() }
    if #available(iOS 26.0, *) {
     let output = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first!
@@ -363,6 +373,20 @@ final class SdaPlayer {
      let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
    try? data.write(to:dir.appendingPathComponent("sda-ci-smoke.json"),options:.atomic)
   }
+ }
+
+ func smokeReaderRecovery() throws -> [String:Any] {
+  let url = try assetRoot().appendingPathComponent("ci-stereo-tones.m4a")
+  let baseline = try CompressedInput(url:url,name:"ci-stereo-tones.m4a")
+  var expected = Data()
+  while let packet = try baseline.next() { expected.append(packet) }
+  let resumed = try CompressedInput(url:url,name:"ci-stereo-tones.m4a")
+  var actual = Data()
+  for _ in 0..<3 { if let packet = try resumed.next() { actual.append(packet) } }
+  try resumed.reopenAfterInterruption()
+  while let packet = try resumed.next() { actual.append(packet) }
+  guard actual == expected, !actual.isEmpty else { throw SdaError.message("压缩音轨恢复丢包或重复") }
+  return ["ok":true,"bytes":actual.count,"byteIdentical":true]
  }
 
  // Use the real default KU100 route and sda.ios.decode dispatch queue.
@@ -383,6 +407,8 @@ final class SdaPlayer {
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
+     guard status["volumeBalanceEnabled"] as? Bool == prefs.bool(forKey:"sda.balance"),
+       status["volumeBalanceEligible"] as? Bool == true else { throw SdaError.message("KU100 音量平衡偏好未恢复") }
      return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects]
     }
     return nil
@@ -425,7 +451,9 @@ final class SdaPlayer {
     if done {
      guard checkedPause, displayedObjects == 2, system.enqueued > 0, system.queued == 0,
        s["outputChannels"] as? Int == 12 else { throw SdaError.message("360RA 系统输出未完成") }
-     return ["ok":true,"status":s,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
+     guard MPNowPlayingInfoCenter.default().playbackState == .stopped,
+       duration > 0 else { throw SdaError.message("曲终媒体状态未停止") }
+     return ["ok":true,"status":s,"endedStateVerified":true,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
       "allowedMultichannel":system.renderer.allowedAudioSpatializationFormats.contains(.multichannel),
       "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true]
     }
@@ -440,6 +468,7 @@ final class SdaPlayer {
      let after = try command("status") as! [String:Any]
      guard before["consumedSamplePos"] as? NSNumber == after["consumedSamplePos"] as? NSNumber,
        systemSpatial != nil else { throw SdaError.message("360RA 暂停或开关重置当前路由") }
+     systemSpatial?.restorePendingSamples()
      checkedPause = true; _ = try setPaused(false)
     }
    }
