@@ -1,7 +1,7 @@
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
 import React, { useMemo, useRef, useState } from "react";
-import { Animated, Image, Modal, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Animated, Image, Modal, PanResponder, Pressable, SafeAreaView, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
 
 export interface TrackMetadata {
@@ -110,7 +110,8 @@ export function RemotePlayer(p: Props) {
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist;
   const playback = p.busy ? "正在准备音频…" : p.playing ? p.paused ? "已暂停" : "正在播放" : p.ended ? "播放结束" : p.selectedUri ? "准备就绪" : "选择文件，开始聆听";
-  return <View style={[s.root, { backgroundColor: c.bg }]}>
+  const SafeContainer = Platform.OS === "ios" ? SafeAreaView : View;
+  return <SafeContainer style={{ flex: 1, backgroundColor: c.bg }}><View style={[s.root, { backgroundColor: c.bg }]}>
     {!isLight && p.metadata.coverUri && <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       <Image source={{ uri: p.metadata.coverUri }} blurRadius={65} style={[StyleSheet.absoluteFill, { opacity: .2 }]} />
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "#10131888" }]} />
