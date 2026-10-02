@@ -339,3 +339,41 @@ mod tests {
         assert!(switched && energy > 0.001 && difference > 0.001);
     }
 }
+
+// Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
+struct SpeakerHost { decoder: mpegh::MpeghDecoder, pcm: std::collections::VecDeque<f32> }
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
+    match result {
+        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default() })).cast(),
+        Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, finish: bool) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() || (len > 0 && bytes.is_null()) || len > 65536 { return Err("invalid speaker input".into()); }
+        let host = unsafe { &mut *p.cast::<SpeakerHost>() };
+        if finish { host.decoder.flush()?; }
+        else { host.decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
+        while let Some(frame) = host.decoder.next_frame() {
+            let frames = frame.channels[0].len();
+            if host.pcm.len() + frames*12 > 8*48000*12 { return Err("speaker PCM backlog exceeded".into()); }
+            for i in 0..frames { for channel in &frame.channels { host.pcm.push_back(channel[i]); } }
+        }
+        Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000}))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *mut f32, capacity_frames: usize) -> usize {
+    if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
+    let host = unsafe { &mut *p.cast::<SpeakerHost>() };
+    let frames = capacity_frames.min(host.pcm.len()/12);
+    for i in 0..frames*12 { unsafe { *out.add(i) = host.pcm.pop_front().unwrap_or(0.0); } }
+    frames
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_close(p: *mut std::ffi::c_void) {
+    if !p.is_null() { drop(unsafe { Box::from_raw(p.cast::<SpeakerHost>()) }); }
+}

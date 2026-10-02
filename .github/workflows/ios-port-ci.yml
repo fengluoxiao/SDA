@@ -50,7 +50,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
       - name: Verify Apple compressed MP4 extraction before full app build
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -86,7 +86,13 @@ jobs:
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
-          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests 2>&1 | tee ios-artifacts/rust-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
+      - name: MPEG-H speaker layout tests
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mpegh::tests -- --test-threads=1 2>&1 | tee ios-artifacts/mpegh-tests.log
       - name: Build shared Rust engine XCFramework
         if: steps.sdk.outputs.available == 'true'
         run: |

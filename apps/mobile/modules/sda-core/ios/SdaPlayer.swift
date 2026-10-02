@@ -7,12 +7,15 @@ import AudioToolbox
 enum SdaError: LocalizedError {
  case message(String)
  var errorDescription: String? { if case let .message(text) = self { return text }; return nil }
+
 }
 
 final class SdaPlayer {
  let lock = NSRecursiveLock()
  let feeder = DispatchQueue(label: "sda.ios.decode", qos: .userInitiated)
  var handle: UnsafeMutableRawPointer?
+ var systemSpatial: SystemSpatial360?
+ var hasPlayback: Bool { handle != nil || systemSpatial != nil }
  var audio: AVAudioEngine?
  var source: AVAudioSourceNode?
  var generation = 0
@@ -39,6 +42,19 @@ final class SdaPlayer {
   return result["value"] ?? NSNull()
  }
  func command(_ op: String, _ args: [String: Any] = [:]) throws -> Any {
+  if let system = systemSpatial {
+   switch op {
+   case "status": return system.status()
+   case "objects": return [String:Any]()
+   case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
+   case "volume": system.renderer.volume = (args["volume"] as? NSNumber)?.floatValue ?? 1; return true
+   case "finish": try system.feed(nil,finish:true,decodeReply:decodeReply); return ["errors":[]]
+   case "loudness": return "null"
+   // Saved SDA preferences never enter the system-rendered path.
+   case "yaw", "resetPose", "measured", "balance", "near", "room", "preset", "rendering": return ["bypassed":true]
+   default: throw SdaError.message("系统空间音频不支持该命令: \(op)")
+   }
+  }
   guard let h = handle else { throw SdaError.message("引擎未启动") }
   return try decodeReply(sda_ios_command(h, op, try json(args)))
  }
@@ -49,7 +65,7 @@ final class SdaPlayer {
   return root
  }
  func settings() -> [String: Any] {
-  return ["layout": layout, "hrtfSet": prefs.string(forKey: "sda.hrtfSet") ?? "dense",
+  return ["systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": prefs.string(forKey: "sda.hrtfSet") ?? "dense",
    "hrtfWetWeight": prefs.object(forKey: "sda.wet") ?? 0.04,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": prefs.bool(forKey: "sda.near"), "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
@@ -63,6 +79,7 @@ final class SdaPlayer {
  }
  func stopNative() {
   generation += 1
+  systemSpatial?.close(); systemSpatial = nil
   // Stop callbacks before freeing the C handle. Do not reset on preset changes.
   audio?.stop()
   if let node = source { audio?.detach(node) }
@@ -106,7 +123,7 @@ final class SdaPlayer {
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {
-  guard handle != nil else { return false }
+  guard hasPlayback else { return false }
   if !paused { try AVAudioSession.sharedInstance().setActive(true); if audio?.isRunning == false { try audio?.start() } }
   _ = try command("pause",["paused":paused]); isPaused = paused; updateNowPlaying(); return true
  }
@@ -133,7 +150,7 @@ final class SdaPlayer {
    guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
          let type = AVAudioSession.InterruptionType(rawValue:raw) else { return }
    self.locked {
-    if type == .began { self.interruptionWasPlaying = self.handle != nil && !self.isPaused; _ = try? self.setPaused(true) }
+    if type == .began { self.interruptionWasPlaying = self.hasPlayback && !self.isPaused; _ = try? self.setPaused(true) }
     else if self.interruptionWasPlaying,
       let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
       AVAudioSession.InterruptionOptions(rawValue:options).contains(.shouldResume) { _ = try? self.setPaused(false) }
@@ -159,9 +176,16 @@ final class SdaPlayer {
    layout = ext == "mhas" ? "360RA-13" : "7.1.4"
    let input = try CompressedInput(url:url,name:name)
    do {
-    try startNative(); title = name; duration = mediaDuration(url)
+    if ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA") {
+     let session = AVAudioSession.sharedInstance()
+     try session.setCategory(.playback, mode:.default, options:[])
+     try session.setPreferredSampleRate(48000); try session.setActive(true)
+     systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1)
+     hrtfState = "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
+    } else { try startNative() }
+    title = name; duration = mediaDuration(url)
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
-    if ext == "mhas" { _ = try command("mpegh") }
+    if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     _ = try command("yaw",["degrees":yaw])
     if let cached = prefs.string(forKey:"sda.loudness."+hash) { _ = try? command("measured",["json":cached]) }
     let token = generation; updateNowPlaying()
@@ -176,10 +200,12 @@ final class SdaPlayer {
   var lastProgress = Date()
   var lastInfo = Date.distantPast
   do {
+   let systemMode = locked { systemSpatial != nil && generation == token }
    while true {
     let shouldWait: Bool? = try locked {
-     guard generation == token, handle != nil else { return nil }
+     guard generation == token, hasPlayback else { return nil }
      if isPaused { lastProgress = Date(); return true }
+     try systemSpatial?.pump()
      let status = try command("status") as! [String:Any]
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
@@ -191,12 +217,13 @@ final class SdaPlayer {
     }
     guard let wait = shouldWait else { return }
     if wait { Thread.sleep(forTimeInterval:0.02); continue }
-    let data = mp3 ? nil : try input.next()
+    let data = mp3 ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
     try locked {
-     guard generation == token, let h = handle else { return }
+     guard generation == token, hasPlayback else { return }
      var eof = false
      if mp3 { let result = try command("pullMp3") as! [String:Any]; eof = result["eof"] as? Bool == true }
-     else if let data { let result = try data.withUnsafeBytes { try decodeReply(sda_ios_feed(h, $0.bindMemory(to: UInt8.self).baseAddress, data.count)) } as? [String:Any]; if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) } }
+     else if let data, let system = systemSpatial { try system.feed(data,finish:false,decodeReply:decodeReply) }
+     else if let data, let h = handle { let result = try data.withUnsafeBytes { try decodeReply(sda_ios_feed(h, $0.bindMemory(to: UInt8.self).baseAddress, data.count)) } as? [String:Any]; if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) } }
      else { eof = true }
      if eof {
       let result = try command("finish") as? [String:Any]
@@ -221,6 +248,9 @@ final class SdaPlayer {
  /// Only enabled by the explicit simulator CI environment; never on ordinary launch.
  func runCISmoke() {
   var report: [String: Any] = ["ok": false]
+  let savedSystemPreference = prefs.bool(forKey:"sda.systemSpatial360RA")
+  prefs.set(false,forKey:"sda.systemSpatial360RA")
+  defer { prefs.set(savedSystemPreference,forKey:"sda.systemSpatial360RA") }
   do {
    let uri = try assetRoot().appendingPathComponent("ci-stereo-tones.m4a").absoluteString
    _ = try play(uri, "ci-stereo-tones.m4a", 0, "ci-generated-tone")
@@ -233,6 +263,9 @@ final class SdaPlayer {
      let clock = (s["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      if !changed && clock >= 4096 && !done {
       let token = generation
+      prefs.set(true,forKey:"sda.systemSpatial360RA")
+      guard systemSpatial == nil else { throw SdaError.message("开关打断现有 SDA 播放") }
+      report["togglePreservesCurrentRoute"] = true
       _ = try command("preset", ["path":try hrtfPath("dense"),"wet":0.0,"direct":true,"directional":true])
       let after = try command("status") as! [String: Any]
       let afterClock = (after["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
@@ -265,7 +298,8 @@ final class SdaPlayer {
     Thread.sleep(forTimeInterval: 0.02)
    }
    if report["ok"] as? Bool != true { throw SdaError.message("模拟器音频冒烟测试超时") }
-  } catch { report["error"] = error.localizedDescription }
+   report["system360RA"] = try smokeSystem360()
+  } catch { report["ok"] = false; report["error"] = error.localizedDescription }
   locked { stopNative() }
   if let dir = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first,
      let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
@@ -273,4 +307,44 @@ final class SdaPlayer {
   }
  }
 
+ func smokeSystem360() throws -> [String:Any] {
+  let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
+  _ = try play(uri,"ci-360ra.mhas",0,"ci-360ra")
+  let deadline = Date().addingTimeInterval(30)
+  var checkedPause = false
+  while Date() < deadline {
+   let complete: [String:Any]? = try locked {
+    if let failure { throw SdaError.message(failure) }
+    guard let system = systemSpatial else { throw SdaError.message("360RA 未进入系统输出路径") }
+    let s = system.status()
+    if !checkedPause && system.enqueued > 0 && !done {
+     _ = try setPaused(true)
+     prefs.set(false,forKey:"sda.systemSpatial360RA")
+     return nil
+    }
+    if done {
+     guard checkedPause, system.enqueued > 0, system.queued == 0,
+       s["outputChannels"] as? Int == 12 else { throw SdaError.message("360RA 系统输出未完成") }
+     return ["ok":true,"status":s,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
+      "allowedMultichannel":system.renderer.allowedAudioSpatializationFormats.contains(.multichannel),
+      "physicalSpatialListeningVerified":false]
+    }
+    return nil
+   }
+   if let complete { return complete }
+   if locked({isPaused && !done}) {
+    Thread.sleep(forTimeInterval:0.15)
+    let before = try locked { try command("status") as! [String:Any] }
+    Thread.sleep(forTimeInterval:0.15)
+    try locked {
+     let after = try command("status") as! [String:Any]
+     guard before["consumedSamplePos"] as? NSNumber == after["consumedSamplePos"] as? NSNumber,
+       systemSpatial != nil else { throw SdaError.message("360RA 暂停或开关重置当前路由") }
+     checkedPause = true; _ = try setPaused(false)
+    }
+   }
+   Thread.sleep(forTimeInterval:0.01)
+  }
+  throw SdaError.message("360RA 系统空间音频冒烟测试超时")
+ }
 }

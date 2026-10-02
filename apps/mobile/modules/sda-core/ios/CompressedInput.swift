@@ -34,8 +34,8 @@ final class CompressedInput {
    reader = r; trackOutput = output
   } else { throw SdaError.message("支持 E-AC-3/Atmos M4A/MP4、MHAS 和 MP3") }
  }
- func next() throws -> Data? {
-  if let f = file { let d = try f.read(upToCount: 24 * 1024); return d?.isEmpty == false ? d : nil }
+ func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
+  if let f = file { let d = try f.read(upToCount: chunkBytes); return d?.isEmpty == false ? d : nil }
   guard let output = trackOutput, let r = reader else { return nil }
   while true {
   guard let sample = output.copyNextSampleBuffer() else {

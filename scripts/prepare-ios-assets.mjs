@@ -29,3 +29,5 @@ cpSync(join(root,'apps/mobile/rendering-presets.json'),join(out,'rendering-prese
 console.log('Staged KU100 assets and '+catalog.profiles.length+' verified room profiles');
 
 cpSync(join(root,'crates/sda-native/tests/fixtures/ios-stereo-tones.m4a'),join(out,'ci-stereo-tones.m4a'));
+
+cpSync(join(root,"packages/core/mpegh/fixtures/motion.mhas"),join(out,"ci-360ra.mhas"));

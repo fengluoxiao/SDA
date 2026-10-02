@@ -15,18 +15,19 @@ public final class SdaModule: Module {
    }
   }
   OnDestroy { player.locked { player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
+  Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
   Function("renderingSettings") { try player.locked { try player.json(player.settings()) } }
   Function("hrtfStatus") { player.locked { player.hrtfState } }
   Function("feedError") { player.locked { player.failure } }
   Function("feedDone") { player.locked { player.done } }
-  Function("status") { try player.locked { try player.json(player.handle == nil ? [:] : player.command("status")) } }
+  Function("status") { try player.locked { try player.json(!player.hasPlayback ? [:] : player.command("status")) } }
   Function("objects") { try player.locked { try player.json(player.handle == nil ? [:] : player.command("objects")) } }
   Function("pause") { try player.locked { try player.setPaused(true) } }
   Function("resume") { try player.locked { try player.setPaused(false) } }
   Function("stop") { player.locked { player.stopNative(); return true } }
   Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]) } }
   Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose") } }
-  Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.handle != nil { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
+  Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.handle != nil { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setObjectRendering") { (direct: Bool, directional: Bool) in try player.locked { if player.handle != nil { _ = try player.command("rendering",["direct":direct,"directional":directional]) }; player.prefs.set(direct,forKey:"sda.direct");player.prefs.set(directional,forKey:"sda.directional") } }
   Function("rooms") { try player.json(player.roomCatalog().compactMap { $0["summary"] }) }
@@ -38,7 +39,7 @@ public final class SdaModule: Module {
    guard let p = presets.first(where:{$0["id"] as? String == id}) else { throw SdaError.message("未知渲染预设") }
    if player.handle != nil { _ = try player.command("preset",["path":try player.hrtfPath(p["hrtfSet"] as! String),"wet":p["hrtfWetWeight"]!,"direct":p["direct"]!,"directional":p["directional"]!]); _ = try player.command("near",["enabled":false,"scale":1.0]); _ = try player.command("room",["path":""]) }
    for (k,v) in [("sda.hrtfSet",p["hrtfSet"]!),("sda.wet",p["hrtfWetWeight"]!),("sda.direct",p["direct"]!),("sda.directional",p["directional"]!),("sda.near",false),("sda.room","")] as [(String,Any)] { player.prefs.set(v,forKey:k) }
-   player.hrtfState = (p["label"] as? String ?? "KU100")+" · 完整 HRTF"
+   if player.systemSpatial == nil { player.hrtfState = (p["label"] as? String ?? "KU100")+" · 完整 HRTF" }
   } }
   AsyncFunction("playUri") { (uri:String,name:String,yaw:Double,hash:String) in try player.play(uri,name,yaw,hash) }
   AsyncFunction("durationMs") { (uri:String) in guard let u = URL(string:uri) else { return 0.0 }; return player.mediaDuration(u) }

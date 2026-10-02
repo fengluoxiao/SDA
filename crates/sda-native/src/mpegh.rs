@@ -4,7 +4,7 @@ use std::{collections::VecDeque, slice, sync::atomic::{AtomicBool, Ordering}};
 use sda_core::{FrameData, ObjectEvent, ObjectChannelDecl};
 
 extern "C" {
-    fn sda_open(raw: i32) -> i32;
+    fn sda_open_layout(raw: i32, layout: i32) -> i32;
     fn sda_close();
     fn sda_input() -> *mut u8;
     fn sda_capacity() -> i32;
@@ -24,19 +24,23 @@ pub struct MpeghDecoder {
     pending: Vec<u8>,
     frames: VecDeque<(FrameData, Vec<Vec<f32>>)>,
     sample_pos: u64,
+    speaker_output: bool,
 }
 impl MpeghDecoder {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, String> { Self::with_layout(2) }
+    /// Upstream MPEG-H object/HOA renderer, CICP 19 (7.1.4). No KU100 processing.
+    pub fn new_7_1_4() -> Result<Self, String> { Self::with_layout(19) }
+    fn with_layout(layout: i32) -> Result<Self, String> {
         if OWNED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return Err("MPEG-H decoder already has an active owner".into());
         }
-        let error = unsafe { sda_open(0) };
+        let error = unsafe { sda_open_layout(0, layout) };
         if error != 0 {
             unsafe { sda_close(); }
             OWNED.store(false, Ordering::Release);
             return Err(format!("MPEG-H create: 0x{:x}", error as u32));
         }
-        Ok(Self { pending: Vec::new(), frames: VecDeque::new(), sample_pos: 0 })
+        Ok(Self { pending: Vec::new(), frames: VecDeque::new(), sample_pos: 0, speaker_output: layout == 19 })
     }
     pub fn push(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.pending.extend_from_slice(bytes);
@@ -58,7 +62,7 @@ impl MpeghDecoder {
             if let Some(frame) = self.take_frame()? {
                 // bridge output is overwritten by the next access unit. Capture
                 // the matching reference here, not after an entire input chunk.
-                let reference = self.reference_stereo()?;
+                let reference = if self.speaker_output { Vec::new() } else { self.reference_stereo()? };
                 self.frames.push_back((frame, reference));
             }
             if used == 0 { break; }
@@ -74,6 +78,7 @@ impl MpeghDecoder {
         if self.pending.is_empty() { Ok(()) } else { Err(format!("MPEG-H truncated stream ({} bytes remain)", self.pending.len())) }
     }
     fn take_frame(&mut self) -> Result<Option<FrameData>, String> {
+        if self.speaker_output { return self.take_speakers(); }
         // All pointers remain owned by this exclusive bridge instance, and are copied
         // before the next decode call. Bounds mirror bridge.c / MpeghDecoder.ts.
         let info = |key| unsafe { sda_info(key) };
@@ -138,6 +143,27 @@ impl MpeghDecoder {
             raw_bed_labels: labels.iter().filter(|l| !l.starts_with("Obj_")).cloned().collect(),
             channels, labels, events, object_channels: declarations, program_loudness: None, ramp_duration: 0 };
         self.sample_pos += frames as u64;
+        Ok(Some(frame))
+    }
+    fn take_speakers(&mut self) -> Result<Option<FrameData>, String> {
+        let (count, bytes, rate) = unsafe { (sda_info(11), sda_info(10), sda_info(2)) };
+        if bytes == 0 { return Ok(None); }
+        if count != 12 || rate != 48000 || bytes < 0 || bytes % 36 != 0 || bytes > 4096*36 {
+            return Err(format!("MPEG-H unexpected 7.1.4 output: channels={count}, bytes={bytes}, rate={rate}"));
+        }
+        let ptr = unsafe { sda_rendered() };
+        if ptr.is_null() { return Err("MPEG-H missing speaker PCM".into()); }
+        let pcm = unsafe { slice::from_raw_parts(ptr, bytes as usize) };
+        let mut channels = vec![Vec::with_capacity(pcm.len()/36); 12];
+        for (i, sample) in pcm.chunks_exact(3).enumerate() {
+            let v = (sample[0] as i32) | ((sample[1] as i32)<<8) | ((sample[2] as i32)<<16);
+            channels[i%12].push(((v<<8)>>8) as f32 / 8388608.0);
+        }
+        // impeg hd_cicp_2_geometry_rom.c: CICP19 is rear BEFORE side.
+        let labels: Vec<String> = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s| s.to_string()).collect();
+        let frame = FrameData { codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
+            raw_bed_labels: labels.clone(), channels, labels, events: vec![], object_channels: vec![], program_loudness: None, ramp_duration: 0 };
+        self.sample_pos += (bytes/36) as u64;
         Ok(Some(frame))
     }
     /// Same upstream PCM24 stereo reference used by Windows's loudness meter.
@@ -218,6 +244,35 @@ mod tests {
         }
         decoder.flush().unwrap();
         (pcm, events, references)
+    }
+    #[test]
+    fn speakers_7_1_4_are_real_chunk_invariant_pcm_and_exclusive() {
+        let fixture = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        let decode = |chunk| {
+            let mut decoder = MpeghDecoder::new_7_1_4().unwrap();
+            assert!(MpeghDecoder::new().is_err());
+            let mut pcm = vec![];
+            for bytes in fixture.chunks(chunk) {
+                decoder.push(bytes).unwrap();
+                while let Some(frame) = decoder.next_frame() {
+                    assert_eq!(frame.labels, ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]);
+                    assert_eq!(frame.sample_rate, 48000);
+                    assert!(frame.events.is_empty() && frame.object_channels.is_empty());
+                    assert_eq!(frame.channels.len(), 12);
+                    assert!(frame.channels.iter().all(|c| c.len() == frame.channels[0].len()));
+                    pcm.extend(frame.channels.into_iter().flatten());
+                }
+            }
+            decoder.flush().unwrap();
+            pcm
+        };
+        let baseline = decode(fixture.len());
+        assert!(!baseline.is_empty() && baseline.iter().all(|s| s.is_finite()));
+        assert!(baseline.iter().any(|s| s.abs() > 0.00001));
+        for chunk in [1,7,1024] { assert_eq!(decode(chunk), baseline); }
+        let mut decoder = MpeghDecoder::new_7_1_4().unwrap();
+        decoder.push(&fixture[..fixture.len()-1]).unwrap();
+        assert!(decoder.flush().is_err());
     }
     #[test]
     fn windows_fixture_is_chunk_invariant_with_exclusive_ownership_and_strict_eof() {

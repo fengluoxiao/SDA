@@ -10,6 +10,8 @@ export interface TrackMetadata {
 }
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
 interface Props {
+  systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
+  setSystemSpatial360RA(enabled: boolean): void;
   layout: "7.1.4" | "360RA-13";
   playbackMode: PlaybackMode; setPlaybackMode(mode: PlaybackMode): void;
   queue: QueueTrack[]; queueIndex: number;
@@ -238,41 +240,49 @@ export function RemotePlayer(p: Props) {
           </Pressable>
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
+          {Platform.OS === "ios" && <>
+            {label("360 Reality Audio", true, s.groupTitle)}
+            <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 KU100、近场、房间与 SDA 响度平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:"#167d72"}} thumbColor="#ffffff" /></View>
+              {label("修改后下一次播放生效，不中断当前歌曲。实际空间化／头部跟踪由兼容耳机及系统设置决定。", true, s.groupHint)}
+              {label(p.systemSpatial360RAActive ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
+            </View>
+          </>}
           {label("空间渲染", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label(p.hrtfSet === "standard" ? "标准 KU100 HRTF" : p.hrtfSet === "dense-raw" ? "原始 KU100 · 61 方向测量" : "61 方向 HRTF", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             {renderingPresets.map(profile => {
               const selected = p.hrtfSet === profile.hrtfSet && p.directObjects === profile.direct && p.directionalObjects === profile.directional && p.nearField === profile.nearField && p.roomId === profile.roomId && Math.abs(p.hrtfWetWeight - profile.hrtfWetWeight) < 1e-6;
-              const disabled = p.busy || p.roomBusy || p.nearFieldBusy;
+              const disabled = p.systemSpatial360RAActive || p.busy || p.roomBusy || p.nearFieldBusy;
               return <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? "#167d72" : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
                 <View style={s.settingCopy}>{label(profile.label, false, s.settingTitle)}{label(profile.description, true, s.settingDescription)}</View>{label(selected ? "●" : "○", !selected, { fontSize: 20 })}
               </Pressable>;
             })}
             {label("切换预设会保留播放进度和播放／暂停状态，并重置下方空间选项；加载时可能短暂缓冲。", true, s.groupHint)}
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directObjects} disabled={p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
           </View>
           {label("实际方向会自动启用逐对象处理；两项均关闭时使用虚拟扬声器。", true, s.groupHint)}
           {label("距离与房间", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("近场声源", false, s.settingTitle)}{label("保留近距离声源的双耳差异", true, s.settingDescription)}</View><Switch accessibilityLabel="近距离双耳差异" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.nearField} disabled={p.busy || p.roomBusy || p.nearFieldBusy} onValueChange={enabled => p.setNearField(enabled, p.metresPerUnit)} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("近场声源", false, s.settingTitle)}{label("保留近距离声源的双耳差异", true, s.settingDescription)}</View><Switch accessibilityLabel="近距离双耳差异" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.nearField} disabled={p.systemSpatial360RAActive || p.busy || p.roomBusy || p.nearFieldBusy} onValueChange={enabled => p.setNearField(enabled, p.metresPerUnit)} /></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             <View style={s.settingRow}><View style={s.settingCopy}>{label("距离映射", false, s.settingTitle)}{label(p.nearFieldBusy ? "正在应用…" : "每个坐标单位对应的距离", true, s.settingDescription)}</View>
               <View style={[s.stepper, { backgroundColor: c.field }]}>
-                <Pressable accessibilityRole="button" accessibilityLabel="减小近场距离映射" style={s.stepperButton} disabled={p.busy || p.nearFieldBusy || p.metresPerUnit <= .25} onPress={() => p.setNearField(p.nearField, Math.max(.25, Math.round((p.metresPerUnit-.05)*100)/100))}>{label("−", false, { fontSize: 20 })}</Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="减小近场距离映射" style={s.stepperButton} disabled={p.systemSpatial360RAActive || p.busy || p.nearFieldBusy || p.metresPerUnit <= .25} onPress={() => p.setNearField(p.nearField, Math.max(.25, Math.round((p.metresPerUnit-.05)*100)/100))}>{label("−", false, { fontSize: 20 })}</Pressable>
                 {label(`${p.metresPerUnit.toFixed(2)} m`, false, { fontSize: 13, fontVariant: ["tabular-nums"] })}
-                <Pressable accessibilityRole="button" accessibilityLabel="增大近场距离映射" style={s.stepperButton} disabled={p.busy || p.nearFieldBusy || p.metresPerUnit >= 4} onPress={() => p.setNearField(p.nearField, Math.min(4, Math.round((p.metresPerUnit+.05)*100)/100))}>{label("＋", false, { fontSize: 20 })}</Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="增大近场距离映射" style={s.stepperButton} disabled={p.systemSpatial360RAActive || p.busy || p.nearFieldBusy || p.metresPerUnit >= 4} onPress={() => p.setNearField(p.nearField, Math.min(4, Math.round((p.metresPerUnit+.05)*100)/100))}>{label("＋", false, { fontSize: 20 })}</Pressable>
               </View>
             </View>
           </View>
           <View style={[s.settingsCard, { backgroundColor: c.panel, marginTop: 12 }]}>
             <View style={s.profileHeader}>{label("房间仿真", false, s.settingTitle)}{label(p.roomBusy ? "切换中…" : p.roomId ? "已开启" : "已关闭", true, s.settingDescription)}</View>
-            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
+            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: p.systemSpatial360RAActive || p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={p.systemSpatial360RAActive || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
               <View style={s.settingCopy}>{label(room.id && room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name, false, s.settingTitle)}{!!room.id && label(`${room.layout} · Windows 房间资产`, true, s.settingDescription)}</View>{label(room.id === p.roomId ? "●" : "○", room.id !== p.roomId, { fontSize: 20 })}
             </Pressable>)}
           </View>
@@ -281,7 +291,7 @@ export function RemotePlayer(p: Props) {
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.settingRow}><View style={s.settingCopy}>{label("外观", false, s.settingTitle)}{label("自动跟随系统", true, s.settingDescription)}</View>{label(isLight ? "浅色" : "深色", true, s.settingDescription)}</View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.outputDetails}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingDescription)}{label("48 kHz · 浮点 PCM · 双声道", true, s.settingDescription)}</View>
+            <View style={s.outputDetails}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingDescription)}{label(p.systemSpatial360RAActive ? "48 kHz · 浮点 PCM · 7.1.4（12 声道）" : "48 kHz · 浮点 PCM · 双声道", true, s.settingDescription)}</View>
           </View>
         </ScrollView>
       </Animated.View>

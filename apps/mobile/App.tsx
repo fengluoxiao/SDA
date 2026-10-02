@@ -1,4 +1,5 @@
 import React from "react";
+import { Platform } from "react-native";
 import renderingPresets from "./rendering-presets.json";
 import { prepare360RaMp4, type MpeghMp4Host } from "./src/mpeghMp4";
 import { nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "../web/src/playbackOrder";
@@ -7,6 +8,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  systemSpatial360RAActive: boolean;
   consumedSamplePos: number;
   decodedSamplePos: number;
   positionMs: number;
@@ -41,6 +43,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setVolumeBalance(enabled: boolean): void;
   hrtfStatus(): string;
   renderingSettings(): string;
+  set360RaSystemSpatialAudio?(enabled: boolean): boolean;
   setObjectRendering(direct: boolean, directional: boolean): void;
   setRenderingPreset(id: string): Promise<void>;
   rooms(): string;
@@ -48,6 +51,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  systemSpatial360RA: boolean;
+  systemSpatial360RAActive: boolean;
   layout: "7.1.4" | "360RA-13";
   playbackMode: PlaybackMode;
   queue: QueueTrack[];
@@ -84,6 +89,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    systemSpatial360RA: false, systemSpatial360RAActive: false,
     layout: "7.1.4",
     playbackMode: "sequence",
     queue: [],
@@ -123,12 +129,23 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
         hrtfWetWeight: settings.hrtfWetWeight ?? 0.04, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+        systemSpatial360RA: Platform.OS === "ios" && settings.systemSpatial360RA === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
         nearField: settings.nearField === true, metresPerUnit: settings.metresPerUnit ?? 1 });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  private setSystemSpatial360RA = (enabled: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      const setter = this.getEngine().set360RaSystemSpatialAudio;
+      if (!setter) throw new Error("当前 iOS 原生模块不支持系统空间音频开关");
+      setter(enabled);
+      this.setState({ systemSpatial360RA: enabled, error: null });
+    } catch (error) { this.setState({error: error instanceof Error ? error.message : String(error)}); }
+  };
 
   private setRenderingPreset = async (id: string) => {
     if (this.changingTrack || this.state.busy || this.state.roomBusy || this.state.nearFieldBusy) return;
@@ -289,13 +306,14 @@ export default class App extends React.Component<Record<string, never>, State> {
         positionMs: value.positionMs ?? 0,
         decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
         fifoFrames: value.fifoFrames ?? 0,
+        systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         objects: feedDone ? [] : Object.values(objects).filter((object) => object.hasPos && object.pos.every(Number.isFinite)),
         paused: value.paused ?? this.state.paused,
         playing: feedDone ? false : this.state.playing,
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+        renderingStatus: value.systemSpatial360RAActive ? "360RA → 7.1.4 · 苹果系统输出 · KU100/房间已旁路" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 61 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"}${value.nearFieldEnabled ? " · 近场" : ""}${value.roomEnabled ? " · 房间仿真" : " · 房间关闭"} · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {
@@ -368,7 +386,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   render() {
-    return <RemotePlayer {...this.state} chooseFile={this.chooseFile} play={this.playSelected}
+    return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;

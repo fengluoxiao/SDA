@@ -1,0 +1,11 @@
+# iOS-only 360RA system spatial audio
+
+The default remains SDA KU100. The iOS settings switch persists a preference for the **next playback**; changing it never stops or changes the current route. It applies only to imported MPEG-H/MHAS (360RA), not E-AC-3/Atmos or MP3, and is not exposed on Android or desktop.
+
+When enabled, the existing upstream MPEG-H decoder renders objects/bed/HOA to CICP 19 (7.1.4) PCM at 48 kHz, rather than relabeling the 360RA-13 source. Signed interleaved PCM24 is converted to Float32 without changing channel positions. Order: L, R, C, LFE, rear L, rear R, side L, side R, top front L/R, top rear L/R. The Apple format carries explicit channel descriptions matching this order.
+
+A separate C ABI and AVSampleBufferAudioRenderer/AVSampleBufferRenderSynchronizer path bypass MobileEngine, stereo mixing, KU100, near-field, room simulation and SDA loudness balancing. The normal volume slider still works. SDA DSP controls are disabled during this route; saved preferences are retained for normal playback. Pause, resume, stop, interruption, unplug and lock-screen controls use the selected route. Native/system queue sizes are bounded; format changes and decoder/output failures are surfaced rather than silently falling back to mislabeled stereo.
+
+The renderer requests allowedAudioSpatializationFormats = .multichannel (available before iOS 16). Actual spatialization and head tracking depend on compatible output hardware and system settings. The API supports multichannel layouts generally: 7.1.4 is the selected output layout, not a claim that Apple rejects all other layouts. This is not Dolby Atmos encoding and does not add Dolby metadata to 360RA.
+
+Tests use the existing generated motion.mhas fixture, not a copyrighted song. Rust verifies 12-channel PCM, source/reference route preservation, chunk invariance, exclusive decoder ownership and strict EOF. CI also checks simulator enqueue/playback-clock/drain, pause/resume and non-disruptive preference changes. A simulator does **not** prove AirPods spatial listening quality. Physical iPhone/AirPods testing is still required. Minimum deployment target remains iOS 16; iOS 27 is not validated when no SDK/runtime is installed.

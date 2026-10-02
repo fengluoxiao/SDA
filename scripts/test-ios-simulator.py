@@ -38,6 +38,9 @@ try:
  result=json.loads(report.read_text())
  (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
  if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
+ spatial=result.get('system360RA',{})
+ if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True:
+  raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
  alive=run('xcrun','simctl','spawn',udid,'launchctl','list').stdout
  if not any(pid==line.split()[0] and 'app.sda.mobile' in line for line in alive.splitlines() if line.split()):
   raise RuntimeError('SDA exited after launch; inspect device logs')
@@ -45,7 +48,7 @@ try:
  # Verify copied folder resources before claiming an app can load HRTF.
  for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:
   if not (app/'SdaCoreAssets.bundle'/name/'hrtf-set.json').is_file(): raise RuntimeError('Missing bundled asset '+name)
- (out/'smoke.txt').write_text('Release app launched. Compressed E-AC-3 MP4 -> Rust/KU100 -> AVAudioEngine consumed playback; live preset clock and pause/resume checks passed. KU100 resources present. No real-device listening validation.\n')
+ (out/'smoke.txt').write_text('Release app launched. Compressed E-AC-3 MP4 -> Rust/KU100 -> AVAudioEngine consumed playback; live preset clock and pause/resume checks passed. 360RA MPEG-H -> 12-channel 7.1.4 -> Apple sample-buffer renderer clock/drain/pause/toggle checks passed. KU100 resources present. No real-device spatial listening validation.\n')
 finally:
  log=run('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "SDA"',check=False)
  (out/'simulator.log').write_text(log.stdout+log.stderr)
