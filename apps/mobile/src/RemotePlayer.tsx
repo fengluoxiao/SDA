@@ -286,7 +286,7 @@ export function RemotePlayer(p: Props) {
         </ScrollView>
       </Animated.View>
     </Modal>
-  </View>;
+  </View></SafeContainer>;
 }
 const s = StyleSheet.create({
   root: { flex: 1, paddingTop: 12, paddingHorizontal: 16, paddingBottom: 12 },
