@@ -278,7 +278,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
         const settings = JSON.parse(engine.renderingSettings());
         this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
-          roomId: settings.roomId || "", layout: settings.layout });
+          roomId: settings.roomId || "", layout: settings.layout, systemSpatial360RAActive: settings.systemSpatial360RAActive === true });
       } finally {
         // playUri has opened its InputStream. Android keeps that descriptor valid
         // after unlinking the temporary extraction, including while paused.
@@ -361,7 +361,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private stop = () => {
     try {
       this.engine?.stop();
-      this.setState({ playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      this.setState({ systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }

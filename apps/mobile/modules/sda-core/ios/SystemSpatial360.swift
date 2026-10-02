@@ -13,6 +13,7 @@ final class SystemSpatial360 {
  var queued: UInt64 = 0
  var started = false
  var paused = false
+ var buffering = false
  var closed = false
  var pcm = [Float](repeating: 0, count: 1024*12)
  init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float) throws {
@@ -65,6 +66,11 @@ final class SystemSpatial360 {
  }
  func pump() throws {
   if renderer.status == .failed { throw SdaError.message(renderer.error?.localizedDescription ?? "系统多声道输出失败") }
+  // Freeze the presentation clock at the end of submitted PCM on underrun.
+  // Otherwise newly decoded buffers would carry timestamps already in the past.
+  if started && !paused && !buffering && consumed >= enqueued {
+   synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true
+  }
   while !paused && queued > 0 && renderer.isReadyForMoreMediaData {
    // Bound system queue as well as decoder queue, including when renderer stays ready.
    if enqueued > consumed + 48000 { break }
@@ -87,6 +93,7 @@ final class SystemSpatial360 {
    renderer.enqueue(sample)
    enqueued += UInt64(frames); queued -= UInt64(frames)
    if !started { synchronizer.setRate(1, time:.zero); started = true }
+   else if buffering { synchronizer.setRate(1,time:synchronizer.currentTime()); buffering = false }
   }
  }
  var consumed: UInt64 {
@@ -97,7 +104,7 @@ final class SystemSpatial360 {
  }
  func setPaused(_ value: Bool) {
   paused = value
-  if started { synchronizer.setRate(value ? 0 : 1, time:synchronizer.currentTime()) }
+  if started { synchronizer.setRate(value || buffering ? 0 : 1, time:synchronizer.currentTime()) }
  }
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued

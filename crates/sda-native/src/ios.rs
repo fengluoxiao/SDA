@@ -338,6 +338,43 @@ mod tests {
         }
         assert!(switched && energy > 0.001 && difference > 0.001);
     }
+    #[test]
+    fn speaker_abi_preserves_twelve_channel_interleaving_and_drains() {
+        let bytes = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        let expected = {
+            let mut d = mpegh::MpeghDecoder::new_7_1_4().unwrap();
+            d.push(bytes).unwrap(); d.flush().unwrap();
+            let mut expected = vec![];
+            while let Some(f) = d.next_frame() { for i in 0..f.channels[0].len() { for c in &f.channels { expected.push(c[i]); } } }
+            expected
+        };
+        unsafe fn value(p: *mut c_char) -> Value {
+            let v: Value = serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_str().unwrap()).unwrap();
+            unsafe { sda_ios_string_free(p); }
+            assert_eq!(v["ok"], true, "{v}"); v["value"].clone()
+        }
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let h = sda_ios_speakers_create(&mut error);
+            assert!(!h.is_null()); assert!(error.is_null());
+            struct Close(*mut std::ffi::c_void);
+            impl Drop for Close { fn drop(&mut self) { unsafe { sda_ios_speakers_close(self.0); } } }
+            let _close = Close(h);
+            let mut pcm = [0.0; 997*12]; let mut actual = vec![];
+            for chunk in bytes.chunks(1024) {
+                let result = value(sda_ios_speakers_feed(h,chunk.as_ptr(),chunk.len(),false));
+                assert_eq!(result["channels"],12);
+                loop {
+                    let n = sda_ios_speakers_read(h,pcm.as_mut_ptr(),997);
+                    if n == 0 { break; }
+                    actual.extend_from_slice(&pcm[..n*12]);
+                }
+            }
+            assert_eq!(value(sda_ios_speakers_feed(h,std::ptr::null(),0,true))["queuedFrames"],0);
+            assert_eq!(actual,expected); assert!(!actual.is_empty());
+        }
+    }
+
 }
 
 // Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
