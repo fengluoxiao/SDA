@@ -74,7 +74,9 @@ try:
  (out/'scene-smoke.json').write_text(json.dumps(scene,indent=2))
  if scene.get('ok') is not True or scene.get('layout')!='7.1.4' or scene.get('calls',0)<=0 or scene.get('triangles',0)<=0:
   raise RuntimeError('Cold-start 7.1.4 scene failed: '+str(scene))
+ time.sleep(3) # Allow submitted GL frames to reach the system compositor.
  run('xcrun','simctl','io',udid,'screenshot',str(out/'simulator.png'))
+ run(sys.executable,'scripts/check-ios-scene-image.py',str(out/'simulator.png'),str(out/'scene-smoke.json'))
  # Verify copied folder resources before claiming an app can load HRTF.
  for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:
   if not (app/'SdaCoreAssets.bundle'/name/'hrtf-set.json').is_file(): raise RuntimeError('Missing bundled asset '+name)

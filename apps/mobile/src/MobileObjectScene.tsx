@@ -1,5 +1,5 @@
 import React, { useMemo, useRef } from "react";
-import { PanResponder, View, Text, Pressable, InteractionManager, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
@@ -59,6 +59,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
 }
 
 export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+  const view = useRef<View>(null);
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
   interaction.current = onInteractionChange;
@@ -93,7 +94,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   }, [active, mounted, ready, failure, attempt]);
   const report = React.useCallback((value: Record<string, unknown>) => {
     const engine = (globalThis as any).expo?.modules?.SdaEngine;
-    if (engine?.sceneSmokeEnabled?.()) engine.reportSceneSmoke(JSON.stringify({ layout, ...value }));
+    if (engine?.sceneSmokeEnabled?.()) view.current?.measureInWindow((x, y, width, height) => engine.reportSceneSmoke(JSON.stringify({ layout, screenWidth: Dimensions.get("window").width, ...value, bounds: { x, y, width, height } })));
   }, [layout]);
   React.useEffect(() => { if (failure) report({ ok: false, error: failure }); }, [failure, report]);
   const retry = () => { firstFrame.current = false; setReady(false); setFailure(null); setAttempt(value => value + 1); };
@@ -132,18 +133,36 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     onPanResponderRelease: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
     onPanResponderTerminate: () => { previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
   })).current;
-  return <View style={{ flex: 1, overflow: "hidden" }} onLayout={event => {
+  return <View ref={view} collapsable={false} style={{ flex: 1, overflow: "hidden" }} onLayout={event => {
     const { width, height } = event.nativeEvent.layout;
     viewportHeight.current = height;
     setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
   }} {...pan.panHandlers}>
     {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
       const renderFrame = state.gl.render.bind(state.gl);
+      const context = state.gl.getContext() as any;
+      const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;
+      let frames = 0;
+      let pixels: Record<string, unknown> = {};
+      if (smoke) {
+        const present = context.endFrameEXP.bind(context);
+        context.endFrameEXP = () => {
+          if (++frames === 30) {
+            const width = context.drawingBufferWidth, height = context.drawingBufferHeight;
+            const buffer = new Uint8Array(width * height * 4);
+            context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, buffer);
+            let brightPixels = 0;
+            for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
+            pixels = { brightPixels, bufferWidth: width, bufferHeight: height, glError: context.getError(), camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)), programs: state.gl.info.programs?.map((program: any) => program.diagnostics) };
+          }
+          present();
+        };
+      }
       state.gl.render = (scene, camera) => {
         renderFrame(scene, camera);
-        if (currentAttempt.current === attempt && !firstFrame.current && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
+        if (currentAttempt.current === attempt && (!smoke ? !firstFrame.current : frames === 30) && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
           firstFrame.current = true;
-          const result = { ok: true, calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles, width: state.size.width, height: state.size.height, attempt };
+          const result = { ok: true, ...pixels, calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles, width: state.size.width, height: state.size.height, attempt };
           setTimeout(() => { if (alive.current && currentAttempt.current === attempt) { setReady(true); report(result); } }, 0);
         }
       };
