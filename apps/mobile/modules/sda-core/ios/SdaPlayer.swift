@@ -129,8 +129,17 @@ final class SdaPlayer {
  }
  func setPaused(_ paused: Bool) throws -> Bool {
   guard hasPlayback, paused || !done else { return false }
-  if !paused { try AVAudioSession.sharedInstance().setActive(true); if audio?.isRunning == false { try audio?.start() } }
-  _ = try command("pause",["paused":paused]); isPaused = paused; updateNowPlaying(); return true
+  if paused {
+   _ = try command("pause",["paused":true])
+   // The worker command is asynchronous. Freeze the Apple consumer as well so
+   // queued DSP work cannot advance the audible clock after pause returns.
+   audio?.pause()
+  } else {
+   try AVAudioSession.sharedInstance().setActive(true)
+   _ = try command("pause",["paused":false])
+   if audio?.isRunning == false { try audio?.start() }
+  }
+  isPaused = paused; updateNowPlaying(); return true
  }
  func updateNowPlaying() {
   guard hasPlayback else { return }
@@ -245,7 +254,7 @@ final class SdaPlayer {
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      if consumed != lastClock { lastClock = consumed; lastProgress = Date() }
-     if decoded > 0 && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据") }
+     if decoded > 0 && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
      if Date().timeIntervalSince(lastInfo) > 1 { updateNowPlaying(); lastInfo = Date() }
      if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true; isPaused = true; updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }

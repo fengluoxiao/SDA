@@ -53,3 +53,10 @@ to be verified (local Files and iCloud, including app relaunch).
 CI confirmed the iOS SDK does not expose the interrupted-operation enum.
 Recovery therefore matches AVFoundationErrorDomain plus the reported code
 -11847 explicitly (rather than referencing a non-existent Swift enum case).
+
+Simulator rerun exposed a pause race: the Rust pause command is asynchronous,
+so AVAudioEngine could still consume FIFO data after the host reported pause.
+The native route now also pauses the Apple consumer synchronously, and resumes
+the consumer without resetting the Rust decoder/FIFO. System-spatial clock
+pause remains handled by its synchronizer. Watchdog errors include route/clock
+diagnostics rather than suppressing a stalled output.
