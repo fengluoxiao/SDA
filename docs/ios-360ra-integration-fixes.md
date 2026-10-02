@@ -60,3 +60,20 @@ The native route now also pauses the Apple consumer synchronously, and resumes
 the consumer without resetting the Rust decoder/FIFO. System-spatial clock
 pause remains handled by its synchronizer. Watchdog errors include route/clock
 diagnostics rather than suppressing a stalled output.
+
+
+## October 3 follow-up: import regression and cold-start scene
+
+The custom open-in-place picker introduced in 87494e0 has been withdrawn.
+Imports again use Expo DocumentPicker with copyToCacheDirectory:true on both
+platforms. Remembered-directory behavior is deferred; no signing configuration
+or additional entitlement was changed. This restores the previously used
+import-copy contract rather than blaming the user's signing certificate.
+
+The first scene now delays GL creation until visible with a nonzero measured
+viewport, reports actual first-frame draw calls/triangles, and retries a stalled
+context at most twice before displaying a retry action. No track, DSP or
+decoder reset is used to refresh the visualizer. A separate cold-launch CI
+process tests the initial 7.1.4 speaker scene without first visiting 360RA.
+Draw calls and a simulator screenshot are not a real-device visual or acoustic
+validation; the user's first-track Atmos case still requires device confirmation.

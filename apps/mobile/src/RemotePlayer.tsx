@@ -40,7 +40,8 @@ const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms /
 // Native counterpart of desktop/remote-web: same palette, cards and three-page navigation.
 export function RemotePlayer(p: Props) {
   const { width, height } = useWindowDimensions();
-  const [page, setPage] = useState(0);
+  const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
+  const [page, setPage] = useState(sceneSmoke ? 2 : 0);
   const [settings, setSettings] = useState(false);
   const sheetDrag = useRef(new Animated.Value(0)).current;
   const sheetHeight = useRef(height);
@@ -126,7 +127,7 @@ export function RemotePlayer(p: Props) {
   React.useEffect(() => {
     if (p.playbackPageRequest) { setPage(0); pager.current?.scrollTo({ x: 0, animated: false }); setSettings(false); }
   }, [p.playbackPageRequest]);
-  const [sceneVisited, setSceneVisited] = useState(false);
+  const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
   React.useEffect(() => { if (page === 2) setSceneVisited(true); }, [page]);
   const navigate = (index: number) => { setPage(index); pager.current?.scrollTo({ x: index * pageWidth, animated: true }); };
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
@@ -214,7 +215,7 @@ export function RemotePlayer(p: Props) {
           </View>
         </View>
       </ScrollView>
-      <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label("播放列表", false, s.sectionTitle)}{label(`${p.queue.length} 首`, true, s.small)}</View>
           {p.queue.map((track, index) => <Pressable key={`${track.uri}-${index}`} accessibilityRole="button" accessibilityLabel={`播放 ${track.metadata.title || track.name}`} accessibilityState={{ selected: index === p.queueIndex }} onPress={() => index === p.queueIndex && p.playing ? p.togglePause() : p.selectTrack(index)} disabled={p.busy} style={[s.queueItem, { backgroundColor: index === p.queueIndex ? c.soft : "transparent" }]}>
@@ -229,7 +230,7 @@ export function RemotePlayer(p: Props) {
         <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
-          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} onInteractionChange={sceneInteraction} />}</View>
+          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2} onInteractionChange={sceneInteraction} />}</View>
           {label("单指旋转 · 双指缩放", true, s.help)}
         </View>
       </ScrollView>

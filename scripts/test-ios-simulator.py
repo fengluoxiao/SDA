@@ -59,6 +59,21 @@ try:
  alive=run('xcrun','simctl','spawn',udid,'launchctl','list').stdout
  if not any(pid==line.split()[0] and 'app.sda.mobile' in line for line in alive.splitlines() if line.split()):
   raise RuntimeError('SDA exited after launch; inspect device logs')
+ # A separate process tests the first 7.1.4 scene after cold launch, without
+ # visiting the spherical 360RA scene first. Native audio smoke cannot prove GL.
+ run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+ os.environ.pop('SIMCTL_CHILD_SDA_IOS_SMOKE',None)
+ os.environ['SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE']='1'
+ sceneReport=container/'Documents/sda-ci-scene.json'
+ if sceneReport.exists():sceneReport.unlink()
+ launch=run('xcrun','simctl','launch','--stdout='+str(out/'scene.stdout'),'--stderr='+str(out/'scene.stderr'),udid,'app.sda.mobile')
+ deadline=time.monotonic()+60
+ while not sceneReport.is_file() and time.monotonic()<deadline:time.sleep(1)
+ if not sceneReport.is_file():raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame')
+ scene=json.loads(sceneReport.read_text())
+ (out/'scene-smoke.json').write_text(json.dumps(scene,indent=2))
+ if scene.get('ok') is not True or scene.get('layout')!='7.1.4' or scene.get('calls',0)<=0 or scene.get('triangles',0)<=0:
+  raise RuntimeError('Cold-start 7.1.4 scene failed: '+str(scene))
  run('xcrun','simctl','io',udid,'screenshot',str(out/'simulator.png'))
  # Verify copied folder resources before claiming an app can load HRTF.
  for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:

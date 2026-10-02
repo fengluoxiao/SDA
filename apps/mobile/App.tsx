@@ -26,7 +26,6 @@ interface PlaybackStatus {
 }
 interface ObjectPoint extends MobileObjectPoint { samplePos: number; hasPos: boolean }
 interface SdaEngineModule extends MpeghMp4Host {
-  pickMedia?(): Promise<DocumentPicker.DocumentPickerResult>;
   contentHash(uri: string): Promise<string>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
@@ -233,8 +232,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     this.changingTrack = true;
     this.setState({ busy: true, error: null });
     try {
-      const engine = this.getEngine();
-      const result = Platform.OS === "ios" && engine.pickMedia ? await engine.pickMedia() : await DocumentPicker.getDocumentAsync({
+      const result = await DocumentPicker.getDocumentAsync({
         type: "*/*",
         copyToCacheDirectory: true,
         multiple: true,

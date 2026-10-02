@@ -1,5 +1,5 @@
 import React, { useMemo, useRef } from "react";
-import { PanResponder, View, Text, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { PanResponder, View, Text, Pressable, InteractionManager, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
@@ -51,17 +51,52 @@ function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13";
   </>;
 }
 
-class SceneBoundary extends React.Component<React.PropsWithChildren, { error: string | null }> {
+class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (message: string) => void }>, { error: string | null }> {
   state: { error: string | null } = { error: null };
   static getDerivedStateFromError(error: Error) { return { error: error.message }; }
+  componentDidCatch(error: Error) { this.props.onError(error.message); }
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, onInteractionChange }: { layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
   interaction.current = onInteractionChange;
   const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
+  const [mounted, setMounted] = React.useState(false);
+  const [attempt, setAttempt] = React.useState(0);
+  const [ready, setReady] = React.useState(false);
+  const [failure, setFailure] = React.useState<string | null>(null);
+  const firstFrame = useRef(false);
+  const alive = useRef(true);
+  React.useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const currentAttempt = useRef(attempt);
+  currentAttempt.current = attempt;
+  // Avoid creating the first GL surface during an offscreen pager transition.
+  // Wait for a visible, measured, settled native view; watchdog failures below.
+  React.useEffect(() => {
+    if (!active || mounted || viewport.width <= 0 || viewport.height <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const task = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(() => setMounted(true), 300);
+    });
+    return () => { task.cancel(); if (timer) clearTimeout(timer); };
+  }, [active, mounted, viewport.width, viewport.height]);
+  React.useEffect(() => {
+    if (!active || !mounted || ready || failure) return;
+    const timer = setTimeout(() => {
+      if (firstFrame.current) return;
+      if (attempt < 2) { firstFrame.current = false; setAttempt(value => value + 1); }
+      else setFailure("3D 上下文未完成首帧渲染");
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [active, mounted, ready, failure, attempt]);
+  const report = React.useCallback((value: Record<string, unknown>) => {
+    const engine = (globalThis as any).expo?.modules?.SdaEngine;
+    if (engine?.sceneSmokeEnabled?.()) engine.reportSceneSmoke(JSON.stringify({ layout, ...value }));
+  }, [layout]);
+  React.useEffect(() => { if (failure) report({ ok: false, error: failure }); }, [failure, report]);
+  const retry = () => { firstFrame.current = false; setReady(false); setFailure(null); setAttempt(value => value + 1); };
   const input = useRef({ rotation: { x: 0.72, y: 0.25 }, distance: 7 });
   const previousPinch = useRef(0);
   const previousDrag = useRef<{ x: number; y: number } | null>(null);
@@ -102,8 +137,22 @@ export function MobileObjectScene({ objects, layout, onInteractionChange }: { la
     viewportHeight.current = height;
     setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
   }} {...pan.panHandlers}>
-    {viewport.width > 0 && viewport.height > 0 && <SceneBoundary><Canvas style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }}>
+    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
+      const renderFrame = state.gl.render.bind(state.gl);
+      state.gl.render = (scene, camera) => {
+        renderFrame(scene, camera);
+        if (currentAttempt.current === attempt && !firstFrame.current && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
+          firstFrame.current = true;
+          const result = { ok: true, calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles, width: state.size.width, height: state.size.height, attempt };
+          setTimeout(() => { if (alive.current && currentAttempt.current === attempt) { setReady(true); report(result); } }, 0);
+        }
+      };
+    }}>
       <Scene layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
+    {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
+      <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>
+      {failure && <Pressable accessibilityRole="button" accessibilityLabel="重试空间视图" onPress={retry}><Text style={{ color: "#ffffff", padding: 12 }}>重试空间视图</Text></Pressable>}
+    </View>}
   </View>;
 }

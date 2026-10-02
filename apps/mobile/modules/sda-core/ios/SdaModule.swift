@@ -5,13 +5,16 @@ import CryptoKit
 
 public final class SdaModule: Module {
  private let player = SdaPlayer()
- private let mediaPicker = MediaPicker()
  public func definition() -> ModuleDefinition {
   let player = self.player
   Name("SdaEngine")
-  AsyncFunction("pickMedia") { (promise: Promise) in
-   self.mediaPicker.present(from:self.appContext?.utilities?.currentViewController(),promise:promise)
-  }.runOnQueue(.main)
+  Function("sceneSmokeEnabled") { ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" }
+  Function("reportSceneSmoke") { (text: String) in
+   guard ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" else { return }
+   guard let data = text.data(using:.utf8) else { return }
+   let directory = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
+   try data.write(to:directory.appendingPathComponent("sda-ci-scene.json"),options:.atomic)
+  }
   OnCreate {
    player.installSystemControls()
    if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {
