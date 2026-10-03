@@ -18,16 +18,23 @@ private enum ChromeSmoke {
    Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
     remaining -= 1
     var views: [[String: Any]] = []
+    var navigationBars: [[String: Any]] = []
     func visit(_ view: UIView) {
      if view.window != nil && !view.isHidden && view.bounds.width > 0 && view.bounds.height > 0 {
       views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "width": view.bounds.width, "height": view.bounds.height])
+      if let bar = view as? UINavigationBar {
+       let appearance = bar.topItem?.standardAppearance ?? bar.standardAppearance
+       let edge = bar.topItem?.scrollEdgeAppearance ?? bar.scrollEdgeAppearance ?? appearance
+       navigationBars.append(["title":bar.topItem?.title ?? "", "backgroundBlur":appearance.backgroundEffect != nil,
+        "scrollEdgeBlur":edge.backgroundEffect != nil, "height":bar.bounds.height])
+      }
      }
      view.subviews.forEach(visit)
     }
     for scene in UIApplication.shared.connectedScenes {
      (scene as? UIWindowScene)?.windows.filter { !$0.isHidden }.forEach(visit)
     }
-    let report: [String: Any] = ["ok": true, "ios": UIDevice.current.systemVersion, "controls": entries, "nativeViews": views]
+    let report: [String: Any] = ["ok": true, "ios": UIDevice.current.systemVersion, "controls": entries, "nativeViews": views, "navigationBars": navigationBars]
     if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
      let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
      try? data.write(to: directory.appendingPathComponent("sda-ci-chrome.json"), options: .atomic)

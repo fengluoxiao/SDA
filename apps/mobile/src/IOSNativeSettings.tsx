@@ -45,14 +45,17 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
         onDismissed={() => onSettingsChange(false)}
-        scrollEdgeEffects={{ top: "soft", bottom: "automatic", left: "automatic", right: "automatic" }}
+        // One UIKit-owned material covers the nav bar AND status bar. A
+        // transparent color alone clears the blur in screens' native build.
+        // Disable content edge effects so they cannot stack a second haze.
+        scrollEdgeEffects={{ top: "hidden", bottom: "hidden", left: "hidden", right: "hidden" }}
         headerConfig={{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-          largeTitle: true, largeTitleHideShadow: true, translucent: true,
+          largeTitle: true, largeTitleHideShadow: true, translucent: true, blurEffect: "systemMaterial",
           hideShadow: true, color: PlatformColor("systemBlue"),
           backgroundColor: "transparent", experimental_userInterfaceStyle: theme }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
         <Host style={{ flex: 1 }} colorScheme={theme}>
-          <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
+          <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} navigationBarOwnsBlur />
         </Host>
       </ScreenStackItem>}
     </ScreenStack>;
@@ -96,7 +99,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   </View>;
 }
 
-function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
+function NativeSettingsForm({ player: p, onClose, navigationBarOwnsBlur = false }: { player: PlayerProps; onClose(): void; navigationBarOwnsBlur?: boolean }) {
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, Stepper, HStack } = swiftUI;
@@ -108,7 +111,10 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
   const rooms = compatibleRooms(p);
   return <Form modifiers={[
     navigationTitle("设置"), tint(PlatformColor("systemBlue")),
-    scrollContentBackground("hidden"), scrollEdgeEffectStyle("soft", "top"),
+    scrollContentBackground("hidden"),
+    // The compatibility modal has no UINavigationBar; only it needs the
+    // SwiftUI content-edge haze. Native-stack pages use the bar material.
+    ...(!navigationBarOwnsBlur ? [scrollEdgeEffectStyle("soft", "top")] : []),
     background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
   ]}>
     <Section title="播放操作">

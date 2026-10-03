@@ -170,10 +170,13 @@ console.log('Settings fullscreen checks passed: overlapping screens, full-height
 
 assert.match(uiKitStack, /translucent: true/);
 assert.match(uiKitStack, /backgroundColor: "transparent", experimental_userInterfaceStyle/);
-assert.match(uiKitStack, /scrollEdgeEffects=\{\{ top: "soft", bottom: "automatic", left: "automatic", right: "automatic" \}\}/);
-assert.doesNotMatch(uiKitStack, /blurEffect:|ignoreSafeArea="container"/);
+assert.match(uiKitStack, /scrollEdgeEffects=\{\{ top: "hidden", bottom: "hidden", left: "hidden", right: "hidden" \}\}/);
+assert.match(uiKitStack, /blurEffect: "systemMaterial"/);
+assert.match(uiKitStack, /<NativeSettingsForm[^\n]*navigationBarOwnsBlur/);
+assert.match(settings, /!navigationBarOwnsBlur \? \[scrollEdgeEffectStyle\("soft", "top"\)\] : \[\]/);
+assert.doesNotMatch(uiKitStack, /ignoreSafeArea="container"/);
 assert.match(settings, /scrollEdgeEffectStyle\("soft", "top"\)/);
-console.log('Settings scroll-edge checks passed: translucent header, native soft edge, no stacked custom blur');
+console.log('Settings header-material checks passed: shared full navigation-bar blur, no overlapping content-edge haze');
 
 // Only an overflowing library may scroll; playback and scene are fixed Views.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));
@@ -242,3 +245,14 @@ for (const adapter of [loadNativeTabs('ios', true, 25), loadNativeTabs('ios', tr
 assert.match(ui, /nativeAccessory=\{p.selectedUri \? miniPlayer : undefined\}/);
 assert.match(ui, /environment \? s.nativeMiniPlayer/);
 console.log('Mini-player checks passed: official accessory, both environments, hidden/empty, old-OS/missing-manager fallback, no double card');
+
+const miniPlayerSource = ui.slice(ui.indexOf('const miniPlayer ='), ui.indexOf('const heading ='));
+assert.match(miniPlayerSource, /cover\(environment === "inline" \? 24 : 32\)/);
+assert.match(miniPlayerSource, /<IOSPlaybackSymbol playing=\{playing\} color=\{c.accent\}/);
+assert.doesNotMatch(miniPlayerSource, /\{icon\(/);
+assert.match(ui, /miniPlayback: \{ width: 44, height: 44,[^\n]*backgroundColor: "transparent"/);
+const playbackSymbol = readFileSync('apps/mobile/src/IOSPlaybackSymbol.tsx', 'utf8');
+assert.match(playbackSymbol, /getViewConfig\?\.\("ExpoUI", "ImageView"\)/);
+assert.match(playbackSymbol, /systemName=\{playing \? "pause.fill" : "play.fill"\}/);
+assert.match(playbackSymbol, /pointerEvents="none"/);
+console.log('Mini-player design checks passed: smaller covers, bare SF Symbol, homepage accent, 44-point target');

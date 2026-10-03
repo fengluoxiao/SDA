@@ -95,6 +95,8 @@ try:
     form=any('CollectionView' in c or 'TableView' in c for c in classes)
     navigation=any('NavigationBar' in c for c in classes)
     ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
+    if stage.startswith('settings'):
+     ready=ready and any(bar.get('backgroundBlur') is True and bar.get('scrollEdgeBlur') is True for bar in data.get('navigationBars',[]))
     if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
     if stage == 'mini-player':
      ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))

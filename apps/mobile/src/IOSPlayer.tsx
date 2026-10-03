@@ -11,6 +11,7 @@ import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "
 import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
+import { IOSPlaybackSymbol } from "./IOSPlaybackSymbol";
 
 const palettes = {
   light: { bg: "#f0f3f0", panel: "#fafcf9", ink: "#24302a", muted: "#66776c", line: "#d5dfd6", field: "#eef2ed", accent: "#28754a" },
@@ -85,8 +86,10 @@ export function IOSPlayer(p: PlayerProps) {
     ? <Image source={{ uri: p.metadata.coverUri }} resizeMode="cover" accessibilityLabel={(p.metadata.album || title) + " 封面"} style={{ width: size, height: size, borderRadius: size > 100 ? 18 : 8 }} />
     : <View accessibilityLabel="无专辑封面" style={[s.emptyCover, { width: size, height: size, borderRadius: size > 100 ? 18 : 8, backgroundColor: c.field }]}>{label("♫", true, { fontSize: size > 100 ? 56 : 23 })}</View>;
   const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && <View style={[s.miniPlayer, environment ? s.nativeMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
-    <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(environment === "inline" ? 28 : 40)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text>{environment !== "inline" && <Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text>}</View></Pressable>
-    {icon(playing ? "pause.fill" : "play.fill", playing ? "暂停" : "播放", togglePlayback, p.busy || !p.selectedUri, 44, playing ? "Ⅱ" : "▷")}
+    <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(environment === "inline" ? 24 : 32)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text>{environment !== "inline" && <Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text>}</View></Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.miniPlayback, { opacity: p.busy ? .35 : 1 }]}>
+      <IOSPlaybackSymbol playing={playing} color={c.accent} />
+    </Pressable>
   </View>;
   const heading = (name: string, stage = "") => <View onLayout={event => {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
@@ -227,6 +230,7 @@ const s = StyleSheet.create({
   emptyLibrary: { paddingVertical: 35, gap: 10 }, libraryHint: { fontSize: 12, lineHeight: 20, marginTop: 28 },
   nativeMiniPlayer: { flex: 1, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", paddingHorizontal: 12, paddingVertical: 4 },
   miniPlayer: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, padding: 8 },
+  miniPlayback: { width: 44, height: 44, alignItems: "center", justifyContent: "center", backgroundColor: "transparent" },
   miniSong: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }, miniTitle: { fontSize: 13, lineHeight: 18 }, miniArtist: { fontSize: 11, marginTop: 3 },
   tabs: { marginTop: 10 }, fallbackTabs: { flexDirection: "row", padding: 5, borderWidth: StyleSheet.hairlineWidth, borderRadius: 26 }, fallbackTab: { flex: 1, minHeight: 50, alignItems: "center", justifyContent: "center", borderRadius: 22 },
   scene: { marginTop: 17, borderRadius: 18, overflow: "hidden", backgroundColor: "#171a19" }, sceneInfo: { marginTop: 18, paddingHorizontal: 4 }, sceneHint: { textAlign: "center", fontSize: 12, marginTop: 18 },
