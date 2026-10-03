@@ -52,9 +52,9 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
           hideShadow: true, color: PlatformColor("systemBlue"),
           backgroundColor: "transparent", experimental_userInterfaceStyle: theme }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
-        {/* iOS 26 large titles live in scroll content. Let the Form extend
-            underneath the bar instead of clipping its Host to the safe area. */}
-        <Host style={{ flex: 1 }} colorScheme={theme} ignoreSafeArea="container">
+        {/* Preserve the approved safe-area layout. Ignoring the container
+            inset lets this nested SwiftUI Form put rows under the native title. */}
+        <Host style={{ flex: 1 }} colorScheme={theme}>
           <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} nativeNavigation />
         </Host>
       </ScreenStackItem>}

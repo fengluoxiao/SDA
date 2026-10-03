@@ -24,7 +24,8 @@ private enum ChromeSmoke {
      // Test visibility only when recording, never cut off the window subtree.
      if view.window != nil && !view.isHidden && view.alpha > 0.01 && view.bounds.width > 0 && view.bounds.height > 0 {
       let text = (view as? UILabel)?.text ?? ""
-      views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "text": text, "alpha": view.alpha, "width": view.bounds.width, "height": view.bounds.height])
+      let frame = view.convert(view.bounds, to: view.window)
+      views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "text": text, "alpha": view.alpha, "x": frame.minX, "y": frame.minY, "width": view.bounds.width, "height": view.bounds.height])
       if let bar = view as? UINavigationBar {
        let appearance = bar.topItem?.standardAppearance ?? bar.standardAppearance
        let edge = bar.topItem?.scrollEdgeAppearance ?? bar.scrollEdgeAppearance ?? appearance

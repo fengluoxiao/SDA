@@ -171,11 +171,12 @@ console.log('Settings fullscreen checks passed: overlapping screens, full-height
 assert.match(uiKitStack, /translucent: true/);
 assert.match(uiKitStack, /backgroundColor: "transparent", experimental_userInterfaceStyle/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
-assert.match(uiKitStack, /<Host[^\n]*ignoreSafeArea="container"/);
+assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
+assert.doesNotMatch(uiKitStack, /ignoreSafeArea=/);
 assert.match(uiKitStack, /<NativeSettingsForm[^\n]*nativeNavigation/);
 assert.match(settings, /!nativeNavigation \? \[navigationTitle\("设置"\)\] : \[\]/);
 assert.match(settings, /scrollEdgeEffectStyle\("soft", "top"\)/);
-console.log('Settings header checks passed: transparent bar, single content edge effect, full-height scroll host, one title owner');
+console.log('Settings header checks passed: transparent bar, single content edge effect, safe-area scroll host, one title owner');
 
 // Only an overflowing library may scroll; playback and scene are fixed Views.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));

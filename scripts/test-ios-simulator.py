@@ -99,6 +99,11 @@ try:
      # iOS 26 uses content edge effects, not a fixed navigation-bar material.
      ready=ready and any(bar.get('title') == '设置' and bar.get('backgroundBlur') is False and bar.get('scrollEdgeBlur') is False for bar in data.get('navigationBars',[]))
      ready=ready and any(v.get('text') == '设置' and v.get('alpha',0) > 0 for v in data.get('nativeViews',[]))
+     if stage == 'settings':
+      # Presence alone missed rows overlapping the status bar/native large title.
+      titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and v.get('height',0)>25]
+      rows=[v for v in data.get('nativeViews',[]) if v.get('class') == 'ListCollectionViewCell' and v.get('y',-1)>=0 and v.get('width',0)>100]
+      ready=ready and bool(titles) and bool(rows) and min(v['y'] for v in rows)>=max(v['y']+v['height'] for v in titles)-1
     if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
     if stage == 'mini-player':
      ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))
