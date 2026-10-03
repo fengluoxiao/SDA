@@ -8,9 +8,9 @@ import { PLAYBACK_MODES, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrde
 
 const hasView = (name: string) => !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", name);
 export const hasNativeIOSSettings = !!swiftUI && ["HostView", "FormView", "SectionView", "ToggleView", "PickerView", "TextView", "Button", "StepperView", "HStackView", "VStackView"].every(hasView);
-export const hasNativeIOSNavigation = hasNativeIOSSettings && ["NavigationStackView", "ToolbarView", "RNHostView"].every(hasView);
 
-// Expo Go has UIKit screen stacks even when its ExpoUI binary lacks NavigationStack.
+// Use the same UIKit settings stack in Expo Go and the standalone app.
+// Home keeps the approved SDA header; only settings owns a system nav bar.
 const hasUIKitSettingsNavigation = Platform.OS === "ios" &&
   ["RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"].every(name => UIManager.hasViewManagerConfig(name));
 const nativeScreens: typeof import("react-native-screens") | null =
@@ -32,51 +32,34 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   title: string; player: PlayerProps; accent: string; theme: "light" | "dark";
 }) {
   if (!swiftUI || !hasNativeIOSSettings) return children;
-  // Expo Go may bundle an earlier ExpoUI native surface than the npm package.
-  // Never mount a native manager merely because its JS export exists.
-  if (!hasNativeIOSNavigation) {
-    if (nativeScreens) {
-      const { ScreenStack, ScreenStackItem } = nativeScreens;
-      const { Host } = swiftUI;
-      if (__DEV__) console.info("[SDA UI] settings navigation: UIKit system header");
-      return <ScreenStack style={{ flex: 1 }}>
-        {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
-            Stack screens overlap at full size; flex siblings would split the viewport. */}
-        <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false}
-          headerConfig={{ hidden: true, title }} style={StyleSheet.absoluteFill}>
-          {children}
-        </ScreenStackItem>
-        {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
-          onDismissed={() => onSettingsChange(false)}
-          scrollEdgeEffects={{ top: "soft", bottom: "automatic", left: "automatic", right: "automatic" }}
-          headerConfig={{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-            largeTitle: true, largeTitleHideShadow: true, translucent: true,
-            hideShadow: true, color: PlatformColor("systemBlue"),
-            backgroundColor: "transparent", experimental_userInterfaceStyle: theme }}
-          contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
-          <Host style={{ flex: 1 }} colorScheme={theme}>
-            <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
-          </Host>
-        </ScreenStackItem>}
-      </ScreenStack>;
-    }
-    return <>{children}<Modal visible={settings} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => onSettingsChange(false)}>
-      <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
-    </Modal></>;
+  if (nativeScreens) {
+    const { ScreenStack, ScreenStackItem } = nativeScreens;
+    const { Host } = swiftUI;
+    if (__DEV__) console.info("[SDA UI] settings navigation: UIKit system header");
+    return <ScreenStack style={{ flex: 1 }}>
+      {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
+          Stack screens overlap at full size; flex siblings would split the viewport. */}
+      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false}
+        headerConfig={{ hidden: true, title }} style={StyleSheet.absoluteFill}>
+        {children}
+      </ScreenStackItem>
+      {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
+        onDismissed={() => onSettingsChange(false)}
+        scrollEdgeEffects={{ top: "soft", bottom: "automatic", left: "automatic", right: "automatic" }}
+        headerConfig={{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
+          largeTitle: true, largeTitleHideShadow: true, translucent: true,
+          hideShadow: true, color: PlatformColor("systemBlue"),
+          backgroundColor: "transparent", experimental_userInterfaceStyle: theme }}
+        contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
+        <Host style={{ flex: 1 }} colorScheme={theme}>
+          <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
+        </Host>
+      </ScreenStackItem>}
+    </ScreenStack>;
   }
-  const { Host, NavigationStack, NavigationDestination, Toolbar, ToolbarItem, Button, RNHostView } = swiftUI;
-  const { navigationTitle, accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  return <Host style={{ flex: 1 }} seedColor={accent} colorScheme={theme}>
-    <NavigationStack path={settings ? ["settings"] : []} onPathChange={path => onSettingsChange(path.includes("settings"))}>
-      <Toolbar modifiers={[navigationTitle(title)]}>
-        <RNHostView>{children}</RNHostView>
-        <Toolbar.Content><ToolbarItem placement="topBarTrailing">
-          <Button label="更多设置" systemImage="gearshape" onPress={() => onSettingsChange(true)} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} />
-        </ToolbarItem></Toolbar.Content>
-      </Toolbar>
-      <NavigationDestination value="settings"><NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} /></NavigationDestination>
-    </NavigationStack>
-  </Host>;
+  return <>{children}<Modal visible={settings} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => onSettingsChange(false)}>
+    <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
+  </Modal></>;
 }
 
 // Expo Go's older native binary has Form/Button but no NavigationStack manager.

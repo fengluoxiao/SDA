@@ -7,7 +7,7 @@ import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSDistanceStepper, IOSGlassTabs, IOSIconButton, IOSMaterialSurface, IOSVolumeSlider } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
-import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings, hasNativeIOSNavigation } from "./IOSNativeSettings";
+import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
 import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
@@ -96,14 +96,14 @@ export function IOSPlayer(p: PlayerProps) {
   <IOSSettingsNavigation settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasSystemIOSTabs ? (hasNativeIOSNavigation ? ["left", "right"] : ["top", "left", "right"]) : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: c.bg }]}>
+  <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: c.bg }]}>
     <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      {!hasNativeIOSNavigation && <View style={s.header}>
+      <View style={s.header}>
         <View style={{ flex: 1 }}>{label("SDA", true, s.eyebrow)}{label(page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放", false, s.pageTitle)}</View>
         {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
-      </View>}
+      </View>
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
