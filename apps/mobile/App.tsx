@@ -119,7 +119,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     headYaw: 0,
     error: null,
     hrtfSet: "dense",
-    hrtfWetWeight: 0.04,
+    hrtfWetWeight: 0,
     directObjects: true,
     directionalObjects: true,
     renderingStatus: "KU100 · 等待播放",
@@ -156,7 +156,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
-        hrtfWetWeight: settings.hrtfWetWeight ?? 0.04, directObjects: settings.direct, directionalObjects: settings.directional,
+        hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
         systemSpatial360RA: Platform.OS === "ios" && settings.systemSpatial360RA === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
@@ -187,7 +187,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       await engine.setRenderingPreset(id);
       const settings = JSON.parse(engine.renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
-        hrtfWetWeight: settings.hrtfWetWeight ?? 0.04,
+        hrtfWetWeight: settings.hrtfWetWeight ?? 0,
         directObjects: settings.direct, directionalObjects: settings.directional,
         nearField: settings.nearField, roomId: settings.roomId,
         hrtfStatus: engine.hrtfStatus() });
@@ -352,8 +352,8 @@ export default class App extends React.Component<Record<string, never>, State> {
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: value.systemSpatial360RAActive ? "360RA → 7.1.4 · 苹果系统输出 · KU100/房间已旁路" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
-          : `KU100${value.hrtfDirections === 61 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"}${value.nearFieldEnabled ? " · 近场" : ""}${value.roomEnabled ? " · 房间仿真" : " · 房间关闭"} · ${value.objectConvolverCount ?? 0} 个独立卷积`,
+        renderingStatus: value.systemSpatial360RAActive ? "360RA → 7.1.4 · 苹果系统输出 · KU100 已旁路" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+          : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {
           this.advancePlaylist();

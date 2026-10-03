@@ -51,13 +51,13 @@ class SdaModule : Module() {
         // Ask Android to provision the app-owned directory (also used by
         // opt-in native PCM diagnostic builds), rather than creating it via adb.
         context.getExternalFilesDir(null)
-        // The dense KU100 set uses the sibling standard set for speaker anchors.
-        for (assetDirectory in listOf("hrtf", "hrtf-dense", "hrtf-raw", "hrtf-dense-raw")) {
+        // One shared direct-only HRIR grid serves objects and bed channels.
+        for (assetDirectory in listOf("hrtf-mobile-direct")) {
             val hrtfDir = java.io.File(context.filesDir, assetDirectory)
             check(hrtfDir.mkdirs() || hrtfDir.isDirectory) { "Cannot create KU100 asset directory: $hrtfDir" }
             val names = context.assets.list(assetDirectory)?.toList().orEmpty()
             val manifestName = "hrtf-set.json"
-            check(manifestName in names && names.any { it.endsWith("_dry.f32") } && names.any { it.endsWith("_wet.f32") }) {
+            check(manifestName in names && names.count { it.endsWith("-dry.f32") } == 128 && "zero-wet.f32" in names) {
                 "Packaged KU100 HRTF asset set is incomplete"
             }
             names.forEach { name ->
@@ -79,11 +79,7 @@ class SdaModule : Module() {
             .put("layout", layout).put("directObjectHrtf", settings.getBoolean("direct"))
             .put("directionalHrtf", settings.getBoolean("directional"))
             .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
-        val assetDirectory = when (settings.getString("hrtfSet")) {
-            "standard" -> "hrtf"
-            "dense-raw" -> "hrtf-dense-raw"
-            else -> "hrtf-dense"
-        }
+        val assetDirectory = "hrtf-mobile-direct"
         val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
         val directionCount = JSONObject(manifest.readText()).getJSONArray("positions").length()
         val ptr = SdaEngine.nativeInit(config, manifest.absolutePath)
@@ -95,15 +91,7 @@ class SdaModule : Module() {
         handle = ptr
         activeLayout = layout
         try {
-            val roomId = RoomAssets.forLayout(context, settings.getString("roomId"), layout)
-            val roomPath = RoomAssets.prepare(context, roomId)
-            if (roomPath.isNotEmpty()) {
-                val error = SdaEngine.nativeSetRoom(ptr, roomPath)
-                check(error.isEmpty()) { error }
-            }
-            if (roomId.isNotEmpty()) context.getSharedPreferences("sda-rendering", 0).edit()
-                .putString("roomId", roomId).putString("roomId_$layout", roomId).apply()
-            val nearError = SdaEngine.nativeSetNearField(ptr, settings.getBoolean("nearField"), settings.getDouble("metresPerUnit").toFloat())
+            val nearError = SdaEngine.nativeSetNearField(ptr, false, 1f)
             check(nearError.isEmpty()) { nearError }
         } catch (error: Throwable) {
             SdaEngine.nativeClose(ptr)
@@ -180,17 +168,13 @@ class SdaModule : Module() {
             val profile = (0 until profiles.length()).map { profiles.getJSONObject(it) }
                 .firstOrNull { it.getString("id") == id } ?: error("未知空间渲染预设")
             val set = profile.getString("hrtfSet")
-            require(set in listOf("standard", "dense", "dense-raw")) { "无效 HRTF 预设" }
+            require(set == "dense") { "无效 HRTF 预设" }
             val wetWeight = profile.getDouble("hrtfWetWeight")
             require(wetWeight.isFinite() && wetWeight in 0.0..1.0) { "无效 HRTF 混响权重" }
             synchronized(nativeLock) {
                 require(!profile.getBoolean("nearField") && profile.getString("roomId").isEmpty()) { "不支持的预设房间配置" }
                 if (handle != 0L) {
-                    val directory = when (set) {
-                        "standard" -> "hrtf"
-                        "dense-raw" -> "hrtf-dense-raw"
-                        else -> "hrtf-dense"
-                    }
+                    val directory = "hrtf-mobile-direct"
                     val manifest = java.io.File(context.filesDir, "$directory/hrtf-set.json")
                     val error = SdaEngine.nativeSetHrtfPreset(handle, manifest.absolutePath,
                         wetWeight.toFloat(), profile.getBoolean("direct"), profile.getBoolean("directional"))
@@ -208,6 +192,7 @@ class SdaModule : Module() {
         }
 
         AsyncFunction("setNearField") { enabled: Boolean, metresPerUnit: Double ->
+            require(!enabled) { "移动端已移除近场渲染" }
             require(metresPerUnit.isFinite() && metresPerUnit in 0.25..4.0) { "近场距离映射必须在 0.25–4 米之间" }
             synchronized(nativeLock) {
                 if (handle != 0L) {
@@ -220,18 +205,18 @@ class SdaModule : Module() {
             }
         }
 
-        Function("rooms") { -> RoomAssets.list(appContext.reactContext ?: error("no react context")).toString() }
+        Function("rooms") { -> "[]" }
 
         AsyncFunction("setRoom") { id: String ->
             val context = appContext.reactContext ?: error("no react context")
-            val path = RoomAssets.prepare(context, id)
+            require(id.isEmpty()) { "移动端已移除房间仿真" }
+            val path = ""
             synchronized(nativeLock) {
                 if (handle != 0L) {
                     val error = SdaEngine.nativeSetRoom(handle, path)
                     check(error.isEmpty()) { error }
                 }
                 val preferences = context.getSharedPreferences("sda-rendering", 0).edit().putString("roomId", id)
-                if (id.isNotEmpty()) preferences.putString("roomId_${RoomAssets.layout(context, id)}", id)
                 preferences.apply()
             }
         }
@@ -533,19 +518,20 @@ class SdaModule : Module() {
     private fun renderingSettings(): JSONObject {
         val context = appContext.reactContext ?: throw RuntimeException("no react context")
         val preferences = context.getSharedPreferences("sda-rendering", 0)
+        if (preferences.getInt("mobileDirectVersion", 0) < 1) {
+            check(preferences.edit().putInt("mobileDirectVersion", 1).putString("hrtfSet", "dense")
+                .putFloat("hrtfWetWeight", 0f).putBoolean("direct", true).putBoolean("directional", true)
+                .putBoolean("nearField", false).putString("roomId", "").commit()) { "无法迁移移动端渲染设置" }
+        }
         return JSONObject().put("layout", activeLayout)
-            // No silent migration: retain legacy dense/custom settings until selected.
-            .put("hrtfSet", when (preferences.getString("hrtfSet", "dense")) {
-                "standard" -> "standard"
-                "dense-raw" -> "dense-raw"
-                else -> "dense"
-            })
-            .put("hrtfWetWeight", preferences.getFloat("hrtfWetWeight", 0.04f).toDouble())
+            // One-time migration also resets legacy object switches to the mobile defaults.
+            .put("hrtfSet", "dense")
+            .put("hrtfWetWeight", 0.0)
             .put("direct", preferences.getBoolean("direct", true))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
             .put("directional", preferences.getBoolean("directional", true))
-            .put("roomId", preferences.getString("roomId", "") ?: "")
-            .put("nearField", preferences.getBoolean("nearField", false))
+            .put("roomId", "")
+            .put("nearField", false)
             .put("metresPerUnit", preferences.getFloat("metresPerUnit", 1f).toDouble())
     }
 }

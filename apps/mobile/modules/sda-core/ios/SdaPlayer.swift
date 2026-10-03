@@ -80,14 +80,18 @@ final class SdaPlayer {
   return root
  }
  func settings() -> [String: Any] {
-  return ["systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": prefs.string(forKey: "sda.hrtfSet") ?? "dense",
-   "hrtfWetWeight": prefs.object(forKey: "sda.wet") ?? 0.04,
+  if prefs.integer(forKey:"sda.mobileDirectVersion") < 1 {
+   for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
+   prefs.set(1,forKey:"sda.mobileDirectVersion")
+  }
+  return ["systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
+   "hrtfWetWeight": 0.0,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
-   "nearField": prefs.bool(forKey: "sda.near"), "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
-   "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
+   "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
+   "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
  }
  func hrtfPath(_ set: String) throws -> String {
-  let directory = set == "standard" ? "hrtf" : set == "dense-raw" ? "hrtf-dense-raw" : "hrtf-dense"
+  let directory = "hrtf-mobile-direct"
   let path = try assetRoot().appendingPathComponent(directory).appendingPathComponent("hrtf-set.json")
   guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("KU100 测量资源缺失") }
   return path.path
@@ -136,7 +140,7 @@ final class SdaPlayer {
    _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
-   hrtfState = "KU100 · 完整 HRTF · 实际方向 · iOS 原生输出"
+   hrtfState = "KU100 · 128 方向 · 纯直达 · iOS 原生输出"
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {
@@ -409,32 +413,16 @@ final class SdaPlayer {
   } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  func mediaDuration(_ url: URL) -> Double { let seconds = CMTimeGetSeconds(AVURLAsset(url:url).duration); return seconds.isFinite ? max(0,seconds*1000) : 0 }
- func roomCatalog() throws -> [[String:Any]] {
-  let d = try Data(contentsOf:assetRoot().appendingPathComponent("rooms/catalog.json"))
-  return (try JSONSerialization.jsonObject(with:d) as? [String:Any])?["profiles"] as? [[String:Any]] ?? []
- }
- // Room preferences belong to the SOURCE layout, not the Apple output layout.
- func savedRoom() -> String {
-  if let id = prefs.string(forKey:"sda.room."+layout) { return id }
-  let legacy = prefs.string(forKey:"sda.room") ?? ""
-  return (try? roomCatalog().contains(where:{ item in
-   guard let summary = item["summary"] as? [String:Any] else { return false }
-   return summary["id"] as? String == legacy && summary["layout"] as? String == layout
-  })) == true ? legacy : ""
- }
+ // Compatibility bridge: mobile builds have no room assets or selectable rooms.
+ func roomCatalog() throws -> [[String:Any]] { [] }
+ func savedRoom() -> String { "" }
  func saveRoom(_ id: String) throws {
-  if !id.isEmpty {
-   guard try roomCatalog().contains(where:{ item in
-    guard let s = item["summary"] as? [String:Any] else { return false }
-    return s["id"] as? String == id && s["layout"] as? String == layout
-   }) else { throw SdaError.message("房间布局与当前音源不匹配") }
-  }
-  if handle != nil { _ = try command("room",["path":id.isEmpty ? "" : try roomPath(id)]) }
-  prefs.set(id,forKey:"sda.room."+layout)
+  guard id.isEmpty else { throw SdaError.message("移动端已移除房间仿真") }
+  if handle != nil { _ = try command("room",["path":""]) }
  }
  func roomPath(_ id: String) throws -> String {
-  guard try roomCatalog().contains(where:{ ($0["summary"] as? [String:Any])?["id"] as? String == id }) else { throw SdaError.message("未知房间资源") }
-  return try assetRoot().appendingPathComponent("rooms/"+id+".json").path
+  guard id.isEmpty else { throw SdaError.message("移动端已移除房间仿真") }
+  return ""
  }
 
  /// Only enabled by the explicit simulator CI environment; never on ordinary launch.
@@ -530,7 +518,7 @@ final class SdaPlayer {
   prefs.set(false,forKey:"sda.systemSpatial360RA")
   let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
   _ = try play(uri,"ci-360ra.mhas",0,"ci-native-360ra")
-  guard layout == "360RA-13", try roomCatalog().contains(where:{ ($0["summary"] as? [String:Any])?["layout"] as? String == "360RA-13" }) else { throw SdaError.message("360RA 源房间目录缺失") }
+  guard layout == "360RA-13" else { throw SdaError.message("360RA 源布局缺失") }
   let deadline = Date().addingTimeInterval(30)
   var displayedObjects = 0
   while Date() < deadline {

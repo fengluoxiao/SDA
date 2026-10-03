@@ -43,7 +43,7 @@ assert.match(ui, /<View style=\{s.header\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
 assert.match(settings, /systemImage="gearshape"/);
 assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(PlatformColor\("systemBlue"\)\)/);
-for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering', 'setNearField', 'setRoom']) assert.ok(settings.includes('p.' + callback));
+for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering']) assert.ok(settings.includes('p.' + callback));
 assert.match(ui, /settings && !hasNativeIOSSettings/);
 assert.match(settings, /getViewConfig/);
 assert.match(settings, /if \(nativeScreens\)/);

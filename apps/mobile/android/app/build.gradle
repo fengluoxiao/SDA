@@ -135,30 +135,21 @@ android {
     }
 }
 
-// Package calibrated and original KU100 assets verbatim. Each dense set
-// needs its matching standard sibling for virtual-speaker fallback anchors.
+// Mobile-only direct HRIR assets. Never package desktop BRIR/room assets.
 def mobileAssets = file('src/main/assets')
-def windowsHrtfAssets = file('../../../desktop/native-renderer/hrtf-assets')
+def mobileHrtfAssets = file('../../assets')
 def sharedAssets = layout.buildDirectory.dir('generated/sharedKu100Assets')
 android.sourceSets.main.assets.setSrcDirs([sharedAssets])
 def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
-    from(mobileAssets) { exclude 'hrtf/**', 'hrtf-dense/**', 'hrtf-raw/**', 'hrtf-dense-raw/**' }
+    from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
-    from(windowsHrtfAssets) { include 'hrtf/**', 'hrtf-dense/**', 'hrtf-raw/**', 'hrtf-dense-raw/**' }
+    from(mobileHrtfAssets) { include 'hrtf-mobile-direct/**' }
     into(sharedAssets)
     doFirst {
-        def manifest = new groovy.json.JsonSlurper().parse(new File(windowsHrtfAssets, 'hrtf-dense/hrtf-set.json'))
-        if (manifest.positions.size() != 61 || manifest.processing.calibrated != true) {
-            throw new GradleException('Expected the Windows calibrated 61-direction KU100 HRTF')
-        }
-        ['hrtf-raw': 17, 'hrtf-dense-raw': 61].each { directory, count ->
-            def raw = new groovy.json.JsonSlurper().parse(new File(windowsHrtfAssets, "$directory/hrtf-set.json"))
-            if (raw.positions.size() != count || raw.subjectId != 'ku100' || raw.calibrationVersion != 0 ||
-                raw.processing.calibrated != false || raw.processing.preserveMeasurements != true ||
-                raw.processing.peakNormalized != false || raw.processing.runtimeEnergyNormalization != false) {
-                throw new GradleException("Expected original KU100 measurements: $directory")
-            }
+        def manifest = new groovy.json.JsonSlurper().parse(new File(mobileHrtfAssets, 'hrtf-mobile-direct/hrtf-set.json'))
+        if (manifest.positions.size() != 128 || manifest.processing.mobileDirectOnly != true || manifest.processing.dryTapLimit != 256) {
+            throw new GradleException('Expected mobile direct-only 128-direction KU100 HRIR')
         }
     }
 }

@@ -22,6 +22,8 @@ struct Manifest {
 #[derive(Debug, Deserialize)]
 struct Processing {
     calibrated: bool,
+    #[serde(default, rename = "mobileDirectOnly")]
+    mobile_direct_only: bool,
     #[serde(default, rename = "preserveMeasurements")]
     preserve_measurements: bool,
     #[serde(default, rename = "preserveSamples")]
@@ -38,6 +40,7 @@ pub struct Position {
 
 #[derive(Debug, Clone)]
 pub struct NativeHrtfSet {
+    mobile_direct_only: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     speaker_prepared: std::collections::HashMap<
@@ -136,6 +139,7 @@ impl NativeHrtfSet {
             });
         }
         Ok(Self {
+            mobile_direct_only: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: Default::default(),
@@ -210,6 +214,19 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if manifest.processing.mobile_direct_only
+            && (!raw_ku100
+                || !complete_subject
+                || cache.len() != 128
+                || cache
+                    .iter()
+                    .any(|ir| ir.dry.len() != 512 || ir.wet.iter().any(|x| *x != 0.0)))
+        {
+            return Err(
+                "mobile direct-only KU100 requires 128 original 256-tap HRIRs and zero wet data"
+                    .into(),
+            );
+        }
         // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
         // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
@@ -239,6 +256,7 @@ impl NativeHrtfSet {
         let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
             || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
+            mobile_direct_only: manifest.processing.mobile_direct_only,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: std::collections::HashMap::new(),
@@ -485,6 +503,12 @@ impl NativeHrtfSet {
         settings: crate::cinema::Settings,
         profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     ) {
+        if self.mobile_direct_only {
+            self.cinema = crate::cinema::Settings::default();
+            self.room_profile = None;
+            self.speaker_prepared.clear();
+            return;
+        }
         self.cinema = settings;
         self.room_profile = profile;
         self.speaker_prepared.clear();
@@ -524,6 +548,15 @@ impl NativeHrtfSet {
     }
 
     pub fn speaker_filter_len(&self) -> usize {
+        if self.mobile_direct_only {
+            return self
+                .cache
+                .iter()
+                .map(|ir| ir.dry.len() / 2)
+                .max()
+                .unwrap_or(256)
+                + 4;
+        }
         let base = self
             .cache
             .iter()
@@ -591,6 +624,16 @@ impl NativeHrtfSet {
         elevation: f64,
         wet: f32,
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        if self.mobile_direct_only {
+            // Bed channels share the delay-aligned direct grid used by objects.
+            // Do not fall back to a room-calibrated speaker or BRIR response.
+            let (mut left, mut right) =
+                self.directional_grid
+                    .interpolate(&self.cache, azimuth, elevation);
+            left.resize(self.speaker_filter_len(), 0.0);
+            right.resize(self.speaker_filter_len(), 0.0);
+            return Ok((left, right));
+        }
         let profile = self
             .room_profile
             .as_ref()
@@ -843,6 +886,14 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((
+                ir.azimuth,
+                ir.elevation,
+                ir.dry[..dry_len].to_vec(),
+                ir.dry[dry_len..].to_vec(),
+            ));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -889,6 +940,9 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((ir.dry[..dry_len].to_vec(), ir.dry[dry_len..].to_vec()));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -1490,6 +1544,38 @@ mod subject_dense_tests {
                 fallback, expected,
                 "{head} absent dense anchor must use standard HRTF"
             );
+        }
+    }
+    #[test]
+    fn mobile_direct_objects_and_bed_have_no_room_tail() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert_eq!(set.simulation_shape(), (128, 256, 1));
+        assert_eq!(set.speaker_filter_len(), 260);
+        assert!(set.speaker_set.is_none());
+        for ir in &set.cache {
+            let (l, r) = set.mixed_direction(ir.azimuth, ir.elevation, 1.0).unwrap();
+            assert_eq!(l, ir.dry[..256]);
+            assert_eq!(r, ir.dry[256..]);
+        }
+        let before = set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 0.0).unwrap();
+        let mut cinema = crate::cinema::Settings::default();
+        cinema.enabled = true;
+        cinema.direct_db = -12.0;
+        set.configure_cinema(cinema, None);
+        assert!(!set.cinema.enabled);
+        assert_eq!(
+            before,
+            set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 1.0).unwrap()
+        );
+        for (az, el) in [(0.0, 0.0), (30.0, 0.0), (-110.0, 0.0), (45.0, 45.0)] {
+            let actual = set.mixed_speaker("channel", "7.1.4", az, el, 1.0).unwrap();
+            let (mut l, mut r) = set.directional_grid.interpolate(&set.cache, az, el);
+            l.resize(260, 0.0);
+            r.resize(260, 0.0);
+            assert_eq!(actual, (l, r));
+            assert!(actual.0.iter().chain(&actual.1).all(|v| v.is_finite()));
         }
     }
 }

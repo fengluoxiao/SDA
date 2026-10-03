@@ -5,10 +5,10 @@ import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playb
 import renderingPresets from "../rendering-presets.json";
 import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
-import { hasNativeIOSChrome, IOSAction, IOSDistanceStepper, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
+import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
 import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
-import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
+import { IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
 import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
@@ -50,8 +50,6 @@ export function IOSPlayer(p: PlayerProps) {
   const format = p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) ? "Dolby Atmos" : "空间音频";
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
-  const canChooseRoom = !(p.systemSpatial360RAActive && p.systemSpatial360RA) && !p.busy && !p.roomBusy;
-  const rooms = compatibleRooms(p);
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
   const togglePlayback = () => p.playing ? p.togglePause() : p.play();
@@ -174,7 +172,7 @@ export function IOSPlayer(p: PlayerProps) {
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>
           {heading("360 Reality Audio")}
-          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100、近场与房间", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
+          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
           {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。", true, s.groupHint)}
           {heading("空间渲染", "settings-spatial")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
@@ -184,17 +182,6 @@ export function IOSPlayer(p: PlayerProps) {
             {toggle("实际方向", "按对象真实位置定位声音", p.directionalObjects, value => p.setRendering(p.directObjects, value), audioOptionsDisabled)}
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
-          {heading("近场与距离")}
-          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
-            {toggle("近场渲染", "按对象距离计算近场声学效果", p.nearField, value => p.setNearField(value, p.metresPerUnit), audioOptionsDisabled || p.nearFieldBusy)}
-            {divider()}
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("距离映射", false, s.settingTitle)}{label(p.metresPerUnit.toFixed(2) + " m / 单位", true, s.settingHint)}</View>{hasNativeIOSChrome ? <IOSDistanceStepper value={p.metresPerUnit} disabled={audioOptionsDisabled || p.nearFieldBusy} onChange={value => p.setNearField(p.nearField, value)} /> : <View style={s.row}>{icon("minus", "减小距离", () => p.setNearField(p.nearField, Math.max(.25, p.metresPerUnit - .05)), audioOptionsDisabled || p.nearFieldBusy, 44, "−")}{icon("plus", "增大距离", () => p.setNearField(p.nearField, Math.min(4, p.metresPerUnit + .05)), audioOptionsDisabled || p.nearFieldBusy, 44, "+")}</View>}</View>
-          </View>
-          {heading("房间仿真", "settings-room")}
-          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
-            {[{ id: "", name: "关闭", layout: "" }, ...rooms].map(room => <View key={room.id}>{actionRow(room.id === p.roomId ? "checkmark.circle.fill" : "circle", room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name, room.id ? room.layout + " · 房间资产" : "使用直接双耳渲染", () => p.setRoom(room.id), !canChooseRoom, room.id === p.roomId)}{divider()}</View>)}
-          </View>
-          {label(p.systemSpatial360RAActive && p.systemSpatial360RA ? "当前系统输出旁路房间仿真。" : "早期反射 −6 dB，直达声与混响尾部保持不变。", true, s.groupHint)}
           {heading("应用与输出")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             <View style={s.settingRow}>{label("外观", false, s.settingTitle)}{label("跟随系统", true, s.small)}</View>{divider()}

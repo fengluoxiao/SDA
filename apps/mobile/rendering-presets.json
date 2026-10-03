@@ -1,38 +1,14 @@
 [
   {
-    "id": "desktop-standard",
-    "label": "桌面标准",
-    "description": "标准 KU100 · 逐对象 · 实际方向 · 关闭近场与房间",
-    "hrtfSet": "standard",
-    "assetDirectory": "hrtf",
-    "direct": true,
-    "directional": true,
-    "nearField": false,
-    "roomId": "",
-    "hrtfWetWeight": 0.04
-  },
-  {
     "id": "object-dense",
     "label": "高解析逐对象",
-    "description": "61 方向 KU100 · 实际方向 · 关闭近场与房间",
+    "description": "128 方向 KU100 · 对象与声道纯直达 · 实际方向",
     "hrtfSet": "dense",
-    "assetDirectory": "hrtf-dense",
+    "assetDirectory": "hrtf-mobile-direct",
     "direct": true,
     "directional": true,
     "nearField": false,
     "roomId": "",
-    "hrtfWetWeight": 0.04
-  },
-  {
-    "id": "ku100-raw-dry",
-    "label": "原始 KU100 · 纯干",
-    "description": "原始 61 方向测量 · 逐对象 · 无附加混响",
-    "hrtfSet": "dense-raw",
-    "assetDirectory": "hrtf-dense-raw",
-    "direct": true,
-    "directional": true,
-    "nearField": false,
-    "roomId": "",
-    "hrtfWetWeight": 0.0
+    "hrtfWetWeight": 0
   }
 ]

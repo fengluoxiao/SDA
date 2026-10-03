@@ -3,11 +3,11 @@ import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, use
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
 import renderingPresets from "../rendering-presets.json";
-import { compatibleRooms, isPresetSelected } from "./ios-ui-model";
+import { isPresetSelected } from "./ios-ui-model";
 import { PLAYBACK_MODES, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 
 const hasView = (name: string) => !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", name);
-export const hasNativeIOSSettings = !!swiftUI && ["HostView", "FormView", "SectionView", "ToggleView", "PickerView", "TextView", "Button", "StepperView", "HStackView", "VStackView"].every(hasView);
+export const hasNativeIOSSettings = !!swiftUI && ["HostView", "FormView", "SectionView", "ToggleView", "PickerView", "TextView", "Button", "HStackView", "VStackView"].every(hasView);
 
 // Use the same UIKit settings stack in Expo Go and the standalone app.
 // Home keeps the approved SDA header; only settings owns a system nav bar.
@@ -127,13 +127,11 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 function NativeSettingsForm({ player: p, onClose, nativeNavigation = false }: { player: PlayerProps; onClose(): void; nativeNavigation?: boolean }) {
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
-  const { Form, Section, Toggle, Picker, Text, Button, Stepper, HStack } = swiftUI;
+  const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
   const { disabled, navigationTitle, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const audioDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
-  const roomDisabled = (p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
-  const rooms = compatibleRooms(p);
   return <Form modifiers={[
     // SwiftUI owns its navigation title on the normal path. Older binaries
     // without NavigationStack retain one inline UIKit-owned title.
@@ -155,7 +153,7 @@ function NativeSettingsForm({ player: p, onClose, nativeNavigation = false }: { 
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
-    <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100、近场与房间。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
+    <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
       <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
     </Section>
     <Section title="空间渲染" footer={<Text>{preset?.description || "当前使用自定义渲染设置。"} 切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。</Text>}>
@@ -165,16 +163,6 @@ function NativeSettingsForm({ player: p, onClose, nativeNavigation = false }: { 
       </Picker>
       <Toggle label="逐对象渲染" isOn={p.directObjects} onIsOnChange={value => p.setRendering(value, p.directionalObjects)} modifiers={[tint(PlatformColor("systemGreen")), disabled(audioDisabled)]}><Text>逐对象渲染</Text><Text>每个对象独立生成双耳声音</Text></Toggle>
       <Toggle label="实际方向" isOn={p.directionalObjects} onIsOnChange={value => p.setRendering(p.directObjects, value)} modifiers={[tint(PlatformColor("systemGreen")), disabled(audioDisabled)]}><Text>实际方向</Text><Text>按对象真实位置定位声音</Text></Toggle>
-    </Section>
-    <Section title="近场与距离" footer={<Text>按对象距离计算近场声学效果。</Text>}>
-      <Toggle label="近场渲染" isOn={p.nearField} onIsOnChange={value => p.setNearField(value, p.metresPerUnit)} modifiers={[tint(PlatformColor("systemGreen")), disabled(audioDisabled || p.nearFieldBusy)]} />
-      <Stepper label={"距离映射：" + p.metresPerUnit.toFixed(2) + " m / 单位"} value={p.metresPerUnit} min={0.25} max={4} step={0.05} onValueChange={value => p.setNearField(p.nearField, value)} modifiers={[disabled(audioDisabled || p.nearFieldBusy)]} />
-    </Section>
-    <Section title="房间仿真" footer={<Text>{p.systemSpatial360RAActive && p.systemSpatial360RA ? "当前系统输出旁路房间仿真。" : "早期反射 −6 dB，直达声与混响尾部保持不变。"}</Text>}>
-      <Picker label="房间" selection={p.roomId} onSelectionChange={p.setRoom} modifiers={[pickerStyle("menu"), disabled(roomDisabled)]}>
-        <Text modifiers={[tag("")]}>关闭 · 直接双耳渲染</Text>
-        {rooms.map(room => <Text key={room.id} modifiers={[tag(room.id)]}>{room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name}</Text>)}
-      </Picker>
     </Section>
     <Section title="应用与输出">
       <Text>外观 · 跟随系统</Text>
