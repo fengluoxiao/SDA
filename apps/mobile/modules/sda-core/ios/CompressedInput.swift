@@ -67,8 +67,12 @@ final class CompressedInput {
    resumedRange = CMTimeCompare(nextTime, .zero) > 0
    if resumedRange {
     let remaining = CMTimeSubtract(track.timeRange.end, nextTime)
-    guard remaining.isNumeric && CMTimeCompare(remaining, .zero) > 0 else { throw SdaError.message("Compressed track resume position is outside its time range") }
-    r.timeRange = CMTimeRange(start:nextTime,duration:remaining)
+    if remaining.isNumeric && CMTimeCompare(remaining, .zero) > 0 {
+     r.timeRange = CMTimeRange(start:nextTime,duration:remaining)
+    }
+    // Some OS versions expose an invalid/empty compressed track timeRange.
+    // In that case read from the beginning and discard already-submitted PTS
+    // below. Do not guess an end time, drop packets, or reset the decoder.
    }
    guard r.startReading() else { throw r.error ?? SdaError.message("音轨读取失败") }
    reader = r; trackOutput = output
