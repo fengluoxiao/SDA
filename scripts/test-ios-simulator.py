@@ -80,27 +80,28 @@ try:
  time.sleep(3) # Allow submitted GL frames to reach the system compositor.
  run('xcrun','simctl','io',udid,'screenshot',str(out/'simulator.png'))
  run(sys.executable,'scripts/check-ios-scene-image.py',str(out/'simulator.png'),str(out/'scene-smoke.json'))
- # Check that registered UIKit views really use iOS 26 glass, rather than
- # silently falling back to the previous JS controls. Capture both UI surfaces.
+ # SDK 57 uses system TabView/UITabBar and SwiftUI Form/Button rather than
+ # SDA's retired tabs/settings wrappers. Require actual mounted native classes.
  def chrome_report(stage):
   report=container/'Documents/sda-ci-chrome.json'
   deadline=time.monotonic()+30
+  data={}
   while time.monotonic()<deadline:
    if report.is_file():
     data=json.loads(report.read_text())
-    controls=data['controls']
-    required={'tabs','更多设置'}
-    if stage == 'player':required.add('volumeSlider')
-    if stage.startswith('settings'):required.update({'settingsSurface','distanceStepper','重新播放','停止播放'})
-    ready=required.issubset(controls)
+    classes=[v['class'] for v in data.get('nativeViews',[])]
+    hosting=any('Hosting' in c for c in classes)
+    tabs=any('TabBar' in c for c in classes)
+    form=any('CollectionView' in c or 'TableView' in c for c in classes)
+    navigation=any('NavigationBar' in c for c in classes)
+    ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
+    if stage == 'player':ready=ready and 'volumeSlider' in data.get('controls',{})
     if ready:break
    time.sleep(1)
-  else:raise RuntimeError('Native chrome did not mount: '+stage)
+  else:
+   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
+   raise RuntimeError('System native chrome did not mount: '+stage)
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
-  expected='liquidGlass' if int(data['ios'].split('.')[0])>=26 else 'legacyMaterial'
-  if data['controls']['tabs']['material']!=expected:raise RuntimeError('Wrong native tabs material: '+str(data))
-  expectedButton='liquidGlass' if int(data['ios'].split('.')[0])>=26 else 'legacyButton'
-  if data['controls']['更多设置']['material']!=expectedButton:raise RuntimeError('Native glass button unavailable: '+str(data))
   return data
  chrome_report('scene')
  for stage in ['player','library','settings','settings-spatial','settings-room']:
