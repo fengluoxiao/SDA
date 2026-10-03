@@ -3300,7 +3300,7 @@ pub fn spawn_render_worker(
                 // Dense ADM runs close to the CPU deadline. A larger rendered
                 // reserve absorbs scheduler/remote-video bursts without changing
                 // source clocks, filters or the DAC-driven presentation clock.
-                let buffer_scale = if !synchronized && engine.is_high_density_adm() { 2 } else { 1 };
+                let buffer_scale = realtime::render_buffer_scale(synchronized, engine.is_high_density_adm());
                 let target = if synchronized {
                     remote_sync::buffer_frames()
                 } else {

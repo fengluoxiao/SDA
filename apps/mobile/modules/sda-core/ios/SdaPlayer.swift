@@ -372,7 +372,11 @@ final class SdaPlayer {
       // events, coalesce consumed events to the current object snapshot.
       _ = try command("objects"); updateNowPlaying(); lastInfo = Date()
      }
-     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true; isPaused = true; finishPreparation(); recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
+     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true
+      // End the actual Apple consumer too; an engine pumping silence can
+      // leave system media activity visible even after its rate becomes zero.
+      _ = try setPaused(true)
+      recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }
      return decoded > consumed + 4*48000 || (status["fifoFrames"] as? Int ?? 0) > 4*48000
     }
@@ -538,6 +542,9 @@ final class SdaPlayer {
     if done {
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+     guard isPaused, audio?.isRunning == false,
+       MPNowPlayingInfoCenter.default().playbackState == .stopped,
+       MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 0 else { throw SdaError.message("KU100 ended output/media state is still active") }
      guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
      guard status["volumeBalanceEnabled"] as? Bool == prefs.bool(forKey:"sda.balance"),
        status["volumeBalanceEligible"] as? Bool == true else { throw SdaError.message("KU100 音量平衡偏好未恢复") }

@@ -11,3 +11,12 @@ export function IOSPlaybackSymbol({ playing, color }: { playing: boolean; color:
     </swiftUI.Host> : <Text style={{ color, fontSize: 20 }}>{playing ? "Ⅱ" : "▶"}</Text>}
   </View>;
 }
+
+export function IOSSkipSymbol({ direction, color }: { direction: "previous" | "next"; color: string }) {
+  const hasImage = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
+  return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center" }}>
+    {hasImage && swiftUI ? <swiftUI.Host style={{ width: 28, height: 28 }}>
+      <swiftUI.Image systemName={direction === "previous" ? "backward.fill" : "forward.fill"} size={24} color={color} />
+    </swiftUI.Host> : <Text style={{ color, fontSize: 22 }}>{direction === "previous" ? "◀◀" : "▶▶"}</Text>}
+  </View>;
+}

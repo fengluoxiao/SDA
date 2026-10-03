@@ -11,7 +11,7 @@ import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "
 import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
-import { IOSPlaybackSymbol } from "./IOSPlaybackSymbol";
+import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
 
 const palettes = {
   light: { bg: "#f0f3f0", panel: "#fafcf9", ink: "#24302a", muted: "#66776c", line: "#d5dfd6", field: "#eef2ed", accent: "#28754a" },
@@ -127,9 +127,9 @@ export function IOSPlayer(p: PlayerProps) {
           <View style={s.times}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={s.transport}>
             {icon(p.playbackMode === "repeat-one" ? "repeat.1" : p.playbackMode === "repeat-all" ? "repeat" : "list.bullet", "播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)), false, 44, "↻")}
-            {icon("backward.end.fill", "上一曲", p.previous, p.busy || !p.queue.length, 44, "|◁")}
+            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="previous" color={c.ink} /></Pressable>
             {icon(playing ? "pause.fill" : "play.fill", playing ? "暂停" : "播放", togglePlayback, p.busy || !p.selectedUri, 58, playing ? "Ⅱ" : "▷")}
-            {icon("forward.end.fill", "下一曲", p.next, p.busy || !p.queue.length, 44, "▷|")}
+            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="next" color={c.ink} /></Pressable>
             {icon("arrow.counterclockwise", "重新播放", p.play, p.busy || !p.selectedUri, 44, "⟲")}
           </View>
           </View>

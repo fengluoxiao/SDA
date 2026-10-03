@@ -256,3 +256,9 @@ assert.match(playbackSymbol, /getViewConfig\?\.\("ExpoUI", "ImageView"\)/);
 assert.match(playbackSymbol, /systemName=\{playing \? "pause.fill" : "play.fill"\}/);
 assert.match(playbackSymbol, /pointerEvents="none"/);
 console.log('Mini-player design checks passed: smaller covers, bare SF Symbol, homepage accent, 44-point target');
+
+assert.match(ui, /<IOSSkipSymbol direction="previous" color=\{c.ink\}/);
+assert.match(ui, /<IOSSkipSymbol direction="next" color=\{c.ink\}/);
+assert.doesNotMatch(ui, /backward.end.fill|forward.end.fill/);
+assert.match(playbackSymbol, /"backward.fill" : "forward.fill"/);
+console.log('Transport symbol checks passed: real double-triangle SF Symbols in Go and release');

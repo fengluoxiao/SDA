@@ -65,9 +65,17 @@ final class CompressedInput {
    guard r.canAdd(output) else { throw SdaError.message("无法读取压缩音轨") }
    r.add(output)
    resumedRange = CMTimeCompare(nextTime, .zero) > 0
-   if resumedRange { r.timeRange = CMTimeRange(start:nextTime,duration:.positiveInfinity) }
+   if resumedRange {
+    let remaining = CMTimeSubtract(track.timeRange.end, nextTime)
+    guard remaining.isNumeric && CMTimeCompare(remaining, .zero) > 0 else { throw SdaError.message("Compressed track resume position is outside its time range") }
+    r.timeRange = CMTimeRange(start:nextTime,duration:remaining)
+   }
    guard r.startReading() else { throw r.error ?? SdaError.message("音轨读取失败") }
    reader = r; trackOutput = output
+ }
+ // Recreate a failed cursor at the first unsubmitted packet, never skip audio.
+ static func isRecoverableReaderError(_ error: NSError) -> Bool {
+  error.domain == AVFoundationErrorDomain && [-11847, -11880].contains(error.code)
  }
  func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
   if let f = file { let d = try f.read(upToCount: chunkBytes); return d?.isEmpty == false ? d : nil }
@@ -76,7 +84,7 @@ final class CompressedInput {
   guard let sample = output.copyNextSampleBuffer() else {
    if r.status == .failed {
     if let error = r.error as NSError?, error.domain == AVFoundationErrorDomain,
-       error.code == -11847 /* AVErrorOperationInterrupted; not exposed by the iOS SDK enum */, retries < 3 {
+       Self.isRecoverableReaderError(error), resumeTimeValid, retries < 3 {
      retries += 1; try reopenAfterInterruption(); return try next(chunkBytes:chunkBytes)
     }
     throw r.error ?? SdaError.message("音轨读取失败")
