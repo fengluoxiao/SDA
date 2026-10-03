@@ -111,6 +111,29 @@ try:
   chrome_report(stage)
   time.sleep(3)
   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
+ # Move the running process genuinely into the background by opening Settings.
+ # This proves native decode/output is independent of the suspended JS timer.
+ # It does NOT simulate physical protected-data locking or Bluetooth behavior.
+ for mode in ['native','system']:
+  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE',None)
+  os.environ['SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE']=mode
+  ready=container/'Documents/sda-ci-background-ready.json'
+  background=container/'Documents/sda-ci-background.json'
+  ready.unlink(missing_ok=True);background.unlink(missing_ok=True)
+  run('xcrun','simctl','launch',udid,'app.sda.mobile')
+  deadline=time.monotonic()+70
+  while not ready.is_file() and not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+  if not ready.is_file():raise RuntimeError('Background playback did not start: '+(background.read_text() if background.is_file() else mode))
+  run('xcrun','simctl','launch',udid,'com.apple.Preferences')
+  while not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+  if not background.is_file():raise RuntimeError('Background playback report timed out: '+mode)
+  proof=json.loads(background.read_text())
+  (out/('background-'+mode+'.json')).write_text(json.dumps(proof,indent=2))
+  if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionVerified') is not True or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000:
+   raise RuntimeError('Native background audio failed: '+str(proof))
+  run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
  # Verify copied folder resources before claiming an app can load HRTF.
  for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:
   if not (app/'SdaCoreAssets.bundle'/name/'hrtf-set.json').is_file(): raise RuntimeError('Missing bundled asset '+name)

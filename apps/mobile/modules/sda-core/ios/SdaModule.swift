@@ -17,7 +17,9 @@ public final class SdaModule: Module {
   }
   OnCreate {
    player.installSystemControls()
-   if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {
+   if let mode = ProcessInfo.processInfo.environment["SDA_IOS_BACKGROUND_SMOKE"] {
+    DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCIBackgroundSmoke(mode) }
+   } else if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {
     DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCISmoke() }
    }
   }
@@ -29,6 +31,7 @@ public final class SdaModule: Module {
   } }
   Function("renderingSettings") { try player.locked { try player.json(player.settings()) } }
   Function("hrtfStatus") { player.locked { player.hrtfState } }
+  Function("playbackDiagnostics") { try player.locked { try player.json(player.playbackEvents) } }
   Function("feedError") { player.locked { player.failure } }
   Function("feedDone") { player.locked { player.done } }
   Function("status") { try player.locked { try player.json(!player.hasPlayback ? [:] : player.command("status")) } }

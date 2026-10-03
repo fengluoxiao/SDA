@@ -17,12 +17,29 @@ final class CompressedInput {
  init(url: URL, name: String) throws {
   self.url = url
   scoped = url.startAccessingSecurityScopedResource()
+  try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
   if ["eac3", "ec3", "mhas", "mp3"].contains(ext) {
    file = try FileHandle(forReadingFrom: url)
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
   } else { throw SdaError.message("支持 E-AC-3/Atmos M4A/MP4、MHAS 和 MP3") }
+ }
+ // Only change protection on SDA-owned imported copies, never a provider/source file.
+ // copyItem can preserve a source file's complete/while-open protection class.
+ static func allowLockedPlaybackOfOwnedCopy(_ url: URL) throws {
+  #if os(iOS)
+  let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+  let fm = FileManager.default
+  let roots = [fm.urls(for:.cachesDirectory,in:.userDomainMask).first!,
+   fm.urls(for:.documentDirectory,in:.userDomainMask).first!, fm.temporaryDirectory]
+  guard roots.contains(where: { path.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) else { return }
+  let value = try fm.attributesOfItem(atPath:path)[.protectionKey]
+  let protection = (value as? FileProtectionType) ?? (value as? String).map { FileProtectionType(rawValue:$0) }
+  if protection == .complete || protection == .completeUnlessOpen {
+   try fm.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:path)
+  }
+  #endif
  }
  // Resume the compressed reader only; the Rust decoder and playback clock stay intact.
  func reopenAfterInterruption() throws {

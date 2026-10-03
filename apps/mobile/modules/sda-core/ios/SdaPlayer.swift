@@ -33,6 +33,13 @@ final class SdaPlayer {
  var mediaInfo: [String:Any] = [:]
  var duration: Double = 0
  var interruptionWasPlaying = false
+ var sessionInterrupted = false
+ var inBackground = false
+ var backgroundTransitions = 0
+ var recoveringOutput = false
+ var preparationLease: PlaybackPreparationLease?
+ var preparationSerial = 0
+ var playbackEvents: [[String:Any]] = []
  let prefs = UserDefaults.standard
  func locked<T>(_ work: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try work() }
  func json(_ value: Any) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]), as: UTF8.self) }
@@ -84,6 +91,7 @@ final class SdaPlayer {
  }
  func stopNative() {
   generation += 1
+  finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false
   systemSpatial?.close(); systemSpatial = nil
   // Stop callbacks before freeing the C handle. Do not reset on preset changes.
   audio?.stop()
@@ -131,11 +139,14 @@ final class SdaPlayer {
  func setPaused(_ paused: Bool) throws -> Bool {
   guard hasPlayback, paused || !done else { return false }
   if paused {
+   finishPreparation()
    _ = try command("pause",["paused":true])
    // The worker command is asynchronous. Freeze the Apple consumer as well so
    // queued DSP work cannot advance the audible clock after pause returns.
    audio?.pause()
   } else {
+   if failure != nil { throw SdaError.message("音频输出发生错误，请重新播放") }
+   if systemSpatial?.started == false { beginPreparation(generation) }
    try AVAudioSession.sharedInstance().setActive(true)
    _ = try command("pause",["paused":false])
    if audio?.isRunning == false { try audio?.start() }
@@ -172,12 +183,59 @@ final class SdaPlayer {
   }
   updateNowPlaying()
  }
+ func beginPreparation(_ token: Int) {
+  finishPreparation()
+  let serial = preparationSerial
+  preparationLease = PlaybackPreparationLease { [weak self] in
+   guard let self else { return }
+   self.locked {
+    guard self.generation == token, self.preparationSerial == serial, self.preparationLease != nil else { return }
+    self.recordPlaybackEvent("preparationExpired")
+    self.stopNative(); self.failure = "后台音频准备时间已到，请回到前台重新播放"
+   }
+  }
+ }
+ func finishPreparation() { guard preparationLease != nil else { return }; preparationSerial += 1; preparationLease?.end(); preparationLease = nil }
+ func recordPlaybackEvent(_ event: String, detail: String = "") {
+  let status = hasPlayback ? (try? command("status")) as? [String:Any] ?? [:] : [:]
+  playbackEvents.append(["time":Date().timeIntervalSince1970,"event":event,"detail":detail,
+   "generation":generation,"background":inBackground,"paused":isPaused,"done":done,
+   "sessionInterrupted":sessionInterrupted,"engineRunning":audio?.isRunning ?? false,
+   "route":systemSpatial == nil ? "KU100" : "system714",
+   "decoded":status["decodedSamplePos"] ?? 0,"consumed":status["consumedSamplePos"] ?? 0])
+  if playbackEvents.count > 96 { playbackEvents.removeFirst(playbackEvents.count-96) }
+  let url = FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("sda-playback-diagnostics.json")
+  if let text = try? json(playbackEvents) { try? Data(text.utf8).write(to:url,options:.atomic) }
+ }
+ func recoverOutputIfNeeded(_ reason: String) throws {
+  guard hasPlayback, !isPaused, !done, !sessionInterrupted, !recoveringOutput else { return }
+  recoveringOutput = true; defer { recoveringOutput = false }
+  if let audio, !audio.isRunning {
+   try AVAudioSession.sharedInstance().setActive(true)
+   try audio.start(); recordPlaybackEvent("engineRestart",detail:reason)
+  }
+  if let system = systemSpatial { try system.pump() }
+ }
  func installSystemControls() {
   for notification in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
    observers.append(NotificationCenter.default.addObserver(forName: notification, object:nil, queue:nil) { [weak self] _ in
-    guard let self else { return }; self.locked { self.updateNowPlaying() }
+    guard let self else { return }; self.locked {
+     self.inBackground = notification == UIApplication.didEnterBackgroundNotification
+     if self.inBackground { self.backgroundTransitions += 1 }
+     self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
+     do { try self.recoverOutputIfNeeded("lifecycle") } catch { self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) }
+     self.updateNowPlaying()
+    }
    })
   }
+  for notification in [UIApplication.protectedDataWillBecomeUnavailableNotification, UIApplication.protectedDataDidBecomeAvailableNotification] {
+   observers.append(NotificationCenter.default.addObserver(forName:notification,object:nil,queue:nil) { [weak self] _ in
+    guard let self else { return }; self.locked { self.recordPlaybackEvent("protectedData",detail:notification.rawValue) }
+   })
+  }
+  observers.append(NotificationCenter.default.addObserver(forName:UIApplication.didReceiveMemoryWarningNotification,object:nil,queue:nil) { [weak self] _ in
+   guard let self else { return }; self.locked { self.recordPlaybackEvent("memoryWarning") }
+  })
   let center = MPRemoteCommandCenter.shared()
   remoteTargets.append((center.pauseCommand, center.pauseCommand.addTarget { [weak self] _ in
    guard let self else { return .commandFailed }; return self.locked { (try? self.setPaused(true)) == true ? .success : .commandFailed }
@@ -192,22 +250,29 @@ final class SdaPlayer {
    guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
          let type = AVAudioSession.InterruptionType(rawValue:raw) else { return }
    self.locked {
-    if type == .began { self.interruptionWasPlaying = self.hasPlayback && !self.isPaused; _ = try? self.setPaused(true) }
-    else if self.interruptionWasPlaying,
-      let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
-      AVAudioSession.InterruptionOptions(rawValue:options).contains(.shouldResume) { _ = try? self.setPaused(false) }
+    self.recordPlaybackEvent("interruption",detail:String(describing:note.userInfo ?? [:]))
+    if type == .began {
+     self.sessionInterrupted = true; self.interruptionWasPlaying = self.hasPlayback && !self.isPaused
+     _ = try? self.setPaused(true)
+    } else {
+     self.sessionInterrupted = false
+     let shouldResume = self.interruptionWasPlaying && AVAudioSession.InterruptionOptions(rawValue:note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0).contains(.shouldResume)
+     self.interruptionWasPlaying = false
+     if shouldResume { _ = try? self.setPaused(false) }
+    }
    }
   })
   observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object:nil, queue:nil) { [weak self] note in
    guard let self else { return }
    self.locked {
+    self.recordPlaybackEvent("routeChange",detail:String(describing:note.userInfo ?? [:]))
     if (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { _ = try? self.setPaused(true) }
-    else if self.handle != nil && !self.isPaused && self.audio?.isRunning == false { do { try self.audio?.start() } catch { self.failure = String(describing:error) } }
+    else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
    }
   })
   observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object:nil, queue:nil) { [weak self] _ in
    guard let self else { return }
-   self.locked { if self.handle != nil && !self.isPaused && self.audio?.isRunning == false { do { try self.audio?.start() } catch { self.failure = String(describing:error) } } }
+   self.locked { do { try self.recoverOutputIfNeeded("configurationChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
   })
  }
  func play(_ uri: String, _ name: String, _ yaw: Double, _ hash: String) throws -> String {
@@ -235,8 +300,11 @@ final class SdaPlayer {
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
     let loudnessKey = (systemSpatial == nil ? "sda.loudness." : "sda.loudness.system714.v1.") + hash
     if !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
-    let token = generation; updateNowPlaying()
-    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, url:url, name:name) }
+    // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
+    let analysisInput: CompressedInput?
+    if systemSpatial != nil { analysisInput = try CompressedInput(url:url,name:name) } else { analysisInput = nil }
+    let token = generation; beginPreparation(token); recordPlaybackEvent("play"); updateNowPlaying()
+    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, analysisInput:analysisInput) }
     return try json(["layout":layout])
    } catch { stopNative(); throw error }
   }
@@ -244,19 +312,23 @@ final class SdaPlayer {
  // Full-track analysis is off the playback lock and owns its own decoder/reader.
  // It discards PCM, so silence/long intros cannot exhaust the bounded playback FIFO.
  // Cancellation is checked per compressed chunk; no old-track result touches a new route.
- func prepareSystemBalance(url: URL, name: String, token: Int, hash: String) throws -> Bool {
+ func prepareSystemBalance(input: CompressedInput?, token: Int, hash: String) throws -> Bool {
   let needed = locked { generation == token && systemSpatial?.balanceEnabled == true && systemSpatial?.started == false && systemSpatial?.measurementReady == false }
   guard needed else { return locked { generation == token } }
   var error: UnsafeMutablePointer<CChar>?
   guard let probe = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("360RA 响度分析初始化失败") }
   defer { sda_ios_speakers_close(probe) }
   sda_ios_speakers_measure_only(probe)
-  let analysis = try CompressedInput(url:url,name:name)
+  guard let analysis = input else { throw SdaError.message("360RA 响度分析输入未打开") }
   while true {
    guard locked({ generation == token && hasPlayback }) else { return false }
-   let data = try analysis.next(chunkBytes:1024)
-   if let data { _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(probe,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) } }
-   else { _ = try decodeReply(sda_ios_speakers_feed(probe,nil,0,true)); break }
+   let more = try autoreleasepool { () throws -> Bool in
+    if let data = try analysis.next(chunkBytes:1024) {
+     _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(probe,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) }; return true
+    }
+    _ = try decodeReply(sda_ios_speakers_feed(probe,nil,0,true)); return false
+   }
+   if !more { break }
   }
   let measurement = try json(decodeReply(sda_ios_speakers_measurement(probe)))
   return try locked {
@@ -266,33 +338,40 @@ final class SdaPlayer {
    return true
   }
  }
- func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, url: URL, name: String) {
+ func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?) {
   var finished = false
   var lastClock: UInt64 = 0
   var lastProgress = Date()
   var lastInfo = Date.distantPast
   do {
    let systemMode = locked { systemSpatial != nil && generation == token }
-   if systemMode { if !(try prepareSystemBalance(url:url,name:name,token:token,hash:hash)) { return }; lastProgress = Date() }
+   if systemMode { if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return }; lastProgress = Date() }
    while true {
+    // A long-lived GCD loop must drain Cocoa temporaries per iteration.
+    let keepFeeding = try autoreleasepool { () throws -> Bool in
     let shouldWait: Bool? = try locked {
      guard generation == token, hasPlayback else { return nil }
      if isPaused { lastProgress = Date(); return true }
-     try systemSpatial?.pump()
+     try recoverOutputIfNeeded("decode")
      let status = try command("status") as! [String:Any]
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+     if consumed > 0 { finishPreparation() }
      if consumed != lastClock { lastClock = consumed; lastProgress = Date() }
      if decoded > 0 && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
-     if Date().timeIntervalSince(lastInfo) > 1 { updateNowPlaying(); lastInfo = Date() }
-     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true; isPaused = true; updateNowPlaying(); return nil }; return true }
+     if Date().timeIntervalSince(lastInfo) > 1 {
+      // Advance metadata even while React polling is suspended. Keep future
+      // events, coalesce consumed events to the current object snapshot.
+      _ = try command("objects"); updateNowPlaying(); lastInfo = Date()
+     }
+     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true; isPaused = true; finishPreparation(); recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }
      return decoded > consumed + 4*48000 || (status["fifoFrames"] as? Int ?? 0) > 4*48000
     }
-    guard let wait = shouldWait else { return }
-    if wait { Thread.sleep(forTimeInterval:0.02); continue }
+    guard let wait = shouldWait else { return false }
+    if wait { Thread.sleep(forTimeInterval:0.02); return true }
     if systemMode && locked({systemSpatial?.preparingAudio == true}) {
-     if !(try prepareSystemBalance(url:url,name:name,token:token,hash:hash)) { return }; lastProgress = Date()
+     if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return false }; lastProgress = Date()
     }
     let data = mp3 ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
     try locked {
@@ -311,8 +390,11 @@ final class SdaPlayer {
       finished = true
      }
     }
+    return true
+    }
+    if !keepFeeding { return }
    }
-  } catch { locked { if generation == token { failure = String(describing:error); _ = try? setPaused(true) } } }
+  } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  func mediaDuration(_ url: URL) -> Double { let seconds = CMTimeGetSeconds(AVURLAsset(url:url).duration); return seconds.isFinite ? max(0,seconds*1000) : 0 }
  func roomCatalog() throws -> [[String:Any]] {
@@ -459,6 +541,61 @@ final class SdaPlayer {
    Thread.sleep(forTimeInterval:0.01)
   }
   throw SdaError.message("360RA KU100 冒烟测试超时")
+ }
+
+ func runCIBackgroundSmoke(_ mode: String) {
+  let directory = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
+  let reportURL = directory.appendingPathComponent("sda-ci-background.json")
+  let readyURL = directory.appendingPathComponent("sda-ci-background-ready.json")
+  let clip = directory.appendingPathComponent("ci-background.mhas")
+  var report: [String:Any] = ["ok":false,"mode":mode,"physicalLockVerified":false]
+  let oldSystem = prefs.bool(forKey:"sda.systemSpatial360RA"), oldBalance = prefs.bool(forKey:"sda.balance")
+  defer {
+   locked { stopNative() }
+   prefs.set(oldSystem,forKey:"sda.systemSpatial360RA"); prefs.set(oldBalance,forKey:"sda.balance")
+   try? FileManager.default.removeItem(at:clip)
+   if let text = try? json(report) { try? Data(text.utf8).write(to:reportURL,options:.atomic) }
+  }
+  do {
+   let fixture = try Data(contentsOf:assetRoot().appendingPathComponent("ci-360ra.mhas"))
+   var repeated = Data(); for _ in 0..<12 { repeated.append(fixture) }
+   try repeated.write(to:clip)
+   try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:clip.path)
+   prefs.set(mode == "system",forKey:"sda.systemSpatial360RA"); prefs.set(mode == "system",forKey:"sda.balance")
+   prefs.removeObject(forKey:"sda.loudness.system714.v1.ci-background-"+mode)
+   _ = try play(clip.absoluteString,"ci-background.mhas",0,"ci-background-"+mode)
+   let value = try FileManager.default.attributesOfItem(atPath:clip.path)[.protectionKey]
+   let protection = (value as? FileProtectionType) ?? (value as? String).map { FileProtectionType(rawValue:$0) }
+   guard protection == .completeUntilFirstUserAuthentication else { throw SdaError.message("导入副本未调整为锁屏可读保护级别") }
+   // Mirrors JS discarding an extracted MHAS after playUri returns: both open
+   // descriptors must remain valid for playback and the independent full scan.
+   try FileManager.default.removeItem(at:clip)
+   let startTransitions = locked { backgroundTransitions }
+   let deadline = Date().addingTimeInterval(60)
+   var ready = false
+   var backgroundClock: UInt64?
+   while Date() < deadline {
+    let state: (UInt64, Bool, Bool) = try locked {
+     if let failure { throw SdaError.message(failure) }
+     let status = try command("status") as! [String:Any]
+     return ((status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0, inBackground && backgroundTransitions > startTransitions, preparationLease == nil)
+    }
+    if !ready && state.0 > 12000 && state.2 {
+     ready = true
+     try Data("{\"ready\":true}".utf8).write(to:readyURL,options:.atomic)
+    }
+    if state.1 && backgroundClock == nil { backgroundClock = state.0 }
+    if let clock = backgroundClock, state.1, state.0 > clock + 8*48000 {
+     report = ["ok":true,"mode":mode,"backgroundNotificationObserved":true,
+      "backgroundStart":clock,"backgroundEnd":state.0,"preparationAssertionReleased":state.2,
+      "ownedCopyProtectionVerified":true,"unlinkedAnalysisInputVerified":true,"physicalLockVerified":false,
+      "events":locked { playbackEvents }]
+     return
+    }
+    Thread.sleep(forTimeInterval:0.02)
+   }
+   throw SdaError.message("真实后台播放未持续推进音频时钟")
+  } catch { report["error"] = String(describing:error); report["events"] = locked { playbackEvents } }
  }
 
  func smokeSystem360(useCache: Bool = false) throws -> [String:Any] {

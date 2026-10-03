@@ -1,5 +1,5 @@
 import React, { useMemo, useRef } from "react";
-import { PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { AppState, Platform, PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
@@ -59,6 +59,15 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
 }
 
 export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+  // Never keep the iOS GL animation loop running behind the lock screen.
+  // Retain the scene/camera so foreground return does not rebuild its assets.
+  const [foreground, setForeground] = React.useState(AppState.currentState === "active");
+  React.useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    const subscription = AppState.addEventListener("change", state => setForeground(state === "active"));
+    return () => subscription.remove();
+  }, []);
+  const renderActive = active && (Platform.OS !== "ios" || foreground);
   const view = useRef<View>(null);
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
@@ -76,22 +85,22 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   // Avoid creating the first GL surface during an offscreen pager transition.
   // Wait for a visible, measured, settled native view; watchdog failures below.
   React.useEffect(() => {
-    if (!active || mounted || viewport.width <= 0 || viewport.height <= 0) return;
+    if (!renderActive || mounted || viewport.width <= 0 || viewport.height <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const task = InteractionManager.runAfterInteractions(() => {
       timer = setTimeout(() => setMounted(true), 300);
     });
     return () => { task.cancel(); if (timer) clearTimeout(timer); };
-  }, [active, mounted, viewport.width, viewport.height]);
+  }, [renderActive, mounted, viewport.width, viewport.height]);
   React.useEffect(() => {
-    if (!active || !mounted || ready || failure) return;
+    if (!renderActive || !mounted || ready || failure) return;
     const timer = setTimeout(() => {
       if (firstFrame.current) return;
       if (attempt < 2) { firstFrame.current = false; setAttempt(value => value + 1); }
       else setFailure("3D 上下文未完成首帧渲染");
     }, 6000);
     return () => clearTimeout(timer);
-  }, [active, mounted, ready, failure, attempt]);
+  }, [renderActive, mounted, ready, failure, attempt]);
   const report = React.useCallback((value: Record<string, unknown>) => {
     const engine = (globalThis as any).expo?.modules?.SdaEngine;
     if (engine?.sceneSmokeEnabled?.()) view.current?.measureInWindow((x, y, width, height) => engine.reportSceneSmoke(JSON.stringify({ layout, screenWidth: Dimensions.get("window").width, ...value, bounds: { x, y, width, height } })));
@@ -138,7 +147,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     viewportHeight.current = height;
     setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
   }} {...pan.panHandlers}>
-    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
+    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={Platform.OS === "ios" && !renderActive ? "never" : "always"} style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
       const renderFrame = state.gl.render.bind(state.gl);
       const context = state.gl.getContext() as any;
       const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;
