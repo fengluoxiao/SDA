@@ -1,5 +1,6 @@
 """Release launch smoke test; not a substitute for physical-device listening."""
 import json,os,pathlib,re,subprocess,sys,time
+from verify_mobile_ios_assets import verify_mobile_ios_assets
 app=pathlib.Path(sys.argv[1]).resolve();out=pathlib.Path(sys.argv[2]).resolve()
 def run(*args,check=True):
  return subprocess.run(args,check=check,text=True,capture_output=True)
@@ -150,9 +151,8 @@ try:
    raise RuntimeError('Native background audio failed: '+str(proof))
   run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
   os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
- # Verify copied folder resources before claiming an app can load HRTF.
- for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:
-  if not (app/'SdaCoreAssets.bundle'/name/'hrtf-set.json').is_file(): raise RuntimeError('Missing bundled asset '+name)
+ # Validate the real mobile-only bundle, including hashes and absence of room assets.
+ verify_mobile_ios_assets(app)
  (out/'smoke.txt').write_text('Release app launched. Compressed E-AC-3 MP4 -> Rust/KU100 -> AVAudioEngine consumed playback; live preset clock and pause/resume checks passed. 360RA MPEG-H -> 12-channel 7.1.4 -> Apple sample-buffer renderer clock/drain/pause/toggle checks passed. KU100 resources present. No real-device spatial listening validation.\n')
 finally:
  log=run('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "SDA"',check=False)

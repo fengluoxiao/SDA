@@ -87,6 +87,7 @@ jobs:
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
           node scripts/test/mobile-rendering-presets.test.cjs
+          python3 scripts/test-ios-mobile-assets.py
           node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
           node scripts/test-ios-ui.mjs
           node scripts/test-ios-playback-polling.mjs
