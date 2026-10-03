@@ -10,7 +10,10 @@
   },
   "apple": {
     "modules": [
-      "SdaModule"
+      "SdaModule",
+      "SdaGlassButtonModule",
+      "SdaGlassTabsModule",
+      "SdaMaterialSurfaceModule"
     ]
   }
 }

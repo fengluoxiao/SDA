@@ -2,6 +2,7 @@ import { followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "
 import renderingPresets from "../rendering-presets.json";
 import React, { useMemo, useRef, useState } from "react";
 import { Animated, Image, Modal, PanResponder, Pressable, SafeAreaView, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { hasNativeIOSChrome, IOSIconButton, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
 
 export interface TrackMetadata {
@@ -41,8 +42,9 @@ const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms /
 export function RemotePlayer(p: Props) {
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
+  const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
   const [page, setPage] = useState(sceneSmoke ? 2 : 0);
-  const [settings, setSettings] = useState(false);
+  const [settings, setSettings] = useState(chromeSmoke === "settings");
   const sheetDrag = useRef(new Animated.Value(0)).current;
   const sheetHeight = useRef(height);
   const showSettings = () => { sheetDrag.setValue(0); setSettings(true); };
@@ -118,7 +120,9 @@ export function RemotePlayer(p: Props) {
   const cardHeight = Math.max(440, height - 235);
   const coverSize = Math.min(Math.max(160, width - 104), 460);
   const label = (value: string, muted = false, extra: object = {}) => <Text style={[{ color: muted ? c.muted : c.ink }, extra]}>{value}</Text>;
-  const button = (glyph: string, name: string, action: () => void, disabled = false, large = false) => (
+  const button = (glyph: string, name: string, action: () => void, disabled = false, large = false) => hasNativeIOSChrome ? (
+    <IOSIconButton symbol={glyph === "＋" ? "plus" : glyph === "···" ? "ellipsis" : "arrow.counterclockwise"} label={name} onPress={action} disabled={disabled} size={large ? 64 : 46} />
+  ) : (
     <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action}
       style={({ pressed }) => [s.circle, { backgroundColor: c.field, borderColor: c.line, opacity: disabled ? .35 : pressed ? .65 : 1 }, large && s.play]}>
       {label(glyph, false, { fontSize: large ? 27 : 22 })}
@@ -180,21 +184,21 @@ export function RemotePlayer(p: Props) {
           </View>
           <View style={[s.row, { marginTop: 9, marginBottom: 12 }]}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={[s.transport, { gap: Math.max(0, Math.min(44, (coverSize - 244) / 2)) }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
+            {hasNativeIOSChrome ? <IOSIconButton symbol="backward.end.fill" label="上一曲" disabled={p.busy || !p.queue.length} onPress={p.previous} /> : <Pressable accessibilityRole="button" accessibilityLabel="上一曲" disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}><View style={{ width: 3, height: 23, borderRadius: 1, backgroundColor: c.ink }} /><View style={{ width: 0, height: 0, borderTopWidth: 12, borderBottomWidth: 12, borderRightWidth: 19, borderTopColor: "transparent", borderBottomColor: "transparent", borderRightColor: c.ink }} /></View>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={p.playing && !p.paused ? "暂停" : "播放"}
+            </Pressable>}
+            {hasNativeIOSChrome ? <IOSIconButton symbol={p.playing && !p.paused ? "pause.fill" : "play.fill"} label={p.playing && !p.paused ? "暂停" : "播放"} disabled={p.busy || !p.selectedUri} onPress={p.playing ? p.togglePause : p.play} prominent size={64} symbolSize={25} /> : <Pressable accessibilityRole="button" accessibilityLabel={p.playing && !p.paused ? "暂停" : "播放"}
               disabled={p.busy || !p.selectedUri} onPress={p.playing ? p.togglePause : p.play}
               style={({ pressed }) => [s.mainPlay, { backgroundColor: c.ink, opacity: p.busy || !p.selectedUri ? .35 : pressed ? .7 : 1 }]}>
               {p.playing && !p.paused ? <View style={{ flexDirection: "row", gap: 6 }}><View style={[s.pauseBar, { backgroundColor: c.bg }]} /><View style={[s.pauseBar, { backgroundColor: c.bg }]} /></View>
                 : <View style={{ marginLeft: 5, width: 0, height: 0, borderTopWidth: 12, borderBottomWidth: 12, borderLeftWidth: 20, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: c.bg }} />}
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
+            </Pressable>}
+            {hasNativeIOSChrome ? <IOSIconButton symbol="forward.end.fill" label="下一曲" disabled={p.busy || !p.queue.length} onPress={p.next} /> : <Pressable accessibilityRole="button" accessibilityLabel="下一曲" disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}><View style={{ width: 0, height: 0, borderTopWidth: 12, borderBottomWidth: 12, borderLeftWidth: 19, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: c.ink }} /><View style={{ width: 3, height: 23, borderRadius: 1, backgroundColor: c.ink }} /></View>
-            </Pressable>
+            </Pressable>}
             <Pressable accessibilityRole="button" accessibilityLabel={`播放模式：${PLAYBACK_MODE_LABELS[p.playbackMode]}，点击切换为${PLAYBACK_MODE_LABELS[followingPlaybackMode(p.playbackMode)]}`}
               onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))}
-              style={({ pressed }) => ({ position: "absolute", right: 0, width: 44, height: 44, justifyContent: "center", alignItems: "center", borderRadius: 22, backgroundColor: p.playbackMode === "sequence" ? "transparent" : c.soft, opacity: pressed ? .65 : 1 })}>
+              style={({ pressed }) => ({ position: hasNativeIOSChrome ? "relative" : "absolute", right: 0, width: 44, height: 44, justifyContent: "center", alignItems: "center", borderRadius: 22, backgroundColor: p.playbackMode === "sequence" ? "transparent" : c.soft, opacity: pressed ? .65 : 1 })}>
               {label(p.playbackMode === "sequence" ? "≡" : p.playbackMode === "repeat-one" ? "↻₁" : "↻", p.playbackMode === "sequence", { fontSize: 20 })}
             </Pressable>
           </View>
@@ -235,21 +239,23 @@ export function RemotePlayer(p: Props) {
         </View>
       </ScrollView>
     </ScrollView>
-    <View style={s.tabs}>{["播放", "列表", "空间"].map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={s.tab}>
-      <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: page === index ? c.field : "transparent" }}>{label(name, page !== index, { fontSize: 12, fontWeight: page === index ? "600" : "400" })}</View></Pressable>)}</View>
+    {hasNativeIOSChrome ? <View style={{ paddingTop: 12 }}><IOSGlassTabs selected={page} onChange={navigate} /></View> : <View style={s.tabs}>{["播放", "列表", "空间"].map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={s.tab}>
+      <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: page === index ? c.field : "transparent" }}>{label(name, page !== index, { fontSize: 12, fontWeight: page === index ? "600" : "400" })}</View></Pressable>)}</View>}
     {p.error && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
     <Modal transparent visible={settings} animationType="slide" onRequestClose={() => setSettings(false)}>
       <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
       <Animated.View style={[s.backdrop, { opacity: sheetDrag.interpolate({ inputRange: [0, height], outputRange: [1, 0], extrapolate: "clamp" }) }]}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭设置" style={StyleSheet.absoluteFill} onPress={() => setSettings(false)} />
       </Animated.View>
-      <Animated.View onLayout={event => { sheetHeight.current = event.nativeEvent.layout.height; }} style={[s.sheet, { backgroundColor: c.bg, maxHeight: height - 64, transform: [{ translateY: sheetDrag }] }]}>
+      <Animated.View onLayout={event => { sheetHeight.current = event.nativeEvent.layout.height; }} style={[s.sheet, { backgroundColor: hasNativeIOSChrome ? "transparent" : c.bg, maxHeight: height - 64, transform: [{ translateY: sheetDrag }] }]}>
+        {hasNativeIOSChrome && <IOSMaterialSurface style={StyleSheet.absoluteFill} />}
         <View collapsable={false} {...sheetGesture.panHandlers} accessible accessibilityLabel="播放设置，向下滑动关闭" accessibilityActions={[{ name: "dismiss", label: "关闭设置" }]} onAccessibilityAction={event => { if (event.nativeEvent.actionName === "dismiss") setSettings(false); }}>
         <View style={[s.sheetHandle, { backgroundColor: c.line }]} />
-        <View style={s.sheetHeader}>
+        <View style={[s.sheetHeader, hasNativeIOSChrome && { paddingRight: 74 }]}>
           <View style={{ flex: 1 }}>{label("播放设置", false, s.sheetTitle)}{label("调整你的空间聆听体验", true, s.sheetSubtitle)}</View>
         </View>
         </View>
+        {hasNativeIOSChrome && <View style={{ position: "absolute", right: 18, top: 22 }}><IOSIconButton symbol="xmark" label="关闭设置" onPress={() => setSettings(false)} size={40} symbolSize={16} /></View>}
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.sheetContent}>
           <View style={s.quickActions}>
             {[{ name: "重新播放", action: p.play, disabled: p.busy || !p.selectedUri }, { name: "停止播放", action: p.stop, disabled: p.busy || !p.playing }].map(action =>

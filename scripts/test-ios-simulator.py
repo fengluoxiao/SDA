@@ -77,6 +77,35 @@ try:
  time.sleep(3) # Allow submitted GL frames to reach the system compositor.
  run('xcrun','simctl','io',udid,'screenshot',str(out/'simulator.png'))
  run(sys.executable,'scripts/check-ios-scene-image.py',str(out/'simulator.png'),str(out/'scene-smoke.json'))
+ # Check that registered UIKit views really use iOS 26 glass, rather than
+ # silently falling back to the previous JS controls. Capture both UI surfaces.
+ def chrome_report(stage):
+  report=container/'Documents/sda-ci-chrome.json'
+  deadline=time.monotonic()+30
+  while time.monotonic()<deadline:
+   if report.is_file():
+    data=json.loads(report.read_text())
+    controls=data['controls']
+    ready=('settingsSurface' in controls and 'tabs' in controls and '更多设置' in controls) if stage=='settings' else ('tabs' in controls and '更多设置' in controls)
+    if ready:break
+   time.sleep(1)
+  else:raise RuntimeError('Native chrome did not mount: '+stage)
+  (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
+  expected='liquidGlass' if int(data['ios'].split('.')[0])>=26 else 'legacyMaterial'
+  if data['controls']['tabs']['material']!=expected:raise RuntimeError('Wrong native tabs material: '+str(data))
+  expectedButton='liquidGlass' if int(data['ios'].split('.')[0])>=26 else 'legacyButton'
+  if data['controls']['更多设置']['material']!=expectedButton:raise RuntimeError('Native glass button unavailable: '+str(data))
+  return data
+ chrome_report('scene')
+ for stage in ['player','settings']:
+  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
+  os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
+  (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
+  run('xcrun','simctl','launch',udid,'app.sda.mobile')
+  chrome_report(stage)
+  time.sleep(3)
+  run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
  # Verify copied folder resources before claiming an app can load HRTF.
  for name in ['hrtf','hrtf-dense','hrtf-raw','hrtf-dense-raw']:
   if not (app/'SdaCoreAssets.bundle'/name/'hrtf-set.json').is_file(): raise RuntimeError('Missing bundled asset '+name)
