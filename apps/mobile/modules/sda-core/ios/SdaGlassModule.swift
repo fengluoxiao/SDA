@@ -22,10 +22,12 @@ private enum ChromeSmoke {
 final class SdaGlassButtonView: ExpoView {
  let control = GlassButtonControl(frame: .zero)
  let onPress = EventDispatcher()
+ let onChoice = EventDispatcher()
  required init(appContext: AppContext? = nil) {
   super.init(appContext: appContext)
   addSubview(control)
   control.action = { [weak self] in self?.onPress([:]) }
+  control.choose = { [weak self] index in self?.onChoice(["index": index]) }
  }
  override func layoutSubviews() {
   super.layoutSubviews(); control.frame = bounds; control.layoutIfNeeded()
@@ -37,7 +39,13 @@ public final class SdaGlassButtonModule: Module {
   Name("SdaGlassButton")
   Function("smokeStage") { ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] ?? "" }
   View(SdaGlassButtonView.self) {
-   Events("onPress")
+   Events("onPress", "onChoice")
+   Prop("title") { (view: SdaGlassButtonView, value: String) in view.control.title = value }
+   Prop("subtitle") { (view: SdaGlassButtonView, value: String) in view.control.subtitle = value }
+   Prop("row") { (view: SdaGlassButtonView, value: Bool) in view.control.row = value }
+   Prop("selected") { (view: SdaGlassButtonView, value: Bool) in view.control.selected = value }
+   Prop("choices") { (view: SdaGlassButtonView, value: [String]) in view.control.choices = value }
+   Prop("choiceIndex") { (view: SdaGlassButtonView, value: Int) in view.control.choiceIndex = value }
    Prop("symbol") { (view: SdaGlassButtonView, value: String) in view.control.symbol = value }
    Prop("label") { (view: SdaGlassButtonView, value: String) in view.control.label = value; view.setNeedsLayout() }
    Prop("enabled") { (view: SdaGlassButtonView, value: Bool) in view.control.enabled = value }
@@ -81,5 +89,51 @@ public final class SdaMaterialSurfaceModule: Module {
  public func definition() -> ModuleDefinition {
   Name("SdaMaterialSurface")
   View(SdaMaterialSurfaceView.self) {}
+ }
+}
+
+final class SdaNativeSliderView: ExpoView {
+ let control = NativeSliderControl(frame: .zero)
+ let onChange = EventDispatcher()
+ let onTracking = EventDispatcher()
+ required init(appContext: AppContext? = nil) {
+  super.init(appContext: appContext); addSubview(control)
+  control.changed = { [weak self] value in self?.onChange(["value": value]) }
+  control.tracking = { [weak self] active in self?.onTracking(["active": active]) }
+ }
+ override func layoutSubviews() {
+  super.layoutSubviews(); control.frame = bounds; control.layoutIfNeeded()
+  ChromeSmoke.record("volumeSlider", kind: "UISlider", view: self)
+ }
+}
+public final class SdaNativeSliderModule: Module {
+ public func definition() -> ModuleDefinition {
+  Name("SdaNativeSlider")
+  View(SdaNativeSliderView.self) {
+   Events("onChange", "onTracking")
+   Prop("value") { (view: SdaNativeSliderView, value: Double) in view.control.value = min(1, max(0, value)) }
+  }
+ }
+}
+final class SdaNativeStepperView: ExpoView {
+ let control = NativeStepperControl(frame: .zero)
+ let onChange = EventDispatcher()
+ required init(appContext: AppContext? = nil) {
+  super.init(appContext: appContext); addSubview(control)
+  control.changed = { [weak self] value in self?.onChange(["value": value]) }
+ }
+ override func layoutSubviews() {
+  super.layoutSubviews(); control.frame = bounds; control.layoutIfNeeded()
+  ChromeSmoke.record("distanceStepper", kind: "UIStepper", view: self)
+ }
+}
+public final class SdaNativeStepperModule: Module {
+ public func definition() -> ModuleDefinition {
+  Name("SdaNativeStepper")
+  View(SdaNativeStepperView.self) {
+   Events("onChange")
+   Prop("value") { (view: SdaNativeStepperView, value: Double) in view.control.stepper.value = min(4, max(0.25, value)) }
+   Prop("enabled") { (view: SdaNativeStepperView, value: Bool) in view.control.stepper.isEnabled = value }
+  }
  }
 }

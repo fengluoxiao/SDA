@@ -86,7 +86,9 @@ try:
    if report.is_file():
     data=json.loads(report.read_text())
     controls=data['controls']
-    ready=('settingsSurface' in controls and 'tabs' in controls and '更多设置' in controls) if stage=='settings' else ('tabs' in controls and '更多设置' in controls)
+    required={'tabs','更多设置','volumeSlider'}
+    if stage.startswith('settings'):required.update({'settingsSurface','distanceStepper','重新播放','停止播放'})
+    ready=required.issubset(controls)
     if ready:break
    time.sleep(1)
   else:raise RuntimeError('Native chrome did not mount: '+stage)
@@ -97,7 +99,7 @@ try:
   if data['controls']['更多设置']['material']!=expectedButton:raise RuntimeError('Native glass button unavailable: '+str(data))
   return data
  chrome_report('scene')
- for stage in ['player','settings']:
+ for stage in ['player','library','settings','settings-spatial','settings-room']:
   run('xcrun','simctl','terminate',udid,'app.sda.mobile')
   os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage

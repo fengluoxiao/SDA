@@ -2,7 +2,7 @@ import { followingPlaybackMode, PLAYBACK_MODE_LABELS, type PlaybackMode } from "
 import renderingPresets from "../rendering-presets.json";
 import React, { useMemo, useRef, useState } from "react";
 import { Animated, Image, Modal, PanResponder, Pressable, SafeAreaView, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
-import { hasNativeIOSChrome, IOSIconButton, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
+import { hasNativeIOSChrome, IOSIconButton, IOSGlassTabs, IOSMaterialSurface, IOSAction, IOSVolumeSlider, IOSDistanceStepper } from "./IOSNativeChrome";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
 
 export interface TrackMetadata {
@@ -43,8 +43,8 @@ export function RemotePlayer(p: Props) {
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
-  const [page, setPage] = useState(sceneSmoke ? 2 : 0);
-  const [settings, setSettings] = useState(chromeSmoke === "settings");
+  const [page, setPage] = useState(sceneSmoke ? 2 : chromeSmoke === "library" ? 1 : 0);
+  const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
   const sheetDrag = useRef(new Animated.Value(0)).current;
   const sheetHeight = useRef(height);
   const showSettings = () => { sheetDrag.setValue(0); setSettings(true); };
@@ -73,6 +73,11 @@ export function RemotePlayer(p: Props) {
   const pager = useRef<ScrollView>(null);
   const playerScroll = useRef<ScrollView>(null);
   const sceneScroll = useRef<ScrollView>(null);
+  const settingsScroll = useRef<ScrollView>(null);
+  // CI-only anchors capture the entire long settings sheet, not just its top.
+  const settingsHeading = (text: string, stage: string) => <View onLayout={event => {
+    if (chromeSmoke === stage) settingsScroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
+  }}>{label(text, true, s.groupTitle)}</View>;
   const pagerLayoutWidth = useRef(0);
   const [adjustingVolume, setAdjustingVolume] = useState(false);
   const [interactingScene, setInteractingScene] = useState(false);
@@ -84,6 +89,14 @@ export function RemotePlayer(p: Props) {
     playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
     sceneScroll.current?.setNativeProps({ scrollEnabled: enabled });
     setInteractingScene(active);
+  };
+  const volumeTracking = (locked: boolean) => {
+    scrollLocks.current.volume = locked;
+    const enabled = !scrollLocks.current.scene && !locked;
+    pager.current?.setNativeProps({ scrollEnabled: enabled });
+    playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
+    sceneScroll.current?.setNativeProps({ scrollEnabled: enabled });
+    setAdjustingVolume(locked);
   };
   const volumeGesture = useMemo(() => {
     const lockScrolling = (locked: boolean) => {
@@ -115,7 +128,7 @@ export function RemotePlayer(p: Props) {
       onPanResponderTerminate: () => lockScrolling(false),
     });
   }, [p.setVolume, volumeWidth]);
-  const c = isLight ? light : dark;
+  const c = Platform.OS === "ios" ? { ...(isLight ? light : dark), bg: isLight ? "#f2f2f7" : "#000000", panel: isLight ? "#ffffff" : "#1c1c1e", ink: isLight ? "#1c1c1e" : "#ffffff", muted: isLight ? "#6c6c70" : "#aeaeb2", accent: "#30b0a6" } : isLight ? light : dark;
   const pageWidth = width - 32;
   const cardHeight = Math.max(440, height - 235);
   const coverSize = Math.min(Math.max(160, width - 104), 460);
@@ -196,13 +209,15 @@ export function RemotePlayer(p: Props) {
             {hasNativeIOSChrome ? <IOSIconButton symbol="forward.end.fill" label="下一曲" disabled={p.busy || !p.queue.length} onPress={p.next} /> : <Pressable accessibilityRole="button" accessibilityLabel="下一曲" disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}><View style={{ width: 0, height: 0, borderTopWidth: 12, borderBottomWidth: 12, borderLeftWidth: 19, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: c.ink }} /><View style={{ width: 3, height: 23, borderRadius: 1, backgroundColor: c.ink }} /></View>
             </Pressable>}
-            <Pressable accessibilityRole="button" accessibilityLabel={`播放模式：${PLAYBACK_MODE_LABELS[p.playbackMode]}，点击切换为${PLAYBACK_MODE_LABELS[followingPlaybackMode(p.playbackMode)]}`}
+            {hasNativeIOSChrome ? <IOSAction symbol={p.playbackMode === "repeat-one" ? "repeat.1" : p.playbackMode === "sequence" ? "list.bullet" : "repeat"} title="" label={`播放模式：${PLAYBACK_MODE_LABELS[p.playbackMode]}`} onPress={() => {}} choices={["sequence", "repeat-one", "repeat-all"].map(mode => PLAYBACK_MODE_LABELS[mode as PlaybackMode])} choiceIndex={["sequence", "repeat-one", "repeat-all"].indexOf(p.playbackMode)} onChoice={index => { const mode = (["sequence", "repeat-one", "repeat-all"] as PlaybackMode[])[index]; if (mode) p.setPlaybackMode(mode); }} style={{ width: 44, height: 44 }} /> : (            <Pressable accessibilityRole="button" accessibilityLabel={`播放模式：${PLAYBACK_MODE_LABELS[p.playbackMode]}，点击切换为${PLAYBACK_MODE_LABELS[followingPlaybackMode(p.playbackMode)]}`}
               onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))}
               style={({ pressed }) => ({ position: hasNativeIOSChrome ? "relative" : "absolute", right: 0, width: 44, height: 44, justifyContent: "center", alignItems: "center", borderRadius: 22, backgroundColor: p.playbackMode === "sequence" ? "transparent" : c.soft, opacity: pressed ? .65 : 1 })}>
               {label(p.playbackMode === "sequence" ? "≡" : p.playbackMode === "repeat-one" ? "↻₁" : "↻", p.playbackMode === "sequence", { fontSize: 20 })}
-            </Pressable>
+            </Pressable>)}
+
           </View>
           <View style={[s.row, { gap: 12, marginTop: 8 }]}>
+            {hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={volumeTracking} /> : <>
             <View accessibilityRole="image" accessibilityLabel="音量" style={{ width: 24, height: 24 }}>
               <View style={{ position: "absolute", left: 2, top: 9, width: 5, height: 7, borderRadius: 1, backgroundColor: c.muted }} />
               <View style={{ position: "absolute", left: 6, top: 5, width: 0, height: 0, borderTopWidth: 7, borderBottomWidth: 7, borderRightWidth: 8, borderTopColor: "transparent", borderBottomColor: "transparent", borderRightColor: c.muted }} />
@@ -215,23 +230,25 @@ export function RemotePlayer(p: Props) {
               onLayout={event => setVolumeWidth(event.nativeEvent.layout.width)}
               {...volumeGesture.panHandlers} style={s.volumeTouch}>
               <View pointerEvents="none" style={[s.volumeTrack, { backgroundColor: c.line }]}><View style={{ width: `${p.volume * 100}%`, height: 5, borderRadius: 8, backgroundColor: c.accent }} /></View>
-            </View>{label(`${Math.round(p.volume * 100)}%`, true, { ...s.small, width: 35 })}
+            </View></>}{label(`${Math.round(p.volume * 100)}%`, true, { ...s.small, width: 35 })}
           </View>
         </View>
       </ScrollView>
       <ScrollView style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
-        <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
+        <View style={[s.card, hasNativeIOSChrome && { borderWidth: 0, borderRadius: 22, padding: 18 }, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label("播放列表", false, s.sectionTitle)}{label(`${p.queue.length} 首`, true, s.small)}</View>
+          {hasNativeIOSChrome ? p.queue.map((track, index) => <IOSAction key={`${track.uri}-${index}`} row selected={index === p.queueIndex} symbol={index === p.queueIndex && p.playing && !p.paused ? "waveform" : "music.note"} title={track.metadata.title || track.name} subtitle={track.metadata.artist || track.metadata.albumArtist || "未知艺人"} label={`播放 ${track.metadata.title || track.name}`} disabled={p.busy} onPress={() => index === p.queueIndex && p.playing ? p.togglePause() : p.selectTrack(index)} style={{ marginTop: 8 }} />) : <>
           {p.queue.map((track, index) => <Pressable key={`${track.uri}-${index}`} accessibilityRole="button" accessibilityLabel={`播放 ${track.metadata.title || track.name}`} accessibilityState={{ selected: index === p.queueIndex }} onPress={() => index === p.queueIndex && p.playing ? p.togglePause() : p.selectTrack(index)} disabled={p.busy} style={[s.queueItem, { backgroundColor: index === p.queueIndex ? c.soft : "transparent" }]}>
             {label(String(index + 1).padStart(2, "0"), true, s.small)}<View style={{ flex: 1 }}><Text numberOfLines={2} style={{ color: c.ink }}>{track.metadata.title || track.name}</Text>{!!(track.metadata.artist || track.metadata.albumArtist) && label(track.metadata.artist || track.metadata.albumArtist || "", true, { ...s.small, marginTop: 5 })}</View>{label(index === p.queueIndex && p.playing && !p.paused ? "Ⅱ" : "▶")}
           </Pressable>)}
+          </>}
           {!p.queue.length && label("还没有添加歌曲。", true, { marginVertical: 28 })}
-          <Pressable accessibilityRole="button" onPress={p.chooseFile} disabled={p.busy} style={[s.choose, { borderColor: c.line }]}>{label("＋  打开本机媒体", false, { color: c.accent })}</Pressable>
+          {hasNativeIOSChrome ? <IOSAction symbol="folder.badge.plus" title="打开本机媒体" onPress={p.chooseFile} disabled={p.busy} style={{ marginTop: 20 }} /> : (          <Pressable accessibilityRole="button" onPress={p.chooseFile} disabled={p.busy} style={[s.choose, { borderColor: c.line }]}>{label("＋  打开本机媒体", false, { color: c.accent })}</Pressable>) }
           {label(`可多选文件加入列表。当前：${PLAYBACK_MODE_LABELS[p.playbackMode]}。`, true, s.help)}
         </View>
       </ScrollView>
       <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
-        <View style={[s.card, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
+        <View style={[s.card, hasNativeIOSChrome && { borderWidth: 0, borderRadius: 22, padding: 18 }, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
           <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2} onInteractionChange={sceneInteraction} />}</View>
@@ -256,15 +273,15 @@ export function RemotePlayer(p: Props) {
         </View>
         </View>
         {hasNativeIOSChrome && <View style={{ position: "absolute", right: 18, top: 22 }}><IOSIconButton symbol="xmark" label="关闭设置" onPress={() => setSettings(false)} size={40} symbolSize={16} /></View>}
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.sheetContent}>
+        <ScrollView ref={settingsScroll} showsVerticalScrollIndicator={false} contentContainerStyle={s.sheetContent}>
           <View style={s.quickActions}>
             {[{ name: "重新播放", action: p.play, disabled: p.busy || !p.selectedUri }, { name: "停止播放", action: p.stop, disabled: p.busy || !p.playing }].map(action =>
-              <Pressable key={action.name} accessibilityRole="button" disabled={action.disabled} onPress={() => { setSettings(false); action.action(); }}
+              hasNativeIOSChrome ? <IOSAction key={action.name} symbol={action.name === "重新播放" ? "arrow.counterclockwise" : "stop.fill"} title={action.name} disabled={action.disabled} onPress={() => { setSettings(false); action.action(); }} style={{ flex: 1 }} /> : <Pressable key={action.name} accessibilityRole="button" disabled={action.disabled} onPress={() => { setSettings(false); action.action(); }}
                 style={({ pressed }) => [s.quickAction, { backgroundColor: c.panel, opacity: action.disabled ? .35 : pressed ? .65 : 1 }]}>{label(action.name, false, s.settingTitle)}</Pressable>)}
           </View>
-          <Pressable accessibilityRole="button" disabled={p.busy} onPress={() => { setSettings(false); p.chooseFile(); }} style={[s.settingsCard, s.settingRow, { backgroundColor: c.panel }]}>
+          {hasNativeIOSChrome ? <IOSAction symbol="folder.badge.plus" title="打开本机媒体" subtitle="添加歌曲到播放列表" disabled={p.busy} onPress={() => { setSettings(false); p.chooseFile(); }} /> : (<Pressable accessibilityRole="button" disabled={p.busy} onPress={() => { setSettings(false); p.chooseFile(); }} style={[s.settingsCard, s.settingRow, { backgroundColor: c.panel }]}>
             <View style={s.settingCopy}>{label("打开本机媒体", false, s.settingTitle)}{label("添加歌曲到播放列表", true, s.settingDescription)}</View>{label("›", true, { fontSize: 26 })}
-          </Pressable>
+          </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
@@ -277,14 +294,14 @@ export function RemotePlayer(p: Props) {
               {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 360RA-13／KU100，可先选择房间" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
             </View>
           </>}
-          {label("空间渲染", true, s.groupTitle)}
+          {settingsHeading("空间渲染", "settings-spatial")}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label(p.hrtfSet === "standard" ? "标准 KU100 HRTF" : p.hrtfSet === "dense-raw" ? "原始 KU100 · 61 方向测量" : "61 方向 HRTF", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             {renderingPresets.map(profile => {
               const selected = p.hrtfSet === profile.hrtfSet && p.directObjects === profile.direct && p.directionalObjects === profile.directional && p.nearField === profile.nearField && p.roomId === profile.roomId && Math.abs(p.hrtfWetWeight - profile.hrtfWetWeight) < 1e-6;
               const disabled = p.systemSpatial360RAActive || p.busy || p.roomBusy || p.nearFieldBusy;
-              return <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? "#167d72" : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
+              return hasNativeIOSChrome ? <IOSAction key={profile.id} row selected={selected} symbol={selected ? "checkmark.circle.fill" : "circle"} title={profile.label} subtitle={profile.description} label={`空间渲染预设：${profile.label}。${profile.description}`} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} /> : <Pressable key={profile.id} accessibilityRole="radio" accessibilityLabel={`空间渲染预设：${profile.label}`} accessibilityState={{ checked: selected, disabled }} disabled={disabled} onPress={() => p.setRenderingPreset(profile.id)} style={[s.roomOption, { borderColor: selected ? "#167d72" : c.line, backgroundColor: selected ? c.soft : "transparent" }]}>
                 <View style={s.settingCopy}>{label(profile.label, false, s.settingTitle)}{label(profile.description, true, s.settingDescription)}</View>{label(selected ? "●" : "○", !selected, { fontSize: 20 })}
               </Pressable>;
             })}
@@ -295,21 +312,22 @@ export function RemotePlayer(p: Props) {
             <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
           </View>
           {label("实际方向会自动启用逐对象处理；两项均关闭时使用虚拟扬声器。", true, s.groupHint)}
-          {label("距离与房间", true, s.groupTitle)}
+          {settingsHeading("距离与房间", "settings-room")}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.settingRow}><View style={s.settingCopy}>{label("近场声源", false, s.settingTitle)}{label("保留近距离声源的双耳差异", true, s.settingDescription)}</View><Switch accessibilityLabel="近距离双耳差异" trackColor={{ false: c.line, true: "#167d72" }} thumbColor="#ffffff" value={p.nearField} disabled={p.systemSpatial360RAActive || p.busy || p.roomBusy || p.nearFieldBusy} onValueChange={enabled => p.setNearField(enabled, p.metresPerUnit)} /></View>
             <View style={[s.cardDivider, { backgroundColor: c.line }]} />
             <View style={s.settingRow}><View style={s.settingCopy}>{label("距离映射", false, s.settingTitle)}{label(p.nearFieldBusy ? "正在应用…" : "每个坐标单位对应的距离", true, s.settingDescription)}</View>
-              <View style={[s.stepper, { backgroundColor: c.field }]}>
+              {hasNativeIOSChrome ? <View style={{ alignItems: "center", gap: 4 }}>{label(`${p.metresPerUnit.toFixed(2)} m`, false, { fontSize: 13, fontVariant: ["tabular-nums"] })}<IOSDistanceStepper value={p.metresPerUnit} disabled={p.systemSpatial360RAActive || p.busy || p.nearFieldBusy} onChange={value => p.setNearField(p.nearField, value)} /></View> : (              <View style={[s.stepper, { backgroundColor: c.field }]}>
                 <Pressable accessibilityRole="button" accessibilityLabel="减小近场距离映射" style={s.stepperButton} disabled={p.systemSpatial360RAActive || p.busy || p.nearFieldBusy || p.metresPerUnit <= .25} onPress={() => p.setNearField(p.nearField, Math.max(.25, Math.round((p.metresPerUnit-.05)*100)/100))}>{label("−", false, { fontSize: 20 })}</Pressable>
                 {label(`${p.metresPerUnit.toFixed(2)} m`, false, { fontSize: 13, fontVariant: ["tabular-nums"] })}
                 <Pressable accessibilityRole="button" accessibilityLabel="增大近场距离映射" style={s.stepperButton} disabled={p.systemSpatial360RAActive || p.busy || p.nearFieldBusy || p.metresPerUnit >= 4} onPress={() => p.setNearField(p.nearField, Math.min(4, Math.round((p.metresPerUnit+.05)*100)/100))}>{label("＋", false, { fontSize: 20 })}</Pressable>
-              </View>
+              </View>)}
+
             </View>
           </View>
           <View style={[s.settingsCard, { backgroundColor: c.panel, marginTop: 12 }]}>
             <View style={s.profileHeader}>{label(`房间仿真 · ${p.layout}`, false, s.settingTitle)}{label(p.roomBusy ? "切换中…" : p.systemSpatial360RAActive ? p.systemSpatial360RA ? "系统输出已旁路" : "下次 SDA 播放应用" : p.roomId ? "已开启" : "已关闭", true, s.settingDescription)}</View>
-            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: (p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={(p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
+            {[{ id: "", name: "关闭", layout: "" }, ...p.rooms.filter(room => room.layout === p.layout)].map(room => hasNativeIOSChrome ? <IOSAction key={room.id} row selected={room.id === p.roomId} symbol={room.id === p.roomId ? "checkmark.circle.fill" : "circle"} title={room.id && room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name} subtitle={room.id ? `${room.layout} · Windows 房间资产` : "使用直接双耳渲染"} disabled={(p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} /> : <Pressable key={room.id} accessibilityRole="radio" accessibilityState={{ checked: room.id === p.roomId, disabled: (p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy }} accessibilityLabel={room.id ? "近场录音棚房间仿真" : "关闭房间仿真"} disabled={(p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy} onPress={() => p.setRoom(room.id)} style={[s.roomOption, { borderColor: room.id === p.roomId ? "#167d72" : c.line, backgroundColor: room.id === p.roomId ? c.soft : "transparent", opacity: p.roomBusy ? .5 : 1 }]}>
               <View style={s.settingCopy}>{label(room.id && room.name.startsWith("SDA Near-field Control Room") ? "近场录音棚" : room.name, false, s.settingTitle)}{!!room.id && label(`${room.layout} · Windows 房间资产`, true, s.settingDescription)}</View>{label(room.id === p.roomId ? "●" : "○", room.id !== p.roomId, { fontSize: 20 })}
             </Pressable>)}
           </View>

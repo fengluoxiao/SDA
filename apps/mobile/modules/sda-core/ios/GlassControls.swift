@@ -6,6 +6,13 @@ final class GlassButtonControl: UIView {
  let button = UIButton(type: .system)
  var action: (() -> Void)?
  var symbol = "plus" { didSet { if symbol != oldValue { update() } } }
+ var title = "" { didSet { if title != oldValue { update() } } }
+ var subtitle = "" { didSet { if subtitle != oldValue { update() } } }
+ var row = false { didSet { if row != oldValue { update() } } }
+ var selected = false { didSet { if selected != oldValue { update() } } }
+ var choices: [String] = [] { didSet { if choices != oldValue { updateMenu() } } }
+ var choiceIndex = -1 { didSet { if choiceIndex != oldValue { updateMenu() } } }
+ var choose: ((Int) -> Void)?
  var label = "" { didSet { if label != oldValue { update() } } }
  var enabled = true { didSet { button.isEnabled = enabled } }
  var prominent = false { didSet { if prominent != oldValue { update() } } }
@@ -20,6 +27,7 @@ final class GlassButtonControl: UIView {
  required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
  override func layoutSubviews() { super.layoutSubviews(); button.frame = bounds }
  private func update() {
+  materialKind = "legacyButton"
   var config = prominent ? UIButton.Configuration.filled() : UIButton.Configuration.gray()
   #if compiler(>=6.2)
   if #available(iOS 26.0, *), NSClassFromString("UIGlassEffect") != nil {
@@ -27,17 +35,44 @@ final class GlassButtonControl: UIView {
    materialKind = "liquidGlass"
   }
   #endif
+  if row {
+   config = .plain()
+   config.background.backgroundColor = selected ? UIColor.systemTeal.withAlphaComponent(0.12) : .clear
+   config.background.cornerRadius = 14
+   materialKind = "nativeRow"
+  }
+  config.title = title.isEmpty ? nil : title
+  config.subtitle = subtitle.isEmpty ? nil : subtitle
+  config.titleLineBreakMode = .byTruncatingTail
+  config.subtitleLineBreakMode = .byTruncatingTail
+  config.titleAlignment = .leading
+  config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+   var result = attributes; result.font = UIFont.preferredFont(forTextStyle: .body); return result
+  }
+  config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+   var result = attributes; result.font = UIFont.preferredFont(forTextStyle: .caption1); result.foregroundColor = UIColor.secondaryLabel; return result
+  }
+  config.imagePadding = 10
+  config.titlePadding = 4
   config.cornerStyle = .capsule
-  config.contentInsets = .zero
+  config.contentInsets = title.isEmpty ? .zero : NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
   config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .semibold))
   config.baseForegroundColor = prominent ? .white : .label
   if prominent { config.baseBackgroundColor = .systemTeal }
   button.configuration = config
+  button.contentHorizontalAlignment = row ? .leading : .center
+  button.accessibilityTraits = selected ? [.button, .selected] : [.button]
   button.isEnabled = enabled
   button.accessibilityLabel = label
   button.accessibilityIdentifier = "sda.chrome." + label
  }
- @objc private func pressed() { action?() }
+ private func updateMenu() {
+  button.showsMenuAsPrimaryAction = !choices.isEmpty
+  button.menu = choices.isEmpty ? nil : UIMenu(children: choices.enumerated().map { index, name in
+   UIAction(title: name, state: index == choiceIndex ? .on : .off) { [weak self] _ in self?.choose?(index) }
+  })
+ }
+ @objc private func pressed() { if choices.isEmpty { action?() } }
 }
 
 final class GlassTabsControl: UIView {
@@ -141,4 +176,41 @@ final class MaterialSurfaceControl: UIView {
   effectView.effect = UIAccessibility.isReduceTransparencyEnabled ? nil : UIBlurEffect(style: .systemMaterial)
   effectView.backgroundColor = UIAccessibility.isReduceTransparencyEnabled ? .systemGroupedBackground : .clear
  }
+}
+
+// Keep the native thumb under the finger despite frequent React status updates.
+final class NativeSliderControl: UIView {
+ let slider = UISlider()
+ var changed: ((Double) -> Void)?
+ var tracking: ((Bool) -> Void)?
+ var value: Double = 1 { didSet { if !slider.isTracking { slider.value = Float(value) } } }
+ override init(frame: CGRect) {
+  super.init(frame: frame); addSubview(slider)
+  slider.minimumValue = 0; slider.maximumValue = 1
+  slider.minimumValueImage = UIImage(systemName: "speaker.fill")
+  slider.maximumValueImage = UIImage(systemName: "speaker.wave.3.fill")
+  slider.tintColor = .systemTeal; slider.accessibilityLabel = "音量"
+  slider.addTarget(self, action: #selector(started), for: .touchDown)
+  slider.addTarget(self, action: #selector(moved), for: .valueChanged)
+  slider.addTarget(self, action: #selector(ended), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+ }
+ required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+ override func layoutSubviews() { super.layoutSubviews(); slider.frame = bounds }
+ override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { tracking?(false) } }
+ @objc private func started() { tracking?(true) }
+ @objc private func moved() { changed?(Double(slider.value)) }
+ @objc private func ended() { changed?(Double(slider.value)); tracking?(false) }
+}
+final class NativeStepperControl: UIView {
+ let stepper = UIStepper()
+ var changed: ((Double) -> Void)?
+ override init(frame: CGRect) {
+  super.init(frame: frame); addSubview(stepper)
+  stepper.minimumValue = 0.25; stepper.maximumValue = 4; stepper.stepValue = 0.05
+  stepper.tintColor = .systemTeal; stepper.accessibilityLabel = "距离映射，单位米"
+  stepper.addTarget(self, action: #selector(moved), for: .valueChanged)
+ }
+ required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+ override func layoutSubviews() { super.layoutSubviews(); stepper.center = CGPoint(x: bounds.midX, y: bounds.midY) }
+ @objc private func moved() { changed?((stepper.value * 100).rounded() / 100) }
 }

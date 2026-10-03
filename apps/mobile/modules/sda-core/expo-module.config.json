@@ -13,7 +13,9 @@
       "SdaModule",
       "SdaGlassButtonModule",
       "SdaGlassTabsModule",
-      "SdaMaterialSurfaceModule"
+      "SdaMaterialSurfaceModule",
+      "SdaNativeSliderModule",
+      "SdaNativeStepperModule"
     ]
   }
 }
