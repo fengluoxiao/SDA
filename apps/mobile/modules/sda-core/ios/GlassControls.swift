@@ -211,6 +211,6 @@ final class NativeStepperControl: UIView {
   stepper.addTarget(self, action: #selector(moved), for: .valueChanged)
  }
  required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
- override func layoutSubviews() { super.layoutSubviews(); stepper.center = CGPoint(x: bounds.midX, y: bounds.midY) }
+ override func layoutSubviews() { super.layoutSubviews(); stepper.sizeToFit(); stepper.center = CGPoint(x: bounds.midX, y: bounds.midY) }
  @objc private func moved() { changed?((stepper.value * 100).rounded() / 100) }
 }
