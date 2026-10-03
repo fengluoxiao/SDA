@@ -20,9 +20,9 @@ private enum ChromeSmoke {
     var views: [[String: Any]] = []
     var navigationBars: [[String: Any]] = []
     func visit(_ view: UIView) {
-     // Hidden/transparent ancestors also hide their descendants.
-     guard view.window != nil, !view.isHidden, view.alpha > 0.01 else { return }
-     if view.bounds.width > 0 && view.bounds.height > 0 {
+     // UIWindow.window can be nil: still traverse its mounted descendants.
+     // Test visibility only when recording, never cut off the window subtree.
+     if view.window != nil && !view.isHidden && view.alpha > 0.01 && view.bounds.width > 0 && view.bounds.height > 0 {
       let text = (view as? UILabel)?.text ?? ""
       views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "text": text, "alpha": view.alpha, "width": view.bounds.width, "height": view.bounds.height])
       if let bar = view as? UINavigationBar {
