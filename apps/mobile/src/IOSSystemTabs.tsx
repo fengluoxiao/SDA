@@ -10,12 +10,12 @@ export const swiftUI: typeof import("@expo/ui/swift-ui") | null =
     ? require("@expo/ui/swift-ui") : null;
 export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
-export function IOSSystemTabs({ selected, onChange, children, accessory, fallback, accent, theme, backgroundColor }: {
+export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor }: {
   selected: number; onChange(index: number): void; children: React.ReactNode;
-  accessory: React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
+  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
 }) {
   const pages = React.Children.toArray(children);
-  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} accent={accent} theme={theme} backgroundColor={backgroundColor} />;
+  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} />;
   if (!swiftUI) return <><View style={{ flex: 1 }}>{pages}</View>{selected !== 0 && accessory}{fallback}</>;
   const { Host, TabView, RNHostView, VStack } = swiftUI;
   const { tabViewStyle, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");

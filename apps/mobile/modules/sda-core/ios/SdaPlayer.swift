@@ -54,7 +54,10 @@ final class SdaPlayer {
  func command(_ op: String, _ args: [String: Any] = [:]) throws -> Any {
   if let system = systemSpatial {
    switch op {
-   case "status": _ = try system.objects(decodeReply); return system.status()
+   // Status is queried by the feeder every ~20 ms. Do not serialize the
+   // entire object graph here; explicit objects + the native 1 s tick drain
+   // consumed events even when JS is suspended in the background.
+   case "status": return system.status()
    case "objects": return try system.objects(decodeReply)
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true

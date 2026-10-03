@@ -25,7 +25,7 @@ export function IOSPlayer(p: PlayerProps) {
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
-  const [page, setPage] = useState(sceneSmoke ? 2 : chromeSmoke === "library" ? 1 : 0);
+  const [page, setPage] = useState(sceneSmoke ? 2 : (chromeSmoke === "library" || chromeSmoke === "mini-player") ? 1 : 0);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
   const [librarySize, setLibrarySize] = useState({ viewport: 0, content: 0 });
@@ -84,8 +84,8 @@ export function IOSPlayer(p: PlayerProps) {
   const cover = (size: number) => p.metadata.coverUri
     ? <Image source={{ uri: p.metadata.coverUri }} resizeMode="cover" accessibilityLabel={(p.metadata.album || title) + " 封面"} style={{ width: size, height: size, borderRadius: size > 100 ? 18 : 8 }} />
     : <View accessibilityLabel="无专辑封面" style={[s.emptyCover, { width: size, height: size, borderRadius: size > 100 ? 18 : 8, backgroundColor: c.field }]}>{label("♫", true, { fontSize: size > 100 ? 56 : 23 })}</View>;
-  const miniPlayer = () => !!p.selectedUri && <View style={[s.miniPlayer, { backgroundColor: c.panel, borderColor: c.line }]}>
-    <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(40)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text><Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text></View></Pressable>
+  const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && <View style={[s.miniPlayer, environment ? s.nativeMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(environment === "inline" ? 28 : 40)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text>{environment !== "inline" && <Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text>}</View></Pressable>
     {icon(playing ? "pause.fill" : "play.fill", playing ? "暂停" : "播放", togglePlayback, p.busy || !p.selectedUri, 44, playing ? "Ⅱ" : "▷")}
   </View>;
   const heading = (name: string, stage = "") => <View onLayout={event => {
@@ -107,7 +107,7 @@ export function IOSPlayer(p: PlayerProps) {
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} backgroundColor={c.bg} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor={c.bg} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, s.playerContent, { gap: playerGap }, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
@@ -225,6 +225,7 @@ const s = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: "600" }, queueRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 15, borderBottomWidth: StyleSheet.hairlineWidth },
   queueCover: { width: 49, height: 49, borderRadius: 8 }, queueTitle: { fontSize: 15, lineHeight: 21 }, queueArtist: { fontSize: 12, marginTop: 5 },
   emptyLibrary: { paddingVertical: 35, gap: 10 }, libraryHint: { fontSize: 12, lineHeight: 20, marginTop: 28 },
+  nativeMiniPlayer: { flex: 1, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", paddingHorizontal: 12, paddingVertical: 4 },
   miniPlayer: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, padding: 8 },
   miniSong: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }, miniTitle: { fontSize: 13, lineHeight: 18 }, miniArtist: { fontSize: 11, marginTop: 3 },
   tabs: { marginTop: 10 }, fallbackTabs: { flexDirection: "row", padding: 5, borderWidth: StyleSheet.hairlineWidth, borderRadius: 26 }, fallbackTab: { flex: 1, minHeight: 50, alignItems: "center", justifyContent: "center", borderRadius: 22 },

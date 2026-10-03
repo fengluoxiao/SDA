@@ -9,15 +9,17 @@ import { IOS_TABS } from "./ios-ui-model";
 // installed SDA versions may expose different native navigation surfaces.
 export const hasUIKitIOSTabs = Platform.OS === "ios" &&
   ["RNSTabsHostIOS", "RNSTabsScreenIOS"].every(name => UIManager.hasViewManagerConfig(name));
+export const hasUIKitTabAccessory = hasUIKitIOSTabs && Number(Platform.Version) >= 26 &&
+  ["RNSTabsBottomAccessory", "RNSTabsBottomAccessoryContent"].every(name => UIManager.hasViewManagerConfig(name));
 if (__DEV__ && Platform.OS === "ios") {
   console.info("[SDA UI] tab bar:", hasUIKitIOSTabs ? "UIKit / explicit transparent appearances" : "SwiftUI compatibility / UIKit managers unavailable");
 }
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, accent, theme, backgroundColor }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor }: {
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
-  accessory: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
+  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
 }) {
   const [provenance, setProvenance] = useState(0);
   if (!screens) return null;
@@ -35,7 +37,12 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, accent, the
     <Tabs.Host
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
       nativeContainerStyle={{ backgroundColor }} colorScheme={theme}
-      ios={{ tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never" }}
+      ios={{ tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never",
+        // The factory is mounted twice by screens. Its content has no local
+        // playback state/effects; both variants act on the same parent engine.
+        bottomAccessory: hasUIKitTabAccessory && nativeAccessory ? nativeAccessory : undefined,
+        bottomAccessoryHidden: selected === 0 || !nativeAccessory,
+      }}
       onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {
         setProvenance(nativeEvent.provenance);
         const index = Number(nativeEvent.selectedScreenKey);
@@ -51,7 +58,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, accent, the
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor }}>
           <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor }}>
-            {pages[index]}{index !== 0 && accessory}
+            {pages[index]}{index !== 0 && !(hasUIKitTabAccessory && nativeAccessory) && accessory}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}

@@ -129,14 +129,30 @@ export default class App extends React.Component<Record<string, never>, State> {
   private changingTrack = false;
   private poller?: ReturnType<typeof setInterval>;
 
+  private foreground = AppState.currentState !== "background" && AppState.currentState !== "inactive";
+
+  private restartStatusPolling() {
+    if (this.poller) clearInterval(this.poller);
+    // Native audio feeds independently of JS. Background JS only handles
+    // end/error while runnable; never poll objects or rebuild hidden UI.
+    this.poller = setInterval(() => this.pollStatus(), Platform.OS === "ios" ? (this.foreground ? 125 : 1000) : 80);
+  }
+
   componentDidMount() {
     const showPlayback = () => this.setState(previous => ({ playbackPageRequest: previous.playbackPageRequest + 1 }));
     this.lifecycleSubscriptions.push(Linking.addEventListener("url", ({ url }) => {
       if (/^(sda|app\.sda\.mobile):\/\/now-playing(?:[/?#]|$)/.test(url)) showPlayback();
     }));
     this.lifecycleSubscriptions.push(AppState.addEventListener("change", state => {
+      this.foreground = state === "active";
+      if (this.poller) this.restartStatusPolling();
       if (state === "active" && (this.state.playing || this.state.ended)) { showPlayback(); this.pollStatus(); }
     }));
+    // UI-only simulator fixture: never start a decoder/audio session. The
+    // native smokeStage export returns an empty string in ordinary launches.
+    if ((globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() === "mini-player") {
+      this.setState({ selectedUri: "ci://mini-player", fileName: "Mini-player", metadata: { title: "正在播放的歌曲", artist: "SDA UI smoke" } });
+    }
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
@@ -284,7 +300,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
     try {
       const engine = this.getEngine();
-      if (!this.poller) this.poller = setInterval(() => this.pollStatus(), 80);
+      if (!this.poller) this.restartStatusPolling();
       this.setState({ hrtfStatus: engine.hrtfStatus() });
       engine.stop();
       const imported = await prepare360RaMp4(engine, track.uri, track.name);
@@ -314,9 +330,15 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const engine = this.engine;
       if (!engine || !this.state.playing || this.state.busy || this.changingTrack) return;
-      const value = JSON.parse(engine.status()) as Partial<PlaybackStatus>;
       const feedError = engine.feedError();
       const feedDone = engine.feedDone();
+      if (Platform.OS === "ios" && !this.foreground) {
+        if (feedDone || feedError) this.setState({ playing: !feedDone, ended: feedDone, error: feedError ?? this.state.error }, () => {
+          if (feedDone && !feedError) this.advancePlaylist();
+        });
+        return;
+      }
+      const value = JSON.parse(engine.status()) as Partial<PlaybackStatus>;
       const objects = JSON.parse(engine.objects()) as Record<string, ObjectPoint>;
       this.setState({
         preparingAudio: (value as Partial<PlaybackStatus> & { preparingAudio?: boolean }).preparingAudio === true,
@@ -334,15 +356,19 @@ export default class App extends React.Component<Record<string, never>, State> {
           : `KU100${value.hrtfDirections === 61 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"}${value.nearFieldEnabled ? " · 近场" : ""}${value.roomEnabled ? " · 房间仿真" : " · 房间关闭"} · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {
-          const items = this.state.queue.map(track => ({ id: track.contentHash }));
-          const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
-          const nextId = nextPlaylistItemId(items, currentId, this.state.playbackMode);
-          if (nextId !== null) void this.selectTrack(this.state.queue.findIndex(track => track.contentHash === nextId));
+          this.advancePlaylist();
         }
       });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  private advancePlaylist() {
+    const items = this.state.queue.map(track => ({ id: track.contentHash }));
+    const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
+    const nextId = nextPlaylistItemId(items, currentId, this.state.playbackMode);
+    if (nextId !== null) void this.selectTrack(this.state.queue.findIndex(track => track.contentHash === nextId));
   }
 
   private togglePause = () => {

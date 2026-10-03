@@ -14,6 +14,7 @@ final class SystemSpatial360 {
  var started = false
  var paused = false
  var buffering = false
+ var underruns = 0
  var closed = false
  var balanceEnabled = false
  var inputFinished = false
@@ -84,7 +85,7 @@ final class SystemSpatial360 {
   // Freeze the presentation clock at the end of submitted PCM on underrun.
   // Otherwise newly decoded buffers would carry timestamps already in the past.
   if started && !paused && !buffering && consumed >= enqueued {
-   synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true
+   synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true; underruns += 1
   }
   // Never submit unbalanced startup PCM while the full-track analysis is pending.
   if preparingAudio { return }
@@ -111,8 +112,14 @@ final class SystemSpatial360 {
    if !started { firstSubmissionBalanced = balanceEnabled && measurementReady }
    renderer.enqueue(sample)
    enqueued += UInt64(frames); queued -= UInt64(frames)
-   if !started { synchronizer.setRate(1, time:.zero); started = true }
-   else if buffering { synchronizer.setRate(1,time:synchronizer.currentTime()); buffering = false }
+  }
+  // Never restart on a single 21 ms packet after underrun. Short tracks / EOF
+  // must drain even if they cannot meet the reserve, including pause/resume.
+  if (!started || buffering) && SystemAudioBufferPolicy.shouldStart(
+    enqueued:enqueued, consumed:consumed, queued:queued,
+    inputFinished:inputFinished, rebuffering:buffering, paused:paused) {
+   synchronizer.setRate(1, time:started ? synchronizer.currentTime() : .zero)
+   started = true; buffering = false
   }
  }
  // Replay only the bounded, not-yet-consumed Apple queue after a recoverable interruption.
@@ -159,6 +166,7 @@ final class SystemSpatial360 {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
    "fifoFrames":decoded-clock,"outputChannels":12,"outputLayout":"7.1.4","systemSpatial360RAActive":true,
+   "systemOutputUnderruns":underruns,"systemOutputBuffering":buffering,"systemOutputQueuedFrames":enqueued-clock,
    "preparingAudio":preparingAudio,"balanceMeasurementReady":measurementReady,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
    "channelOrder":["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]]
  }

@@ -97,7 +97,7 @@ assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360R
 // Exercise the UI adapter with mocked native components (not a visual/native
 // runtime test): appearances, controlled selection, capability-safe imports.
 const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context'] });
-function loadNativeTabs(platform, available) {
+function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true) {
   const module = { exports: {} };
   let nativeImports = 0;
   const mockReact = {
@@ -106,7 +106,7 @@ function loadNativeTabs(platform, available) {
   };
   const mockRequire = name => {
     if (name === 'react') return mockReact;
-    if (name === 'react-native') return { Platform: { OS: platform }, UIManager: { hasViewManagerConfig: () => available }, View: 'View' };
+    if (name === 'react-native') return { Platform: { OS: platform, Version: version }, UIManager: { hasViewManagerConfig: name => available && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable) }, View: 'View' };
     if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView' };
     if (name === 'react-native-screens') {
       nativeImports++;
@@ -216,3 +216,29 @@ const sharedVolume = ui.slice(ui.indexOf('<View style={[s.volume,'), ui.indexOf(
 assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
 assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
 console.log('Expo Go/release parity checks passed: shared home header, transport and volume controls');
+
+// Both native accessory environments share actions/state with the main player.
+const accessoryProps = { selected: 1, onChange() {}, pages: ['player', 'library', 'scene'], accessory: 'legacy-card', nativeAccessory: environment => 'content-' + environment, accent: '#28754a', theme: 'light', backgroundColor: '#f0f3f0' };
+const accessoryHost = adapter => adapter.api.IOSUIKitTabs(accessoryProps).props.children[0];
+const systemHost = accessoryHost(nativeAdapter);
+assert.equal(systemHost.props.ios.bottomAccessory('regular'), 'content-regular');
+assert.equal(systemHost.props.ios.bottomAccessory('inline'), 'content-inline');
+assert.equal(systemHost.props.ios.bottomAccessoryHidden, false);
+for (const screen of systemHost.props.children[0]) {
+  const page = screen.props.children[0].props.children[0];
+  assert.equal(page.props.children[1], false, 'native container must replace, not stack with, legacy card');
+}
+const playerHost = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, selected: 0}).props.children[0];
+assert.equal(playerHost.props.ios.bottomAccessoryHidden, true);
+const emptyHost = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, nativeAccessory: undefined, accessory: false}).props.children[0];
+assert.equal(emptyHost.props.ios.bottomAccessory, undefined);
+assert.equal(emptyHost.props.ios.bottomAccessoryHidden, true);
+for (const adapter of [loadNativeTabs('ios', true, 25), loadNativeTabs('ios', true, 26, false)]) {
+  const fallbackHost = accessoryHost(adapter);
+  assert.equal(fallbackHost.props.ios.bottomAccessory, undefined);
+  const library = fallbackHost.props.children[0][1].props.children[0].props.children[0];
+  assert.equal(library.props.children[1], 'legacy-card');
+}
+assert.match(ui, /nativeAccessory=\{p.selectedUri \? miniPlayer : undefined\}/);
+assert.match(ui, /environment \? s.nativeMiniPlayer/);
+console.log('Mini-player checks passed: official accessory, both environments, hidden/empty, old-OS/missing-manager fallback, no double card');

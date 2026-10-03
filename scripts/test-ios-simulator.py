@@ -96,6 +96,8 @@ try:
     navigation=any('NavigationBar' in c for c in classes)
     ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
     if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
+    if stage == 'mini-player':
+     ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))
     if ready:break
    time.sleep(1)
   else:
@@ -104,7 +106,7 @@ try:
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
  chrome_report('scene')
- for stage in ['player','library','settings','settings-spatial','settings-room']:
+ for stage in ['player','library','mini-player','settings','settings-spatial','settings-room']:
   run('xcrun','simctl','terminate',udid,'app.sda.mobile')
   os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
