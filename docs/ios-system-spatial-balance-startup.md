@@ -16,8 +16,8 @@ When normalization is enabled before first output:
 
 1. Restore a complete CICP19 measurement from `sda.loudness.system714.v1.<hash>`.
    It is deliberately separate from the KU100/reference cache.
-2. If no valid cache exists, scan the entire MHAS source with an independent
-   7.1.4 decoder on the existing serial decode queue. Do not retain PCM or object
+2. If no valid cache exists, scan the entire MHAS source using the exclusive
+   7.1.4 decoder in analysis-only mode on the serial decode queue. Do not retain PCM or object
    events; do not start the Apple presentation clock or enqueue audible samples.
 3. Freeze that full-track gain before reading playback PCM. The first nonzero
    sample, including after a silent intro, has the same gain as subsequent PCM.
@@ -27,8 +27,8 @@ When normalization is enabled before first output:
    subsequent plays restore the result before the first submission. The UI uses
    the existing preparing-audio state; the media clock remains at zero.
 
-Analysis does not hold the player lock while decoding and checks the playback
-session generation per compressed chunk and before installing/caching results.
+Analysis takes the player lock only for each bounded compressed chunk and checks
+the session generation per chunk and before installing/caching results.
 Switching track/stop cannot publish an old result into a new decoder. Import-copy
 behavior, CICP19 channel order, object time alignment and KU100 rendering are not
 changed. A user enabling normalization after playback already began retains the

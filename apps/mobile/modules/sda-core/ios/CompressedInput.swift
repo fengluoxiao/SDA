@@ -36,11 +36,17 @@ final class CompressedInput {
   guard roots.contains(where: { path.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) else { return }
   let value = try fm.attributesOfItem(atPath:path)[.protectionKey]
   let protection = (value as? FileProtectionType) ?? (value as? String).map { FileProtectionType(rawValue:$0) }
-  if protection == .complete || protection == .completeUnlessOpen {
-   try fm.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:path)
+  if let desired = lockedPlaybackProtection(protection), desired != protection {
+   try fm.setAttributes([.protectionKey:desired],ofItemAtPath:path)
   }
   #endif
  }
+ #if os(iOS)
+ static func lockedPlaybackProtection(_ protection: FileProtectionType?) -> FileProtectionType? {
+  if protection == .complete || protection == .completeUnlessOpen { return .completeUntilFirstUserAuthentication }
+  return protection
+ }
+ #endif
  // Resume the compressed reader only; the Rust decoder and playback clock stay intact.
  func reopenAfterInterruption() throws {
   guard resumeTimeValid else { throw SdaError.message("音轨缺少恢复时间戳，不能安全重读") }

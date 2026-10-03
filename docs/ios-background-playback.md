@@ -41,7 +41,10 @@ Launch a Release app, play real MPEG-H fixtures through KU100 or system 7.1.4,
 then genuinely put SDA in the background by launching Settings. Require the
 native consumed clock to advance by at least eight seconds while SDA has received
 its actual background notification, with the preparation assertion already ended.
-Also require inherited protection conversion and playback/analysis after unlink.
+Also require protection-policy assertions and playback/analysis after unlink.
+CoreSimulator may not implement file protection despite accepting the setter;
+reports explicitly mark actual conversion as unverified in that case. A supported
+protection attribute must still show the expected conversion.
 The report always states `physicalLockVerified: false`.
 
 Pending physical-device checks: a mid-song device lock, a locked uncached

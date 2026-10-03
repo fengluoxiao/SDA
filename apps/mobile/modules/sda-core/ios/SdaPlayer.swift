@@ -566,12 +566,28 @@ final class SdaPlayer {
    var repeated = Data(); for _ in 0..<12 { repeated.append(fixture) }
    try repeated.write(to:clip)
    try FileManager.default.setAttributes([.protectionKey:FileProtectionType.complete],ofItemAtPath:clip.path)
+   let beforeValue = try FileManager.default.attributesOfItem(atPath:clip.path)[.protectionKey]
+   let beforeProtection = (beforeValue as? FileProtectionType) ?? (beforeValue as? String).map { FileProtectionType(rawValue:$0) }
+   // CoreSimulator can accept setAttributes without implementing data protection.
+   // Verify the policy separately, never report physical protection as proven.
+   guard CompressedInput.lockedPlaybackProtection(.complete) == .completeUntilFirstUserAuthentication,
+     CompressedInput.lockedPlaybackProtection(.completeUnlessOpen) == .completeUntilFirstUserAuthentication,
+     CompressedInput.lockedPlaybackProtection(FileProtectionType.none) == FileProtectionType.none,
+     CompressedInput.lockedPlaybackProtection(.completeUntilFirstUserAuthentication) == .completeUntilFirstUserAuthentication else {
+    throw SdaError.message("锁屏副本保护策略不正确")
+   }
    prefs.set(mode == "system",forKey:"sda.systemSpatial360RA"); prefs.set(mode == "system",forKey:"sda.balance")
    prefs.removeObject(forKey:"sda.loudness.system714.v1.ci-background-"+mode)
    _ = try play(clip.absoluteString,"ci-background.mhas",0,"ci-background-"+mode)
    let value = try FileManager.default.attributesOfItem(atPath:clip.path)[.protectionKey]
    let protection = (value as? FileProtectionType) ?? (value as? String).map { FileProtectionType(rawValue:$0) }
-   guard protection == .completeUntilFirstUserAuthentication else { throw SdaError.message("导入副本未调整为锁屏可读保护级别") }
+   let protectionAvailable = beforeProtection == .complete
+   let protectionVerified = protectionAvailable && protection == .completeUntilFirstUserAuthentication
+   #if targetEnvironment(simulator)
+   if protectionAvailable && !protectionVerified { throw SdaError.message("导入副本未调整为锁屏可读保护级别") }
+   #else
+   guard protectionVerified else { throw SdaError.message("导入副本未调整为锁屏可读保护级别") }
+   #endif
    // Mirrors JS discarding an extracted MHAS after playUri returns: both open
    // descriptors must remain valid for playback and the independent full scan.
    try FileManager.default.removeItem(at:clip)
@@ -593,7 +609,8 @@ final class SdaPlayer {
     if let clock = backgroundClock, state.1, state.0 > clock + 8*48000 {
      report = ["ok":true,"mode":mode,"backgroundNotificationObserved":true,
       "backgroundStart":clock,"backgroundEnd":state.0,"preparationAssertionReleased":state.2,
-      "ownedCopyProtectionVerified":true,"unlinkedAnalysisInputVerified":true,"physicalLockVerified":false,
+      "ownedCopyProtectionVerified":protectionVerified,"ownedCopyProtectionPolicyVerified":true,
+      "simulatorFileProtectionAvailable":protectionAvailable,"unlinkedAnalysisInputVerified":true,"physicalLockVerified":false,
       "events":locked { playbackEvents }]
      return
     }
