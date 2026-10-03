@@ -46,3 +46,11 @@ existing smooth live gain transition (not a new full-track startup scan).
 - iOS simulator smoke: uncached preparation and cached replay, requiring the
   full-track measurement and balanced first Apple buffer submission. This is not
   physical AirPods listening validation.
+
+### Exclusive bridge ownership
+
+The MPEG-H bridge supports only one active decoder. The full scan uses the
+current speaker decoder in discard-only mode, under the player lock per bounded
+chunk, then closes/recreates it for playback and installs the measured gain.
+It does not construct a concurrent probe decoder. The separately opened analysis
+reader survives JS unlinking, and per-chunk generation checks protect cancellation.

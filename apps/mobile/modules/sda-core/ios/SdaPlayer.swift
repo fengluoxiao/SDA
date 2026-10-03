@@ -309,31 +309,36 @@ final class SdaPlayer {
    } catch { stopNative(); throw error }
   }
  }
- // Full-track analysis is off the playback lock and owns its own decoder/reader.
- // It discards PCM, so silence/long intros cannot exhaust the bounded playback FIFO.
- // Cancellation is checked per compressed chunk; no old-track result touches a new route.
+ // The bridge owns a single MPEG-H instance. Analyze using that instance,
+ // then recreate it for playback under the same lock. Input has its own reader.
+ // Each chunk is bounded; cancellation cannot free an in-use decoder pointer.
  func prepareSystemBalance(input: CompressedInput?, token: Int, hash: String) throws -> Bool {
-  let needed = locked { generation == token && systemSpatial?.balanceEnabled == true && systemSpatial?.started == false && systemSpatial?.measurementReady == false }
+  let needed = locked { () -> Bool in
+   guard generation == token, let system = systemSpatial,
+     system.balanceEnabled, !system.started, !system.measurementReady else { return false }
+   sda_ios_speakers_measure_only(system.decoder); return true
+  }
   guard needed else { return locked { generation == token } }
-  var error: UnsafeMutablePointer<CChar>?
-  guard let probe = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("360RA 响度分析初始化失败") }
-  defer { sda_ios_speakers_close(probe) }
-  sda_ios_speakers_measure_only(probe)
   guard let analysis = input else { throw SdaError.message("360RA 响度分析输入未打开") }
   while true {
    guard locked({ generation == token && hasPlayback }) else { return false }
-   let more = try autoreleasepool { () throws -> Bool in
-    if let data = try analysis.next(chunkBytes:1024) {
-     _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(probe,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) }; return true
+   let more: Bool? = try autoreleasepool {
+    let data = try analysis.next(chunkBytes:1024)
+    return try locked { () throws -> Bool? in
+     guard generation == token, let system = systemSpatial else { return nil }
+     if let data {
+      _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(system.decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) }; return true
+     }
+     _ = try decodeReply(sda_ios_speakers_feed(system.decoder,nil,0,true)); return false
     }
-    _ = try decodeReply(sda_ios_speakers_feed(probe,nil,0,true)); return false
    }
+   guard let more else { return false }
    if !more { break }
   }
-  let measurement = try json(decodeReply(sda_ios_speakers_measurement(probe)))
   return try locked {
    guard generation == token, let system = systemSpatial else { return false }
-   try system.setMeasurement(measurement,decodeReply:decodeReply)
+   let measurement = try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
+   try system.restartAfterMeasurement(measurement,decodeReply:decodeReply)
    if !hash.isEmpty { prefs.set(measurement,forKey:"sda.loudness.system714.v1."+hash) }
    return true
   }

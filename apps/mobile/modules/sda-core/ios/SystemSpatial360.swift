@@ -5,7 +5,7 @@ import AudioToolbox
 /// MPEG-H -> CICP19 speaker PCM -> Apple renderer. No binaural PCM or SDA effects.
 /// Access only under SdaPlayer.lock, never from an audio realtime callback.
 final class SystemSpatial360 {
- let decoder: UnsafeMutableRawPointer
+ var decoder: UnsafeMutableRawPointer
  let renderer = AVSampleBufferAudioRenderer()
  let synchronizer = AVSampleBufferRenderSynchronizer()
  let format: CMAudioFormatDescription
@@ -139,6 +139,18 @@ final class SystemSpatial360 {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
  var preparingAudio: Bool { !started && balanceEnabled && !measurementReady }
+ // MPEG-H bridge is process-global: analyze and play sequentially, not with
+ // concurrent owners. Called under SdaPlayer.lock before any PCM is submitted.
+ func restartAfterMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
+  guard !started, enqueued == 0 else { throw SdaError.message("响度分析不能重置已开始的播放") }
+  sda_ios_speakers_close(decoder)
+  closed = true // Keep close/deinit safe if recreation fails.
+  var error: UnsafeMutablePointer<CChar>?
+  guard let next = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("360RA 播放解码器重建失败") }
+  decoder = next; closed = false
+  sda_ios_speakers_balance(decoder,balanceEnabled)
+  try setMeasurement(value,decodeReply:decodeReply)
+ }
  func setMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
   _ = try decodeReply(sda_ios_speakers_measured(decoder,value)); measurementReady = true
  }

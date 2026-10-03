@@ -39,7 +39,7 @@ Do not claim that a simulator background check proves physical locking.
 
 Launch a Release app, play real MPEG-H fixtures through KU100 or system 7.1.4,
 then genuinely put SDA in the background by launching Settings. Require the
-native consumed clock to advance by at least two seconds while SDA has received
+native consumed clock to advance by at least eight seconds while SDA has received
 its actual background notification, with the preparation assertion already ended.
 Also require inherited protection conversion and playback/analysis after unlink.
 The report always states `physicalLockVerified: false`.
