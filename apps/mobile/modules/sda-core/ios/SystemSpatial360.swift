@@ -17,6 +17,8 @@ final class SystemSpatial360 {
  var closed = false
  var balanceEnabled = false
  var inputFinished = false
+ var measurementReady = false
+ var firstSubmissionBalanced = false
  var pendingSamples: [(sample: CMSampleBuffer, end: UInt64)] = []
  var interruptionRecoveries = 0
  var pcm = [Float](repeating: 0, count: 1024*12)
@@ -84,7 +86,7 @@ final class SystemSpatial360 {
   if started && !paused && !buffering && consumed >= enqueued {
    synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true
   }
-  // Decode bounded pre-roll before the first submission so balance starts at sample zero.
+  // Never submit unbalanced startup PCM while the full-track analysis is pending.
   if preparingAudio { return }
   while !paused && queued > 0 && renderer.isReadyForMoreMediaData {
    // Bound system queue as well as decoder queue, including when renderer stays ready.
@@ -106,6 +108,7 @@ final class SystemSpatial360 {
     sampleSizeEntryCount:1, sampleSizeArray:&sampleSize, sampleBufferOut:&sample)
    guard result == noErr, let sample else { throw SdaError.message("7.1.4 音频样本创建失败: \(result)") }
    pendingSamples.append((sample:sample,end:enqueued + UInt64(frames)))
+   if !started { firstSubmissionBalanced = balanceEnabled && measurementReady }
    renderer.enqueue(sample)
    enqueued += UInt64(frames); queued -= UInt64(frames)
    if !started { synchronizer.setRate(1, time:.zero); started = true }
@@ -135,13 +138,16 @@ final class SystemSpatial360 {
  func objects(_ decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
- var preparingAudio: Bool { !started && balanceEnabled && !inputFinished && queued < 6*48000 }
+ var preparingAudio: Bool { !started && balanceEnabled && !measurementReady }
+ func setMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
+  _ = try decodeReply(sda_ios_speakers_measured(decoder,value)); measurementReady = true
+ }
  func setBalance(_ enabled: Bool) { balanceEnabled = enabled; sda_ios_speakers_balance(decoder,enabled) }
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
    "fifoFrames":decoded-clock,"outputChannels":12,"outputLayout":"7.1.4","systemSpatial360RAActive":true,
-   "preparingAudio":preparingAudio,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
+   "preparingAudio":preparingAudio,"balanceMeasurementReady":measurementReady,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
    "channelOrder":["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]]
  }
 }

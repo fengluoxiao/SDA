@@ -46,8 +46,11 @@ try:
  if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2:
   raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
  spatial=result.get('system360RA',{})
- if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True or spatial.get('endedStateVerified') is not True:
+ if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True or spatial.get('endedStateVerified') is not True or spatial.get('fullTrackBalancePrepared') is not True or spatial.get('firstSubmissionBalanced') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
+ cached=result.get('system360RACached',{})
+ if cached.get('ok') is not True or cached.get('cachedMeasurementRestored') is not True or cached.get('firstSubmissionBalanced') is not True:
+  raise RuntimeError('360RA system balance cache did not apply before first submission: '+str(cached))
  phase=result.get('phase360RA',{})
  if (phase.get('ok') is not True or phase.get('objects')!=2 or phase.get('renderedObjectStreams')!=2
      or phase.get('coordinateMappingVerified') is not True or phase.get('gainRampVerified') is not True

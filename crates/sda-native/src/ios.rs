@@ -433,6 +433,67 @@ mod tests {
     }
 
     #[test]
+    fn speaker_full_track_balance_handles_silent_intro_from_first_audible_sample() {
+        let mut meter = crate::balance::LoudnessMeter::speakers_7_1_4();
+        let silence = vec![vec![0.0; 4800]; 12];
+        for _ in 0..60 { meter.push(&silence); }
+        // The old six-second queued-PCM gate releases here without a valid gain.
+        assert_eq!(meter.integrated().blocks, 0);
+        let loud: Vec<Vec<f32>> = (0..12).map(|_| (0..4800).map(|i| 0.8*(i as f32*std::f32::consts::TAU*1000.0/48000.0).sin()).collect()).collect();
+        for _ in 0..40 { meter.push(&loud); }
+        let m = meter.integrated();
+        assert!(m.blocks < crate::balance::MIN_BLOCKS); // Complete short loud part is still valid.
+        let gain = 10_f64.powf(crate::balance::master_gain(m.integrated_lufs.unwrap(),m.true_peak_dbtp)/20.0) as f32;
+        assert!(gain < 0.5);
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let h = sda_ios_speakers_create(&mut error);
+            assert!(!h.is_null());
+            let text = CString::new(serde_json::to_string(&m).unwrap()).unwrap();
+            let reply = sda_ios_speakers_measured(h,text.as_ptr());
+            let response: Value = serde_json::from_str(CStr::from_ptr(reply).to_str().unwrap()).unwrap();
+            sda_ios_string_free(reply); assert_eq!(response["ok"],true);
+            sda_ios_speakers_balance(h,true);
+            let host = &mut *h.cast::<SpeakerHost>();
+            host.pcm.extend(std::iter::repeat_n(0.0, 6*48000*12));
+            host.pcm.extend(std::iter::repeat_n(0.8, 1024*12));
+            let mut out = [0.0;1024*12];
+            for _ in 0..(6*48000/1024) { assert_eq!(sda_ios_speakers_read(h,out.as_mut_ptr(),1024),1024); assert!(out.iter().all(|v| *v==0.0)); }
+            let remaining_silence = 6*48000%1024;
+            assert_eq!(sda_ios_speakers_read(h,out.as_mut_ptr(),1024),1024);
+            assert_eq!(out[remaining_silence*12],0.8*gain);
+            assert_eq!(out[1023*12],0.8*gain); // No loud first frame or startup ramp.
+            // Repeated live/offline meter updates must not overwrite the whole-track gain.
+            sda_ios_string_free(sda_ios_speakers_feed(h,std::ptr::null(),0,true));
+            assert_eq!((*h.cast::<SpeakerHost>()).target_gain,gain);
+            sda_ios_speakers_close(h);
+        }
+    }
+
+    #[test]
+    fn speaker_analysis_discards_pcm_and_objects_beyond_playback_backlog() {
+        let bytes = include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let h = sda_ios_speakers_create(&mut error);
+            assert!(!h.is_null());
+            sda_ios_speakers_measure_only(h);
+            for _ in 0..10 {
+                for chunk in bytes.chunks(1024) {
+                    let p = sda_ios_speakers_feed(h,chunk.as_ptr(),chunk.len(),false);
+                    let v: Value = serde_json::from_str(CStr::from_ptr(p).to_str().unwrap()).unwrap();
+                    sda_ios_string_free(p); assert_eq!(v["ok"],true,"{v}");
+                    assert_eq!(v["value"]["queuedFrames"],0);
+                }
+            }
+            let host = &*h.cast::<SpeakerHost>();
+            assert!(host.pcm.is_empty()); assert!(host.events.is_empty());
+            assert!(host.meter.integrated().blocks > 80);
+            sda_ios_speakers_close(h);
+        }
+    }
+
+    #[test]
     fn speaker_balance_is_uniform_smooth_and_toggle_does_not_reset() {
         unsafe {
             let mut error = std::ptr::null_mut();
@@ -471,13 +532,15 @@ struct SpeakerHost {
     target_gain: f32,
     gain: f32,
     read_started: bool,
+    measure_only: bool,
+    fixed_measurement: Option<crate::balance::Measurement>,
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
         Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default(), events: Default::default(), active: Default::default(),
-            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false })).cast(),
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false, measure_only: false, fixed_measurement: None })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
 }
@@ -491,26 +554,54 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
         while let Some(frame) = host.decoder.next_frame() {
             let frames = frame.channels[0].len();
             if host.events.len() + frame.events.len() > 262144 { return Err("speaker object timeline backlog exceeded".into()); }
-            host.events.extend(frame.events);
+            if !host.measure_only { host.events.extend(frame.events); }
             host.events.make_contiguous().sort_by_key(|e| e.sample_pos);
-            host.meter.push(&frame.channels);
+            if host.fixed_measurement.is_none() { host.meter.push(&frame.channels); }
             host.measured_frames += 1;
-            if !host.read_started || host.measured_frames % 8 == 0 {
+            if !host.measure_only && host.fixed_measurement.is_none() && (!host.read_started || host.measured_frames % 8 == 0) {
                 let m = host.meter.integrated();
                 if m.blocks >= crate::balance::MIN_BLOCKS {
                     if let Some(lufs) = m.integrated_lufs { host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32; }
                 }
             }
+            if host.measure_only { continue; }
             if host.pcm.len() + frames*12 > 8*48000*12 { return Err("speaker PCM backlog exceeded".into()); }
             for i in 0..frames { for channel in &frame.channels { host.pcm.push_back(channel[i]); } }
         }
-        if finish {
+        if finish && host.fixed_measurement.is_none() {
             let m = host.meter.integrated();
             if let Some(lufs) = m.integrated_lufs {
                 host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32;
             }
         }
         Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000}))
+    })
+}
+// Analysis uses a separate decoder and keeps no PCM/object backlog. Never audible.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_measure_only(p: *mut std::ffi::c_void) {
+    if !p.is_null() { unsafe { (*p.cast::<SpeakerHost>()).measure_only = true; } }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_measurement(p: *mut std::ffi::c_void) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() { return Err("invalid speaker handle".into()); }
+        let host = unsafe { &*p.cast::<SpeakerHost>() };
+        serde_json::to_value(host.fixed_measurement.clone().unwrap_or_else(|| host.meter.integrated())).map_err(|e| e.to_string())
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_measured(p: *mut std::ffi::c_void, measurement: *const c_char) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() || measurement.is_null() { return Err("invalid speaker measurement".into()); }
+        let host = unsafe { &mut *p.cast::<SpeakerHost>() };
+        let m: crate::balance::Measurement = serde_json::from_str(unsafe { CStr::from_ptr(measurement) }.to_str().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if m.integrated_lufs.is_some_and(|v| !v.is_finite()) || m.true_peak_dbtp.is_some_and(|v| !v.is_finite()) {
+            return Err("nonfinite speaker measurement".into());
+        }
+        host.target_gain = m.integrated_lufs.map_or(1.0, |lufs| 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32);
+        host.fixed_measurement = Some(m);
+        Ok(json!(true))
     })
 }
 #[no_mangle]

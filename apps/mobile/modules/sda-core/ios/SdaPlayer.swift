@@ -53,9 +53,10 @@ final class SdaPlayer {
    case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
    case "volume": system.renderer.volume = (args["volume"] as? NSNumber)?.floatValue ?? 1; return true
    case "finish": try system.feed(nil,finish:true,decodeReply:decodeReply); return ["errors":[]]
-   case "loudness": return "null"
+   case "loudness": return try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
+   case "measured": try system.setMeasurement(args["json"] as? String ?? "",decodeReply:decodeReply); return true
    // Saved SDA preferences never enter the system-rendered path.
-   case "yaw", "resetPose", "measured", "near", "room", "preset", "rendering": return ["bypassed":true]
+   case "yaw", "resetPose", "near", "room", "preset", "rendering": return ["bypassed":true]
    default: throw SdaError.message("系统空间音频不支持该命令: \(op)")
    }
   }
@@ -231,20 +232,48 @@ final class SdaPlayer {
     // Apply persisted balance after the new route/source is fully selected.
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
     _ = try command("yaw",["degrees":yaw])
-    if let cached = prefs.string(forKey:"sda.loudness."+hash) { _ = try? command("measured",["json":cached]) }
+    // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
+    let loudnessKey = (systemSpatial == nil ? "sda.loudness." : "sda.loudness.system714.v1.") + hash
+    if !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
     let token = generation; updateNowPlaying()
-    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash) }
+    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, url:url, name:name) }
     return try json(["layout":layout])
    } catch { stopNative(); throw error }
   }
  }
- func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String) {
+ // Full-track analysis is off the playback lock and owns its own decoder/reader.
+ // It discards PCM, so silence/long intros cannot exhaust the bounded playback FIFO.
+ // Cancellation is checked per compressed chunk; no old-track result touches a new route.
+ func prepareSystemBalance(url: URL, name: String, token: Int, hash: String) throws -> Bool {
+  let needed = locked { generation == token && systemSpatial?.balanceEnabled == true && systemSpatial?.started == false && systemSpatial?.measurementReady == false }
+  guard needed else { return locked { generation == token } }
+  var error: UnsafeMutablePointer<CChar>?
+  guard let probe = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("360RA 响度分析初始化失败") }
+  defer { sda_ios_speakers_close(probe) }
+  sda_ios_speakers_measure_only(probe)
+  let analysis = try CompressedInput(url:url,name:name)
+  while true {
+   guard locked({ generation == token && hasPlayback }) else { return false }
+   let data = try analysis.next(chunkBytes:1024)
+   if let data { _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(probe,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) } }
+   else { _ = try decodeReply(sda_ios_speakers_feed(probe,nil,0,true)); break }
+  }
+  let measurement = try json(decodeReply(sda_ios_speakers_measurement(probe)))
+  return try locked {
+   guard generation == token, let system = systemSpatial else { return false }
+   try system.setMeasurement(measurement,decodeReply:decodeReply)
+   if !hash.isEmpty { prefs.set(measurement,forKey:"sda.loudness.system714.v1."+hash) }
+   return true
+  }
+ }
+ func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, url: URL, name: String) {
   var finished = false
   var lastClock: UInt64 = 0
   var lastProgress = Date()
   var lastInfo = Date.distantPast
   do {
    let systemMode = locked { systemSpatial != nil && generation == token }
+   if systemMode { if !(try prepareSystemBalance(url:url,name:name,token:token,hash:hash)) { return }; lastProgress = Date() }
    while true {
     let shouldWait: Bool? = try locked {
      guard generation == token, hasPlayback else { return nil }
@@ -262,6 +291,9 @@ final class SdaPlayer {
     }
     guard let wait = shouldWait else { return }
     if wait { Thread.sleep(forTimeInterval:0.02); continue }
+    if systemMode && locked({systemSpatial?.preparingAudio == true}) {
+     if !(try prepareSystemBalance(url:url,name:name,token:token,hash:hash)) { return }; lastProgress = Date()
+    }
     let data = mp3 ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
     try locked {
      guard generation == token, hasPlayback else { return }
@@ -273,7 +305,7 @@ final class SdaPlayer {
      if eof {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
-      if let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:"sda.loudness."+hash) }
+      if !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemMode ? "sda.loudness.system714.v1." : "sda.loudness.")+hash) }
       let finalStatus = try command("status") as! [String:Any]
       if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
       finished = true
@@ -369,6 +401,7 @@ final class SdaPlayer {
    report["native360RA"] = try smokeNative360()
    prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
+   report["system360RACached"] = try smokeSystem360(useCache:true)
    prefs.set(true,forKey:"sda.balance")
    report["native360RAAfterSystem"] = try smokeNative360()
    locked { stopNative() }
@@ -428,9 +461,12 @@ final class SdaPlayer {
   throw SdaError.message("360RA KU100 冒烟测试超时")
  }
 
- func smokeSystem360() throws -> [String:Any] {
+ func smokeSystem360(useCache: Bool = false) throws -> [String:Any] {
+  prefs.set(true,forKey:"sda.systemSpatial360RA"); prefs.set(true,forKey:"sda.balance")
+  if !useCache { prefs.removeObject(forKey:"sda.loudness.system714.v1.ci-360ra") }
   let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
   _ = try play(uri,"ci-360ra.mhas",0,"ci-360ra")
+  if useCache && !locked({systemSpatial?.measurementReady == true}) { throw SdaError.message("系统空间音频响度缓存未在起播前恢复") }
   let deadline = Date().addingTimeInterval(30)
   var checkedPause = false
   var displayedObjects = 0
@@ -459,12 +495,12 @@ final class SdaPlayer {
     }
     if done {
      guard checkedPause, displayedObjects == 2, system.enqueued > 0, system.queued == 0,
-       s["outputChannels"] as? Int == 12 else { throw SdaError.message("360RA 系统输出未完成") }
+       s["outputChannels"] as? Int == 12, system.measurementReady else { throw SdaError.message("360RA 系统输出未完成") }
      guard MPNowPlayingInfoCenter.default().playbackState == .stopped,
        duration > 0 else { throw SdaError.message("曲终媒体状态未停止") }
      return ["ok":true,"status":s,"endedStateVerified":true,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
       "allowedMultichannel":system.renderer.allowedAudioSpatializationFormats.contains(.multichannel),
-      "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true]
+      "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true,"fullTrackBalancePrepared":system.measurementReady,"firstSubmissionBalanced":system.firstSubmissionBalanced,"cachedMeasurementRestored":useCache]
     }
     return nil
    }
