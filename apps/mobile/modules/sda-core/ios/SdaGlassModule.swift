@@ -5,6 +5,37 @@ import UIKit
 // in a user's app. All rendering and control events stay on the main thread.
 private enum ChromeSmoke {
  static var entries: [String: [String: Any]] = [:]
+ // New SDK UI is owned by SwiftUI/UIKit, not the old SDA wrapper views.
+ // Inspect real mounted native views in opt-in CI instead of inventing records
+ // for controls that are no longer used. No timers run in normal playback.
+ static var inspecting = false
+ static func startInspection() {
+  guard !inspecting,
+   ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" || ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] != nil else { return }
+  inspecting = true
+  DispatchQueue.main.async {
+   var remaining = 45
+   Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
+    remaining -= 1
+    var views: [[String: Any]] = []
+    func visit(_ view: UIView) {
+     if view.window != nil && !view.isHidden && view.bounds.width > 0 && view.bounds.height > 0 {
+      views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "width": view.bounds.width, "height": view.bounds.height])
+     }
+     view.subviews.forEach(visit)
+    }
+    for scene in UIApplication.shared.connectedScenes {
+     (scene as? UIWindowScene)?.windows.filter { !$0.isHidden }.forEach(visit)
+    }
+    let report: [String: Any] = ["ok": true, "ios": UIDevice.current.systemVersion, "controls": entries, "nativeViews": views]
+    if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+     let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+     try? data.write(to: directory.appendingPathComponent("sda-ci-chrome.json"), options: .atomic)
+    }
+    if remaining <= 0 { timer.invalidate() }
+   }
+  }
+ }
  static func record(_ key: String, kind: String, view: UIView) {
   guard ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" || ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] != nil,
         !key.isEmpty, view.window != nil, view.bounds.width > 0 else { return }
@@ -37,7 +68,10 @@ final class SdaGlassButtonView: ExpoView {
 public final class SdaGlassButtonModule: Module {
  public func definition() -> ModuleDefinition {
   Name("SdaGlassButton")
-  Function("smokeStage") { ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] ?? "" }
+  Function("smokeStage") { () -> String in
+   ChromeSmoke.startInspection()
+   return ProcessInfo.processInfo.environment["SDA_IOS_CHROME_SMOKE"] ?? ""
+  }
   View(SdaGlassButtonView.self) {
    Events("onPress", "onChoice")
    Prop("title") { (view: SdaGlassButtonView, value: String) in view.control.title = value }
