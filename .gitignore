@@ -31,6 +31,7 @@ apps/desktop/room-simulator/runtime.json
 /.tmp/
 /.pnpm-store/
 apps/native-renderer/target/
+crates/sda-native/target/
 __pycache__/
 *.pyc
 
@@ -50,3 +51,7 @@ apps/desktop/native-renderer/SdaNativeRenderer.exe
 /outlogs/
 
 /apps/desktop/performance-core/
+# Local IDE state, Expo dev state, and user audio media.
+.idea/
+apps/mobile/.expo/
+*.mp3

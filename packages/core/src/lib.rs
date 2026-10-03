@@ -10,8 +10,10 @@
 
 use std::collections::VecDeque;
 
+#[cfg(feature = "wasm")]
 use js_sys::Float32Array;
 use serde::Serialize;
+#[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
 pub mod alac_pipeline;
@@ -21,9 +23,9 @@ pub mod eac3_pipeline;
 pub mod truehd_pipeline;
 pub mod vbap;
 pub mod diagnostics;
-#[wasm_bindgen(js_name = setDiagnostics)]
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = setDiagnostics))]
 pub fn set_diagnostics(enabled:bool){diagnostics::enable(enabled);}
-#[wasm_bindgen(js_name = drainDiagnostics)]
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = drainDiagnostics))]
 pub fn drain_diagnostics()->String{diagnostics::drain()}
 
 /// One dynamic-object spatial event (port of `bridge_api::REvent`).
@@ -42,6 +44,8 @@ pub struct ObjectEvent {
     pub size: [f64; 3],
     /// Codec metadata anchor: room, screen, or speaker.
     pub anchor: String,
+    /// MPEG-H diffuse energy fraction, independent of object extent.
+    pub diffuse: f64,
     /// Finite codec object distance in metres; None means not transmitted.
     pub distance_m: Option<f64>,
     /// Codec explicitly marked this object as infinitely distant.
@@ -105,48 +109,49 @@ pub trait Pipeline {
 
 /// A decoded frame. PCM channels are fetched one at a time as typed arrays;
 /// metadata comes out as JSON (events are small — a handful per frame).
-#[wasm_bindgen]
+#[cfg_attr(feature = "wasm", wasm_bindgen)]
 pub struct DecodedFrame {
     data: FrameData,
 }
 
-#[wasm_bindgen]
+#[cfg_attr(feature = "wasm", wasm_bindgen)]
 impl DecodedFrame {
-    #[wasm_bindgen(getter)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter))]
     pub fn codec(&self) -> String {
         self.data.codec.to_string()
     }
 
-    #[wasm_bindgen(getter, js_name = sampleRate)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = sampleRate))]
     pub fn sample_rate(&self) -> u32 {
         self.data.sample_rate
     }
 
-    #[wasm_bindgen(getter, js_name = samplePos)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = samplePos))]
     pub fn sample_pos(&self) -> f64 {
         self.data.sample_pos as f64
     }
 
-    #[wasm_bindgen(getter, js_name = channelCount)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = channelCount))]
     pub fn channel_count(&self) -> usize {
         self.data.channels.len()
     }
 
-    #[wasm_bindgen(getter, js_name = samplesPerChannel)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = samplesPerChannel))]
     pub fn samples_per_channel(&self) -> usize {
         self.data.channels.first().map_or(0, Vec::len)
     }
 
-    #[wasm_bindgen(getter)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter))]
     pub fn labels(&self) -> Vec<String> {
         self.data.labels.clone()
     }
 
-    #[wasm_bindgen(getter, js_name = rawBedLabels)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = rawBedLabels))]
     pub fn raw_bed_labels(&self) -> Vec<String> {
         self.data.raw_bed_labels.clone()
     }
 
+    #[cfg(feature = "wasm")]
     pub fn channel(&self, index: usize) -> Option<Float32Array> {
         self.data
             .channels
@@ -154,52 +159,57 @@ impl DecodedFrame {
             .map(|c| Float32Array::from(c.as_slice()))
     }
 
-    #[wasm_bindgen(getter, js_name = eventsJson)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = eventsJson))]
     pub fn events_json(&self) -> String {
         serde_json::to_string(&self.data.events).unwrap_or_default()
     }
 
     /// Sparse: empty when the object↔channel mapping didn't change.
-    #[wasm_bindgen(getter, js_name = objectChannelsJson)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = objectChannelsJson))]
     pub fn object_channels_json(&self) -> String {
         serde_json::to_string(&self.data.object_channels).unwrap_or_default()
     }
 
-    #[wasm_bindgen(getter, js_name = programLoudnessJson)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = programLoudnessJson))]
     pub fn program_loudness_json(&self) -> String {
         serde_json::to_string(&self.data.program_loudness).unwrap_or_default()
     }
 
-    #[wasm_bindgen(getter, js_name = rampDuration)]
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = rampDuration))]
     pub fn ramp_duration(&self) -> u32 {
         self.data.ramp_duration
     }
 }
 
-/// Stateful streaming decoder. Construct with a codec name
-/// (`"auto" | "truehd" | "eac3" | "dts"`), `push()` raw bytes, then drain
-/// with `next_frame()` until it returns `undefined`. ALAC is constructed with
-/// `with_config()` because its MP4 codec cookie is required before decoding.
-#[wasm_bindgen]
-pub struct SdaDecoder {
+impl DecodedFrame {
+    /// Native access to the decoded planar PCM (wasm consumers read `channel()`).
+    pub fn channel_samples(&self, index: usize) -> Option<&[f32]> {
+        self.data.channels.get(index).map(|c| c.as_slice())
+    }
+}
+
+/// Platform-neutral streaming decoder (auto-detect + pipeline dispatch). This
+/// is the shared core; the wasm `SdaDecoder` below is a thin binding over it.
+pub struct StreamingDecoder {
     pipeline: Box<dyn Pipeline>,
     sniff: Option<Vec<u8>>,
     queue: VecDeque<FrameData>,
     errors: Vec<String>,
 }
 
-#[wasm_bindgen]
-impl SdaDecoder {
-    #[wasm_bindgen(constructor)]
-    pub fn new(codec: &str) -> Result<SdaDecoder, JsValue> {
+impl StreamingDecoder {
+    /// Construct with a codec name (`"auto" | "truehd" | "eac3" | "dts" | "ac4"`).
+    /// ALAC requires `with_config()` because its MP4 codec cookie is needed
+    /// before decoding.
+    pub fn new(codec: &str) -> Result<StreamingDecoder, String> {
         match codec {
-            "auto" => Ok(SdaDecoder {
+            "auto" => Ok(StreamingDecoder {
                 pipeline: Box::new(NoopPipeline),
                 sniff: Some(Vec::with_capacity(64 * 1024)),
                 queue: VecDeque::new(),
                 errors: Vec::new(),
             }),
-            _ => Ok(SdaDecoder {
+            _ => Ok(StreamingDecoder {
                 pipeline: build_pipeline(codec)?,
                 sniff: None,
                 queue: VecDeque::new(),
@@ -210,16 +220,15 @@ impl SdaDecoder {
 
     /// Construct a decoder whose container codec requires initialization bytes.
     /// Currently this is used by ALAC MP4 tracks and expects the full `alac` atom.
-    #[wasm_bindgen(js_name = withConfig)]
-    pub fn with_config(codec: &str, config: &[u8]) -> Result<SdaDecoder, JsValue> {
+    pub fn with_config(codec: &str, config: &[u8]) -> Result<StreamingDecoder, String> {
         let pipeline: Box<dyn Pipeline> = match codec {
             "alac" => Box::new(
                 alac_pipeline::AlacPipeline::from_cookie(config)
-                    .map_err(|error| JsValue::from_str(&format!("invalid ALAC configuration: {error}")))?,
+                    .map_err(|error| format!("invalid ALAC configuration: {error}"))?,
             ),
-            other => return Err(JsValue::from_str(&format!("codec does not accept container configuration: {other}"))),
+            other => return Err(format!("codec does not accept container configuration: {other}")),
         };
-        Ok(SdaDecoder {
+        Ok(StreamingDecoder {
             pipeline,
             sniff: None,
             queue: VecDeque::new(),
@@ -228,7 +237,7 @@ impl SdaDecoder {
     }
 
     /// Feed raw bitstream bytes (any chunking — the extractors re-frame).
-    pub fn push(&mut self, data: &[u8]) -> Result<(), JsValue> {
+    pub fn push(&mut self, data: &[u8]) -> Result<(), String> {
         diagnostics::input(data.len());
         if let Some(sniff) = &mut self.sniff {
             sniff.extend_from_slice(data);
@@ -242,9 +251,10 @@ impl SdaDecoder {
                 }
                 None if sniff.len() >= 64 * 1024 => {
                     diagnostics::checkpoint("auto.sync_not_found");
-                    return Err(JsValue::from_str(
-                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS syncword)",
-                    ));
+                    return Err(
+                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS syncword)"
+                            .into(),
+                    );
                 }
                 None => return Ok(()),
             }
@@ -254,20 +264,17 @@ impl SdaDecoder {
         Ok(())
     }
 
-    /// Pop the next decoded frame, or `undefined` when more input is needed.
-    #[wasm_bindgen(js_name = nextFrame)]
-    pub fn next_frame(&mut self) -> Option<DecodedFrame> {
-        self.queue.pop_front().map(|data| DecodedFrame { data })
+    /// Pop the next decoded frame, or `None` when more input is needed.
+    pub fn next_frame(&mut self) -> Option<FrameData> {
+        self.queue.pop_front()
     }
 
     /// Codec actually in use (meaningful after auto-detection kicked in).
-    #[wasm_bindgen(getter)]
-    pub fn codec(&self) -> String {
-        self.pipeline.codec_name().to_string()
+    pub fn codec_name(&self) -> &'static str {
+        self.pipeline.codec_name()
     }
 
     /// Decode errors are non-fatal (the pipelines resync); drain them here.
-    #[wasm_bindgen(js_name = drainErrors)]
     pub fn drain_errors(&mut self) -> Vec<String> {
         std::mem::take(&mut self.errors)
     }
@@ -282,13 +289,74 @@ impl SdaDecoder {
     }
 }
 
-fn build_pipeline(codec: &str) -> Result<Box<dyn Pipeline>, JsValue> {
+/// Stateful streaming decoder. Construct with a codec name
+/// (`"auto" | "truehd" | "eac3" | "dts"`), `push()` raw bytes, then drain
+/// with `next_frame()` until it returns `undefined`. ALAC is constructed with
+/// `with_config()` because its MP4 codec cookie is required before decoding.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub struct SdaDecoder {
+    inner: StreamingDecoder,
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+impl SdaDecoder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(codec: &str) -> Result<SdaDecoder, JsValue> {
+        Ok(SdaDecoder {
+            inner: StreamingDecoder::new(codec).map_err(|e| JsValue::from_str(&e))?,
+        })
+    }
+
+    #[wasm_bindgen(js_name = withConfig)]
+    pub fn with_config(codec: &str, config: &[u8]) -> Result<SdaDecoder, JsValue> {
+        Ok(SdaDecoder {
+            inner: StreamingDecoder::with_config(codec, config).map_err(|e| JsValue::from_str(&e))?,
+        })
+    }
+
+    /// Feed raw bitstream bytes (any chunking — the extractors re-frame).
+    pub fn push(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        self.inner.push(data).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Pop the next decoded frame, or `undefined` when more input is needed.
+    #[wasm_bindgen(js_name = nextFrame)]
+    pub fn next_frame(&mut self) -> Option<DecodedFrame> {
+        self.inner
+            .next_frame()
+            .map(|data| DecodedFrame { data })
+    }
+
+    /// Codec actually in use (meaningful after auto-detection kicked in).
+    #[wasm_bindgen(getter)]
+    pub fn codec(&self) -> String {
+        self.inner.codec_name().to_string()
+    }
+
+    /// Decode errors are non-fatal (the pipelines resync); drain them here.
+    #[wasm_bindgen(js_name = drainErrors)]
+    pub fn drain_errors(&mut self) -> Vec<String> {
+        self.inner.drain_errors()
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    pub fn flush(&mut self) {
+        self.inner.flush();
+    }
+}
+
+pub(crate) fn build_pipeline(codec: &str) -> Result<Box<dyn Pipeline>, String> {
     match codec {
         "truehd" | "thd" | "mlp" => Ok(Box::new(truehd_pipeline::TruehdPipeline::new())),
         "eac3" | "ec3" | "ac3" => Ok(Box::new(eac3_pipeline::Eac3Pipeline::new())),
         "dts" | "dca" => Ok(Box::new(dts_pipeline::DtsPipeline::new())),
         "ac4" | "ac-4" => Ok(Box::new(ac4_pipeline::Ac4Pipeline::new())),
-        other => Err(JsValue::from_str(&format!("unknown codec: {other}"))),
+        other => Err(format!("unknown codec: {other}")),
     }
 }
 
@@ -327,4 +395,133 @@ fn detect_codec(data: &[u8]) -> Option<&'static str> {
         }
     }
     first_eac3.or(first_dts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// JOC/Atmos E-AC-3 fixture from the harletty-bridge submodule
+    /// (requires `git submodule update --init`).
+    fn joc_fixture() -> Vec<u8> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../harletty-bridge/harletty/tests/fixtures/joc_atmos_1s.eac3"
+        );
+        std::fs::read(path)
+            .unwrap_or_else(|error| panic!("fixture missing ({error}); run `git submodule update --init`"))
+    }
+
+    /// Event JSON keys must stay camelCase and field-complete: the web app
+    /// (packages/core/index.ts) and the future Android bridge both consume
+    /// this exact shape.
+    #[test]
+    fn object_event_json_contract_is_camel_case() {
+        let event = ObjectEvent {
+            diffuse: 0.0,
+            id: 10,
+            sample_pos: 1536,
+            has_pos: true,
+            pos: [-1.0, 1.0, 0.0],
+            gain_db: -3.5,
+            size: [0.1, 0.0, 0.2],
+            anchor: "room".into(),
+            distance_m: Some(1.5),
+            distance_infinite: false,
+            screen_factor: Some(0.8),
+            depth_factor: None,
+            ramp_duration: 1536,
+        };
+        let value: serde_json::Value = serde_json::to_value(&event).unwrap();
+        for key in [
+            "id",
+            "samplePos",
+            "hasPos",
+            "pos",
+            "gainDb",
+            "size",
+            "anchor",
+            "distanceM",
+            "distanceInfinite",
+            "screenFactor",
+            "depthFactor",
+            "rampDuration",
+        ] {
+            assert!(value.get(key).is_some(), "missing key {key} in {value}");
+        }
+        assert_eq!(value["samplePos"], 1536);
+        assert_eq!(value["gainDb"], -3.5);
+        assert_eq!(value["distanceM"], 1.5);
+        assert!(value["depthFactor"].is_null());
+    }
+
+    #[test]
+    fn decodes_joc_fixture_with_odd_chunking() {
+        let bytes = joc_fixture();
+        let mut decoder = StreamingDecoder::new("eac3").unwrap();
+        // Deliberately awkward chunking: the pipelines must re-frame.
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let take = if offset == 0 { 7 } else { 613 };
+            let end = (offset + take).min(bytes.len());
+            decoder.push(&bytes[offset..end]).unwrap();
+            offset = end;
+        }
+        decoder.flush();
+
+        let mut frames = Vec::new();
+        while let Some(frame) = decoder.next_frame() {
+            frames.push(frame);
+        }
+        assert!(!frames.is_empty(), "expected decoded frames");
+        assert_eq!(decoder.drain_errors(), Vec::<String>::new());
+
+        let first = &frames[0];
+        assert_eq!(first.sample_rate, 48000);
+        assert!(!first.channels.is_empty());
+        assert!(first.channels.iter().all(|c| !c.is_empty()));
+        let mut non_finite = 0_usize;
+        for frame in &frames {
+            for channel in &frame.channels {
+                non_finite += channel.iter().filter(|v| !v.is_finite()).count();
+            }
+        }
+        println!("NON_FINITE_SAMPLES={non_finite} total_frames={}", frames.len());
+        assert_eq!(non_finite, 0, "decoder output must be finite");
+        assert!(
+            first.labels.iter().any(|l| l.starts_with("Obj_")),
+            "JOC fixture should carry object labels, got {:?}",
+            first.labels
+        );
+        assert!(
+            !first.object_channels.is_empty(),
+            "first frame must declare the object↔channel mapping"
+        );
+        // Events serialize through the same serde shape the web app parses.
+        let events_json = serde_json::to_string(&first.events).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&events_json).unwrap();
+        assert!(parsed.is_array());
+        assert!(first.sample_pos + first.channels[0].len() as u64 > 0);
+    }
+
+    #[test]
+    fn auto_detection_identifies_eac3() {
+        let bytes = joc_fixture();
+        let mut decoder = StreamingDecoder::new("auto").unwrap();
+        // Syncword sits at byte 0, so the very first push detects and decodes.
+        assert_eq!(decoder.codec_name(), "auto");
+        decoder.push(&bytes[..1000]).unwrap();
+        assert_eq!(decoder.codec_name(), "eac3");
+        decoder.push(&bytes[1000..]).unwrap();
+        decoder.flush();
+        assert!(decoder.next_frame().is_some(), "sniffed bytes must still decode");
+    }
+
+    #[test]
+    fn unknown_codec_and_bad_auto_stream_error_cleanly() {
+        assert!(StreamingDecoder::new("aac").is_err());
+        let mut decoder = StreamingDecoder::new("auto").unwrap();
+        let garbage = vec![0x12u8; 64 * 1024];
+        assert!(decoder.push(&garbage).is_err());
+    }
 }

@@ -3,6 +3,7 @@ fn main() {
     // link directive. Keep GNU Windows builds portable (no libstdc++ DLL needed).
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+        && std::env::var_os("CARGO_FEATURE_CPAL_OUTPUT").is_some()
     {
         println!("cargo:rustc-link-arg=-Wl,-Bstatic");
         println!("cargo:rustc-link-arg=-Wl,--start-group");

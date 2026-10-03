@@ -1,0 +1,21 @@
+{
+  "platforms": [
+    "android",
+    "apple"
+  ],
+  "android": {
+    "modules": [
+      "app.sda.mobile.sda.SdaModule"
+    ]
+  },
+  "apple": {
+    "modules": [
+      "SdaModule",
+      "SdaGlassButtonModule",
+      "SdaGlassTabsModule",
+      "SdaMaterialSurfaceModule",
+      "SdaNativeSliderModule",
+      "SdaNativeStepperModule"
+    ]
+  }
+}

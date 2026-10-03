@@ -12,7 +12,7 @@ pub struct Direction {
     pub depth: f32,
 }
 
-type Route = (
+pub(crate) type Route = (
     Direction,
     crate::vbap::LayoutId,
     [f32; crate::vbap::MAX_BUS_COUNT],
@@ -39,6 +39,238 @@ struct DiffuseField {
 // and listener changes still retarget immediately.
 const CONTINUOUS_DIRECTION_DEADBAND_COS: f32 = 0.999_847_7;
 const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
+
+/// Symmetric directions can differ by a few f32 ulps between platform math
+/// libraries. KU100's notch guard may use the dominant HRIR outright, so a
+/// numerical tie must not select a different ear response on Android/Windows.
+fn dominant_measurement(weights: &[(usize, f64)], irs: &[StereoIr]) -> usize {
+    let peak = weights.iter().map(|(_, weight)| *weight).fold(0.0_f64, f64::max);
+    // Horizontal ties need the same geometric convention as elevated ties.
+    // Manifest order is not spatial: at +/-45 degrees, choosing the last row
+    // can anchor one ear pair at 40 degrees and its mirror at 50 degrees.
+    // That breaks the calibrated set's bilateral symmetry for the dominant
+    // front music objects even though each input HRIR pair is valid.
+    // Collapse only f32-scale weight ties. Compare measured geometry in a
+    // canonical hemisphere, not manifest indices: mirrored inputs must select
+    // mirrored HRIRs. Larger absolute azimuth preserves the established left
+    // hemisphere convention (e.g. +60 at +45) on the right (-60 at -45).
+    // This is a deterministic boundary convention, not an acoustic preference.
+    weights.iter().filter(|(_, weight)| peak - *weight <= 1e-6)
+        .map(|(index, _)| *index)
+        .max_by(|&a, &b| irs[a].azimuth.abs().total_cmp(&irs[b].azimuth.abs())
+            .then_with(|| irs[a].elevation.total_cmp(&irs[b].elevation))
+            .then_with(|| a.cmp(&b)))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod dominant_measurement_tests {
+    use super::dominant_measurement;
+
+    #[test]
+    #[ignore = "offline all-enabled front/back listening diagnostic; requires SDA_FRONT_BACK_DIR and SDA_PROBE_ROOM"]
+    fn export_front_back_all_enabled() {
+        use std::io::Write;
+        let output = std::path::PathBuf::from(std::env::var("SDA_FRONT_BACK_DIR").unwrap());
+        let room = std::sync::Arc::new(crate::cinema::RoomProfile::load(
+            &std::env::var("SDA_PROBE_ROOM").unwrap()).unwrap());
+        let mut noise = Vec::with_capacity(144384);
+        let mut seed = 12345u32;
+        for i in 0..144384 {
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            let envelope = ((i as f32 / 480.0).min(1.0))
+                * (((144000-i.min(144000)) as f32 / 480.0).min(1.0));
+            noise.push((seed as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32 * 0.03 * envelope);
+        }
+        let render = |y: f32| {
+            let mut e = crate::Engine::new(48000, 2);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json");
+            e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.04).unwrap();
+            e.configure_room(crate::cinema::Settings { enabled: true, ..Default::default() }, Some(room.clone())).unwrap();
+            e.configure_near_field(crate::near_field::Settings { enabled: true, metres_per_unit: 1.0 }).unwrap();
+            e.set_direct_objects(true).unwrap();
+            e.set_directional_hrtf(true);
+            e.set_program_codec("eac3".into());
+            e.output_active = true;
+            e.paused = false;
+            e.direct_mix = 1.0;
+            let mut source = crate::Source { kind: crate::SourceKind::Object,
+                position: [0.0,y,0.0], gain: 1.0, target_gain: 1.0,
+                availability: 1.0, availability_target: 1.0, ..Default::default() };
+            source.samples.write(0, 0, &noise);
+            e.sources.insert("obj:1".into(), source);
+            e.route_source_now("obj:1", 0).unwrap();
+            let mut pcm = vec![0.0; 144384*2];
+            e.render_into(&mut pcm, 2);
+            assert!(pcm.iter().any(|v| v.abs() > 1e-5));
+            assert!(pcm.iter().all(|v| v.is_finite()));
+            assert!(e.sources["obj:1"].continuous_active);
+            pcm.truncate(144000*2);
+            pcm
+        };
+        let front = render(0.65);
+        let rear = render(-0.65);
+        let energy = |a: &[f32]| a.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let correlation = front.iter().zip(&rear).map(|(a,b)| f64::from(*a)*f64::from(*b)).sum::<f64>()
+            / (energy(&front)*energy(&rear)).sqrt();
+        println!("all-enabled front/rear correlation={correlation}, front RMS={}, rear RMS={}",
+            (energy(&front)/front.len() as f64).sqrt(), (energy(&rear)/rear.len() as f64).sqrt());
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, pcm) in [("front", &front), ("rear", &rear)] {
+            let mut file = std::io::BufWriter::new(std::fs::File::create(output.join(format!("{name}.wav"))).unwrap());
+            let bytes = (pcm.len()*2) as u32;
+            file.write_all(b"RIFF").unwrap(); file.write_all(&(36+bytes).to_le_bytes()).unwrap();
+            file.write_all(b"WAVEfmt ").unwrap(); file.write_all(&16u32.to_le_bytes()).unwrap();
+            for v in [1u16,2] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            for v in [48000u32,192000] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            for v in [4u16,16] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            file.write_all(b"data").unwrap(); file.write_all(&bytes.to_le_bytes()).unwrap();
+            for v in pcm { file.write_all(&((v.clamp(-1.0,1.0)*32767.0).round() as i16).to_le_bytes()).unwrap(); }
+            file.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn same_x_front_back_keep_distinct_ku100_filters() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        let pair = |y| set.directional_dry_compact(super::Direction {
+            position: [0.0, y, 0.0], head: None, diffuse: 0.0,
+            horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        let front = pair(0.6);
+        let back = pair(-0.6);
+        let norm = |p: &(Vec<f32>, Vec<f32>)| p.0.iter().chain(&p.1).map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt();
+        let a = norm(&front); let b = norm(&back);
+        let correlation = front.0.iter().chain(&front.1).zip(back.0.iter().chain(&back.1))
+            .map(|(x,y)| f64::from(*x)*f64::from(*y)).sum::<f64>()/(a*b);
+        assert!(correlation < 0.95, "front/back filters collapsed: {correlation}");
+        // Direction-only assets cannot supply a distance dimension: the
+        // desktop near-field stage is separate and must not be baked into HRIRs.
+        assert_eq!(front, pair(0.3));
+    }
+
+    fn measured(azimuth: f64) -> super::StereoIr {
+        super::StereoIr { azimuth, elevation: 45.0, dry: vec![], wet: vec![] }
+    }
+
+    #[test]
+    fn symmetric_anchor_selection_ignores_platform_roundoff_and_order() {
+        for sign in [-1.0, 1.0] {
+            for reversed in [false, true] {
+                let mut irs = vec![measured(sign * 30.0), measured(sign * 60.0)];
+                if reversed { irs.reverse(); }
+                for epsilon in [-1e-7, -1e-15, 0.0, 1e-15, 1e-7] {
+                    for weights in [vec![(0, 0.5 + epsilon), (1, 0.5)],
+                                    vec![(1, 0.5), (0, 0.5 + epsilon)]] {
+                        let selected = dominant_measurement(&weights, &irs);
+                        assert_eq!(irs[selected].azimuth, sign * 60.0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_weights_still_select_the_strongest_measurement() {
+        let irs = vec![measured(-60.0), measured(-30.0)];
+        assert_eq!(dominant_measurement(&[(0, 0.479999), (1, 0.480001)], &irs), 1);
+    }
+
+    #[test]
+    fn horizontal_boundary_selection_is_mirrored_and_order_independent() {
+        for sign in [-1.0, 1.0] {
+            for reversed in [false, true] {
+                let mut irs = vec![measured(sign * 50.0), measured(sign * 40.0)];
+                for ir in &mut irs { ir.elevation = 0.0; }
+                if reversed { irs.reverse(); }
+                for epsilon in [-1e-7, 0.0, 1e-7] {
+                    let index = dominant_measurement(&[(0, 0.5), (1, 0.5 + epsilon)], &irs);
+                    assert_eq!(irs[index].azimuth, sign * 50.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ku100_front_horizontal_midpoints_preserve_left_right_mirror_symmetry() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        // Test the bilateral frontal grid used by the dominant music pair.
+        // The rear seam includes a single unpaired -180-degree measurement;
+        // its measured ears are not required to be identical.
+        for azimuth in [5.0_f64, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0] {
+            let position = |az: f64| [-az.to_radians().sin() as f32,
+                az.to_radians().cos() as f32, 0.0];
+            let pair = |az| set.directional_dry_compact(super::Direction {
+                position: position(az), head: None, diffuse: 0.0,
+                horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+            }, crate::vbap::LayoutId::Dolby7_1_4,
+                [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+            let left = pair(azimuth);
+            let right = pair(-azimuth);
+            let energy: f64 = left.0.iter().chain(&left.1)
+                .map(|v| f64::from(*v).powi(2)).sum();
+            let error: f64 = left.0.iter().chain(&left.1)
+                .zip(right.1.iter().chain(&right.0))
+                .map(|(a,b)| f64::from(a-b).powi(2)).sum();
+            assert!((error/energy).sqrt() < 1e-3,
+                "horizontal KU100 mirror at {azimuth} degrees: {}", (error/energy).sqrt());
+        }
+    }
+
+    #[test]
+    fn ku100_elevated_boundary_filters_preserve_left_right_mirror_symmetry() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        let pair = |position| set.directional_dry_compact(super::Direction {
+            position, head: None, diffuse: 0.0, horizontal_only: false,
+            width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        for y in [-1.0, 1.0] {
+            for z in [-1.0, 1.0] {
+                let left = pair([-1.0, y, z]);
+                let right = pair([1.0, y, z]);
+                let energy: f64 = left.0.iter().chain(&left.1).map(|v| f64::from(*v).powi(2)).sum();
+                let difference: f64 = left.0.iter().chain(&left.1)
+                    .zip(right.1.iter().chain(&right.0))
+                    .map(|(a,b)| (f64::from(*a)-f64::from(*b)).powi(2)).sum();
+                assert!((difference / energy).sqrt() < 1e-3,
+                    "mirrored KU100 boundary y={y} z={z}: relative error {}", (difference / energy).sqrt());
+            }
+        }
+    }
+
+    #[test]
+    fn ku100_upper_front_boundary_does_not_flip_hrir_from_coordinate_roundoff() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        for side in [-1.0_f32, 1.0] {
+            let pair = |x| set.directional_dry_compact(super::Direction {
+                position: [x, 1.0, 1.0], head: None, diffuse: 0.0,
+                horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+            }, crate::vbap::LayoutId::Dolby7_1_4,
+                [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+            let reference = pair(side);
+            for delta in [-f32::EPSILON, f32::EPSILON] {
+                let perturbed = pair(side + delta);
+                let error = reference.0.iter().chain(&reference.1)
+                    .zip(perturbed.0.iter().chain(&perturbed.1))
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(error < 5e-5, "side={side} delta={delta}: HRIR discontinuity {error}");
+            }
+        }
+    }
+}
 
 fn equivalent_direction(a: Direction, b: Direction) -> bool {
     if a.diffuse != b.diffuse
@@ -131,6 +363,10 @@ impl ContinuousSource {
             right: [0.0; crate::convolution::DEFAULT_PARTITION],
         })
     }
+    pub(crate) fn effective_route(&self) -> Option<Route> {
+        self.pending.or(self.route)
+    }
+
     pub fn schedule(
         &mut self,
         direction: Direction,
@@ -139,8 +375,12 @@ impl ContinuousSource {
         amounts: [f32; crate::vbap::MAX_BUS_COUNT],
     ) {
         let route = (direction, layout, gains, amounts);
-        let current = self.pending.as_ref().or(self.route.as_ref());
-        self.pending = current
+        // Metadata may repeat before the next convolution block. An equivalent
+        // pending target still needs to be applied; it is not the active filter.
+        if self.pending.as_ref().is_some_and(|pending| equivalent_route(pending, &route)) {
+            return;
+        }
+        self.pending = self.route.as_ref()
             .is_none_or(|current| !equivalent_route(current, &route))
             .then_some(route);
     }
@@ -591,10 +831,11 @@ impl Grid {
         // level; the mix interpolates each ear's fine structure toward the
         // dominant direction, which is the physically expected behaviour of
         // a source between two measurements.
-        let dominant = weights
-            .iter()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map_or(0, |x| x.0);
+        let dominant = if self.ku100_notch_guard {
+            dominant_measurement(&weights, irs)
+        } else {
+            weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
+        };
         for ear in 0..2 {
             // Keep the fine waveform locked to the dominant measurement, but
             // move that temporary timeline to the weighted measured arrival.
@@ -782,6 +1023,46 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_direction_updates_preserve_audible_filter_and_retargeting() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut once = ContinuousSource::new(&set).unwrap();
+        let mut repeated = ContinuousSource::new(&set).unwrap();
+        let mut energy = 0.0_f64;
+        let mut max_difference = 0.0_f32;
+        for block in 0..16 {
+            let direction = Direction { position: [0.2, if block < 8 { 0.8 } else { -0.8 }, 0.3],
+                head: None, diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+            let gains = solver.pan(direction.position, 0.0);
+            if block == 0 || block == 8 {
+                once.schedule(direction, solver.layout(), gains, [0.0; crate::vbap::MAX_BUS_COUNT]);
+            }
+            // The engine schedules once per block, including silent blocks.
+            // Repeating a target on audible re-entry must preserve the pending filter.
+            repeated.schedule(direction, solver.layout(), gains, [0.0; crate::vbap::MAX_BUS_COUNT]);
+            for i in 0..crate::convolution::DEFAULT_PARTITION {
+                let input = if block == 0 || (6..=8).contains(&block) { 0.0 } else {
+                    ((block * crate::convolution::DEFAULT_PARTITION + i) as f32 * 0.13).sin() * 0.05
+                };
+                once.frames[i].input = input;
+                repeated.frames[i].input = input;
+            }
+            once.finish(&set).unwrap();
+            repeated.finish(&set).unwrap();
+            for (a,b) in once.frames.iter().zip(&repeated.frames) {
+                for ear in 0..2 {
+                    energy += f64::from(a.output[ear]).powi(2);
+                    max_difference = max_difference.max((a.output[ear]-b.output[ear]).abs());
+                }
+            }
+        }
+        assert!(energy > 1e-5, "reference must be audible");
+        assert!(max_difference < 1e-6, "repeated direction updates change audio: {max_difference}");
+    }
 
     #[test]
     fn partial_neighbour_selection_matches_full_sort() {

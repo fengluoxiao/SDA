@@ -260,6 +260,11 @@ pub(super) struct StereoPeakGuard {
 }
 
 impl StereoPeakGuard {
+    #[cfg(test)]
+    pub(super) fn diagnostic_gain(&self) -> f32 {
+        self.gain
+    }
+
     pub(super) fn new(sample_rate: u32) -> Self {
         let lookahead = ((sample_rate as f32 * 0.005).round() as usize).max(1);
         Self {

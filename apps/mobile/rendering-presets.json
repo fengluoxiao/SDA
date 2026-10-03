@@ -1,0 +1,14 @@
+[
+  {
+    "id": "object-dense",
+    "label": "高解析逐对象",
+    "description": "128 方向 KU100 · 对象与声道纯直达 · 实际方向",
+    "hrtfSet": "dense",
+    "assetDirectory": "hrtf-mobile-direct",
+    "direct": true,
+    "directional": true,
+    "nearField": false,
+    "roomId": "",
+    "hrtfWetWeight": 0
+  }
+]

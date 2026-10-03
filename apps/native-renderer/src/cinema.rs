@@ -57,6 +57,16 @@ fn bounded(value: f32, low: f32, high: f32) -> bool {
     value.is_finite() && value >= low && value <= high
 }
 impl Settings {
+    /// Explicit listening preset shared with desktop UI. Default/deserialization stay
+    /// neutral for authored-room comparison and existing user calibration.
+    pub fn room_listening() -> Self {
+        let settings: Self = serde_json::from_str(include_str!(
+            "../../../packages/renderer/src/room-listening-levels.json"
+        )).expect("valid shared room listening preset");
+        settings.validate().expect("bounded shared room listening preset");
+        settings
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.monitor.validate()?;
         if !bounded(self.direct_db, -24.0, 6.0)
@@ -288,6 +298,43 @@ impl RoomProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn room_listening_is_explicit_and_does_not_migrate_saved_settings() {
+        let listening = Settings::room_listening();
+        assert_eq!((listening.direct_db, listening.early_db, listening.late_db, listening.early_ms),
+                   (0.0, -6.0, 0.0, 50.0));
+        assert!(!listening.enabled);
+        assert!(matches!(listening.reflection_mode, ReflectionMode::Full));
+        assert!(listening.speakers.is_empty());
+        assert_eq!(Settings::default().early_db, 0.0);
+        let saved: Settings = serde_json::from_str(r#"{"enabled":true,"earlyDb":-2.5,"lateDb":-3}"#).unwrap();
+        assert_eq!((saved.early_db, saved.late_db), (-2.5, -3.0));
+        let old: Settings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert_eq!(old.early_db, 0.0);
+    }
+
+    #[test]
+    fn room_listening_attenuates_only_early_residual_with_complementary_boundary() {
+        let mut direct = vec![0.0; 8192];
+        direct[128] = 1.0;
+        direct[700] = 0.1;
+        direct[2528] = 0.05;
+        direct[6000] = 0.02;
+        let mut room = direct.clone();
+        room[700] += 0.5;
+        room[2528] += 0.4;
+        room[6000] += 0.25;
+        let settings = Settings { enabled: true, ..Settings::room_listening() };
+        let (left, right) = settings.mix((&direct, &direct), (&room, &room), 1.0, 128);
+        assert_eq!(left, right);
+        assert_eq!(left[128], 1.0);
+        assert!((left[700] - (0.1 + 0.5 * db(-6.0))).abs() < 1e-6);
+        assert!((left[2528] - (0.05 + 0.4 * (db(-6.0) + 1.0) * 0.5)).abs() < 1e-6);
+        assert!((left[6000] - 0.27).abs() < 1e-6);
+        assert_eq!(Settings::room_listening().mix((&direct, &direct), (&room, &room), 1.0, 128),
+                   (room.clone(), room));
+    }
+
     #[test]
     fn cinema_neutral_mix_and_calibration_preserve_interaural_delay() {
         let mut dry_l = vec![0.0; 512];

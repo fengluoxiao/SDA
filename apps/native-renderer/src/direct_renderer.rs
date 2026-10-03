@@ -47,6 +47,7 @@ pub(super) fn workers() -> Option<&'static rayon::ThreadPool> {
         rayon::ThreadPoolBuilder::new()
             .num_threads(count)
             .thread_name(|id| format!("sda-object-hrtf-{id}"))
+            .start_handler(|_| crate::realtime::promote_current_thread())
             .build()
             .ok()
     })
