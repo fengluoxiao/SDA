@@ -36,7 +36,7 @@ assert.match(tabs, /selection=\{String\(selected\)\}/);
 assert.match(ui, /<IOSSystemTabs selected=\{page\} onChange=\{navigate\}/);
 assert.doesNotMatch(tabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
-assert.match(settings, /<NavigationStack path=\{\["settings"\]\}/);
+assert.match(settings, /largeTitle: false/);
 assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{s.header\}>/);
@@ -150,12 +150,12 @@ assert.ok(settings.indexOf('<Section title="播放操作">') < settings.indexOf(
 assert.ok(ui.indexOf('<View style={s.settingsActions}>') < ui.indexOf('{heading("播放")}'));
 console.log('Settings layout checks passed: glass style, single-row navigation/actions, no redundant home controls');
 
-// One SwiftUI NavigationStack owns the normal settings title, back and Form.
-// UIKit only presents the page; older binaries retain an inline header fallback.
+// One inline UIKit header owns the settings title and back button.
+// The hosted Form must not emit its own large navigation title.
 assert.match(settings, /hasUIKitSettingsNavigation = Platform.OS === "ios"/);
 assert.match(settings, /"RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"/);
 assert.match(settings, /hasUIKitSettingsNavigation \? require\("react-native-screens"\) : null/);
-assert.match(settings, /headerConfig=\{hasSwiftUISettingsNavigation \? \{ hidden: true \} : \{/);
+assert.doesNotMatch(settings, /hasSwiftUISettingsNavigation|IOSSwiftUISettingsPage/);
 assert.match(settings, /title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false/);
 assert.match(settings, /onDismissed=\{\(\) => onSettingsChange\(false\)\}/);
 assert.match(settings, /screenId="sda-home" activityState=\{2\} freezeOnBlur=\{false\}/);
@@ -168,23 +168,20 @@ assert.equal((uiKitStack.match(/style=\{StyleSheet.absoluteFill\}/g) || []).leng
 assert.match(uiKitStack, /contentStyle=\{\{ flex: 1/);
 assert.match(uiKitStack, /largeTitle: false/);
 assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
-console.log('Settings fullscreen checks passed: mounted home, SwiftUI-owned settings, inline old-binary fallback');
+console.log('Settings fullscreen checks passed: mounted home, inline settings title');
 
 assert.match(uiKitStack, /translucent: true/);
 assert.match(uiKitStack, /backgroundColor: "transparent",\s*experimental_userInterfaceStyle/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
 assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
 assert.doesNotMatch(uiKitStack, /ignoreSafeArea=/);
-assert.match(uiKitStack, /<NativeSettingsForm[^\n]*nativeNavigation/);
-assert.match(settings, /!nativeNavigation \? \[navigationTitle\("设置"\)\] : \[\]/);
+assert.match(uiKitStack, /<NativeSettingsForm/);
+assert.doesNotMatch(settings, /navigationTitle\(|<NavigationStack|<NavigationDestination/);
 assert.doesNotMatch(settings, /scrollEdgeEffectStyle\(|blurEffect:/);
-assert.match(settings, /\["NavigationStackView", "SlotView"\]\.every\(hasView\)/);
-assert.match(settings, /<NavigationDestination value="settings">\s*<NativeSettingsForm player=\{player\} onClose=\{onClose\} \/>/);
-assert.match(settings, /onPathChange=\{path => \{ if \(path\.length === 0\) onClose\(\); \}\}/);
-console.log('Settings header checks passed: one SwiftUI title/scroll owner, system-default edge effects, no forced material');
+console.log('Settings header checks passed: single inline title, no large Form title or forced material');
 
 // Execute both capability paths rather than only matching source text. The
-// normal path must hide the outer bar and let the SwiftUI stack handle pop.
+// title must remain inline regardless of SwiftUI NavigationStack availability.
 const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable) {
   const module = { exports: {} };
@@ -208,26 +205,14 @@ for (const available of [true,false]) {
   const tree = adapter.IOSSettingsNavigation({ children: 'approved-home', settings: true, onSettingsChange: value => closed.push(value), title: '正在播放', player: {}, theme: 'dark' });
   const [home,settingsScreen] = tree.props.children;
   assert.equal(home.props.children[0], 'approved-home');
-  if (available) {
-    assert.deepEqual(settingsScreen.props.headerConfig, { hidden: true });
-    const page = settingsScreen.props.children[0];
-    const host = page.type(page.props);
-    const stack = host.props.children[0];
-    assert.equal(stack.type,'NavigationStack');
-    assert.deepEqual(stack.props.path,['settings']);
-    assert.equal(stack.props.children[1].type,'NavigationDestination');
-    assert.equal(stack.props.children[1].props.children[0].props.nativeNavigation,undefined);
-    stack.props.onPathChange(['settings']);
-    assert.deepEqual(closed,[]);
-    stack.props.onPathChange([]);
-    assert.deepEqual(closed,[false]);
-  } else {
-    assert.equal(settingsScreen.props.headerConfig.title,'设置');
-    assert.equal(settingsScreen.props.headerConfig.largeTitle,false);
-    assert.equal(settingsScreen.props.children[0].type,'Host');
-  }
+  assert.equal(settingsScreen.props.headerConfig.title,'设置');
+  assert.equal(settingsScreen.props.headerConfig.largeTitle,false);
+  assert.notEqual(settingsScreen.props.headerConfig.hidden,true);
+  assert.equal(settingsScreen.props.children[0].type,'Host');
+  settingsScreen.props.onDismissed();
+  assert.deepEqual(closed,[false]);
 }
-console.log('Settings adapter checks passed: guarded SwiftUI stack, one title owner, real native pop, unchanged home, safe old-binary fallback');
+console.log('Settings adapter checks passed: inline native title, no nested large-title stack, native dismissal, unchanged home');
 
 // Only an overflowing library may scroll; playback and scene are fixed Views.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));
