@@ -36,7 +36,8 @@ assert.match(tabs, /selection=\{String\(selected\)\}/);
 assert.match(ui, /<IOSSystemTabs selected=\{page\} onChange=\{navigate\}/);
 assert.doesNotMatch(tabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
-assert.doesNotMatch(settings, /<NavigationStack|<ToolbarItem/);
+assert.match(settings, /<NavigationStack path=\{\["settings"\]\}/);
+assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{s.header\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
@@ -149,12 +150,13 @@ assert.ok(settings.indexOf('<Section title="播放操作">') < settings.indexOf(
 assert.ok(ui.indexOf('<View style={s.settingsActions}>') < ui.indexOf('{heading("播放")}'));
 console.log('Settings layout checks passed: glass style, single-row navigation/actions, no redundant home controls');
 
-// Expo Go's settings title/back action must be owned by UINavigationController,
-// not the hand-built compatibility row when UIKit managers are available.
+// One SwiftUI NavigationStack owns the normal settings title, back and Form.
+// UIKit only presents the page; older binaries retain an inline header fallback.
 assert.match(settings, /hasUIKitSettingsNavigation = Platform.OS === "ios"/);
 assert.match(settings, /"RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"/);
 assert.match(settings, /hasUIKitSettingsNavigation \? require\("react-native-screens"\) : null/);
-assert.match(settings, /headerConfig=\{\{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false/);
+assert.match(settings, /headerConfig=\{hasSwiftUISettingsNavigation \? \{ hidden: true \} : \{/);
+assert.match(settings, /title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false/);
 assert.match(settings, /onDismissed=\{\(\) => onSettingsChange\(false\)\}/);
 assert.match(settings, /screenId="sda-home" activityState=\{2\} freezeOnBlur=\{false\}/);
 console.log('Settings native-header checks passed: guarded UIKit stack, system title/back, mounted home');
@@ -164,19 +166,68 @@ assert.doesNotMatch(settings, /activityState=\{settings \?/);
 const uiKitStack = settings.slice(settings.indexOf('return <ScreenStack style='), settings.indexOf('return <>{children}<Modal'));
 assert.equal((uiKitStack.match(/style=\{StyleSheet.absoluteFill\}/g) || []).length, 2);
 assert.match(uiKitStack, /contentStyle=\{\{ flex: 1/);
-assert.match(uiKitStack, /largeTitle: true, largeTitleHideShadow: true/);
+assert.match(uiKitStack, /largeTitle: false/);
 assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
-console.log('Settings fullscreen checks passed: overlapping screens, full-height form, native minimal back and large title');
+console.log('Settings fullscreen checks passed: mounted home, SwiftUI-owned settings, inline old-binary fallback');
 
 assert.match(uiKitStack, /translucent: true/);
-assert.match(uiKitStack, /backgroundColor: "transparent", experimental_userInterfaceStyle/);
+assert.match(uiKitStack, /backgroundColor: "transparent",\s*experimental_userInterfaceStyle/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
 assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
 assert.doesNotMatch(uiKitStack, /ignoreSafeArea=/);
 assert.match(uiKitStack, /<NativeSettingsForm[^\n]*nativeNavigation/);
 assert.match(settings, /!nativeNavigation \? \[navigationTitle\("设置"\)\] : \[\]/);
-assert.match(settings, /scrollEdgeEffectStyle\("soft", "top"\)/);
-console.log('Settings header checks passed: transparent bar, single content edge effect, safe-area scroll host, one title owner');
+assert.doesNotMatch(settings, /scrollEdgeEffectStyle\(|blurEffect:/);
+assert.match(settings, /\["NavigationStackView", "SlotView"\]\.every\(hasView\)/);
+assert.match(settings, /<NavigationDestination value="settings">\s*<NativeSettingsForm player=\{player\} onClose=\{onClose\} \/>/);
+assert.match(settings, /onPathChange=\{path => \{ if \(path\.length === 0\) onClose\(\); \}\}/);
+console.log('Settings header checks passed: one SwiftUI title/scroll owner, system-default edge effects, no forced material');
+
+// Execute both capability paths rather than only matching source text. The
+// normal path must hide the outer bar and let the SwiftUI stack handle pop.
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', '@expo/ui/swift-ui/modifiers'] });
+function settingsAdapter(swiftNavigationAvailable) {
+  const module = { exports: {} };
+  const previousExpo = globalThis.expo;
+  globalThis.expo = { getViewConfig: (_module, name) => !['NavigationStackView', 'SlotView'].includes(name) || swiftNavigationAvailable };
+  const react = { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
+  const mockRequire = name => {
+    if (name === 'react') return react;
+    if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => ({ width: 390 }), View: 'View', Modal: 'Modal' };
+    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text'].map(name => [name,name])) };
+    if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
+    throw new Error('Unexpected settings test dependency: ' + name);
+  };
+  try { new Function('require','module','exports','__DEV__',settingsBundle.outputFiles[0].text)(mockRequire,module,module.exports,false); }
+  finally { globalThis.expo = previousExpo; }
+  return module.exports;
+}
+for (const available of [true,false]) {
+  const adapter = settingsAdapter(available);
+  const closed = [];
+  const tree = adapter.IOSSettingsNavigation({ children: 'approved-home', settings: true, onSettingsChange: value => closed.push(value), title: '正在播放', player: {}, theme: 'dark' });
+  const [home,settingsScreen] = tree.props.children;
+  assert.equal(home.props.children[0], 'approved-home');
+  if (available) {
+    assert.deepEqual(settingsScreen.props.headerConfig, { hidden: true });
+    const page = settingsScreen.props.children[0];
+    const host = page.type(page.props);
+    const stack = host.props.children[0];
+    assert.equal(stack.type,'NavigationStack');
+    assert.deepEqual(stack.props.path,['settings']);
+    assert.equal(stack.props.children[1].type,'NavigationDestination');
+    assert.equal(stack.props.children[1].props.children[0].props.nativeNavigation,undefined);
+    stack.props.onPathChange(['settings']);
+    assert.deepEqual(closed,[]);
+    stack.props.onPathChange([]);
+    assert.deepEqual(closed,[false]);
+  } else {
+    assert.equal(settingsScreen.props.headerConfig.title,'设置');
+    assert.equal(settingsScreen.props.headerConfig.largeTitle,false);
+    assert.equal(settingsScreen.props.children[0].type,'Host');
+  }
+}
+console.log('Settings adapter checks passed: guarded SwiftUI stack, one title owner, real native pop, unchanged home, safe old-binary fallback');
 
 // Only an overflowing library may scroll; playback and scene are fixed Views.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));

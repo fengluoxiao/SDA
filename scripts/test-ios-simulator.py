@@ -96,10 +96,10 @@ try:
     navigation=any('NavigationBar' in c for c in classes)
     ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
     if stage.startswith('settings'):
-     # iOS 26 uses content edge effects, not a fixed navigation-bar material.
-     ready=ready and any(bar.get('title') == '设置' and bar.get('backgroundBlur') is False and bar.get('scrollEdgeBlur') is False for bar in data.get('navigationBars',[]))
+     # SwiftUI owns the bar's default appearance; don't pin private material details.
+     ready=ready and any(bar.get('title') == '设置' for bar in data.get('navigationBars',[]))
      ready=ready and any(v.get('text') == '设置' and v.get('alpha',0) > 0 for v in data.get('nativeViews',[]))
-     if stage == 'settings':
+     if stage in ('settings','settings-dark'):
       # Presence alone missed rows overlapping the status bar/native large title.
       titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and v.get('height',0)>25]
       rows=[v for v in data.get('nativeViews',[]) if v.get('class') == 'ListCollectionViewCell' and v.get('y',-1)>=0 and v.get('width',0)>100]
@@ -115,15 +115,17 @@ try:
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
  chrome_report('scene')
- for stage in ['player','library','mini-player','settings','settings-spatial','settings-room']:
+ for stage in ['player','library','mini-player','settings','settings-spatial','settings-room','settings-dark']:
   run('xcrun','simctl','terminate',udid,'app.sda.mobile')
   os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
+  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
   (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
   run('xcrun','simctl','launch',udid,'app.sda.mobile')
   chrome_report(stage)
   time.sleep(3)
   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
+  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','light')
  # Move the running process genuinely into the background by opening Settings.
  # This proves native decode/output is independent of the suspended JS timer.
  # It does NOT simulate physical protected-data locking or Bluetooth behavior.

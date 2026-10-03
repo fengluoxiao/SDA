@@ -16,6 +16,10 @@ const hasUIKitSettingsNavigation = Platform.OS === "ios" &&
 const nativeScreens: typeof import("react-native-screens") | null =
   hasUIKitSettingsNavigation ? require("react-native-screens") : null;
 
+// Native SwiftUI navigation must own the Form's title, insets and scroll edge
+// together. A UIKit large-title bar around an independent Host cannot do that.
+const hasSwiftUISettingsNavigation = !!swiftUI && ["NavigationStackView", "SlotView"].every(hasView);
+
 const settingsButtonStyle = Platform.OS === "ios" && Number(Platform.Version) >= 26 ? "glass" : "bordered";
 
 export function IOSSettingsButton({ onPress }: { onPress(): void }) {
@@ -45,24 +49,45 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
         onDismissed={() => onSettingsChange(false)}
-        // WWDC25/284: transparent bars; the scrolling content owns the edge effect.
-        // Do not hide that effect or put a fixed material behind the entire bar.
-        headerConfig={{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-          largeTitle: true, largeTitleHideShadow: true, translucent: true,
-          hideShadow: true, color: PlatformColor("systemBlue"),
-          backgroundColor: "transparent", experimental_userInterfaceStyle: theme }}
+        // The outer stack only presents the page. SwiftUI owns all settings
+        // chrome; never overlay a second UIKit large-title bar on its Form.
+        headerConfig={hasSwiftUISettingsNavigation ? { hidden: true } : {
+          title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
+          largeTitle: false, translucent: true, hideShadow: true,
+          color: PlatformColor("systemBlue"), backgroundColor: "transparent",
+          experimental_userInterfaceStyle: theme }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
-        {/* Preserve the approved safe-area layout. Ignoring the container
-            inset lets this nested SwiftUI Form put rows under the native title. */}
-        <Host style={{ flex: 1 }} colorScheme={theme}>
-          <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} nativeNavigation />
-        </Host>
+        {hasSwiftUISettingsNavigation
+          ? <IOSSwiftUISettingsPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
+          : <Host style={{ flex: 1 }} colorScheme={theme}>
+              <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} nativeNavigation />
+            </Host>}
       </ScreenStackItem>}
     </ScreenStack>;
   }
   return <>{children}<Modal visible={settings} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => onSettingsChange(false)}>
-    <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
+    {hasSwiftUISettingsNavigation
+      ? <IOSSwiftUISettingsPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
+      : <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />}
   </Modal></>;
+}
+
+// Apple NavigationStack provides the actual system back button and interactive
+// pop. Its Form is the destination itself, not a separately hosted scroll view.
+// Keep this stack confined to settings so the approved home hierarchy is unchanged.
+function IOSSwiftUISettingsPage({ player, theme, onClose }: {
+  player: PlayerProps; theme: "light" | "dark"; onClose(): void;
+}) {
+  if (!swiftUI) return null;
+  const { Host, NavigationStack, NavigationDestination, Text } = swiftUI;
+  return <Host style={{ flex: 1 }} colorScheme={theme}>
+    <NavigationStack path={["settings"]} onPathChange={path => { if (path.length === 0) onClose(); }}>
+      <Text>{""}</Text>
+      <NavigationDestination value="settings">
+        <NativeSettingsForm player={player} onClose={onClose} />
+      </NavigationDestination>
+    </NavigationStack>
+  </Host>;
 }
 
 // Expo Go's older native binary has Form/Button but no NavigationStack manager.
@@ -103,19 +128,19 @@ function NativeSettingsForm({ player: p, onClose, nativeNavigation = false }: { 
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, Stepper, HStack } = swiftUI;
-  const { disabled, navigationTitle, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle, scrollEdgeEffectStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { disabled, navigationTitle, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const audioDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const roomDisabled = (p.systemSpatial360RAActive && p.systemSpatial360RA) || p.busy || p.roomBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const rooms = compatibleRooms(p);
   return <Form modifiers={[
-    // UIKit already owns the navigation item; don't let a nested hosting
-    // controller overwrite it with a second SwiftUI navigation title.
+    // SwiftUI owns its navigation title on the normal path. Older binaries
+    // without NavigationStack retain one inline UIKit-owned title.
     ...(!nativeNavigation ? [navigationTitle("设置")] : []), tint(PlatformColor("systemBlue")),
     scrollContentBackground("hidden"),
-    // One adaptive effect on the actual scrolling Form, not a fixed blur slab.
-    scrollEdgeEffectStyle("soft", "top"),
+    // No forced material or custom scroll-edge style: NavigationStack/Form use
+    // the OS's default treatment, including the iOS 26 Liquid Glass edge effect.
     background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
   ]}>
     <Section title="播放操作">
