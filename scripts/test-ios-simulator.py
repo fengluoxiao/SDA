@@ -96,7 +96,9 @@ try:
     navigation=any('NavigationBar' in c for c in classes)
     ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
     if stage.startswith('settings'):
-     ready=ready and any(bar.get('backgroundBlur') is True and bar.get('scrollEdgeBlur') is True for bar in data.get('navigationBars',[]))
+     # iOS 26 uses content edge effects, not a fixed navigation-bar material.
+     ready=ready and any(bar.get('title') == '设置' and bar.get('backgroundBlur') is False and bar.get('scrollEdgeBlur') is False for bar in data.get('navigationBars',[]))
+     ready=ready and any(v.get('text') == '设置' and v.get('alpha',0) > 0 for v in data.get('nativeViews',[]))
     if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
     if stage == 'mini-player':
      ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))

@@ -20,8 +20,11 @@ private enum ChromeSmoke {
     var views: [[String: Any]] = []
     var navigationBars: [[String: Any]] = []
     func visit(_ view: UIView) {
-     if view.window != nil && !view.isHidden && view.bounds.width > 0 && view.bounds.height > 0 {
-      views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "width": view.bounds.width, "height": view.bounds.height])
+     // Hidden/transparent ancestors also hide their descendants.
+     guard view.window != nil, !view.isHidden, view.alpha > 0.01 else { return }
+     if view.bounds.width > 0 && view.bounds.height > 0 {
+      let text = (view as? UILabel)?.text ?? ""
+      views.append(["class": String(describing: type(of: view)), "label": view.accessibilityLabel ?? "", "text": text, "alpha": view.alpha, "width": view.bounds.width, "height": view.bounds.height])
       if let bar = view as? UINavigationBar {
        let appearance = bar.topItem?.standardAppearance ?? bar.standardAppearance
        let edge = bar.topItem?.scrollEdgeAppearance ?? bar.scrollEdgeAppearance ?? appearance

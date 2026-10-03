@@ -41,7 +41,7 @@ assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{s.header\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
 assert.match(settings, /systemImage="gearshape"/);
-assert.match(settings, /<Form modifiers=\{\[\s*navigationTitle\("设置"\), tint\(PlatformColor\("systemBlue"\)\)/);
+assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(PlatformColor\("systemBlue"\)\)/);
 for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering', 'setNearField', 'setRoom']) assert.ok(settings.includes('p.' + callback));
 assert.match(ui, /settings && !hasNativeIOSSettings/);
 assert.match(settings, /getViewConfig/);
@@ -170,13 +170,12 @@ console.log('Settings fullscreen checks passed: overlapping screens, full-height
 
 assert.match(uiKitStack, /translucent: true/);
 assert.match(uiKitStack, /backgroundColor: "transparent", experimental_userInterfaceStyle/);
-assert.match(uiKitStack, /scrollEdgeEffects=\{\{ top: "hidden", bottom: "hidden", left: "hidden", right: "hidden" \}\}/);
-assert.match(uiKitStack, /blurEffect: "systemMaterial"/);
-assert.match(uiKitStack, /<NativeSettingsForm[^\n]*navigationBarOwnsBlur/);
-assert.match(settings, /!navigationBarOwnsBlur \? \[scrollEdgeEffectStyle\("soft", "top"\)\] : \[\]/);
-assert.doesNotMatch(uiKitStack, /ignoreSafeArea="container"/);
+assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
+assert.match(uiKitStack, /<Host[^\n]*ignoreSafeArea="container"/);
+assert.match(uiKitStack, /<NativeSettingsForm[^\n]*nativeNavigation/);
+assert.match(settings, /!nativeNavigation \? \[navigationTitle\("设置"\)\] : \[\]/);
 assert.match(settings, /scrollEdgeEffectStyle\("soft", "top"\)/);
-console.log('Settings header-material checks passed: shared full navigation-bar blur, no overlapping content-edge haze');
+console.log('Settings header checks passed: transparent bar, single content edge effect, full-height scroll host, one title owner');
 
 // Only an overflowing library may scroll; playback and scene are fixed Views.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));
