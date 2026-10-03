@@ -208,3 +208,11 @@ console.log('Player layout checks passed: short/tall viewports, measured notices
 
 assert.equal(iosPlayerLayout(390, 780, 237).coverSize, 260);
 assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 260);
+
+// Standalone-only SDA managers may supply audio, never a different home design.
+const sharedTransport = ui.slice(ui.indexOf('  const icon ='), ui.indexOf('  const divider ='));
+assert.doesNotMatch(sharedTransport, /hasNativeIOSChrome|IOSIconButton/);
+const sharedVolume = ui.slice(ui.indexOf('<View style={[s.volume,'), ui.indexOf('<View style={[s.volume,') + 1100);
+assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
+assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
+console.log('Expo Go/release parity checks passed: shared home header, transport and volume controls');

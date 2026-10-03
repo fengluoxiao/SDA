@@ -5,7 +5,7 @@ import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playb
 import renderingPresets from "../rendering-presets.json";
 import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
-import { hasNativeIOSChrome, IOSAction, IOSDistanceStepper, IOSGlassTabs, IOSIconButton, IOSMaterialSurface, IOSVolumeSlider } from "./IOSNativeChrome";
+import { hasNativeIOSChrome, IOSAction, IOSDistanceStepper, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
 import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
 import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
@@ -70,9 +70,9 @@ export function IOSPlayer(p: PlayerProps) {
     onPanResponderMove: (_, gesture) => p.setVolume(Math.max(0, Math.min(1, (gesture.moveX - volumeOrigin.current) / volumeWidth.current))),
   }), [p.setVolume]);
   const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: muted ? c.muted : c.ink }, style]}>{value}</Text>;
-  const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => hasNativeIOSChrome
-    ? <IOSIconButton symbol={symbol} label={name} onPress={action} disabled={disabled} size={size} symbolSize={size > 50 ? 25 : 19} />
-    : <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: c.panel, opacity: disabled ? .35 : 1 }]}>{label(fallback, false, { fontSize: 22 })}</Pressable>;
+  // The approved Expo Go transport controls are shared with the release app.
+  // The presence of SdaEngine/SdaGlass must never select a different design.
+  const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: c.panel, opacity: disabled ? .35 : 1 }]}>{label(fallback, false, { fontSize: 22 })}</Pressable>;
   const divider = () => <View style={[s.divider, { backgroundColor: c.line }]} />;
   const toggle = (name: string, description: string, value: boolean, onValueChange: (enabled: boolean) => void, disabled = false) => <View style={s.settingRow}>
     <View style={s.settingCopy}>{label(name, false, s.settingTitle)}{!!description && label(description, true, s.settingHint)}</View>
@@ -130,7 +130,7 @@ export function IOSPlayer(p: PlayerProps) {
             {icon("arrow.counterclockwise", "重新播放", p.play, p.busy || !p.selectedUri, 44, "⟲")}
           </View>
           </View>
-          <View style={[s.volume, s.playerBlock]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}><IOSVolumeSymbol volume={p.volume} color={c.muted} />{hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={() => { /* Fixed page has no parent scrolling to suspend. */ }} /> : <View onLayout={event => { volumeWidth.current = Math.max(1, event.nativeEvent.layout.width); }} {...volumeGesture.panHandlers} style={s.volumeTouch}><View style={[s.progress, { marginTop: 0, backgroundColor: c.line }]}><View style={{ height: 5, width: String(p.volume * 100) + "%" as any, backgroundColor: c.accent }} /></View></View>}{label(Math.round(p.volume * 100) + "%", true, s.volumeValue)}</View>
+          <View style={[s.volume, s.playerBlock]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}><IOSVolumeSymbol volume={p.volume} color={c.muted} /><View accessible accessibilityLabel="音量滑块" onLayout={event => { volumeWidth.current = Math.max(1, event.nativeEvent.layout.width); }} {...volumeGesture.panHandlers} style={s.volumeTouch}><View style={[s.progress, { marginTop: 0, backgroundColor: c.line }]}><View style={{ height: 5, width: String(p.volume * 100) + "%" as any, backgroundColor: c.accent }} /></View></View>{label(Math.round(p.volume * 100) + "%", true, s.volumeValue)}</View>
         </View>
         <ScrollView style={[s.page, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={s.otherContent}
           scrollEnabled={libraryCanScroll} bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator={false}

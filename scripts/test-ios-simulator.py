@@ -95,7 +95,7 @@ try:
     form=any('CollectionView' in c or 'TableView' in c for c in classes)
     navigation=any('NavigationBar' in c for c in classes)
     ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
-    if stage == 'player':ready=ready and 'volumeSlider' in data.get('controls',{})
+    if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
     if ready:break
    time.sleep(1)
   else:
