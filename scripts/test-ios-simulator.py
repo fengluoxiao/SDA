@@ -89,7 +89,8 @@ try:
    if report.is_file():
     data=json.loads(report.read_text())
     controls=data['controls']
-    required={'tabs','更多设置','volumeSlider'}
+    required={'tabs','更多设置'}
+    if stage == 'player':required.add('volumeSlider')
     if stage.startswith('settings'):required.update({'settingsSurface','distanceStepper','重新播放','停止播放'})
     ready=required.issubset(controls)
     if ready:break

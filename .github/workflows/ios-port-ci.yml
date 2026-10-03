@@ -83,6 +83,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
+          pnpm exec tsc -p apps/mobile/tsconfig.json --noEmit
+          node scripts/test-ios-ui.mjs
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
         run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts

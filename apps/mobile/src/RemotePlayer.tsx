@@ -4,13 +4,14 @@ import React, { useMemo, useRef, useState } from "react";
 import { Animated, Image, Modal, PanResponder, Pressable, SafeAreaView, Platform, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { hasNativeIOSChrome, IOSIconButton, IOSGlassTabs, IOSMaterialSurface, IOSAction, IOSVolumeSlider, IOSDistanceStepper } from "./IOSNativeChrome";
 import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
+import { IOSPlayer } from "./IOSPlayer";
 
 export interface TrackMetadata {
   title?: string; artist?: string; album?: string; albumArtist?: string;
   year?: string; track?: string; coverUri?: string; durationMs?: number;
 }
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
-interface Props {
+export interface PlayerProps {
   preparingAudio?: boolean;
   playbackPageRequest?: number;
   systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
@@ -39,7 +40,11 @@ const light = { bg: "#f3f4f6", panel: "#ffffff", ink: "#19212b", muted: "#687381
 const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
 // Native counterpart of desktop/remote-web: same palette, cards and three-page navigation.
-export function RemotePlayer(p: Props) {
+export function RemotePlayer(p: PlayerProps) {
+  return Platform.OS === "ios" ? <IOSPlayer {...p} /> : <LegacyRemotePlayer {...p} />;
+}
+
+function LegacyRemotePlayer(p: PlayerProps) {
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");

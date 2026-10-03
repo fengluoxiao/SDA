@@ -1,5 +1,11 @@
 import UIKit
 
+private let sdaAccent = UIColor { traits in
+ traits.userInterfaceStyle == .dark
+  ? UIColor(red: 159/255, green: 220/255, blue: 185/255, alpha: 1)
+  : UIColor(red: 40/255, green: 117/255, blue: 74/255, alpha: 1)
+}
+
 // UIKit owns the material, SF Symbols, highlighting and accessibility. Keep
 // these controls independent of the decoder and of the React render cadence.
 final class GlassButtonControl: UIView {
@@ -37,7 +43,7 @@ final class GlassButtonControl: UIView {
   #endif
   if row {
    config = .plain()
-   config.background.backgroundColor = selected ? UIColor.systemTeal.withAlphaComponent(0.12) : .clear
+   config.background.backgroundColor = selected ? sdaAccent.withAlphaComponent(0.12) : .clear
    config.background.cornerRadius = 14
    materialKind = "nativeRow"
   }
@@ -58,7 +64,7 @@ final class GlassButtonControl: UIView {
   config.contentInsets = title.isEmpty ? .zero : NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
   config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .semibold))
   config.baseForegroundColor = prominent ? .white : .label
-  if prominent { config.baseBackgroundColor = .systemTeal }
+  if prominent { config.baseBackgroundColor = sdaAccent }
   button.configuration = config
   button.contentHorizontalAlignment = row ? .leading : .center
   button.accessibilityTraits = selected ? [.button, .selected] : [.button]
@@ -78,7 +84,7 @@ final class GlassButtonControl: UIView {
 final class GlassTabsControl: UIView {
  let effectView = UIVisualEffectView()
  let stack = UIStackView()
- private let titles = ["播放", "列表", "空间"]
+ private let titles = ["播放", "资料库", "空间"]
  private let symbols = ["play.circle.fill", "music.note.list", "cube.transparent"]
  private var buttons: [UIButton] = []
  var action: ((Int) -> Void)?
@@ -140,8 +146,8 @@ final class GlassTabsControl: UIView {
    config.imagePlacement = .top; config.imagePadding = 3
    config.contentInsets = .zero
    config.cornerStyle = .capsule
-   config.baseForegroundColor = index == selected ? .label : .secondaryLabel
-   config.background.backgroundColor = index == selected ? UIColor.label.withAlphaComponent(0.09) : .clear
+   config.baseForegroundColor = index == selected ? sdaAccent : .secondaryLabel
+   config.background.backgroundColor = index == selected ? sdaAccent.withAlphaComponent(0.09) : .clear
    config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
     var result = attributes
     result.font = UIFont.preferredFont(forTextStyle: .caption1)
@@ -189,7 +195,7 @@ final class NativeSliderControl: UIView {
   slider.minimumValue = 0; slider.maximumValue = 1
   slider.minimumValueImage = UIImage(systemName: "speaker.fill")
   slider.maximumValueImage = UIImage(systemName: "speaker.wave.3.fill")
-  slider.tintColor = .systemTeal; slider.accessibilityLabel = "音量"
+  slider.tintColor = sdaAccent; slider.accessibilityLabel = "音量"
   slider.addTarget(self, action: #selector(started), for: .touchDown)
   slider.addTarget(self, action: #selector(moved), for: .valueChanged)
   slider.addTarget(self, action: #selector(ended), for: [.touchUpInside, .touchUpOutside, .touchCancel])
@@ -207,7 +213,7 @@ final class NativeStepperControl: UIView {
  override init(frame: CGRect) {
   super.init(frame: frame); addSubview(stepper)
   stepper.minimumValue = 0.25; stepper.maximumValue = 4; stepper.stepValue = 0.05
-  stepper.tintColor = .systemTeal; stepper.accessibilityLabel = "距离映射，单位米"
+  stepper.tintColor = sdaAccent; stepper.accessibilityLabel = "距离映射，单位米"
   stepper.addTarget(self, action: #selector(moved), for: .valueChanged)
  }
  required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
