@@ -101,6 +101,11 @@ jobs:
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
+      - name: Verify independent object routes and quiet height contributions
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
       - name: iOS renderer scheduling policy tests
         if: steps.sdk.outputs.available == 'true'
         run: |

@@ -17,7 +17,12 @@ impl Default for FrontCommon {
     fn default() -> Self {
         Self {
             center: None,
-            enabled: true,
+            // Correlation is not metadata: equal samples in two objects may
+            // contain backing vocals or ambience as well as a centered lead.
+            // Re-centering them invents a source and changes the authored mix
+            // even in actual-direction mode. Keep this diagnostic experiment
+            // opt-in; normal playback must convolve each object independently.
+            enabled: false,
             mix: 0.0,
             pair: None,
             reference: None,
@@ -473,6 +478,107 @@ mod tests {
         }
         out
     }
+    #[test]
+    fn default_actual_direction_keeps_correlated_objects_on_authored_routes() {
+        for manifest in [
+            "../web/public/hrtf-dense/hrtf-set.json",
+            "../mobile/assets/hrtf-mobile-direct/hrtf-set.json",
+        ] {
+            for extras in [0, 8] {
+                let make = |bypass: bool| {
+                    let mut e = engine(false, "eac3", false, extras);
+                    // Exercise the shipped default, not a diagnostic opt-in.
+                    e.front_common = FrontCommon::default();
+                    if bypass {
+                        e.front_common.enabled = false;
+                    }
+                    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest);
+                    e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0)
+                        .unwrap();
+                    e
+                };
+                let expected = rendered(&mut make(true), 1536);
+                let mut actual = make(false);
+                let output = rendered(&mut actual, 173);
+                let error = output
+                    .iter()
+                    .zip(&expected)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    error < 1e-7,
+                    "actual-direction mode recentered correlated object PCM: {manifest}, extras={extras}, error={error}"
+                );
+                assert!(
+                    actual.front_common.center.is_none(),
+                    "must not invent a center object"
+                );
+                assert_eq!(actual.peak_guard.diagnostic_gain(), 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn quiet_height_and_front_object_contributions_are_additive_by_default() {
+        for manifest in [
+            "../web/public/hrtf-dense/hrtf-set.json",
+            "../mobile/assets/hrtf-mobile-direct/hrtf-set.json",
+        ] {
+            // Ten declarations also exercise the parallel object mixer.
+            let make = |group: usize| {
+                let mut e = engine(false, "eac3", false, 8);
+                e.front_common = FrontCommon::default();
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest);
+                e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0)
+                    .unwrap();
+                for i in 0..10 {
+                    let id = format!("arbitrary-name-{i}");
+                    let source = e.sources.get_mut(&id).unwrap();
+                    if i == 2 || i == 3 {
+                        source.position = [if i == 2 { -1.0 } else { 1.0 }, 1.0, 1.0];
+                    }
+                    let samples: Vec<_> = (0..12288)
+                        .map(|n| {
+                            let included = group == 0
+                                || (group == 1 && i < 2)
+                                || (group == 2 && i == 2)
+                                || (group == 3 && i == 3);
+                            if !included || i >= 4 {
+                                0.0
+                            } else if i < 2 {
+                                (n as f32 * 0.173).sin() * 0.01
+                            }
+                            // Deliberately below the UI activity threshold. A quiet
+                            // harmony must not be dropped from the audio mix.
+                            else {
+                                (n as f32 * 0.093 + i as f32).sin() * 0.0001
+                            }
+                        })
+                        .collect();
+                    source.samples.write(0, 0, &samples);
+                    e.route_source_now(&id, 0).unwrap();
+                }
+                e
+            };
+            let outputs: Vec<_> = (0..4)
+                .map(|group| rendered(&mut make(group), 173))
+                .collect();
+            let mut max_error = 0.0_f32;
+            for n in 0..outputs[0].len() {
+                max_error = max_error
+                    .max((outputs[0][n] - outputs[1][n] - outputs[2][n] - outputs[3][n]).abs());
+            }
+            assert!(
+                max_error < 1e-7,
+                "object summation changed authored contributions: {manifest}, error={max_error}"
+            );
+            for quiet in &outputs[2..] {
+                let energy: f64 = quiet.iter().map(|v| f64::from(*v).powi(2)).sum();
+                assert!(energy > 1e-6, "quiet elevated object was gated: {manifest}");
+            }
+        }
+    }
+
     #[test]
     fn pure_side_is_bit_identical_in_general_and_parallel_mixers() {
         for extras in [0, 8] {
