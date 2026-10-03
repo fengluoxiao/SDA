@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 const result = await build({ entryPoints: ['apps/mobile/src/ios-ui-model.ts'], bundle: true, platform: 'node', format: 'esm', write: false });
-const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle, iosPlayerLayout } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 assert.deepEqual(IOS_TABS, ['播放', '资料库', '空间']);
 assert.equal(trackTitle({name:'file.m4a',metadata:{title:'Song'}}),'Song');
 assert.equal(trackTitle({name:'file.m4a',metadata:{}}),'file.m4a');
@@ -27,4 +27,183 @@ assert.match(ui, /accessibilityViewIsModal/);
 assert.ok(ui.includes('"chevron.left", "返回", () => setSettings(false)'));
 assert.match(readFileSync('apps/mobile/App.tsx','utf8'), /copyToCacheDirectory: *true/);
 assert.match(readFileSync('apps/mobile/modules/sda-core/ios/GlassControls.swift','utf8'), /["播放", "资料库", "空间"]/);
+const tabs=readFileSync('apps/mobile/src/IOSSystemTabs.tsx','utf8');
+assert.match(tabs, /TabView.Tab/);
+assert.match(tabs, /tabViewStyle\(\{ type: "automatic" \}\)/);
+assert.match(tabs, /RNHostView/);
+assert.match(tabs, /Platform.OS === "ios"/);
+assert.match(tabs, /selection=\{String\(selected\)\}/);
+assert.match(ui, /<IOSSystemTabs selected=\{page\} onChange=\{navigate\}/);
+assert.doesNotMatch(tabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
+const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
+assert.match(settings, /NavigationStack path=\{settings \? \["settings"\] : \[\]\}/);
+assert.match(settings, /NavigationDestination value="settings"/);
+assert.match(settings, /ToolbarItem placement="topBarTrailing"/);
+assert.match(settings, /systemImage="gearshape"/);
+assert.match(settings, /<Form modifiers=\{\[\s*navigationTitle\("设置"\), tint\(PlatformColor\("systemBlue"\)\)/);
+for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering', 'setNearField', 'setRoom']) assert.ok(settings.includes('p.' + callback));
+assert.match(ui, /settings && !hasNativeIOSSettings/);
+assert.match(settings, /getViewConfig/);
+assert.match(settings, /if \(!hasNativeIOSNavigation\)/);
+assert.match(settings, /presentationStyle="fullScreen"/);
+assert.match(readFileSync('apps/mobile/metro.config.js','utf8'), /moduleName === 'three'/);
+assert.match(readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8'), /quaternion=\{facing.quaternion.toArray\(\)/);
 console.log('iOS UI regression checks passed: navigation, status, original 360RA rooms, presets, real scene, safe import');
+
+assert.match(settings, /<IOSSettingsCompatibilityPage player=\{player\}/);
+assert.match(settings, /VStack alignment="leading"/);
+assert.match(settings, /font\(\{ textStyle: "headline", weight: "semibold" \}\)/);
+assert.match(settings, /frame\(\{ width, alignment: "leading" \}\)/);
+assert.match(settings, /PlatformColor\("systemGroupedBackground"\)/);
+assert.match(settings, /frame\(\{ minHeight: 44 \}\)/);
+assert.doesNotMatch(settings, /<HStack><Button label="返回"/);
+
+// Settings backgrounds extend to the screen edge; content keeps native insets.
+const compatibilityPage = settings.slice(settings.indexOf('function IOSSettingsCompatibilityPage'), settings.indexOf('function NativeSettingsForm'));
+assert.doesNotMatch(compatibilityPage, /<SafeAreaView/);
+assert.equal((compatibilityPage.match(/<Host /g) || []).length, 1);
+assert.match(compatibilityPage, /ignoresSafeAreaEdges: "all"/);
+assert.doesNotMatch(compatibilityPage, /ignoreSafeArea="(?:all|container)"/);
+assert.match(settings, /scrollContentBackground\("hidden"\)/);
+
+// The home screen must not clip the native TabView at the bottom safe area
+// or show a different-color native page between the top/bottom backgrounds.
+assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
+assert.match(ui, /edges=\{hasSystemIOSTabs \? \(hasNativeIOSNavigation \? \["left", "right"\] : \["top", "left", "right"\]\)/);
+assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
+assert.match(ui, /backgroundColor=\{c.bg\} accent=\{c.accent\}/);
+assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
+assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
+
+// Never place an engine-error footer between the native tabs and home indicator.
+assert.doesNotMatch(ui, /<\/IOSSystemTabs>\s*\{!!p.error/);
+assert.ok(ui.indexOf('!!p.error && !engineUnavailable') < ui.indexOf('<IOSSystemTabs selected='));
+assert.match(ui, /engineUnavailable && <Text/);
+assert.match(tabs, /<VStack spacing=\{0\} modifiers=\{\[background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)\]\}/);
+
+// UIKit path exposes actual native bar appearances, not just page backgrounds.
+const uiKitTabs = readFileSync('apps/mobile/src/IOSUIKitTabs.tsx', 'utf8');
+assert.match(tabs, /if \(hasUIKitIOSTabs\) return <IOSUIKitTabs/);
+assert.match(uiKitTabs, /UIManager.hasViewManagerConfig\(name\)/);
+assert.match(uiKitTabs, /tabBarBackgroundColor: "transparent"/);
+assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
+assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
+assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
+assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
+assert.match(uiKitTabs, /<SafeAreaView edges=\{\["bottom"\]\}/);
+assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
+
+// Exercise the UI adapter with mocked native components (not a visual/native
+// runtime test): appearances, controlled selection, capability-safe imports.
+const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context'] });
+function loadNativeTabs(platform, available) {
+  const module = { exports: {} };
+  let nativeImports = 0;
+  const mockReact = {
+    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+    useState: () => [0, () => {}],
+  };
+  const mockRequire = name => {
+    if (name === 'react') return mockReact;
+    if (name === 'react-native') return { Platform: { OS: platform }, UIManager: { hasViewManagerConfig: () => available }, View: 'View' };
+    if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView' };
+    if (name === 'react-native-screens') {
+      nativeImports++;
+      assert.equal(platform, 'ios');
+      assert.ok(available, 'missing native managers must not be imported');
+      return { Tabs: { Host: 'UITabBarController', Screen: 'NativeTabScreen' } };
+    }
+    throw new Error('Unexpected test dependency: ' + name);
+  };
+  new Function('require', 'module', 'exports', '__DEV__', nativeTabsBundle.outputFiles[0].text)(mockRequire, module, module.exports, false);
+  return { api: module.exports, nativeImports };
+}
+const nativeAdapter = loadNativeTabs('ios', true);
+const selections = [];
+const tree = nativeAdapter.api.IOSUIKitTabs({ selected: 0, onChange: index => selections.push(index), pages: ['player', 'library', 'scene'], accent: '#28754a', theme: 'light', backgroundColor: '#f0f3f0' });
+const tabHost = tree.props.children[0];
+assert.deepEqual(tabHost.props.navStateRequest, { selectedScreenKey: '0', baseProvenance: 0 });
+for (const screen of tabHost.props.children[0]) {
+  assert.equal(screen.props.ios.standardAppearance.tabBarBackgroundColor, 'transparent');
+  assert.deepEqual(screen.props.ios.standardAppearance, screen.props.ios.scrollEdgeAppearance);
+  assert.equal(screen.props.ios.standardAppearance.tabBarBlurEffect, 'systemDefault');
+}
+for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1 } });
+assert.deepEqual(selections, [1]);
+assert.equal(loadNativeTabs('ios', false).nativeImports, 0);
+assert.equal(loadNativeTabs('android', true).nativeImports, 0);
+console.log('Native tabs adapter checks passed: transparent bar appearances, controlled selection, guarded native imports');
+
+// Requested cleanup must not reintroduce redundant import/head-direction controls.
+assert.doesNotMatch(ui, /folder\.badge\.plus|头向左转|头向右转|重置头向/);
+assert.match(ui, /"folder.open", "打开本机文件"/);
+assert.match(settings, /Number\(Platform.Version\) >= 26 \? "glass"/);
+assert.match(settings, /buttonStyle\(settingsButtonStyle\)/);
+assert.match(compatibilityPage, /<HStack spacing=\{0\}/);
+assert.match(compatibilityPage, /frame\(\{ width: 88, alignment: "leading" \}\)/);
+const nativeActions = settings.slice(settings.indexOf('<Section title="播放操作">'), settings.indexOf('<Section title="播放"'));
+assert.match(nativeActions, /<HStack spacing=\{12\}>/);
+assert.equal((nativeActions.match(/<Button /g) || []).length, 2);
+assert.ok(settings.indexOf('<Section title="播放操作">') < settings.indexOf('<Section title="播放"'));
+assert.ok(ui.indexOf('<View style={s.settingsActions}>') < ui.indexOf('{heading("播放")}'));
+console.log('Settings layout checks passed: glass style, single-row navigation/actions, no redundant home controls');
+
+// Expo Go's settings title/back action must be owned by UINavigationController,
+// not the hand-built compatibility row when UIKit managers are available.
+assert.match(settings, /hasUIKitSettingsNavigation = Platform.OS === "ios"/);
+assert.match(settings, /"RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"/);
+assert.match(settings, /hasUIKitSettingsNavigation \? require\("react-native-screens"\) : null/);
+assert.match(settings, /headerConfig=\{\{ title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false/);
+assert.match(settings, /onDismissed=\{\(\) => onSettingsChange\(false\)\}/);
+assert.match(settings, /screenId="sda-home" activityState=\{2\} freezeOnBlur=\{false\}/);
+console.log('Settings native-header checks passed: guarded UIKit stack, system title/back, mounted home');
+
+assert.doesNotMatch(settings, /activityState=\{settings \?/);
+
+const uiKitStack = settings.slice(settings.indexOf('return <ScreenStack style='), settings.indexOf('return <>{children}<Modal'));
+assert.equal((uiKitStack.match(/style=\{StyleSheet.absoluteFill\}/g) || []).length, 2);
+assert.match(uiKitStack, /contentStyle=\{\{ flex: 1/);
+assert.match(uiKitStack, /largeTitle: true, largeTitleHideShadow: true/);
+assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
+console.log('Settings fullscreen checks passed: overlapping screens, full-height form, native minimal back and large title');
+
+assert.match(uiKitStack, /translucent: true/);
+assert.match(uiKitStack, /backgroundColor: "transparent", experimental_userInterfaceStyle/);
+assert.match(uiKitStack, /scrollEdgeEffects=\{\{ top: "soft", bottom: "automatic", left: "automatic", right: "automatic" \}\}/);
+assert.doesNotMatch(uiKitStack, /blurEffect:|ignoreSafeArea="container"/);
+assert.match(settings, /scrollEdgeEffectStyle\("soft", "top"\)/);
+console.log('Settings scroll-edge checks passed: translucent header, native soft edge, no stacked custom blur');
+
+// Only an overflowing library may scroll; playback and scene are fixed Views.
+const homePages = ui.slice(ui.indexOf('<IOSSystemTabs selected='), ui.indexOf('</IOSSystemTabs>'));
+assert.equal((homePages.match(/<ScrollView /g) || []).length, 1);
+assert.match(homePages, /scrollEnabled=\{libraryCanScroll\} bounces=\{false\} alwaysBounceVertical=\{false\}/);
+assert.match(ui, /librarySize.content > librarySize.viewport \+ 1/);
+assert.match(homePages, /onContentSizeChange=/);
+assert.match(homePages, /onLayout=/);
+assert.doesNotMatch(ui, /lockScroll|scrollLocks|playerScroll|sceneScroll/);
+console.log('Home scrolling checks passed: fixed player/scene, overflow-only library without bounce');
+
+// Responsive layout uses actual viewport and measured controls, distributing
+// spare height rather than piling it up below the volume row.
+for (const viewport of [410, 520, 650, 780]) {
+  for (const blocks of [237, 285, 315]) {
+    const layout = iosPlayerLayout(390, viewport, blocks);
+    assert.ok(layout.coverSize >= 48 && layout.coverSize <= 260);
+    assert.ok(layout.coverSize + blocks + 22 + layout.gap * 4 <= viewport + 1);
+  }
+}
+assert.ok(iosPlayerLayout(390, 700, 237).coverSize > iosPlayerLayout(390, 410, 237).coverSize);
+assert.ok(iosPlayerLayout(390, 500, 285).coverSize < iosPlayerLayout(390, 500, 237).coverSize);
+assert.match(ui, /justifyContent: "space-between"/);
+assert.match(ui, /measurePlayerBlock\("(?:status|info|controls|volume)"/);
+assert.match(ui, /<IOSVolumeSymbol volume=\{p.volume\}/);
+assert.doesNotMatch(ui, /label\("音量", true/);
+const volumeSymbol = readFileSync('apps/mobile/src/IOSVolumeSymbol.tsx', 'utf8');
+assert.match(volumeSymbol, /speaker.wave.2.fill/);
+assert.match(volumeSymbol, /speaker.slash.fill/);
+assert.match(volumeSymbol, /getViewConfig/);
+console.log('Player layout checks passed: short/tall viewports, measured notices/metadata, guarded native speaker symbol');
+
+assert.equal(iosPlayerLayout(390, 780, 237).coverSize, 260);
+assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 260);

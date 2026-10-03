@@ -22,3 +22,12 @@ export function isPresetSelected(p: Pick<PlayerProps, "hrtfSet" | "directObjects
   return p.hrtfSet === preset.hrtfSet && p.directObjects === preset.direct && p.directionalObjects === preset.directional
     && p.nearField === preset.nearField && p.roomId === preset.roomId && Math.abs(p.hrtfWetWeight - preset.hrtfWetWeight) < 1e-6;
 }
+
+// Measure the tab's actual viewport and text/control blocks, not the full phone
+// screen. Safe areas, native tabs, wrapped metadata and notices are already excluded.
+export function iosPlayerLayout(width: number, viewportHeight: number, blockHeight: number) {
+  const gap = Math.min(12, Math.max(4, viewportHeight / 70));
+  const padding = 22; // playerContent top + bottom
+  const coverSize = Math.max(48, Math.min(260, Math.max(48, width - 64), viewportHeight - blockHeight - padding - gap * 4));
+  return { coverSize: Math.floor(coverSize), gap };
+}

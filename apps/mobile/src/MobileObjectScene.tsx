@@ -42,7 +42,7 @@ function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13";
       const facing = new THREE.Object3D();
       facing.position.set(...position);
       facing.lookAt(0, speaker.isLfe ? SCENE_FLOOR_Y + 0.13 : 0, 0);
-      return <group key={speaker.name} position={position} quaternion={facing.quaternion}>
+      return <group key={speaker.name} position={position} quaternion={facing.quaternion.toArray() as [number, number, number, number]}>
         {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
       </group>;
     })}

@@ -10,20 +10,27 @@
     "android:bundle:embed": "node ./scripts/expo-embed.cjs"
   },
   "dependencies": {
-    "@react-three/fiber": "8.18.0",
+    "@expo/ui": "~57.0.21",
+    "@react-three/fiber": "9.8.1",
     "@sda/core": "workspace:*",
-    "expo": "~52.0.0",
-    "expo-document-picker": "~13.0.0",
-    "expo-gl": "~15.0.5",
-    "expo-status-bar": "~2.0.0",
-    "react": "18.3.1",
-    "react-native": "0.76.0",
-    "three": "0.159.0",
-    "base64-js": "1.5.1"
+    "base64-js": "1.5.1",
+    "expo": "~57.0.26",
+    "expo-asset": "~57.0.18",
+    "expo-document-picker": "~57.0.3",
+    "expo-file-system": "~57.0.7",
+    "expo-gl": "~57.0.2",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-worklets": "0.10.1",
+    "three": "0.159.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",
-    "@types/react": "^18.3.0",
-    "typescript": "^5.6.0"
+    "@types/react": "~19.2.0",
+    "typescript": "~6.0.3"
   }
 }

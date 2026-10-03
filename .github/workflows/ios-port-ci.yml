@@ -29,7 +29,7 @@ jobs:
     env:
       CI: '1'
       EXPO_NO_TELEMETRY: '1'
-      RCT_NEW_ARCH_ENABLED: '0'
+      RCT_NEW_ARCH_ENABLED: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.sdk.outputs.available == 'true'
         with:
-          node-version: '20'
+          node-version: '24'
       - uses: pnpm/action-setup@v4
         if: steps.sdk.outputs.available == 'true'
         with:
@@ -83,7 +83,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
-          pnpm exec tsc -p apps/mobile/tsconfig.json --noEmit
+          node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
           node scripts/test-ios-ui.mjs
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
@@ -118,7 +118,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.0 build 2>&1 | tee ios-artifacts/simulator-build.log
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee ios-artifacts/simulator-build.log
       - name: Boot simulator and smoke test
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -127,16 +127,16 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0 archive 2>&1 | tee ios-artifacts/device-build.log
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
           ditto -c -k --keepParent ios-build/SDA.xcarchive/dSYMs ios-artifacts/SDA-device-dSYMs.zip
           xcrun dwarfdump --uuid ios-build/SDA.xcarchive/Products/Applications/SDA.app/SDA > ios-artifacts/device-uuid.txt
           cd ios-build/package
-          zip -qry ../../ios-artifacts/SDA-unsigned-ios16-arm64.ipa Payload
+          zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
           cd ../..
           ditto -c -k --keepParent ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts/SDA-simulator-arm64.zip
-          printf 'Unsigned IPA: requires valid Apple signing/provisioning before device installation. Minimum deployment target iOS 16. SDK 27 validation is unavailable unless that SDK is installed.\n' > ios-artifacts/README.txt
+          printf 'Unsigned IPA: requires valid Apple signing/provisioning before device installation. Minimum deployment target iOS 16.4. SDK 27 validation is unavailable unless that SDK is installed.\n' > ios-artifacts/README.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

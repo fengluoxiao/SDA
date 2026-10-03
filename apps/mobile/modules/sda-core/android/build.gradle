@@ -3,11 +3,7 @@ apply plugin: 'com.android.library'
 group = 'app.sda.mobile'
 version = '0.1.0'
 
-def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
-apply from: expoModulesCorePlugin
-applyKotlinExpoModulesCorePlugin()
-useCoreDependencies()
-useDefaultAndroidSdkVersions()
+apply plugin: 'expo-module-gradle-plugin'
 
 android {
   namespace "app.sda.mobile.sda"

@@ -6,6 +6,7 @@ const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, '../..');
 const rnPackage = require.resolve('react-native/package.json', { paths: [projectRoot] });
 const reactPackage = require.resolve('react/package.json', { paths: [path.dirname(rnPackage)] });
+const threeEntry = require.resolve('three', { paths: [projectRoot] });
 const reactRoot = fs.realpathSync.native(path.dirname(reactPackage));
 const config = getDefaultConfig(projectRoot);
 config.resolver.disableHierarchicalLookup = true;
@@ -30,6 +31,9 @@ config.resolver.extraNodeModules = {
 
 const defaultResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Fiber and shared desktop scene components must see the same Three classes.
+  // Cross-version instanceof checks otherwise try to replace readonly vectors.
+  if (moduleName === 'three') return { type: 'sourceFile', filePath: threeEntry };
   const match = /^react(?:\/(.*))?$/.exec(moduleName);
   if (match) {
     const request = match[1] ? path.join(reactRoot, match[1]) : path.join(reactRoot, 'index.js');

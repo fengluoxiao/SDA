@@ -371,7 +371,7 @@ const s = StyleSheet.create({
   footer: { flexDirection: "row", justifyContent: "space-between", marginTop: 12 },
   queueItem: { flexDirection: "row", alignItems: "center", gap: 16, padding: 18, borderRadius: 14, marginTop: 26 }, choose: { padding: 16, alignItems: "center", borderRadius: 14, borderWidth: 1, marginTop: 20 },
   help: { fontSize: 12, lineHeight: 20, marginTop: 12, textAlign: "center" }, scene: { borderRadius: 16, overflow: "hidden", marginTop: 16, backgroundColor: "#171a19" },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "#0008" }, sheet: { position: "absolute", bottom: 0, right: 0, left: 0, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: "hidden" },
+  backdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "#0008" }, sheet: { position: "absolute", bottom: 0, right: 0, left: 0, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: "hidden" },
   sheetHandle: { width: 36, height: 4, borderRadius: 2, alignSelf: "center", marginTop: 10 },
   sheetHeader: { flexDirection: "row", alignItems: "center", paddingHorizontal: 22, paddingTop: 18, paddingBottom: 20 },
   sheetTitle: { fontSize: 23, fontWeight: "600", lineHeight: 30, includeFontPadding: false },

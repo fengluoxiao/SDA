@@ -2,8 +2,7 @@ import React from "react";
 import { Platform, type NativeSyntheticEvent, type StyleProp, type ViewStyle } from "react-native";
 import { requireNativeView } from "expo";
 
-// The workspace also contains desktop React 19 types. Keep this native view
-// adapter typed against the mobile React 18 surface (Metro pins its runtime).
+// Keep the native view adapter typed against the mobile React surface.
 const nativeView = requireNativeView as unknown as <P>(name: string) => React.ComponentType<P>;
 
 interface ButtonProps {

@@ -1,11 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Image, PanResponder, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, Image, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
 import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSDistanceStepper, IOSGlassTabs, IOSIconButton, IOSMaterialSurface, IOSVolumeSlider } from "./IOSNativeChrome";
-import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle } from "./ios-ui-model";
+import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
+import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings, hasNativeIOSNavigation } from "./IOSNativeSettings";
+import { compatibleRooms, IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
+
+import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
 
 const palettes = {
   light: { bg: "#f0f3f0", panel: "#fafcf9", ink: "#24302a", muted: "#66776c", line: "#d5dfd6", field: "#eef2ed", accent: "#28754a" },
@@ -23,21 +28,24 @@ export function IOSPlayer(p: PlayerProps) {
   const [page, setPage] = useState(sceneSmoke ? 2 : chromeSmoke === "library" ? 1 : 0);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
-  const [volumeTracking, setVolumeTracking] = useState(false);
-  const [sceneTracking, setSceneTracking] = useState(false);
-  const sceneScroll = useRef<ScrollView>(null);
-  const playerScroll = useRef<ScrollView>(null);
+  const [librarySize, setLibrarySize] = useState({ viewport: 0, content: 0 });
+  const libraryCanScroll = librarySize.viewport > 0 && librarySize.content > librarySize.viewport + 1;
   const settingsScroll = useRef<ScrollView>(null);
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
-  const scrollLocks = useRef({ volume: false, scene: false });
   const isLight = systemTheme !== "dark";
   const c = palettes[isLight ? "light" : "dark"];
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听");
   const status = playbackStatus(p);
+  const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
-  const coverSize = Math.min(240, Math.max(160, width - 80));
+  const [playerHeight, setPlayerHeight] = useState(Math.max(300, height - 230));
+  const [playerBlocks, setPlayerBlocks] = useState({ status: 20, info: 66, controls: 107, volume: 44 });
+  const { coverSize, gap: playerGap } = iosPlayerLayout(width, playerHeight, Object.values(playerBlocks).reduce((sum, value) => sum + value, 0));
+  const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
+    setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
+  };
   const format = p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) ? "Dolby Atmos" : "空间音频";
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
@@ -51,25 +59,15 @@ export function IOSPlayer(p: PlayerProps) {
     if (p.playbackPageRequest) { setSettings(false); navigate(0); }
   }, [p.playbackPageRequest]);
 
-  const lockScroll = (kind: "volume" | "scene", active: boolean) => {
-    scrollLocks.current[kind] = active;
-    const enabled = !scrollLocks.current.volume && !scrollLocks.current.scene;
-    playerScroll.current?.setNativeProps({ scrollEnabled: enabled });
-    sceneScroll.current?.setNativeProps({ scrollEnabled: enabled });
-    if (kind === "volume") setVolumeTracking(active); else setSceneTracking(active);
-  };
   const volumeGesture = React.useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onStartShouldSetPanResponderCapture: () => true,
     onPanResponderTerminationRequest: () => false,
     onPanResponderGrant: event => {
       volumeOrigin.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
-      lockScroll("volume", true);
       p.setVolume(Math.max(0, Math.min(1, event.nativeEvent.locationX / volumeWidth.current)));
     },
     onPanResponderMove: (_, gesture) => p.setVolume(Math.max(0, Math.min(1, (gesture.moveX - volumeOrigin.current) / volumeWidth.current))),
-    onPanResponderRelease: () => lockScroll("volume", false),
-    onPanResponderTerminate: () => lockScroll("volume", false),
   }), [p.setVolume]);
   const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: muted ? c.muted : c.ink }, style]}>{value}</Text>;
   const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => hasNativeIOSChrome
@@ -94,20 +92,34 @@ export function IOSPlayer(p: PlayerProps) {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
   }}>{label(name, true, s.groupTitle)}</View>;
 
-  return <SafeAreaView style={[s.safe, { backgroundColor: c.bg }]}>
+  return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: c.bg }}>
+  <IOSSettingsNavigation settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  {/* Native tabs own the bottom inset. Reserve only the header/side insets
+      here, so the tab bar's background reaches the home indicator. */}
+  <SafeAreaView edges={hasSystemIOSTabs ? (hasNativeIOSNavigation ? ["left", "right"] : ["top", "left", "right"]) : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: c.bg }]}>
     <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
-    <View style={s.root}>
+    <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      <View style={s.header}>
+      {!hasNativeIOSNavigation && <View style={s.header}>
         <View style={{ flex: 1 }}>{label("SDA", true, s.eyebrow)}{label(page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放", false, s.pageTitle)}</View>
-        {icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
-      </View>
-      <View style={s.pages}>
-        <ScrollView ref={playerScroll} style={[s.page, page !== 0 && s.hidden]} scrollEnabled={!volumeTracking && !sceneTracking} showsVerticalScrollIndicator={false} contentContainerStyle={s.playerContent}>
+        {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+      </View>}
+      {/* Status belongs above the native tabs, never below their full-screen
+          host, where it steals the home-indicator inset from the tab bar. */}
+      {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
+      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} backgroundColor={c.bg} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+        <View style={[s.page, s.playerContent, { gap: playerGap }, !hasSystemIOSTabs && page !== 0 && s.hidden]}
+          onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
+          <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
+          {engineUnavailable && <Text accessibilityRole="alert" style={[s.engineNotice, { color: c.muted }]}>当前运行环境未包含 SDA 音频引擎；可查看界面，播放需要完整安装包。</Text>}
           <View style={s.row}>{label(format + " · 48 kHz", true, s.small)}<Text accessibilityLiveRegion="polite" style={[s.small, { color: c.accent, maxWidth: "58%", textAlign: "right" }]}>{status}</Text></View>
+          </View>
           <View style={[s.album, { width: coverSize, height: coverSize }]}>{cover(coverSize)}</View>
+          <View style={s.playerBlock} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
           <Text numberOfLines={2} style={[s.trackTitle, { color: c.ink }]}>{title}</Text>
           <Text numberOfLines={2} style={[s.trackSubtitle, { color: c.muted }]}>{artist}{p.metadata.album ? " · " + p.metadata.album : ""}</Text>
+          </View>
+          <View style={s.playerBlock} onLayout={event => measurePlayerBlock("controls", event.nativeEvent.layout.height)}>
           <View accessibilityRole="progressbar" accessibilityLabel="播放进度" accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.durationMs, p.positionMs), text: time(p.positionMs) + " / " + time(p.durationMs) } : { text: "总时长未知" }} style={[s.progress, { backgroundColor: c.line }]}><View style={{ width: String(progress * 100) + "%" as any, height: 5, borderRadius: 8, backgroundColor: c.accent }} /></View>
           <View style={s.times}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={s.transport}>
@@ -117,10 +129,13 @@ export function IOSPlayer(p: PlayerProps) {
             {icon("forward.end.fill", "下一曲", p.next, p.busy || !p.queue.length, 44, "▷|")}
             {icon("arrow.counterclockwise", "重新播放", p.play, p.busy || !p.selectedUri, 44, "⟲")}
           </View>
-          <View style={s.volume}>{label("音量", true, s.small)}{hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={active => lockScroll("volume", active)} /> : <View onLayout={event => { volumeWidth.current = Math.max(1, event.nativeEvent.layout.width); }} {...volumeGesture.panHandlers} style={s.volumeTouch}><View style={[s.progress, { marginTop: 0, backgroundColor: c.line }]}><View style={{ height: 5, width: String(p.volume * 100) + "%" as any, backgroundColor: c.accent }} /></View></View>}{label(Math.round(p.volume * 100) + "%", true, s.volumeValue)}</View>
-          {!p.selectedUri && <View style={{ marginTop: 16 }}>{actionRow("folder.badge.plus", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>}
-        </ScrollView>
-        <ScrollView style={[s.page, page !== 1 && s.hidden]} contentContainerStyle={s.otherContent} showsVerticalScrollIndicator={false}>
+          </View>
+          <View style={[s.volume, s.playerBlock]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}><IOSVolumeSymbol volume={p.volume} color={c.muted} />{hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={() => { /* Fixed page has no parent scrolling to suspend. */ }} /> : <View onLayout={event => { volumeWidth.current = Math.max(1, event.nativeEvent.layout.width); }} {...volumeGesture.panHandlers} style={s.volumeTouch}><View style={[s.progress, { marginTop: 0, backgroundColor: c.line }]}><View style={{ height: 5, width: String(p.volume * 100) + "%" as any, backgroundColor: c.accent }} /></View></View>}{label(Math.round(p.volume * 100) + "%", true, s.volumeValue)}</View>
+        </View>
+        <ScrollView style={[s.page, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={s.otherContent}
+          scrollEnabled={libraryCanScroll} bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator={false}
+          onLayout={event => { const viewport = event.nativeEvent.layout.height; setLibrarySize(previous => previous.viewport === viewport ? previous : { ...previous, viewport }); }}
+          onContentSizeChange={(_, content) => setLibrarySize(previous => previous.content === content ? previous : { ...previous, content })}>
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
           <View style={[s.row, { marginTop: 28, marginBottom: 8 }]}>{label("播放列表", false, s.sectionTitle)}{label(p.queue.length + " 首", true, s.small)}</View>
@@ -132,25 +147,23 @@ export function IOSPlayer(p: PlayerProps) {
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
         </ScrollView>
-        <ScrollView ref={sceneScroll} style={[s.page, page !== 2 && s.hidden]} scrollEnabled={!sceneTracking && !volumeTracking} contentContainerStyle={s.otherContent} showsVerticalScrollIndicator={false}>
+        <View style={[s.page, s.otherContent, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : "7.1.4", true, s.small)}</View>
-          <View style={[s.scene, { height: Math.max(270, Math.min(410, height * .42)) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} onInteractionChange={active => lockScroll("scene", active)} />}</View>
+          <View style={[s.scene, { height: Math.max(270, Math.min(410, height * .42)) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
           <View style={[s.row, s.sceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "KU100", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "7.1.4 系统输出" : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
           {label("单指旋转 · 双指缩放", true, s.sceneHint)}
-          <View style={[s.row, { marginTop: 18 }]}>{icon("arrow.uturn.left", "头向左转", () => p.adjustYaw(-15), audioOptionsDisabled, 44, "↶")}{label("头向 " + Math.round(p.headYaw) + "°", true, s.small)}{icon("arrow.counterclockwise", "重置头向", p.resetYaw, audioOptionsDisabled, 44, "⟲")}{icon("arrow.uturn.right", "头向右转", () => p.adjustYaw(15), audioOptionsDisabled, 44, "↷")}</View>
-        </ScrollView>
+        </View>
+      </IOSSystemTabs>
+
       </View>
-      {page !== 0 && miniPlayer()}
-      <View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>
-      {!!p.error && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      </View>
-      {settings && <View style={[s.settingsPage, { backgroundColor: c.bg }]} accessibilityViewIsModal>
+      {settings && !hasNativeIOSSettings && <View style={[s.settingsPage, { backgroundColor: c.bg }]} accessibilityViewIsModal>
         <View style={[s.settingsHeader, { backgroundColor: c.panel }]}>
           {hasNativeIOSChrome && <IOSMaterialSurface style={StyleSheet.absoluteFill} />}
           {icon("chevron.left", "返回", () => setSettings(false), false, 44, "‹")}
           {label("设置", false, s.settingsTitle)}<View style={{ width: 44 }} />
         </View>
         <ScrollView ref={settingsScroll} showsVerticalScrollIndicator={false} contentContainerStyle={s.settingsContent}>
+          <View style={s.settingsActions}>{icon("arrow.counterclockwise", "重新播放", () => { setSettings(false); p.play(); }, p.busy || !p.selectedUri, 46, "⟲")}{icon("stop.fill", "停止播放", () => { setSettings(false); p.stop(); }, p.busy || !p.playing, 46, "□")}</View>
           {heading("播放")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {toggle("音量平衡", "双声道 / 360RA 响度平衡，只衰减不增益", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
@@ -185,26 +198,29 @@ export function IOSPlayer(p: PlayerProps) {
             <View style={s.settingRow}><View style={s.settingCopy}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingHint)}{label(p.systemSpatial360RAActive ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道", true, s.settingHint)}</View></View>{divider()}
             {actionRow("info.circle", "关于 SDA", "Spatial Decoder App", () => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器"))}
           </View>
-          <View style={s.settingsActions}>{icon("arrow.counterclockwise", "重新播放", () => { setSettings(false); p.play(); }, p.busy || !p.selectedUri, 46, "⟲")}{icon("stop.fill", "停止播放", () => { setSettings(false); p.stop(); }, p.busy || !p.playing, 46, "□")}</View>
+
         </ScrollView>
       </View>}
     </View>
-  </SafeAreaView>;
+  </SafeAreaView>
+  </IOSSettingsNavigation>
+  </SafeAreaProvider>;
 }
 
 const s = StyleSheet.create({
+  engineNotice: { fontSize: 12, lineHeight: 18, marginBottom: 12 },
   safe: { flex: 1 }, root: { flex: 1, paddingHorizontal: 18, paddingBottom: 8 },
   header: { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 3 },
   eyebrow: { fontSize: 11, letterSpacing: 3 }, pageTitle: { fontSize: 24, fontWeight: "600", marginTop: 5 },
   pages: { flex: 1 }, page: { flex: 1 }, hidden: { display: "none" },
-  playerContent: { paddingHorizontal: 7, paddingTop: 8, paddingBottom: 14 }, otherContent: { paddingTop: 8, paddingBottom: 20 },
+  playerContent: { paddingHorizontal: 7, paddingTop: 8, paddingBottom: 14, justifyContent: "space-between" }, playerBlock: { flexShrink: 0 }, otherContent: { paddingTop: 8, paddingBottom: 20 },
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }, small: { fontSize: 11, lineHeight: 17 },
-  album: { alignSelf: "center", marginTop: 22, marginBottom: 22, shadowColor: "#000", shadowOpacity: .15, shadowRadius: 18, shadowOffset: { width: 0, height: 12 } },
+  album: { alignSelf: "center", flexShrink: 0, shadowColor: "#000", shadowOpacity: .15, shadowRadius: 18, shadowOffset: { width: 0, height: 12 } },
   emptyCover: { alignItems: "center", justifyContent: "center" }, trackTitle: { fontSize: 22, fontWeight: "600", textAlign: "center", lineHeight: 29 },
-  trackSubtitle: { fontSize: 13, textAlign: "center", marginTop: 8, lineHeight: 20, marginBottom: 22 },
+  trackSubtitle: { fontSize: 13, textAlign: "center", marginTop: 8, lineHeight: 20 },
   progress: { height: 5, borderRadius: 8, overflow: "hidden", marginTop: 4 }, times: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
   transport: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 9, marginTop: 20 }, icon: { borderRadius: 32, alignItems: "center", justifyContent: "center" },
-  volume: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 22 }, volumeValue: { fontSize: 11, minWidth: 31, textAlign: "right", fontVariant: ["tabular-nums"] }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
+  volume: { flexDirection: "row", alignItems: "center", gap: 10 }, volumeValue: { fontSize: 11, minWidth: 31, textAlign: "right", fontVariant: ["tabular-nums"] }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
   lead: { fontSize: 13, lineHeight: 21, marginBottom: 22 }, group: { borderRadius: 15, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, overflow: "hidden" },
   sectionTitle: { fontSize: 18, fontWeight: "600" }, queueRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 15, borderBottomWidth: StyleSheet.hairlineWidth },
   queueCover: { width: 49, height: 49, borderRadius: 8 }, queueTitle: { fontSize: 15, lineHeight: 21 }, queueArtist: { fontSize: 12, marginTop: 5 },
@@ -213,7 +229,7 @@ const s = StyleSheet.create({
   miniSong: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }, miniTitle: { fontSize: 13, lineHeight: 18 }, miniArtist: { fontSize: 11, marginTop: 3 },
   tabs: { marginTop: 10 }, fallbackTabs: { flexDirection: "row", padding: 5, borderWidth: StyleSheet.hairlineWidth, borderRadius: 26 }, fallbackTab: { flex: 1, minHeight: 50, alignItems: "center", justifyContent: "center", borderRadius: 22 },
   scene: { marginTop: 17, borderRadius: 18, overflow: "hidden", backgroundColor: "#171a19" }, sceneInfo: { marginTop: 18, paddingHorizontal: 4 }, sceneHint: { textAlign: "center", fontSize: 12, marginTop: 18 },
-  settingsPage: { ...StyleSheet.absoluteFillObject, zIndex: 10 }, settingsHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingVertical: 8, overflow: "hidden" }, settingsTitle: { fontSize: 18, fontWeight: "600" },
+  settingsPage: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 10 }, settingsHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingVertical: 8, overflow: "hidden" }, settingsTitle: { fontSize: 18, fontWeight: "600" },
   settingsContent: { paddingHorizontal: 3, paddingBottom: 28 }, groupTitle: { fontSize: 12, marginTop: 25, marginBottom: 8, marginLeft: 12 },
   settingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 13, minHeight: 54 }, settingCopy: { flex: 1 }, settingTitle: { fontSize: 15, lineHeight: 22 }, settingHint: { fontSize: 12, lineHeight: 19, marginTop: 4 }, groupHint: { fontSize: 12, lineHeight: 19, marginTop: 9, paddingHorizontal: 12 },
   divider: { height: StyleSheet.hairlineWidth }, settingsActions: { flexDirection: "row", justifyContent: "center", gap: 24, marginTop: 25 }, error: { color: "#bc483a", fontSize: 12, lineHeight: 18, marginTop: 7 },

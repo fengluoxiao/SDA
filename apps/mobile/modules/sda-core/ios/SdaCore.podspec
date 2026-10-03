@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
  s.author = 'SDA contributors'
  s.homepage = 'https://github.com/fengluoxiao/SDA'
  s.source = { :git => 'https://github.com/fengluoxiao/SDA.git' }
- s.platform = :ios, '16.0'
+ s.platform = :ios, '16.4'
  s.swift_version = '5.0'
  s.static_framework = true
  s.dependency 'ExpoModulesCore'
