@@ -88,6 +88,7 @@ jobs:
           node scripts/prepare-ios-assets.mjs
           node scripts/test/mobile-rendering-presets.test.cjs
           python3 scripts/test-ios-mobile-assets.py
+          python3 scripts/verify-spatial-cues.py
           node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
           node scripts/test-ios-ui.mjs
           node scripts/test-ios-playback-polling.mjs
@@ -106,6 +107,15 @@ jobs:
         run: |
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
+      - name: Verify integrated depth, elevation and harmony regressions
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cues::tests 2>&1 | tee ios-artifacts/spatial-cues-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib directional::tests 2>&1 | tee ios-artifacts/directional-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib occlusion 2>&1 | tee ios-artifacts/occlusion-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --test mobile_front_back 2>&1 | tee ios-artifacts/front-back-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_cues_start -- --test-threads=1 2>&1 | tee ios-artifacts/mobile-cues-tests.log
       - name: iOS renderer scheduling policy tests
         if: steps.sdk.outputs.available == 'true'
         run: |

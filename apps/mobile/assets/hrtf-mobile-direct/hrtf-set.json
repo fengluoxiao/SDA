@@ -33,7 +33,8 @@
     "runtimeEnergyNormalization": false,
     "dryTapLimit": 256,
     "wetTapLimit": 1,
-    "note": "Original HRIR samples only. No BRIR, room residual, room EQ, early reflections, decorrelation or synthetic tail. Same direct HRIR grid serves objects and bed channels; inter-ear timing and level retained."
+    "note": "Original HRIR samples only. No BRIR, room residual, room EQ, early reflections, decorrelation or synthetic tail. Same direct HRIR grid serves objects and bed channels; inter-ear timing and level retained.",
+    "spatialCues": true
   },
   "positions": [
     {

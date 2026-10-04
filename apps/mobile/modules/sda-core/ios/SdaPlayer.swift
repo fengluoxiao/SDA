@@ -140,7 +140,7 @@ final class SdaPlayer {
    _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
-   hrtfState = "KU100 · 128 方向 · 纯直达 · iOS 原生输出"
+   hrtfState = "KU100 · 128 方向 · 前后/上下空间线索 · iOS 原生输出"
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {
@@ -536,6 +536,11 @@ final class SdaPlayer {
      guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
      guard status["volumeBalanceEnabled"] as? Bool == prefs.bool(forKey:"sda.balance"),
        status["volumeBalanceEligible"] as? Bool == true else { throw SdaError.message("KU100 音量平衡偏好未恢复") }
+     guard status["spatialCuesEnabled"] as? Bool == true,
+       status["roomEnabled"] as? Bool == false,
+       status["nearFieldEnabled"] as? Bool == false,
+       status["directObjectHrtf"] as? Bool == true,
+       status["directionalHrtf"] as? Bool == true else { throw SdaError.message("KU100 空间线索或逐对象实际方向未启用") }
      return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects]
     }
     return nil

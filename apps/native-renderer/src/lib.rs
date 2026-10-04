@@ -53,6 +53,7 @@ mod adm_zone;
 pub mod bus_renderer;
 pub mod callback_output;
 pub mod cinema;
+mod spatial_cues;
 pub mod convolution;
 pub mod direct_renderer;
 pub mod directional;
@@ -769,8 +770,8 @@ pub struct Source {
     distance_gain: f32,
     /// Finite codec distance in metres. `None` means direction-only metadata.
     distance_m: Option<f32>,
-    /// Per-ear openness targets for the current block, computed once per block
-    /// from the pairwise occlusion pass (1 = unoccluded).
+    /// Per-ear openness targets (1 = unoccluded). Kept open in the absence
+    /// of explicit physical occlusion information.
     occlusion_targets: [f32; 2],
 }
 
@@ -864,6 +865,7 @@ pub struct RuntimeTelemetry {
     pub directional_hrtf: AtomicBool,
     pub near_field_enabled: AtomicBool,
     pub room_enabled: AtomicBool,
+    pub spatial_cues_enabled: AtomicBool,
     pub object_convolver_count: AtomicU64,
     pub continuous_object_count: AtomicU64,
     /// Renderer-applied pause state exposed to mobile status polling.
@@ -897,6 +899,7 @@ impl RuntimeTelemetry {
             && (!engine.cinema.monitor.hardware.enabled || engine.directional_hrtf);
         self.near_field_enabled.store(near_active, Ordering::Release);
         self.room_enabled.store(engine.cinema.enabled, Ordering::Release);
+        self.spatial_cues_enabled.store(engine.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()), Ordering::Release);
         let active = engine.direct_objects || engine.directional_hrtf || near_active;
         self.object_convolver_count.store(if active {
             engine.sources.values().filter(|source| source.kind == SourceKind::Object
@@ -1274,6 +1277,8 @@ impl Engine {
 
     pub fn replace_hrtf(&mut self, mut set: hrtf::NativeHrtfSet, wet: f32) -> Result<(), String> {
         set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
+        set.configure_spatial_cues(self.layout)?;
+        let wet = set.effective_wet(wet);
         let bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
         direct_renderer::warm_banks(&mut set, &self.vbap, wet)?;
         // Publish all related state only after every speaker filter is ready.
@@ -1297,6 +1302,8 @@ impl Engine {
         self.stereo_dry_bus = None;
         if let Some(set) = &mut self.active_hrtf_set {
             set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
+            set.configure_spatial_cues(self.layout)?;
+            self.hrtf_wet_weight = set.effective_wet(self.hrtf_wet_weight);
             direct_renderer::warm_banks(set, &self.vbap, self.hrtf_wet_weight)?;
         }
         let set = self
@@ -1457,68 +1464,13 @@ impl Engine {
         Some(source.position.map(|axis| axis * units / norm))
     }
 
-    /// Pairwise source-to-source occlusion for the current render block. A
-    /// nearer object on the same bearing shadows the farther one's far ear.
-    /// Runs once per block over the active objects; n<=64 keeps the pairwise
-    /// loop negligible next to the per-sample convolution work.
-    /// Pairwise source-to-source occlusion for the current render block. A
-    /// nearer object on the same bearing shadows the farther one's far ear.
-    /// Runs at block boundaries only (the caller guards on block_offset == 0);
-    /// allocation-free so it never disturbs the render thread's timing.
-    fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
-        const MAX_OCCLUDERS: usize = 64;
-        let mut positions: [[f32; 3]; MAX_OCCLUDERS] = [[0.0; 3]; MAX_OCCLUDERS];
-        let mut object_ids: [u32; MAX_OCCLUDERS] = [u32::MAX; MAX_OCCLUDERS];
-        let mut count = 0usize;
-        for source in self.sources.values() {
-            if count >= MAX_OCCLUDERS {
-                break;
-            }
-            if source.kind != SourceKind::Object || source.muted || source.lfe_target != 0.0
-                || source.suspended || source.gain.abs() < OBJECT_ACTIVITY_THRESHOLD
-                || source.position.iter().any(|axis| !axis.is_finite())
-                // A declared ADM/MPEG-H object can legitimately contain a block
-                // of zero PCM. Letting it shadow an audible object makes the
-                // latter lose one ear even though no physical occluder exists.
-                || !source.samples.has_signal_within(
-                    self.sample_pos,
-                    convolution::DEFAULT_PARTITION,
-                    OBJECT_ACTIVITY_THRESHOLD,
-                )
-            {
-                continue;
-            }
-            if let Some(object_id) = source.object_id {
-                object_ids[count] = object_id;
-            } else {
-                continue;
-            }
-            positions[count] = source.position;
-            count += 1;
-        }
-        if count == 0 {
-            return;
-        }
-        // One head-relative rotation per source, reused by every pairwise test.
-        let mut rotated: [[f32; 3]; MAX_OCCLUDERS] = [[0.0; 3]; MAX_OCCLUDERS];
-        for index in 0..count {
-            rotated[index] = crate::spatial::head_relative_adm(positions[index], head_pose);
-        }
-        for index in 0..count {
-            let openness = crate::occlusion::ear_openness_prepared(
-                &positions[index],
-                &rotated[index],
-                &positions[..count],
-                &rotated[..count],
-                index,
-            );
-            if let Some(source) = self
-                .sources
-                .values_mut()
-                .find(|source| source.object_id == Some(object_ids[index]))
-            {
-                source.occlusion_targets = openness;
-            }
+    /// Audio-object positions describe emitters, not solid obstacles. No
+    /// geometry/material/occlusion metadata reaches this engine, so another
+    /// audible source must not change this source's spectrum or ear balance.
+    /// Reset inactive sources too, so stale shadows cannot survive transitions.
+    fn update_occlusion(&mut self, _head_pose: Option<[f32; 4]>) {
+        for source in self.sources.values_mut() {
+            source.occlusion_targets = [1.0; 2];
         }
     }
 
@@ -3777,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    fn only_audible_objects_cast_per_ear_occlusion() {
+    fn neither_silent_nor_audible_emitters_cast_occlusion() {
         let source = |position, pcm: Vec<f32>| {
             let mut source = Source {
                 kind: SourceKind::Object,
@@ -3813,13 +3765,13 @@ mod tests {
         engine.update_occlusion(None);
         let openness = engine.sources["far"].occlusion_targets;
         assert!(
-            openness[0] < 0.99 && openness[1] > 0.99,
-            "active near object must shade the far ear: {openness:?}"
+            openness == [1.0; 2],
+            "an active emitter is not an obstacle: {openness:?}"
         );
     }
 
     #[test]
-    fn occlusion_writeback_stays_with_audible_source_ids_after_silent_placeholders() {
+    fn object_occlusion_resets_stale_shadows_including_inactive_sources() {
         let source = |position, pcm: Vec<f32>| {
             let mut source = Source {
                 kind: SourceKind::Object,
@@ -3849,6 +3801,11 @@ mod tests {
                 .sources
                 .insert(format!("a-silent-placeholder-{index}"), placeholder);
         }
+        for source in engine.sources.values_mut() {
+            source.occlusion_targets = [0.2, 0.4];
+            source.suspended = true;
+        }
+        far.occlusion_targets = [0.5; 2];
         engine.sources.insert("middle-far-harmony".into(), far);
         engine.sources.insert("middle-near-vocal".into(), near);
         engine.update_occlusion(None);
@@ -3858,9 +3815,10 @@ mod tests {
         );
         let openness = engine.sources["middle-far-harmony"].occlusion_targets;
         assert!(
-            openness[0] < 0.99 && openness[1] < 0.99,
-            "far harmony must receive the near vocal's shadow: {openness:?}"
+            openness == [1.0; 2],
+            "harmony must not be shaded by another emitter: {openness:?}"
         );
+        assert!(engine.sources.values().all(|source| source.occlusion_targets == [1.0; 2]));
     }
 
     #[test]
@@ -4015,9 +3973,9 @@ mod tests {
     }
 
     #[test]
-    fn object_depth_loudness_follows_adm_distance() {
-        // An approaching object (|pos| shrinking) must get louder and a
-        // receding one quieter; beds keep unity regardless of position.
+    fn normalized_object_radius_does_not_invent_distance_gain() {
+        // ADM normalized room coordinates are not metres. Without explicit
+        // distance metadata, radius must not change the authored balance.
         let render = |position: [f32; 3], bed: bool| {
             let mut engine = crate::Engine::new(48000, 2);
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4066,12 +4024,10 @@ mod tests {
         let near = render([0.0, 0.25, 0.0], false);
         let unit = render([0.0, 1.0, 0.0], false);
         let far = render([0.0, 2.0, 0.0], false);
-        // Near objects gain (capped at +9 dB so they cannot mask the mix) and
-        // far placements stay at the programme reference — the object-vs-bed
-        // balance measured on real masters must not shift.
+        // Both near and far normalized placements retain programme gain.
         assert!(
-            near > unit * 2.2,
-            "approaching object must get louder: near={near} unit={unit}"
+            (near - unit).abs() < unit * 0.05,
+            "normalized radius must not amplify: near={near} unit={unit}"
         );
         assert!(
             (far - unit).abs() < unit * 0.05,

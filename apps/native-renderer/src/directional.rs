@@ -624,6 +624,43 @@ fn unit(az: f64, el: f64) -> [f64; 3] {
     let e = el.to_radians();
     [-a.sin() * e.cos(), a.cos() * e.cos(), e.sin()]
 }
+// 40 samples neighbour alignment + 16 timeline + 16 sinc support.
+pub(crate) const INTERPOLATION_TAIL: usize = 72;
+const FRACTIONAL_RADIUS: isize = 16;
+
+/// Offline HRIR shift. Linear interpolation adds a direction-dependent low-pass
+/// (half-sample: -6 dB at 16 kHz / 48 kHz), including in the notch-guard fallback.
+/// Use a DC-normalized Blackman-windowed sinc; integer shifts remain exact.
+/// No bulk delay is added. Like integer alignment, this crops samples before
+/// the finite HRIR's time origin; positive tails have explicit padding.
+fn add_fractional_shifted(output: &mut [f32], input: &[f32], shift: f64, gain: f32) {
+    let base = shift.floor() as isize;
+    let fraction = shift - base as f64;
+    if fraction < 1e-12 {
+        add_shifted(output, input, base, gain);
+        return;
+    }
+    if 1.0 - fraction < 1e-12 {
+        add_shifted(output, input, base + 1, gain);
+        return;
+    }
+    let mut kernel = [0.0_f64; (2 * FRACTIONAL_RADIUS + 1) as usize];
+    for (i, value) in kernel.iter_mut().enumerate() {
+        let x = (i as isize - FRACTIONAL_RADIUS) as f64 - fraction;
+        if x.abs() < FRACTIONAL_RADIUS as f64 {
+            let phase = std::f64::consts::PI * x;
+            let window_phase = phase / FRACTIONAL_RADIUS as f64;
+            *value = (phase.sin() / phase)
+                * (0.42 + 0.5 * window_phase.cos() + 0.08 * (2.0 * window_phase).cos());
+        }
+    }
+    let sum: f64 = kernel.iter().sum();
+    for (i, value) in kernel.iter().enumerate() {
+        add_shifted(output, input, base + i as isize - FRACTIONAL_RADIUS,
+            gain * (value / sum) as f32);
+    }
+}
+
 fn add_shifted(output: &mut [f32], input: &[f32], offset: isize, gain: f32) {
     if gain == 0.0 {
         return;
@@ -687,7 +724,7 @@ impl Grid {
         horizontal_only: bool,
         head: Option<[f32; 4]>,
     ) -> DiffuseField {
-        let length = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + 4 + 127;
+        let length = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + INTERPOLATION_TAIL + 127;
         let mut field = (vec![0.0; length], vec![0.0; length]);
         let mut reference_energy = 0.0;
         for i in 0..12 {
@@ -820,7 +857,7 @@ impl Grid {
     pub fn interpolate(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
         let weights = self.weights(az, el);
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
-        let mut output = [vec![0.0; n + 4], vec![0.0; n + 4]];
+        let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
         // The dominant measurement anchors the output position (its ITD and
         // level pattern are physically intact); every other neighbour is
         // whole-waveform aligned to it per ear before mixing. Aligning to a
@@ -858,16 +895,8 @@ impl Grid {
                     self.neighbour_shift(irs, dominant, index)[ear]
                 };
                 let shift = alignment_shift + timeline_shift;
-                let base = shift.floor() as isize;
-                let fraction = (shift - base as f64) as f32;
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
-                add_shifted(
-                    &mut output[ear],
-                    input,
-                    base,
-                    weight as f32 * (1.0 - fraction),
-                );
-                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
+                add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
             }
         }
         // Delay alignment prevents duplicated onsets, but interpolation of
@@ -902,7 +931,7 @@ impl Grid {
                     (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
                 };
                 if floor > 0.0 {
-                    let mut anchor = [vec![0.0; n + 4], vec![0.0; n + 4]];
+                    let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
                     for ear in 0..2 {
                         let target_arrival: f64 = weights
                             .iter()
@@ -910,12 +939,9 @@ impl Grid {
                             .sum();
                         let shift = (target_arrival - self.arrivals[dominant][ear] as f64)
                             .clamp(-16.0, 16.0);
-                        let base = shift.floor() as isize;
-                        let fraction = (shift - base as f64) as f32;
                         let len = irs[dominant].dry.len() / 2;
                         let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
-                        add_shifted(&mut anchor[ear], input, base, 1.0 - fraction);
-                        add_shifted(&mut anchor[ear], input, base + 1, fraction);
+                        add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
                     }
                     for ear in 0..2 {
                         for (mixed, stable) in output[ear].iter_mut().zip(&anchor[ear]) {
@@ -2323,7 +2349,7 @@ mod tests {
         }
     }
     #[test]
-    fn shared_reflections_match_independent_objects_with_near_field_and_focus() {
+    fn shared_reflections_match_independent_static_objects_with_near_field_and_focus() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../web/public/hrtf/hrtf-set.json");
         let mut set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
@@ -2348,7 +2374,9 @@ mod tests {
             for (id, (a, b)) in old.iter_mut().zip(&mut new).enumerate() {
                 let gains = solver.pan([id as f32 * 0.2 - 0.3, 0.6, 0.4], 0.0);
                 let direction = Direction {
-                    position: [(block as f32 * 0.04 + id as f32).sin() * 0.6, 0.5, 0.3],
+                    // Compare decomposition at a fixed direction. Legacy and continuous
+                    // paths intentionally use different motion crossfade durations.
+                    position: [(id as f32).sin() * 0.6, 0.5, 0.3],
                     head: None,
                     diffuse: 0.0,
                     horizontal_only: false,
@@ -2630,5 +2658,100 @@ mod tests {
             ea > 0.0 && eb > 0.0 && (ea / eb - 1.0).abs() < 0.1,
             "rear pole energy must match: {ea} vs {eb}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fractional_delay_regressions {
+    use super::*;
+
+    #[test]
+    fn fractional_delay_preserves_high_frequency_magnitude_and_phase() {
+        let mut input = vec![0.0; 256];
+        input[96] = 1.0;
+        for shift in [-15.75, -0.5, 0.125, 0.5, 0.875, 15.75, 55.5] {
+            let mut out = vec![0.0; input.len() + INTERPOLATION_TAIL];
+            add_fractional_shifted(&mut out, &input, shift, 1.0);
+            assert!((out.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+            for frequency in [1000.0, 4000.0, 8000.0, 12000.0, 16000.0, 18000.0, 20000.0] {
+                let omega = std::f64::consts::TAU * frequency / 48000.0;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, &value) in out.iter().enumerate() {
+                    let phase = omega * (i as f64 - 96.0 - shift);
+                    re += value as f64 * phase.cos();
+                    im -= value as f64 * phase.sin();
+                }
+                let db = 20.0 * re.hypot(im).log10();
+                assert!(db.abs() < 0.02, "shift={shift} f={frequency}: {db} dB");
+                assert!(im.atan2(re).abs() < 0.002, "fractional timing changed");
+            }
+        }
+    }
+
+    #[test]
+    fn integer_shifts_are_exact_and_positive_tail_is_retained() {
+        let mut input = vec![0.0; 256];
+        input[255] = 0.75;
+        let mut out = vec![0.0; input.len() + INTERPOLATION_TAIL];
+        add_fractional_shifted(&mut out, &input, 56.0, 1.0);
+        assert_eq!(out[311], 0.75);
+        assert_eq!(out.iter().filter(|x| **x != 0.0).count(), 1);
+        out.fill(0.0);
+        add_fractional_shifted(&mut out, &input, 55.5, 1.0);
+        assert!((out.iter().sum::<f32>() - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fractional_delay_is_continuous_across_integer_boundary() {
+        let mut input = vec![0.0; 128];
+        input[64] = 1.0;
+        let mut a = vec![0.0; 256];
+        let mut b = a.clone();
+        add_fractional_shifted(&mut a, &input, 1.0 - 1e-7, 1.0);
+        add_fractional_shifted(&mut b, &input, 1.0 + 1e-7, 1.0);
+        assert!(a.iter().zip(&b).all(|(x,y)| (x-y).abs() < 1e-6));
+    }
+
+    #[test]
+    fn mobile_ku100_retains_measured_anchors_and_front_back_difference() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let pair = |az: f64, el: f64| set.directional_dry_compact(Direction {
+            position: unit(az, el).map(|v| v as f32), head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            { let mut g = [0.0; crate::vbap::MAX_BUS_COUNT]; g[0] = 1.0; g },
+            [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let irs: Vec<_> = manifest["positions"].as_array().unwrap().iter().map(|position| {
+            set.nearest(position["azimuth"].as_f64().unwrap(),
+                position["elevation"].as_f64().unwrap()).unwrap().clone()
+        }).collect();
+        assert_eq!(irs.len(), 128);
+        let grid = Grid::new_with_notch_guard(&irs, true);
+        for ir in &irs {
+            let got = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&got.0[..n], &ir.dry[..n]);
+            assert_eq!(&got.1[..n], &ir.dry[n..]);
+            assert!(got.0[n..].iter().chain(&got.1[n..]).all(|x| *x == 0.0));
+        }
+        for az in [0.0, 180.0] {
+            let ir = set.nearest(az, 0.0).unwrap();
+            let got = pair(az, 0.0);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&got.0[..n], &ir.dry[..n]);
+            assert_eq!(&got.1[..n], &ir.dry[n..]);
+        }
+        for (front, rear) in [(0.0, 180.0), (25.0, 155.0), (-25.0, -155.0)] {
+            let a = pair(front, 0.0); let b = pair(rear, 0.0);
+            let energy = |p: &(Vec<f32>,Vec<f32>)| p.0.iter().chain(&p.1)
+                .map(|v| f64::from(*v).powi(2)).sum::<f64>();
+            let corr = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                .map(|(x,y)| f64::from(*x)*f64::from(*y)).sum::<f64>()
+                / (energy(&a)*energy(&b)).sqrt();
+            assert!(corr < 0.95, "front={front} rear={rear}: {corr}");
+        }
     }
 }

@@ -24,6 +24,8 @@ struct Processing {
     calibrated: bool,
     #[serde(default, rename = "mobileDirectOnly")]
     mobile_direct_only: bool,
+    #[serde(default, rename = "spatialCues")]
+    spatial_cues: bool,
     #[serde(default, rename = "preserveMeasurements")]
     preserve_measurements: bool,
     #[serde(default, rename = "preserveSamples")]
@@ -41,6 +43,8 @@ pub struct Position {
 #[derive(Debug, Clone)]
 pub struct NativeHrtfSet {
     mobile_direct_only: bool,
+    spatial_cues: bool,
+    spatial_cues_active: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     speaker_prepared: std::collections::HashMap<
@@ -140,6 +144,8 @@ impl NativeHrtfSet {
         }
         Ok(Self {
             mobile_direct_only: false,
+            spatial_cues: false,
+            spatial_cues_active: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: Default::default(),
@@ -257,6 +263,8 @@ impl NativeHrtfSet {
             || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
             mobile_direct_only: manifest.processing.mobile_direct_only,
+            spatial_cues: manifest.processing.spatial_cues,
+            spatial_cues_active: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: std::collections::HashMap::new(),
@@ -337,7 +345,7 @@ impl NativeHrtfSet {
             .map(|ir| ir.dry.len() / 2)
             .max()
             .unwrap_or(512)
-            + 4;
+            + crate::directional::INTERPOLATION_TAIL;
         let calibration = if self.cinema.enabled {
             self.cinema
                 .speakers
@@ -356,8 +364,8 @@ impl NativeHrtfSet {
             0
         };
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
-        // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
-        // when a 512-tap HRIR also needs four fractional-delay padding samples.
+        // 1e-20 zero threshold. The base includes alignment and bandlimited
+        // fractional-delay support so shifted HRIR tails remain intact.
         base + 127 + calibration + self.output_max_delay() + 480
     }
     pub fn directional_dry_compact(
@@ -503,6 +511,7 @@ impl NativeHrtfSet {
         settings: crate::cinema::Settings,
         profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     ) {
+        self.spatial_cues_active = false;
         if self.mobile_direct_only {
             self.cinema = crate::cinema::Settings::default();
             self.room_profile = None;
@@ -512,6 +521,31 @@ impl NativeHrtfSet {
         self.cinema = settings;
         self.room_profile = profile;
         self.speaker_prepared.clear();
+    }
+
+    /// Fixed, explicitly opted-in short spatial cues are separate from user room
+    /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
+    pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
+        self.spatial_cues_active = false;
+        if !self.spatial_cues { return Ok(()); }
+        self.cinema = crate::cinema::Settings::default();
+        self.room_profile = None;
+        if !self.mobile_direct_only || self.subject_id.as_deref() != Some("ku100") {
+            return Err("bundled spatial cues require the mobile direct KU100 set".into());
+        }
+        if let Some(profile) = crate::spatial_cues::profile(layout)? {
+            self.cinema = crate::spatial_cues::settings();
+            self.room_profile = Some(profile);
+            self.spatial_cues_active = true;
+        }
+        self.speaker_prepared.clear();
+        Ok(())
+    }
+
+    pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active }
+
+    pub(crate) fn effective_wet(&self, requested: f32) -> f32 {
+        if self.spatial_cues_active { 0.04 } else { requested }
     }
 
     fn room_alignment_active(&self, layout: &str) -> bool {
@@ -548,7 +582,7 @@ impl NativeHrtfSet {
     }
 
     pub fn speaker_filter_len(&self) -> usize {
-        if self.mobile_direct_only {
+        if self.mobile_direct_only && !self.spatial_cues_active {
             return self
                 .cache
                 .iter()
@@ -624,7 +658,7 @@ impl NativeHrtfSet {
         elevation: f64,
         wet: f32,
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
-        if self.mobile_direct_only {
+        if self.mobile_direct_only && !self.spatial_cues_active {
             // Bed channels share the delay-aligned direct grid used by objects.
             // Do not fall back to a room-calibrated speaker or BRIR response.
             let (mut left, mut right) =

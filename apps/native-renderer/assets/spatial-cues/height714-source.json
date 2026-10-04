@@ -1,0 +1,107 @@
+{
+  "archiveSha256": "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2",
+  "method": "Only four top-speaker residuals change. Previous nearest 35.3deg residual replaced by common-pair arrival-aligned linear blend of 35.3/64.8deg measurements at target45deg. Same 5-80ms window, per-pair energy match, no dry/object-position/gain change.",
+  "directions": [
+    {
+      "speaker": "TopFrontLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_45,0_ele_35,3.wav",
+      "sourceElevation": 35.3,
+      "commonPairOnset": 34,
+      "commonPairCalibrationGain": 0.7043074465899268,
+      "sha256": "50be981b6458b6ef5d52b9eb9568b493a5f7df20fc6890160728488cff588b6b"
+    },
+    {
+      "speaker": "TopFrontLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_45,0_ele_64,8.wav",
+      "sourceElevation": 64.8,
+      "commonPairOnset": 38,
+      "commonPairCalibrationGain": 0.7466829690929583,
+      "sha256": "a59ca9d2350a8fd43cf973117edc8de655187c99c502bb33fd816c954c310c37"
+    },
+    {
+      "speaker": "TopFrontLeft",
+      "targetElevation": 45.0,
+      "upperWeight": 0.328813559322034,
+      "lowerWeight": 0.671186440677966,
+      "pairEnergyMatchGain": 1.2603187233848079,
+      "residualEnergy": 0.01243372678316078
+    },
+    {
+      "speaker": "TopFrontRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_315,0_ele_35,3.wav",
+      "sourceElevation": 35.3,
+      "commonPairOnset": 35,
+      "commonPairCalibrationGain": 0.7420681166890044,
+      "sha256": "5915e6e24ccbbab7c2ddb84e78d6c86bfaa9d6f958dee538650711bef8459252"
+    },
+    {
+      "speaker": "TopFrontRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_315,0_ele_64,8.wav",
+      "sourceElevation": 64.8,
+      "commonPairOnset": 42,
+      "commonPairCalibrationGain": 0.7524169357919028,
+      "sha256": "fc2921c1953d7b6ada05ec7ab849af7c5aaf6a2d2498a72048e94ea8d5fec77d"
+    },
+    {
+      "speaker": "TopFrontRight",
+      "targetElevation": 45.0,
+      "upperWeight": 0.328813559322034,
+      "lowerWeight": 0.671186440677966,
+      "pairEnergyMatchGain": 1.1708629666368398,
+      "residualEnergy": 0.011845661136631538
+    },
+    {
+      "speaker": "TopRearLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_135,0_ele_35,3.wav",
+      "sourceElevation": 35.3,
+      "commonPairOnset": 34,
+      "commonPairCalibrationGain": 0.7552111938027453,
+      "sha256": "b3fa72bf64cdc59c5a8a7dbe422974b29469dcdb4ca412950bd1ea5b8a39d148"
+    },
+    {
+      "speaker": "TopRearLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_135,0_ele_64,8.wav",
+      "sourceElevation": 64.8,
+      "commonPairOnset": 39,
+      "commonPairCalibrationGain": 0.6376801508332852,
+      "sha256": "160ce257f595f4930383d0ead681ff8961e0e29654ea3409e06a66d1485bd96b"
+    },
+    {
+      "speaker": "TopRearLeft",
+      "targetElevation": 45.0,
+      "upperWeight": 0.328813559322034,
+      "lowerWeight": 0.671186440677966,
+      "pairEnergyMatchGain": 1.260498554267655,
+      "residualEnergy": 0.01631330756753894
+    },
+    {
+      "speaker": "TopRearRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_225,0_ele_35,3.wav",
+      "sourceElevation": 35.3,
+      "commonPairOnset": 35,
+      "commonPairCalibrationGain": 0.7280772595348484,
+      "sha256": "f8774fe0b1bf77e80ec46831845cef8a219b4754bc18fb960b740e5a9e8f1c93"
+    },
+    {
+      "speaker": "TopRearRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_225,0_ele_64,8.wav",
+      "sourceElevation": 64.8,
+      "commonPairOnset": 39,
+      "commonPairCalibrationGain": 0.6290185374905158,
+      "sha256": "ab1b63ba86508774a42929b960b8dc50e8de87f76470008a6f9b722863cea098"
+    },
+    {
+      "speaker": "TopRearRight",
+      "targetElevation": 45.0,
+      "upperWeight": 0.328813559322034,
+      "lowerWeight": 0.671186440677966,
+      "pairEnergyMatchGain": 1.2541283339412614,
+      "residualEnergy": 0.015803721085281275
+    }
+  ],
+  "limitations": [
+    "Interpolated residual is not an actual 45deg BRIR; coherent interpolation may change coloration and is not guaranteed perceptually superior.",
+    "Existing 7.1.4 diagnostic has horizontal and top layers, no bottom speakers. This evaluates upper-vs-ear-level separation, not full below-listener reconstruction.",
+    "Preserving horizontal response arrays does not guarantee subjective front/back cues are unaffected by new top content."
+  ]
+}

@@ -116,6 +116,7 @@ pub struct PlaybackStatus {
     pub continuous_object_count: u64,
     pub near_field_enabled: bool,
     pub room_enabled: bool,
+    pub spatial_cues_enabled: bool,
     pub volume_balance_enabled: bool,
     pub volume_balance_eligible: bool,
     pub program_gain_db: f64,
@@ -506,6 +507,7 @@ impl MobileEngine {
             volume_balance_eligible: self.balance.eligible,
             program_gain_db: self.balance.gain_db,
             room_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.room_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            spatial_cues_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_cues_enabled.load(std::sync::atomic::Ordering::Acquire)),
         }
     }
 
@@ -844,15 +846,16 @@ mod tests {
     }
 
     #[test]
-    fn mobile_raw_dry_hrtf_loads_and_starts_without_room_or_near_field() {
+    fn mobile_spatial_cues_start_without_legacy_room_or_near_field() {
         let mut engine = MobileEngine::new(EngineConfig { hrtf_wet_weight: 0.0,
             direct_object_hrtf: true, directional_hrtf: true, ..EngineConfig::default() }, None).unwrap();
         engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),
-            "/../../apps/desktop/native-renderer/hrtf-assets/hrtf-dense-raw/hrtf-set.json")).unwrap();
-        assert_eq!(engine.hrtf_directions, 61);
+            "/../../apps/mobile/assets/hrtf-mobile-direct/hrtf-set.json")).unwrap();
+        assert_eq!(engine.hrtf_directions, 128);
         engine.start(Arc::new(MobileTestOutput)).unwrap();
         let status = wait_mobile_status(&engine, |s| s.direct_object_hrtf && s.directional_hrtf);
         assert!(status.hrtf_ready);
+        assert!(status.spatial_cues_enabled);
         assert!(!status.room_enabled && !status.near_field_enabled);
         engine.stop();
     }

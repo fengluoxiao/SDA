@@ -1,0 +1,18 @@
+{
+  "source": "SADIE II D1 KU100, DOI 10.5281/zenodo.12092466",
+  "license": "Apache-2.0",
+  "archiveSha256": "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2",
+  "method": "Derived short residual, pair-common calibration/alignment, 5-80ms gate, mobile direct arrays unchanged. 7.1.4 retains approved depth baseline plus top interpolation; 360RA-13 includes lower measurements. Not physical authored distance or Apple reproduction.",
+  "profiles": {
+    "height714.json": {
+      "sha256": "7633bbbca8c6e25e8b0f9426c7c4d23fecf25c9d4154d2bdc3a9e67c6987b578",
+      "sourceArtifact": "E:\\SDA\\artifacts\\very-first-night-audit\\height-response\\matched-profile.json",
+      "bytes": 2695798
+    },
+    "height360.json": {
+      "sha256": "695af7386a9a019ba4e4b49bbfb645482b345fc8b7fdc7ec07ab3e5a8d4cc3ec",
+      "sourceArtifact": "E:\\SDA\\artifacts\\seiza-360ra-height\\room80-profile.json",
+      "bytes": 3187792
+    }
+  }
+}

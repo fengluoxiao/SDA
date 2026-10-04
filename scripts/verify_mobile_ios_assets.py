@@ -12,6 +12,7 @@ def verify_mobile_ios_assets(app):
     if (len(positions) != 128 or manifest['sampleRate'] != 48000
             or manifest.get('completeSubject') is not True
             or manifest.get('processing', {}).get('mobileDirectOnly') is not True
+            or manifest.get('processing', {}).get('spatialCues') is not True
             or manifest.get('processing', {}).get('preserveMeasurements') is not True
             or manifest.get('source', {}).get('brPath') is not None):
         raise RuntimeError('Invalid mobile direct-only KU100 manifest')

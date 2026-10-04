@@ -1980,6 +1980,8 @@ impl Engine {
         wet: f32) -> Result<(), String> {
         settings.validate()?;
         candidate.configure_cinema(settings.clone(), room.clone());
+        candidate.configure_spatial_cues(self.layout)?;
+        let wet = candidate.effective_wet(wet);
         let bus = bus_renderer::BusRenderer::new(&candidate, &self.vbap, wet)?;
         self.hrtf_wet_weight = wet;
         self.cinema = settings;
