@@ -721,6 +721,7 @@ pub struct Source {
     continuous: Option<Box<directional::ContinuousSource>>,
     continuous_mix: f32,
     continuous_active: bool,
+    motion_cues: spatial_cues::MotionCues,
     /// Automatic exact-direction mode for objects above the selected layout's
     /// highest speaker ring. This is separate from the user's global toggle.
     auto_sky_directional: bool,
@@ -786,6 +787,7 @@ impl Default for Source {
             continuous: None,
             continuous_mix: 0.0,
             continuous_active: false,
+            motion_cues: spatial_cues::MotionCues::default(),
             auto_sky_directional: false,
             fast_mixed: false,
             near_target: [1.0; 2],
@@ -2114,6 +2116,7 @@ impl Engine {
             layout: self.layout,
             head: self.head_pose,
             extent: self.source_extent,
+            bundled_cues: self.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()),
             near_active,
             near_field: self.near_field,
             sample_rate: self.output_sample_rate,
@@ -2781,6 +2784,8 @@ impl Engine {
                         direct.input[block_index] = object_sample * (1.0 - source.continuous_mix);
                     }
                     if let Some(continuous) = &mut source.continuous {
+                        let cue_gain = source.motion_cues.next(source.position, at, self.output_sample_rate,
+                            self.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()));
                         if block_index == 0 {
                             continuous.occlusion_targets = source.occlusion_targets;
                         }
@@ -2809,7 +2814,7 @@ impl Engine {
                                 1.0
                             };
                             self.bus_renderer.as_mut().unwrap().add_reflections(
-                                input * proximity_dry,
+                                input * proximity_dry * cue_gain,
                                 &std::array::from_fn(|bus| {
                                     source.bus_gains[bus] * self.speaker_levels[bus]
                                 }),

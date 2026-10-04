@@ -40,6 +40,37 @@ struct DiffuseField {
 const CONTINUOUS_DIRECTION_DEADBAND_COS: f32 = 0.999_847_7;
 const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
 
+/// Blend in the measured anchor continuously as coherent energy collapses.
+/// The 0.72..0.90 interval is an engineering guard transition, not a fitted
+/// perceptual threshold. Smoothstep has zero slope at both endpoints.
+fn ku100_notch_guard_mix(energy_ratio: f64) -> f32 {
+    let t = ((0.90 - energy_ratio) / (0.90 - 0.72)).clamp(0.0, 1.0);
+    (t * t * (3.0 - 2.0 * t)) as f32
+}
+
+/// Preserve the guard's binaural ratio when it has replaced a cancelling
+/// mixture. With no guard use per-ear measurement energies; at full guard use
+/// the guarded waveform's ratio, as the previously accepted common-scalar path
+/// did. Intermediate targets vary continuously and still sum to measured total
+/// energy. This is not an ear-balancing or content-dependent loudness control.
+fn normalize_guarded_ear_energy(output: &mut [Vec<f32>; 2], measured: [f64; 2], guard: f32) {
+    let actual: [f64; 2] = std::array::from_fn(|ear| {
+        output[ear].iter().map(|v| f64::from(*v).powi(2)).sum()
+    });
+    let total = measured.iter().sum::<f64>();
+    let actual_total = actual.iter().sum::<f64>();
+    if total <= 1e-20 || actual_total <= 1e-20 { return; }
+    let guard = f64::from(guard.clamp(0.0, 1.0));
+    for ear in 0..2 {
+        let target = measured[ear] * (1.0 - guard)
+            + total * (actual[ear] / actual_total) * guard;
+        if actual[ear] > 1e-20 {
+            let scale = (target / actual[ear]).sqrt() as f32;
+            for sample in &mut output[ear] { *sample *= scale; }
+        }
+    }
+}
+
 /// Symmetric directions can differ by a few f32 ulps between platform math
 /// libraries. KU100's notch guard may use the dominant HRIR outright, so a
 /// numerical tie must not select a different ear response on Android/Windows.
@@ -457,7 +488,6 @@ pub fn finish_sources<'a>(
 
 pub struct Grid {
     directions: Vec<[f64; 3]>,
-    arrivals: Vec<[usize; 2]>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
     /// the normal continuous interpolation path.
@@ -486,7 +516,6 @@ impl Clone for Grid {
     fn clone(&self) -> Self {
         Self {
             directions: self.directions.clone(),
-            arrivals: self.arrivals.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -624,8 +653,8 @@ fn unit(az: f64, el: f64) -> [f64; 3] {
     let e = el.to_radians();
     [-a.sin() * e.cos(), a.cos() * e.cos(), e.sin()]
 }
-// 40 samples neighbour alignment + 16 timeline + 16 sinc support.
-pub(crate) const INTERPOLATION_TAIL: usize = 72;
+// 40 samples neighbour alignment + 40 weighted timeline + 16 sinc support.
+pub(crate) const INTERPOLATION_TAIL: usize = 96;
 const FRACTIONAL_RADIUS: isize = 16;
 
 /// Offline HRIR shift. Linear interpolation adds a direction-dependent low-pass
@@ -683,19 +712,6 @@ impl Grid {
             directions: irs
                 .iter()
                 .map(|ir| unit(ir.azimuth, ir.elevation))
-                .collect(),
-            arrivals: irs
-                .iter()
-                .map(|ir| {
-                    let n = ir.dry.len() / 2;
-                    std::array::from_fn(|ear| {
-                        ir.dry[ear * n..(ear + 1) * n]
-                            .iter()
-                            .enumerate()
-                            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-                            .map_or(0, |x| x.0)
-                    })
-                })
                 .collect(),
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -873,28 +889,20 @@ impl Grid {
         } else {
             weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
         };
+        // Use the same waveform-correlation clock for alignment and timeline
+        // restoration. Absolute peak indices can jump between pinna-response
+        // lobes even when the actual waveforms hardly change.
+        let shifts: Vec<[f64; 2]> = weights.iter()
+            .map(|&(index, _)| self.neighbour_shift(irs, dominant, index))
+            .collect();
+        let timeline: [f64; 2] = std::array::from_fn(|ear| {
+            -weights.iter().zip(&shifts)
+                .map(|((_, weight), shift)| weight * shift[ear]).sum::<f64>()
+        });
         for ear in 0..2 {
-            // Keep the fine waveform locked to the dominant measurement, but
-            // move that temporary timeline to the weighted measured arrival.
-            // Without this second step, the dominant index changes at a cell
-            // boundary and the whole filter can jump by a few samples even
-            // though the spatial weights are continuous. The bounded shift is
-            // a common timeline adjustment for this ear; it does not change
-            // the neighbour-to-dominant alignment or the interaural balance.
-            let target_arrival: f64 = weights
-                .iter()
-                .map(|&(index, weight)| self.arrivals[index][ear] as f64 * weight)
-                .sum();
-            let timeline_shift =
-                (target_arrival - self.arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
-            for &(index, weight) in &weights {
+            for (&(index, weight), alignment) in weights.iter().zip(&shifts) {
                 let len = irs[index].dry.len() / 2;
-                let alignment_shift = if index == dominant {
-                    0.0
-                } else {
-                    self.neighbour_shift(irs, dominant, index)[ear]
-                };
-                let shift = alignment_shift + timeline_shift;
+                let shift = alignment[ear] + timeline[ear];
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
                 add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
             }
@@ -902,43 +910,35 @@ impl Grid {
         // Delay alignment prevents duplicated onsets, but interpolation of
         // different waveforms (including fractional shifts) loses energy. Use
         // the weighted measurement energy as a layout-independent reference.
-        // Both ears receive the same scalar: preserve ITD and interaural level.
+        // The legacy path normalizes total energy. KU100 also restores each
+        // ear's weighted measured energy below where the cancellation guard
+        // has not substituted its protected binaural ratio.
         let target: f64 = weights
             .iter()
             .map(|(i, w)| irs[*i].dry.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() * w)
             .sum();
         let actual: f64 = output.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
         if target > 1e-20 {
-            // A pinna notch can make two perfectly valid neighbouring HRIRs
-            // cancel at one intermediate angle. Total-energy compensation
-            // alone then raises the surviving tail and the direct image still
-            // sounds as if it briefly disappears. Keep a small, adaptive
-            // contribution from the dominant measured response only when the
-            // coherent mix has collapsed; ordinary interpolation remains
-            // untouched and does not allocate an anchor buffer.
+            // Energy normalization alone cannot recover a cancelled direct
+            // response. KU100 progressively blends in an aligned measured
+            // anchor instead of switching to it abruptly below 0.90 energy.
+            // Full protection remains for severe cancellation; other sets
+            // retain their existing lighter fallback.
             let ratio = actual / target;
+            let mut guard_mix = 0.0;
             if weights.len() > 1 && ratio < if self.ku100_notch_guard { 0.90 } else { 0.72 } {
-                // KU100 is the one dense set assembled from a binaural dummy
-                // head rather than a complete individual subject. Its
-                // adjacent pinna notches are valid measurements, but a time
-                // domain sum can erase a narrow-band source between them.
-                // Keep the dominant measured response intact in that case;
-                // convolver filter transitions still smooth movement between
-                // anchors. Other subjects retain the lighter fallback.
                 let floor = if self.ku100_notch_guard {
-                    1.0
+                    ku100_notch_guard_mix(ratio)
                 } else {
                     (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
                 };
+                guard_mix = floor;
                 if floor > 0.0 {
                     let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
                     for ear in 0..2 {
-                        let target_arrival: f64 = weights
-                            .iter()
-                            .map(|&(index, weight)| self.arrivals[index][ear] as f64 * weight)
-                            .sum();
-                        let shift = (target_arrival - self.arrivals[dominant][ear] as f64)
-                            .clamp(-16.0, 16.0);
+                        // The protective anchor must use exactly the same
+                        // timeline as the coherent mixture it is blended into.
+                        let shift = timeline[ear];
                         let len = irs[dominant].dry.len() / 2;
                         let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
                         add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
@@ -955,7 +955,14 @@ impl Grid {
                 .flatten()
                 .map(|v| (*v as f64).powi(2))
                 .sum::<f64>();
-            if actual > 1e-20 {
+            if self.ku100_notch_guard {
+                let measured = std::array::from_fn(|ear| weights.iter().map(|&(index, weight)| {
+                    let len = irs[index].dry.len() / 2;
+                    weight * irs[index].dry[ear * len..(ear + 1) * len]
+                        .iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+                }).sum());
+                normalize_guarded_ear_energy(&mut output, measured, guard_mix);
+            } else if actual > 1e-20 {
                 let scale = (target / actual).sqrt() as f32;
                 for ear in &mut output {
                     for v in ear {
@@ -1585,16 +1592,18 @@ mod tests {
                 wet: vec![],
             },
         ];
-        let grid = Grid::new(&irs);
         let expected: f64 = irs[0].dry.iter().map(|v| (*v as f64).powi(2)).sum();
-        for az in [-30.0, -15.0, 0.0, 15.0, 30.0] {
-            let (l, r) = grid.interpolate(&irs, az, 0.0);
-            let energy: f64 = l.iter().chain(&r).map(|v| (*v as f64).powi(2)).sum();
-            assert!((energy / expected - 1.0).abs() < 1e-6, "energy dip at {az}");
-            assert!(
-                l.iter().zip(&r).all(|(l, r)| (r - l * 0.7).abs() < 1e-6),
-                "interaural balance changed"
-            );
+        for notch_guard in [false, true] {
+            let grid = Grid::new_with_notch_guard(&irs, notch_guard);
+            for az in [-30.0, -15.0, 0.0, 15.0, 30.0] {
+                let (l, r) = grid.interpolate(&irs, az, 0.0);
+                let energy: f64 = l.iter().chain(&r).map(|v| (*v as f64).powi(2)).sum();
+                assert!((energy / expected - 1.0).abs() < 1e-6, "energy dip at {az}");
+                assert!(
+                    l.iter().zip(&r).all(|(l, r)| (r - l * 0.7).abs() < 1e-6),
+                    "interaural balance changed"
+                );
+            }
         }
     }
     #[test]
@@ -1631,6 +1640,34 @@ mod tests {
             "direct anchor was lost during cancellation: {actual} / {target}"
         );
         assert!(out_left.iter().chain(&out_right).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn ku100_notch_guard_mix_is_bounded_and_monotonic() {
+        assert_eq!(ku100_notch_guard_mix(0.0), 1.0);
+        assert_eq!(ku100_notch_guard_mix(0.72), 1.0);
+        assert_eq!(ku100_notch_guard_mix(0.90), 0.0);
+        assert_eq!(ku100_notch_guard_mix(2.0), 0.0);
+        assert!((ku100_notch_guard_mix(0.81) - 0.5).abs() < 1e-6);
+        let mut previous = 1.0;
+        for step in 0..=1000 {
+            let mix = ku100_notch_guard_mix(step as f64 / 1000.0);
+            assert!((0.0..=1.0).contains(&mix));
+            assert!(mix <= previous);
+            previous = mix;
+        }
+    }
+
+    #[test]
+    fn ku100_notch_guard_mix_has_no_threshold_jump() {
+        let epsilon = 1e-5;
+        for boundary in [0.72, 0.90] {
+            let below = ku100_notch_guard_mix(boundary - epsilon);
+            let at = ku100_notch_guard_mix(boundary);
+            let above = ku100_notch_guard_mix(boundary + epsilon);
+            assert!((below - at).abs() < 1e-7);
+            assert!((above - at).abs() < 1e-7);
+        }
     }
 
     #[test]
@@ -1718,6 +1755,32 @@ mod tests {
         );
     }
     #[test]
+    fn rear_seam_stays_continuous_when_waveform_peaks_change_lobes() {
+        // Nearly identical double-lobed responses can select different absolute
+        // peaks. Those peak indices are not a reliable waveform time origin.
+        let make = |azimuth, reverse: bool| {
+            let mut dry = vec![0.0; 256];
+            for ear in 0..2 {
+                let base = ear * 128 + 40 + ear * 3;
+                dry[base] = if reverse { 0.98 } else { 1.0 };
+                dry[base + 10] = if reverse { 1.0 } else { 0.98 };
+            }
+            StereoIr { azimuth, elevation: 0.0, dry, wet: vec![] }
+        };
+        let irs = vec![make(150.0, false), make(-150.0, true)];
+        for guard in [false, true] {
+            let grid = Grid::new_with_notch_guard(&irs, guard);
+            let a = grid.interpolate(&irs, 179.999, 0.0);
+            let b = grid.interpolate(&irs, -179.999, 0.0);
+            let energy: f64 = a.0.iter().chain(&a.1).map(|v| f64::from(*v).powi(2)).sum();
+            let error: f64 = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                .map(|(a,b)| (f64::from(*a)-f64::from(*b)).powi(2)).sum();
+            assert!((error / energy).sqrt() < 0.001,
+                "rear seam waveform jumped despite almost identical measurements: {}", (error / energy).sqrt());
+        }
+    }
+
+    #[test]
     fn interpolation_keeps_the_timeline_continuous_when_dominant_changes() {
         let make = |left: usize, right: usize| {
             let mut dry = vec![0.0; 256];
@@ -1764,6 +1827,147 @@ mod tests {
                 dry: dry.clone(),
                 wet: dry,
             }
+        }
+    }
+    #[test]
+    fn energy_correction_respects_guard_endpoints_and_blends_continuously() {
+        let base = [vec![0.5, -0.25, 0.125], vec![0.125, -0.0625, 0.03125]];
+        let measured = [0.8, 0.2];
+        let energy = |v: &Vec<f32>| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+        let original_total = energy(&base[0])+energy(&base[1]);
+        let mut previous: Option<f64> = None;
+        for step in 0..=100 {
+            let guard = step as f32 / 100.0;
+            let mut output = base.clone();
+            normalize_guarded_ear_energy(&mut output, measured, guard);
+            let left = energy(&output[0]); let right = energy(&output[1]);
+            assert!((left+right-1.0).abs()<1e-6);
+            for ear in 0..2 {
+                let expected = measured[ear]*(1.0-f64::from(guard))
+                    + energy(&base[ear])/original_total*f64::from(guard);
+                assert!((energy(&output[ear])-expected).abs()<1e-6);
+            }
+            if step==0 { assert!((left/right-4.0).abs()<1e-5); }
+            if step==100 { assert!((left/right-16.0).abs()<1e-4); }
+            if let Some(prev) = previous { assert!((left-prev).abs()<0.002); }
+            previous = Some(left);
+            let mut mirror = [base[1].clone(),base[0].clone()];
+            normalize_guarded_ear_energy(&mut mirror, [measured[1],measured[0]], guard);
+            assert_eq!(output[0],mirror[1]); assert_eq!(output[1],mirror[0]);
+        }
+        let mut silence=[vec![0.0;4],vec![0.0;4]];
+        normalize_guarded_ear_energy(&mut silence, [0.0,0.0], 0.5);
+        assert!(silence.iter().flatten().all(|v| *v==0.0));
+    }
+
+    #[test]
+    fn mobile_ku100_guard_aware_energy_is_finite_mirrored_and_anchor_preserving() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        // Read the actual asymmetric measurements, not the legacy mirrored set.
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let irs: Vec<StereoIr> = manifest["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes = std::fs::read(path.parent().unwrap().join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr {
+                azimuth: p["azimuth"].as_f64().unwrap(),
+                elevation: p["elevation"].as_f64().unwrap(),
+                dry: bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+                wet: vec![],
+            }
+        }).collect();
+        let mirrored: Vec<StereoIr> = irs.iter().map(|r| {
+            let n = r.dry.len()/2;
+            StereoIr { azimuth: -r.azimuth, elevation: r.elevation,
+                dry: r.dry[n..].iter().chain(&r.dry[..n]).copied().collect(), wet: vec![] }
+        }).collect();
+        let grid = Grid::new_with_notch_guard(&irs, true);
+        let mirror_grid = Grid::new_with_notch_guard(&mirrored, true);
+        for el in [0.0, 15.0, 45.0] {
+            for az in -180..180 {
+                let pair = grid.interpolate(&irs, az as f64, el);
+                let mirror = mirror_grid.interpolate(&mirrored, -(az as f64), el);
+                let weights = grid.weights(az as f64, el);
+                let target: f64 = weights.iter().map(|&(i,w)| {
+                    w*irs[i].dry.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+                }).sum();
+                let actual: f64 = pair.0.iter().chain(&pair.1).map(|v| f64::from(*v).powi(2)).sum();
+                assert!((actual/target-1.0).abs()<1e-5, "az={az} el={el}: {actual}/{target}");
+                for (samples, mirrored_samples) in [(&pair.0, &mirror.1), (&pair.1, &mirror.0)] {
+                    assert!(samples.iter().all(|v| v.is_finite()));
+                    assert!(samples.iter().zip(mirrored_samples).all(|(a,b)| (a-b).abs()<1e-6), "hemisphere bias at {az}/{el}");
+                }
+            }
+        }
+        for ir in &irs {
+            let pair = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n=ir.dry.len()/2;
+            for (out, input) in [(&pair.0,&ir.dry[..n]),(&pair.1,&ir.dry[n..])] {
+                assert!(out[..n].iter().zip(input).all(|(a,b)| (a-b).abs()<1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn moving_bundled_cues_match_both_mixers_and_layouts() {
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
+            let build = |fast: bool| {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+                let mut e = crate::Engine::new(48000, 2);
+                e.set_layout(layout).unwrap();
+                e.directional_hrtf = true;
+                e.disable_fast_objects = !fast;
+                e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+                assert!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
+                e.direct_mix = 1.0;
+                e.paused = false;
+                e.output_active = true;
+                for id in 0..8 {
+                    let mut source = crate::Source {
+                        kind: crate::SourceKind::Object,
+                        position: [-0.8, -0.4, 0.1],
+                        gain: 1.0, target_gain: 1.0,
+                        availability: 1.0, availability_target: 1.0,
+                        ..Default::default()
+                    };
+                    if id != 0 {
+                        source.spatial_events.insert(0, crate::SpatialEvent {
+                            position: [0.8, -0.4, 0.1], extent: [0.0;3],
+                            zone_exclusion: Default::default(), horizontal_only: false,
+                            diffuse: 0.0, spread: 0.0, distance_m: None, ramp: 32768,
+                        });
+                    }
+                    let pcm: Vec<_> = (0..32768).map(|i| 0.01*(i as f32*0.13+id as f32).sin()).collect();
+                    source.samples.write(0, 0, &pcm);
+                    let key = format!("obj:{id}");
+                    e.sources.insert(key.clone(), source);
+                    e.route_source_now(&key, 0).unwrap();
+                }
+                e
+            };
+            let mut fast = build(true);
+            let mut general = build(false);
+            let mut peak = 0.0_f32;
+            for frames in [31, 993, 17, 1007].into_iter().cycle().take(64) {
+                let mut a = vec![0.0; frames*2];
+                let mut b = a.clone();
+                fast.render_into(&mut a, 2);
+                general.render_into(&mut b, 2);
+                for (&x,&y) in a.iter().zip(&b) {
+                    assert!(x.is_finite() && y.is_finite());
+                    assert!((x-y).abs() < 1e-5, "{layout:?}: {x} != {y}");
+                    peak = peak.max(x.abs());
+                }
+                for (id, source) in &fast.sources {
+                    assert!((source.motion_cues.gain()-general.sources[id].motion_cues.gain()).abs() < 1e-6);
+                }
+            }
+            assert!(peak > 1e-6);
+            assert!(fast.fast_object_blocks > 0);
+            assert_eq!(general.fast_object_blocks, 0);
+            assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
+            assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
+            assert!(fast.sources.values().all(|s| s.continuous_active && s.continuous.is_some()));
         }
     }
     #[test]

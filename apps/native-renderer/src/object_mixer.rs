@@ -31,6 +31,7 @@ pub struct Context {
     pub head: Option<[f32; 4]>,
     pub extent: source_extent::Settings,
     pub near_active: bool,
+    pub bundled_cues: bool,
     pub near_field: crate::near_field::Settings,
     pub sample_rate: u32,
     pub start: u64,
@@ -443,6 +444,7 @@ fn mix_source(
                 [1.0; 2]
             };
         }
+        let cue_gain = source.motion_cues.next(source.position, at, ctx.sample_rate, ctx.bundled_cues);
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
         if block_index == 0 {
@@ -471,7 +473,7 @@ fn mix_source(
             } else {
                 1.0
             };
-            input * proximity_dry
+            input * proximity_dry * cue_gain
         } else {
             0.0
         };

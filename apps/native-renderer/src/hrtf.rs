@@ -589,7 +589,7 @@ impl NativeHrtfSet {
                 .map(|ir| ir.dry.len() / 2)
                 .max()
                 .unwrap_or(256)
-                + 4;
+                + crate::directional::INTERPOLATION_TAIL;
         }
         let base = self
             .cache
@@ -688,13 +688,24 @@ impl NativeHrtfSet {
                     .and_then(|v| v.get("sourceModel"))
                     .and_then(|v| v.as_str())
                     == Some("ideal-omnidirectional");
-            if simulated_room
+            if self.spatial_cues_active
+                || simulated_room
                 || self
                     .subject_id
                     .as_deref()
                     .is_some_and(|id| id.starts_with("personal-"))
             {
-                let ir = if simulated_room {
+                let ir = if self.spatial_cues_active {
+                    // Bundled profiles contain a snapshot of their original
+                    // direct response. Keep only their residual: bed channels
+                    // must use the same current interpolator as direct objects,
+                    // including later notch-guard fixes.
+                    let (left, right) = self.directional_grid
+                        .interpolate(&self.cache, azimuth, elevation);
+                    let mut dry = left;
+                    dry.extend_from_slice(&right);
+                    StereoIr { azimuth, elevation, dry, wet: vec![] }
+                } else if simulated_room {
                     self.speaker_ir(azimuth, elevation)?
                 } else {
                     self.nearest(azimuth, elevation)?
@@ -718,7 +729,7 @@ impl NativeHrtfSet {
                 let energy = |a: &[f32], b: &[f32]| {
                     a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>()
                 };
-                let residual_gain = if simulated_room {
+                let residual_gain = if simulated_room || self.spatial_cues_active {
                     let reference = energy(&speaker.direct_left, &speaker.direct_right);
                     if reference <= 1e-20 {
                         return Err("simulated room has no direct reference".into());
@@ -1581,12 +1592,34 @@ mod subject_dense_tests {
         }
     }
     #[test]
+    fn rear_measured_directions_and_azimuth_wrap_preserve_direct_responses() {
+        let set = NativeHrtfSet::load_calibrated(&Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json")).unwrap();
+        for ir in set.cache.iter().filter(|ir| ir.azimuth.abs() >= 120.0) {
+            let (l, r) = set.directional_grid.interpolate(&set.cache, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&l[..n], &ir.dry[..n]);
+            assert_eq!(&r[..n], &ir.dry[n..]);
+            assert!(l[n..].iter().chain(&r[n..]).all(|v| *v == 0.0));
+        }
+        for el in [0.0, 15.0, 17.5, 25.0, 45.0] {
+            for az in [120.0, 150.0, 179.999, 180.0, 180.001, 210.0, 240.0] {
+                let a = set.directional_grid.interpolate(&set.cache, az, el);
+                let b = set.directional_grid.interpolate(&set.cache, az - 360.0, el);
+                let error = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(error < 1e-6, "rear azimuth wrap changed filter: {az}, {el}, {error}");
+            }
+        }
+    }
+
+    #[test]
     fn mobile_direct_objects_and_bed_have_no_room_tail() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
         let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
         assert_eq!(set.simulation_shape(), (128, 256, 1));
-        assert_eq!(set.speaker_filter_len(), 260);
+        assert_eq!(set.speaker_filter_len(), 256 + crate::directional::INTERPOLATION_TAIL);
         assert!(set.speaker_set.is_none());
         for ir in &set.cache {
             let (l, r) = set.mixed_direction(ir.azimuth, ir.elevation, 1.0).unwrap();
@@ -1603,11 +1636,11 @@ mod subject_dense_tests {
             before,
             set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 1.0).unwrap()
         );
-        for (az, el) in [(0.0, 0.0), (30.0, 0.0), (-110.0, 0.0), (45.0, 45.0)] {
+        for (az, el) in [(0.0, 0.0), (30.0, 0.0), (-110.0, 0.0), (45.0, 45.0), (-30.0, 30.0)] {
             let actual = set.mixed_speaker("channel", "7.1.4", az, el, 1.0).unwrap();
-            let (mut l, mut r) = set.directional_grid.interpolate(&set.cache, az, el);
-            l.resize(260, 0.0);
-            r.resize(260, 0.0);
+            // Compare the complete interpolation, not a truncated copy: the
+            // fractional-delay tail is direct sound, not room reverberation.
+            let (l, r) = set.directional_grid.interpolate(&set.cache, az, el);
             assert_eq!(actual, (l, r));
             assert!(actual.0.iter().chain(&actual.1).all(|v| v.is_finite()));
         }
