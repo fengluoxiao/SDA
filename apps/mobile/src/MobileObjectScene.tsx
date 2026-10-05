@@ -1,3 +1,4 @@
+import { resetNativeDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
 import { AppState, Platform, PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
@@ -172,9 +173,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
         // Rebind its current default FBO rather than retaining a deleted/stale
         // drawable after the native tab has laid out or resumed.
         if (Platform.OS === "ios") {
-          state.gl.resetState();
-          context.bindFramebuffer(context.FRAMEBUFFER, null);
-          state.gl.setViewport(0, 0, state.size.width, state.size.height);
+          resetNativeDrawable(state.gl, context, state.size.width, state.size.height);
         }
         renderFrame(scene, camera);
         if (currentAttempt.current === attempt && (!smoke ? !firstFrame.current : frames === 30) && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
