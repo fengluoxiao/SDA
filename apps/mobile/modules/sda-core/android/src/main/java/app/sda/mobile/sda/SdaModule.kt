@@ -52,12 +52,12 @@ class SdaModule : Module() {
         // opt-in native PCM diagnostic builds), rather than creating it via adb.
         context.getExternalFilesDir(null)
         // One shared direct-only HRIR grid serves objects and bed channels.
-        for (assetDirectory in listOf("hrtf-mobile-direct")) {
+        for (assetDirectory in listOf("hrtf-restored/hrtf-dense", "hrtf-restored/hrtf")) {
             val hrtfDir = java.io.File(context.filesDir, assetDirectory)
             check(hrtfDir.mkdirs() || hrtfDir.isDirectory) { "Cannot create KU100 asset directory: $hrtfDir" }
             val names = context.assets.list(assetDirectory)?.toList().orEmpty()
             val manifestName = "hrtf-set.json"
-            check(manifestName in names && names.count { it.endsWith("-dry.f32") } == 128 && "zero-wet.f32" in names) {
+            check(manifestName in names && names.count { it.endsWith("_dry.f32") } == (if (assetDirectory.endsWith("hrtf-dense")) 61 else 17)) {
                 "Packaged KU100 HRTF asset set is incomplete"
             }
             names.forEach { name ->
@@ -79,7 +79,7 @@ class SdaModule : Module() {
             .put("layout", layout).put("directObjectHrtf", settings.getBoolean("direct"))
             .put("directionalHrtf", settings.getBoolean("directional"))
             .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
-        val assetDirectory = "hrtf-mobile-direct"
+        val assetDirectory = "hrtf-restored/hrtf-dense"
         val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
         val directionCount = JSONObject(manifest.readText()).getJSONArray("positions").length()
         val ptr = SdaEngine.nativeInit(config, manifest.absolutePath)
@@ -174,7 +174,7 @@ class SdaModule : Module() {
             synchronized(nativeLock) {
                 require(!profile.getBoolean("nearField") && profile.getString("roomId").isEmpty()) { "不支持的预设房间配置" }
                 if (handle != 0L) {
-                    val directory = "hrtf-mobile-direct"
+                    val directory = "hrtf-restored/hrtf-dense"
                     val manifest = java.io.File(context.filesDir, "$directory/hrtf-set.json")
                     val error = SdaEngine.nativeSetHrtfPreset(handle, manifest.absolutePath,
                         wetWeight.toFloat(), profile.getBoolean("direct"), profile.getBoolean("directional"))

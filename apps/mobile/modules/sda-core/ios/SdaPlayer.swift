@@ -91,7 +91,7 @@ final class SdaPlayer {
    "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
  }
  func hrtfPath(_ set: String) throws -> String {
-  let directory = "hrtf-mobile-direct"
+  let directory = "hrtf-restored/hrtf-dense"
   let path = try assetRoot().appendingPathComponent(directory).appendingPathComponent("hrtf-set.json")
   guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("KU100 测量资源缺失") }
   return path.path
@@ -140,7 +140,7 @@ final class SdaPlayer {
    _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
-   hrtfState = "KU100 · 128 方向 · 前后/上下空间线索 · iOS 原生输出"
+   hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
   } catch { stopNative(); throw error }
  }
  func setPaused(_ paused: Bool) throws -> Bool {

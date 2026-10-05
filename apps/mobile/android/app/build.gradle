@@ -144,12 +144,12 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
-    from(mobileHrtfAssets) { include 'hrtf-mobile-direct/**' }
+    from(mobileHrtfAssets) { include 'hrtf-restored/**' }
     into(sharedAssets)
     doFirst {
-        def manifest = new groovy.json.JsonSlurper().parse(new File(mobileHrtfAssets, 'hrtf-mobile-direct/hrtf-set.json'))
-        if (manifest.positions.size() != 128 || manifest.processing.mobileDirectOnly != true || manifest.processing.dryTapLimit != 256) {
-            throw new GradleException('Expected mobile direct-only 128-direction KU100 HRIR')
+        def manifest = new groovy.json.JsonSlurper().parse(new File(mobileHrtfAssets, 'hrtf-restored/hrtf-dense/hrtf-set.json'))
+        if (manifest.positions.size() != 61 || manifest.processing.historicalInterpolation != true || manifest.processing.spatialCues != true || manifest.processing.dryTapLimit != 512) {
+            throw new GradleException('Expected calibrated 61-direction KU100 with historical interpolation and spatial cues')
         }
     }
 }

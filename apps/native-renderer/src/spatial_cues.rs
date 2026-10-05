@@ -207,6 +207,37 @@ mod tests {
         }
     }
     #[test]
+    fn historical61_cues_preserve_approved_direct_and_cover_both_layouts() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        let dry = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        for layout in [LayoutId::Dolby7_1_4, LayoutId::Sony360Ra13] {
+            let mut enabled = dry.clone();
+            enabled.configure_spatial_cues(layout).unwrap();
+            assert!(enabled.spatial_cues_active());
+            let p = profile(layout).unwrap().unwrap();
+            for speaker in &p.speakers {
+                let az = speaker.azimuth as f64;
+                let el = speaker.elevation as f64;
+                let baseline = dry.mixed_speaker(&speaker.name, &p.layout, az, el, 0.0).unwrap();
+                let direct = enabled.mixed_speaker(&speaker.name, &p.layout, az, el, 0.0).unwrap();
+                let full = enabled.mixed_speaker(&speaker.name, &p.layout, az, el, 0.04).unwrap();
+                for (a,b) in [(&baseline.0,&direct.0),(&baseline.1,&direct.1)] {
+                    assert_eq!(&b[..a.len()],a, "{} direct changed",speaker.name);
+                    assert!(b[a.len()..].iter().all(|v| *v == 0.0));
+                }
+                assert!(full.0.iter().chain(&full.1).all(|v| v.is_finite()));
+                assert!(full.0.iter().zip(&direct.0).any(|(a,b)| a != b));
+            }
+            let mut e = crate::Engine::new(48000,2);
+            e.replace_hrtf(dry.clone(),0.0).unwrap();
+            e.set_layout(layout).unwrap();
+            assert!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
+            assert!(!e.cinema.enabled);
+        }
+    }
+
+    #[test]
     fn engine_replacement_and_layout_switch_reselect_cues_without_enabling_legacy_room() {
         let mut e = crate::Engine::new(48000,2);
         e.replace_hrtf(mobile(),0.0).unwrap();

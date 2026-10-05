@@ -114,6 +114,7 @@ jobs:
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cues::tests 2>&1 | tee ios-artifacts/spatial-cues-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib directional::tests 2>&1 | tee ios-artifacts/directional-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cue_gain_scales_only_residual_for_both_layouts 2>&1 | tee ios-artifacts/approved-cue-gain-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib occlusion 2>&1 | tee ios-artifacts/occlusion-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --test mobile_front_back 2>&1 | tee ios-artifacts/front-back-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_cues_start -- --test-threads=1 2>&1 | tee ios-artifacts/mobile-cues-tests.log

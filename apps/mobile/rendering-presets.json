@@ -2,9 +2,9 @@
   {
     "id": "object-dense",
     "label": "高解析逐对象",
-    "description": "128 方向 KU100 · 逐对象实际方向 · 80ms 前后/上下空间线索",
+    "description": "61 方向 KU100 · 历史兼容插值 · 逐对象实际方向 · 前后/上下空间线索",
     "hrtfSet": "dense",
-    "assetDirectory": "hrtf-mobile-direct",
+    "assetDirectory": "hrtf-restored/hrtf-dense",
     "direct": true,
     "directional": true,
     "nearField": false,

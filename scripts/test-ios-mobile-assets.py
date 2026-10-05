@@ -15,8 +15,8 @@ class MobileAssetsTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.app = Path(self.temp.name) / 'SDA.app'
         self.bundle = self.app / 'SdaCoreAssets.bundle'
-        shutil.copytree(ROOT / 'apps/mobile/assets/hrtf-mobile-direct',
-                        self.bundle / 'hrtf-mobile-direct')
+        shutil.copytree(ROOT / 'apps/mobile/assets/hrtf-restored',
+                        self.bundle / 'hrtf-restored')
         shutil.copy(ROOT / 'apps/mobile/rendering-presets.json', self.bundle)
 
     def test_mobile_only_bundle_passes(self):
@@ -31,17 +31,20 @@ class MobileAssetsTest(unittest.TestCase):
                 (self.bundle / name).rmdir()
 
     def test_corrupt_dry_rejected(self):
-        (self.bundle / 'hrtf-mobile-direct/direction-000-dry.f32').write_bytes(b'bad')
+        root = self.bundle / 'hrtf-restored/hrtf-dense'
+        manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
+        (root / manifest['positions'][0]['dry']).write_bytes(b'bad')
         with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):
             verify_mobile_ios_assets(self.app)
 
     def test_wet_signal_rejected_even_with_matching_hash(self):
         import hashlib
-        root = self.bundle / 'hrtf-mobile-direct'
+        root = self.bundle / 'hrtf-restored/hrtf-dense'
         data = b'\x01' + bytes(7)
         (root / 'zero-wet.f32').write_bytes(data)
         manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
         for p in manifest['positions']:
+            p['wet'] = 'zero-wet.f32'
             p['assets']['wet']['sha256'] = hashlib.sha256(data).hexdigest()
         (root / 'hrtf-set.json').write_text(json.dumps(manifest))
         with self.assertRaisesRegex(RuntimeError, 'Invalid mobile KU100 asset'):

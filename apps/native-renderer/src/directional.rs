@@ -488,6 +488,7 @@ pub fn finish_sources<'a>(
 
 pub struct Grid {
     directions: Vec<[f64; 3]>,
+    historical_arrivals: Option<Vec<[usize; 2]>>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
     /// the normal continuous interpolation path.
@@ -516,6 +517,7 @@ impl Clone for Grid {
     fn clone(&self) -> Self {
         Self {
             directions: self.directions.clone(),
+            historical_arrivals: self.historical_arrivals.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -713,11 +715,25 @@ impl Grid {
                 .iter()
                 .map(|ir| unit(ir.azimuth, ir.elevation))
                 .collect(),
+            historical_arrivals: None,
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
             diffuse_fields: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Explicit compatibility for the calibrated historical pack. Not a new
+    /// default: raw measurements retain the continuous moving-object path.
+    pub(crate) fn with_historical_interpolation(mut self, irs: &[StereoIr], enabled: bool) -> Self {
+        if enabled {
+            self.historical_arrivals = Some(irs.iter().map(|ir| {
+                let n = ir.dry.len() / 2;
+                std::array::from_fn(|ear| ir.dry[ear*n..(ear+1)*n].iter().enumerate()
+                    .max_by(|a,b| a.1.abs().total_cmp(&b.1.abs())).map_or(0, |x| x.0))
+            }).collect());
+        }
+        self
     }
 
     #[cfg(test)]
@@ -870,7 +886,135 @@ impl Grid {
         }
         weights
     }
+    fn interpolate_historical(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        let arrivals = self.historical_arrivals.as_ref().expect("historical profile");
+        let weights = self.weights(az, el);
+        let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
+        let mut output = [vec![0.0; n + 4], vec![0.0; n + 4]];
+        // The dominant measurement anchors the output position (its ITD and
+        // level pattern are physically intact); every other neighbour is
+        // whole-waveform aligned to it per ear before mixing. Aligning to a
+        // weighted average arrival instead leaves the fine phase structure
+        // misaligned, and the mix then cancels the correlated part between
+        // the ears, collapsing interaural coherence (unfocused, "wide"
+        // imaging). Per-ear alignment keeps the frontal IACC at the measured
+        // level; the mix interpolates each ear's fine structure toward the
+        // dominant direction, which is the physically expected behaviour of
+        // a source between two measurements.
+        let dominant = if self.ku100_notch_guard {
+            dominant_measurement(&weights, irs)
+        } else {
+            weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
+        };
+        for ear in 0..2 {
+            // Keep the fine waveform locked to the dominant measurement, but
+            // move that temporary timeline to the weighted measured arrival.
+            // Without this second step, the dominant index changes at a cell
+            // boundary and the whole filter can jump by a few samples even
+            // though the spatial weights are continuous. The bounded shift is
+            // a common timeline adjustment for this ear; it does not change
+            // the neighbour-to-dominant alignment or the interaural balance.
+            let target_arrival: f64 = weights
+                .iter()
+                .map(|&(index, weight)| arrivals[index][ear] as f64 * weight)
+                .sum();
+            let timeline_shift =
+                (target_arrival - arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
+            for &(index, weight) in &weights {
+                let len = irs[index].dry.len() / 2;
+                let alignment_shift = if index == dominant {
+                    0.0
+                } else {
+                    self.neighbour_shift(irs, dominant, index)[ear]
+                };
+                let shift = alignment_shift + timeline_shift;
+                let base = shift.floor() as isize;
+                let fraction = (shift - base as f64) as f32;
+                let input = &irs[index].dry[ear * len..(ear + 1) * len];
+                add_shifted(
+                    &mut output[ear],
+                    input,
+                    base,
+                    weight as f32 * (1.0 - fraction),
+                );
+                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
+            }
+        }
+        // Delay alignment prevents duplicated onsets, but interpolation of
+        // different waveforms (including fractional shifts) loses energy. Use
+        // the weighted measurement energy as a layout-independent reference.
+        // Both ears receive the same scalar: preserve ITD and interaural level.
+        let target: f64 = weights
+            .iter()
+            .map(|(i, w)| irs[*i].dry.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() * w)
+            .sum();
+        let actual: f64 = output.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
+        if target > 1e-20 {
+            // A pinna notch can make two perfectly valid neighbouring HRIRs
+            // cancel at one intermediate angle. Total-energy compensation
+            // alone then raises the surviving tail and the direct image still
+            // sounds as if it briefly disappears. Keep a small, adaptive
+            // contribution from the dominant measured response only when the
+            // coherent mix has collapsed; ordinary interpolation remains
+            // untouched and does not allocate an anchor buffer.
+            let ratio = actual / target;
+            if weights.len() > 1 && ratio < if self.ku100_notch_guard { 0.90 } else { 0.72 } {
+                // KU100 is the one dense set assembled from a binaural dummy
+                // head rather than a complete individual subject. Its
+                // adjacent pinna notches are valid measurements, but a time
+                // domain sum can erase a narrow-band source between them.
+                // Keep the dominant measured response intact in that case;
+                // convolver filter transitions still smooth movement between
+                // anchors. Other subjects retain the lighter fallback.
+                let floor = if self.ku100_notch_guard {
+                    1.0
+                } else {
+                    (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
+                };
+                if floor > 0.0 {
+                    let mut anchor = [vec![0.0; n + 4], vec![0.0; n + 4]];
+                    for ear in 0..2 {
+                        let target_arrival: f64 = weights
+                            .iter()
+                            .map(|&(index, weight)| arrivals[index][ear] as f64 * weight)
+                            .sum();
+                        let shift = (target_arrival - arrivals[dominant][ear] as f64)
+                            .clamp(-16.0, 16.0);
+                        let base = shift.floor() as isize;
+                        let fraction = (shift - base as f64) as f32;
+                        let len = irs[dominant].dry.len() / 2;
+                        let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
+                        add_shifted(&mut anchor[ear], input, base, 1.0 - fraction);
+                        add_shifted(&mut anchor[ear], input, base + 1, fraction);
+                    }
+                    for ear in 0..2 {
+                        for (mixed, stable) in output[ear].iter_mut().zip(&anchor[ear]) {
+                            *mixed = *mixed * (1.0 - floor) + *stable * floor;
+                        }
+                    }
+                }
+            }
+            let actual = output
+                .iter()
+                .flatten()
+                .map(|v| (*v as f64).powi(2))
+                .sum::<f64>();
+            if actual > 1e-20 {
+                let scale = (target / actual).sqrt() as f32;
+                for ear in &mut output {
+                    for v in ear {
+                        *v *= scale;
+                    }
+                }
+            }
+        }
+        let [left, right] = output;
+        (left, right)
+    }
     pub fn interpolate(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        if self.historical_arrivals.is_some() {
+            return self.interpolate_historical(irs, az, el);
+        }
         let weights = self.weights(az, el);
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
         let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
@@ -1056,6 +1200,32 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_profile_is_opt_in_and_clone_preserves_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let measurements: Vec<_> = [(0.0,0.0), (30.0,0.0), (-30.0,0.0), (150.0,0.0), (-150.0,0.0)].iter().map(|&(az,el)| set.nearest(az,el).unwrap()).collect();
+        let irs = &measurements;
+        let current = Grid::new_with_notch_guard(irs, true);
+        let disabled = current.clone().with_historical_interpolation(irs, false);
+        let legacy = current.clone().with_historical_interpolation(irs, true);
+        let cloned = legacy.clone();
+        assert!(current.historical_arrivals.is_none());
+        for (az, el) in [(0.0, 0.0), (17.0, 11.0), (153.0, -13.0), (-172.0, 29.0)] {
+            assert_eq!(current.interpolate(irs, az, el), disabled.interpolate(irs, az, el));
+            let a = legacy.interpolate(irs, az, el);
+            assert_eq!(a, cloned.interpolate(irs, az, el));
+            assert!(a.0.iter().chain(&a.1).all(|v| v.is_finite()));
+        }
+        for ir in irs {
+            let a = legacy.interpolate(irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len()/2;
+            assert_eq!(&a.0[..n], &ir.dry[..n]);
+            assert_eq!(&a.1[..n], &ir.dry[n..]);
+        }
+    }
 
     #[test]
     fn repeated_direction_updates_preserve_audible_filter_and_retargeting() {

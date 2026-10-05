@@ -14,7 +14,7 @@ Pod::Spec.new do |s|
  s.source_files = '*.{h,swift}'
  s.public_header_files = 'SdaBridge.h'
  s.vendored_frameworks = 'SdaNative.xcframework'
- s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-mobile-direct', 'Resources/rendering-presets.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas'] }
+ s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-restored', 'Resources/rendering-presets.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas'] }
  s.frameworks = 'AVFoundation', 'MediaPlayer', 'AudioToolbox', 'PHASE'
  s.libraries = 'c++'
  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }

@@ -1,0 +1,335 @@
+{
+  "mode": "historical-calibrated-direct-restore",
+  "directionCount": 61,
+  "speakerFallbackCount": 17,
+  "sampleRate": 48000,
+  "roomResidual": false,
+  "spatialCues": true,
+  "preservesDrySamplesExactly": true,
+  "sources": [
+    {
+      "name": "hrtf-dense",
+      "manifestSha256": "93dbb8408d666c7a55a07e9b87b1b56df1e39ff4f2dcf81493ef98aa459502e6",
+      "files": [
+        {
+          "file": "azm180_el0_dry.f32",
+          "sha256": "8b6846da484ba93bb453daec5007af3a43302f1434dd9597dddae50efcaa2242"
+        },
+        {
+          "file": "azm170_el0_dry.f32",
+          "sha256": "fed9d97acbe75eb929fb713a217e658f32c6dd040f03df201c398c5adec9cb85"
+        },
+        {
+          "file": "azm160_el0_dry.f32",
+          "sha256": "5ddba56f60536e9232946a29cf2ee0592c670d5eba733b1b4bfffbcce5e6bcc0"
+        },
+        {
+          "file": "azm150_el0_dry.f32",
+          "sha256": "2313d055bf27c11a99371a3dadb9d743533648b7cc30a0e199005c028486ee84"
+        },
+        {
+          "file": "azm140_el0_dry.f32",
+          "sha256": "ef33f4141c50fbcc5605538ffd80624070b3545ac7b13f8c5894f0ccc9132eba"
+        },
+        {
+          "file": "azm130_el0_dry.f32",
+          "sha256": "b0ef8eadb17b76d70f14e4cfb7c5ef6c0717940fe9164aa66d40ef701a8f05fb"
+        },
+        {
+          "file": "azm120_el0_dry.f32",
+          "sha256": "53604591a349ad28acd945b959e11fe502ca246bc29199a4d0fcd897ece56ccb"
+        },
+        {
+          "file": "azm110_el0_dry.f32",
+          "sha256": "5bcc9ea2c63b140111f29a744d5ad54b9eacc79070acf0fc4a4790bdb190f11c"
+        },
+        {
+          "file": "azm100_el0_dry.f32",
+          "sha256": "30f5be8db353e35e94cd2acd5f914701235e52bd737652a2f4722aeb7441f69f"
+        },
+        {
+          "file": "azm90_el0_dry.f32",
+          "sha256": "34fd92d1d3d462fb1000b8abfd8f76726a1c49c4c500e952f8a2628768d4f5b4"
+        },
+        {
+          "file": "azm80_el0_dry.f32",
+          "sha256": "fc6e98b4712b18f4299a13927301a6aa7e7fcff178ca259dbdf4a316685b2bce"
+        },
+        {
+          "file": "azm70_el0_dry.f32",
+          "sha256": "37aa9166c29e36288ba2b6660f6d3378a93872b5f389e5e368e104d1617efec7"
+        },
+        {
+          "file": "azm60_el0_dry.f32",
+          "sha256": "24d3ff4afbb0c3a2377062d0e3a4170ccd9cbcb59e65d5ab4f62c73986a9e28b"
+        },
+        {
+          "file": "azm50_el0_dry.f32",
+          "sha256": "add3b30238675421fabc504d73d3b3cee15b857328bfd708ef31d200292504e6"
+        },
+        {
+          "file": "azm40_el0_dry.f32",
+          "sha256": "5b7d37bfe56628f7a16647b3ee22669004e3c41595bcff3b6ca7cf61a1221305"
+        },
+        {
+          "file": "azm30_el0_dry.f32",
+          "sha256": "4759ec139b4826f97123234fcd8eb9ca37954f696defdd9dbc50680faff9dc88"
+        },
+        {
+          "file": "azm20_el0_dry.f32",
+          "sha256": "e4387cd11aec54b2fe0f0d2c7081864f9950a32742bf550c11e1f1ef9946f2e5"
+        },
+        {
+          "file": "azm10_el0_dry.f32",
+          "sha256": "1c149559649816dc85e72d9646e5b588280181e9dd4640701f3081081139cd2a"
+        },
+        {
+          "file": "az0_el0_dry.f32",
+          "sha256": "bd7bdfd221745a172b0fb1159709f5b8707cc13e851ba45b0a2179a989639830"
+        },
+        {
+          "file": "az10_el0_dry.f32",
+          "sha256": "a440e8073b54f5aa02dc62870194931da8b752f9bc61dff802f52d4b26660048"
+        },
+        {
+          "file": "az20_el0_dry.f32",
+          "sha256": "5ba99f6d256f3aeba0f627de8780b6e9cd80a2ed869d4bac51308b6be317017d"
+        },
+        {
+          "file": "az30_el0_dry.f32",
+          "sha256": "a0f5e5fcfd5364f43da673cc0a97e9c3e25d090b25cfe4348536b6d997af7400"
+        },
+        {
+          "file": "az40_el0_dry.f32",
+          "sha256": "0a8d764f6cd80f9b8dd08b436383fe286eb239d3e86326518e19f9bf3f7e2c75"
+        },
+        {
+          "file": "az50_el0_dry.f32",
+          "sha256": "db3fcc74edc742dc93ded120ef3ffdb13a05a072f250d558e0694a841c6debd3"
+        },
+        {
+          "file": "az60_el0_dry.f32",
+          "sha256": "8f28747b905b867e222aa66872b582fcae326d31ac23e072df65988e598419a1"
+        },
+        {
+          "file": "az70_el0_dry.f32",
+          "sha256": "2e7254f16873789fe1a74ac86b21bb87a2c3ef2e456769b9c05facd29e1e650f"
+        },
+        {
+          "file": "az80_el0_dry.f32",
+          "sha256": "dcc48f7c3d4372b94240aeacc79fd7de7c74870cc655d39b4d1d92080b24f865"
+        },
+        {
+          "file": "az90_el0_dry.f32",
+          "sha256": "9209fd8612a350cff5d0892338bc7cc47c98185cda6cddd058c2b8e1a5c6a9f4"
+        },
+        {
+          "file": "az100_el0_dry.f32",
+          "sha256": "786ffa7e9cd9d08df389df03b7a04699f50b741e0bb7c20afe24deeeda1d7655"
+        },
+        {
+          "file": "az110_el0_dry.f32",
+          "sha256": "da077be4447a98f04c609cab0338fd87fe1917de3df1e3cc4b94dfc74e3226b8"
+        },
+        {
+          "file": "az120_el0_dry.f32",
+          "sha256": "893b68c96d98772c958afd843e00ae545696d34aa1e09ef1c8ec085d4c8d36b8"
+        },
+        {
+          "file": "az130_el0_dry.f32",
+          "sha256": "3c8d0deda928d1c07b92886e7b002d6ecccc9b7194152d94836992f49eaf6353"
+        },
+        {
+          "file": "az140_el0_dry.f32",
+          "sha256": "1e83ab3573ec98c8495850f8b03d50cc023ae112f810258143812312be513492"
+        },
+        {
+          "file": "az150_el0_dry.f32",
+          "sha256": "839239b879d4f504e8cfa19a6db33cec95e41d4bd81520f77bd62f48727e9225"
+        },
+        {
+          "file": "az160_el0_dry.f32",
+          "sha256": "12c5dded92c2b656046446daf2ff4a15186456568056f7d6529e6355dd5cfba0"
+        },
+        {
+          "file": "az170_el0_dry.f32",
+          "sha256": "ab635849521f6b58fa7ce22b08620f51a4d474d2341391658e524b3d9f62063f"
+        },
+        {
+          "file": "azm180_el45_dry.f32",
+          "sha256": "fe63a8cf24f09311c54307b1ff4b6965b2b68c7b0c9d6a01d59b5b06f971980a"
+        },
+        {
+          "file": "azm150_el45_dry.f32",
+          "sha256": "11fddc152d6c4199158dca008c688f48a470d9ef1ea4e0e09e1d9f7530e16c07"
+        },
+        {
+          "file": "azm120_el45_dry.f32",
+          "sha256": "1ebfe7c0f08fb4fce78e04e88c6115b4a7191369be2c71e172fde509d9626b08"
+        },
+        {
+          "file": "azm90_el45_dry.f32",
+          "sha256": "72a80baee30e18dd56a4b947881d74d991088d4c09c57a1fea11db1b0963b0e0"
+        },
+        {
+          "file": "azm60_el45_dry.f32",
+          "sha256": "f588177c20e961ad855ff9ebc70c8e14518eacbd86e4ea64b0c0abf7112cd74c"
+        },
+        {
+          "file": "azm30_el45_dry.f32",
+          "sha256": "de838c6ff40ef6fb331b7f9b12785a82bd7bb588ecf3c334b48bc9f1f32bdbaf"
+        },
+        {
+          "file": "az0_el45_dry.f32",
+          "sha256": "535818c3c37593fc8eb468d1bb3299d4c250de9dabc19354f68b2c5a044c518a"
+        },
+        {
+          "file": "az30_el45_dry.f32",
+          "sha256": "0946eb7ca2118514815ce22426525635eb07fb79f9dda4d4a87a35789ce507f6"
+        },
+        {
+          "file": "az60_el45_dry.f32",
+          "sha256": "229fbd8b285f5195b051c7bd9ad995eaacfce31b6735e7eb0a49489d887ae0a2"
+        },
+        {
+          "file": "az90_el45_dry.f32",
+          "sha256": "dac64a83cffeda4bf74d335969e9dab53fa6997e58d19d6858ca4b9c21c30b20"
+        },
+        {
+          "file": "az120_el45_dry.f32",
+          "sha256": "f174b72c616a5f7877c02a120c9598d9e25da5298bcdc6f30d5987c1171d022a"
+        },
+        {
+          "file": "az150_el45_dry.f32",
+          "sha256": "3eb7c700ab95e0bb301f0f5f057a6df0b8a7c860f0bbe4bec9f520b9bf90a66c"
+        },
+        {
+          "file": "azm180_elm30_dry.f32",
+          "sha256": "0c9bd8cbf49e2664ac1c044b5cccedd7bef736a3fe067cc8649e0316b5d5d3bd"
+        },
+        {
+          "file": "azm150_elm30_dry.f32",
+          "sha256": "4d5965fa76e417b48dd08fe9e96d0d55614e3a785e78d595f8638506fe40a30c"
+        },
+        {
+          "file": "azm120_elm30_dry.f32",
+          "sha256": "f65f75c09a10d84b8ccbaa8d9a799c0931cc866cc897966af510688e7036fc91"
+        },
+        {
+          "file": "azm90_elm30_dry.f32",
+          "sha256": "48444f7b829772327b74f4e33e8e16552e5eb9edc87f2b4113e2bef8da948015"
+        },
+        {
+          "file": "azm60_elm30_dry.f32",
+          "sha256": "e06d6c04300cd46bc30e37c0c2c2e897ab9b7fe7c79d0ae596acff7d4061b465"
+        },
+        {
+          "file": "azm30_elm30_dry.f32",
+          "sha256": "6479aa35e58feb18535c0e9e9cf57ad3ece931fc5dee416a4cc0d1001e5222fd"
+        },
+        {
+          "file": "az0_elm30_dry.f32",
+          "sha256": "e1e997bb4d65232e7bbb573a5d2fa50ac710396ef161b7cbf57e5495521e3e11"
+        },
+        {
+          "file": "az30_elm30_dry.f32",
+          "sha256": "a243318941d87b7db3845cb8203c0eec66963e736f5d0848e5b53ad9b0a72e30"
+        },
+        {
+          "file": "az60_elm30_dry.f32",
+          "sha256": "b568e5082306cff2c94b662f58d488188ddd3c994af5b711ff071491f8a09ea6"
+        },
+        {
+          "file": "az90_elm30_dry.f32",
+          "sha256": "c19fa4d1addf2b2f069fb97db57d78d91fb0a7a2bc7dffe7ae3aa6c37a18dfba"
+        },
+        {
+          "file": "az120_elm30_dry.f32",
+          "sha256": "b7879a355db5f2729470cca5c21ab82b65d9439bb60618c8d2723849de201d86"
+        },
+        {
+          "file": "az150_elm30_dry.f32",
+          "sha256": "b2c99ad6836611792c73be871dc0bba4b3afcb23ffa4305d6d4234a9529f9913"
+        },
+        {
+          "file": "az0_el90_dry.f32",
+          "sha256": "a356a54c4156cf3911853df93878897aa5acced69edd385cd93a0763b60d3cb2"
+        }
+      ]
+    },
+    {
+      "name": "hrtf",
+      "manifestSha256": "10fef5551de76173129c476abe3a0a0b3ec558f1a3685759a6c6338cb21e7c67",
+      "files": [
+        {
+          "file": "az0_el0_dry.f32",
+          "sha256": "c36c91acb672e8ca634e9d285e20c54123549e44d7a3bfe03824ee4c26062486"
+        },
+        {
+          "file": "az30_el0_dry.f32",
+          "sha256": "1e3ac631fcd723256f3d4b11b141cffa3fcea583b0d42c0d086b9a4f1a8eedab"
+        },
+        {
+          "file": "azm30_el0_dry.f32",
+          "sha256": "1ca9f2fbc038f157c67042b64379f581cfd087c55f421ad46ace73c788cc035e"
+        },
+        {
+          "file": "az60_el0_dry.f32",
+          "sha256": "468613285f4f7dc0ecf45af78e7743c4cf3cb3ddeee1e11b1134d69a95e909bc"
+        },
+        {
+          "file": "azm60_el0_dry.f32",
+          "sha256": "82f6cbe6af322e88b4b62d37a77ba821d464f5d6817f8cfe70d4cc5731c630bc"
+        },
+        {
+          "file": "az100_el0_dry.f32",
+          "sha256": "f242c485a7a11014c93924ce6f3bf7697bda8ebfe65e1518ff04baa95e621a3f"
+        },
+        {
+          "file": "azm100_el0_dry.f32",
+          "sha256": "088d60fa3d5e827ccd014640978f5f70200f298bf7e451bf28f500fc276e30ba"
+        },
+        {
+          "file": "az110_el0_dry.f32",
+          "sha256": "362c31043057f4f4e141acdecb247bd90c6d0ddd689f0453376380ab3fdb952c"
+        },
+        {
+          "file": "azm110_el0_dry.f32",
+          "sha256": "d5294c8cd788a97358d289b560682d19e4a7eb097c9e03b4249672bf8bd60452"
+        },
+        {
+          "file": "az140_el0_dry.f32",
+          "sha256": "cc9496b4bc3a03d6cbd3346d78ca9ca786acb6e69716b2ca238f560db3472e60"
+        },
+        {
+          "file": "azm140_el0_dry.f32",
+          "sha256": "9e3fd0d9b08f3d862bded9d6ca70484df36d15852d6bd4f4f86b8d1f77b0c1bf"
+        },
+        {
+          "file": "az45_el45_dry.f32",
+          "sha256": "90077d64fbadd916aa770172e26f1897dd64619c1beee901249c78f162d5ace6"
+        },
+        {
+          "file": "azm45_el45_dry.f32",
+          "sha256": "cbe95047eb483df128665231ce17dc868a77aa2fbcd2375947423409902378b2"
+        },
+        {
+          "file": "az90_el45_dry.f32",
+          "sha256": "e3f74fdb321da8d8aab84fa60c73100febe598e2d49ed307221dcad3841ffa97"
+        },
+        {
+          "file": "azm90_el45_dry.f32",
+          "sha256": "e346196f6f64830a5a61d22c01a09ff30d75ab3607b0f76e7fdd210a96a96742"
+        },
+        {
+          "file": "az135_el45_dry.f32",
+          "sha256": "8b6592c7ec2b96a6f83b09b8b20ccb3a74a82b48999196b8308c20563da50975"
+        },
+        {
+          "file": "azm135_el45_dry.f32",
+          "sha256": "0774b237a3ce8c5b4e3b1bb7bc9d349bb8e93ac6810b119b1d0f4219bcb53606"
+        }
+      ]
+    }
+  ]
+}
