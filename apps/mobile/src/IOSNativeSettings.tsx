@@ -139,6 +139,11 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Toggle label="逐对象渲染" isOn={p.directObjects} onIsOnChange={value => p.setRendering(value, p.directionalObjects)} modifiers={[tint(PlatformColor("systemGreen")), disabled(audioDisabled)]}><Text>逐对象渲染</Text><Text>每个对象独立生成双耳声音</Text></Toggle>
       <Toggle label="实际方向" isOn={p.directionalObjects} onIsOnChange={value => p.setRendering(p.directObjects, value)} modifiers={[tint(PlatformColor("systemGreen")), disabled(audioDisabled)]}><Text>实际方向</Text><Text>按对象真实位置定位声音</Text></Toggle>
     </Section>
+    <Section title="空间线索强度" footer={<Text>仅调节 SDA / KU100 额外空间线索，不调整主音量或干声增益。播放中平滑切换，不暂停或重新播放；已缓冲的声音播放完后生效。系统空间音频旁路时仅保存设置，恢复 SDA 渲染后生效。</Text>}>
+      <Picker label="辅助空间效果" selection={String(p.spatialCueDb)} onSelectionChange={(value: string) => p.setSpatialCueDb(Number(value))} modifiers={[pickerStyle("menu"), disabled(p.spatialCueBusy || p.busy)]}>
+        {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
+      </Picker>
+    </Section>
     <Section title="应用与输出">
       <Text>外观 · 跟随系统</Text>
       <Text>{"音频输出：" + (p.playing ? p.renderingStatus : "等待播放")}</Text>

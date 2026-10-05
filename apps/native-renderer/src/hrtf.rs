@@ -568,6 +568,14 @@ impl NativeHrtfSet {
         Ok(())
     }
 
+    pub fn set_spatial_cue_gain(&mut self, gain: f32) -> Result<(), String> {
+        if !gain.is_finite() || gain <= 0.0 || gain > 1.0 { return Err("invalid spatial cue gain".into()); }
+        self.spatial_cue_gain = gain;
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        Ok(())
+    }
+
     pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active }
 
     pub(crate) fn effective_wet(&self, requested: f32) -> f32 {

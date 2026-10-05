@@ -47,11 +47,14 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNowPlayingMetadata?(contentHash: string, metadataJson: string): void;
   setObjectRendering(direct: boolean, directional: boolean): void;
   setRenderingPreset(id: string): Promise<void>;
+  setSpatialCueDb?(db: number): Promise<void>;
   rooms(): string;
   setRoom(id: string): Promise<void>;
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  spatialCueDb: number;
+  spatialCueBusy: boolean;
   systemSpatial360RA: boolean;
   systemSpatial360RAActive: boolean;
   layout: "7.1.4" | "360RA-13";
@@ -92,6 +95,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    spatialCueDb: -6, spatialCueBusy: false,
     systemSpatial360RA: false, systemSpatial360RAActive: false,
     layout: "7.1.4",
     playbackMode: "sequence",
@@ -156,6 +160,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
+        spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
         systemSpatial360RA: Platform.OS === "ios" && settings.systemSpatial360RA === true,
@@ -174,6 +179,20 @@ export default class App extends React.Component<Record<string, never>, State> {
       setter(enabled);
       this.setState({ systemSpatial360RA: enabled, error: null });
     } catch (error) { this.setState({error: error instanceof Error ? error.message : String(error)}); }
+  };
+
+  private cueUpdatePending = false;
+  private setSpatialCueDb = async (db: number) => {
+    if (Platform.OS !== "ios" || this.changingTrack || this.state.busy || this.cueUpdatePending || ![0, -3, -6, -9, -12].includes(db)) return;
+    this.cueUpdatePending = true;
+    this.setState({ spatialCueBusy: true, error: null });
+    try {
+      const engine = this.getEngine();
+      if (!engine.setSpatialCueDb) throw new Error("请更新 iOS 原生模块以调整空间线索");
+      await engine.setSpatialCueDb(db);
+      this.setState({ spatialCueDb: db });
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
+    finally { this.cueUpdatePending = false; this.setState({ spatialCueBusy: false }); }
   };
 
   private setRenderingPreset = async (id: string) => {
@@ -432,6 +451,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
   }
 }

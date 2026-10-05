@@ -25,6 +25,7 @@ pub enum RenderCommand {
         directional: bool,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    SpatialCueGain { update: Box<crate::live_spatial_cues::PreparedCueUpdate>, reply: std::sync::mpsc::Sender<Result<(), String>> },
     NearField {
         settings: crate::near_field::Settings,
         reply: std::sync::mpsc::Sender<Result<(), String>>,

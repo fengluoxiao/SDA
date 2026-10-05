@@ -86,6 +86,7 @@ pub mod remote_audio;
 pub mod realtime;
 pub mod remote_sync;
 pub mod render_command;
+pub mod live_spatial_cues;
 pub mod source_extent;
 pub mod spatial;
 pub mod stereo_fifo;

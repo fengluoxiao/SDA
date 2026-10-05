@@ -339,6 +339,23 @@ impl MobileEngine {
         Ok(())
     }
 
+    /// Prepare filters away from the render worker, then crossfade in place.
+    pub fn set_spatial_cue_gain(&mut self, path: &str, gain: f32) -> EngineResult<()> {
+        let update = sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(path, &self.config.layout, gain)?;
+        self.apply_spatial_cue_update(update)
+    }
+    pub fn apply_spatial_cue_update(&mut self, update: sda_native_renderer::live_spatial_cues::PreparedCueUpdate) -> EngineResult<()> {
+        if let Some(pipeline) = &self.pipeline {
+            let (reply, received) = std::sync::mpsc::channel();
+            pipeline.commands.push(render_command::RenderCommand::SpatialCueGain { update: Box::new(update), reply })
+                .map_err(|_| "spatial cue command queue is full")?;
+            received.recv_timeout(Duration::from_secs(30)).map_err(|_| "spatial cue acknowledgement timed out")??;
+        } else {
+            self.renderer.as_mut().ok_or("renderer unavailable")?.apply_spatial_cue_update(update)?;
+        }
+        Ok(())
+    }
+
     /// Open a seekable MP3 file. Decoded PCM enters the shared 48 kHz renderer as a stereo bed.
     pub fn open_mp3(&mut self, path: &str) -> EngineResult<u32> {
         if self.mp3_decoder.is_some() {

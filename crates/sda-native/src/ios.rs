@@ -133,6 +133,7 @@ pub unsafe extern "C" fn sda_ios_command(
             "near" => e.set_near_field(boolean("enabled")?, number("scale")?)?,
             "room" => e.set_room(str_arg("path")?)?,
             "rendering" => e.set_object_rendering(boolean("direct")?, boolean("directional")?)?,
+            "spatialCueGain" => e.set_spatial_cue_gain(str_arg("path")?, number("gain")?)?,
             "preset" => e.set_hrtf_preset(
                 str_arg("path")?,
                 number("wet")?,
@@ -325,6 +326,16 @@ mod tests {
                         json!({"path":path.to_str().unwrap(),"wet":0.0,"direct":true,"directional":true}),
                     )
                 };
+                let cue_path = root.join("apps/mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+                let cue_path = CString::new(cue_path.to_str().unwrap()).unwrap();
+                unsafe { command(h, "preset", json!({"path":cue_path.to_str().unwrap(),"wet":0.0,"direct":true,"directional":true})) };
+                for gain in [1.0, 0.5011872, 0.25118864] {
+                    let layout = CString::new("7.1.4").unwrap();
+                    let mut error = std::ptr::null_mut();
+                    let update = unsafe { sda_ios_prepare_cues(cue_path.as_ptr(), layout.as_ptr(), gain, &mut error) };
+                    assert!(!update.is_null(), "cue preparation failed");
+                    unsafe { value(sda_ios_apply_cues(h, update)); sda_ios_free_cues(update); }
+                }
                 let after = unsafe { command(h, "status", json!({})) };
                 assert_eq!(after["decodedSamplePos"], decoded);
                 assert_eq!(after["consumedSamplePos"], clock);
@@ -695,4 +706,30 @@ pub unsafe extern "C" fn sda_ios_sources_next(p: *mut std::ffi::c_void) -> *mut 
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_sources_close(p: *mut std::ffi::c_void) {
     if !p.is_null() { drop(unsafe { Box::from_raw(p.cast::<SourceHost>()) }); }
+}
+
+// Asset IO and FFT preparation intentionally require no playback handle/lock.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_prepare_cues(path: *const c_char, layout: *const c_char, gain: f32, error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(unsafe { text(path)? }, unsafe { text(layout)? }, gain)
+    })).unwrap_or_else(|_| Err("cue preparation panic".into()));
+    match result {
+        Ok(update) => Box::into_raw(Box::new(Some(update))).cast(),
+        Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_apply_cues(p: *mut std::ffi::c_void, prepared: *mut std::ffi::c_void) -> *mut c_char {
+    guarded(|| {
+        if p.is_null() || prepared.is_null() { return Err("null cue handle".into()); }
+        let host = unsafe { &*(p as *mut Host) };
+        let update = unsafe { &mut *(prepared as *mut Option<sda_native_renderer::live_spatial_cues::PreparedCueUpdate>) };
+        host.engine.lock().map_err(|_| "engine lock poisoned")?.apply_spatial_cue_update(update.take().ok_or("cue update already consumed")?)?;
+        Ok(Value::Null)
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_free_cues(p: *mut std::ffi::c_void) {
+    if !p.is_null() { drop(unsafe { Box::from_raw(p as *mut Option<sda_native_renderer::live_spatial_cues::PreparedCueUpdate>) }); }
 }

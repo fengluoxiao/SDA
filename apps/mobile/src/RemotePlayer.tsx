@@ -12,6 +12,7 @@ export interface TrackMetadata {
 }
 export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
 export interface PlayerProps {
+  spatialCueDb: number; spatialCueBusy: boolean; setSpatialCueDb(db: number): void;
   preparingAudio?: boolean;
   playbackPageRequest?: number;
   systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
@@ -299,6 +300,13 @@ function LegacyRemotePlayer(p: PlayerProps) {
               {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 360RA-13／KU100 直达渲染" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
             </View>
           </>}
+          {Platform.OS === "ios" && <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
+            {label("空间线索强度", false, s.settingTitle)}
+            {[0, -3, -6, -9, -12].map(db => <Pressable key={db} accessibilityRole="radio" accessibilityState={{ checked: p.spatialCueDb === db, disabled: p.spatialCueBusy || p.busy }} disabled={p.spatialCueBusy || p.busy} onPress={() => p.setSpatialCueDb(db)} style={s.settingRow}>
+              {label(`${p.spatialCueDb === db ? "●" : "○"} ${db} dB${db === -6 ? " · 默认" : ""}`, false, s.settingTitle)}
+            </Pressable>)}
+            {label("播放中平滑切换，不暂停或重新播放；缓冲音频播放完后生效。系统空间音频旁路时仅保存设置。", true, s.groupHint)}
+          </View>}
           {settingsHeading("空间渲染", "settings-spatial")}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.profileHeader}><View style={s.settingCopy}>{label("KU100 双耳音频", false, s.profileTitle)}{label("128 方向 HRIR · 对象与声道纯直达", true, s.settingDescription)}</View><View style={[s.profileBadge, { backgroundColor: c.soft }]}>{label("耳廓", false, { fontSize: 11 })}</View></View>

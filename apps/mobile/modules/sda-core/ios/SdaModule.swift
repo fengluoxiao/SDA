@@ -47,12 +47,14 @@ public final class SdaModule: Module {
   Function("rooms") { "[]" }
   AsyncFunction("setNearField") { (enabled: Bool, scale: Double) in try player.locked { guard !enabled else { throw SdaError.message("移动端已移除近场渲染") }; guard scale.isFinite && scale >= 0.25 && scale <= 4 else { throw SdaError.message("近场距离映射无效") }; if player.handle != nil { _ = try player.command("near",["enabled":enabled,"scale":scale]) }; player.prefs.set(enabled,forKey:"sda.near"); player.prefs.set(scale,forKey:"sda.scale") } }
   AsyncFunction("setRoom") { (id: String) in try player.locked { guard id.isEmpty else { throw SdaError.message("移动端已移除房间仿真") }; try player.saveRoom(id) } }
+  AsyncFunction("setSpatialCueDb") { (db: Double) in try player.saveSpatialCueDb(db) }
   AsyncFunction("setRenderingPreset") { (id: String) in try player.locked {
    let data = try Data(contentsOf:player.assetRoot().appendingPathComponent("rendering-presets.json"))
    let presets = try JSONSerialization.jsonObject(with:data) as! [[String:Any]]
    guard let p = presets.first(where:{$0["id"] as? String == id}) else { throw SdaError.message("未知渲染预设") }
    if player.handle != nil { _ = try player.command("preset",["path":try player.hrtfPath(p["hrtfSet"] as! String),"wet":p["hrtfWetWeight"]!,"direct":p["direct"]!,"directional":p["directional"]!]); _ = try player.command("near",["enabled":false,"scale":1.0]); _ = try player.command("room",["path":""]) }
    for (k,v) in [("sda.hrtfSet",p["hrtfSet"]!),("sda.wet",p["hrtfWetWeight"]!),("sda.direct",p["direct"]!),("sda.directional",p["directional"]!),("sda.near",false),("sda.room","")] as [(String,Any)] { player.prefs.set(v,forKey:k) }
+   try player.saveSpatialCueDb(player.spatialCueDb())
    player.prefs.set("",forKey:"sda.room."+player.layout)
    if player.systemSpatial == nil { player.hrtfState = (p["label"] as? String ?? "KU100")+" · 完整 HRTF" }
   } }

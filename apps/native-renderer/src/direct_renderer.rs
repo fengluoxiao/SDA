@@ -827,6 +827,18 @@ impl DirectSource {
         Ok(())
     }
 
+    pub(super) fn refresh_cue_filters(&mut self, set: &mut NativeHrtfSet,
+        solver: &vbap::VbapSolver, wet: f32) -> Result<(), String> {
+        let Some(route) = self.pending_route.or(self.idle_route).or(self.route) else { return Ok(()); };
+        let bank = prepare_bank(set, solver, wet)?;
+        let residual = vbap::speakers(solver.layout()).iter().map(|s| Ok([
+            set.prepared_reflection_speaker(s.name, solver.layout().as_str(), s.azimuth as f64, s.elevation as f64, wet, false)?,
+            set.prepared_reflection_speaker(s.name, solver.layout().as_str(), s.azimuth as f64, s.elevation as f64, wet, true)?,
+        ])).collect::<Result<FilterBank, String>>()?;
+        self.update_from_bank(&bank, Some(&residual), route);
+        Ok(())
+    }
+
     pub fn schedule_focus(
         &mut self,
         layout: vbap::LayoutId,

@@ -759,6 +759,11 @@ pub(super) fn apply_render_command(
             let _ = reply.send(result);
             true
         }
+        render_command::RenderCommand::SpatialCueGain { update, reply } => {
+            let result = state.apply_spatial_cue_update(*update);
+            let _ = reply.send(result);
+            true
+        }
         render_command::RenderCommand::Room { settings, profile, reply } => {
             let result = state.configure_room(settings, profile);
             telemetry.publish_rendering_state(state);

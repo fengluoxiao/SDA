@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 void *sda_ios_create(const char *config, const char *hrtf, char **error);
+void *sda_ios_prepare_cues(const char *path, const char *layout, float gain, char **error);
+char *sda_ios_apply_cues(void *engine, void *prepared);
+void sda_ios_free_cues(void *prepared);
 char *sda_ios_command(void *engine, const char *op, const char *args);
 char *sda_ios_feed(void *engine, const uint8_t *bytes, size_t length);
 void sda_ios_render(void *engine, float *left, float *right, size_t frames);

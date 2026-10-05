@@ -79,13 +79,38 @@ final class SdaPlayer {
         let bundle = Bundle(url: url), let root = bundle.resourceURL else { throw SdaError.message("iOS KU100 资源包缺失") }
   return root
  }
+ func spatialCueDb() -> Double {
+  let value = (prefs.object(forKey:"sda.spatialCueDb") as? NSNumber)?.doubleValue ?? -6
+  return [0.0, -3, -6, -9, -12].contains(value) ? value : -6
+ }
+ func saveSpatialCueDb(_ db: Double) throws {
+  guard [0.0, -3, -6, -9, -12].contains(db) else { throw SdaError.message("空间线索强度无效") }
+  let snapshot: (Int, String, String)? = try locked {
+   guard handle != nil && systemSpatial == nil else { prefs.set(db, forKey:"sda.spatialCueDb"); return nil }
+   return (generation, layout, try hrtfPath("dense"))
+  }
+  guard let snapshot else { return }
+  // Do not hold the playback/decoder lock during disk IO or FFT preparation.
+  var error: UnsafeMutablePointer<CChar>?
+  guard let prepared = sda_ios_prepare_cues(snapshot.2, snapshot.1, Float(pow(10.0, db / 20.0)), &error) else {
+   _ = try decodeReply(error); throw SdaError.message("空间线索准备失败")
+  }
+  defer { sda_ios_free_cues(prepared) }
+  try locked {
+   guard generation == snapshot.0, layout == snapshot.1, let h = handle, systemSpatial == nil else {
+    throw SdaError.message("播放曲目已切换，请重新选择空间线索强度")
+   }
+   _ = try decodeReply(sda_ios_apply_cues(h, prepared))
+   prefs.set(db, forKey:"sda.spatialCueDb")
+  }
+ }
  func settings() -> [String: Any] {
   if prefs.integer(forKey:"sda.mobileDirectVersion") < 1 {
    for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
    prefs.set(1,forKey:"sda.mobileDirectVersion")
   }
   return ["systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
-   "hrtfWetWeight": 0.0,
+   "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
    "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
@@ -124,6 +149,7 @@ final class SdaPlayer {
   }
   handle = h
   do {
+   try saveSpatialCueDb(spatialCueDb())
    let engine = AVAudioEngine()
    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
    let node = AVAudioSourceNode(format: format) { _, _, frames, list -> OSStatus in
