@@ -147,7 +147,7 @@ try:
   if not background.is_file():raise RuntimeError('Background playback report timed out: '+mode)
   proof=json.loads(background.read_text())
   (out/('background-'+mode+'.json')).write_text(json.dumps(proof,indent=2))
-  if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionPolicyVerified') is not True or (proof.get('simulatorFileProtectionAvailable') is not False and proof.get('ownedCopyProtectionVerified') is not True) or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000:
+  if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionPolicyVerified') is not True or (proof.get('simulatorFileProtectionAvailable') is not False and proof.get('ownedCopyProtectionVerified') is not True) or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000 or proof.get('nativeNextTrackVerified') is not True or proof.get('nativeRepeatOneVerified') is not True:
    raise RuntimeError('Native background audio failed: '+str(proof))
   run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
   os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)

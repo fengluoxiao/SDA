@@ -39,8 +39,8 @@ public final class SdaModule: Module {
   Function("pause") { try player.locked { try player.setPaused(true) } }
   Function("resume") { try player.locked { try player.setPaused(false) } }
   Function("stop") { player.locked { player.stopNative(); return true } }
-  Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]) } }
-  Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose") } }
+  Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]); player.playbackYaw=degrees } }
+  Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose"); player.playbackYaw=0 } }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setObjectRendering") { (direct: Bool, directional: Bool) in try player.locked { if player.handle != nil { _ = try player.command("rendering",["direct":direct,"directional":directional]) }; player.prefs.set(direct,forKey:"sda.direct");player.prefs.set(directional,forKey:"sda.directional") } }
@@ -58,6 +58,16 @@ public final class SdaModule: Module {
    player.prefs.set("",forKey:"sda.room."+player.layout)
    if player.systemSpatial == nil { player.hrtfState = (p["label"] as? String ?? "KU100")+" · 完整 HRTF" }
   } }
+  Function("configurePlaybackQueue") { (text:String,mode:String) in try player.locked {
+   guard ["sequence","repeat-all","repeat-one"].contains(mode),
+    let data=text.data(using:.utf8), let queue=try JSONSerialization.jsonObject(with:data) as? [[String:Any]],
+    queue.allSatisfy({ ($0["hash"] as? String) != nil && ($0["name"] as? String) != nil && URL(string:$0["uri"] as? String ?? "")?.isFileURL == true })
+    else { throw SdaError.message("播放队列无效") }
+   // Fix protection while foreground/import still has access, not on a locked-screen EOF.
+   for track in queue { if let uri=track["uri"] as? String, let url=URL(string:uri) { try CompressedInput.allowLockedPlaybackOfOwnedCopy(url) } }
+   player.playbackQueue=queue; player.playbackMode=mode
+  } }
+  Function("currentTrackHash") { player.locked { player.trackHash } }
   AsyncFunction("playUri") { (uri:String,name:String,yaw:Double,hash:String) in try player.play(uri,name,yaw,hash) }
   AsyncFunction("durationMs") { (uri:String) in guard let u = URL(string:uri) else { return 0.0 }; return player.mediaDuration(u) }
   AsyncFunction("metadata") { (uri:String) in

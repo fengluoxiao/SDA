@@ -19,6 +19,9 @@ final class SdaPlayer {
  var hasPlayback: Bool { handle != nil || systemSpatial != nil }
  var audio: AVAudioEngine?
  var source: AVAudioSourceNode?
+ var playbackQueue: [[String:Any]] = []
+ var playbackMode = "sequence"
+ var playbackYaw: Double = 0
  var generation = 0
  var isPaused = false
  var done = false
@@ -149,7 +152,8 @@ final class SdaPlayer {
   }
   handle = h
   do {
-   try saveSpatialCueDb(spatialCueDb())
+   // Bundled kernels already contain the approved -6 dB cues.
+   if spatialCueDb() != -6 { try saveSpatialCueDb(spatialCueDb()) }
    let engine = AVAudioEngine()
    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
    let node = AVAudioSourceNode(format: format) { _, _, frames, list -> OSStatus in
@@ -324,6 +328,7 @@ final class SdaPlayer {
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative() }
+    playbackYaw = yaw
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
@@ -402,7 +407,9 @@ final class SdaPlayer {
       // events, coalesce consumed events to the current object snapshot.
       _ = try command("objects"); updateNowPlaying(); lastInfo = Date()
      }
-     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 { done = true
+     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 {
+      if try advanceNativeQueue() { return nil }
+      done = true
       // End the actual Apple consumer too; an engine pumping silence can
       // leave system media activity visible even after its rate becomes zero.
       _ = try setPaused(true)
@@ -437,6 +444,29 @@ final class SdaPlayer {
     if !keepFeeding { return }
    }
   } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
+ }
+ // Called only by the serialized native feeder under the player lock, before
+ // stopping the old consumer. No React timer/import/bridge round trip at EOF.
+ func advanceNativeQueue() throws -> Bool {
+  guard let index = playbackQueue.firstIndex(where: { $0["hash"] as? String == trackHash }) else { return false }
+  let next = playbackMode == "repeat-one" ? index : index + 1
+  guard next < playbackQueue.count || playbackMode == "repeat-all" else { return false }
+  let track = playbackQueue[next % playbackQueue.count]
+  guard let uri = track["uri"] as? String, let name = track["name"] as? String,
+   let hash = track["hash"] as? String else { return false }
+  let lease = PlaybackPreparationLease(expired: {})
+  defer { lease.end() }
+  do {
+   _ = try play(uri,name,playbackYaw,hash)
+   setMediaMetadata(hash,track["metadata"] as? [String:Any] ?? [:])
+   recordPlaybackEvent("nativeQueueAdvance",detail:hash)
+  } catch {
+   // play() changes generation even on failure; the outgoing feeder must not
+   // swallow this error through its stale-generation catch guard.
+   stopNative(); done = true; failure = String(describing:error)
+   recordPlaybackEvent("nativeQueueError",detail:failure ?? "")
+  }
+  return true
  }
  func mediaDuration(_ url: URL) -> Double { let seconds = CMTimeGetSeconds(AVURLAsset(url:url).duration); return seconds.isFinite ? max(0,seconds*1000) : 0 }
  // Compatibility bridge: mobile builds have no room assets or selectable rooms.
@@ -585,7 +615,7 @@ final class SdaPlayer {
   var report: [String:Any] = ["ok":false,"mode":mode,"physicalLockVerified":false]
   let oldSystem = prefs.bool(forKey:"sda.systemSpatial360RA"), oldBalance = prefs.bool(forKey:"sda.balance")
   defer {
-   locked { stopNative() }
+   locked { playbackQueue = []; playbackMode = "sequence"; stopNative() }
    prefs.set(oldSystem,forKey:"sda.systemSpatial360RA"); prefs.set(oldBalance,forKey:"sda.balance")
    try? FileManager.default.removeItem(at:clip)
    if let text = try? json(report) { try? Data(text.utf8).write(to:reportURL,options:.atomic) }
@@ -624,6 +654,9 @@ final class SdaPlayer {
    let deadline = Date().addingTimeInterval(60)
    var ready = false
    var backgroundClock: UInt64?
+   var sustainedBackground = false
+   var sustainedEnd: UInt64 = 0
+   var nextGeneration: Int?
    while Date() < deadline {
     let state: (UInt64, Bool, Bool) = try locked {
      if let failure { throw SdaError.message(failure) }
@@ -635,13 +668,32 @@ final class SdaPlayer {
      try Data("{\"ready\":true}".utf8).write(to:readyURL,options:.atomic)
     }
     if state.1 && backgroundClock == nil { backgroundClock = state.0 }
-    if let clock = backgroundClock, state.1, state.0 > clock + 8*48000 {
+    if let clock = backgroundClock, state.1, !sustainedBackground, state.0 > clock + 8*48000 {
+     sustainedBackground = true
+     sustainedEnd = state.0
+     let nextURI = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
+     locked {
+      playbackQueue = [["hash":trackHash,"uri":clip.absoluteString,"name":"ci-background.mhas"],
+       ["hash":"ci-background-next-"+mode,"uri":nextURI,"name":"ci-360ra.mhas"]]
+      playbackMode = "sequence"
+     }
+    }
+    if sustainedBackground && state.1 {
+     let progress = locked { () -> (Bool, Int) in
+      let next = trackHash == "ci-background-next-"+mode
+      if next { playbackMode = "repeat-one" }
+      return (next,generation)
+     }
+     if progress.0 && nextGeneration == nil { nextGeneration = progress.1 }
+     if let first = nextGeneration, progress.0, progress.1 > first, state.0 > 12000, state.2 {
      report = ["ok":true,"mode":mode,"backgroundNotificationObserved":true,
-      "backgroundStart":clock,"backgroundEnd":state.0,"preparationAssertionReleased":state.2,
+      "backgroundStart":backgroundClock ?? 0,"backgroundEnd":sustainedEnd,"preparationAssertionReleased":state.2,
+      "nativeNextTrackVerified":true,"nativeRepeatOneVerified":true,"javascriptHandoffRequired":false,
       "ownedCopyProtectionVerified":protectionVerified,"ownedCopyProtectionPolicyVerified":true,
       "simulatorFileProtectionAvailable":protectionAvailable,"unlinkedAnalysisInputVerified":true,"physicalLockVerified":false,
       "events":locked { playbackEvents }]
      return
+     }
     }
     Thread.sleep(forTimeInterval:0.02)
    }

@@ -162,12 +162,20 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
             context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, buffer);
             let brightPixels = 0;
             for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
-            pixels = { brightPixels, bufferWidth: width, bufferHeight: height, glError: context.getError(), camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)), programs: state.gl.info.programs?.map((program: any) => program.diagnostics) };
+            pixels = { brightPixels, bufferWidth: width, bufferHeight: height, glError: context.getError(), framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER), camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)), programs: state.gl.info.programs?.map((program: any) => program.diagnostics) };
           }
           present();
         };
       }
       state.gl.render = (scene, camera) => {
+        // Expo owns/presents/resizes the drawable outside Three's state cache.
+        // Rebind its current default FBO rather than retaining a deleted/stale
+        // drawable after the native tab has laid out or resumed.
+        if (Platform.OS === "ios") {
+          state.gl.resetState();
+          context.bindFramebuffer(context.FRAMEBUFFER, null);
+          state.gl.setViewport(0, 0, state.size.width, state.size.height);
+        }
         renderFrame(scene, camera);
         if (currentAttempt.current === attempt && (!smoke ? !firstFrame.current : frames === 30) && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
           firstFrame.current = true;

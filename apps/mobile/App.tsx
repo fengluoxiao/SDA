@@ -26,6 +26,8 @@ interface PlaybackStatus {
 }
 interface ObjectPoint extends MobileObjectPoint { samplePos: number; hasPos: boolean }
 interface SdaEngineModule extends MpeghMp4Host {
+  configurePlaybackQueue?(json: string, mode: string): void;
+  currentTrackHash?(): string;
   contentHash(uri: string): Promise<string>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
@@ -283,15 +285,18 @@ export default class App extends React.Component<Record<string, never>, State> {
         const contentHash = await this.getEngine().contentHash(asset.uri);
         if (knownHashes.has(contentHash)) continue;
         const metadata = JSON.parse(await this.getEngine().metadata(asset.uri)) as TrackMetadata;
-        additions.push({ contentHash, uri: asset.uri, name: asset.name, metadata });
+        const track = { contentHash, uri: asset.uri, name: asset.name, metadata };
+        // Prepare while the foreground import transaction is alive, not after EOF in background.
+        if (Platform.OS === "ios") await this.prepareTrack(track);
+        additions.push(track);
         knownHashes.add(contentHash);
       }
       if (!additions.length) return;
       const queue = [...this.state.queue, ...additions];
       if (this.state.queueIndex < 0) {
         const first = queue[0]!;
-        this.setState({ queue, queueIndex: 0, selectedUri: first.uri, fileName: first.name, metadata: first.metadata, durationMs: first.metadata.durationMs ?? 0 });
-      } else this.setState({ queue });
+        this.setState({ queue, queueIndex: 0, selectedUri: first.uri, fileName: first.name, metadata: first.metadata, durationMs: first.metadata.durationMs ?? 0 }, this.syncNativeQueue);
+      } else this.setState({ queue }, this.syncNativeQueue);
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -300,7 +305,24 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
-  private setPlaybackMode = (playbackMode: PlaybackMode) => this.setState({ playbackMode });
+  // Keep iOS extractions alive for native EOF handoff. Android retains its existing lifetime.
+  private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
+  private prepareTrack = async (track: QueueTrack) => {
+    if (Platform.OS !== "ios") return prepare360RaMp4(this.getEngine(), track.uri, track.name);
+    if (!this.preparedTracks.has(track.contentHash)) {
+      this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name));
+    }
+    return this.preparedTracks.get(track.contentHash) ?? null;
+  };
+  private syncNativeQueue = () => {
+    if (Platform.OS !== "ios") return;
+    this.engine?.configurePlaybackQueue?.(JSON.stringify(this.state.queue.map(track => {
+      const prepared = this.preparedTracks.get(track.contentHash);
+      return { hash: track.contentHash, uri: prepared?.uri ?? track.uri, name: prepared?.name ?? track.name,
+        metadata: { ...track.metadata, durationMs: prepared?.durationMs || track.metadata.durationMs } };
+    })), this.state.playbackMode);
+  };
+  private setPlaybackMode = (playbackMode: PlaybackMode) => this.setState({ playbackMode }, this.syncNativeQueue);
 
   private skipTrack = (direction: 1 | -1) => {
     const items = this.state.queue.map(track => ({ id: track.contentHash }));
@@ -321,8 +343,9 @@ export default class App extends React.Component<Record<string, never>, State> {
       const engine = this.getEngine();
       if (!this.poller) this.restartStatusPolling();
       this.setState({ hrtfStatus: engine.hrtfStatus() });
-      engine.stop();
-      const imported = await prepare360RaMp4(engine, track.uri, track.name);
+      const imported = await this.prepareTrack(track);
+      this.syncNativeQueue();
+      // playUri owns stop/start atomically; do not stop audio before asynchronous preparation.
       try {
         await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
         engine.setNowPlayingMetadata?.(track.contentHash, JSON.stringify({ ...track.metadata, durationMs: imported?.durationMs || track.metadata.durationMs }));
@@ -333,7 +356,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       } finally {
         // playUri has opened its InputStream. Android keeps that descriptor valid
         // after unlinking the temporary extraction, including while paused.
-        await imported?.release();
+        if (Platform.OS !== "ios") await imported?.release();
       }
       engine.setVolume(this.state.volume);
       this.setState({ playing: true, ended: false, paused: false, error: null });
@@ -356,6 +379,14 @@ export default class App extends React.Component<Record<string, never>, State> {
           if (feedDone && !feedError) this.advancePlaylist();
         });
         return;
+      }
+      const hash = engine.currentTrackHash?.();
+      const index = this.state.queue.findIndex(track => track.contentHash === hash);
+      if (index >= 0 && index !== this.state.queueIndex) {
+        const track = this.state.queue[index]!;
+        const prepared = this.preparedTracks.get(track.contentHash);
+        this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
+          durationMs: prepared?.durationMs || track.metadata.durationMs || 0 });
       }
       const value = JSON.parse(engine.status()) as Partial<PlaybackStatus>;
       const objects = JSON.parse(engine.objects()) as Record<string, ObjectPoint>;
@@ -384,6 +415,8 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   private advancePlaylist() {
+    // Native EOF owns iOS advancement even when JS is suspended. Never advance twice.
+    if (Platform.OS === "ios" && this.engine?.configurePlaybackQueue) return;
     const items = this.state.queue.map(track => ({ id: track.contentHash }));
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = nextPlaylistItemId(items, currentId, this.state.playbackMode);
