@@ -3157,3 +3157,46 @@ mod restored_historical_interpolation_regressions {
         }
     }
 }
+
+#[cfg(test)]
+mod spectral_interpolation_audit {
+    use super::*;
+    fn power(samples: &[f32], frequency: f64) -> f64 {
+        let step = std::f64::consts::TAU * frequency / 48000.0;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, &x) in samples.iter().enumerate() {
+            let (s, c) = (step * i as f64).sin_cos();
+            re += f64::from(x) * c; im += f64::from(x) * s;
+        }
+        re * re + im * im
+    }
+    #[test]
+    #[ignore = "offline measured-grid interpolation audit; requires SDA_SPECTRAL_AUDIT_OUT"]
+    fn audit_interpolated_voice_band() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
+        let m: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("hrtf-set.json")).unwrap()).unwrap();
+        let irs: Vec<StereoIr> = m["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr { azimuth: p["azimuth"].as_f64().unwrap(), elevation: p["elevation"].as_f64().unwrap(),
+                dry: bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet: vec![] }
+        }).collect();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let freq = [500.0, 750.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0];
+        let measured: Vec<Vec<f64>> = irs.iter().map(|ir| { let n=ir.dry.len()/2;
+            freq.iter().map(|&f| power(&ir.dry[..n], f)+power(&ir.dry[n..], f)).collect() }).collect();
+        let mut rows = Vec::new();
+        for el in (-90..=90).step_by(5) { for az in (-180..180).step_by(5) {
+            let (l,r) = grid.interpolate(&irs, az as f64, el as f64);
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()), "non-finite response at {az}/{el}");
+            assert!(l.iter().chain(&r).map(|v| f64::from(*v).powi(2)).sum::<f64>() > 1e-12, "silent response at {az}/{el}");
+            let weights = grid.weights(az as f64,el as f64);
+            let ratios: Vec<f64> = freq.iter().enumerate().map(|(k,&f)| {
+                let target: f64 = weights.iter().map(|&(i,w)| measured[i][k]*w).sum();
+                10.0*((power(&l,f)+power(&r,f)).max(1e-20)/target.max(1e-20)).log10()
+            }).collect();
+            rows.push(serde_json::json!({"az":az,"el":el,"relativeBandDb":ratios}));
+        }}
+        let path=std::env::var("SDA_SPECTRAL_AUDIT_OUT").unwrap();
+        std::fs::write(path,serde_json::to_vec_pretty(&serde_json::json!({"frequencies":freq,"rows":rows})).unwrap()).unwrap();
+    }
+}

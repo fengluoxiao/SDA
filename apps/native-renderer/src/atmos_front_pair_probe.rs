@@ -86,6 +86,7 @@ fn replay_atmos_object_stream() {
     let mut e = Engine::new(48000, 2);
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(std::path::Path::new(&manifest)).unwrap(), wet).unwrap();
     e.front_common.enabled = std::env::var("SDA_ATMOS_REPLAY_FRONT_COMMON").as_deref() != Ok("0");
+    e.set_spatial_balance(std::env::var("SDA_ATMOS_REPLAY_SPATIAL_BALANCE").as_deref() == Ok("1"));
     e.set_program_codec("eac3".into());
     e.set_direct_objects(direct).unwrap();
     e.set_directional_hrtf(direct);
@@ -162,6 +163,7 @@ fn replay_atmos_object_stream() {
     assert_eq!(e.sources["bed:0"].lfe_gain, 1.0);
     let report = serde_json::json!({"scope":"offline actual decoded Atmos PCM/metadata replay; not Android output", "hrtf":manifest,
         "wetWeight":wet,"direct":direct,"frames":frames,"samples":e.sample_pos,"events":event_count,"frontCommonGain":e.front_common.gain,"frontCommonActive":e.front_common.center.is_some(),"minimumGuard":minimum_guard,
+        "spatialBalanceEnabled":e.spatial_balance.enabled,"spatialBalanceGain":e.spatial_balance.gain,
         "sources":e.sources.len(),"nearField":e.near_field.enabled,"room":e.cinema.enabled});
     std::fs::write(dir.join(format!("{tag}.json")), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 }

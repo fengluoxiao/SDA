@@ -9,6 +9,7 @@ fn ku100_whole_song_engine_probe() {
     let tag=std::env::var("SDA_SONG_PROBE_TAG").unwrap();
     let set=hrtf::NativeHrtfSet::load_calibrated(std::path::Path::new(&manifest)).unwrap();
     let mut e=Engine::new(48000,2);
+    if let Ok(balance)=std::env::var("SDA_SONG_PROBE_SPATIAL_BALANCE") { e.set_spatial_balance(balance != "0"); }
     e.replace_hrtf(set,0.04).unwrap();
     e.configure_near_field(near_field::Settings {enabled:std::env::var("SDA_PROBE_NEAR").as_deref()!=Ok("0"),metres_per_unit:1.0}).unwrap();
     e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);e.set_program_codec("mpegh".into());

@@ -60,6 +60,7 @@ pub mod directional;
 pub mod dsp;
 pub mod focus;
 mod front_common;
+mod spatial_balance;
 pub mod hardware;
 #[allow(dead_code)]
 pub mod headphone;
@@ -960,6 +961,7 @@ pub struct RenderStageMicros {
 
 pub struct Engine {
     front_common: front_common::FrontCommon,
+    spatial_balance: spatial_balance::SpatialBalance,
     fast_activity: Vec<ObjectActivitySnapshot>,
     fast_mix_buffers: Vec<object_mixer::Buffer>,
     last_render_stages: RenderStageMicros,
@@ -1076,6 +1078,12 @@ impl Engine {
         }
     }
 
+    /// Shared foreground masking compensation; enabled by default.
+    /// Does not change positions or HRTF data. Hosts may explicitly bypass it.
+    pub fn set_spatial_balance(&mut self, enabled: bool) {
+        self.spatial_balance.enabled = enabled;
+    }
+
     /// Mobile/host entry: mark the output as live. The desktop sidecar sets
     /// this via protocol once the device callback is pulling; engine-only
     /// hosts flip it directly at start.
@@ -1089,6 +1097,7 @@ impl Engine {
             #[cfg(test)]
             profile_ms: [0.0; 7],
             front_common: Default::default(),
+            spatial_balance: Default::default(),
             fast_activity: Vec::new(),
             fast_mix_buffers: Vec::new(),
             last_render_stages: RenderStageMicros::default(),
@@ -1242,6 +1251,7 @@ impl Engine {
 
     fn reset_object_renderers(&mut self) {
         self.front_common.reset();
+        self.spatial_balance.reset();
         for source in self.sources.values_mut() {
             if source.kind == SourceKind::Object {
                 source.direct = None;
@@ -1286,6 +1296,7 @@ impl Engine {
         direct_renderer::warm_banks(&mut set, &self.vbap, wet)?;
         // Publish all related state only after every speaker filter is ready.
         self.front_common.reset();
+        self.spatial_balance.reset();
         self.active_hrtf_set = Some(set);
         self.hrtf_wet_weight = wet;
         self.bus_renderer = Some(bus);
@@ -1302,6 +1313,7 @@ impl Engine {
 
     fn rebuild_bus_renderer(&mut self) -> Result<(), String> {
         self.front_common.reset();
+        self.spatial_balance.reset();
         self.stereo_dry_bus = None;
         if let Some(set) = &mut self.active_hrtf_set {
             set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
@@ -1761,6 +1773,7 @@ impl Engine {
     fn reset_session(&mut self, origin: u64) {
         performance::reset();
         self.front_common.reset();
+        self.spatial_balance.reset();
         self.fast_activity.clear();
         self.cinema_bass_delay.fill(0.0);
         self.cinema_sub_delay.fill(0.0);
@@ -2926,6 +2939,13 @@ impl Engine {
             if block_index + 1 == convolution::DEFAULT_PARTITION {
                 sample_micros = stage_started.elapsed().as_micros() as u64;
                 if let Some(set) = &mut self.active_hrtf_set {
+                    self.spatial_balance.prepare(
+                        &mut self.sources,
+                        self.directional_hrtf && !self.front_common.enabled
+                            && !self.cinema.monitor.hardware.enabled
+                            && self.speaker_mutes.is_empty() && self.focused_speakers.is_empty(),
+                        self.output_sample_rate,
+                    );
                     // Work on completed excitation, after both object mixers.
                     // Center and original paths have identical partition latency.
                     self.front_common.prepare(
