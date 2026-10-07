@@ -24,7 +24,7 @@ public final class SdaModule: Module {
    }
   }
   OnDestroy { player.locked { player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
-  Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.alacStereoUpmix"); return true } }
+  Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
   Function("setNowPlayingMetadata") { (hash: String, text: String) in try player.locked {

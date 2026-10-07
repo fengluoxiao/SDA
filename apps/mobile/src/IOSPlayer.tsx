@@ -124,9 +124,8 @@ export function IOSPlayer(p: PlayerProps) {
           <View accessibilityRole="progressbar" accessibilityLabel="播放进度" accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.durationMs, p.positionMs), text: time(p.positionMs) + " / " + time(p.durationMs) } : { text: "总时长未知" }} style={[s.progress, { backgroundColor: c.line }]}><View style={{ width: String(progress * 100) + "%" as any, height: 5, borderRadius: 8, backgroundColor: c.accent }} /></View>
           <View style={s.times}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={s.transport}>
-            <Pressable accessibilityRole="button" accessibilityLabel={"播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode]} accessibilityHint="轻点切换顺序播放、列表循环和单曲循环" accessibilityValue={{ text: PLAYBACK_MODE_LABELS[p.playbackMode] }} onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))} style={[s.icon, { width: 58, minHeight: 58, backgroundColor: c.panel }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel={"播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode]} accessibilityHint="轻点切换顺序播放、列表循环和单曲循环" accessibilityValue={{ text: PLAYBACK_MODE_LABELS[p.playbackMode] }} onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel }]}>
               <IOSModeSymbol mode={p.playbackMode} color={p.playbackMode === "sequence" ? c.ink : c.accent} />
-              <Text style={{ color: c.muted, fontSize: 10, marginTop: 3 }} numberOfLines={1}>{PLAYBACK_MODE_LABELS[p.playbackMode]}</Text>
             </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="previous" color={c.ink} /></Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.icon, { width: 58, height: 58, backgroundColor: c.panel, opacity: p.busy || !p.selectedUri ? .35 : 1 }]}>
@@ -154,7 +153,7 @@ export function IOSPlayer(p: PlayerProps) {
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
         </ScrollView>
         <View style={[s.page, s.otherContent, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
-          <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : "7.1.4", true, s.small)}</View>
+          <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
           <View style={[s.scene, { height: Math.max(270, Math.min(410, height * .42)) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
           <View style={[s.row, s.sceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "KU100", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
           {label("单指旋转 · 双指缩放", true, s.sceneHint)}
@@ -184,7 +183,7 @@ export function IOSPlayer(p: PlayerProps) {
             {toggle("立体声上混 · 7.1.4", "由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy)}{divider()}
             {toggle("立体声系统空间音频", "关闭上混时提交 2.0；开启上混时提交 7.1.4，旁路 KU100", p.systemSpatialStereo, p.setSystemSpatialStereo, p.busy)}
           </View>
-          {label("以上设置下次播放生效，不中断当前歌曲。系统空间效果取决于输出设备及系统设置。", true, s.groupHint)}
+          {label("上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效。系统空间效果取决于输出设备及系统设置。", true, s.groupHint)}
           {heading("空间渲染", "settings-spatial")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {renderingPresets.map(profile => <View key={profile.id}>{actionRow(isPresetSelected(p, profile) ? "checkmark.circle.fill" : "circle", profile.label, profile.description, () => p.setRenderingPreset(profile.id), presetDisabled, isPresetSelected(p, profile))}{divider()}</View>)}

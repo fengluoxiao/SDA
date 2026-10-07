@@ -5,7 +5,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
 import { rotateScene } from "./scene-gesture";
-import { LAYOUT_7_1_4, LAYOUT_360RA } from "../../../packages/renderer/src/layouts";
+import { LAYOUTS } from "../../../packages/renderer/src/layouts";
 import { admToScenePosition, SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT, SCENE_WALL_HEIGHT, SCENE_WALL_MID_Y, smoothScenePosition, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
 
 export interface MobileObjectPoint { id: number; pos: [number, number, number]; gainDb: number }
@@ -25,7 +25,7 @@ function ObjectPoint({ object }: { object: MobileObjectPoint }) {
   </group>;
 }
 
-function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
+function Scene({ objects, cameraInput, layout }: { layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
   const camera = useThree((state) => state.camera);
   useFrame(() => {
     const spherical = new THREE.Spherical(cameraInput.distance, Math.PI / 2.9 + cameraInput.rotation.y, cameraInput.rotation.x);
@@ -38,7 +38,7 @@ function Scene({ objects, cameraInput, layout }: { layout: "7.1.4" | "360RA-13";
     <ambientLight intensity={0.75} /><directionalLight position={[2.5, 4, 2]} intensity={1.2} />
     {layout === "360RA-13" ? <SphericalRoom p={PALETTE.dark} /> : <Room p={PALETTE.dark} />}
     {layout !== "360RA-13" && <gridHelper args={[SCENE_ROOM_HALF_EXTENT * 2, 10, PALETTE.dark.gridMain, PALETTE.dark.floorGrid]} position={[0, SCENE_FLOOR_Y, 0]} />}
-    {(layout === "360RA-13" ? LAYOUT_360RA : LAYOUT_7_1_4).map((speaker) => {
+    {LAYOUTS[layout].map((speaker) => {
       const position = speakerScenePosition(speaker);
       const facing = new THREE.Object3D();
       facing.position.set(...position);
@@ -59,7 +59,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
   // Never keep the iOS GL animation loop running behind the lock screen.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");

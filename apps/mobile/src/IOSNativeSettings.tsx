@@ -131,7 +131,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
     <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
       <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
     </Section>
-    <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 KU100。修改后下次播放生效，不中断当前歌曲；空间效果取决于输出设备及系统设置。</Text>}>
+    <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 KU100。上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效；空间效果取决于输出设备及系统设置。</Text>}>
       <Toggle label="立体声上混 · 7.1.4" isOn={p.alacStereoUpmix} onIsOnChange={p.setAlacStereoUpmix} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
       <Toggle label="立体声系统空间音频" isOn={p.systemSpatialStereo} onIsOnChange={p.setSystemSpatialStereo} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
     </Section>

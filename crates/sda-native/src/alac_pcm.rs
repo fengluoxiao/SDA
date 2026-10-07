@@ -2,8 +2,29 @@
 //! Input is decoded, resampled 48 kHz stereo; never an Atmos/object reconstruction.
 use sda_core::FrameData;
 #[derive(Default)]
-pub(crate) struct AlacPcm { lfe: f32 }
+pub(crate) struct AlacPcm { lfe: f32, live_mix: Option<f32> }
 impl AlacPcm {
+    /// Fixed-capacity bed for live switching. Dry L/R are bit-identical after
+    /// the ramp; unused channels are zero. Never resets the source clock/filter.
+    pub fn live_frame(&mut self, pcm: &[f32], upmix: bool, sample_pos: u64) -> Result<FrameData, String> {
+        let mut frame = self.frame(pcm, true, sample_pos)?;
+        let target = if upmix { 1.0 } else { 0.0 };
+        let mut mix = self.live_mix.unwrap_or(target);
+        for (i, pair) in pcm.chunks_exact(2).enumerate() {
+            mix += (target - mix).clamp(-1.0/2400.0, 1.0/2400.0);
+            for ch in 0..12 {
+                let dry = if ch < 2 { pair[ch] } else { 0.0 };
+                frame.channels[ch][i] = if mix == 0.0 { dry } else if mix == 1.0 {
+                    frame.channels[ch][i]
+                } else { dry + (frame.channels[ch][i] - dry) * mix };
+            }
+        }
+        self.live_mix = Some(mix);
+        Ok(frame)
+    }
+    pub fn live_channels(&self, upmix: bool) -> usize {
+        if upmix || self.live_mix.unwrap_or(0.0) > 0.0 { 12 } else { 2 }
+    }
     pub fn frame(&mut self, pcm: &[f32], upmix: bool, sample_pos: u64) -> Result<FrameData, String> {
         if pcm.is_empty() || pcm.len() % 2 != 0 || pcm.len() > 65536 || pcm.iter().any(|v| !v.is_finite()) {
             return Err("invalid ALAC stereo PCM".into());
@@ -31,6 +52,36 @@ pub(crate) fn is_upmixed(f: &FrameData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_switch_is_chunk_invariant_reversible_and_keeps_every_sample() {
+        fn run(chunk: usize) -> Vec<Vec<f32>> {
+            let mut a = AlacPcm::default();
+            let mut output = vec![Vec::new();12];
+            let mut at = 0;
+            for wet in [false,true,false,true,false] {
+                let pcm: Vec<f32> = (0..5000).flat_map(|i| [0.3+(i as f32)*0.00001,-0.2]).collect();
+                for block in pcm.chunks(chunk*2) {
+                    let frame = a.live_frame(block,wet,at).unwrap();
+                    assert_eq!(frame.sample_pos,at);
+                    at += (block.len()/2) as u64;
+                    for (dst,src) in output.iter_mut().zip(frame.channels) { dst.extend(src); }
+                }
+                if !wet {
+                    for i in 3000..5000 {
+                        assert_eq!(output[0][at as usize-5000+i],pcm[i*2]);
+                        assert_eq!(output[1][at as usize-5000+i],pcm[i*2+1]);
+                        assert!(output[2..].iter().all(|c| c[at as usize-5000+i] == 0.0));
+                    }
+                    assert_eq!(a.live_channels(false),2);
+                }
+            }
+            assert!(output.iter().all(|c| c.len()==25000));
+            // Constant-ish source: the crossfade must not create a gain step.
+            assert!(output[0][5000..7500].windows(2).all(|w| (w[1]-w[0]).abs()<0.001));
+            output
+        }
+        assert_eq!(run(5000),run(127));
+    }
     #[test] fn stereo_is_unchanged_and_mono_has_no_fake_height() {
         let pcm = [0.4,0.4,0.2,0.2];
         let dry = AlacPcm::default().frame(&pcm,false,0).unwrap();

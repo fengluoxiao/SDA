@@ -549,7 +549,7 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
         let mut e = host.engine.lock().map_err(|_| "engine poisoned")?;
         let mut adapter = host.alac.lock().map_err(|_| "ALAC adapter poisoned")?;
         for pcm in pcm.chunks(8192) {
-            let frame = adapter.frame(pcm,upmix,e.decoded_sample_pos())?;
+            let frame = adapter.live_frame(pcm,upmix,e.decoded_sample_pos())?;
             let reference = vec![pcm.iter().step_by(2).copied().collect(),pcm.iter().skip(1).step_by(2).copied().collect()];
             e.feed_alac_pcm(frame,reference)?;
         }
@@ -632,7 +632,7 @@ pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, by
         if host.decoder.is_some() || (finish && len != 0) { return Err("invalid ALAC source".into()); }
         if !finish {
             let pcm = unsafe { alac_samples(bytes,len)? };
-            if !host.measure_only && host.pcm.len() + pcm.len()/2*host.channels > 8*48000*host.channels { return Err("speaker PCM backlog exceeded".into()); }
+            if !host.measure_only && host.pcm.len() + pcm.len() > 8*48000*2 { return Err("speaker PCM backlog exceeded".into()); }
             let reference = vec![pcm.iter().step_by(2).copied().collect(),pcm.iter().skip(1).step_by(2).copied().collect()];
             if host.fixed_measurement.is_none() { host.meter.push(&reference); }
             host.measured_frames += 1;
@@ -643,17 +643,16 @@ pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, by
                 }
             }
             if !host.measure_only {
-                let frame = host.alac.frame(&pcm,host.upmix,0)?;
-                // Conventional SDA bed -> CICP19 (rear surrounds before sides).
-                let order: &[usize] = if host.upmix { &[0,1,2,3,6,7,4,5,8,9,10,11] } else { &[0,1] };
-                for i in 0..pcm.len()/2 { for &ch in order { host.pcm.push_back(frame.channels[ch][i]); } }
+                // Keep original stereo until read: queued audio can change mode
+                // without dropping/redecoding samples or mixing queue strides.
+                host.pcm.extend(pcm);
             }
         }
         if finish && host.fixed_measurement.is_none() {
             let m = host.meter.integrated();
             host.target_gain = m.integrated_lufs.map_or(1.0,|lufs| 10_f64.powf(crate::balance::master_gain(lufs,m.true_peak_dbtp)/20.0) as f32);
         }
-        Ok(json!({"queuedFrames":host.pcm.len()/host.channels,"channels":host.channels,"sampleRate":48000}))
+        Ok(json!({"queuedFrames":host.pcm.len()/2,"channels":host.channels,"sampleRate":48000}))
     })
 }
 // Analysis uses a separate decoder and keeps no PCM/object backlog. Never audible.
@@ -687,7 +686,16 @@ pub unsafe extern "C" fn sda_ios_speakers_measured(p: *mut std::ffi::c_void, mea
 pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *mut f32, capacity_frames: usize) -> usize {
     if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
     let host = unsafe { &mut *p.cast::<SpeakerHost>() };
-    let frames = capacity_frames.min(host.pcm.len()/host.channels);
+    let alac = host.decoder.is_none();
+    let frames = capacity_frames.min(host.pcm.len()/if alac { 2 } else { host.channels });
+    if frames == 0 { return 0; }
+    let converted = if alac {
+        host.channels = host.alac.live_channels(host.upmix);
+        let pcm: Vec<f32> = host.pcm.drain(..frames*2).collect();
+        match host.alac.live_frame(&pcm,host.upmix,0) {
+            Ok(frame) => Some(frame), Err(_) => return 0,
+        }
+    } else { None };
     if frames > 0 && !host.read_started {
         host.gain = if host.balance_enabled { host.target_gain } else { 1.0 };
         host.read_started = true;
@@ -696,9 +704,25 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
         let target = if host.balance_enabled { host.target_gain } else { 1.0 };
         // A single smooth gain for all 12 channels, including LFE. No remapping.
         host.gain += (target - host.gain).clamp(-1.0/12000.0, 1.0/12000.0);
-        for ch in 0..host.channels { unsafe { *out.add(i*host.channels+ch) = host.pcm.pop_front().unwrap_or(0.0) * host.gain; } }
+        for ch in 0..host.channels {
+            let sample = if let Some(frame) = &converted {
+                frame.channels[[0,1,2,3,6,7,4,5,8,9,10,11][ch]][i]
+            } else { host.pcm.pop_front().unwrap_or(0.0) };
+            unsafe { *out.add(i*host.channels+ch) = sample * host.gain; }
+        }
     }
     frames
+}
+// Control-thread only. Callers provide space for 12 channels when live mode is used.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_alac_speakers_upmix(p: *mut std::ffi::c_void, enabled: bool) {
+    if let Some(host) = unsafe { p.cast::<SpeakerHost>().as_mut() } {
+        if host.decoder.is_none() { host.upmix = enabled; }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_channels(p: *mut std::ffi::c_void) -> usize {
+    unsafe { p.cast::<SpeakerHost>().as_ref() }.map_or(0, |h| h.channels)
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_objects(p: *mut std::ffi::c_void, clock: u64) -> *mut c_char {
@@ -835,6 +859,39 @@ mod alac_tests {
         }
     }
     #[test]
+    fn alac_speaker_live_switch_preserves_queued_stereo_and_balance() {
+        let h = unsafe { sda_ios_alac_speakers_create(false) }; let _close=Close(h);
+        let pcm: Vec<f32> = (0..20000).flat_map(|i| [0.1+i as f32*0.000001,-0.2]).collect();
+        unsafe { value(sda_ios_alac_speakers_feed(h,pcm.as_ptr().cast(),pcm.len()*4,false)); }
+        let cached=CString::new(r#"{"integratedLufs":-12,"truePeakDbtp":-3,"blocks":100}"#).unwrap();
+        unsafe { value(sda_ios_speakers_measured(h,cached.as_ptr())); sda_ios_speakers_balance(h,true); }
+        let gain=10f32.powf(-6.0/20.0);
+        let mut consumed=0;
+        for enabled in [false,true,false,true,false] {
+            unsafe { sda_ios_alac_speakers_upmix(h,enabled); }
+            for _ in 0..4 {
+                let mut out=vec![99.0;1000*12+1];
+                assert_eq!(unsafe { sda_ios_speakers_read(h,out.as_mut_ptr(),1000) },1000);
+                let channels=unsafe { sda_ios_speakers_channels(h) };
+                assert!(channels==2 || channels==12);
+                assert_eq!(out[1000*channels],99.0);
+                if channels==2 {
+                    for i in 0..1000 {
+                        assert!((out[2*i]-pcm[2*(consumed+i)]*gain).abs()<1e-6);
+                        assert!((out[2*i+1]-pcm[2*(consumed+i)+1]*gain).abs()<1e-6);
+                    }
+                }
+                consumed+=1000;
+            }
+            let host=unsafe { &*h.cast::<SpeakerHost>() };
+            assert_eq!(host.pcm.len(),(20000-consumed)*2);
+            assert!(host.balance_enabled && host.fixed_measurement.is_some());
+            assert_eq!(host.alac.live_channels(enabled),if enabled {12} else {2});
+        }
+        assert_eq!(consumed,20000);
+        assert_eq!(unsafe { value(sda_ios_alac_speakers_feed(h,std::ptr::null(),0,true)) }["queuedFrames"],0);
+    }
+    #[test]
     fn balance_is_one_linked_gain_and_analysis_keeps_no_pcm() {
         let pcm: Vec<f32> = (0..8192).map(|i| 0.5*(i as f32*0.03).sin()).collect();
         let a=unsafe { sda_ios_alac_speakers_create(false) }; let _a=Close(a);
@@ -855,6 +912,114 @@ mod alac_tests {
         for (ch,source) in [0,1,2,3,6,7,4,5,8,9,10,11].into_iter().enumerate() {
             assert!((out[ch]-expected.channels[source][0]*10f32.powf(-6.0/20.0)).abs()<1e-6);
         }
+    }
+    #[test]
+    fn alac_upmix_uncached_balance_measures_original_stereo() {
+        let mut stereo = crate::balance::VolumeBalance::default();
+        let mut upmixed = crate::balance::VolumeBalance::default();
+        stereo.enabled = true; upmixed.enabled = true;
+        stereo.enable_alac_startup(); upmixed.enable_alac_startup();
+        let mut adapter = crate::alac_pcm::AlacPcm::default();
+        for start in (0..48000*8).step_by(4096) {
+            let pcm: Vec<f32> = (start..start+4096).flat_map(|i| {
+                [0.5*(i as f32*0.13).sin(),0.25*(i as f32*0.17).sin()]
+            }).collect();
+            let dry=adapter.frame(&pcm,false,start as u64).unwrap();
+            let reference=dry.channels.clone();
+            let wet=adapter.frame(&pcm,true,start as u64).unwrap();
+            let a=stereo.measure(dry,None); let b=upmixed.measure(wet,Some(reference));
+            stereo.route(&a); upmixed.route(&b);
+            assert_eq!(stereo.gain_db,upmixed.gain_db);
+            assert!(stereo.eligible && upmixed.eligible);
+        }
+        assert!(upmixed.gain_db < -3.0,"uncached ALAC must attenuate a loud master: {}",upmixed.gain_db);
+        stereo.finish(); upmixed.finish();
+        assert_eq!(serde_json::to_value(stereo.complete_measurement()).unwrap(),
+            serde_json::to_value(upmixed.complete_measurement()).unwrap());
+    }
+    // Exercise the real native FIFO, not only the eligibility/status flags.
+    #[test]
+    fn alac_native_balance_changes_output_pcm_in_stereo_and_upmix() {
+        fn render(enabled: bool, upmix: bool, cached: bool, toggle: bool, live: bool) -> Vec<f32> {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let path = CString::new(root.join("apps/mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json").to_str().unwrap()).unwrap();
+            let config = CString::new(json!({"sampleRate":48000,"outputChannels":2,"layout":if upmix {"7.1.4"} else {"2.0"},"directObjectHrtf":true,"directionalHrtf":true}).to_string()).unwrap();
+            let mut error = std::ptr::null_mut();
+            let h = unsafe { sda_ios_create(config.as_ptr(),path.as_ptr(),&mut error) };
+            if h.is_null() { unsafe { value(error); } panic!("create failed"); }
+            struct NativeClose(*mut std::ffi::c_void);
+            impl Drop for NativeClose { fn drop(&mut self) { unsafe { sda_ios_close(self.0); } } }
+            let _close = NativeClose(h);
+            for (op,args) in [("balance",json!({"enabled":enabled})),
+                ("measured",json!({"json":r#"{"integratedLufs":-12,"blocks":100,"truePeakDbtp":-3}"#}))] {
+                if op == "measured" && !cached { continue; }
+                let op=CString::new(op).unwrap(); let args=CString::new(args.to_string()).unwrap();
+                unsafe { value(sda_ios_command(h,op.as_ptr(),args.as_ptr())); }
+            }
+            let frames = 48000*4;
+            let amplitude = if cached { 0.002 } else { 0.5 };
+            for start in (0..frames).step_by(4096) {
+                let pcm: Vec<f32> = (start..(start+4096).min(frames)).flat_map(|i| {
+                    [amplitude*(i as f32*0.13).sin(),amplitude*0.5*(i as f32*0.17).sin()]
+                }).collect();
+                unsafe { value(sda_ios_alac_feed(h,pcm.as_ptr().cast(),pcm.len()*4,if live { start >= 48000 && start < 96000 } else { upmix })); }
+            }
+            unsafe { value(sda_ios_command(h,c"finish".as_ptr(),c"{}".as_ptr())); }
+            let host = unsafe { &*h.cast::<Host>() };
+            let deadline=Instant::now()+Duration::from_secs(30);
+            let mut output=Vec::new();
+            let mut toggles=0;
+            while output.len()<frames*2 {
+                let mut l=[0.0;512]; let mut r=[0.0;512];
+                let n=pull(&host.output,&mut l,&mut r);
+                for i in 0..n { output.extend_from_slice(&[l[i],r[i]]); }
+                if toggle && toggles < 2 && output.len() >= (toggles+1)*96000 {
+                    let args = CString::new(json!({"enabled":toggles == 1}).to_string()).unwrap();
+                    unsafe { value(sda_ios_command(h,c"balance".as_ptr(),args.as_ptr())); }
+                    toggles+=1;
+                }
+                assert!(Instant::now()<deadline,"native ALAC output stalled");
+                if n==0 { std::thread::sleep(Duration::from_millis(1)); }
+            }
+            output.truncate(frames*2); output
+        }
+        for upmix in [false,true] {
+            let bypass=render(false,upmix,true,false,false); let balanced=render(true,upmix,true,false,false);
+            let gain=10f32.powf(-6.0/20.0);
+            assert!(bypass.iter().any(|v|v.abs()>1e-5));
+            for (a,b) in bypass.iter().zip(&balanced).skip(8192) {
+                assert!((a*gain-b).abs()<2e-6,"expected linked -6 dB: upmix={upmix}, bypass={a}, balanced={b}");
+            }
+        }
+        // Real output must attenuate a cold, short ALAC stream before six
+        // seconds; the old MIN_BLOCKS policy left this entire clip unchanged.
+        let bypass=render(false,true,false,false,false);
+        let balanced=render(true,true,false,false,false);
+        let energy = |pcm: &[f32]| pcm.iter().map(|v| (*v as f64).powi(2)).sum::<f64>();
+        let ratio=energy(&balanced[48000*4..])/energy(&bypass[48000*4..]);
+        assert!(ratio.is_finite() && ratio < 0.5,"cold ALAC not attenuated: energy ratio={ratio}");
+        // Toggle off at one second and on at two, without restarting/pausing.
+        let switched=render(true,true,true,true,false);
+        let stable=render(true,true,true,false,false);
+        let energy_slice = |pcm: &[f32], from: usize, to: usize| energy(&pcm[from..to]) / (to-from) as f64;
+        let baseline=energy_slice(&stable,48000,96000);
+        let off=energy_slice(&switched,144000,180000);
+        let on=energy_slice(&switched,288000,360000);
+        assert!((off/baseline-10f64.powf(6.0/10.0)).abs()<0.05,"toggle off did not restore unity: {}",off/baseline);
+        assert!((on/baseline-1.0).abs()<0.02,"toggle on did not restore balance: {}",on/baseline);
+        // Same native handle and continuously increasing PCM timestamps, dry ->
+        // wet -> dry. Settled regions must match the corresponding static path.
+        let dry=render(false,false,true,false,false);
+        let wet=render(false,true,true,false,false);
+        let live=render(false,false,true,false,true);
+        assert_eq!(live.len(),48000*4*2);
+        for (range,reference) in [(64000..88000,&wet),(160000..185000,&dry)] {
+            for i in range { for ch in 0..2 {
+                assert!((live[i*2+ch]-reference[i*2+ch]).abs()<2e-5,
+                    "live mode lost continuity at {i}:{ch}: {} vs {}",live[i*2+ch],reference[i*2+ch]);
+            } }
+        }
+
     }
     #[test]
     fn ku100_adapter_preserves_source_clock_and_balance_eligibility() {

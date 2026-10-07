@@ -19,7 +19,7 @@ export interface PlayerProps {
   playbackPageRequest?: number;
   systemSpatial360RA: boolean; systemSpatial360RAActive: boolean;
   setSystemSpatial360RA(enabled: boolean): void;
-  layout: "7.1.4" | "360RA-13";
+  layout: "2.0" | "7.1.4" | "360RA-13";
   playbackMode: PlaybackMode; setPlaybackMode(mode: PlaybackMode): void;
   queue: QueueTrack[]; queueIndex: number;
   selectTrack(index: number): void; previous(): void; next(): void;

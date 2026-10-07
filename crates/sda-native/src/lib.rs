@@ -394,6 +394,17 @@ impl MobileEngine {
 
     /// Apple-decoded ALAC enters the existing bed renderer and balance policy.
     pub(crate) fn feed_alac_pcm(&mut self, frame: FrameData, reference: Vec<Vec<f32>>) -> EngineResult<()> {
+        self.balance.enable_alac_startup();
+        // Reserve all buses once, before the first ALAC PCM. Live dry/wet
+        // transitions change samples, not the convolution graph or its tails.
+        if self.config.layout != "7.1.4" {
+            self.config.layout = "7.1.4".into();
+            if let Some(pipeline) = &self.pipeline {
+                pipeline.commands.push(render_command::RenderCommand::Command(
+                    Command::SetLayout { layout: self.config.layout.clone() },
+                )).map_err(|_| "ALAC layout command queue full")?;
+            }
+        }
         self.stereo_bed_mode = frame.channels.len() == 2;
         let end = frame.sample_pos + frame.channels[0].len() as u64;
         self.pending.lock().expect("pending lock").push_back(self.balance.measure(frame, Some(reference)));

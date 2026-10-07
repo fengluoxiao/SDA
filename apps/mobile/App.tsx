@@ -8,6 +8,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  outputLayout: "2.0" | "7.1.4" | "360RA-13";
   sourceCodec: string;
   alacUpmixActive: boolean;
   outputChannels: number;
@@ -66,7 +67,7 @@ interface State {
   spatialCueBusy: boolean;
   systemSpatial360RA: boolean;
   systemSpatial360RAActive: boolean;
-  layout: "7.1.4" | "360RA-13";
+  layout: "2.0" | "7.1.4" | "360RA-13";
   playbackMode: PlaybackMode;
   queue: QueueTrack[];
   queueIndex: number;
@@ -423,6 +424,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         fifoFrames: value.fifoFrames ?? 0,
         sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
         systemSpatial360RAActive: value.systemSpatial360RAActive === true,
+        layout: value.outputLayout ?? this.state.layout,
         objects: feedDone ? [] : Object.values(objects).filter((object) => object.hasPos && object.pos.every(Number.isFinite)),
         paused: value.paused ?? this.state.paused,
         playing: feedDone ? false : this.state.playing,

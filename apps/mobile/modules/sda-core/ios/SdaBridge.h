@@ -15,6 +15,9 @@ void sda_ios_string_free(char *string);
 // Apple-decoded 48 kHz interleaved Float32 ALAC stereo, bounded control calls.
 char *sda_ios_alac_feed(void *engine, const uint8_t *pcm, size_t length, bool upmix);
 void *sda_ios_alac_speakers_create(bool upmix);
+// Live ALAC reads require capacity_frames * 12 floats; query stride after read.
+void sda_ios_alac_speakers_upmix(void *decoder, bool enabled);
+size_t sda_ios_speakers_channels(void *decoder);
 char *sda_ios_alac_speakers_feed(void *decoder, const uint8_t *pcm, size_t length, bool finish);
 // Control/PCM calls must be serialized by the host; no realtime callback uses this handle.
 void *sda_ios_speakers_create(char **error);

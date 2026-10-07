@@ -218,8 +218,12 @@ pub struct VolumeBalance {
     balanced_blocks: usize,
     pub gain_db: f64,
     completed: bool,
+    early_alac_balance: bool,
 }
 impl VolumeBalance {
+    /// Only the Apple-decoded ALAC route opts in. Other codec scheduling and
+    /// full-track cache validity keep the established desktop policy.
+    pub fn enable_alac_startup(&mut self) { self.early_alac_balance = true; }
     pub fn reset(&mut self) {
         let enabled = self.enabled;
         *self = Self {
@@ -287,14 +291,26 @@ impl VolumeBalance {
                 });
             }
         } else if let Some(m) = &frame.measurement {
-            if m.blocks >= MIN_BLOCKS && (!self.settled || m.blocks >= self.balanced_blocks + 50) {
+            // Seven overlapping 400 ms windows cover one second of audible
+            // material. Do not count a silent intro toward this estimate.
+            let early = self.early_alac_balance && f.codec == "alac" && !self.settled;
+            let required_blocks = if early { 7 } else { MIN_BLOCKS };
+            if m.blocks >= required_blocks && (!self.settled || m.blocks >= self.balanced_blocks + 50) {
                 if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                     self.settled = true;
                     self.balanced_blocks = m.blocks;
                     let gain = master_gain(lufs, if stereo { m.true_peak_dbtp } else { None });
                     let previous = self.gain_db;
                     self.gain_db = gain;
-                    if (gain - previous).abs() >= 0.05 {
+                    if early && (gain - previous).abs() >= 0.05 {
+                        // Use the renderer's existing 50 ms linked ramp, not
+                        // another multi-second startup staircase. The event is
+                        // source-clocked so it cannot attenuate earlier audio.
+                        commands.push(Command::SetProgramGain {
+                            gain: 10_f64.powf(gain / 20.0) as f32,
+                            at: Some(f.sample_pos),
+                        });
+                    } else if (gain - previous).abs() >= 0.05 {
                         let steps = ((gain - previous).abs() / 0.75).ceil() as u64;
                         let samples = (0.25_f64.min(4.0 / steps as f64) * f.sample_rate as f64)
                             .round() as u64;
@@ -327,6 +343,46 @@ impl VolumeBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_alac_startup_does_not_wait_six_seconds_or_schedule_seconds_ahead() {
+        let mut b = VolumeBalance { enabled: true, ..Default::default() };
+        b.enable_alac_startup();
+        let early = PendingFrame {
+            frame: frame("alac", 61440),
+            measurement: Some(Measurement { integrated_lufs: Some(-10.0), blocks: 10, true_peak_dbtp: Some(-2.0) }),
+        };
+        let commands = b.route(&early);
+        assert_eq!(b.gain_db, -8.0);
+        assert!(commands.iter().any(|c| matches!(c, Command::SetProgramGain { gain, at: Some(61440) } if (*gain-10f32.powf(-8.0/20.0)).abs()<1e-6)));
+        // A provisional estimate is never promoted to a full-track cache.
+        assert!(b.complete_measurement().is_none());
+    }
+
+    #[test]
+    fn native_alac_early_balance_respects_silence_cache_and_other_codecs() {
+        let pending = |codec, blocks, lufs| PendingFrame {
+            frame: frame(codec,48000),
+            measurement: Some(Measurement { integrated_lufs:lufs, blocks, true_peak_dbtp:Some(-3.0) }),
+        };
+        let mut b=VolumeBalance::default(); b.enable_alac_startup();
+        b.route(&pending("alac",0,None));
+        assert!(!b.settled); assert_eq!(b.gain_db,0.0);
+        b.route(&pending("alac",6,Some(-10.0)));
+        assert!(!b.settled); assert_eq!(b.gain_db,0.0);
+        b.route(&pending("alac",7,Some(-25.0)));
+        assert!(b.settled); assert_eq!(b.gain_db,0.0); // Never boost quiet audio.
+        b.reset(); b.enable_alac_startup();
+        b.set_cached(Measurement { integrated_lufs:Some(-12.0), blocks:100, true_peak_dbtp:Some(-3.0) });
+        b.route(&pending("alac",7,Some(-6.0)));
+        assert_eq!(b.gain_db,-6.0); // Full measurement wins over provisional data.
+        b.reset(); b.enable_alac_startup();
+        b.route(&pending("mp3",7,Some(-10.0)));
+        assert!(!b.settled); assert_eq!(b.gain_db,0.0);
+        b.reset();
+        b.route(&pending("alac",7,Some(-10.0)));
+        assert!(!b.settled); // New sources cannot inherit the opt-in.
+    }
 
     #[test]
     fn speaker_meter_excludes_lfe_and_retains_stereo_calibration() {

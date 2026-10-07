@@ -81,6 +81,7 @@ final class SdaPlayer {
    status["sourceCodec"] = alacActive ? "alac" : layout == "360RA-13" ? "mpegh" : ""
    status["alacUpmixActive"] = alacUpmixActive
    status["outputChannels"] = 2
+   status["outputLayout"] = layout
    return status
   }
   return result
@@ -146,6 +147,14 @@ final class SdaPlayer {
   isPaused = false; done = false
   MPNowPlayingInfoCenter.default().playbackState = .stopped
   MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+ }
+ // Serialized with the feeder; no decoder, clock, loudness or audio reset.
+ func setAlacStereoUpmix(_ enabled: Bool) {
+  prefs.set(enabled,forKey:"sda.alacStereoUpmix")
+  guard alacActive, hasPlayback else { return }
+  alacUpmixActive = enabled
+  layout = enabled ? "7.1.4" : "2.0"
+  systemSpatial?.setAlacUpmix(enabled)
  }
  func startNative() throws {
   let session = AVAudioSession.sharedInstance()
@@ -327,10 +336,10 @@ final class SdaPlayer {
    stopNative(); failure = nil
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    let ext = (name as NSString).pathExtension.lowercased()
-   layout = ext == "mhas" ? "360RA-13" : "7.1.4"
    let input = try CompressedInput(url:url,name:name)
    alacActive = input.isAlac
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
+   layout = input.isAlac ? (alacUpmixActive ? "7.1.4" : "2.0") : (ext == "mhas" ? "360RA-13" : "7.1.4")
    do {
     if (ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
      let session = AVAudioSession.sharedInstance()
@@ -427,7 +436,9 @@ final class SdaPlayer {
       _ = try setPaused(true)
       recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
      if status["preparingAudio"] as? Bool == true { return false }
-     return decoded > consumed + 4*48000 || (status["fifoFrames"] as? Int ?? 0) > 4*48000
+     // Bound ALAC lookahead so a live switch does not sit behind four seconds.
+     let lead = alacActive ? 24000 : 4*48000
+     return decoded > consumed + UInt64(lead) || (status["fifoFrames"] as? Int ?? 0) > lead
     }
     guard let wait = shouldWait else { return false }
     if wait { Thread.sleep(forTimeInterval:0.02); return true }

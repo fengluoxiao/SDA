@@ -5,12 +5,12 @@ import AudioToolbox
 /// MPEG-H 7.1.4 or ALAC stereo/upmix PCM -> Apple renderer. No SDA HRTF/room.
 /// Access only under SdaPlayer.lock, never from an audio realtime callback.
 final class SystemSpatial360 {
- let alacUpmix: Bool?
- let channels: Int
+ var alacUpmix: Bool?
+ var channels: Int
  var decoder: UnsafeMutableRawPointer
  let renderer = AVSampleBufferAudioRenderer()
  let synchronizer = AVSampleBufferRenderSynchronizer()
- let format: CMAudioFormatDescription
+ var format: CMAudioFormatDescription
  var enqueued: UInt64 = 0
  var queued: UInt64 = 0
  var started = false
@@ -28,6 +28,16 @@ final class SystemSpatial360 {
  init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float, alacUpmix: Bool? = nil) throws {
   self.alacUpmix = alacUpmix
   channels = alacUpmix == false ? 2 : 12
+  format = try Self.makeFormat(channels:channels)
+  var error: UnsafeMutablePointer<CChar>?
+  guard let h = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频输出初始化失败") }
+  decoder = h
+  renderer.allowedAudioSpatializationFormats = channels == 2 ? .monoAndStereo : .multichannel
+  renderer.volume = volume
+  synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
+  synchronizer.addRenderer(renderer)
+ }
+ static func makeFormat(channels: Int) throws -> CMAudioFormatDescription {
   // Explicit labels match CICP19, whose rear channels precede its side channels.
   let allLabels: [AudioChannelLabel] = [kAudioChannelLabel_Left, kAudioChannelLabel_Right,
    kAudioChannelLabel_Center, kAudioChannelLabel_LFEScreen,
@@ -53,14 +63,12 @@ final class SystemSpatial360 {
   let result = CMAudioFormatDescriptionCreate(allocator:kCFAllocatorDefault, asbd:&asbd,
    layoutSize:size, layout:layout, magicCookieSize:0, magicCookie:nil, extensions:nil, formatDescriptionOut:&description)
   guard result == noErr, let description else { throw SdaError.message("系统音频格式创建失败: \(result)") }
-  format = description
-  var error: UnsafeMutablePointer<CChar>?
-  guard let h = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频输出初始化失败") }
-  decoder = h
-  renderer.allowedAudioSpatializationFormats = channels == 2 ? .monoAndStereo : .multichannel
-  renderer.volume = volume
-  synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
-  synchronizer.addRenderer(renderer)
+  return description
+ }
+ func setAlacUpmix(_ enabled: Bool) {
+  guard alacUpmix != nil else { return }
+  alacUpmix = enabled
+  sda_ios_alac_speakers_upmix(decoder,enabled)
  }
  func close() {
   guard !closed else { return }; closed = true
@@ -103,6 +111,12 @@ final class SystemSpatial360 {
    if enqueued > consumed + 48000 { break }
    let frames = pcm.withUnsafeMutableBufferPointer { sda_ios_speakers_read(decoder,$0.baseAddress,1024) }
    guard frames > 0 else { throw SdaError.message("7.1.4 PCM 队列不一致") }
+   let nextChannels = Int(sda_ios_speakers_channels(decoder))
+   if nextChannels != channels {
+    let nextFormat = try Self.makeFormat(channels:nextChannels)
+    channels = nextChannels; format = nextFormat
+    renderer.allowedAudioSpatializationFormats = channels == 2 ? .monoAndStereo : .multichannel
+   }
    var block: CMBlockBuffer?
    var result = CMBlockBufferCreateWithMemoryBlock(allocator:kCFAllocatorDefault, memoryBlock:nil,
     blockLength:frames*channels*4, blockAllocator:kCFAllocatorDefault, customBlockSource:nil,

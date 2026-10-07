@@ -302,7 +302,11 @@ console.log('Transport symbol checks passed: real double-triangle SF Symbols in 
 // Home transport must visibly reflect the same mode as the settings picker.
 assert.match(ui, /<IOSModeSymbol mode=\{p.playbackMode\}/);
 assert.match(ui, /onPress=\{\(\) => p.setPlaybackMode\(followingPlaybackMode\(p.playbackMode\)\)\}/);
-assert.match(ui, /numberOfLines=\{1\}>\{PLAYBACK_MODE_LABELS\[p.playbackMode\]\}/);
+const modeControl = ui.match(/<Pressable[^>]*accessibilityLabel=\{["']播放模式：["'][\s\S]*?<\/Pressable>/)?.[0];
+assert.ok(modeControl);
+assert.doesNotMatch(modeControl, /<Text/);
+assert.match(modeControl, /accessibilityValue=\{\{ text: PLAYBACK_MODE_LABELS\[p.playbackMode\]/);
+assert.match(modeControl, /width: 44, height: 44/);
 assert.match(ui, /<IOSPlaybackSymbol playing=\{playing\} color=\{c.ink\}/);
 assert.doesNotMatch(ui, /icon\(playing \? "pause.fill"/);
 assert.match(playbackSymbol, /"repeat.1" : mode === "repeat-all" \? "repeat" : "list.bullet"/);
@@ -314,7 +318,7 @@ const alacNative = readFileSync('apps/mobile/modules/sda-core/ios/SdaModule.swif
 for (const method of ['setAlacStereoUpmix','setStereoSystemSpatialAudio']) {
  const line = alacNative.split('\n').find(line => line.includes(`Function("${method}")`));
  assert.ok(line,`${method} is exported`);
- assert.match(line,/prefs\.set/);
+ assert.match(line,method === "setAlacStereoUpmix" ? /player\.setAlacStereoUpmix/ : /prefs\.set/);
  assert.doesNotMatch(line,/stopNative|\.play\(|startNative/,'Preference changes must not restart playback');
 }
 for (const file of ['IOSPlayer.tsx','IOSNativeSettings.tsx']) {
@@ -326,3 +330,19 @@ assert.match(alacReader,/kAudioFormatAppleLossless/);
 assert.match(alacReader,/mChannelsPerFrame == 2/);
 assert.match(alacReader,/isAlac \? \[AVFormatIDKey:kAudioFormatLinearPCM/);
 console.log('ALAC routing checks passed: distinct preferences, no toggle restart, stereo-only decoding, room isolation');
+
+// ALAC layout must describe the selected route, not default every MP4 to Atmos.
+const alacPlayer = readFileSync('apps/mobile/modules/sda-core/ios/SdaPlayer.swift','utf8');
+assert.match(alacPlayer,/layout = input\.isAlac \? \(alacUpmixActive \? "7\.1\.4" : "2\.0"\)/);
+assert.ok(alacPlayer.indexOf('layout = input.isAlac') < alacPlayer.indexOf('} else { try startNative() }'));
+assert.match(alacPlayer,/status\["outputLayout"\] = layout/);
+assert.match(readFileSync('apps/mobile/App.tsx','utf8'),/layout: value\.outputLayout \?\? this\.state\.layout/);
+assert.match(readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8'),/LAYOUTS\[layout\]\.map/);
+assert.doesNotMatch(readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8'),/"360° 球形声场" : "7\.1\.4"/);
+console.log('ALAC 2.0 layout checks passed: engine, status, scene and label');
+
+const liveUpmix = alacPlayer.slice(alacPlayer.indexOf(' func setAlacStereoUpmix('), alacPlayer.indexOf(' func startNative()'));
+assert.match(liveUpmix,/alacUpmixActive = enabled/);
+assert.match(liveUpmix,/systemSpatial\?\.setAlacUpmix\(enabled\)/);
+assert.doesNotMatch(liveUpmix,/stopNative|startNative|setPaused|reset_source|\.play\(/);
+console.log('Live ALAC mode setter preserves the active playback session');
