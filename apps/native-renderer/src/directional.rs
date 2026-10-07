@@ -521,9 +521,132 @@ impl LowerSupport {
     }
 }
 
+/// Direction-independent spectral coordinates for the historical KU100 pack.
+/// Time-domain blending around a changing dominant neighbour is not continuous:
+/// both its correlation alignment and its cancellation fallback jump at ties.
+/// Interpolate measured power and frequency-unwrapped phase instead, on a
+/// common clock. There is no dominant anchor, source gain, or programme selector.
+struct SpectralBank {
+    responses: Vec<[Vec<(f64, f64)>; 2]>, // (power, unwrapped phase), positive bins
+    endpoints: Vec<[[f64; 2]; 2]>,        // real DC/Nyquist, per ear
+    inverse: std::sync::Arc<dyn rustfft::Fft<f64>>,
+    length: usize,
+    output_length: usize,
+}
+impl SpectralBank {
+    fn new(irs: &[StereoIr]) -> Self {
+        use rustfft::{FftPlanner, num_complex::Complex};
+        let output_length =
+            irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + INTERPOLATION_TAIL;
+        // Zero padding keeps phase interpolation's short residual tail from
+        // wrapping into the direct onset. Plan once, never in a route update.
+        let length = (output_length * 2).next_power_of_two();
+        let mut planner = FftPlanner::<f64>::new();
+        let forward = planner.plan_fft_forward(length);
+        let inverse = planner.plan_fft_inverse(length);
+        let mut responses = Vec::with_capacity(irs.len());
+        let mut endpoints = Vec::with_capacity(irs.len());
+        for ir in irs {
+            let n = ir.dry.len() / 2;
+            let mut ends = [[0.0; 2]; 2];
+            let pair = std::array::from_fn(|ear| {
+                let mut bins = vec![Complex::new(0.0, 0.0); length];
+                for (bin, &sample) in bins.iter_mut().zip(&ir.dry[ear * n..(ear + 1) * n]) {
+                    bin.re = f64::from(sample);
+                }
+                forward.process(&mut bins);
+                ends[ear] = [bins[0].re, bins[length / 2].re];
+                let mut previous = bins[0].arg();
+                let mut phase = previous;
+                bins[..=length / 2]
+                    .iter()
+                    .enumerate()
+                    .map(|(k, bin)| {
+                        let wrapped = bin.arg();
+                        if k != 0 {
+                            let delta = (wrapped - previous + std::f64::consts::PI)
+                                .rem_euclid(std::f64::consts::TAU)
+                                - std::f64::consts::PI;
+                            phase += delta;
+                        }
+                        previous = wrapped;
+                        (bin.norm_sqr(), phase)
+                    })
+                    .collect()
+            });
+            responses.push(pair);
+            endpoints.push(ends);
+        }
+        Self {
+            responses,
+            endpoints,
+            inverse,
+            length,
+            output_length,
+        }
+    }
+
+    fn interpolate(&self, irs: &[StereoIr], weights: &[(usize, f64)]) -> (Vec<f32>, Vec<f32>) {
+        use rustfft::num_complex::Complex;
+        // No FFT roundtrip at measured directions: the approved 61 anchors
+        // (and the separately measured lower anchors) remain bit-identical.
+        if let [(index, weight)] = weights {
+            if *weight == 1.0 {
+                let ir = &irs[*index];
+                let n = ir.dry.len() / 2;
+                let pair: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+                    let mut out = vec![0.0; self.output_length];
+                    out[..n].copy_from_slice(&ir.dry[ear * n..(ear + 1) * n]);
+                    out
+                });
+                let [left, right] = pair;
+                return (left, right);
+            }
+        }
+        let mut bins = vec![Complex::new(0.0, 0.0); self.length];
+        let mut scratch = vec![Complex::new(0.0, 0.0); self.inverse.get_inplace_scratch_len()];
+        let output: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+            for k in 1..self.length / 2 {
+                let (mut power, mut phase) = (0.0, 0.0);
+                for &(index, weight) in weights {
+                    let (p, a) = self.responses[index][ear][k];
+                    power += weight * p;
+                    phase += weight * a;
+                }
+                bins[k] = Complex::from_polar(power.max(0.0).sqrt(), phase);
+                bins[self.length - k] = bins[k].conj();
+            }
+            // A real impulse requires real DC/Nyquist bins, even if measured
+            // endpoint signs differ. Never synthesize an imaginary endpoint.
+            bins[0] = Complex::new(
+                weights
+                    .iter()
+                    .map(|&(i, w)| self.endpoints[i][ear][0] * w)
+                    .sum(),
+                0.0,
+            );
+            bins[self.length / 2] = Complex::new(
+                weights
+                    .iter()
+                    .map(|&(i, w)| self.endpoints[i][ear][1] * w)
+                    .sum(),
+                0.0,
+            );
+            self.inverse.process_with_scratch(&mut bins, &mut scratch);
+            bins[..self.output_length]
+                .iter()
+                .map(|v| (v.re / self.length as f64) as f32)
+                .collect()
+        });
+        let [left, right] = output;
+        (left, right)
+    }
+}
+
 pub struct Grid {
     directions: Vec<[f64; 3]>,
     historical_arrivals: Option<Vec<[usize; 2]>>,
+    spectral_bank: Option<std::sync::Arc<SpectralBank>>,
     lower_support: Option<std::sync::Arc<LowerSupport>>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
@@ -554,6 +677,7 @@ impl Clone for Grid {
         Self {
             directions: self.directions.clone(),
             historical_arrivals: self.historical_arrivals.clone(),
+            spectral_bank: self.spectral_bank.clone(),
             lower_support: self.lower_support.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -753,6 +877,7 @@ impl Grid {
                 .map(|ir| unit(ir.azimuth, ir.elevation))
                 .collect(),
             historical_arrivals: None,
+            spectral_bank: None,
             lower_support: None,
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -761,17 +886,22 @@ impl Grid {
         }
     }
 
-    /// Explicit compatibility for the calibrated historical pack. Not a new
-    /// default: raw measurements retain the continuous moving-object path.
+    /// Historical packs retain their calibrated measured anchors. KU100 uses
+    /// continuous spectral interpolation between them; other subject packs
+    /// retain the existing waveform path.
     pub(crate) fn with_historical_interpolation(mut self, irs: &[StereoIr], enabled: bool) -> Self {
         if enabled {
+            if self.ku100_notch_guard {
+                self.spectral_bank = Some(std::sync::Arc::new(SpectralBank::new(irs)));
+            }
             self.historical_arrivals = Some(irs.iter().map(|ir| {
                 let n = ir.dry.len() / 2;
                 std::array::from_fn(|ear| ir.dry[ear*n..(ear+1)*n].iter().enumerate()
                     .max_by(|a,b| a.1.abs().total_cmp(&b.1.abs())).map_or(0, |x| x.0))
             }).collect());
             // Only the calibrated historical KU100 61-point profile lacks lower
-            // support. Raw/other-subject grids and all directions >= -30 stay exact.
+            // support. Raw/other-subject grids do not receive these measurements;
+            // directions >= -30 use only the original bank.
             if self.ku100_notch_guard && irs.len() == 61
                 && irs.iter().filter(|ir| ir.elevation == -30.0).count() == 12
                 && irs.iter().all(|ir| ir.elevation >= -30.0)
@@ -941,6 +1071,9 @@ impl Grid {
         self.interpolate_historical_weighted(irs, self.weights(az, el))
     }
     fn interpolate_historical_weighted(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>) -> (Vec<f32>, Vec<f32>) {
+        if let Some(bank) = &self.spectral_bank {
+            return bank.interpolate(irs, &weights);
+        }
         let arrivals = self.historical_arrivals.as_ref().expect("historical profile");
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
         let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
@@ -3299,6 +3432,185 @@ mod spectral_interpolation_audit {
             let b=grid.interpolate(&irs,az as f64,el+0.0001);
             assert!(relative_error(&a,&b)<0.002,"handover {az}/{el}");
         }}
+    }
+    #[test]
+    fn historical_cell_boundaries_have_no_pivot_jump() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        // Includes all hemispheres, the azimuth wrap, lower handover, poles,
+        // and former dominant-neighbour ties (e.g. +/-105 at elevation 40).
+        for el in (-90..=90).step_by(5) {
+            for az in (-180..180).step_by(5) {
+                let (az, el) = (az as f64, el as f64);
+                for ((aaz, ael), (baz, bel)) in [
+                    ((az - 0.0001, el), (az + 0.0001, el)),
+                    (
+                        (az, (el - 0.0001).max(-90.0)),
+                        (az, (el + 0.0001).min(90.0)),
+                    ),
+                ] {
+                    let a = grid.interpolate(&irs, aaz, ael);
+                    let b = grid.interpolate(&irs, baz, bel);
+                    let error = relative_error(&a, &b);
+                    assert!(error < 0.002, "boundary {az}/{el}: {error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn historical_spectral_power_and_low_band_itd_follow_measurements() {
+        use rustfft::num_complex::Complex;
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let bank = grid.spectral_bank.as_ref().unwrap();
+        let response = |pcm: &[f32], bin: usize| -> Complex<f64> {
+            pcm.iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    Complex::from_polar(
+                        f64::from(v),
+                        -std::f64::consts::TAU * bin as f64 * i as f64 / bank.length as f64,
+                    )
+                })
+                .sum()
+        };
+        for el in (-85..=85).step_by(10) {
+            for az in (-175..180).step_by(10) {
+                let (support, bank, weights) = if el < -30 {
+                    let lower = grid.lower_support.as_ref().unwrap();
+                    (
+                        &lower.irs,
+                        lower.grid.spectral_bank.as_ref().unwrap(),
+                        lower.weights(&grid, az as f64, el as f64),
+                    )
+                } else {
+                    (&irs, bank, grid.weights(az as f64, el as f64))
+                };
+                let pair = grid.interpolate(&irs, az as f64, el as f64);
+                let h = [response(&pair.0, 21), response(&pair.1, 21)];
+                let phase: [f64; 2] = std::array::from_fn(|ear| {
+                    weights
+                        .iter()
+                        .map(|&(i, w)| bank.responses[i][ear][21].1 * w)
+                        .sum()
+                });
+                for ear in 0..2 {
+                    let phase_error = (h[ear].arg() - phase[ear] + std::f64::consts::PI)
+                        .rem_euclid(std::f64::consts::TAU)
+                        - std::f64::consts::PI;
+                    assert!(
+                        phase_error.abs() < std::f64::consts::TAU * 21.0 / bank.length as f64,
+                        "arrival {az}/{el}, ear {ear}: {phase_error}"
+                    );
+                }
+                let expected_itd_phase = phase[0] - phase[1];
+                let error = ((h[0] / h[1]).arg() - expected_itd_phase + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                // One sample at 492 Hz. This tests binaural phase, not independent
+                // ear energy only; a continuous but arbitrary delay is not a fix.
+                assert!(
+                    error.abs() < std::f64::consts::TAU * 21.0 / bank.length as f64,
+                    "ITD {az}/{el}: {error}"
+                );
+                for (ear, pcm) in [&pair.0, &pair.1].iter().enumerate() {
+                    let energy: f64 = pcm.iter().map(|&v| f64::from(v).powi(2)).sum();
+                    let target_energy: f64 = weights
+                        .iter()
+                        .map(|&(i, w)| {
+                            let n = support[i].dry.len() / 2;
+                            support[i].dry[ear * n..(ear + 1) * n]
+                                .iter()
+                                .map(|&v| f64::from(v).powi(2))
+                                .sum::<f64>()
+                                * w
+                        })
+                        .sum();
+                    assert!(
+                        (energy / target_energy - 1.0).abs() < 0.002,
+                        "energy {az}/{el}, ear {ear}: {}",
+                        energy / target_energy
+                    );
+                    let pre: f64 = pcm[..100].iter().map(|&v| f64::from(v).powi(2)).sum();
+                    assert!(
+                        pre / energy < 0.002,
+                        "pre-onset {az}/{el}, ear {ear}: {}",
+                        pre / energy
+                    );
+                    for bin in [21, 43, 64, 85, 128, 171] {
+                        let target: f64 = weights
+                            .iter()
+                            .map(|&(i, w)| bank.responses[i][ear][bin].0 * w)
+                            .sum();
+                        let db = 10.0 * (response(pcm, bin).norm_sqr() / target).log10();
+                        assert!(
+                            db.abs() < 0.3,
+                            "power {az}/{el}, ear {ear}, bin {bin}: {db}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "offline cached spectral interpolation benchmark; run in release mode"]
+    fn benchmark_historical_spectral_updates() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let started = std::time::Instant::now();
+        for i in 0..4000 {
+            let az = (i as f64 * 137.507764).rem_euclid(360.0) - 180.0;
+            let el = ((i % 179) as f64) - 89.0;
+            std::hint::black_box(grid.interpolate(&irs, az, el));
+        }
+        println!(
+            "cached historical spectral interpolation: {} us/update (4000 moving directions)",
+            started.elapsed().as_secs_f64() * 1e6 / 4000.0
+        );
+    }
+    #[test]
+    #[ignore = "offline effective filter dump; requires SDA_FILTER_AUDIT_REQUESTS/OUT"]
+    fn export_actual_direction_filters() {
+        use std::io::Write;
+        let requests: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(
+            std::env::var("SDA_FILTER_AUDIT_REQUESTS").unwrap()).unwrap()).unwrap();
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let root = std::path::PathBuf::from(std::env::var("SDA_FILTER_AUDIT_OUT").unwrap());
+        std::fs::create_dir_all(&root).unwrap();
+        let mut file = std::io::BufWriter::new(std::fs::File::create(root.join("filters.f32")).unwrap());
+        let mut rows = Vec::new();
+        for request in requests {
+            let az = request["az"].as_f64().unwrap(); let el = request["el"].as_f64().unwrap();
+            let (left,right) = grid.interpolate(&irs,az,el);
+            for x in left.iter().chain(&right) { file.write_all(&x.to_le_bytes()).unwrap(); }
+            let (support,weights) = if el < -30.0 {
+                let lower = grid.lower_support.as_ref().unwrap();
+                (lower.irs.len(),lower.weights(&grid,az,el))
+            } else { (irs.len(),grid.weights(az,el)) };
+            rows.push(serde_json::json!({"az":az,"el":el,"tapCount":left.len(),"support":support,"weights":weights}));
+        }
+        std::fs::write(root.join("rows.json"),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+    }
+    #[test]
+    #[ignore = "offline interpolation boundary audit; requires SDA_BOUNDARY_AUDIT_OUT"]
+    fn audit_historical_cell_boundaries() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let mut rows = Vec::new();
+        for el in (-30..=85).step_by(5) {
+            for az in (-180..180).step_by(5) {
+                let a = grid.interpolate(&irs,az as f64-0.0001,el as f64);
+                let b = grid.interpolate(&irs,az as f64+0.0001,el as f64);
+                let err = relative_error(&a,&b);
+                let weights = grid.weights(az as f64,el as f64);
+                rows.push(serde_json::json!({"az":az,"el":el,"relativeWaveformJump":err,
+                    "weights":weights}));
+            }
+        }
+        std::fs::write(std::env::var("SDA_BOUNDARY_AUDIT_OUT").unwrap(),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
     }
     #[test]
     #[ignore = "offline measured-grid interpolation audit; requires SDA_SPECTRAL_AUDIT_OUT"]

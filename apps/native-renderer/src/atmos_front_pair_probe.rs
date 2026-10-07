@@ -86,7 +86,9 @@ fn replay_atmos_object_stream() {
     let mut e = Engine::new(48000, 2);
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(std::path::Path::new(&manifest)).unwrap(), wet).unwrap();
     e.front_common.enabled = std::env::var("SDA_ATMOS_REPLAY_FRONT_COMMON").as_deref() != Ok("0");
-    e.set_spatial_balance(std::env::var("SDA_ATMOS_REPLAY_SPATIAL_BALANCE").as_deref() == Ok("1"));
+    if let Ok(balance) = std::env::var("SDA_ATMOS_REPLAY_SPATIAL_BALANCE") {
+        e.set_spatial_balance(balance == "1");
+    }
     e.set_program_codec("eac3".into());
     e.set_direct_objects(direct).unwrap();
     e.set_directional_hrtf(direct);

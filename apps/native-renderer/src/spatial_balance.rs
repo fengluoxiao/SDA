@@ -1,6 +1,6 @@
 //! Bounded foreground masking compensation for the shared directional renderer.
 //! This is a bounded remix, not a correction to authored metadata or an HRTF
-//! calibration claim. The accepted scene-balance policy is enabled by default.
+//! calibration claim. Diagnostic opt-in only: normal playback preserves source levels.
 use crate::{Source, convolution::DEFAULT_PARTITION};
 use std::collections::HashMap;
 
@@ -11,7 +11,7 @@ pub(crate) struct SpatialBalance {
 impl Default for SpatialBalance {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             gain: 1.0,
         }
     }
@@ -98,9 +98,9 @@ impl SpatialBalance {
 mod tests {
     use super::*;
     #[test]
-    fn default_enables_accepted_policy_without_initial_attenuation() {
+    fn default_preserves_authored_levels_without_attenuation() {
         let s = SpatialBalance::default();
-        assert!(s.enabled);
+        assert!(!s.enabled);
         assert_eq!(s.gain, 1.0);
     }
     #[test]
@@ -144,6 +144,31 @@ mod tests {
         assert_eq!(weights([0.0, 0.0, 1.0]), (0.0, 1.0));
         assert_eq!(weights([0.0, -1.0, 0.0]).0, 0.0);
         assert_eq!(weights([0.0; 3]), (0.0, 0.0));
+    }
+    #[test]
+    fn default_never_remixes_a_front_dominant_scene() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let mut sources = HashMap::new();
+        for (name, position, input) in [
+            ("front", [0.0, 1.0, 0.0], 0.1),
+            ("upper", [0.0, 0.0, 1.0], 0.005),
+        ] {
+            let mut continuous = crate::directional::ContinuousSource::new(&set).unwrap();
+            for frame in &mut continuous.frames { frame.input = input; }
+            sources.insert(name.into(), Source {
+                position, continuous_active: true, continuous_mix: 1.0,
+                continuous: Some(Box::new(continuous)), ..Default::default()
+            });
+        }
+        let mut balance = SpatialBalance::default();
+        for _ in 0..1000 { balance.prepare(&mut sources, true, 48000); }
+        assert_eq!(balance.gain, 1.0);
+        for (name, expected) in [("front", 0.1), ("upper", 0.005)] {
+            assert!(sources[name].continuous.as_ref().unwrap().frames.iter()
+                .all(|frame| frame.input == expected));
+        }
     }
     #[test]
     fn prepared_scene_changes_only_front_excitation_and_keeps_positions() {
