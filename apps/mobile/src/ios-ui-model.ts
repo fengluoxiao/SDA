@@ -11,10 +11,10 @@ export function playbackStatus(p: Pick<PlayerProps, "busy" | "preparingAudio" | 
   if (p.ended) return "播放结束";
   return p.selectedUri ? "准备就绪" : "选择文件，开始聆听";
 }
-export function compatibleRooms(p: Pick<PlayerProps, "rooms" | "layout" | "systemSpatial360RAActive" | "systemSpatial360RA">) {
+export function compatibleRooms(p: Pick<PlayerProps, "rooms" | "layout" | "systemSpatial360RAActive" | "systemSpatial360RA" | "sourceCodec">) {
   // A pending switch back to KU100 must offer the original 13-channel room,
   // while the current track can still be finishing on the system 7.1.4 route.
-  const layout = p.systemSpatial360RAActive && !p.systemSpatial360RA ? "360RA-13" : p.layout;
+  const layout = p.systemSpatial360RAActive && p.sourceCodec !== "alac" && !p.systemSpatial360RA ? "360RA-13" : p.layout;
   return p.rooms.filter(room => room.layout === layout);
 }
 export function isPresetSelected(p: Pick<PlayerProps, "hrtfSet" | "directObjects" | "directionalObjects" | "nearField" | "roomId" | "hrtfWetWeight">,

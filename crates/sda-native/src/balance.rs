@@ -238,7 +238,7 @@ impl VolumeBalance {
         self.settled = false;
     }
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
-        let channels = if frame.codec == "mpegh" {
+        let channels = if frame.codec == "mpegh" || crate::alac_pcm::is_upmixed(&frame) {
             reference.as_deref()
         } else if stereo_master(&frame) {
             Some(frame.channels.as_slice())
@@ -259,7 +259,7 @@ impl VolumeBalance {
     }
     pub fn route(&mut self, frame: &PendingFrame) -> Vec<Command> {
         let f = &frame.frame;
-        let stereo = f.codec != "mpegh" && stereo_master(f);
+        let stereo = f.codec != "mpegh" && (stereo_master(f) || crate::alac_pcm::is_upmixed(f));
         if f.codec != "mpegh" && !stereo {
             self.non_stereo_seen = true;
         }

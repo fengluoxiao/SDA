@@ -2,9 +2,11 @@ import Foundation
 import AVFoundation
 import AudioToolbox
 
-/// MPEG-H -> CICP19 speaker PCM -> Apple renderer. No binaural PCM or SDA effects.
+/// MPEG-H 7.1.4 or ALAC stereo/upmix PCM -> Apple renderer. No SDA HRTF/room.
 /// Access only under SdaPlayer.lock, never from an audio realtime callback.
 final class SystemSpatial360 {
+ let alacUpmix: Bool?
+ let channels: Int
  var decoder: UnsafeMutableRawPointer
  let renderer = AVSampleBufferAudioRenderer()
  let synchronizer = AVSampleBufferRenderSynchronizer()
@@ -23,14 +25,17 @@ final class SystemSpatial360 {
  var pendingSamples: [(sample: CMSampleBuffer, end: UInt64)] = []
  var interruptionRecoveries = 0
  var pcm = [Float](repeating: 0, count: 1024*12)
- init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float) throws {
+ init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float, alacUpmix: Bool? = nil) throws {
+  self.alacUpmix = alacUpmix
+  channels = alacUpmix == false ? 2 : 12
   // Explicit labels match CICP19, whose rear channels precede its side channels.
-  let labels: [AudioChannelLabel] = [kAudioChannelLabel_Left, kAudioChannelLabel_Right,
+  let allLabels: [AudioChannelLabel] = [kAudioChannelLabel_Left, kAudioChannelLabel_Right,
    kAudioChannelLabel_Center, kAudioChannelLabel_LFEScreen,
    kAudioChannelLabel_RearSurroundLeft, kAudioChannelLabel_RearSurroundRight,
    kAudioChannelLabel_LeftSurround, kAudioChannelLabel_RightSurround,
    kAudioChannelLabel_LeftTopFront, kAudioChannelLabel_RightTopFront,
    kAudioChannelLabel_LeftTopRear, kAudioChannelLabel_RightTopRear]
+  let labels = Array(allLabels.prefix(channels))
   let size = MemoryLayout<AudioChannelLayout>.size + (labels.count-1)*MemoryLayout<AudioChannelDescription>.stride
   let memory = UnsafeMutableRawPointer.allocate(byteCount:size, alignment:MemoryLayout<AudioChannelLayout>.alignment)
   defer { memory.deallocate() }
@@ -42,17 +47,17 @@ final class SystemSpatial360 {
   let descriptions = memory.advanced(by:offset).assumingMemoryBound(to:AudioChannelDescription.self)
   for i in labels.indices { descriptions[i].mChannelLabel = labels[i] }
   var asbd = AudioStreamBasicDescription(mSampleRate:48000, mFormatID:kAudioFormatLinearPCM,
-   mFormatFlags:kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket:48,
-   mFramesPerPacket:1, mBytesPerFrame:48, mChannelsPerFrame:12, mBitsPerChannel:32, mReserved:0)
+   mFormatFlags:kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket:UInt32(channels*4),
+   mFramesPerPacket:1, mBytesPerFrame:UInt32(channels*4), mChannelsPerFrame:UInt32(channels), mBitsPerChannel:32, mReserved:0)
   var description: CMAudioFormatDescription?
   let result = CMAudioFormatDescriptionCreate(allocator:kCFAllocatorDefault, asbd:&asbd,
    layoutSize:size, layout:layout, magicCookieSize:0, magicCookie:nil, extensions:nil, formatDescriptionOut:&description)
-  guard result == noErr, let description else { throw SdaError.message("7.1.4 格式创建失败: \(result)") }
+  guard result == noErr, let description else { throw SdaError.message("系统音频格式创建失败: \(result)") }
   format = description
   var error: UnsafeMutablePointer<CChar>?
-  guard let h = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("MPEG-H 7.1.4 初始化失败") }
+  guard let h = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频输出初始化失败") }
   decoder = h
-  renderer.allowedAudioSpatializationFormats = .multichannel
+  renderer.allowedAudioSpatializationFormats = channels == 2 ? .monoAndStereo : .multichannel
   renderer.volume = volume
   synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
   synchronizer.addRenderer(renderer)
@@ -65,13 +70,17 @@ final class SystemSpatial360 {
  }
  deinit { close() }
  func feed(_ data: Data?, finish: Bool, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
-  let value: Any
-  if let data { value = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,finish)) } }
-  else { value = try decodeReply(sda_ios_speakers_feed(decoder,nil,0,finish)) }
+  let value = try decodeInput(data, finish:finish, decodeReply:decodeReply)
   queued = ((value as? [String:Any])?["queuedFrames"] as? NSNumber)?.uint64Value ?? 0
   if finish { inputFinished = true }
   try pump()
  }
+ func decodeInput(_ data: Data?, finish: Bool, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
+  let feed = alacUpmix == nil ? sda_ios_speakers_feed : sda_ios_alac_speakers_feed
+  if let data { return try data.withUnsafeBytes { try decodeReply(feed(decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,finish)) } }
+  return try decodeReply(feed(decoder,nil,0,finish))
+ }
+ var loudnessPrefix: String { alacUpmix == nil ? "sda.loudness.system714.v1." : "sda.loudness.alac.stereo.v1." }
  func pump() throws {
   if paused { return }
   if renderer.status == .failed {
@@ -96,13 +105,13 @@ final class SystemSpatial360 {
    guard frames > 0 else { throw SdaError.message("7.1.4 PCM 队列不一致") }
    var block: CMBlockBuffer?
    var result = CMBlockBufferCreateWithMemoryBlock(allocator:kCFAllocatorDefault, memoryBlock:nil,
-    blockLength:frames*48, blockAllocator:kCFAllocatorDefault, customBlockSource:nil,
-    offsetToData:0, dataLength:frames*48, flags:0, blockBufferOut:&block)
+    blockLength:frames*channels*4, blockAllocator:kCFAllocatorDefault, customBlockSource:nil,
+    offsetToData:0, dataLength:frames*channels*4, flags:0, blockBufferOut:&block)
    guard result == noErr, let block else { throw SdaError.message("多声道缓冲创建失败") }
-   result = pcm.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with:$0.baseAddress!, blockBuffer:block, offsetIntoDestination:0, dataLength:frames*48) }
+   result = pcm.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with:$0.baseAddress!, blockBuffer:block, offsetIntoDestination:0, dataLength:frames*channels*4) }
    guard result == noErr else { throw SdaError.message("多声道 PCM 拷贝失败") }
    var timing = CMSampleTimingInfo(duration:CMTime(value:1,timescale:48000), presentationTimeStamp:CMTime(value:Int64(enqueued),timescale:48000), decodeTimeStamp:.invalid)
-   var sampleSize = 48
+   var sampleSize = channels*4
    var sample: CMSampleBuffer?
    result = CMSampleBufferCreateReady(allocator:kCFAllocatorDefault, dataBuffer:block, formatDescription:format,
     sampleCount:frames, sampleTimingEntryCount:1, sampleTimingArray:&timing,
@@ -153,7 +162,7 @@ final class SystemSpatial360 {
   sda_ios_speakers_close(decoder)
   closed = true // Keep close/deinit safe if recreation fails.
   var error: UnsafeMutablePointer<CChar>?
-  guard let next = sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("360RA 播放解码器重建失败") }
+  guard let next = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频播放源重建失败") }
   decoder = next; closed = false
   sda_ios_speakers_balance(decoder,balanceEnabled)
   try setMeasurement(value,decodeReply:decodeReply)
@@ -165,9 +174,9 @@ final class SystemSpatial360 {
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
-   "fifoFrames":decoded-clock,"outputChannels":12,"outputLayout":"7.1.4","systemSpatial360RAActive":true,
+   "fifoFrames":decoded-clock,"outputChannels":channels,"outputLayout":channels == 2 ? "2.0" : "7.1.4", "sourceCodec":alacUpmix == nil ? "mpegh" : "alac", "alacUpmixActive":alacUpmix == true,"systemSpatial360RAActive":true,
    "systemOutputUnderruns":underruns,"systemOutputBuffering":buffering,"systemOutputQueuedFrames":enqueued-clock,
    "preparingAudio":preparingAudio,"balanceMeasurementReady":measurementReady,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
-   "channelOrder":["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]]
+   "channelOrder":Array(["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].prefix(channels))]
  }
 }

@@ -31,6 +31,7 @@ mod frame_router;
 pub mod ios;
 pub mod mpegh;
 pub mod balance;
+mod alac_pcm;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -389,6 +390,15 @@ impl MobileEngine {
         }
         let done = self.mp3_decoder.as_ref().is_some_and(mp3::Mp3FileDecoder::is_finished);
         Ok((frames, done))
+    }
+
+    /// Apple-decoded ALAC enters the existing bed renderer and balance policy.
+    pub(crate) fn feed_alac_pcm(&mut self, frame: FrameData, reference: Vec<Vec<f32>>) -> EngineResult<()> {
+        self.stereo_bed_mode = frame.channels.len() == 2;
+        let end = frame.sample_pos + frame.channels[0].len() as u64;
+        self.pending.lock().expect("pending lock").push_back(self.balance.measure(frame, Some(reference)));
+        *self.newest_sample_pos.lock().expect("clock lock") = end;
+        self.drain_pending_into_pipeline()
     }
 
     pub fn stereo_bed_mode(&self) -> bool { self.stereo_bed_mode }

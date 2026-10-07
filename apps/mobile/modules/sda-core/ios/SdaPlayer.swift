@@ -15,6 +15,8 @@ final class SdaPlayer {
  let lock = NSRecursiveLock()
  let feeder = DispatchQueue(label: "sda.ios.decode", qos: .userInitiated)
  var handle: UnsafeMutableRawPointer?
+ var alacActive = false
+ var alacUpmixActive = false
  var systemSpatial: SystemSpatial360?
  var hasPlayback: Bool { handle != nil || systemSpatial != nil }
  var audio: AVAudioEngine?
@@ -74,7 +76,14 @@ final class SdaPlayer {
    }
   }
   guard let h = handle else { throw SdaError.message("引擎未启动") }
-  return try decodeReply(sda_ios_command(h, op, try json(args)))
+  let result = try decodeReply(sda_ios_command(h, op, try json(args)))
+  if op == "status", var status = result as? [String:Any] {
+   status["sourceCodec"] = alacActive ? "alac" : layout == "360RA-13" ? "mpegh" : ""
+   status["alacUpmixActive"] = alacUpmixActive
+   status["outputChannels"] = 2
+   return status
+  }
+  return result
  }
  func assetRoot() throws -> URL {
   let moduleBundle = Bundle(for: SdaPlayer.self)
@@ -112,7 +121,7 @@ final class SdaPlayer {
    for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
    prefs.set(1,forKey:"sda.mobileDirectVersion")
   }
-  return ["systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
+  return ["alacStereoUpmix":prefs.bool(forKey:"sda.alacStereoUpmix"), "systemSpatialStereo":prefs.bool(forKey:"sda.systemSpatialStereo"), "systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
    "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
@@ -128,6 +137,7 @@ final class SdaPlayer {
   generation += 1
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false
   systemSpatial?.close(); systemSpatial = nil
+  alacActive = false; alacUpmixActive = false
   // Stop callbacks before freeing the C handle. Do not reset on preset changes.
   audio?.stop()
   if let node = source { audio?.detach(node) }
@@ -319,14 +329,16 @@ final class SdaPlayer {
    let ext = (name as NSString).pathExtension.lowercased()
    layout = ext == "mhas" ? "360RA-13" : "7.1.4"
    let input = try CompressedInput(url:url,name:name)
+   alacActive = input.isAlac
+   alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
    do {
-    if ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA") {
+    if (ext == "mhas" && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])
      try session.setPreferredSampleRate(48000); try session.setActive(true)
-     systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1)
+     systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1, alacUpmix:input.isAlac ? alacUpmixActive : nil)
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
-     hrtfState = "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
+     hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "360RA → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative() }
     playbackYaw = yaw
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
@@ -336,7 +348,7 @@ final class SdaPlayer {
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
     _ = try command("yaw",["degrees":yaw])
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
-    let loudnessKey = (systemSpatial == nil ? "sda.loudness." : "sda.loudness.system714.v1.") + hash
+    let loudnessKey = (systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness.")) + hash
     if !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
     // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
     let analysisInput: CompressedInput?
@@ -365,9 +377,9 @@ final class SdaPlayer {
     return try locked { () throws -> Bool? in
      guard generation == token, let system = systemSpatial else { return nil }
      if let data {
-      _ = try data.withUnsafeBytes { try decodeReply(sda_ios_speakers_feed(system.decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,false)) }; return true
+      _ = try system.decodeInput(data,finish:false,decodeReply:decodeReply); return true
      }
-     _ = try decodeReply(sda_ios_speakers_feed(system.decoder,nil,0,true)); return false
+     _ = try system.decodeInput(nil,finish:true,decodeReply:decodeReply); return false
     }
    }
    guard let more else { return false }
@@ -377,7 +389,7 @@ final class SdaPlayer {
    guard generation == token, let system = systemSpatial else { return false }
    let measurement = try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
    try system.restartAfterMeasurement(measurement,decodeReply:decodeReply)
-   if !hash.isEmpty { prefs.set(measurement,forKey:"sda.loudness.system714.v1."+hash) }
+   if !hash.isEmpty { prefs.set(measurement,forKey:system.loudnessPrefix+hash) }
    return true
   }
  }
@@ -428,12 +440,15 @@ final class SdaPlayer {
      var eof = false
      if mp3 { let result = try command("pullMp3") as! [String:Any]; eof = result["eof"] as? Bool == true }
      else if let data, let system = systemSpatial { try system.feed(data,finish:false,decodeReply:decodeReply) }
+     else if let data, input.isAlac, let h = handle {
+      _ = try data.withUnsafeBytes { try decodeReply(sda_ios_alac_feed(h,$0.bindMemory(to:UInt8.self).baseAddress,data.count,alacUpmixActive)) }
+     }
      else if let data, let h = handle { let result = try data.withUnsafeBytes { try decodeReply(sda_ios_feed(h, $0.bindMemory(to: UInt8.self).baseAddress, data.count)) } as? [String:Any]; if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) } }
      else { eof = true }
      if eof {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
-      if !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemMode ? "sda.loudness.system714.v1." : "sda.loudness.")+hash) }
+      if !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness."))+hash) }
       let finalStatus = try command("status") as! [String:Any]
       if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
       finished = true

@@ -63,6 +63,12 @@ jobs:
           set -o pipefail
           xcrun swiftc -swift-version 5 scripts/ios-reader-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/reader-probe
           ios-artifacts/reader-probe crates/sda-native/tests/fixtures/ios-stereo-tones.m4a crates/sda-native/tests/fixtures/ios-stereo-tones.eac3 2>&1 | tee ios-artifacts/reader-probe.log
+      - name: Verify stereo ALAC decoding and recovery
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 scripts/ios-alac-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/alac-probe
+          ios-artifacts/alac-probe 2>&1 | tee ios-artifacts/alac-probe.log
       - uses: actions/setup-node@v4
         if: steps.sdk.outputs.available == 'true'
         with:
@@ -104,7 +110,7 @@ jobs:
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
-          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios::tests -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios:: -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
       - name: Verify independent object routes and quiet height contributions
         if: steps.sdk.outputs.available == 'true'
         run: |

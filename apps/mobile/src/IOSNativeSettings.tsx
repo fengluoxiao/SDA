@@ -131,6 +131,10 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
     <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
       <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
     </Section>
+    <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 KU100。修改后下次播放生效，不中断当前歌曲；空间效果取决于输出设备及系统设置。</Text>}>
+      <Toggle label="立体声上混 · 7.1.4" isOn={p.alacStereoUpmix} onIsOnChange={p.setAlacStereoUpmix} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
+      <Toggle label="立体声系统空间音频" isOn={p.systemSpatialStereo} onIsOnChange={p.setSystemSpatialStereo} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
+    </Section>
     <Section title="空间渲染" footer={<Text>{preset?.description || "当前使用自定义渲染设置。"} 切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。</Text>}>
       <Picker label="渲染预设" selection={preset?.id || "custom"} onSelectionChange={(id: string) => { if (renderingPresets.some(profile => profile.id === id)) p.setRenderingPreset(id); }} modifiers={[pickerStyle("menu"), disabled(presetDisabled)]}>
         {!preset && <Text modifiers={[tag("custom")]}>自定义</Text>}
@@ -147,7 +151,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
     <Section title="应用与输出">
       <Text>外观 · 跟随系统</Text>
       <Text>{"音频输出：" + (p.playing ? p.renderingStatus : "等待播放")}</Text>
-      <Text>{p.systemSpatial360RAActive ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道"}</Text>
+      <Text>{p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道"}</Text>
       <Button label="关于 SDA" systemImage="info.circle" onPress={() => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器")} />
     </Section>
   </Form>;

@@ -298,3 +298,31 @@ assert.match(ui, /<IOSSkipSymbol direction="next" color=\{c.ink\}/);
 assert.doesNotMatch(ui, /backward.end.fill|forward.end.fill/);
 assert.match(playbackSymbol, /"backward.fill" : "forward.fill"/);
 console.log('Transport symbol checks passed: real double-triangle SF Symbols in Go and release');
+
+// Home transport must visibly reflect the same mode as the settings picker.
+assert.match(ui, /<IOSModeSymbol mode=\{p.playbackMode\}/);
+assert.match(ui, /onPress=\{\(\) => p.setPlaybackMode\(followingPlaybackMode\(p.playbackMode\)\)\}/);
+assert.match(ui, /numberOfLines=\{1\}>\{PLAYBACK_MODE_LABELS\[p.playbackMode\]\}/);
+assert.match(ui, /<IOSPlaybackSymbol playing=\{playing\} color=\{c.ink\}/);
+assert.doesNotMatch(ui, /icon\(playing \? "pause.fill"/);
+assert.match(playbackSymbol, /"repeat.1" : mode === "repeat-all" \? "repeat" : "list.bullet"/);
+console.log('Home transport regression checks passed: visible mode feedback and native playback symbols');
+
+// ALAC shares the Apple output transport, not the MPEG-H codec or room fallback.
+assert.deepEqual(compatibleRooms({rooms,layout:'7.1.4',systemSpatial360RAActive:true,systemSpatial360RA:false,sourceCodec:'alac'}),[rooms[1]]);
+const alacNative = readFileSync('apps/mobile/modules/sda-core/ios/SdaModule.swift','utf8');
+for (const method of ['setAlacStereoUpmix','setStereoSystemSpatialAudio']) {
+ const line = alacNative.split('\n').find(line => line.includes(`Function("${method}")`));
+ assert.ok(line,`${method} is exported`);
+ assert.match(line,/prefs\.set/);
+ assert.doesNotMatch(line,/stopNative|\.play\(|startNative/,'Preference changes must not restart playback');
+}
+for (const file of ['IOSPlayer.tsx','IOSNativeSettings.tsx']) {
+ const ui = readFileSync(`apps/mobile/src/${file}`,'utf8');
+ assert.match(ui,/setAlacStereoUpmix/); assert.match(ui,/setSystemSpatialStereo/);
+}
+const alacReader = readFileSync('apps/mobile/modules/sda-core/ios/CompressedInput.swift','utf8');
+assert.match(alacReader,/kAudioFormatAppleLossless/);
+assert.match(alacReader,/mChannelsPerFrame == 2/);
+assert.match(alacReader,/isAlac \? \[AVFormatIDKey:kAudioFormatLinearPCM/);
+console.log('ALAC routing checks passed: distinct preferences, no toggle restart, stereo-only decoding, room isolation');

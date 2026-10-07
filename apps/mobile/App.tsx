@@ -8,6 +8,9 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  sourceCodec: string;
+  alacUpmixActive: boolean;
+  outputChannels: number;
   systemSpatial360RAActive: boolean;
   consumedSamplePos: number;
   decodedSamplePos: number;
@@ -46,6 +49,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   hrtfStatus(): string;
   renderingSettings(): string;
   set360RaSystemSpatialAudio?(enabled: boolean): boolean;
+  setAlacStereoUpmix?(enabled: boolean): boolean;
+  setStereoSystemSpatialAudio?(enabled: boolean): boolean;
   setNowPlayingMetadata?(contentHash: string, metadataJson: string): void;
   setObjectRendering(direct: boolean, directional: boolean): void;
   setRenderingPreset(id: string): Promise<void>;
@@ -55,6 +60,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  alacStereoUpmix: boolean; systemSpatialStereo: boolean;
+  sourceCodec: string; alacUpmixActive: boolean; outputChannels: number;
   spatialCueDb: number;
   spatialCueBusy: boolean;
   systemSpatial360RA: boolean;
@@ -97,6 +104,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    alacStereoUpmix: false, systemSpatialStereo: false, sourceCodec: "", alacUpmixActive: false, outputChannels: 2,
     spatialCueDb: -6, spatialCueBusy: false,
     systemSpatial360RA: false, systemSpatial360RAActive: false,
     layout: "7.1.4",
@@ -162,6 +170,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
+        alacStereoUpmix: settings.alacStereoUpmix === true, systemSpatialStereo: settings.systemSpatialStereo === true,
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
@@ -181,6 +190,23 @@ export default class App extends React.Component<Record<string, never>, State> {
       setter(enabled);
       this.setState({ systemSpatial360RA: enabled, error: null });
     } catch (error) { this.setState({error: error instanceof Error ? error.message : String(error)}); }
+  };
+
+  private setAlacStereoUpmix = (enabled: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      const setter = this.getEngine().setAlacStereoUpmix;
+      if (!setter) throw new Error("请更新 iOS 原生模块以启用 ALAC 上混");
+      setter(enabled); this.setState({ alacStereoUpmix: enabled, error: null });
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
+  };
+  private setSystemSpatialStereo = (enabled: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      const setter = this.getEngine().setStereoSystemSpatialAudio;
+      if (!setter) throw new Error("请更新 iOS 原生模块以启用立体声系统空间音频");
+      setter(enabled); this.setState({ systemSpatialStereo: enabled, error: null });
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
   };
 
   private cueUpdatePending = false;
@@ -280,7 +306,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       for (const asset of result.assets) {
         const extension = asset.name.split(".").pop()?.toLowerCase();
         if (!extension || !["eac3", "ec3", "m4a", "mp4", "mp3", "mhas"].includes(extension)) {
-          throw new Error("请选择 .eac3/.ec3、.mp3、.mhas，或包含 Atmos/360RA 音轨的 .m4a/.mp4 文件");
+          throw new Error("请选择 .eac3/.ec3、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA 音轨的 .m4a/.mp4 文件");
         }
         const contentHash = await this.getEngine().contentHash(asset.uri);
         if (knownHashes.has(contentHash)) continue;
@@ -395,6 +421,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         positionMs: value.positionMs ?? 0,
         decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
         fifoFrames: value.fifoFrames ?? 0,
+        sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
         systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         objects: feedDone ? [] : Object.values(objects).filter((object) => object.hasPos && object.pos.every(Number.isFinite)),
         paused: value.paused ?? this.state.paused,
@@ -402,7 +429,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: value.systemSpatial360RAActive ? "360RA → 7.1.4 · 苹果系统输出 · KU100 已旁路" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {
@@ -456,7 +483,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private stop = () => {
     try {
       this.engine?.stop();
-      this.setState({ systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      this.setState({ sourceCodec: "", alacUpmixActive: false, outputChannels: 2, systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -481,7 +508,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   render() {
-    return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} chooseFile={this.chooseFile} play={this.playSelected}
+    return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;

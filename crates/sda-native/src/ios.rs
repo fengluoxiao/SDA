@@ -22,6 +22,7 @@ impl AudioOutput for PullOutput {
     }
 }
 struct Host {
+    alac: Mutex<crate::alac_pcm::AlacPcm>,
     engine: Mutex<MobileEngine>,
     output: Arc<PullOutput>,
 }
@@ -78,6 +79,7 @@ pub unsafe extern "C" fn sda_ios_create(
                 std::thread::sleep(Duration::from_millis(1));
             }
             Ok(Host {
+                alac: Mutex::new(Default::default()),
                 engine: Mutex::new(engine),
                 output,
             })
@@ -531,9 +533,36 @@ mod tests {
 
 }
 
+// Bounded non-realtime interleaved Float32 input; Swift owns decoding/resampling.
+unsafe fn alac_samples(bytes: *const u8, len: usize) -> EngineResult<Vec<f32>> {
+    if bytes.is_null() || len == 0 || len % 8 != 0 || len > 65536*4 { return Err("invalid ALAC PCM buffer".into()); }
+    let bytes = unsafe { std::slice::from_raw_parts(bytes,len) };
+    let pcm: Vec<f32> = bytes.chunks_exact(4).map(|v| f32::from_le_bytes(v.try_into().unwrap())).collect();
+    if pcm.iter().any(|v| !v.is_finite()) { return Err("nonfinite ALAC PCM".into()); }
+    Ok(pcm)
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, upmix: bool) -> *mut c_char {
+    guarded(|| {
+        let host = unsafe { (p as *mut Host).as_ref() }.ok_or("engine unavailable")?;
+        let pcm = unsafe { alac_samples(bytes,len)? };
+        let mut e = host.engine.lock().map_err(|_| "engine poisoned")?;
+        let mut adapter = host.alac.lock().map_err(|_| "ALAC adapter poisoned")?;
+        for pcm in pcm.chunks(8192) {
+            let frame = adapter.frame(pcm,upmix,e.decoded_sample_pos())?;
+            let reference = vec![pcm.iter().step_by(2).copied().collect(),pcm.iter().skip(1).step_by(2).copied().collect()];
+            e.feed_alac_pcm(frame,reference)?;
+        }
+        Ok(json!(true))
+    })
+}
+
 // Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
 struct SpeakerHost {
-    decoder: mpegh::MpeghDecoder,
+    decoder: Option<mpegh::MpeghDecoder>,
+    alac: crate::alac_pcm::AlacPcm,
+    channels: usize,
+    upmix: bool,
     pcm: std::collections::VecDeque<f32>,
     events: std::collections::VecDeque<sda_core::ObjectEvent>,
     active: crate::ObjectSnapshot,
@@ -550,7 +579,7 @@ struct SpeakerHost {
 pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
-        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder, pcm: Default::default(), events: Default::default(), active: Default::default(),
+        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: Some(decoder), alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(), events: Default::default(), active: Default::default(),
             meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false, measure_only: false, fixed_measurement: None })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
@@ -560,9 +589,10 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
     guarded(|| {
         if p.is_null() || (len > 0 && bytes.is_null()) || len > 65536 { return Err("invalid speaker input".into()); }
         let host = unsafe { &mut *p.cast::<SpeakerHost>() };
-        if finish { host.decoder.flush()?; }
-        else { host.decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
-        while let Some(frame) = host.decoder.next_frame() {
+        let decoder = host.decoder.as_mut().ok_or("not an MPEG-H source")?;
+        if finish { decoder.flush()?; }
+        else { decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
+        while let Some(frame) = decoder.next_frame() {
             let frames = frame.channels[0].len();
             if host.events.len() + frame.events.len() > 262144 { return Err("speaker object timeline backlog exceeded".into()); }
             if !host.measure_only { host.events.extend(frame.events); }
@@ -586,6 +616,44 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
             }
         }
         Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000}))
+    })
+}
+// PCM-only speaker host: never acquires the process-global MPEG-H decoder.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_alac_speakers_create(upmix: bool) -> *mut std::ffi::c_void {
+    Box::into_raw(Box::new(SpeakerHost { decoder:None, alac:Default::default(), channels:if upmix {12} else {2}, upmix,
+        pcm:Default::default(), events:Default::default(), active:Default::default(), meter:crate::balance::LoudnessMeter::new(48000),
+        balance_enabled:false, measured_frames:0, target_gain:1.0, gain:1.0, read_started:false, measure_only:false, fixed_measurement:None })).cast()
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, finish: bool) -> *mut c_char {
+    guarded(|| {
+        let host = unsafe { p.cast::<SpeakerHost>().as_mut() }.ok_or("speaker host unavailable")?;
+        if host.decoder.is_some() || (finish && len != 0) { return Err("invalid ALAC source".into()); }
+        if !finish {
+            let pcm = unsafe { alac_samples(bytes,len)? };
+            if !host.measure_only && host.pcm.len() + pcm.len()/2*host.channels > 8*48000*host.channels { return Err("speaker PCM backlog exceeded".into()); }
+            let reference = vec![pcm.iter().step_by(2).copied().collect(),pcm.iter().skip(1).step_by(2).copied().collect()];
+            if host.fixed_measurement.is_none() { host.meter.push(&reference); }
+            host.measured_frames += 1;
+            if !host.measure_only && host.fixed_measurement.is_none() && (!host.read_started || host.measured_frames % 8 == 0) {
+                let m = host.meter.integrated();
+                if m.blocks >= crate::balance::MIN_BLOCKS {
+                    if let Some(lufs) = m.integrated_lufs { host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs,m.true_peak_dbtp)/20.0) as f32; }
+                }
+            }
+            if !host.measure_only {
+                let frame = host.alac.frame(&pcm,host.upmix,0)?;
+                // Conventional SDA bed -> CICP19 (rear surrounds before sides).
+                let order: &[usize] = if host.upmix { &[0,1,2,3,6,7,4,5,8,9,10,11] } else { &[0,1] };
+                for i in 0..pcm.len()/2 { for &ch in order { host.pcm.push_back(frame.channels[ch][i]); } }
+            }
+        }
+        if finish && host.fixed_measurement.is_none() {
+            let m = host.meter.integrated();
+            host.target_gain = m.integrated_lufs.map_or(1.0,|lufs| 10_f64.powf(crate::balance::master_gain(lufs,m.true_peak_dbtp)/20.0) as f32);
+        }
+        Ok(json!({"queuedFrames":host.pcm.len()/host.channels,"channels":host.channels,"sampleRate":48000}))
     })
 }
 // Analysis uses a separate decoder and keeps no PCM/object backlog. Never audible.
@@ -619,7 +687,7 @@ pub unsafe extern "C" fn sda_ios_speakers_measured(p: *mut std::ffi::c_void, mea
 pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *mut f32, capacity_frames: usize) -> usize {
     if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
     let host = unsafe { &mut *p.cast::<SpeakerHost>() };
-    let frames = capacity_frames.min(host.pcm.len()/12);
+    let frames = capacity_frames.min(host.pcm.len()/host.channels);
     if frames > 0 && !host.read_started {
         host.gain = if host.balance_enabled { host.target_gain } else { 1.0 };
         host.read_started = true;
@@ -628,7 +696,7 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
         let target = if host.balance_enabled { host.target_gain } else { 1.0 };
         // A single smooth gain for all 12 channels, including LFE. No remapping.
         host.gain += (target - host.gain).clamp(-1.0/12000.0, 1.0/12000.0);
-        for ch in 0..12 { unsafe { *out.add(i*12+ch) = host.pcm.pop_front().unwrap_or(0.0) * host.gain; } }
+        for ch in 0..host.channels { unsafe { *out.add(i*host.channels+ch) = host.pcm.pop_front().unwrap_or(0.0) * host.gain; } }
     }
     frames
 }
@@ -732,4 +800,72 @@ pub unsafe extern "C" fn sda_ios_apply_cues(p: *mut std::ffi::c_void, prepared: 
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_free_cues(p: *mut std::ffi::c_void) {
     if !p.is_null() { drop(unsafe { Box::from_raw(p as *mut Option<sda_native_renderer::live_spatial_cues::PreparedCueUpdate>) }); }
+}
+
+#[cfg(test)]
+mod alac_tests {
+    use super::*;
+    unsafe fn value(p: *mut c_char) -> Value {
+        let result: Value = serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_str().unwrap()).unwrap();
+        unsafe { sda_ios_string_free(p) };
+        assert_eq!(result["ok"],true,"{result}"); result["value"].clone()
+    }
+    struct Close(*mut std::ffi::c_void);
+    impl Drop for Close { fn drop(&mut self) { unsafe { sda_ios_speakers_close(self.0) }; } }
+    #[test]
+    fn stereo_and_upmix_speaker_pcm_have_correct_order_and_no_fake_objects() {
+        for upmix in [false,true] {
+            let h = unsafe { sda_ios_alac_speakers_create(upmix) }; let _close = Close(h);
+            let pcm: [f32;4] = [0.6,0.2,-0.2,0.4];
+            let status = unsafe { value(sda_ios_alac_speakers_feed(h,pcm.as_ptr().cast(),16,false)) };
+            let channels = if upmix {12} else {2};
+            assert_eq!(status["queuedFrames"],2); assert_eq!(status["channels"],channels);
+            let mut result=vec![99.0;2*channels+1];
+            assert_eq!(unsafe { sda_ios_speakers_read(h,result.as_mut_ptr(),2) },2);
+            assert_eq!(result[2*channels],99.0); // no writes beyond actual channel count
+            if upmix {
+                let expected=crate::alac_pcm::AlacPcm::default().frame(&pcm,true,0).unwrap();
+                for (ch,source) in [0,1,2,3,6,7,4,5,8,9,10,11].into_iter().enumerate() {
+                    assert_eq!(result[ch],expected.channels[source][0]);
+                    assert_eq!(result[12+ch],expected.channels[source][1]);
+                }
+            } else { assert_eq!(&result[..4],&pcm); }
+            assert_eq!(unsafe { value(sda_ios_speakers_objects(h,2)) },json!({}));
+            assert_eq!(unsafe { value(sda_ios_alac_speakers_feed(h,std::ptr::null(),0,true)) }["queuedFrames"],0);
+        }
+    }
+    #[test]
+    fn balance_is_one_linked_gain_and_analysis_keeps_no_pcm() {
+        let pcm: Vec<f32> = (0..8192).map(|i| 0.5*(i as f32*0.03).sin()).collect();
+        let a=unsafe { sda_ios_alac_speakers_create(false) }; let _a=Close(a);
+        let b=unsafe { sda_ios_alac_speakers_create(true) }; let _b=Close(b);
+        for h in [a,b] { unsafe { sda_ios_speakers_measure_only(h); } }
+        for _ in 0..80 { for h in [a,b] { unsafe { value(sda_ios_alac_speakers_feed(h,pcm.as_ptr().cast(),pcm.len()*4,false)); } } }
+        let measured=unsafe { value(sda_ios_speakers_measurement(a)) };
+        assert_eq!(measured,unsafe { value(sda_ios_speakers_measurement(b)) });
+        assert!(measured["integratedLufs"].is_number());
+        let mut out=[0.0;12];
+        assert_eq!(unsafe { sda_ios_speakers_read(b,out.as_mut_ptr(),1) },0);
+        let h=unsafe { sda_ios_alac_speakers_create(true) }; let _close=Close(h);
+        let cached=CString::new(json!({"integratedLufs":-12.0,"truePeakDbtp":-3.0,"blocks":100}).to_string()).unwrap();
+        unsafe { value(sda_ios_speakers_measured(h,cached.as_ptr())); sda_ios_speakers_balance(h,true); }
+        unsafe { value(sda_ios_alac_speakers_feed(h,pcm.as_ptr().cast(),pcm.len()*4,false)); }
+        assert_eq!(unsafe { sda_ios_speakers_read(h,out.as_mut_ptr(),1) },1);
+        let expected=crate::alac_pcm::AlacPcm::default().frame(&pcm,true,0).unwrap();
+        for (ch,source) in [0,1,2,3,6,7,4,5,8,9,10,11].into_iter().enumerate() {
+            assert!((out[ch]-expected.channels[source][0]*10f32.powf(-6.0/20.0)).abs()<1e-6);
+        }
+    }
+    #[test]
+    fn ku100_adapter_preserves_source_clock_and_balance_eligibility() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        let pcm=vec![0.2f32;8192];
+        let frame=crate::alac_pcm::AlacPcm::default().frame(&pcm,true,0).unwrap();
+        engine.feed_alac_pcm(frame,vec![vec![0.2;4096];2]).unwrap();
+        assert_eq!(engine.decoded_sample_pos(),4096);
+        let mut pending=engine.pending.lock().unwrap(); let frame=pending.pop_front().unwrap(); drop(pending);
+        engine.balance.route(&frame);
+        assert!(engine.balance.eligible);
+        assert_eq!(frame.frame.raw_bed_labels,vec!["L","R"]);
+    }
 }

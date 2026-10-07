@@ -11,7 +11,7 @@ import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "
 import { IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
 import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
-import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
+import { IOSPlaybackSymbol, IOSSkipSymbol, IOSModeSymbol } from "./IOSPlaybackSymbol";
 
 const palettes = {
   light: { bg: "#f0f3f0", panel: "#fafcf9", ink: "#24302a", muted: "#66776c", line: "#d5dfd6", field: "#eef2ed", accent: "#28754a" },
@@ -47,7 +47,7 @@ export function IOSPlayer(p: PlayerProps) {
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
   };
-  const format = p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) ? "Dolby Atmos" : "空间音频";
+  const format = p.sourceCodec === "alac" ? (p.alacUpmixActive ? "ALAC · 7.1.4 上混" : "ALAC · 立体声") : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) ? "Dolby Atmos" : "空间音频";
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
@@ -124,9 +124,14 @@ export function IOSPlayer(p: PlayerProps) {
           <View accessibilityRole="progressbar" accessibilityLabel="播放进度" accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.durationMs, p.positionMs), text: time(p.positionMs) + " / " + time(p.durationMs) } : { text: "总时长未知" }} style={[s.progress, { backgroundColor: c.line }]}><View style={{ width: String(progress * 100) + "%" as any, height: 5, borderRadius: 8, backgroundColor: c.accent }} /></View>
           <View style={s.times}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={s.transport}>
-            {icon(p.playbackMode === "repeat-one" ? "repeat.1" : p.playbackMode === "repeat-all" ? "repeat" : "list.bullet", "播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)), false, 44, "↻")}
+            <Pressable accessibilityRole="button" accessibilityLabel={"播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode]} accessibilityHint="轻点切换顺序播放、列表循环和单曲循环" accessibilityValue={{ text: PLAYBACK_MODE_LABELS[p.playbackMode] }} onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))} style={[s.icon, { width: 58, minHeight: 58, backgroundColor: c.panel }]}>
+              <IOSModeSymbol mode={p.playbackMode} color={p.playbackMode === "sequence" ? c.ink : c.accent} />
+              <Text style={{ color: c.muted, fontSize: 10, marginTop: 3 }} numberOfLines={1}>{PLAYBACK_MODE_LABELS[p.playbackMode]}</Text>
+            </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="previous" color={c.ink} /></Pressable>
-            {icon(playing ? "pause.fill" : "play.fill", playing ? "暂停" : "播放", togglePlayback, p.busy || !p.selectedUri, 58, playing ? "Ⅱ" : "▷")}
+            <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.icon, { width: 58, height: 58, backgroundColor: c.panel, opacity: p.busy || !p.selectedUri ? .35 : 1 }]}>
+              <IOSPlaybackSymbol playing={playing} color={c.ink} />
+            </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="next" color={c.ink} /></Pressable>
             {icon("arrow.counterclockwise", "重新播放", p.play, p.busy || !p.selectedUri, 44, "⟲")}
           </View>
@@ -151,7 +156,7 @@ export function IOSPlayer(p: PlayerProps) {
         <View style={[s.page, s.otherContent, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : "7.1.4", true, s.small)}</View>
           <View style={[s.scene, { height: Math.max(270, Math.min(410, height * .42)) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
-          <View style={[s.row, s.sceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "KU100", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "7.1.4 系统输出" : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
+          <View style={[s.row, s.sceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "KU100", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
           {label("单指旋转 · 双指缩放", true, s.sceneHint)}
         </View>
       </IOSSystemTabs>
@@ -174,6 +179,12 @@ export function IOSPlayer(p: PlayerProps) {
           {heading("360 Reality Audio")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
           {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。", true, s.groupHint)}
+          {heading("ALAC 立体声")}
+          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
+            {toggle("立体声上混 · 7.1.4", "由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy)}{divider()}
+            {toggle("立体声系统空间音频", "关闭上混时提交 2.0；开启上混时提交 7.1.4，旁路 KU100", p.systemSpatialStereo, p.setSystemSpatialStereo, p.busy)}
+          </View>
+          {label("以上设置下次播放生效，不中断当前歌曲。系统空间效果取决于输出设备及系统设置。", true, s.groupHint)}
           {heading("空间渲染", "settings-spatial")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {renderingPresets.map(profile => <View key={profile.id}>{actionRow(isPresetSelected(p, profile) ? "checkmark.circle.fill" : "circle", profile.label, profile.description, () => p.setRenderingPreset(profile.id), presetDisabled, isPresetSelected(p, profile))}{divider()}</View>)}
@@ -185,7 +196,7 @@ export function IOSPlayer(p: PlayerProps) {
           {heading("应用与输出")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             <View style={s.settingRow}>{label("外观", false, s.settingTitle)}{label("跟随系统", true, s.small)}</View>{divider()}
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingHint)}{label(p.systemSpatial360RAActive ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道", true, s.settingHint)}</View></View>{divider()}
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingHint)}{label(p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道", true, s.settingHint)}</View></View>{divider()}
             {actionRow("info.circle", "关于 SDA", "Spatial Decoder App", () => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器"))}
           </View>
 
