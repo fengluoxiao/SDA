@@ -42,7 +42,11 @@ enum SdaError: LocalizedError {
    try fixture(url,rate:rate,channels:2)
    let pcm = try decode(url,resume:false)
    let resumed = try decode(url,resume:true)
-   precondition(abs(pcm.count/2 - 48000) <= 2, "Incorrect resampled duration")
+   let source = try AVAudioFile(forReading:url)
+   let track = AVURLAsset(url:url).tracks(withMediaType:.audio).first!
+   let diagnostic = "rate=\(rate) sourceFrames=\(source.length) trackDuration=\(CMTimeGetSeconds(track.timeRange.duration)) decodedFrames=\(pcm.count/2) resumedFrames=\(resumed.count/2)"
+   FileHandle.standardError.write(Data((diagnostic + "\n").utf8))
+   guard abs(pcm.count/2 - 48000) <= 2 else { throw SdaError.message("Incorrect resampled duration: " + diagnostic) }
    precondition(resumed.count == pcm.count, "Recovery dropped or duplicated samples")
    precondition(pcm.allSatisfy { $0.isFinite } && resumed.allSatisfy { $0.isFinite })
    for i in stride(from:1000,to:pcm.count-1000,by:2) {
