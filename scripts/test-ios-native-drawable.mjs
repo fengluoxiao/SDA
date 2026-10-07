@@ -17,3 +17,13 @@ assert.equal(calls[0][1],1200,'native resize must not retain stale copied dimens
 const existing={width:60,height:90};gl.canvas=existing;
 resetNativeDrawable(renderer,gl,20,30);assert.equal(gl.canvas,existing);
 console.log('Native drawable reset: Expo missing canvas, reset ordering, resized canvas, existing context canvas passed');
+
+// A slow CI pixel sample must not keep the first-frame watchdog armed.
+const {readFileSync}=await import('node:fs');
+const sceneSource=readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8');
+assert.match(sceneSource,/if \(!firstFrame\.current\) \{\s*firstFrame\.current = true;/);
+assert.ok(sceneSource.indexOf('firstFrame.current = true;',sceneSource.indexOf('state.gl.render =')) < sceneSource.indexOf('if (smoke && frames >= 30'));
+assert.match(sceneSource,/frames >= 30 && !smokeReported/);
+assert.doesNotMatch(sceneSource,/context\.endFrameEXP\s*=/);
+assert.ok(sceneSource.indexOf('renderFrame(scene, camera)') < sceneSource.indexOf('context.readPixels'));
+console.log('Scene readiness: first real draw is separate from one-shot CI pixel capture');

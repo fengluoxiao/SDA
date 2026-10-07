@@ -153,21 +153,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
       const context = state.gl.getContext() as any;
       const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;
       let frames = 0;
-      let pixels: Record<string, unknown> = {};
-      if (smoke) {
-        const present = context.endFrameEXP.bind(context);
-        context.endFrameEXP = () => {
-          if (++frames === 30) {
-            const width = context.drawingBufferWidth, height = context.drawingBufferHeight;
-            const buffer = new Uint8Array(width * height * 4);
-            context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, buffer);
-            let brightPixels = 0;
-            for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
-            pixels = { brightPixels, bufferWidth: width, bufferHeight: height, glError: context.getError(), framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER), camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)), programs: state.gl.info.programs?.map((program: any) => program.diagnostics) };
-          }
-          present();
-        };
-      }
+      let smokeReported = false;
       state.gl.render = (scene, camera) => {
         // Expo owns/presents/resizes the drawable outside Three's state cache.
         // Rebind its current default FBO rather than retaining a deleted/stale
@@ -176,10 +162,31 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
           resetNativeDrawable(state.gl, context, state.size.width, state.size.height);
         }
         renderFrame(scene, camera);
-        if (currentAttempt.current === attempt && (!smoke ? !firstFrame.current : frames === 30) && state.gl.info.render.calls > 0 && state.gl.info.render.triangles > 0) {
+        if (currentAttempt.current !== attempt || !alive.current) return;
+        if (state.gl.info.render.calls <= 0 || state.gl.info.render.triangles <= 0) return;
+        frames++;
+        // Readiness is the first actual draw, not the later CI pixel sample.
+        // Otherwise a slow simulator rebuilds healthy contexts before frame 30.
+        if (!firstFrame.current) {
           firstFrame.current = true;
-          const result = { ok: true, ...pixels, calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles, width: state.size.width, height: state.size.height, attempt };
-          setTimeout(() => { if (alive.current && currentAttempt.current === attempt) { setReady(true); report(result); } }, 0);
+          setTimeout(() => { if (alive.current && currentAttempt.current === attempt) setReady(true); }, 0);
+        }
+        if (smoke && frames >= 30 && !smokeReported) {
+          smokeReported = true;
+          // Sample immediately after drawing, before Expo presents this buffer.
+          // Do not depend on endFrameEXP being called exactly once per render.
+          const width = context.drawingBufferWidth, height = context.drawingBufferHeight;
+          const buffer = new Uint8Array(width * height * 4);
+          context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, buffer);
+          let brightPixels = 0;
+          for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
+          const result = { ok: true, brightPixels, bufferWidth: width, bufferHeight: height,
+            glError: context.getError(), framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER),
+            camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)),
+            programs: state.gl.info.programs?.map((program: any) => program.diagnostics),
+            calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles,
+            width: state.size.width, height: state.size.height, attempt, frames };
+          setTimeout(() => { if (alive.current && currentAttempt.current === attempt) report(result); }, 0);
         }
       };
     }}>
