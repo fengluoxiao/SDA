@@ -486,9 +486,45 @@ pub fn finish_sources<'a>(
     }
 }
 
+/// Additional measured support, separate from the unchanged historical 61 anchors.
+struct LowerSupport {
+    irs: Vec<StereoIr>,
+    grid: Grid,
+}
+impl LowerSupport {
+    fn new(original: &[StereoIr]) -> Self {
+        let mut irs = original.to_vec();
+        let bytes = include_bytes!("../assets/ku100-lower/lower-support.f32");
+        for (i, raw) in bytes.chunks_exact(512 * 2 * 4).enumerate() {
+            irs.push(StereoIr {
+                azimuth: if i == 12 { 0.0 } else { -180.0 + i as f64 * 30.0 },
+                elevation: if i == 12 { -90.0 } else { -60.0 },
+                dry: raw.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(),
+                wet: Vec::new(),
+            });
+        }
+        // 74 entries cannot recursively create another lower support bank.
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        Self { irs, grid }
+    }
+    fn weights(&self, original: &Grid, az: f64, el: f64) -> Vec<(usize, f64)> {
+        let t = ((-el - 30.0) / 30.0).clamp(0.0, 1.0);
+        let mix = t * t * (3.0 - 2.0 * t);
+        let extended = self.grid.weights(az, el);
+        if mix == 1.0 { return extended; }
+        // Fade SUPPORT weights, not independently rendered waveforms. The existing
+        // delay-aligned interpolator then avoids a second unaligned crossfade.
+        let mut weights = vec![0.0; self.irs.len()];
+        for (i, w) in original.weights(az, el) { weights[i] += w * (1.0 - mix); }
+        for (i, w) in extended { weights[i] += w * mix; }
+        weights.into_iter().enumerate().filter(|(_, w)| *w > 0.0).collect()
+    }
+}
+
 pub struct Grid {
     directions: Vec<[f64; 3]>,
     historical_arrivals: Option<Vec<[usize; 2]>>,
+    lower_support: Option<std::sync::Arc<LowerSupport>>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
     /// the normal continuous interpolation path.
@@ -518,6 +554,7 @@ impl Clone for Grid {
         Self {
             directions: self.directions.clone(),
             historical_arrivals: self.historical_arrivals.clone(),
+            lower_support: self.lower_support.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -716,6 +753,7 @@ impl Grid {
                 .map(|ir| unit(ir.azimuth, ir.elevation))
                 .collect(),
             historical_arrivals: None,
+            lower_support: None,
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -732,6 +770,14 @@ impl Grid {
                 std::array::from_fn(|ear| ir.dry[ear*n..(ear+1)*n].iter().enumerate()
                     .max_by(|a,b| a.1.abs().total_cmp(&b.1.abs())).map_or(0, |x| x.0))
             }).collect());
+            // Only the calibrated historical KU100 61-point profile lacks lower
+            // support. Raw/other-subject grids and all directions >= -30 stay exact.
+            if self.ku100_notch_guard && irs.len() == 61
+                && irs.iter().filter(|ir| ir.elevation == -30.0).count() == 12
+                && irs.iter().all(|ir| ir.elevation >= -30.0)
+            {
+                self.lower_support = Some(std::sync::Arc::new(LowerSupport::new(irs)));
+            }
         }
         self
     }
@@ -887,8 +933,15 @@ impl Grid {
         weights
     }
     fn interpolate_historical(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        if el < -30.0 {
+            if let Some(lower) = &self.lower_support {
+                return lower.grid.interpolate_historical_weighted(&lower.irs, lower.weights(self, az, el));
+            }
+        }
+        self.interpolate_historical_weighted(irs, self.weights(az, el))
+    }
+    fn interpolate_historical_weighted(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>) -> (Vec<f32>, Vec<f32>) {
         let arrivals = self.historical_arrivals.as_ref().expect("historical profile");
-        let weights = self.weights(az, el);
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
         let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
         // The dominant measurement anchors the output position (its ITD and
@@ -3161,6 +3214,16 @@ mod restored_historical_interpolation_regressions {
 #[cfg(test)]
 mod spectral_interpolation_audit {
     use super::*;
+    fn restored_irs() -> Vec<StereoIr> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
+        let m: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("hrtf-set.json")).unwrap()).unwrap();
+        let irs: Vec<StereoIr> = m["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr { azimuth: p["azimuth"].as_f64().unwrap(), elevation: p["elevation"].as_f64().unwrap(),
+                dry: bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet: vec![] }
+        }).collect();
+        irs
+    }
     fn power(samples: &[f32], frequency: f64) -> f64 {
         let step = std::f64::consts::TAU * frequency / 48000.0;
         let (mut re, mut im) = (0.0, 0.0);
@@ -3170,28 +3233,93 @@ mod spectral_interpolation_audit {
         }
         re * re + im * im
     }
+    fn pair_energy(p: &(Vec<f32>, Vec<f32>)) -> f64 {
+        p.0.iter().chain(&p.1).map(|v| f64::from(*v).powi(2)).sum()
+    }
+    fn relative_error(a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>)) -> f64 {
+        (a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+            .map(|(x,y)| f64::from(x-y).powi(2)).sum::<f64>() / pair_energy(a)).sqrt()
+    }
+    #[test]
+    fn lower_support_preserves_original_domain_and_all_61_anchors() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let mut old = grid.clone(); old.lower_support = None;
+        assert!(grid.lower_support.is_some());
+        for el in (-30..=90).step_by(10) { for az in (-180..180).step_by(15) {
+            assert_eq!(grid.interpolate(&irs,az as f64,el as f64), old.interpolate(&irs,az as f64,el as f64));
+        }}
+        for ir in &irs {
+            assert_eq!(grid.interpolate(&irs,ir.azimuth,ir.elevation),old.interpolate(&irs,ir.azimuth,ir.elevation));
+        }
+    }
+    #[test]
+    fn lower_support_nadir_is_measured_and_azimuth_independent() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let lower = grid.lower_support.as_ref().unwrap();
+        assert_eq!(lower.irs.len(), 74);
+        for anchor in lower.irs.iter().skip(61) {
+            let n=anchor.dry.len()/2;
+            let response=grid.interpolate(&irs,anchor.azimuth,anchor.elevation);
+            assert_eq!(&response.0[..n],&anchor.dry[..n]);
+            assert_eq!(&response.1[..n],&anchor.dry[n..]);
+        }
+        let anchor = lower.irs.last().unwrap(); let n = anchor.dry.len()/2;
+        let pole = grid.interpolate(&irs,0.0,-90.0);
+        assert_eq!(&pole.0[..n],&anchor.dry[..n]);
+        assert_eq!(&pole.1[..n],&anchor.dry[n..]);
+        assert_eq!(pole.0,pole.1);
+        for az in (-180..180).step_by(5) { assert_eq!(pole, grid.interpolate(&irs,az as f64,-90.0)); }
+    }
+    #[test]
+    fn lower_support_is_mirrored_bounded_and_continuous_at_handover() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        for el in (-90..=-35).step_by(5) { for az in (5..180).step_by(15) {
+            let a=grid.interpolate(&irs,az as f64,el as f64);
+            let b=grid.interpolate(&irs,-(az as f64),el as f64);
+            assert!(a.0.iter().chain(&a.1).all(|v|v.is_finite()));
+            assert!((pair_energy(&a)-1.05677).abs()<0.001);
+            let err=relative_error(&a,&(b.1,b.0));
+            if err >= 0.002 {
+                let mut old=grid.clone(); old.lower_support=None;
+                let oa=old.interpolate(&irs,az as f64,el as f64);
+                let ob=old.interpolate(&irs,-(az as f64),el as f64);
+                // The preserved -30 ring already contains median-plane
+                // asymmetry. The transition must not worsen it; do not hide
+                // that inherited response by changing the approved anchors.
+                let inherited=relative_error(&oa,&(ob.1,ob.0));
+                assert!(err <= inherited+0.002,"transition mirror {az}/{el}: {err} > {inherited}");
+            }
+            if el <= -60 { assert!(err<0.002,"deep mirror {az}/{el}: {err}"); }
+        }}
+        for el in [-30.0,-60.0] { for az in (-180..180).step_by(15) {
+            let a=grid.interpolate(&irs,az as f64,el-0.0001);
+            let b=grid.interpolate(&irs,az as f64,el+0.0001);
+            assert!(relative_error(&a,&b)<0.002,"handover {az}/{el}");
+        }}
+    }
     #[test]
     #[ignore = "offline measured-grid interpolation audit; requires SDA_SPECTRAL_AUDIT_OUT"]
     fn audit_interpolated_voice_band() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
-        let m: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("hrtf-set.json")).unwrap()).unwrap();
-        let irs: Vec<StereoIr> = m["positions"].as_array().unwrap().iter().map(|p| {
-            let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
-            StereoIr { azimuth: p["azimuth"].as_f64().unwrap(), elevation: p["elevation"].as_f64().unwrap(),
-                dry: bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet: vec![] }
-        }).collect();
+        let irs = restored_irs();
         let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
         let freq = [500.0, 750.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0];
-        let measured: Vec<Vec<f64>> = irs.iter().map(|ir| { let n=ir.dry.len()/2;
-            freq.iter().map(|&f| power(&ir.dry[..n], f)+power(&ir.dry[n..], f)).collect() }).collect();
         let mut rows = Vec::new();
         for el in (-90..=90).step_by(5) { for az in (-180..180).step_by(5) {
             let (l,r) = grid.interpolate(&irs, az as f64, el as f64);
             assert!(l.iter().chain(&r).all(|v| v.is_finite()), "non-finite response at {az}/{el}");
             assert!(l.iter().chain(&r).map(|v| f64::from(*v).powi(2)).sum::<f64>() > 1e-12, "silent response at {az}/{el}");
-            let weights = grid.weights(az as f64,el as f64);
-            let ratios: Vec<f64> = freq.iter().enumerate().map(|(k,&f)| {
-                let target: f64 = weights.iter().map(|&(i,w)| measured[i][k]*w).sum();
+            let (support, weights) = if el < -30 {
+                let lower = grid.lower_support.as_ref().unwrap();
+                (&lower.irs, lower.weights(&grid, az as f64, el as f64))
+            } else { (&irs, grid.weights(az as f64,el as f64)) };
+            let ratios: Vec<f64> = freq.iter().map(|&f| {
+                let target: f64 = weights.iter().map(|&(i,w)| {
+                    let ir = &support[i]; let n = ir.dry.len()/2;
+                    (power(&ir.dry[..n], f)+power(&ir.dry[n..], f))*w
+                }).sum();
                 10.0*((power(&l,f)+power(&r,f)).max(1e-20)/target.max(1e-20)).log10()
             }).collect();
             rows.push(serde_json::json!({"az":az,"el":el,"relativeBandDb":ratios}));
