@@ -30,6 +30,7 @@ pub fn profile(layout: LayoutId) -> Result<Option<Arc<cinema::RoomProfile>>, Str
         p.validate()?;
         validate_short(&p)?;
         balance_rear_residuals(&mut p);
+        shape_residual_spectrum(&mut p, RESIDUAL_HIGH_GAIN);
         validate_short(&p)?;
         Ok(Arc::new(p))
     }).clone().map(Some)
@@ -110,7 +111,9 @@ mod tests {
             (LayoutId::Sony360Ra13, include_str!("../assets/spatial-cues/height360.json")),
         ] {
             let raw: cinema::RoomProfile = serde_json::from_str(data).unwrap();
-            let balanced = profile(layout).unwrap().unwrap();
+            // Test rear balancing independently of subsequent spectral shaping.
+            let mut balanced = raw.clone();
+            balance_rear_residuals(&mut balanced);
             let mut changed = 0;
             for (before, after) in raw.speakers.iter().zip(&balanced.speakers) {
                 assert_eq!(before.direct_left, after.direct_left);
@@ -386,5 +389,91 @@ mod motion_tests {
         assert_eq!(state.next([f32::NAN,0.0,0.0], 480128, 48000, true), 1.0);
         assert_eq!(state.next([0.0;3], 480256, 48000, true), 1.0);
         assert_eq!(state.next([0.0,1.0,0.0], 0, 48000, true), 1.0);
+    }
+}
+
+
+// Accepted residual-only B tuning (360RA, Ether and MONTERO auditions).
+// This is a listening-tuned shelf, not a psychoacoustic threshold or source EQ.
+const RESIDUAL_HIGH_GAIN: f64 = 0.5011872336272722; // -6 dB high-frequency limit
+
+// Identical centered 17-tap binomial FIR for every bundled speaker and ear.
+// Bake into the existing 5-80 ms residual window: no extra playback latency,
+// no change to direct HRIRs, source gains/positions or MotionCues policy.
+// Zero extension/clipping at the window edges keeps the original time support.
+// User-supplied room profiles do not pass through this bundled-profile helper.
+fn shape_residual_spectrum(p: &mut cinema::RoomProfile, high_gain: f64) {
+    assert!((0.0..=1.0).contains(&high_gain));
+    if high_gain == 1.0 { return; } // bit-exact bypass
+    let taps: [f64;17] = [1.,16.,120.,560.,1820.,4368.,8008.,11440.,12870.,11440.,8008.,4368.,1820.,560.,120.,16.,1.];
+    for s in &mut p.speakers {
+        let start=s.onset_sample+240;
+        let end=s.onset_sample+3840;
+        for (dry,room) in [(&s.direct_left,&mut s.room_left),(&s.direct_right,&mut s.room_right)] {
+            let residual:Vec<f64>=room.iter().zip(dry).map(|(&r,&d)| f64::from(r)-f64::from(d)).collect();
+            for i in start..end.min(room.len()) {
+                let mut low=0.0;
+                for (k,tap) in taps.iter().enumerate() {
+                    let j=i as isize+k as isize-8;
+                    if j>=start as isize && j<(end.min(residual.len())) as isize {
+                        low+=residual[j as usize]*tap/65536.0;
+                    }
+                }
+                room[i]=(f64::from(dry[i])+high_gain*residual[i]+(1.0-high_gain)*low) as f32;
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod residual_spectrum_tests {
+    use super::*;
+    #[test]
+    fn both_layouts_bypass_direct_support_and_finite() {
+        for data in [include_str!("../assets/spatial-cues/height714.json"),include_str!("../assets/spatial-cues/height360.json")] {
+            let mut p:cinema::RoomProfile=serde_json::from_str(data).unwrap();
+            balance_rear_residuals(&mut p);
+            let original=p.clone();
+            shape_residual_spectrum(&mut p,1.0);
+            assert_eq!(format!("{:?}",p),format!("{:?}",original));
+            shape_residual_spectrum(&mut p,RESIDUAL_HIGH_GAIN);
+            validate_short(&p).unwrap();p.validate().unwrap();
+            for (a,b) in original.speakers.iter().zip(&p.speakers) {
+                assert_eq!(a.direct_left,b.direct_left);assert_eq!(a.direct_right,b.direct_right);
+                assert_eq!(a.azimuth,b.azimuth);assert_eq!(a.elevation,b.elevation);
+                assert_eq!(a.onset_sample,b.onset_sample);
+                assert!(b.room_left.iter().chain(&b.room_right).all(|v|v.is_finite()));
+            }
+        }
+    }
+    #[test]
+    fn ear_exchange_commutes_and_energy_does_not_increase() {
+        let mut p:cinema::RoomProfile=serde_json::from_str(include_str!("../assets/spatial-cues/height360.json")).unwrap();
+        let original=p.clone();let mut swapped=p.clone();
+        for s in &mut swapped.speakers {std::mem::swap(&mut s.direct_left,&mut s.direct_right);std::mem::swap(&mut s.room_left,&mut s.room_right);}
+        shape_residual_spectrum(&mut p,RESIDUAL_HIGH_GAIN);shape_residual_spectrum(&mut swapped,RESIDUAL_HIGH_GAIN);
+        for ((a,b),old) in p.speakers.iter().zip(&swapped.speakers).zip(&original.speakers) {
+            assert_eq!(a.room_left,b.room_right);assert_eq!(a.room_right,b.room_left);
+            assert!(residual_direct_ratio(a)<=residual_direct_ratio(old)*(1.0+1e-6));
+        }
+    }
+}
+
+#[cfg(test)]
+mod residual_profile_integration_tests {
+    use super::*;
+    #[test]
+    fn both_profiles_apply_accepted_stage_order() {
+        for (layout, data) in [
+            (LayoutId::Dolby7_1_4, include_str!("../assets/spatial-cues/height714.json")),
+            (LayoutId::Sony360Ra13, include_str!("../assets/spatial-cues/height360.json")),
+        ] {
+            let mut expected: cinema::RoomProfile = serde_json::from_str(data).unwrap();
+            balance_rear_residuals(&mut expected);
+            let before = expected.clone();
+            shape_residual_spectrum(&mut expected, RESIDUAL_HIGH_GAIN);
+            let actual = profile(layout).unwrap().unwrap();
+            assert_eq!(format!("{:?}", expected), format!("{:?}", actual));
+            assert!(before.speakers.iter().zip(&actual.speakers).any(|(a,b)| a.room_left != b.room_left));
+        }
     }
 }

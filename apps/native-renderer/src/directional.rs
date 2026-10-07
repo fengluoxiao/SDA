@@ -890,7 +890,7 @@ impl Grid {
         let arrivals = self.historical_arrivals.as_ref().expect("historical profile");
         let weights = self.weights(az, el);
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
-        let mut output = [vec![0.0; n + 4], vec![0.0; n + 4]];
+        let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
         // The dominant measurement anchors the output position (its ITD and
         // level pattern are physically intact); every other neighbour is
         // whole-waveform aligned to it per ear before mixing. Aligning to a
@@ -928,16 +928,8 @@ impl Grid {
                     self.neighbour_shift(irs, dominant, index)[ear]
                 };
                 let shift = alignment_shift + timeline_shift;
-                let base = shift.floor() as isize;
-                let fraction = (shift - base as f64) as f32;
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
-                add_shifted(
-                    &mut output[ear],
-                    input,
-                    base,
-                    weight as f32 * (1.0 - fraction),
-                );
-                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
+                add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
             }
         }
         // Delay alignment prevents duplicated onsets, but interpolation of
@@ -963,16 +955,17 @@ impl Grid {
                 // head rather than a complete individual subject. Its
                 // adjacent pinna notches are valid measurements, but a time
                 // domain sum can erase a narrow-band source between them.
-                // Keep the dominant measured response intact in that case;
+                // Blend the dominant response progressively; preserve interpolation
+                // for mild cancellation instead of replacing elevation spectra.
                 // convolver filter transitions still smooth movement between
                 // anchors. Other subjects retain the lighter fallback.
                 let floor = if self.ku100_notch_guard {
-                    1.0
+                    ku100_notch_guard_mix(ratio)
                 } else {
                     (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
                 };
                 if floor > 0.0 {
-                    let mut anchor = [vec![0.0; n + 4], vec![0.0; n + 4]];
+                    let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
                     for ear in 0..2 {
                         let target_arrival: f64 = weights
                             .iter()
@@ -980,12 +973,9 @@ impl Grid {
                             .sum();
                         let shift = (target_arrival - arrivals[dominant][ear] as f64)
                             .clamp(-16.0, 16.0);
-                        let base = shift.floor() as isize;
-                        let fraction = (shift - base as f64) as f32;
                         let len = irs[dominant].dry.len() / 2;
                         let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
-                        add_shifted(&mut anchor[ear], input, base, 1.0 - fraction);
-                        add_shifted(&mut anchor[ear], input, base + 1, fraction);
+                        add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
                     }
                     for ear in 0..2 {
                         for (mixed, stable) in output[ear].iter_mut().zip(&anchor[ear]) {
@@ -3126,6 +3116,44 @@ mod fractional_delay_regressions {
                 .map(|(x,y)| f64::from(*x)*f64::from(*y)).sum::<f64>()
                 / (energy(&a)*energy(&b)).sqrt();
             assert!(corr < 0.95, "front={front} rear={rear}: {corr}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod restored_historical_interpolation_regressions {
+    use super::*;
+
+    #[test]
+    fn all_61_measured_anchors_remain_exact() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut irs = Vec::new();
+        for position in json["positions"].as_array().unwrap() {
+            let bytes = std::fs::read(
+                path.parent().unwrap().join(position["dry"].as_str().unwrap()),
+            ).unwrap();
+            assert_eq!(bytes.len() % 4, 0);
+            let dry: Vec<f32> = bytes.chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            irs.push(StereoIr {
+                azimuth: position["azimuth"].as_f64().unwrap(),
+                elevation: position["elevation"].as_f64().unwrap(),
+                wet: dry.clone(),
+                dry,
+            });
+        }
+        assert_eq!(irs.len(), 61);
+        let grid = Grid::new_with_notch_guard(&irs, true)
+            .with_historical_interpolation(&irs, true);
+        for ir in &irs {
+            let (left, right) = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&left[..n], &ir.dry[..n]);
+            assert_eq!(&right[..n], &ir.dry[n..]);
+            assert!(left[n..].iter().chain(&right[n..]).all(|x| *x == 0.0));
         }
     }
 }

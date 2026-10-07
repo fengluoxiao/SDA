@@ -116,7 +116,7 @@ jobs:
           set -o pipefail
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib live_spatial_cues::tests 2>&1 | tee ios-artifacts/live-cues-tests.log
-          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cues::tests 2>&1 | tee ios-artifacts/spatial-cues-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cues:: 2>&1 | tee ios-artifacts/spatial-cues-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib directional::tests 2>&1 | tee ios-artifacts/directional-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cue_gain_scales_only_residual_for_both_layouts 2>&1 | tee ios-artifacts/approved-cue-gain-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib occlusion 2>&1 | tee ios-artifacts/occlusion-tests.log
