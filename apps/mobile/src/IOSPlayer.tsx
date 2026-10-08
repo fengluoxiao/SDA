@@ -156,7 +156,7 @@ export function IOSPlayer(p: PlayerProps) {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: c.muted, fontSize: 12 }}>{name}</Text><Text selectable style={{ color: c.ink, fontSize: 16, lineHeight: 23, marginTop: 5 }}>{value}</Text></View>)}</ScrollView>
     </SafeAreaView>
   </IOSMetadataSheet>
-  <IOSSettingsNavigation settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: homeBackground }]}>

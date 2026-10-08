@@ -30,9 +30,9 @@ export function IOSSettingsButton({ onPress }: { onPress(): void }) {
 
 // A single native navigation stack stays mounted over the existing player.
 // Its controlled path changes only presentation, never the audio engine.
-export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme }: {
+export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme, immersive = false }: {
   children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void;
-  title: string; player: PlayerProps; accent: string; theme: "light" | "dark";
+  title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean;
 }) {
   if (!swiftUI || !hasNativeIOSSettings) return children;
   if (nativeScreens) {
@@ -43,7 +43,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
       <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false}
-        headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: "transparent" }} style={StyleSheet.absoluteFill}>
+        headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: immersive ? "transparent" : PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
         {children}
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
