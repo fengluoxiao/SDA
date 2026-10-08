@@ -44,6 +44,7 @@ public final class SdaModule: Module {
   Function("setHeadYaw") { (degrees: Double) in try player.locked { _ = try player.command("yaw",["degrees":degrees]); player.playbackYaw=degrees } }
   Function("resetHeadPose") { try player.locked { _ = try player.command("resetPose"); player.playbackYaw=0 } }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
+  Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setObjectRendering") { (direct: Bool, directional: Bool) in try player.locked { if player.handle != nil { _ = try player.command("rendering",["direct":direct,"directional":directional]) }; player.prefs.set(direct,forKey:"sda.direct");player.prefs.set(directional,forKey:"sda.directional") } }
   Function("rooms") { "[]" }

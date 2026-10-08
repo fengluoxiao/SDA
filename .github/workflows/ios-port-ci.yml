@@ -98,6 +98,7 @@ jobs:
           python3 scripts/verify-spatial-cues.py
           node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
           node scripts/test-ios-ui.mjs
+          node scripts/test-ios-spatial-enhancement.mjs
           node scripts/test-ios-playback-polling.mjs
           node scripts/test-ios-native-queue.mjs
           node scripts/test-ios-native-drawable.mjs
@@ -131,6 +132,12 @@ jobs:
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib occlusion 2>&1 | tee ios-artifacts/occlusion-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --test mobile_front_back 2>&1 | tee ios-artifacts/front-back-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_cues_start -- --test-threads=1 2>&1 | tee ios-artifacts/mobile-cues-tests.log
+      - name: Verify packaged master and spatial-layer enhancement
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib master_preamp::tests 2>&1 | tee ios-artifacts/master-preamp-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_layer::tests 2>&1 | tee ios-artifacts/spatial-layer-tests.log
       - name: iOS renderer scheduling policy tests
         if: steps.sdk.outputs.available == 'true'
         run: |

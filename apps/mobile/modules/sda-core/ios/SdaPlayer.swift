@@ -117,6 +117,10 @@ final class SdaPlayer {
    prefs.set(db, forKey:"sda.spatialCueDb")
   }
  }
+ func saveSpatialEnhancement(_ enabled: Bool) throws {
+  if handle != nil && systemSpatial == nil { _ = try command("spatialEnhancement", ["enabled":enabled]) }
+  prefs.set(enabled, forKey:"sda.spatialEnhancement")
+ }
  func settings() -> [String: Any] {
   if prefs.integer(forKey:"sda.mobileDirectVersion") < 1 {
    for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
@@ -124,6 +128,7 @@ final class SdaPlayer {
   }
   return ["alacStereoUpmix":prefs.bool(forKey:"sda.alacStereoUpmix"), "systemSpatialStereo":prefs.bool(forKey:"sda.systemSpatialStereo"), "systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
    "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
+   "spatialEnhancementEnabled": prefs.bool(forKey:"sda.spatialEnhancement"),
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
    "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
@@ -187,6 +192,7 @@ final class SdaPlayer {
    _ = try command("near", ["enabled":s["nearField"]!,"scale":s["metresPerUnit"]!])
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
    _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
+   _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
    let room = s["roomId"] as! String
    if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"

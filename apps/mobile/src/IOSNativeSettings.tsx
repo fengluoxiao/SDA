@@ -128,6 +128,9 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
+    <Section title="声音增强" footer={<Text>总输出 +2 dB，辅助空间层最多 +6 dB。不识别人声，可能改变原混音层次。仅 SDA / KU100 路径应用，系统空间音频路径不应用。</Text>}>
+      <Toggle label="空间层增强 · +2/+6" isOn={p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy || p.systemSpatial360RAActive)]} />
+    </Section>
     <Section title="360 Reality Audio" footer={<Text>仅 360RA：12 声道交给系统，旁路 KU100 直达渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。</Text>}>
       <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(PlatformColor("systemGreen")), disabled(p.busy)]} />
     </Section>

@@ -47,6 +47,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   feedDone(): boolean;
   setVolume(volume: number): void;
   setVolumeBalance(enabled: boolean): void;
+  setSpatialEnhancement?(enabled: boolean): void;
   hrtfStatus(): string;
   renderingSettings(): string;
   set360RaSystemSpatialAudio?(enabled: boolean): boolean;
@@ -95,6 +96,7 @@ interface State {
   renderingStatus: string;
   volume: number;
   volumeBalanceEnabled: boolean;
+  spatialEnhancementEnabled: boolean;
   rooms: { id: string; name: string; layout: string }[];
   roomId: string;
   roomBusy: boolean;
@@ -114,6 +116,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     queueIndex: -1,
     volume: 1,
     volumeBalanceEnabled: false,
+    spatialEnhancementEnabled: false,
     rooms: [], roomId: "", roomBusy: false,
     nearField: false, metresPerUnit: 1, nearFieldBusy: false,
     busy: false,
@@ -175,6 +178,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+        spatialEnhancementEnabled: settings.spatialEnhancementEnabled === true,
         systemSpatial360RA: Platform.OS === "ios" && settings.systemSpatial360RA === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
         nearField: settings.nearField === true, metresPerUnit: settings.metresPerUnit ?? 1 });
@@ -491,6 +495,16 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
+  private setSpatialEnhancement = (spatialEnhancementEnabled: boolean) => {
+    if (Platform.OS !== "ios" || this.changingTrack || this.state.busy || this.state.systemSpatial360RAActive) return;
+    try {
+      const setter = this.getEngine().setSpatialEnhancement;
+      if (!setter) throw new Error("请更新 iOS 原生模块以启用空间层增强");
+      setter(spatialEnhancementEnabled);
+      this.setState({ spatialEnhancementEnabled, error: null });
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
+  };
+
   private setVolumeBalance = (volumeBalanceEnabled: boolean) => {
     try {
       this.getEngine().setVolumeBalance(volumeBalanceEnabled);
@@ -513,6 +527,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
   }
 }

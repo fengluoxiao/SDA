@@ -61,6 +61,8 @@ pub mod dsp;
 pub mod focus;
 mod front_common;
 mod spatial_balance;
+mod master_preamp;
+mod spatial_layer;
 pub mod hardware;
 #[allow(dead_code)]
 pub mod headphone;
@@ -142,6 +144,15 @@ pub enum Command {
     },
     SetVolume {
         volume: f32,
+    },
+    SetSpatialEnhancement { enabled: bool },
+    SetSpatialLayerGain {
+        #[serde(rename = "gainDb")]
+        gain_db: f32,
+    },
+    SetMasterPreamp {
+        #[serde(rename = "gainDb")]
+        gain_db: f32,
     },
     SetComparisonGain {
         #[serde(rename = "gainDb")]
@@ -737,6 +748,9 @@ pub struct Source {
     object_id: Option<u32>,
     activity_until: u64,
     gain_events: BTreeMap<u64, GainEvent>,
+    spatial_layer_gain: f32,
+    spatial_layer_target: f32,
+    spatial_layer_bed_weight: f32,
     gain: f32,
     target_gain: f32,
     ramp_remaining: u32,
@@ -798,6 +812,9 @@ impl Default for Source {
             object_id: None,
             activity_until: 0,
             gain_events: BTreeMap::new(),
+            spatial_layer_gain: 1.0,
+            spatial_layer_target: 1.0,
+            spatial_layer_bed_weight: 0.0,
             gain: 0.0,
             target_gain: 0.0,
             ramp_remaining: 0,
@@ -1022,6 +1039,8 @@ pub struct Engine {
     stereo_background: [focus::BackgroundFilter; 2],
     stereo_dry_bus: Option<bus_renderer::BusRenderer>,
     speaker_lfe_level: f32,
+    spatial_layer: spatial_layer::Settings,
+    master_preamp: master_preamp::MasterPreamp,
     output_gain: f32,
     comparison_gain: f32,
     comparison_target: f32,
@@ -1149,6 +1168,8 @@ impl Engine {
             stereo_background: std::array::from_fn(|_| focus::BackgroundFilter::default()),
             stereo_dry_bus: None,
             speaker_lfe_level: 1.0,
+            spatial_layer: spatial_layer::Settings::new(sample_rate),
+            master_preamp: Default::default(),
             output_gain: 1.0,
             comparison_gain: 1.0,
             comparison_target: 1.0,
@@ -1632,6 +1653,24 @@ impl Engine {
         );
     }
 
+    /// Linked total-output gain; does not inspect songs, object IDs or source levels.
+    /// The final shared peak guard may reduce gain when headroom is insufficient.
+    pub fn set_master_preamp_db(&mut self, gain_db: f32) -> Result<(), String> {
+        self.master_preamp.set(gain_db, self.output_sample_rate, !self.output_active)
+    }
+
+    pub fn master_preamp_db(&self) -> f32 { self.master_preamp.target_db() }
+    /// Optional geometry-based auxiliary layer; zero preserves authored levels.
+    pub fn set_spatial_layer_gain_db(&mut self, gain_db: f32) -> Result<(), String> {
+        self.spatial_layer.set(gain_db, self.output_sample_rate)
+    }
+    pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
+    /// Atomic listener preset for the accepted general enhancement recipe.
+    pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_master_preamp_db(if enabled { 2.0 } else { 0.0 })?;
+        self.set_spatial_layer_gain_db(if enabled { 6.0 } else { 0.0 })
+    }
+
     fn set_output_volume(&mut self, volume: f32, immediate: bool) {
         let target = volume.clamp(0.0, 1.0).powi(2);
         if immediate {
@@ -1679,6 +1718,7 @@ impl Engine {
     }
 
     fn advance_output_envelopes(&mut self) {
+        self.master_preamp.advance();
         self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
         if self.output_gain_ramp_remaining > 0 {
             self.output_gain += self.output_gain_step;
@@ -1772,6 +1812,7 @@ impl Engine {
 
     fn reset_session(&mut self, origin: u64) {
         performance::reset();
+        self.master_preamp.settle();
         self.front_common.reset();
         self.spatial_balance.reset();
         self.fast_activity.clear();
@@ -2137,6 +2178,8 @@ impl Engine {
             start: self.sample_pos,
             offset: self.block_offset,
             bass_crossover_hz,
+            spatial_layer_gain_db: self.spatial_layer.db,
+            spatial_layer_slew: self.spatial_layer.slew,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2220,6 +2263,7 @@ impl Engine {
         if self.paused || !self.output_active || self.bus_renderer.is_none() {
             return;
         }
+        self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
         let stereo = self.sources.len() == 2
             && self
                 .sources
@@ -2597,6 +2641,7 @@ impl Engine {
                     * source.gain
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
+                sample *= spatial_layer::source_gain(source, self.spatial_layer.db, self.spatial_layer.slew, at);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
@@ -2925,9 +2970,11 @@ impl Engine {
                 equalized[0] * self.output_gain * self.comparison_gain,
                 equalized[1] * self.output_gain * self.comparison_gain,
             ];
+            // One linked master gain after the complete mix, before protection.
+            let master = self.master_preamp.gain();
             let guarded = self.peak_guard.process(
-                pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain(),
-                pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain(),
+                pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
+                pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
             );
             if channels >= 2 {
                 frame[0] = guarded[0];

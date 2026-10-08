@@ -29,6 +29,7 @@ export interface PlayerProps {
   headYaw: number; error: string | null; directObjects: boolean; directionalObjects: boolean;
   renderingStatus: string; volume: number;
   volumeBalanceEnabled: boolean; setVolumeBalance(enabled: boolean): void;
+  spatialEnhancementEnabled: boolean; setSpatialEnhancement(enabled: boolean): void;
   chooseFile(): void; play(): void; togglePause(): void; stop(): void;
   adjustYaw(delta: number): void; resetYaw(): void; setVolume(value: number): void;
   hrtfSet: "standard" | "dense" | "dense-raw"; hrtfWetWeight: number; setRenderingPreset(id: string): void;

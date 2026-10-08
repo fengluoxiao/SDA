@@ -595,6 +595,34 @@ impl MobileEngine {
         serde_json::to_string(&self.balance.complete_measurement()).unwrap_or_else(|_|"null".into())
     }
 
+    /// User-selected total-output preamp; independent of objects and volume balance.
+    pub fn set_spatial_enhancement(&self, enabled: bool) -> EngineResult<()> {
+        let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::Command(
+            Command::SetSpatialEnhancement { enabled }
+        )).map_err(|_| "command queue full".into())
+    }
+
+    pub fn set_spatial_layer_gain_db(&self, gain_db: f32) -> EngineResult<()> {
+        if !gain_db.is_finite() || !(0.0..=6.0).contains(&gain_db) {
+            return Err("spatial layer gain must be finite and between 0 and +6 dB".into());
+        }
+        let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::Command(
+            Command::SetSpatialLayerGain { gain_db }
+        )).map_err(|_| "command queue full".into())
+    }
+
+    pub fn set_master_preamp_db(&self, gain_db: f32) -> EngineResult<()> {
+        if !gain_db.is_finite() || !(-12.0..=12.0).contains(&gain_db) {
+            return Err("master preamp must be finite and between -12 and +12 dB".into());
+        }
+        let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::Command(
+            Command::SetMasterPreamp { gain_db }
+        )).map_err(|_| "command queue full".into())
+    }
+
     pub fn set_volume(&self, volume: f32) -> EngineResult<()> {
         if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
             return Err("volume must be between 0 and 1".into());

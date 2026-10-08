@@ -580,6 +580,20 @@ fn handle_command(
                 detail: None,
             });
         }
+        Command::SetSpatialEnhancement { enabled } => {
+            let result = state.set_spatial_enhancement(enabled);
+            write_event(&Event::Ack { command: "setSpatialEnhancement", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
+        Command::SetSpatialLayerGain { gain_db } => {
+            let result = state.set_spatial_layer_gain_db(gain_db);
+            write_event(&Event::Ack { command: "setSpatialLayerGain", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
+        Command::SetMasterPreamp { gain_db } => {
+            let result = state.set_master_preamp_db(gain_db);
+            write_event(&Event::Ack {
+                command: "setMasterPreamp", accepted: result.is_ok(), detail: result.err().as_deref(),
+            });
+        }
         Command::SetVolume { volume } => {
             if volume.is_finite() {
                 state.set_output_volume(volume, !state.output_active);
@@ -1413,6 +1427,9 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetLfeMuted { .. } => "setLfeMuted",
         Command::SetSpeakerMutes { .. } => "setSpeakerMutes",
         Command::SetVolume { .. } => "setVolume",
+        Command::SetMasterPreamp { .. } => "setMasterPreamp",
+        Command::SetSpatialLayerGain { .. } => "setSpatialLayerGain",
+        Command::SetSpatialEnhancement { .. } => "setSpatialEnhancement",
         Command::SetComparisonGain { .. } => "setComparisonGain",
         Command::SetProgramEnabled { .. } => "setProgramEnabled",
         Command::SetProgramGain { .. } => "setProgramGain",

@@ -175,6 +175,10 @@ export function IOSPlayer(p: PlayerProps) {
             {divider()}
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>
+          {heading("声音增强")}
+          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
+            {toggle("空间层增强 · +2/+6", "总输出 +2 dB，辅助空间层最多 +6 dB；不识别人声，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
+          </View>
           {heading("360 Reality Audio")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
           {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / KU100 空间渲染，并非普通立体声下混。", true, s.groupHint)}

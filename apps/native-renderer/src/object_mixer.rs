@@ -37,6 +37,8 @@ pub struct Context {
     pub start: u64,
     pub offset: usize,
     pub bass_crossover_hz: Option<f32>,
+    pub spatial_layer_gain_db: f32,
+    pub spatial_layer_slew: f32,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -321,6 +323,7 @@ fn mix_source(
             * source.gain
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
+        sample *= crate::spatial_layer::source_gain(source, ctx.spatial_layer_gain_db, ctx.spatial_layer_slew, at);
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source
