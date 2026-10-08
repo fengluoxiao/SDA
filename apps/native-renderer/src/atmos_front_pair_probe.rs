@@ -99,6 +99,9 @@ fn replay_atmos_object_stream() {
     if let Ok(db) = std::env::var("SDA_ATMOS_REPLAY_LAYER_DB") {
         e.set_spatial_layer_gain_db(db.parse().unwrap()).unwrap();
     }
+    if std::env::var("SDA_ATMOS_REPLAY_ENHANCEMENT").as_deref() == Ok("1") {
+        e.set_spatial_enhancement(true).unwrap();
+    }
     e.output_active = true;
     e.paused = false;
     let fifo = stereo_fifo::StereoFifo::new(4096);
@@ -198,6 +201,7 @@ fn replay_atmos_object_stream() {
         "spatialBalanceEnabled":e.spatial_balance.enabled,"spatialBalanceGain":e.spatial_balance.gain,
         "masterPreampDb":e.master_preamp.target_db(),"masterPreampGain":e.master_preamp.gain(),
         "spatialLayerGainDb":e.spatial_layer_gain_db(),
+        "spatialLayerMainRestoreDb":e.spatial_layer.main_restore_db,
         "sources":e.sources.len(),"nearField":e.near_field.enabled,"room":e.cinema.enabled});
     std::fs::write(dir.join(format!("{tag}.json")), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 }

@@ -177,7 +177,7 @@ export function IOSPlayer(p: PlayerProps) {
           </View>
           {heading("声音增强")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
-            {toggle("空间层增强 · +2/+6", "总输出 +2 dB，辅助空间层最多 +6 dB；不识别人声，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
+            {toggle("空间层增强 · +2/+6", "主层维持原电平；总输出 +2 dB 与辅助层最多 +6 dB 配套，不识别人声，仅 SDA / KU100 路径应用", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>
           {heading("360 Reality Audio")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>

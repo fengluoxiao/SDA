@@ -1662,13 +1662,19 @@ impl Engine {
     pub fn master_preamp_db(&self) -> f32 { self.master_preamp.target_db() }
     /// Optional geometry-based auxiliary layer; zero preserves authored levels.
     pub fn set_spatial_layer_gain_db(&mut self, gain_db: f32) -> Result<(), String> {
-        self.spatial_layer.set(gain_db, self.output_sample_rate)
+        self.spatial_layer.set(gain_db, self.output_sample_rate)?;
+        self.spatial_layer.main_restore_db = 0.0;
+        Ok(())
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
     /// Atomic listener preset for the accepted general enhancement recipe.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         self.set_master_preamp_db(if enabled { 2.0 } else { 0.0 })?;
-        self.set_spatial_layer_gain_db(if enabled { 6.0 } else { 0.0 })
+        self.set_spatial_layer_gain_db(if enabled { 6.0 } else { 0.0 })?;
+        // Cancel the automatic master lift on the main layer; preserve original
+        // main level rather than applying a vocal/song-specific cut.
+        self.spatial_layer.main_restore_db = if enabled { 2.0 } else { 0.0 };
+        Ok(())
     }
 
     fn set_output_volume(&mut self, volume: f32, immediate: bool) {
@@ -2180,6 +2186,7 @@ impl Engine {
             bass_crossover_hz,
             spatial_layer_gain_db: self.spatial_layer.db,
             spatial_layer_slew: self.spatial_layer.slew,
+            spatial_layer_main_restore_db: self.spatial_layer.main_restore_db,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2641,7 +2648,7 @@ impl Engine {
                     * source.gain
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
-                sample *= spatial_layer::source_gain(source, self.spatial_layer.db, self.spatial_layer.slew, at);
+                sample *= spatial_layer::source_gain(source, self.spatial_layer.db, self.spatial_layer.main_restore_db, self.spatial_layer.slew, at);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
