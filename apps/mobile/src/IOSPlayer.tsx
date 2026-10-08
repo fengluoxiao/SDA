@@ -8,14 +8,24 @@ import { MobileObjectScene } from "./MobileObjectScene";
 import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
 import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
-import { IOS_TABS, isPresetSelected, playbackStatus, trackTitle, iosPlayerLayout } from "./ios-ui-model";
+import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
-import { IOSVolumeSymbol } from "./IOSVolumeSymbol";
-import { IOSPlaybackSymbol, IOSSkipSymbol, IOSModeSymbol } from "./IOSPlaybackSymbol";
+import { IOSMetadataSheet } from "./IOSMetadataSheet";
+import { artworkColor } from "./artwork-color";
+import { swiftUI } from "./IOSSystemTabs";
+import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
+
+function Symbol({ name, fallback, size = 22, color = "#fff" }: { name: string; fallback: string; size?: number; color?: string }) {
+  const native = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
+  return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
+    {native && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }}><swiftUI.Image systemName={name as React.ComponentProps<typeof swiftUI.Image>["systemName"]} size={size} color={color} /></swiftUI.Host> : <Text style={{ fontSize: size, color }}>{fallback}</Text>}
+  </View>;
+}
+
 
 const palettes = {
-  light: { bg: "#f0f3f0", panel: "#fafcf9", ink: "#24302a", muted: "#66776c", line: "#d5dfd6", field: "#eef2ed", accent: "#28754a" },
-  dark: { bg: "#171a19", panel: "#202523", ink: "#e9eeeb", muted: "#a0ada6", line: "#35413a", field: "#2a322e", accent: "#9fdcb9" },
+  light: { bg: "#f2f2f7", panel: "#ffffff", ink: "#1c1c1e", muted: "#74747c", line: "#dcdce3", field: "#e8e8ef", accent: "#28754a" },
+  dark: { bg: "#111113", panel: "#242427", ink: "#f5f5f7", muted: "#a0a0a8", line: "#3c3c43", field: "#29292e", accent: "#9fdcb9" },
 };
 const time = (ms: number) => Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0");
 
@@ -27,6 +37,7 @@ export function IOSPlayer(p: PlayerProps) {
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
   const [chromeSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaGlassButton?.smokeStage?.() || "");
   const [page, setPage] = useState(sceneSmoke ? 2 : (chromeSmoke === "library" || chromeSmoke === "mini-player") ? 1 : 0);
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
   const [librarySize, setLibrarySize] = useState({ viewport: 0, content: 0 });
@@ -36,18 +47,40 @@ export function IOSPlayer(p: PlayerProps) {
   const volumeOrigin = useRef(0);
   const isLight = systemTheme !== "dark";
   const c = palettes[isLight ? "light" : "dark"];
+  const artworkSize = width + 48; // Slight uniform zoom, never stretch the square.
+  const pc = { ink: "#ffffff", muted: "#c9c9ce", line: "rgba(255,255,255,.24)", field: "rgba(255,255,255,.10)" };
+  const [failedArtwork, setFailedArtwork] = useState("");
+  const artworkUri = p.metadata.coverUri || "";
+  const hasArtwork = !!artworkUri && failedArtwork !== artworkUri;
+  const [artworkTone, setArtworkTone] = useState({ uri: "", color: "#303034" });
+  const fadeColor = artworkTone.uri === artworkUri ? artworkTone.color : "#303034";
+  useEffect(() => {
+    let active = true;
+    if (hasArtwork) artworkColor(artworkUri).then(color => { if (active) setArtworkTone({ uri: artworkUri, color }); }).catch(() => { if (active) setArtworkTone({ uri: artworkUri, color: "#303034" }); });
+    return () => { active = false; };
+  }, [artworkUri, hasArtwork]);
+  const immersiveHome = page === 0 && !settings;
+  const homeBackground = immersiveHome ? "transparent" : c.bg;
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听");
-  const status = playbackStatus(p);
   const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const [playerHeight, setPlayerHeight] = useState(Math.max(300, height - 230));
-  const [playerBlocks, setPlayerBlocks] = useState({ status: 20, info: 66, controls: 107, volume: 44 });
+  const [playerBlocks, setPlayerBlocks] = useState({ status: 24, info: 62, controls: 106, volume: 44 });
   const { coverSize, gap: playerGap } = iosPlayerLayout(width, playerHeight, Object.values(playerBlocks).reduce((sum, value) => sum + value, 0));
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
   };
-  const format = p.sourceCodec === "alac" ? (p.alacUpmixActive ? "ALAC · 7.1.4 上混" : "ALAC · 立体声") : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) ? "Dolby Atmos" : "空间音频";
+  const previewMetadata = __DEV__ && !p.selectedUri && engineUnavailable;
+  const format = p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
+  const infoRows: [string, string][] = previewMetadata ? [
+    ["数据来源", "Expo Go 模拟数据 · 仅开发预览"], ["文件名", "Preview.m4a"], ["标题", "示例歌曲"], ["艺人", "示例艺人"], ["专辑", "示例专辑"], ["容器", "M4A"], ["编码", "E-AC-3 JOC"], ["采样率", "48,000 Hz（模拟）"], ["音频格式", "杜比全景声"],
+  ] : [
+    ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
+    ["年份", p.metadata.year || "未写入"], ["曲目", p.metadata.track || "未写入"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
+    ["编码", p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["输出声道数", String(p.outputChannels)], ["渲染布局", p.layout], ["对象数量", String(p.objects.length)],
+    ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / KU100"],
+  ];
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
@@ -57,6 +90,14 @@ export function IOSPlayer(p: PlayerProps) {
   useEffect(() => {
     if (p.playbackPageRequest) { setSettings(false); navigate(0); }
   }, [p.playbackPageRequest]);
+
+  const button = (name: string, symbol: string, fallback: string, action: () => void, disabled = false, small = false) =>
+    <Pressable accessibilityRole="button" accessibilityLabel={name} accessibilityState={{ disabled }} disabled={disabled} onPress={action} style={({ pressed }) => [small ? np.smallAction : np.action, { backgroundColor: small ? pc.field : "transparent", opacity: disabled ? .3 : pressed ? .55 : 1 }]}><Symbol name={symbol} fallback={fallback} size={small ? 18 : 22} color={pc.ink} /></Pressable>;
+  const more = () => Alert.alert(title, "歌曲选项", [
+    { text: "重新播放", onPress: p.play },
+    { text: `播放模式：${PLAYBACK_MODE_LABELS[p.playbackMode]}`, onPress: () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)) },
+    { text: "SDA 设置", onPress: () => setSettings(true) }, { text: "取消", style: "cancel" },
+  ]);
 
   const volumeGesture = React.useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
@@ -68,7 +109,7 @@ export function IOSPlayer(p: PlayerProps) {
     },
     onPanResponderMove: (_, gesture) => p.setVolume(Math.max(0, Math.min(1, (gesture.moveX - volumeOrigin.current) / volumeWidth.current))),
   }), [p.setVolume]);
-  const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: muted ? c.muted : c.ink }, style]}>{value}</Text>;
+  const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: immersiveHome ? (muted ? pc.muted : pc.ink) : (muted ? c.muted : c.ink) }, style]}>{value}</Text>;
   // The approved Expo Go transport controls are shared with the release app.
   // The presence of SdaEngine/SdaGlass must never select a different design.
   const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: c.panel, opacity: disabled ? .35 : 1 }]}>{label(fallback, false, { fontSize: 22 })}</Pressable>;
@@ -94,11 +135,32 @@ export function IOSPlayer(p: PlayerProps) {
   }}>{label(name, true, s.groupTitle)}</View>;
 
   return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: c.bg }}>
+  {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
+    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {/* Crossfade into a blurred copy before the sampled-color fade.
+        Each clipped band uses the same square coordinates: no image stretching. */}
+    {hasArtwork && Array.from({ length: 8 }, (_, index) => {
+      const bandTop = artworkSize * (.58 + index * .0525);
+      const t = (index + 1) / 8;
+      return <View key={`blur-${index}`} style={{ position: "absolute", top: bandTop, left: 0, width, height: artworkSize * .0525 + 1, overflow: "hidden", opacity: t * t * (3 - 2 * t) }}>
+        <Image source={{ uri: artworkUri }} resizeMode="contain" blurRadius={24} style={{ position: "absolute", top: -bandTop, left: -24, width: artworkSize, height: artworkSize }} />
+      </View>;
+    })}
+    <View style={{ position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30 }}>
+      {Array.from({ length: 64 }, (_, index) => { const t = index / 63; return <View key={index} style={{ position: "absolute", top: artworkSize * .30 * index / 64, left: 0, right: 0, height: artworkSize * .30 / 64 + 1, backgroundColor: fadeColor, opacity: t * t * (3 - 2 * t) }} />; })}
+    </View>
+  </View>}
+  <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: c.ink, fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><Pressable accessibilityRole="button" accessibilityLabel="关闭歌曲元数据" onPress={() => setMetadataOpen(false)} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><Text style={{ color: c.accent }}>完成</Text></Pressable></View>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: c.muted, fontSize: 12 }}>{name}</Text><Text selectable style={{ color: c.ink, fontSize: 16, lineHeight: 23, marginTop: 5 }}>{value}</Text></View>)}</ScrollView>
+    </SafeAreaView>
+  </IOSMetadataSheet>
   <IOSSettingsNavigation settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: c.bg }]}>
-    <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
+  <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: homeBackground }]}>
+    <StatusBar barStyle={immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
@@ -108,34 +170,34 @@ export function IOSPlayer(p: PlayerProps) {
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor={c.bg} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
-        <View style={[s.page, s.playerContent, { gap: playerGap }, !hasSystemIOSTabs && page !== 0 && s.hidden]}
+      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor={homeBackground} accent={c.accent} theme={immersiveHome ? "dark" : isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+        <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
+          <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="rgba(255,255,255,.45)" />}</Pressable>
+          <View style={[np.metadata, { transform: [{ translateY: 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
+            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, { color: pc.muted }]}>{artist}</Text></View>
+          </View>
+          <View style={[s.playerBlock, np.controlsDown]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - playerGap - 22))}>
+          <View style={np.infoProgressOffset}>
+            <View accessibilityRole="progressbar" accessibilityLabel="播放进度（当前不支持拖动定位）" accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></View>
+            <View style={np.times}><Text style={[np.time, { color: pc.muted }]}>{time(p.positionMs)}</Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
+          </View>
+          <View style={[np.transport, { marginTop: playerGap + 22 }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="previous" color={pc.ink} size={30} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={() => p.playing ? p.togglePause() : p.play()} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.selectedUri ? .3 : pressed ? .55 : 1 }]}><IOSPlaybackSymbol playing={playing} color={pc.ink} size={38} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={({ pressed }) => [np.transportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="next" color={pc.ink} size={30} /></Pressable>
+          </View>
+          </View>
+          <View style={[np.volume, np.controlsDown]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
+            <Symbol name="speaker.fill" fallback="◂" size={13} color={pc.muted} />
+            <View accessible accessibilityRole="adjustable" accessibilityLabel="音量" accessibilityValue={{ min: 0, max: 100, now: Math.round(p.volume * 100) }} accessibilityActions={[{ name: "increment" }, { name: "decrement" }]} onAccessibilityAction={e => p.setVolume(Math.max(0, Math.min(1, p.volume + (e.nativeEvent.actionName === "increment" ? .05 : -.05))))} {...volumeGesture.panHandlers} onLayout={e => { volumeWidth.current = Math.max(1, e.nativeEvent.layout.width); }} style={np.volumeTouch}><View style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${Math.max(0, Math.min(1, p.volume)) * 100}%` }]} /></View></View>
+            <Symbol name="speaker.wave.2.fill" fallback="▸" size={18} color={pc.muted} />
+          </View>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
-          {engineUnavailable && <Text accessibilityRole="alert" style={[s.engineNotice, { color: c.muted }]}>当前运行环境未包含 SDA 音频引擎；可查看界面，播放需要完整安装包。</Text>}
-          <View style={s.row}>{label(format + " · 48 kHz", true, s.small)}<Text accessibilityLiveRegion="polite" style={[s.small, { color: c.accent, maxWidth: "58%", textAlign: "right" }]}>{status}</Text></View>
-          </View>
-          <View style={[s.album, { width: coverSize, height: coverSize }]}>{cover(coverSize)}</View>
-          <View style={s.playerBlock} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
-          <Text numberOfLines={2} style={[s.trackTitle, { color: c.ink }]}>{title}</Text>
-          <Text numberOfLines={2} style={[s.trackSubtitle, { color: c.muted }]}>{artist}{p.metadata.album ? " · " + p.metadata.album : ""}</Text>
-          </View>
-          <View style={s.playerBlock} onLayout={event => measurePlayerBlock("controls", event.nativeEvent.layout.height)}>
-          <View accessibilityRole="progressbar" accessibilityLabel="播放进度" accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.durationMs, p.positionMs), text: time(p.positionMs) + " / " + time(p.durationMs) } : { text: "总时长未知" }} style={[s.progress, { backgroundColor: c.line }]}><View style={{ width: String(progress * 100) + "%" as any, height: 5, borderRadius: 8, backgroundColor: c.accent }} /></View>
-          <View style={s.times}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
-          <View style={s.transport}>
-            <Pressable accessibilityRole="button" accessibilityLabel={"播放模式：" + PLAYBACK_MODE_LABELS[p.playbackMode]} accessibilityHint="轻点切换顺序播放、列表循环和单曲循环" accessibilityValue={{ text: PLAYBACK_MODE_LABELS[p.playbackMode] }} onPress={() => p.setPlaybackMode(followingPlaybackMode(p.playbackMode))} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel }]}>
-              <IOSModeSymbol mode={p.playbackMode} color={p.playbackMode === "sequence" ? c.ink : c.accent} />
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="previous" color={c.ink} /></Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.icon, { width: 58, height: 58, backgroundColor: c.panel, opacity: p.busy || !p.selectedUri ? .35 : 1 }]}>
-              <IOSPlaybackSymbol playing={playing} color={c.ink} />
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={[s.icon, { width: 44, height: 44, backgroundColor: c.panel, opacity: p.busy || !p.queue.length ? .35 : 1 }]}><IOSSkipSymbol direction="next" color={c.ink} /></Pressable>
-            {icon("arrow.counterclockwise", "重新播放", p.play, p.busy || !p.selectedUri, 44, "⟲")}
+          {p.busy && <Text accessibilityLiveRegion="polite" style={[np.notice, { color: pc.muted }]}>正在准备音频…</Text>}
           </View>
           </View>
-          <View style={[s.volume, s.playerBlock]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}><IOSVolumeSymbol volume={p.volume} color={c.muted} /><View accessible accessibilityLabel="音量滑块" onLayout={event => { volumeWidth.current = Math.max(1, event.nativeEvent.layout.width); }} {...volumeGesture.panHandlers} style={s.volumeTouch}><View style={[s.progress, { marginTop: 0, backgroundColor: c.line }]}><View style={{ height: 5, width: String(p.volume * 100) + "%" as any, backgroundColor: c.accent }} /></View></View>{label(Math.round(p.volume * 100) + "%", true, s.volumeValue)}</View>
         </View>
         <ScrollView style={[s.page, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={s.otherContent}
           scrollEnabled={libraryCanScroll} bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator={false}
@@ -143,6 +205,15 @@ export function IOSPlayer(p: PlayerProps) {
           onContentSizeChange={(_, content) => setLibrarySize(previous => previous.content === content ? previous : { ...previous, content })}>
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
+          <View style={s.libraryPlaybackModes}>
+            {(["sequence", "repeat-all", "repeat-one"] as const).map(mode => {
+              const selected = p.playbackMode === mode;
+              return <Pressable key={mode} accessibilityRole="button" accessibilityLabel={PLAYBACK_MODE_LABELS[mode]} accessibilityState={{ selected }} onPress={() => p.setPlaybackMode(mode)}
+                style={({ pressed }) => [s.loopPill, { backgroundColor: selected ? c.accent : c.field, opacity: pressed ? .65 : 1 }]}>
+                <Symbol name={mode === "sequence" ? "list.bullet" : mode === "repeat-one" ? "repeat.1" : "repeat"} fallback={mode === "sequence" ? "≡" : mode === "repeat-one" ? "↻1" : "↻"} size={22} color={selected ? isLight ? "#ffffff" : "#16221b" : c.muted} />
+              </Pressable>;
+            })}
+          </View>
           <View style={[s.row, { marginTop: 28, marginBottom: 8 }]}>{label("播放列表", false, s.sectionTitle)}{label(p.queue.length + " 首", true, s.small)}</View>
           {p.queue.map((track, index) => <Pressable key={track.contentHash} accessibilityRole="button" accessibilityState={{ selected: index === p.queueIndex, disabled: p.busy }} disabled={p.busy} onPress={() => { p.selectTrack(index); navigate(0); }} style={[s.queueRow, { borderBottomColor: c.line }]}>
             {track.metadata.coverUri ? <Image source={{ uri: track.metadata.coverUri }} resizeMode="cover" style={s.queueCover} /> : <View style={[s.queueCover, s.emptyCover, { backgroundColor: c.field }]}>{label("♫", true, { fontSize: 23 })}</View>}
@@ -212,19 +283,25 @@ export function IOSPlayer(p: PlayerProps) {
 }
 
 const s = StyleSheet.create({
+  libraryPlaybackModes: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20 },
+  loopPill: { flex: 1, minHeight: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
   engineNotice: { fontSize: 12, lineHeight: 18, marginBottom: 12 },
   safe: { flex: 1 }, root: { flex: 1, paddingHorizontal: 18, paddingBottom: 8 },
   header: { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 3 },
   eyebrow: { fontSize: 11, letterSpacing: 3 }, pageTitle: { fontSize: 24, fontWeight: "600", marginTop: 5 },
   pages: { flex: 1 }, page: { flex: 1 }, hidden: { display: "none" },
-  playerContent: { paddingHorizontal: 7, paddingTop: 8, paddingBottom: 14, justifyContent: "space-between" }, playerBlock: { flexShrink: 0 }, otherContent: { paddingTop: 8, paddingBottom: 20 },
+  playerContent: { paddingHorizontal: 7, paddingTop: 8, paddingBottom: 14, justifyContent: "flex-start" }, playerBlock: { flexShrink: 0 }, otherContent: { paddingTop: 8, paddingBottom: 20 },
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }, small: { fontSize: 11, lineHeight: 17 },
-  album: { alignSelf: "center", flexShrink: 0, shadowColor: "#000", shadowOpacity: .15, shadowRadius: 18, shadowOffset: { width: 0, height: 12 } },
-  emptyCover: { alignItems: "center", justifyContent: "center" }, trackTitle: { fontSize: 22, fontWeight: "600", textAlign: "center", lineHeight: 29 },
-  trackSubtitle: { fontSize: 13, textAlign: "center", marginTop: 8, lineHeight: 20 },
+  formatBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  playerActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, marginTop: 8 },
+  transportButton: { width: 60, height: 60, alignItems: "center", justifyContent: "center" },
+  primaryTransport: { width: 80, height: 68 },
+  album: { alignSelf: "center", flexShrink: 0, shadowColor: "#000", shadowOpacity: .2, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
+  emptyCover: { alignItems: "center", justifyContent: "center" }, trackTitle: { fontSize: 22, fontWeight: "600", textAlign: "left", lineHeight: 29 },
+  trackSubtitle: { fontSize: 14, textAlign: "left", marginTop: 5, lineHeight: 20 },
   progress: { height: 5, borderRadius: 8, overflow: "hidden", marginTop: 4 }, times: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
-  transport: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 9, marginTop: 20 }, icon: { borderRadius: 32, alignItems: "center", justifyContent: "center" },
-  volume: { flexDirection: "row", alignItems: "center", gap: 10 }, volumeValue: { fontSize: 11, minWidth: 31, textAlign: "right", fontVariant: ["tabular-nums"] }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
+  transport: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 30, marginTop: 12 }, icon: { borderRadius: 32, alignItems: "center", justifyContent: "center" },
+  volume: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 10 }, volumeValue: { fontSize: 11, minWidth: 31, textAlign: "right", fontVariant: ["tabular-nums"] }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
   lead: { fontSize: 13, lineHeight: 21, marginBottom: 22 }, group: { borderRadius: 15, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, overflow: "hidden" },
   sectionTitle: { fontSize: 18, fontWeight: "600" }, queueRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 15, borderBottomWidth: StyleSheet.hairlineWidth },
   queueCover: { width: 49, height: 49, borderRadius: 8 }, queueTitle: { fontSize: 15, lineHeight: 21 }, queueArtist: { fontSize: 12, marginTop: 5 },
@@ -239,4 +316,21 @@ const s = StyleSheet.create({
   settingsContent: { paddingHorizontal: 3, paddingBottom: 28 }, groupTitle: { fontSize: 12, marginTop: 25, marginBottom: 8, marginLeft: 12 },
   settingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 13, minHeight: 54 }, settingCopy: { flex: 1 }, settingTitle: { fontSize: 15, lineHeight: 22 }, settingHint: { fontSize: 12, lineHeight: 19, marginTop: 4 }, groupHint: { fontSize: 12, lineHeight: 19, marginTop: 9, paddingHorizontal: 12 },
   divider: { height: StyleSheet.hairlineWidth }, settingsActions: { flexDirection: "row", justifyContent: "center", gap: 24, marginTop: 25 }, error: { color: "#bc483a", fontSize: 12, lineHeight: 18, marginTop: 7 },
+});
+
+const np = StyleSheet.create({
+  controlsDown: { transform: [{ translateY: 24 }] },
+  infoProgressOffset: { transform: [{ translateY: 12 }] },
+  root: { flex: 1, backgroundColor: "transparent", marginHorizontal: -18, overflow: "hidden" },
+  artwork: { position: "absolute", top: 0, left: 0, width: "100%" },
+  defaultArtwork: { position: "absolute", top: 0, left: 0, width: "100%", backgroundColor: "#303034", alignItems: "center", justifyContent: "center" },
+  cover: { flexShrink: 0, alignSelf: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 14 }, shadowOpacity: .26, shadowRadius: 22 },
+  coverImage: { width: "100%", height: "100%", borderRadius: 9 }, emptyCover: { backgroundColor: "transparent", alignItems: "center", justifyContent: "center" },
+  metadata: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 8 }, title: { color: "#fff", fontSize: 20, fontWeight: "600", lineHeight: 26 }, artist: { color: "rgba(255,255,255,.58)", fontSize: 19, marginTop: 2 },
+  action: { width: 48, height: 44, alignItems: "center", justifyContent: "center" }, smallAction: { width: 32, height: 32, borderRadius: 16, backgroundColor: "transparent", alignItems: "center", justifyContent: "center" },
+  track: { height: 5, backgroundColor: "rgba(255,255,255,.22)", borderRadius: 4, overflow: "hidden" }, fill: { height: 5, backgroundColor: "rgba(255,255,255,.68)", borderRadius: 4 },
+  times: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 7 }, time: { fontSize: 11, color: "rgba(255,255,255,.58)", fontVariant: ["tabular-nums"] }, format: { color: "rgba(255,255,255,.58)", fontSize: 11 },
+  transport: { flexDirection: "row", alignItems: "center", justifyContent: "space-evenly" }, transportTouch: { width: 76, height: 68, alignItems: "center", justifyContent: "center" },
+  volume: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 9 }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
+  footer: { flexDirection: "row", alignItems: "center", justifyContent: "space-around", marginTop: 8 }, notice: { color: "rgba(255,255,255,.58)", fontSize: 11, textAlign: "center", marginTop: 6 },
 });

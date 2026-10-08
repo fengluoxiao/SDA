@@ -43,7 +43,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
       <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false}
-        headerConfig={{ hidden: true, title }} style={StyleSheet.absoluteFill}>
+        headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: "transparent" }} style={StyleSheet.absoluteFill}>
         {children}
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"

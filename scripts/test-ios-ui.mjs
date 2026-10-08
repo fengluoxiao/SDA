@@ -73,7 +73,7 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
 assert.match(ui, /edges=\{hasSystemIOSTabs \? \["top", "left", "right"\]/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
-assert.match(ui, /backgroundColor=\{c.bg\} accent=\{c.accent\}/);
+assert.match(ui, /backgroundColor=\{homeBackground\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
 assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
 
@@ -229,15 +229,16 @@ console.log('Home scrolling checks passed: fixed player/scene, overflow-only lib
 for (const viewport of [410, 520, 650, 780]) {
   for (const blocks of [237, 285, 315]) {
     const layout = iosPlayerLayout(390, viewport, blocks);
-    assert.ok(layout.coverSize >= 48 && layout.coverSize <= 260);
-    assert.ok(layout.coverSize + blocks + 22 + layout.gap * 4 <= viewport + 1);
+    assert.ok(layout.coverSize >= 48 && layout.coverSize <= 340);
+    assert.ok(layout.coverSize + blocks + 44 + layout.gap * 5 <= viewport + 1);
   }
 }
 assert.ok(iosPlayerLayout(390, 700, 237).coverSize > iosPlayerLayout(390, 410, 237).coverSize);
 assert.ok(iosPlayerLayout(390, 500, 285).coverSize < iosPlayerLayout(390, 500, 237).coverSize);
-assert.match(ui, /justifyContent: "space-between"/);
+assert.match(ui, /justifyContent: "flex-start"/);
+assert.match(ui, /marginHorizontal: -18, overflow: "hidden"/);
 assert.match(ui, /measurePlayerBlock\("(?:status|info|controls|volume)"/);
-assert.match(ui, /<IOSVolumeSymbol volume=\{p.volume\}/);
+assert.match(ui, /name="speaker.wave.2.fill"/);
 assert.doesNotMatch(ui, /label\("音量", true/);
 const volumeSymbol = readFileSync('apps/mobile/src/IOSVolumeSymbol.tsx', 'utf8');
 assert.match(volumeSymbol, /speaker.wave.2.fill/);
@@ -245,15 +246,16 @@ assert.match(volumeSymbol, /speaker.slash.fill/);
 assert.match(volumeSymbol, /getViewConfig/);
 console.log('Player layout checks passed: short/tall viewports, measured notices/metadata, guarded native speaker symbol');
 
-assert.equal(iosPlayerLayout(390, 780, 237).coverSize, 260);
-assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 260);
+assert.equal(iosPlayerLayout(390, 780, 237).coverSize, 326);
+assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 340);
 
 // Standalone-only SDA managers may supply audio, never a different home design.
 const sharedTransport = ui.slice(ui.indexOf('  const icon ='), ui.indexOf('  const divider ='));
 assert.doesNotMatch(sharedTransport, /hasNativeIOSChrome|IOSIconButton/);
-const sharedVolume = ui.slice(ui.indexOf('<View style={[s.volume,'), ui.indexOf('<View style={[s.volume,') + 1100);
+const sharedVolume = ui.slice(ui.indexOf('<View style={[np.volume, np.controlsDown]}'), ui.indexOf('<View style={[np.volume, np.controlsDown]}') + 1800);
 assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
-assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
+assert.match(sharedVolume, /accessibilityRole="adjustable"/);
+assert.match(sharedVolume, /accessibilityLabel="音量"/);
 console.log('Expo Go/release parity checks passed: shared home header, transport and volume controls');
 
 // Both native accessory environments share actions/state with the main player.
@@ -293,24 +295,17 @@ assert.match(playbackSymbol, /systemName=\{playing \? "pause.fill" : "play.fill"
 assert.match(playbackSymbol, /pointerEvents="none"/);
 console.log('Mini-player design checks passed: smaller covers, bare SF Symbol, homepage accent, 44-point target');
 
-assert.match(ui, /<IOSSkipSymbol direction="previous" color=\{c.ink\}/);
-assert.match(ui, /<IOSSkipSymbol direction="next" color=\{c.ink\}/);
+assert.match(ui, /<IOSSkipSymbol direction="previous" color=\{pc.ink\}/);
+assert.match(ui, /<IOSSkipSymbol direction="next" color=\{pc.ink\}/);
 assert.doesNotMatch(ui, /backward.end.fill|forward.end.fill/);
 assert.match(playbackSymbol, /"backward.fill" : "forward.fill"/);
 console.log('Transport symbol checks passed: real double-triangle SF Symbols in Go and release');
 
-// Home transport must visibly reflect the same mode as the settings picker.
-assert.match(ui, /<IOSModeSymbol mode=\{p.playbackMode\}/);
-assert.match(ui, /onPress=\{\(\) => p.setPlaybackMode\(followingPlaybackMode\(p.playbackMode\)\)\}/);
-const modeControl = ui.match(/<Pressable[^>]*accessibilityLabel=\{["']播放模式：["'][\s\S]*?<\/Pressable>/)?.[0];
-assert.ok(modeControl);
-assert.doesNotMatch(modeControl, /<Text/);
-assert.match(modeControl, /accessibilityValue=\{\{ text: PLAYBACK_MODE_LABELS\[p.playbackMode\]/);
-assert.match(modeControl, /width: 44, height: 44/);
-assert.match(ui, /<IOSPlaybackSymbol playing=\{playing\} color=\{c.ink\}/);
-assert.doesNotMatch(ui, /icon\(playing \? "pause.fill"/);
-assert.match(playbackSymbol, /"repeat.1" : mode === "repeat-all" \? "repeat" : "list.bullet"/);
-console.log('Home transport regression checks passed: visible mode feedback and native playback symbols');
+// Mode remains a real action in the existing player's more menu.
+assert.match(ui, /播放模式：/);
+assert.match(ui, /p.setPlaybackMode\(followingPlaybackMode\(p.playbackMode\)\)/);
+assert.match(ui, /<IOSPlaybackSymbol playing=\{playing\} color=\{pc.ink\} size=\{38\}/);
+console.log('Home transport checks passed: original callbacks, more-menu mode, library queue navigation');
 
 // ALAC shares the Apple output transport, not the MPEG-H codec or room fallback.
 assert.deepEqual(compatibleRooms({rooms,layout:'7.1.4',systemSpatial360RAActive:true,systemSpatial360RA:false,sourceCodec:'alac'}),[rooms[1]]);
@@ -346,3 +341,68 @@ assert.match(liveUpmix,/alacUpmixActive = enabled/);
 assert.match(liveUpmix,/systemSpatial\?\.setAlacUpmix\(enabled\)/);
 assert.doesNotMatch(liveUpmix,/stopNative|startNative|setPaused|reset_source|\.play\(/);
 console.log('Live ALAC mode setter preserves the active playback session');
+
+// Restyle the existing first tab, never introduce a separate playback route.
+assert.doesNotMatch(ui, /IOSNowPlaying|setNowPlaying|presentationStyle="fullScreen"/);
+assert.match(homePages, /s.page, np.root/);
+assert.match(homePages, /onPress=\{p.previous\}/);
+assert.match(homePages, /onPress=\{p.next\}/);
+assert.match(homePages, /当前不支持拖动定位/);
+assert.match(homePages, /onAccessibilityAction=/);
+console.log('Existing playback tab checks passed: page background, reference layout, original navigation, no new screen/modal');
+
+assert.ok(iosPlayerLayout(390, 780, 237).coverSize > 260);
+
+
+assert.doesNotMatch(homePages, /np.footer|歌词（尚未支持）|选择输出设备（尚未支持）|待播清单/);
+
+assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap|marginTop: "auto"/);
+for (const height of [520, 650, 780]) {
+ const layout = iosPlayerLayout(390, height, 236);
+ assert.ok(layout.gap >= 0 && layout.gap <= 48);
+ const unused = height - (layout.coverSize + 236 + 44 + layout.gap * 5);
+ assert.ok(unused >= -1 && unused < 24, `unexpected empty bottom: ${unused}`);
+}
+
+assert.match(ui, /marginTop: playerGap \+ 22/);
+assert.match(ui, /layout.height - playerGap - 22/);
+
+assert.equal((homePages.match(/np.infoProgressOffset/g) || []).length, 1);
+assert.match(ui, /infoProgressOffset: \{ transform: \[\{ translateY: 12 \}\]/);
+
+
+
+assert.doesNotMatch(homePages, /blurRadius|immersive-default|immersive &&/);
+
+assert.match(ui, /const homeBackground = immersiveHome \? "transparent" : c.bg/);
+assert.doesNotMatch(homePages, /np.coverImage|np.emptyCover/);
+
+
+assert.match(ui, /backgroundColor=\{homeBackground\}/);
+assert.match(ui, /immersiveHome && <View pointerEvents="none"/);
+
+
+assert.match(ui, /backgroundColor: fadeColor/);
+assert.match(ui, /artworkColor\(artworkUri\)/);
+
+assert.match(ui, /width: artworkSize, height: artworkSize/);
+assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
+
+assert.match(ui, /const artworkSize = width \+ 48/);
+assert.match(ui, /blurRadius=\{24\}/);
+assert.match(ui, /top: -bandTop/);
+
+assert.match(ui, /previewMetadata = __DEV__ && !p.selectedUri && engineUnavailable/);
+const metadataSheet = readFileSync("apps/mobile/src/IOSMetadataSheet.tsx", "utf8");
+assert.match(metadataSheet, /presentationDetents\(\["medium", "large"\]\)/);
+assert.match(metadataSheet, /presentationDragIndicator\("visible"\)/);
+assert.match(metadataSheet, /onIsPresentedChange=\{onChange\}/);
+assert.match(ui, /onPress=\{\(\) => setMetadataOpen\(true\)\}/);
+
+assert.doesNotMatch(homePages, /收藏（尚未支持）|更多歌曲选项/);
+
+
+assert.match(homePages, /onPress=\{\(\) => p.setPlaybackMode\(mode\)\}/);
+assert.match(homePages, /selected = p.playbackMode === mode/);
+
+assert.doesNotMatch(ui, /images.unsplash.com|previewArtwork/);
