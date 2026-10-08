@@ -7,7 +7,7 @@ assert.match(app,/spatialEnhancementEnabled: settings\.spatialEnhancementEnabled
 assert.match(app,/setSpatialEnhancement=\{this\.setSpatialEnhancement\}/);
 assert.match(app,/this\.state\.systemSpatial360RAActive\) return/);
 for(const path of ['apps/mobile/src/IOSNativeSettings.tsx','apps/mobile/src/IOSPlayer.tsx']) {
- const ui=read(path);assert.ok(ui.includes('空间层增强 · +2/+6'));assert.ok(ui.includes('p.setSpatialEnhancement'));
+ const ui=read(path);assert.ok(ui.includes('空间平衡 · −0.75 dB'));assert.ok(ui.includes('p.setSpatialEnhancement'));
  assert.ok(ui.includes('p.busy || p.systemSpatial360RAActive'));
 }
 const player=read('apps/mobile/modules/sda-core/ios/SdaPlayer.swift');

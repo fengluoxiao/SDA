@@ -130,7 +130,8 @@ mod tests {
         let mut e=crate::Engine::new(48000,2);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.master_preamp_db(),2.0);assert_eq!(e.spatial_layer_gain_db(),6.0);
+        assert_eq!(e.master_preamp_db(),2.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
+        assert_eq!(e.final_output_trim.target_db(),-0.75);
         e.set_spatial_enhancement(false).unwrap();
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         let command:crate::Command=serde_json::from_str(r#"{"type":"setSpatialEnhancement","enabled":true}"#).unwrap();

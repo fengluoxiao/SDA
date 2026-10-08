@@ -1041,6 +1041,7 @@ pub struct Engine {
     speaker_lfe_level: f32,
     spatial_layer: spatial_layer::Settings,
     master_preamp: master_preamp::MasterPreamp,
+    final_output_trim: master_preamp::MasterPreamp,
     output_gain: f32,
     comparison_gain: f32,
     comparison_target: f32,
@@ -1170,6 +1171,7 @@ impl Engine {
             speaker_lfe_level: 1.0,
             spatial_layer: spatial_layer::Settings::new(sample_rate),
             master_preamp: Default::default(),
+            final_output_trim: Default::default(),
             output_gain: 1.0,
             comparison_gain: 1.0,
             comparison_target: 1.0,
@@ -1670,7 +1672,8 @@ impl Engine {
     /// Atomic listener preset for the accepted general enhancement recipe.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         self.set_master_preamp_db(if enabled { 2.0 } else { 0.0 })?;
-        self.set_spatial_layer_gain_db(if enabled { 6.0 } else { 0.0 })?;
+        self.set_spatial_layer_gain_db(0.0)?;
+        self.final_output_trim.set(if enabled { -0.75 } else { 0.0 }, self.output_sample_rate, !self.output_active)?;
         // Cancel the automatic master lift on the main layer; preserve original
         // main level rather than applying a vocal/song-specific cut.
         self.spatial_layer.main_restore_db = if enabled { 2.0 } else { 0.0 };
@@ -1725,6 +1728,7 @@ impl Engine {
 
     fn advance_output_envelopes(&mut self) {
         self.master_preamp.advance();
+        self.final_output_trim.advance();
         self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
         if self.output_gain_ramp_remaining > 0 {
             self.output_gain += self.output_gain_step;
@@ -1819,6 +1823,7 @@ impl Engine {
     fn reset_session(&mut self, origin: u64) {
         performance::reset();
         self.master_preamp.settle();
+        self.final_output_trim.settle();
         self.front_common.reset();
         self.spatial_balance.reset();
         self.fast_activity.clear();
@@ -2983,6 +2988,7 @@ impl Engine {
                 pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
                 pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
             );
+            let guarded = guarded.map(|v| v * self.final_output_trim.gain());
             if channels >= 2 {
                 frame[0] = guarded[0];
                 frame[1] = guarded[1];
