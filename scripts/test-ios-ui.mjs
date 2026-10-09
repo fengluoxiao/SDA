@@ -255,7 +255,7 @@ assert.doesNotMatch(sharedTransport, /hasNativeIOSChrome|IOSIconButton/);
 const sharedVolume = ui.slice(ui.indexOf('<View style={[np.volume, np.controlsDown]}'), ui.indexOf('<View style={[np.volume, np.controlsDown]}') + 1800);
 assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
 assert.match(sharedVolume, /accessibilityRole="adjustable"/);
-assert.match(sharedVolume, /accessibilityLabel="音量"/);
+assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
 console.log('Expo Go/release parity checks passed: shared home header, transport and volume controls');
 
 // Both native accessory environments share actions/state with the main player.
