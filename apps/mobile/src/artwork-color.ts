@@ -41,3 +41,4 @@ export async function artworkColor(uri: string): Promise<string> {
     return color;
   } finally { await GLView.destroyContextAsync(gl); }
 }
+

@@ -78,7 +78,9 @@ final class SdaPlayer {
   guard let h = handle else { throw SdaError.message("引擎未启动") }
   let result = try decodeReply(sda_ios_command(h, op, try json(args)))
   if op == "status", var status = result as? [String:Any] {
-   status["sourceCodec"] = alacActive ? "alac" : layout == "360RA-13" ? "mpegh" : ""
+   if alacActive { status["sourceCodec"] = "alac" }
+   else if layout == "360RA-13" { status["sourceCodec"] = "mpegh" }
+   // Other compressed codecs come from the decoder status; never overwrite them.
    status["alacUpmixActive"] = alacUpmixActive
    status["outputChannels"] = 2
    status["outputLayout"] = layout

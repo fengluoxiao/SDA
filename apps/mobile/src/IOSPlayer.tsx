@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Image, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, Image, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
@@ -59,14 +59,16 @@ export function IOSPlayer(p: PlayerProps) {
     if (hasArtwork) artworkColor(artworkUri).then(color => { if (active) setArtworkTone({ uri: artworkUri, color }); }).catch(() => { if (active) setArtworkTone({ uri: artworkUri, color: "#303034" }); });
     return () => { active = false; };
   }, [artworkUri, hasArtwork]);
-  const immersiveHome = page === 0 && !settings;
+  // Preserve the underlying player across the settings push/pop animation.
+  const immersiveHome = page === 0;
   const homeBackground = immersiveHome ? "transparent" : c.bg;
+  const homeTitle = page === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[page] || "正在播放";
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听");
   const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const [playerHeight, setPlayerHeight] = useState(Math.max(300, height - 230));
-  const [playerBlocks, setPlayerBlocks] = useState({ status: 24, info: 62, controls: 106, volume: 44 });
+  const [playerBlocks, setPlayerBlocks] = useState({ status: 0, info: 62, controls: 106, volume: 44 });
   const { coverSize, gap: playerGap } = iosPlayerLayout(width, playerHeight, Object.values(playerBlocks).reduce((sum, value) => sum + value, 0));
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
@@ -77,8 +79,8 @@ export function IOSPlayer(p: PlayerProps) {
     ["数据来源", "Expo Go 模拟数据 · 仅开发预览"], ["文件名", "Preview.m4a"], ["标题", "示例歌曲"], ["艺人", "示例艺人"], ["专辑", "示例专辑"], ["容器", "M4A"], ["编码", "E-AC-3 JOC"], ["采样率", "48,000 Hz（模拟）"], ["音频格式", "杜比全景声"],
   ] : [
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
-    ["年份", p.metadata.year || "未写入"], ["曲目", p.metadata.track || "未写入"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
-    ["编码", p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["输出声道数", String(p.outputChannels)], ["渲染布局", p.layout], ["对象数量", String(p.objects.length)],
+    ["年份", p.metadata.year || "暂未读取"], ["曲目", p.metadata.track || "暂未读取"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
+    ["编码", p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["当前可视对象数（非全曲总数）", String(p.objects.length)],
     ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / KU100"],
   ];
   const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
@@ -109,7 +111,7 @@ export function IOSPlayer(p: PlayerProps) {
     },
     onPanResponderMove: (_, gesture) => p.setVolume(Math.max(0, Math.min(1, (gesture.moveX - volumeOrigin.current) / volumeWidth.current))),
   }), [p.setVolume]);
-  const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: immersiveHome ? (muted ? pc.muted : pc.ink) : (muted ? c.muted : c.ink) }, style]}>{value}</Text>;
+  const label = (value: string, muted = false, style: object = {}) => <Text style={[{ color: immersiveHome && !settings ? (muted ? pc.muted : pc.ink) : (muted ? c.muted : c.ink) }, style]}>{value}</Text>;
   // The approved Expo Go transport controls are shared with the release app.
   // The presence of SdaEngine/SdaGlass must never select a different design.
   const icon = (symbol: string, name: string, action: () => void, disabled = false, size = 44, fallback = "•") => <Pressable accessibilityRole="button" accessibilityLabel={name} disabled={disabled} onPress={action} style={[s.icon, { width: size, height: size, backgroundColor: c.panel, opacity: disabled ? .35 : 1 }]}>{label(fallback, false, { fontSize: 22 })}</Pressable>;
@@ -137,26 +139,15 @@ export function IOSPlayer(p: PlayerProps) {
   return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: c.bg }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
     {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
-    {/* Crossfade into a blurred copy before the sampled-color fade.
-        Each clipped band uses the same square coordinates: no image stretching. */}
-    {hasArtwork && Array.from({ length: 8 }, (_, index) => {
-      const bandTop = artworkSize * (.58 + index * .0525);
-      const t = (index + 1) / 8;
-      return <View key={`blur-${index}`} style={{ position: "absolute", top: bandTop, left: 0, width, height: artworkSize * .0525 + 1, overflow: "hidden", opacity: t * t * (3 - 2 * t) }}>
-        <Image source={{ uri: artworkUri }} resizeMode="contain" blurRadius={24} style={{ position: "absolute", top: -bandTop, left: -24, width: artworkSize, height: artworkSize }} />
-      </View>;
-    })}
-    <View style={{ position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30 }}>
-      {Array.from({ length: 64 }, (_, index) => { const t = index / 63; return <View key={index} style={{ position: "absolute", top: artworkSize * .30 * index / 64, left: 0, right: 0, height: artworkSize * .30 / 64 + 1, backgroundColor: fadeColor, opacity: t * t * (3 - 2 * t) }} />; })}
-    </View>
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30, tintColor: fadeColor }} />
   </View>}
   <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
     <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: c.ink, fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><Pressable accessibilityRole="button" accessibilityLabel="关闭歌曲元数据" onPress={() => setMetadataOpen(false)} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><Text style={{ color: c.accent }}>完成</Text></Pressable></View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: c.muted, fontSize: 12 }}>{name}</Text><Text selectable style={{ color: c.ink, fontSize: 16, lineHeight: 23, marginTop: 5 }}>{value}</Text></View>)}</ScrollView>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><Pressable accessibilityRole="button" accessibilityLabel="关闭歌曲元数据" onPress={() => setMetadataOpen(false)} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><Text style={{ color: PlatformColor("systemBlue"), fontWeight: "600" }}>完成</Text></Pressable></View>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
     </SafeAreaView>
   </IOSMetadataSheet>
-  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放"} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: homeBackground }]}>
@@ -164,7 +155,7 @@ export function IOSPlayer(p: PlayerProps) {
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
-        <View style={{ flex: 1 }}>{label("SDA", true, s.eyebrow)}{label(page === 0 ? "正在播放" : IOS_TABS[page] || "正在播放", false, s.pageTitle)}</View>
+        <View style={{ flex: 1 }}>{label("SDA", true, s.eyebrow)}{label(homeTitle, false, s.pageTitle)}</View>
         {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen
@@ -195,7 +186,6 @@ export function IOSPlayer(p: PlayerProps) {
             <Symbol name="speaker.wave.2.fill" fallback="▸" size={18} color={pc.muted} />
           </View>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
-          {p.busy && <Text accessibilityLiveRegion="polite" style={[np.notice, { color: pc.muted }]}>正在准备音频…</Text>}
           </View>
           </View>
         </View>

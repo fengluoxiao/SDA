@@ -120,7 +120,9 @@ pub unsafe extern "C" fn sda_ios_command(
         };
         match unsafe { text(op)? } {
             "status" => {
-                return serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())
+                let mut status = serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())?;
+                status["sourceCodec"] = json!(e.codec_name());
+                return Ok(status)
             }
             "objects" => {
                 return serde_json::to_value(e.object_snapshot()).map_err(|e| e.to_string())

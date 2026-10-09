@@ -389,8 +389,6 @@ assert.match(ui, /width: artworkSize, height: artworkSize/);
 assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
 assert.match(ui, /const artworkSize = width \+ 48/);
-assert.match(ui, /blurRadius=\{24\}/);
-assert.match(ui, /top: -bandTop/);
 
 assert.match(ui, /previewMetadata = __DEV__ && !p.selectedUri && engineUnavailable/);
 const metadataSheet = readFileSync("apps/mobile/src/IOSMetadataSheet.tsx", "utf8");
@@ -406,3 +404,21 @@ assert.match(homePages, /onPress=\{\(\) => p.setPlaybackMode\(mode\)\}/);
 assert.match(homePages, /selected = p.playbackMode === mode/);
 
 assert.doesNotMatch(ui, /images.unsplash.com|previewArtwork/);
+
+assert.doesNotMatch(ui, /bandTop|length: 64|length: 8/);
+
+assert.match(ui, /const immersiveHome = page === 0;/);
+assert.doesNotMatch(ui, /const immersiveHome = page === 0 && !settings/);
+
+assert.doesNotMatch(ui, /artworkTransition|transitionArtwork/);
+assert.match(ui, /tintColor: fadeColor/);
+
+assert.match(ui, /p.busy \|\| p.preparingAudio \? "正在准备音频…"/);
+assert.match(ui, /label\(homeTitle, false, s.pageTitle\)/);
+assert.doesNotMatch(homePages, /正在准备音频/);
+assert.match(ui, /PlatformColor\("label"\), fontSize: 13, fontWeight: "600"/);
+
+assert.doesNotMatch(ui, /rgba\(255,255,255,.55\)|rgba\(0,0,0,.45\)/);
+
+assert.match(readFileSync("crates/sda-native/src/ios.rs", "utf8"), /status\["sourceCodec"\] = json!\(e.codec_name\(\)\)/);
+assert.doesNotMatch(readFileSync("apps/mobile/modules/sda-core/ios/SdaPlayer.swift", "utf8"), /layout == "360RA-13" \? "mpegh" : ""/);
