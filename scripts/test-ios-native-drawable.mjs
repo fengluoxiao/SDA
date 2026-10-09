@@ -25,5 +25,9 @@ assert.match(sceneSource,/if \(!firstFrame\.current\) \{\s*firstFrame\.current =
 assert.ok(sceneSource.indexOf('firstFrame.current = true;',sceneSource.indexOf('state.gl.render =')) < sceneSource.indexOf('if (smoke && frames >= 30'));
 assert.match(sceneSource,/frames >= 30 && !smokeReported/);
 assert.doesNotMatch(sceneSource,/context\.endFrameEXP\s*=/);
-assert.ok(sceneSource.indexOf('renderFrame(scene, camera)') < sceneSource.indexOf('context.readPixels'));
+assert.ok(sceneSource.indexOf('renderFrame(scene, camera)') < sceneSource.indexOf('state.gl.readRenderTargetPixels'));
 console.log('Scene readiness: first real draw is separate from one-shot CI pixel capture');
+
+assert.match(sceneSource,/new THREE.WebGLRenderTarget/);
+assert.match(sceneSource,/state.gl.setRenderTarget\(previousTarget\)/);
+assert.match(sceneSource,/target.dispose\(\)/);

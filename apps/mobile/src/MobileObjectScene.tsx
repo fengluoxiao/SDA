@@ -175,13 +175,29 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
           smokeReported = true;
           // Sample immediately after drawing, before Expo presents this buffer.
           // Do not depend on endFrameEXP being called exactly once per render.
-          const width = context.drawingBufferWidth, height = context.drawingBufferHeight;
+          // Expo's presented default framebuffer is not reliably readable on
+          // iOS (the screenshot can be valid while readPixels returns 1282).
+          // Probe the same scene/camera through an explicitly readable target.
+          const width = 256, height = 256;
           const buffer = new Uint8Array(width * height * 4);
-          context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, buffer);
+          const target = new THREE.WebGLRenderTarget(width, height, { depthBuffer: true });
+          const previousTarget = state.gl.getRenderTarget();
+          let probeError = 0;
+          try {
+            // Separate stale default-drawable errors from probe validation.
+            for (let i = 0; i < 8 && context.getError() !== context.NO_ERROR; i++) {}
+            state.gl.setRenderTarget(target);
+            renderFrame(scene, camera);
+            state.gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+            probeError = context.getError();
+          } finally {
+            state.gl.setRenderTarget(previousTarget);
+            target.dispose();
+          }
           let brightPixels = 0;
           for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
           const result = { ok: true, brightPixels, bufferWidth: width, bufferHeight: height,
-            glError: context.getError(), framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER),
+            pixelProbe: "explicit-render-target", glError: probeError, framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER),
             camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)),
             programs: state.gl.info.programs?.map((program: any) => program.diagnostics),
             calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles,
