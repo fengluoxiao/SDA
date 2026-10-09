@@ -28,8 +28,8 @@ export function IOSSystemTabs({ selected, onChange, children, accessory, nativeA
       {IOS_TABS.map((label, index) => <TabView.Tab key={label} value={String(index)} label={label} systemImage={symbols[index]}>
         {/* Paint inside each native tab, not just underneath TabView itself.
             The page background must continue behind the floating system bar. */}
-        <VStack spacing={0} modifiers={[background(pageBackgroundColors?.[index] ?? backgroundColor, { ignoresSafeAreaEdges: "all" })]}>
-          <RNHostView><View style={{ flex: 1, paddingHorizontal: 18, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>{pages[index]}{index !== 0 && accessory}</View></RNHostView>
+        <VStack spacing={0}>
+          <RNHostView><View style={{ flex: 1, paddingHorizontal: 18, backgroundColor: "transparent" }}>{pages[index]}{index !== 0 && accessory}</View></RNHostView>
         </VStack>
       </TabView.Tab>)}
     </TabView>

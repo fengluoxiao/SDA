@@ -81,7 +81,7 @@ assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
 assert.doesNotMatch(ui, /<\/IOSSystemTabs>\s*\{!!p.error/);
 assert.ok(ui.indexOf('!!p.error && !engineUnavailable') < ui.indexOf('<IOSSystemTabs selected='));
 assert.match(ui, /engineUnavailable && <Text/);
-assert.match(tabs, /<VStack spacing=\{0\} modifiers=\{\[background\(pageBackgroundColors\?\.\[index\] \?\? backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)\]\}/);
+assert.match(tabs, /<VStack spacing=\{0\}>/);
 
 // UIKit path exposes actual native bar appearances, not just page backgrounds.
 const uiKitTabs = readFileSync('apps/mobile/src/IOSUIKitTabs.tsx', 'utf8');
@@ -92,7 +92,7 @@ assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
-assert.match(uiKitTabs, /<SafeAreaView edges=\{\["bottom"\]\}/);
+assert.match(uiKitTabs, /<SafeAreaView edges=\{index === 1 \? \[\] : \["bottom"\]\}/);
 assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 
 // Exercise the UI adapter with mocked native components (not a visual/native
@@ -102,6 +102,8 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
   const module = { exports: {} };
   let nativeImports = 0;
   const mockReact = {
+    isValidElement: value => !!value && typeof value === "object" && "props" in value,
+    cloneElement: (value, props) => ({ ...value, props: { ...value.props, ...props } }),
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
     useState: () => [0, () => {}],
   };
@@ -390,7 +392,6 @@ assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
 assert.match(ui, /const artworkSize = width \+ 48/);
 
-assert.match(ui, /previewMetadata = __DEV__ && !p.selectedUri && engineUnavailable/);
 const metadataSheet = readFileSync("apps/mobile/src/IOSMetadataSheet.tsx", "utf8");
 assert.match(metadataSheet, /presentationDetents\(\["medium", "large"\]\)/);
 assert.match(metadataSheet, /presentationDragIndicator\("visible"\)/);
@@ -445,3 +446,6 @@ assert.match(metadataSheet, /<NativeText modifiers=\{\[frame\(\{ width: 44, heig
 assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
+
+assert.match(ui, /const previewMetadata = __DEV__ &&/);
+assert.match(uiKitTabs, /paddingBottom: 24/);

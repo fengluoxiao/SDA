@@ -57,9 +57,9 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         }}>
         {/* The page owns its content inset, while its background remains full
             screen behind the floating bar. Pages stay mounted across selection. */}
-        <SafeAreaProvider style={{ flex: 1, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>
-          <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>
-            {pages[index]}{index !== 0 && !(hasUIKitTabAccessory && nativeAccessory) && accessory}
+        <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
+          <SafeAreaView edges={index === 1 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor: "transparent" }}>
+            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: 24 }] }) : pages[index]}{index !== 0 && !(hasUIKitTabAccessory && nativeAccessory) && accessory}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}
