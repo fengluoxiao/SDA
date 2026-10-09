@@ -31,38 +31,8 @@ const time = (ms: number) => Math.floor(ms / 60000) + ":" + String(Math.floor(ms
 
 // The approved remote-inspired presentation. All audio actions remain owned by
 // App/SdaPlayer; navigating between pages never stops or restarts a track.
-export function IOSPlayer(actual: PlayerProps) {
-  // Explicit host environment: native-module proxies are not a reliable
-  // presence check. Release cannot load this preview branch.
-  const previewMetadata = __DEV__ && (() => {
-    const constants = require("expo-constants").default as typeof import("expo-constants").default;
-    return constants.appOwnership === "expo" || constants.executionEnvironment === "storeClient";
-  })();
-  const [mockIndex, setMockIndex] = useState(0);
-  const [mockPlaying, setMockPlaying] = useState(false);
-  const mockQueue = previewMetadata ? [
-    { contentHash: "preview-ether", uri: "mock://ether", name: "Ether.m4a", metadata: { title: "Ether", artist: "Ave Mujica", album: "Ave Musica" } },
-    { contentHash: "preview-eyes", uri: "mock://eyes", name: "In Your Eyes.m4a", metadata: { title: "In Your Eyes", artist: "The Weeknd", album: "After Hours" } },
-    { contentHash: "preview-night", uri: "mock://night", name: "The Very First Night.m4a", metadata: { title: "The Very First Night", artist: "Taylor Swift", album: "Red (Taylor’s Version)" } },
-    {"contentHash": "preview-cruel", "uri": "mock://cruel", "name": "Cruel Summer.m4a", "metadata": {"title": "Cruel Summer", "artist": "Taylor Swift", "album": "Lover"}},
-    {"contentHash": "preview-72", "uri": "mock://72", "name": "看我72变.m4a", "metadata": {"title": "看我72变", "artist": "蔡依林", "album": "看我72变"}},
-    {"contentHash": "preview-sky", "uri": "mock://sky", "name": "壱雫空.m4a", "metadata": {"title": "壱雫空", "artist": "MyGO!!!!!", "album": "壱雫空 - Single"}},
-    {"contentHash": "preview-life", "uri": "mock://life", "name": "これはぼくたちの生存のあらすじ.m4a", "metadata": {"title": "これはぼくたちの生存のあらすじ", "artist": "夢限大みゅーたいぷ", "album": "これはぼくたちの生存のあらすじ"}},
-    {"contentHash": "preview-love", "uri": "mock://love", "name": "How Do I Make You Love Me?.m4a", "metadata": {"title": "How Do I Make You Love Me?", "artist": "The Weeknd", "album": "Dawn FM"}},
-    {"contentHash": "preview-lights", "uri": "mock://lights", "name": "Blinding Lights.m4a", "metadata": {"title": "Blinding Lights", "artist": "The Weeknd", "album": "After Hours"}},
-    {"contentHash": "preview-anti", "uri": "mock://anti", "name": "Anti-Hero.m4a", "metadata": {"title": "Anti-Hero", "artist": "Taylor Swift", "album": "Midnights"}},
-    {"contentHash": "preview-haze", "uri": "mock://haze", "name": "Lavender Haze.m4a", "metadata": {"title": "Lavender Haze", "artist": "Taylor Swift", "album": "Midnights"}},
-    {"contentHash": "preview-symbol", "uri": "mock://symbol", "name": "Symbol I : △.m4a", "metadata": {"title": "Symbol I : △", "artist": "Ave Mujica", "album": "The Die Is Cast"}},
-  ] : [];
-  const mockTrack = mockQueue[mockIndex];
-  const p: PlayerProps = mockTrack ? {
-    ...actual, queue: mockQueue, queueIndex: mockIndex, selectedUri: mockTrack.uri,
-    fileName: mockTrack.name, metadata: mockTrack.metadata, durationMs: 214000, positionMs: 55000,
-    busy: false, preparingAudio: false, playing: mockPlaying, paused: false, error: null,
-    sourceCodec: "eac3", renderingStatus: "Dolby Atmos · UI mock",
-    play: () => setMockPlaying(true), togglePause: () => setMockPlaying(value => !value), stop: () => setMockPlaying(false),
-    selectTrack: index => setMockIndex(index), previous: () => setMockIndex(index => (index + mockQueue.length - 1) % mockQueue.length), next: () => setMockIndex(index => (index + 1) % mockQueue.length),
-  } : actual;
+export function IOSPlayer(p: PlayerProps) {
+  const previewMetadata = false;
   const systemTheme = useColorScheme();
   const { width, height } = useWindowDimensions();
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);

@@ -447,5 +447,7 @@ assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
 
-assert.match(ui, /const previewMetadata = __DEV__ &&/);
 assert.match(uiKitTabs, /paddingBottom: 24/);
+
+assert.match(ui, /const previewMetadata = false;/);
+assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
