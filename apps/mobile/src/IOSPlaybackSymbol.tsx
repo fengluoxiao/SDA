@@ -6,7 +6,7 @@ import { swiftUI } from "./IOSSystemTabs";
 export function IOSPlaybackSymbol({ playing, color, size = 20 }: { playing: boolean; color: string; size?: number }) {
   const hasImage = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
-    {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }}>
+    {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={color.startsWith("#1") || color.startsWith("#2") ? "light" : "dark"}>
       <swiftUI.Image systemName={playing ? "pause.fill" : "play.fill"} size={size} color={color} />
     </swiftUI.Host> : <Text style={{ color, fontSize: size }}>{playing ? "Ⅱ" : "▶"}</Text>}
   </View>;
@@ -15,7 +15,7 @@ export function IOSPlaybackSymbol({ playing, color, size = 20 }: { playing: bool
 export function IOSSkipSymbol({ direction, color, size = 24 }: { direction: "previous" | "next"; color: string; size?: number }) {
   const hasImage = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
-    {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }}>
+    {hasImage && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={color.startsWith("#1") || color.startsWith("#2") ? "light" : "dark"}>
       <swiftUI.Image systemName={direction === "previous" ? "backward.fill" : "forward.fill"} size={size} color={color} />
     </swiftUI.Host> : <Text style={{ color, fontSize: size }}>{direction === "previous" ? "◀◀" : "▶▶"}</Text>}
   </View>;

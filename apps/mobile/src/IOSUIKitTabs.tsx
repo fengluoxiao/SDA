@@ -17,9 +17,9 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors }: {
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
-  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
+  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
   const [provenance, setProvenance] = useState(0);
   if (!screens) return null;
@@ -49,15 +49,16 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         if (Number.isInteger(index) && index >= 0 && index < IOS_TABS.length && index !== selected) onChange(index);
       }}>
       {IOS_TABS.map((label, index) => <Tabs.Screen key={label} screenKey={String(index)} title={label}
-        style={{ backgroundColor }} tabBarItemAccessibilityLabel={label}
+        style={{ backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }} tabBarItemAccessibilityLabel={label}
         ios={{
+          experimental_userInterfaceStyle: theme,
           icon: { type: "sfSymbol", name: symbols[index] },
           standardAppearance: appearance, scrollEdgeAppearance: appearance,
         }}>
         {/* The page owns its content inset, while its background remains full
             screen behind the floating bar. Pages stay mounted across selection. */}
-        <SafeAreaProvider style={{ flex: 1, backgroundColor }}>
-          <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor }}>
+        <SafeAreaProvider style={{ flex: 1, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>
+          <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>
             {pages[index]}{index !== 0 && !(hasUIKitTabAccessory && nativeAccessory) && accessory}
           </SafeAreaView>
         </SafeAreaProvider>

@@ -73,7 +73,7 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
 assert.match(ui, /edges=\{hasSystemIOSTabs \? \["top", "left", "right"\]/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
-assert.match(ui, /backgroundColor=\{homeBackground\} accent=\{c.accent\}/);
+assert.match(ui, /backgroundColor="transparent" pageBackgroundColors=\{\["transparent", c.bg, c.bg\]\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
 assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
 
@@ -81,7 +81,7 @@ assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
 assert.doesNotMatch(ui, /<\/IOSSystemTabs>\s*\{!!p.error/);
 assert.ok(ui.indexOf('!!p.error && !engineUnavailable') < ui.indexOf('<IOSSystemTabs selected='));
 assert.match(ui, /engineUnavailable && <Text/);
-assert.match(tabs, /<VStack spacing=\{0\} modifiers=\{\[background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)\]\}/);
+assert.match(tabs, /<VStack spacing=\{0\} modifiers=\{\[background\(pageBackgroundColors\?\.\[index\] \?\? backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)\]\}/);
 
 // UIKit path exposes actual native bar appearances, not just page backgrounds.
 const uiKitTabs = readFileSync('apps/mobile/src/IOSUIKitTabs.tsx', 'utf8');
@@ -414,7 +414,7 @@ assert.doesNotMatch(ui, /artworkTransition|transitionArtwork/);
 assert.match(ui, /tintColor: fadeColor/);
 
 assert.match(ui, /p.busy \|\| p.preparingAudio \? "正在准备音频…"/);
-assert.match(ui, /label\(homeTitle, false, s.pageTitle\)/);
+assert.match(ui, /label\(homeTitle, false, \[s.pageTitle, \{ color: immersiveHome \? pc.ink : c.ink \}\]\)/);
 assert.doesNotMatch(homePages, /正在准备音频/);
 assert.match(ui, /PlatformColor\("label"\), fontSize: 13, fontWeight: "600"/);
 
@@ -422,3 +422,26 @@ assert.doesNotMatch(ui, /rgba\(255,255,255,.55\)|rgba\(0,0,0,.45\)/);
 
 assert.match(readFileSync("crates/sda-native/src/ios.rs", "utf8"), /status\["sourceCodec"\] = json!\(e.codec_name\(\)\)/);
 assert.doesNotMatch(readFileSync("apps/mobile/modules/sda-core/ios/SdaPlayer.swift", "utf8"), /layout == "360RA-13" \? "mpegh" : ""/);
+
+assert.match(ui, /animated=\{false\} barStyle=\{settings \?/);
+assert.match(metadataSheet, /buttonStyle\(Platform.OS === "ios" && Number\(Platform.Version\) >= 26 \? "glass"/);
+assert.match(readFileSync('apps/mobile/src/IOSUIKitTabs.tsx','utf8'), /pageBackgroundColors\?\.\[index\] \?\? backgroundColor/);
+
+assert.doesNotMatch(readFileSync("apps/mobile/src/IOSNativeSettings.tsx", "utf8"), /statusBarStyle=|statusBarAnimation=/);
+
+assert.match(homePages, /size=\{22\} theme=\{selected \? "dark" : isLight \? "light" : "dark"\}/);
+assert.doesNotMatch(ui, /color.startsWith/);
+
+assert.match(uiKitTabs, /experimental_userInterfaceStyle: theme,/);
+assert.doesNotMatch(uiKitTabs, /index === 0 \? "dark"/);
+
+assert.match(homePages, /color=\{selected \? "#ffffff" : c.ink\}/);
+
+
+assert.match(metadataSheet, /pointerEvents="none"/);
+assert.match(metadataSheet, /color: accent, fontSize: 17/);
+
+assert.match(metadataSheet, /<NativeText modifiers=\{\[frame\(\{ width: 44, height: 28 \}\), opacity\(0\)\]\}/);
+assert.doesNotMatch(metadataSheet, /label=" "/);
+
+assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);

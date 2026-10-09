@@ -10,15 +10,15 @@ import { hasSystemIOSTabs, IOSSystemTabs } from "./IOSSystemTabs";
 import { IOSSettingsNavigation, IOSSettingsButton, hasNativeIOSSettings } from "./IOSNativeSettings";
 import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout } from "./ios-ui-model";
 
-import { IOSMetadataSheet } from "./IOSMetadataSheet";
+import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
 import { artworkColor } from "./artwork-color";
 import { swiftUI } from "./IOSSystemTabs";
 import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
 
-function Symbol({ name, fallback, size = 22, color = "#fff" }: { name: string; fallback: string; size?: number; color?: string }) {
+function Symbol({ name, fallback, size = 22, color = "#fff", theme = "dark" }: { name: string; fallback: string; size?: number; color?: string; theme?: "light" | "dark" }) {
   const native = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
   return <View pointerEvents="none" accessible={false} accessibilityElementsHidden style={{ width: size + 4, height: size + 4, alignItems: "center", justifyContent: "center" }}>
-    {native && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }}><swiftUI.Image systemName={name as React.ComponentProps<typeof swiftUI.Image>["systemName"]} size={size} color={color} /></swiftUI.Host> : <Text style={{ fontSize: size, color }}>{fallback}</Text>}
+    {native && swiftUI ? <swiftUI.Host style={{ width: size + 4, height: size + 4 }} colorScheme={theme}><swiftUI.Image systemName={name as React.ComponentProps<typeof swiftUI.Image>["systemName"]} size={size} color={color} /></swiftUI.Host> : <Text style={{ fontSize: size, color }}>{fallback}</Text>}
   </View>;
 }
 
@@ -143,7 +143,7 @@ export function IOSPlayer(p: PlayerProps) {
   </View>}
   <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
     <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><Pressable accessibilityRole="button" accessibilityLabel="关闭歌曲元数据" onPress={() => setMetadataOpen(false)} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><Text style={{ color: PlatformColor("systemBlue"), fontWeight: "600" }}>完成</Text></Pressable></View>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><IOSMetadataDoneButton accent={c.accent} onPress={() => setMetadataOpen(false)} theme={isLight ? "light" : "dark"} /></View>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
     </SafeAreaView>
   </IOSMetadataSheet>
@@ -151,21 +151,21 @@ export function IOSPlayer(p: PlayerProps) {
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={hasSystemIOSTabs ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: homeBackground }]}>
-    <StatusBar barStyle={immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={homeBackground} />
+    <StatusBar animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       <View style={s.header}>
-        <View style={{ flex: 1 }}>{label("SDA", true, s.eyebrow)}{label(homeTitle, false, s.pageTitle)}</View>
+        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? pc.muted : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor={homeBackground} accent={c.accent} theme={immersiveHome ? "dark" : isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <IOSSystemTabs selected={page} onChange={navigate} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="rgba(255,255,255,.45)" />}</Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
           <View style={[np.metadata, { transform: [{ translateY: 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
@@ -200,7 +200,7 @@ export function IOSPlayer(p: PlayerProps) {
               const selected = p.playbackMode === mode;
               return <Pressable key={mode} accessibilityRole="button" accessibilityLabel={PLAYBACK_MODE_LABELS[mode]} accessibilityState={{ selected }} onPress={() => p.setPlaybackMode(mode)}
                 style={({ pressed }) => [s.loopPill, { backgroundColor: selected ? c.accent : c.field, opacity: pressed ? .65 : 1 }]}>
-                <Symbol name={mode === "sequence" ? "list.bullet" : mode === "repeat-one" ? "repeat.1" : "repeat"} fallback={mode === "sequence" ? "≡" : mode === "repeat-one" ? "↻1" : "↻"} size={22} color={selected ? isLight ? "#ffffff" : "#16221b" : c.muted} />
+                <Symbol name={mode === "sequence" ? "list.bullet" : mode === "repeat-one" ? "repeat.1" : "repeat"} fallback={mode === "sequence" ? "≡" : mode === "repeat-one" ? "↻1" : "↻"} size={22} theme={selected ? "dark" : isLight ? "light" : "dark"} color={selected ? "#ffffff" : c.ink} />
               </Pressable>;
             })}
           </View>

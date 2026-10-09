@@ -10,12 +10,12 @@ export const swiftUI: typeof import("@expo/ui/swift-ui") | null =
     ? require("@expo/ui/swift-ui") : null;
 export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
-export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor }: {
+export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors }: {
   selected: number; onChange(index: number): void; children: React.ReactNode;
-  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string;
+  accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
   const pages = React.Children.toArray(children);
-  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} />;
+  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} />;
   if (!swiftUI) return <><View style={{ flex: 1 }}>{pages}</View>{selected !== 0 && accessory}{fallback}</>;
   const { Host, TabView, RNHostView, VStack } = swiftUI;
   const { tabViewStyle, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
@@ -28,8 +28,8 @@ export function IOSSystemTabs({ selected, onChange, children, accessory, nativeA
       {IOS_TABS.map((label, index) => <TabView.Tab key={label} value={String(index)} label={label} systemImage={symbols[index]}>
         {/* Paint inside each native tab, not just underneath TabView itself.
             The page background must continue behind the floating system bar. */}
-        <VStack spacing={0} modifiers={[background(backgroundColor, { ignoresSafeAreaEdges: "all" })]}>
-          <RNHostView><View style={{ flex: 1, paddingHorizontal: 18, backgroundColor }}>{pages[index]}{index !== 0 && accessory}</View></RNHostView>
+        <VStack spacing={0} modifiers={[background(pageBackgroundColors?.[index] ?? backgroundColor, { ignoresSafeAreaEdges: "all" })]}>
+          <RNHostView><View style={{ flex: 1, paddingHorizontal: 18, backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }}>{pages[index]}{index !== 0 && accessory}</View></RNHostView>
         </VStack>
       </TabView.Tab>)}
     </TabView>
