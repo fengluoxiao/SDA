@@ -1,3 +1,4 @@
+import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
@@ -31,7 +32,9 @@ const time = (ms: number) => Math.floor(ms / 60000) + ":" + String(Math.floor(ms
 
 // The approved remote-inspired presentation. All audio actions remain owned by
 // App/SdaPlayer; navigating between pages never stops or restarts a track.
-export function IOSPlayer(p: PlayerProps) {
+export function IOSPlayer(p: PlayerProps) { return <AppThemeProvider><ThemedPlayer {...p} /></AppThemeProvider>; }
+function ThemedPlayer(p: PlayerProps) {
+  const appTheme = useAppTheme();
   const previewMetadata = false;
   const systemTheme = useColorScheme();
   const { width, height } = useWindowDimensions();
@@ -47,7 +50,7 @@ export function IOSPlayer(p: PlayerProps) {
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
   const isLight = systemTheme !== "dark";
-  const c = palettes[isLight ? "light" : "dark"];
+  const c = { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
   const artworkSize = width + 48; // Slight uniform zoom, never stretch the square.
   const pc = { ink: "#ffffff", muted: "#c9c9ce", line: "rgba(255,255,255,.24)", field: "rgba(255,255,255,.10)" };
   const [failedArtwork, setFailedArtwork] = useState("");
@@ -257,6 +260,8 @@ export function IOSPlayer(p: PlayerProps) {
             {toggle("实际方向", "按对象真实位置定位声音", p.directionalObjects, value => p.setRendering(p.directObjects, value), audioOptionsDisabled)}
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
+          {heading("主题色")}
+          <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>
           {heading("应用与输出")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             <View style={s.settingRow}>{label("外观", false, s.settingTitle)}{label("跟随系统", true, s.small)}</View>{divider()}

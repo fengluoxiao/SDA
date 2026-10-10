@@ -42,7 +42,7 @@ assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{s.header\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
 assert.match(settings, /systemImage="gearshape"/);
-assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(PlatformColor\("systemBlue"\)\)/);
+assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(appTheme.accent\)/);
 for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering']) assert.ok(settings.includes('p.' + callback));
 assert.match(ui, /settings && !hasNativeIOSSettings/);
 assert.match(settings, /getViewConfig/);
@@ -184,7 +184,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './app-theme', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -193,6 +193,7 @@ function settingsAdapter(swiftNavigationAvailable) {
   const mockRequire = name => {
     if (name === 'react') return react;
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => ({ width: 390 }), View: 'View', Modal: 'Modal' };
+    if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text'].map(name => [name,name])) };
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
     throw new Error('Unexpected settings test dependency: ' + name);
@@ -451,3 +452,6 @@ assert.match(uiKitTabs, /paddingBottom: 24/);
 
 assert.match(ui, /const previewMetadata = false;/);
 assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
+
+assert.match(ui, /AppThemeProvider/);
+assert.match(settings, /角色代表色/);
