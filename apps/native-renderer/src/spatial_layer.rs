@@ -33,7 +33,9 @@ impl Settings {
     }
     /// Bed routes use canonical world layout, never the rotated listener route.
     pub fn refresh_beds(&self,sources:&mut HashMap<String,Source>,solver:&vbap::VbapSolver) {
-        if self.db==0.0 {return;}
+        // The accepted preset has no auxiliary lift, but still restores the
+        // horizontal main layer. Its bed weights must not stay zero/stale.
+        if self.db==0.0 && self.main_restore_db==0.0 {return;}
         for s in sources.values_mut().filter(|s|s.kind==SourceKind::Bed) {
             let route=crate::bed_route(s.bed_label.as_deref().unwrap_or(""),solver);
             if route.lfe>0.0 {s.spatial_layer_bed_weight=0.0;continue;}
@@ -59,6 +61,64 @@ pub(crate) fn source_gain(s:&mut Source,db:f32,main_restore_db:f32,slew:f32,at:u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accepted_candidate_motion_is_bounded_at_common_sample_rates() {
+        for rate in [44100,48000,96000] {
+            let settings=Settings{db:1.5,main_restore_db:2.0,..Settings::new(rate)};
+            let mut source=Source{kind:SourceKind::Object,position:[0.0,1.0,0.0],..Default::default()};
+            let low=10.0f32.powf(-2.0/20.0);let high=10.0f32.powf(1.5/20.0);
+            let mut previous=1.0f32;
+            for at in 0..u64::from(rate)*2 {
+                let a=at as f64/f64::from(rate)*std::f64::consts::TAU;
+                // Traverse front/side/rear and height transitions continuously.
+                source.position=[a.sin() as f32,a.cos() as f32,(a*1.3).sin() as f32];
+                let gain=source_gain(&mut source,settings.db,settings.main_restore_db,settings.slew,at);
+                assert!(gain.is_finite() && gain>=low-1e-6 && gain<=high+1e-6);
+                assert!((gain-previous).abs()<=settings.slew+1e-6);
+                previous=gain;
+            }
+            // A metadata jump still obeys the same per-sample bound.
+            source.position=[0.0,1.0,0.0];
+            for at in u64::from(rate)*2..u64::from(rate)*2+4096 {
+                let gain=source_gain(&mut source,settings.db,settings.main_restore_db,settings.slew,at);
+                assert!((gain-previous).abs()<=settings.slew+1e-6);previous=gain;
+            }
+            assert!((previous-low).abs()<1e-6);
+        }
+    }
+
+    #[test]
+    fn accepted_candidate_pause_keeps_source_gain_and_resumes_same_output() {
+        use crate::*;
+        let make=|| {
+            let mut e=Engine::new(48000,2);
+            let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+            e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+            e.set_spatial_enhancement(true).unwrap();
+            // Match the offline +1.5 candidate, retaining main compensation.
+            e.spatial_layer.db=1.5;
+            e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);
+            e.set_program_codec("eac3".into());e.direct_mix=1.0;e.output_active=true;e.paused=false;
+            let id="pause-probe".to_string();
+            let mut source=Source{kind:SourceKind::Object,position:[0.0,-1.0,0.7],gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
+            let pcm:Vec<_>=(0..16384).map(|n|(n as f32*0.137).sin()*0.001).collect();
+            source.samples.write(0,0,&pcm);e.sources.insert(id.clone(),source);e.route_source_now(&id,0).unwrap();e
+        };
+        let mut reference=make();let mut paused=make();
+        let mut a=vec![0.0;8192];let mut b=a.clone();
+        reference.render_into(&mut a,2);paused.render_into(&mut b,2);
+        assert!(a.iter().zip(&b).all(|(a,b)|(*a-*b).abs()<1e-7));
+        let clock=paused.sample_pos;let gain=paused.sources["pause-probe"].spatial_layer_gain;
+        paused.paused=true;
+        let mut silence=vec![1.0;4096];paused.render_into(&mut silence,2);
+        assert!(silence.iter().all(|v|*v==0.0));
+        assert_eq!(paused.sample_pos,clock);assert_eq!(paused.sources["pause-probe"].spatial_layer_gain,gain);
+        paused.paused=false;
+        reference.render_into(&mut a,2);paused.render_into(&mut b,2);
+        assert!(a.iter().any(|v|v.abs()>1e-5));
+        assert!(a.iter().zip(&b).all(|(a,b)|(*a-*b).abs()<1e-7));
+        assert_eq!(paused.peak_guard.diagnostic_gain(),1.0);
+    }
     #[test]
     fn world_geometry_is_continuous_mirrored_and_radius_independent() {
         assert!(weight([-1.0,1.0,0.0])<1e-6);assert_eq!(weight([0.0,1.0,0.0]),0.0);
@@ -102,10 +162,34 @@ mod tests {
         assert!(sources["FrontLeft"].spatial_layer_bed_weight<1e-6);assert!(sources["FrontRight"].spatial_layer_bed_weight<1e-6);
         assert!(sources["TopFrontLeft"].spatial_layer_bed_weight>0.99);assert!(sources["SurroundLeft"].spatial_layer_bed_weight<1e-6);assert_eq!(sources["LFE"].spatial_layer_bed_weight,0.0);
     }
+
+    #[test]
+    fn zero_auxiliary_lift_still_classifies_beds_for_main_restore() {
+        let solver=vbap::VbapSolver::new();
+        let settings=Settings{db:0.0,main_restore_db:2.0,..Settings::new(48000)};
+        let mut sources=HashMap::new();
+        for label in ["FrontLeft","TopFrontLeft","LFE"] {
+            sources.insert(label.into(),Source{kind:SourceKind::Bed,bed_label:Some(label.into()),..Default::default()});
+        }
+        settings.refresh_beds(&mut sources,&solver);
+        assert_eq!(sources["FrontLeft"].spatial_layer_bed_weight,0.0);
+        assert!(sources["TopFrontLeft"].spatial_layer_bed_weight>0.99);
+        assert_eq!(sources["LFE"].spatial_layer_bed_weight,0.0);
+        let master=10.0f32.powf(2.0/20.0);
+        for (label,expected) in [("FrontLeft",1.0),("TopFrontLeft",master)] {
+            let source=sources.get_mut(label).unwrap();
+            for at in 0..4096 {source_gain(source,settings.db,settings.main_restore_db,settings.slew,at);}
+            assert!((source.spatial_layer_gain*master-expected).abs()<1e-5);
+        }
+        // Previously cached weights must also be replaced by current labels.
+        sources.get_mut("TopFrontLeft").unwrap().bed_label=Some("FrontLeft".into());
+        settings.refresh_beds(&mut sources,&solver);
+        assert_eq!(sources["TopFrontLeft"].spatial_layer_bed_weight,0.0);
+    }
     #[test]
     fn parallel_and_general_object_mixers_apply_the_same_layer() {
         use crate::*;
-        let render=|slow:bool| {
+        let render=|slow:bool,moving:bool| {
             let mut e=Engine::new(48000,2);
             let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
             e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
@@ -119,10 +203,71 @@ mod tests {
                 let pcm:Vec<_>=(0..16384).map(|n|((n+i*5) as f32*0.173).sin()*0.0002).collect();
                 source.samples.write(0,0,&pcm);e.sources.insert(id.clone(),source);e.route_source_now(&id,0).unwrap();
             }
-            let mut output=vec![0.0;32768];e.render_into(&mut output,2);assert_eq!(e.peak_guard.diagnostic_gain(),1.0);output
+            let mut output=vec![0.0;32768];
+            for block in 0..64 {
+                if moving {
+                    let angle=block as f32*0.08;
+                    for i in 0..10 {
+                        let id=format!("arbitrary-layer-name-{i}");
+                        let p=angle+i as f32*0.4;
+                        e.sources.get_mut(&id).unwrap().position=[p.sin(),p.cos(),(p*0.7).sin()*0.8];
+                        e.route_source_now(&id,128).unwrap();
+                    }
+                }
+                e.render_into(&mut output[block*512..(block+1)*512],2);
+                assert_eq!(e.peak_guard.diagnostic_gain(),1.0);
+            }
+            output
         };
-        let fast=render(false);let slow=render(true);assert!(fast.iter().any(|v|v.abs()>1e-5));
-        assert!(fast.iter().zip(slow).all(|(a,b)|(*a-b).abs()<1e-6));
+        for moving in [false,true] {
+            let fast=render(false,moving);let slow=render(true,moving);
+            assert!(fast.iter().any(|v|v.abs()>1e-5));
+            assert!(fast.iter().zip(slow).all(|(a,b)|(*a-b).abs()<1e-6),"mixer parity failed: moving={moving}");
+        }
+    }
+
+    #[test]
+    fn moving_correlated_objects_sum_without_extra_loss_in_accepted_preset() {
+        use crate::*;
+        for slow in [false,true] {
+            let render=|included:Option<usize>| {
+                let mut e=Engine::new(48000,2);
+                let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+                e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(),0.0).unwrap();
+                e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);
+                e.set_program_codec("eac3".into());e.set_spatial_enhancement(true).unwrap();
+                e.disable_fast_objects=slow;e.direct_mix=1.0;e.output_active=true;e.paused=false;
+                // Keep identical source declarations in every run, so mixer
+                // selection/availability do not confound linear superposition.
+                for i in 0..10 {
+                    let id=format!("sum-probe-{i}");
+                    let mut source=Source{kind:SourceKind::Object,position:[0.0,1.0,0.0],gain:1.0,target_gain:1.0,availability:1.0,availability_target:1.0,..Default::default()};
+                    let samples:Vec<_>=(0..8192).map(|n| {
+                        if i>=3 || included.is_some_and(|only|only!=i) {0.0}
+                        else {(n as f32*0.137).sin()*[0.002,0.0001,-0.0001][i]}
+                    }).collect();
+                    source.samples.write(0,0,&samples);e.sources.insert(id.clone(),source);
+                    e.route_source_now(&id,0).unwrap();
+                }
+                let mut out=vec![0.0;16384];
+                for block in 0..32 {
+                    for i in 0..3 {
+                        let a=block as f32*0.09+i as f32*0.6;
+                        let id=format!("sum-probe-{i}");
+                        e.sources.get_mut(&id).unwrap().position=[a.sin(),a.cos(),(a*0.8).sin()];
+                        e.route_source_now(&id,128).unwrap();
+                    }
+                    e.render_into(&mut out[block*512..(block+1)*512],2);
+                    assert_eq!(e.peak_guard.diagnostic_gain(),1.0);
+                }
+                out
+            };
+            let full=render(None);
+            let solos:Vec<_>=(0..3).map(|i|render(Some(i))).collect();
+            let error=full.iter().enumerate().map(|(n,v)|(*v-solos.iter().map(|s|s[n]).sum::<f32>()).abs()).fold(0.0f32,f32::max);
+            assert!(error<1e-7,"unexpected nonlinear loss: slow={slow}, error={error}");
+            for solo in &solos {assert!(solo.iter().map(|v|f64::from(*v).powi(2)).sum::<f64>()>1e-6);}
+        }
     }
 
     #[test]
@@ -130,7 +275,7 @@ mod tests {
         let mut e=crate::Engine::new(48000,2);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.master_preamp_db(),2.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
+        assert_eq!(e.master_preamp_db(),2.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
         assert_eq!(e.final_output_trim.target_db(),-0.75);
         e.set_spatial_enhancement(false).unwrap();
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
