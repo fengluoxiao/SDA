@@ -21,7 +21,7 @@ import {createHardwarePreset} from "./hardware-presets";
 import {alignMonitorToRoom} from "./monitor-alignment";
 import type {RemoteTools} from "./remote-session";
 import {useRemoteSession} from "./remote-session";
-import {ROOM_LISTENING_LEVELS} from "./room-listening";
+import {roomListeningSettings} from "./room-listening";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WindowTitlebar } from "./components/WindowTitlebar";
 import { MediaPicker } from "./components/MediaPicker";
@@ -1125,7 +1125,9 @@ export function App() {
       // storing every sample here re-rendered the entire Three.js interface
       // ten times per second and competed with remote-desktop video encoding.
       nativeRendererRunningRef.current = next.running === true;
-      if (Number.isSafeInteger(next.samplePos)) nativeRendererSampleRef.current = next.samplePos;
+      if (typeof next.samplePos === "number" && Number.isSafeInteger(next.samplePos)) {
+        nativeRendererSampleRef.current = next.samplePos;
+      }
       nativeRemoteSyncRef.current = next.remoteSynchronized === true;
       nativeRemoteWaitingRef.current = next.remoteSyncWaiting === true;
       setNativeRendererStatus((previous) => {
@@ -1688,7 +1690,7 @@ export function App() {
     const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
     if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectiveDense,ku100Calibration),.04))throw new Error("HRTF 未就绪");
     const current=await api.getCinemaSettings();
-    if(!await api.nativeRendererCinema?.({...current.settings,enabled:true,reflectionMode:"full",...ROOM_LISTENING_LEVELS,speakers:{}},roomId))throw new Error("房间档案未被接受");
+    if(!await api.nativeRendererCinema?.(roomListeningSettings(current.settings),roomId))throw new Error("房间档案未被接受");
     setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
   };
   const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full")=>{

@@ -4,7 +4,9 @@
 //! scheduling policy. It receives the renderer's active layout as ADM unit
 //! vectors and returns normalized logical-layout gain rows.
 
+#[cfg(feature = "wasm")]
 use js_sys::{Float32Array, Float64Array, Uint8Array};
+#[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
 const DET_EPSILON: f64 = 1e-9;
@@ -50,7 +52,7 @@ fn inv3(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     ])
 }
 
-#[wasm_bindgen]
+#[cfg_attr(feature = "wasm", wasm_bindgen)]
 pub struct VbapSolver {
     dirs: Vec<Vec3>,
     lfe_mask: Vec<bool>,
@@ -58,13 +60,14 @@ pub struct VbapSolver {
     triplets: Vec<Triplet>,
 }
 
+#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 impl VbapSolver {
     /// `directions_adm` is packed `[x,y,z] × speakerCount`; directions may be
     /// non-unit and are normalized internally. `azimuths` preserves the caller's
     /// logical ordering for coplanar adjacent-pair construction.
     #[wasm_bindgen(constructor)]
-    pub fn new(directions_adm: Float64Array, lfe_mask: Uint8Array, azimuths: Float64Array) -> Result<VbapSolver, JsValue> {
+    pub fn js_new(directions_adm: Float64Array, lfe_mask: Uint8Array, azimuths: Float64Array) -> Result<VbapSolver, JsValue> {
         VbapSolver::from_parts(&directions_adm.to_vec(), &lfe_mask.to_vec(), &azimuths.to_vec())
             .map_err(|message| JsValue::from_str(&message))
     }
@@ -91,7 +94,7 @@ impl VbapSolver {
 }
 
 impl VbapSolver {
-    fn from_parts(directions_adm: &[f64], lfe_mask: &[u8], azimuths: &[f64]) -> Result<VbapSolver, String> {
+    pub fn from_parts(directions_adm: &[f64], lfe_mask: &[u8], azimuths: &[f64]) -> Result<VbapSolver, String> {
         if directions_adm.len() % 3 != 0 { return Err("VBAP directions must be xyz triples".into()); }
         let speaker_count = directions_adm.len() / 3;
         if lfe_mask.len() != speaker_count || azimuths.len() != speaker_count {

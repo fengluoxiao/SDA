@@ -1,11 +1,11 @@
-//! Windows MMCSS registration for threads that feed or render live audio.
+//! Platform scheduling for threads that feed or render live audio.
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 pub(super) struct ProAudio(
     Option<windows::Win32::Foundation::HANDLE>,
 );
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 impl ProAudio {
     pub(super) fn enter() -> Self {
         use windows::{
@@ -31,7 +31,7 @@ impl ProAudio {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 impl Drop for ProAudio {
     fn drop(&mut self) {
         if let Some(handle) = self.0.take() {
@@ -42,12 +42,47 @@ impl Drop for ProAudio {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(all(windows, feature = "cpal-output")))]
 pub(super) struct ProAudio;
 
-#[cfg(not(windows))]
+#[cfg(not(all(windows, feature = "cpal-output")))]
 impl ProAudio {
     pub(super) fn enter() -> Self {
+        promote_current_thread();
         Self
+    }
+}
+
+/// Explicit QoS on every iOS HRTF worker, not just the Swift decoder queue.
+/// Best effort; never opt into hard realtime scheduling or run DSP on the callback.
+pub(super) fn promote_current_thread() {
+    #[cfg(target_os = "ios")]
+    {
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(class: u32, relative_priority: i32) -> i32;
+        }
+        const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+        let _ = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0) };
+    }
+}
+
+pub(super) fn render_buffer_scale(synchronized: bool, dense: bool) -> usize {
+    buffer_scale_for_platform(cfg!(target_os = "ios"), synchronized, dense)
+}
+
+fn buffer_scale_for_platform(ios: bool, synchronized: bool, dense: bool) -> usize {
+    if synchronized { 1 } else if ios { 4 } else if dense { 2 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ios_reserve_handles_other_app_bursts_without_changing_remote_sync() {
+        use super::buffer_scale_for_platform as scale;
+        assert_eq!(scale(true, false, false), 4);
+        assert_eq!(scale(true, false, true), 4);
+        assert_eq!(scale(true, true, true), 1);
+        assert_eq!(scale(false, false, false), 1);
+        assert_eq!(scale(false, false, true), 2);
     }
 }

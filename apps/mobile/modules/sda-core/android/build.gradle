@@ -1,0 +1,45 @@
+apply plugin: 'com.android.library'
+
+group = 'app.sda.mobile'
+version = '0.1.0'
+
+apply plugin: 'expo-module-gradle-plugin'
+
+android {
+  namespace "app.sda.mobile.sda"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+  }
+  sourceSets.main.assets.srcDir("$buildDir/generated/sdaRooms")
+}
+
+// Package the desktop catalog's current 7.1.4 and 360RA assets directly; no second copy
+// of the room responses or hand-maintained mobile acoustics parameters.
+def desktopRooms = file('../../../../desktop/builtin-rooms')
+def syncSdaRooms = tasks.register('syncSdaRooms') {
+  inputs.dir(desktopRooms)
+  outputs.dir("$buildDir/generated/sdaRooms")
+  doLast {
+    def catalog = new groovy.json.JsonSlurper().parse(new File(desktopRooms, 'catalog.json'))
+    def rooms = catalog.profiles.findAll { it.summary.layout in ['7.1.4', '360RA-13'] }
+    if (rooms.collect { it.summary.layout }.toSet() != ['7.1.4', '360RA-13'].toSet()) throw new GradleException('Desktop 7.1.4 / 360RA room assets are missing')
+    project.sync { spec ->
+      spec.from(desktopRooms)
+      spec.into("$buildDir/generated/sdaRooms/builtin-rooms")
+      spec.include(rooms.collect { it.file } + ['NOTICE.txt', 'LICENSE-SADIE.txt', 'MATERIAL-SOURCES.md'])
+      // aapt transparently expands *.gz assets and drops the suffix; retain
+      // the original archive bytes so the desktop checksum stays meaningful.
+      spec.rename { name -> name.endsWith('.gz') ? name + '.bin' : name }
+    }
+    file("$buildDir/generated/sdaRooms/builtin-rooms/catalog.json").text = groovy.json.JsonOutput.toJson([version: 1, profiles: rooms])
+  }
+}
+tasks.named('preBuild').configure { dependsOn(syncSdaRooms) }
+
+dependencies {
+  implementation 'androidx.media3:media3-exoplayer:1.5.1'
+  androidTestImplementation 'androidx.test:runner:1.6.2'
+  androidTestImplementation 'junit:junit:4.13.2'
+}

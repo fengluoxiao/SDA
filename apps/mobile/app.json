@@ -4,17 +4,23 @@
     "slug": "sda",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "backgroundColor": "#0c101c",
     "ios": {
       "bundleIdentifier": "app.sda.mobile",
       "infoPlist": {
-        "UIBackgroundModes": ["audio"]
-      }
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      },
+      "supportsTablet": true
     },
     "android": {
       "package": "app.sda.mobile"
     },
-    "plugins": []
+    "plugins": [
+      "./plugins/with-ios-deployment"
+    ],
+    "scheme": "sda"
   }
 }

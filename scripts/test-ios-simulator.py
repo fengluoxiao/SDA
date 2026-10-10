@@ -1,0 +1,160 @@
+"""Release launch smoke test; not a substitute for physical-device listening."""
+import json,os,pathlib,re,subprocess,sys,time
+from verify_mobile_ios_assets import verify_mobile_ios_assets
+app=pathlib.Path(sys.argv[1]).resolve();out=pathlib.Path(sys.argv[2]).resolve()
+def run(*args,check=True):
+ return subprocess.run(args,check=check,text=True,capture_output=True)
+runtimes=json.loads(run('xcrun','simctl','list','runtimes','-j').stdout)['runtimes']
+ios=[r for r in runtimes if r.get('isAvailable') and '.iOS-' in r['identifier']]
+if not ios: raise SystemExit('No available iOS simulator runtime')
+runtime=max(ios,key=lambda r:tuple(map(int,r['version'].split('.'))))
+types=json.loads(run('xcrun','simctl','list','devicetypes','-j').stdout)['devicetypes']
+# simctl returns newest phones first on current images; never assume reverse order.
+# Try newest numbered phones and let CoreSimulator check runtime compatibility.
+phones=[t for t in types if t['name'].startswith('iPhone')]
+phones.sort(key=lambda t:(int(re.search(r'iPhone (\d+)',t['name']).group(1)) if re.search(r'iPhone (\d+)',t['name']) else 0,t['name']),reverse=True)
+udid=None
+attempts=[]
+for phone in phones:
+ created=run('xcrun','simctl','create','SDA-CI',phone['identifier'],runtime['identifier'],check=False)
+ attempts.append({'device':phone['name'],'returncode':created.returncode,'stderr':created.stderr})
+ if created.returncode==0:
+  udid=created.stdout.strip()
+  (out/'simulator-selection.json').write_text(json.dumps({'device':phone['name'],'runtime':runtime['name'],'attempts':attempts},indent=2))
+  break
+if not udid:raise RuntimeError('No compatible iPhone simulator: '+json.dumps(attempts))
+try:
+ run('xcrun','simctl','boot',udid)
+ run('xcrun','simctl','bootstatus',udid,'-b')
+ run('xcrun','simctl','install',udid,str(app))
+ os.environ['SIMCTL_CHILD_SDA_IOS_SMOKE']='1'
+ launch=run('xcrun','simctl','launch','--stdout='+str(out/'app.stdout'),'--stderr='+str(out/'app.stderr'),udid,'app.sda.mobile')
+ (out/'launch.txt').write_text(launch.stdout)
+ pid=launch.stdout.strip().split(':')[-1].strip()
+ container=pathlib.Path(run('xcrun','simctl','get_app_container',udid,'app.sda.mobile','data').stdout.strip())
+ report=container/'Documents/sda-ci-smoke.json'
+ deadline=time.monotonic()+90
+ while not report.is_file() and time.monotonic()<deadline:time.sleep(2)
+ if not report.is_file():raise RuntimeError('Native module did not complete audio smoke test')
+ result=json.loads(report.read_text())
+ (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
+ if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
+ recovery=result.get('compressedReaderRecovery',{})
+ if recovery.get('byteIdentical') is not True:raise RuntimeError('Compressed reader recovery duplicated/lost packets: '+str(recovery))
+ restored=result.get('native360RAAfterSystem',{})
+ if restored.get('ok') is not True or restored.get('status',{}).get('volumeBalanceEnabled') is not True:raise RuntimeError('System -> KU100 lost balance preference: '+str(restored))
+ native=result.get('native360RA',{})
+ if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2:
+  raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
+ spatial=result.get('system360RA',{})
+ if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True or spatial.get('endedStateVerified') is not True or spatial.get('fullTrackBalancePrepared') is not True or spatial.get('firstSubmissionBalanced') is not True:
+  raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))
+ cached=result.get('system360RACached',{})
+ if cached.get('ok') is not True or cached.get('cachedMeasurementRestored') is not True or cached.get('firstSubmissionBalanced') is not True:
+  raise RuntimeError('360RA system balance cache did not apply before first submission: '+str(cached))
+ phase=result.get('phase360RA',{})
+ if (phase.get('ok') is not True or phase.get('objects')!=2 or phase.get('renderedObjectStreams')!=2
+     or phase.get('coordinateMappingVerified') is not True or phase.get('gainRampVerified') is not True
+     or phase.get('pauseStateVerified') is not True or phase.get('poseUpdates',0)<100):
+  raise RuntimeError('PHASE object prototype failed: '+str(phase))
+ motion=container/'Documents/phase-object-motion.csv'
+ if not motion.is_file():raise RuntimeError('Missing PHASE object motion trace')
+ (out/'phase-object-motion.csv').write_bytes(motion.read_bytes())
+ alive=run('xcrun','simctl','spawn',udid,'launchctl','list').stdout
+ if not any(pid==line.split()[0] and 'app.sda.mobile' in line for line in alive.splitlines() if line.split()):
+  raise RuntimeError('SDA exited after launch; inspect device logs')
+ # A separate process tests the first 7.1.4 scene after cold launch, without
+ # visiting the spherical 360RA scene first. Native audio smoke cannot prove GL.
+ run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+ os.environ.pop('SIMCTL_CHILD_SDA_IOS_SMOKE',None)
+ os.environ['SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE']='1'
+ sceneReport=container/'Documents/sda-ci-scene.json'
+ if sceneReport.exists():sceneReport.unlink()
+ launch=run('xcrun','simctl','launch','--stdout='+str(out/'scene.stdout'),'--stderr='+str(out/'scene.stderr'),udid,'app.sda.mobile')
+ deadline=time.monotonic()+60
+ while not sceneReport.is_file() and time.monotonic()<deadline:time.sleep(1)
+ if not sceneReport.is_file():raise RuntimeError('Cold-start 7.1.4 scene did not report a rendered frame')
+ scene=json.loads(sceneReport.read_text())
+ (out/'scene-smoke.json').write_text(json.dumps(scene,indent=2))
+ if scene.get('ok') is not True or scene.get('layout')!='7.1.4' or scene.get('calls',0)<=0 or scene.get('triangles',0)<=0:
+  raise RuntimeError('Cold-start 7.1.4 scene failed: '+str(scene))
+ time.sleep(3) # Allow submitted GL frames to reach the system compositor.
+ run('xcrun','simctl','io',udid,'screenshot',str(out/'simulator.png'))
+ run(sys.executable,'scripts/check-ios-scene-image.py',str(out/'simulator.png'),str(out/'scene-smoke.json'))
+ # SDK 57 uses system TabView/UITabBar and SwiftUI Form/Button rather than
+ # SDA's retired tabs/settings wrappers. Require actual mounted native classes.
+ def chrome_report(stage):
+  report=container/'Documents/sda-ci-chrome.json'
+  deadline=time.monotonic()+30
+  data={}
+  while time.monotonic()<deadline:
+   if report.is_file():
+    data=json.loads(report.read_text())
+    classes=[v['class'] for v in data.get('nativeViews',[])]
+    hosting=any('Hosting' in c for c in classes)
+    tabs=any('TabBar' in c for c in classes)
+    form=any('CollectionView' in c or 'TableView' in c for c in classes)
+    navigation=any('NavigationBar' in c for c in classes)
+    ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
+    if stage.startswith('settings'):
+     # SwiftUI owns the bar's default appearance; don't pin private material details.
+     ready=ready and any(bar.get('title') == '设置' for bar in data.get('navigationBars',[]))
+     ready=ready and any(v.get('text') == '设置' and v.get('alpha',0) > 0 for v in data.get('nativeViews',[]))
+     if stage in ('settings','settings-dark'):
+      # The user requested only the centered inline title, never a large title.
+      titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and 0<v.get('height',0)<=30]
+      rows=[v for v in data.get('nativeViews',[]) if v.get('class') == 'ListCollectionViewCell' and v.get('y',-1)>=0 and v.get('width',0)>100]
+      large_titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and v.get('height',0)>30]
+      ready=ready and bool(titles) and not large_titles and bool(rows) and min(v['y'] for v in rows)>=max(v['y']+v['height'] for v in titles)-1
+    if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
+    if stage == 'mini-player':
+     ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))
+    if ready:break
+   time.sleep(1)
+  else:
+   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
+   raise RuntimeError('System native chrome did not mount: '+stage)
+  (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
+  return data
+ chrome_report('scene')
+ for stage in ['player','library','mini-player','settings','settings-spatial','settings-room','settings-dark']:
+  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
+  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
+  os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
+  (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
+  run('xcrun','simctl','launch',udid,'app.sda.mobile')
+  chrome_report(stage)
+  time.sleep(3)
+  run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
+  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','light')
+ # Move the running process genuinely into the background by opening Settings.
+ # This proves native decode/output is independent of the suspended JS timer.
+ # It does NOT simulate physical protected-data locking or Bluetooth behavior.
+ for mode in ['native','system']:
+  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE',None)
+  os.environ['SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE']=mode
+  ready=container/'Documents/sda-ci-background-ready.json'
+  background=container/'Documents/sda-ci-background.json'
+  ready.unlink(missing_ok=True);background.unlink(missing_ok=True)
+  run('xcrun','simctl','launch',udid,'app.sda.mobile')
+  deadline=time.monotonic()+70
+  while not ready.is_file() and not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+  if not ready.is_file():raise RuntimeError('Background playback did not start: '+(background.read_text() if background.is_file() else mode))
+  run('xcrun','simctl','launch',udid,'com.apple.Preferences')
+  while not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+  if not background.is_file():raise RuntimeError('Background playback report timed out: '+mode)
+  proof=json.loads(background.read_text())
+  (out/('background-'+mode+'.json')).write_text(json.dumps(proof,indent=2))
+  if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionPolicyVerified') is not True or (proof.get('simulatorFileProtectionAvailable') is not False and proof.get('ownedCopyProtectionVerified') is not True) or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000 or proof.get('nativeNextTrackVerified') is not True or proof.get('nativeRepeatOneVerified') is not True:
+   raise RuntimeError('Native background audio failed: '+str(proof))
+  run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
+  os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
+ # Validate the real mobile-only bundle, including hashes and absence of room assets.
+ verify_mobile_ios_assets(app)
+ (out/'smoke.txt').write_text('Release app launched. Compressed E-AC-3 MP4 -> Rust/KU100 -> AVAudioEngine consumed playback; live preset clock and pause/resume checks passed. 360RA MPEG-H -> 12-channel 7.1.4 -> Apple sample-buffer renderer clock/drain/pause/toggle checks passed. KU100 resources present. No real-device spatial listening validation.\n')
+finally:
+ log=run('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "SDA"',check=False)
+ (out/'simulator.log').write_text(log.stdout+log.stderr)
+ run('xcrun','simctl','shutdown',udid,check=False)

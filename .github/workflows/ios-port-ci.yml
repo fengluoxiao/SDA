@@ -1,0 +1,193 @@
+name: iOS port CI
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/android-port]
+    paths:
+      - '.github/workflows/ios-port-ci.yml'
+      - 'apps/mobile/**'
+      - 'crates/sda-native/**'
+      - 'apps/native-renderer/**'
+      - 'packages/core/**'
+      - 'scripts/*ios*'
+      - 'scripts/prepare-mpegh.mjs'
+      - 'pnpm-lock.yaml'
+permissions:
+  contents: read
+concurrency:
+  group: ios-port-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios:
+    name: iOS SDK ${{ matrix.sdk }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ['26', '27']
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+      RCT_NEW_ARCH_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Select and record actual SDK
+        id: sdk
+        shell: bash
+        run: |
+          mkdir -p ios-artifacts
+          python3 scripts/select-ios-sdk.py '${{ matrix.sdk }}'
+          sw_vers | tee ios-artifacts/host.txt
+      - name: Record Xcode and runtimes
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          xcodebuild -version | tee ios-artifacts/xcode.txt
+          xcodebuild -showsdks | tee ios-artifacts/sdks.txt
+          xcrun simctl list runtimes | tee ios-artifacts/runtimes.txt
+      - name: Type-check Apple playback host before full React Native build
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcrun swiftc -frontend -parse apps/mobile/modules/sda-core/ios/SdaModule.swift apps/mobile/modules/sda-core/ios/SdaGlassModule.swift
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" apps/mobile/modules/sda-core/ios/GlassControls.swift
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/PlaybackLifecycle.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/SystemAudioBufferPolicy.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
+      - name: Verify system audio prebuffer and recovery policy
+        if: steps.sdk.outputs.available == 'true'
+        run: python3 scripts/test-ios-buffer-policy.py
+      - name: Verify Apple compressed MP4 extraction before full app build
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 scripts/ios-reader-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/reader-probe
+          ios-artifacts/reader-probe crates/sda-native/tests/fixtures/ios-stereo-tones.m4a crates/sda-native/tests/fixtures/ios-stereo-tones.eac3 2>&1 | tee ios-artifacts/reader-probe.log
+      - name: Verify stereo ALAC decoding and recovery
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 scripts/ios-alac-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/alac-probe
+          ios-artifacts/alac-probe 2>&1 | tee ios-artifacts/alac-probe.log
+      - uses: actions/setup-node@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          version: '9.15.9'
+      - uses: dtolnay/rust-toolchain@master
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          workspaces: crates/sda-native
+          key: ios-${{ matrix.sdk }}
+          cache-on-failure: true
+      - name: Install JS dependencies and stage verified assets
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          pnpm install --frozen-lockfile --config.node-linker=hoisted
+          node scripts/prepare-ios-assets.mjs
+          node scripts/test/mobile-rendering-presets.test.cjs
+          node scripts/test/mobile-spatial-cues.test.cjs
+          python3 scripts/test-ios-mobile-assets.py
+          python3 scripts/verify-spatial-cues.py
+          node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
+          node scripts/test-ios-ui.mjs
+          node scripts/test-ios-spatial-enhancement.mjs
+          node scripts/test-ios-playback-polling.mjs
+          node scripts/test-ios-native-queue.mjs
+          node scripts/test-ios-native-drawable.mjs
+      - name: Verify MHAS stack budget with Apple device compiler
+        if: steps.sdk.outputs.available == 'true'
+        run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts
+      - name: Host callback tests
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          node scripts/prepare-ac4.mjs
+          export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios:: -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
+      - name: Verify independent object routes and quiet height contributions
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
+      - name: Verify integrated depth, elevation and harmony regressions
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib live_spatial_cues::tests 2>&1 | tee ios-artifacts/live-cues-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cues:: 2>&1 | tee ios-artifacts/spatial-cues-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib directional::tests 2>&1 | tee ios-artifacts/directional-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spectral_interpolation_audit 2>&1 | tee ios-artifacts/spectral-interpolation-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib restored_historical_interpolation_regressions 2>&1 | tee ios-artifacts/historical-anchor-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_balance::tests 2>&1 | tee ios-artifacts/authored-level-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_cue_gain_scales_only_residual_for_both_layouts 2>&1 | tee ios-artifacts/approved-cue-gain-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib occlusion 2>&1 | tee ios-artifacts/occlusion-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --test mobile_front_back 2>&1 | tee ios-artifacts/front-back-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_cues_start -- --test-threads=1 2>&1 | tee ios-artifacts/mobile-cues-tests.log
+      - name: Verify packaged master and spatial-layer enhancement
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib master_preamp::tests 2>&1 | tee ios-artifacts/master-preamp-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib spatial_layer::tests 2>&1 | tee ios-artifacts/spatial-layer-tests.log
+      - name: iOS renderer scheduling policy tests
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          rustc --edition=2024 --test scripts/ios-render-policy-test.rs -o ios-artifacts/realtime-policy-tests
+          ios-artifacts/realtime-policy-tests
+      - name: MPEG-H speaker layout tests
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mpegh::tests -- --test-threads=1 2>&1 | tee ios-artifacts/mpegh-tests.log
+      - name: Build shared Rust engine XCFramework
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+      - name: Generate Xcode project and install CocoaPods
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          cd apps/mobile
+          pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
+          cd ios
+          pod install 2>&1 | tee ../../../ios-artifacts/pods.log
+      - name: Build simulator app
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee ios-artifacts/simulator-build.log
+      - name: Boot simulator and smoke test
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          python3 scripts/test-ios-simulator.py ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts
+      - name: Archive unsigned device app
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
+          mkdir -p ios-build/package/Payload
+          cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
+          ditto -c -k --keepParent ios-build/SDA.xcarchive/dSYMs ios-artifacts/SDA-device-dSYMs.zip
+          xcrun dwarfdump --uuid ios-build/SDA.xcarchive/Products/Applications/SDA.app/SDA > ios-artifacts/device-uuid.txt
+          cd ios-build/package
+          zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
+          cd ../..
+          ditto -c -k --keepParent ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts/SDA-simulator-arm64.zip
+          printf 'Unsigned IPA: requires valid Apple signing/provisioning before device installation. Minimum deployment target iOS 16.4. SDK 27 validation is unavailable unless that SDK is installed.\n' > ios-artifacts/README.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-iOS-SDK${{ matrix.sdk }}-${{ github.run_number }}
+          path: ios-artifacts/
+          retention-days: 14

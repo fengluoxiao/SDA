@@ -489,6 +489,7 @@ fn extract_events(
                 .to_string();
 
                 events.push(ObjectEvent {
+                    diffuse: 0.0,
                     id,
                     sample_pos: base_sample_pos + sample_offset,
                     has_pos,

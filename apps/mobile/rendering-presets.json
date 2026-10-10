@@ -1,0 +1,14 @@
+[
+  {
+    "id": "object-dense",
+    "label": "高解析逐对象",
+    "description": "61 方向 KU100 · 历史兼容插值 · 逐对象实际方向 · 前后/上下空间线索",
+    "hrtfSet": "dense",
+    "assetDirectory": "hrtf-restored/hrtf-dense",
+    "direct": true,
+    "directional": true,
+    "nearField": false,
+    "roomId": "",
+    "hrtfWetWeight": 0
+  }
+]

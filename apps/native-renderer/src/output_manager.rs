@@ -3,10 +3,10 @@
 //! macOS/Linux: CPAL (CoreAudio/ALSA) callback-driven stream.
 use super::*;
 use std::sync::{OnceLock, mpsc};
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 #[path = "asio_output.rs"]
 mod asio_output;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 #[path = "directsound_output.rs"]
 mod directsound_output;
 
@@ -118,7 +118,7 @@ pub fn stop() {
 }
 
 // ── Windows WASAPI implementation ───────────────────────────────────────────
-#[cfg(windows)]
+#[cfg(all(windows, feature = "cpal-output"))]
 mod platform {
     use super::*;
     struct ComScope;
@@ -1259,10 +1259,10 @@ mod platform {
             );
         }
     }
-} // end #[cfg(windows)] mod platform
+} // end #[cfg(all(windows, feature = "cpal-output"))] mod platform
 
 // ── macOS / Linux CPAL implementation ───────────────────────────────────────
-#[cfg(not(windows))]
+#[cfg(all(not(windows), feature = "cpal-output"))]
 mod platform {
     use super::super::record_callback;
     use super::*;
@@ -1744,6 +1744,35 @@ mod platform {
             }
         }
         drop(output);
+    }
+}
+
+// Engine-only build (mobile hosts, host test runs): no platform audio device.
+// Playback backends live above this crate (Android: AAudio sink; tests: FIFO
+// drains).
+#[cfg(not(feature = "cpal-output"))]
+mod platform {
+    use super::*;
+    pub fn run(
+        _fifo: Arc<stereo_fifo::StereoFifo>,
+        _telemetry: Arc<RuntimeTelemetry>,
+        _commands: Arc<render_command::RenderCommandQueue>,
+    ) {
+    }
+}
+
+/// Desktop CPAL-backed output (WASAPI/ASIO on Windows, ALSA/PipeWire
+/// elsewhere); no-op when built without the `cpal-output` feature.
+pub struct CpalOutput;
+
+impl crate::AudioOutput for CpalOutput {
+    fn run(
+        self: Arc<Self>,
+        fifo: Arc<stereo_fifo::StereoFifo>,
+        telemetry: Arc<RuntimeTelemetry>,
+        commands: Arc<render_command::RenderCommandQueue>,
+    ) {
+        platform::run(fifo, telemetry, commands)
     }
 }
 

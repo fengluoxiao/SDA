@@ -13,8 +13,28 @@ use super::Command;
 
 const MAX_QUEUED_PCM_BYTES: usize = 16 * 1024 * 1024;
 
-pub(super) enum RenderCommand {
+pub enum RenderCommand {
     Command(Command),
+    /// One queue entry so mobile settings cannot be only partially enqueued.
+    ObjectRendering { direct: bool, directional: bool },
+    /// Live asset replacement: no decoder restart, PCM flush or clock reset.
+    HrtfPreset {
+        set: Box<crate::hrtf::NativeHrtfSet>,
+        wet: f32,
+        direct: bool,
+        directional: bool,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    SpatialCueGain { update: Box<crate::live_spatial_cues::PreparedCueUpdate>, reply: std::sync::mpsc::Sender<Result<(), String>> },
+    NearField {
+        settings: crate::near_field::Settings,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    Room {
+        settings: crate::cinema::Settings,
+        profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
     Pcm {
         id: String,
         start: u64,
@@ -29,6 +49,13 @@ pub(super) enum RenderCommand {
         entries: Vec<(String, Vec<f32>)>,
         events: Vec<crate::NativeObjectEvent>,
     },
+    /// Same transaction as the desktop F packet, with its ACK returned to JNI.
+    PcmFrameWithAck {
+        start: u64,
+        entries: Vec<(String, Vec<f32>)>,
+        events: Vec<crate::NativeObjectEvent>,
+        reply: std::sync::mpsc::Sender<bool>,
+    },
     HeadphoneFir {
         preamp: f32,
         left: Vec<f32>,
@@ -41,7 +68,7 @@ impl RenderCommand {
         match self {
             Self::Command(Command::Feed { samples, .. }) => samples.len() * size_of::<f32>(),
             Self::Pcm { samples, .. } => samples.len() * size_of::<f32>(),
-            Self::PcmBatch { entries, .. } | Self::PcmFrame { entries, .. } => entries
+            Self::PcmBatch { entries, .. } | Self::PcmFrame { entries, .. } | Self::PcmFrameWithAck { entries, .. } => entries
                 .iter()
                 .map(|(_, samples)| samples.len() * size_of::<f32>())
                 .sum(),
@@ -51,7 +78,7 @@ impl RenderCommand {
     }
 }
 
-pub(super) struct RenderCommandQueue {
+pub struct RenderCommandQueue {
     pending: Mutex<VecDeque<RenderCommand>>,
     available: Condvar,
     capacity: usize,
@@ -59,7 +86,7 @@ pub(super) struct RenderCommandQueue {
 }
 
 impl RenderCommandQueue {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             pending: Mutex::new(VecDeque::with_capacity(capacity)),
             available: Condvar::new(),
@@ -70,7 +97,7 @@ impl RenderCommandQueue {
 
     /// Never waits for the render worker: stdin backpressure must not couple to
     /// the real-time output path. Callers receive a protocol rejection on full.
-    pub(super) fn push(&self, command: RenderCommand) -> Result<(), RenderCommand> {
+    pub fn push(&self, command: RenderCommand) -> Result<(), RenderCommand> {
         let bytes = command.pcm_bytes();
         let mut pending = self.pending.lock().expect("render command queue poisoned");
         let mut queued_pcm_bytes = self
@@ -109,6 +136,11 @@ impl RenderCommandQueue {
         if pending.is_empty() {
             let _ = self.available.wait_timeout(pending, duration);
         }
+    }
+
+    /// Debug access for hosts outside the crate (mobile facade tests).
+    pub fn pending_len_for_debug(&self) -> usize {
+        self.pending.lock().expect("render command queue poisoned").len()
     }
 
     #[cfg(test)]

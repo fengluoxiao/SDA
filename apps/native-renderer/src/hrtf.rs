@@ -19,9 +19,19 @@ struct Manifest {
     positions: Vec<Position>,
 }
 
+fn default_spatial_cue_gain() -> f32 { 1.0 }
+
 #[derive(Debug, Deserialize)]
 struct Processing {
     calibrated: bool,
+    #[serde(default, rename = "historicalInterpolation")]
+    historical_interpolation: bool,
+    #[serde(default, rename = "mobileDirectOnly")]
+    mobile_direct_only: bool,
+    #[serde(default, rename = "spatialCues")]
+    spatial_cues: bool,
+    #[serde(default = "default_spatial_cue_gain", rename = "spatialCueGain")]
+    spatial_cue_gain: f32,
     #[serde(default, rename = "preserveMeasurements")]
     preserve_measurements: bool,
     #[serde(default, rename = "preserveSamples")]
@@ -38,6 +48,11 @@ pub struct Position {
 
 #[derive(Debug, Clone)]
 pub struct NativeHrtfSet {
+    historical_interpolation: bool,
+    mobile_direct_only: bool,
+    spatial_cues: bool,
+    spatial_cue_gain: f32,
+    spatial_cues_active: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     speaker_prepared: std::collections::HashMap<
@@ -136,6 +151,11 @@ impl NativeHrtfSet {
             });
         }
         Ok(Self {
+            historical_interpolation: false,
+            mobile_direct_only: false,
+            spatial_cues: false,
+            spatial_cue_gain: 1.0,
+            spatial_cues_active: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: Default::default(),
@@ -161,6 +181,19 @@ impl NativeHrtfSet {
         let manifest: Manifest =
             serde_json::from_slice(&read(manifest_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
+        if !manifest.processing.spatial_cue_gain.is_finite()
+            || manifest.processing.spatial_cue_gain <= 0.0
+            || manifest.processing.spatial_cue_gain > 1.0 {
+            return Err("spatialCueGain must be finite and in (0, 1]".into());
+        }
+        if manifest.processing.historical_interpolation
+            && (!manifest.processing.calibrated
+                || !matches!(manifest.calibration_version, Some(4 | 5))
+                || manifest.processing.mobile_direct_only
+                || manifest.subject_id.as_deref().is_some_and(|s| s != "ku100"))
+        {
+            return Err("historical interpolation requires a calibrated v4/v5 non-mobile KU100 pack".into());
+        }
         let raw_ku100 = manifest.subject_id.as_deref() == Some("ku100")
             && manifest.calibration_version == Some(0)
             && !manifest.processing.calibrated
@@ -210,6 +243,19 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if manifest.processing.mobile_direct_only
+            && (!raw_ku100
+                || !complete_subject
+                || cache.len() != 128
+                || cache
+                    .iter()
+                    .any(|ir| ir.dry.len() != 512 || ir.wet.iter().any(|x| *x != 0.0)))
+        {
+            return Err(
+                "mobile direct-only KU100 requires 128 original 256-tap HRIRs and zero wet data"
+                    .into(),
+            );
+        }
         // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
         // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
@@ -239,6 +285,11 @@ impl NativeHrtfSet {
         let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
             || (is_dense_ku100 && manifest.subject_id.is_none());
         Ok(Self {
+            historical_interpolation: manifest.processing.historical_interpolation,
+            mobile_direct_only: manifest.processing.mobile_direct_only,
+            spatial_cues: manifest.processing.spatial_cues,
+            spatial_cue_gain: manifest.processing.spatial_cue_gain,
+            spatial_cues_active: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: std::collections::HashMap::new(),
@@ -249,7 +300,7 @@ impl NativeHrtfSet {
             directional_grid: crate::directional::Grid::new_with_notch_guard(
                 &cache,
                 ku100_notch_guard,
-            ),
+            ).with_historical_interpolation(&cache, manifest.processing.historical_interpolation),
             cache,
             speaker_set,
             prepared: std::collections::HashMap::new(),
@@ -319,7 +370,7 @@ impl NativeHrtfSet {
             .map(|ir| ir.dry.len() / 2)
             .max()
             .unwrap_or(512)
-            + 4;
+            + crate::directional::INTERPOLATION_TAIL;
         let calibration = if self.cinema.enabled {
             self.cinema
                 .speakers
@@ -338,8 +389,8 @@ impl NativeHrtfSet {
             0
         };
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
-        // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
-        // when a 512-tap HRIR also needs four fractional-delay padding samples.
+        // 1e-20 zero threshold. The base includes alignment and bandlimited
+        // fractional-delay support so shifted HRIR tails remain intact.
         base + 127 + calibration + self.output_max_delay() + 480
     }
     pub fn directional_dry_compact(
@@ -485,9 +536,50 @@ impl NativeHrtfSet {
         settings: crate::cinema::Settings,
         profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     ) {
+        self.spatial_cues_active = false;
+        if self.mobile_direct_only {
+            self.cinema = crate::cinema::Settings::default();
+            self.room_profile = None;
+            self.speaker_prepared.clear();
+            return;
+        }
         self.cinema = settings;
         self.room_profile = profile;
         self.speaker_prepared.clear();
+    }
+
+    /// Fixed, explicitly opted-in short spatial cues are separate from user room
+    /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
+    pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
+        self.spatial_cues_active = false;
+        if !self.spatial_cues { return Ok(()); }
+        self.cinema = crate::cinema::Settings::default();
+        self.room_profile = None;
+        if !(self.mobile_direct_only && self.subject_id.as_deref() == Some("ku100"))
+            && !self.historical_interpolation {
+            return Err("bundled spatial cues require a direct KU100 or historical calibrated KU100 set".into());
+        }
+        if let Some(profile) = crate::spatial_cues::profile(layout)? {
+            self.cinema = crate::spatial_cues::settings();
+            self.room_profile = Some(profile);
+            self.spatial_cues_active = true;
+        }
+        self.speaker_prepared.clear();
+        Ok(())
+    }
+
+    pub fn set_spatial_cue_gain(&mut self, gain: f32) -> Result<(), String> {
+        if !gain.is_finite() || gain <= 0.0 || gain > 1.0 { return Err("invalid spatial cue gain".into()); }
+        self.spatial_cue_gain = gain;
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        Ok(())
+    }
+
+    pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active }
+
+    pub(crate) fn effective_wet(&self, requested: f32) -> f32 {
+        if self.spatial_cues_active { 0.04 } else { requested }
     }
 
     fn room_alignment_active(&self, layout: &str) -> bool {
@@ -524,6 +616,15 @@ impl NativeHrtfSet {
     }
 
     pub fn speaker_filter_len(&self) -> usize {
+        if self.mobile_direct_only && !self.spatial_cues_active {
+            return self
+                .cache
+                .iter()
+                .map(|ir| ir.dry.len() / 2)
+                .max()
+                .unwrap_or(256)
+                + crate::directional::INTERPOLATION_TAIL;
+        }
         let base = self
             .cache
             .iter()
@@ -591,6 +692,16 @@ impl NativeHrtfSet {
         elevation: f64,
         wet: f32,
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        if self.mobile_direct_only && !self.spatial_cues_active {
+            // Bed channels share the delay-aligned direct grid used by objects.
+            // Do not fall back to a room-calibrated speaker or BRIR response.
+            let (mut left, mut right) =
+                self.directional_grid
+                    .interpolate(&self.cache, azimuth, elevation);
+            left.resize(self.speaker_filter_len(), 0.0);
+            right.resize(self.speaker_filter_len(), 0.0);
+            return Ok((left, right));
+        }
         let profile = self
             .room_profile
             .as_ref()
@@ -611,13 +722,28 @@ impl NativeHrtfSet {
                     .and_then(|v| v.get("sourceModel"))
                     .and_then(|v| v.as_str())
                     == Some("ideal-omnidirectional");
-            if simulated_room
+            if self.spatial_cues_active
+                || simulated_room
                 || self
                     .subject_id
                     .as_deref()
                     .is_some_and(|id| id.starts_with("personal-"))
             {
-                let ir = if simulated_room {
+                let ir = if self.spatial_cues_active && self.historical_interpolation {
+                    // Preserve the approved calibrated speaker anchors, including
+                    // the standard-set fallback. Add only the cue residual below.
+                    self.speaker_ir(azimuth, elevation)?
+                } else if self.spatial_cues_active {
+                    // Bundled profiles contain a snapshot of their original
+                    // direct response. Keep only their residual: bed channels
+                    // must use the same current interpolator as direct objects,
+                    // including later notch-guard fixes.
+                    let (left, right) = self.directional_grid
+                        .interpolate(&self.cache, azimuth, elevation);
+                    let mut dry = left;
+                    dry.extend_from_slice(&right);
+                    StereoIr { azimuth, elevation, dry, wet: vec![] }
+                } else if simulated_room {
                     self.speaker_ir(azimuth, elevation)?
                 } else {
                     self.nearest(azimuth, elevation)?
@@ -641,7 +767,7 @@ impl NativeHrtfSet {
                 let energy = |a: &[f32], b: &[f32]| {
                     a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>()
                 };
-                let residual_gain = if simulated_room {
+                let residual_gain = if simulated_room || self.spatial_cues_active {
                     let reference = energy(&speaker.direct_left, &speaker.direct_right);
                     if reference <= 1e-20 {
                         return Err("simulated room has no direct reference".into());
@@ -662,7 +788,10 @@ impl NativeHrtfSet {
                     for (i, (r, d)) in room.iter().zip(original).enumerate() {
                         let target = i as isize + shift;
                         if target >= 0 && (target as usize) < length {
-                            out[target as usize] += (r - d) * residual_gain;
+                            // One common scalar affects the separate spatial residual only.
+                            // Direct HRIR, interaural ratio and arrival timing are unchanged.
+                            let cue_gain = if self.spatial_cues_active { self.spatial_cue_gain } else { 1.0 };
+                            out[target as usize] += (r - d) * residual_gain * cue_gain;
                         }
                     }
                 }
@@ -843,6 +972,14 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((
+                ir.azimuth,
+                ir.elevation,
+                ir.dry[..dry_len].to_vec(),
+                ir.dry[dry_len..].to_vec(),
+            ));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -889,6 +1026,9 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((ir.dry[..dry_len].to_vec(), ir.dry[dry_len..].to_vec()));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -1492,4 +1632,85 @@ mod subject_dense_tests {
             );
         }
     }
+    #[test]
+    fn rear_measured_directions_and_azimuth_wrap_preserve_direct_responses() {
+        let set = NativeHrtfSet::load_calibrated(&Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json")).unwrap();
+        for ir in set.cache.iter().filter(|ir| ir.azimuth.abs() >= 120.0) {
+            let (l, r) = set.directional_grid.interpolate(&set.cache, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&l[..n], &ir.dry[..n]);
+            assert_eq!(&r[..n], &ir.dry[n..]);
+            assert!(l[n..].iter().chain(&r[n..]).all(|v| *v == 0.0));
+        }
+        for el in [0.0, 15.0, 17.5, 25.0, 45.0] {
+            for az in [120.0, 150.0, 179.999, 180.0, 180.001, 210.0, 240.0] {
+                let a = set.directional_grid.interpolate(&set.cache, az, el);
+                let b = set.directional_grid.interpolate(&set.cache, az - 360.0, el);
+                let error = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(error < 1e-6, "rear azimuth wrap changed filter: {az}, {el}, {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn mobile_direct_objects_and_bed_have_no_room_tail() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert_eq!(set.simulation_shape(), (128, 256, 1));
+        assert_eq!(set.speaker_filter_len(), 256 + crate::directional::INTERPOLATION_TAIL);
+        assert!(set.speaker_set.is_none());
+        for ir in &set.cache {
+            let (l, r) = set.mixed_direction(ir.azimuth, ir.elevation, 1.0).unwrap();
+            assert_eq!(l, ir.dry[..256]);
+            assert_eq!(r, ir.dry[256..]);
+        }
+        let before = set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 0.0).unwrap();
+        let mut cinema = crate::cinema::Settings::default();
+        cinema.enabled = true;
+        cinema.direct_db = -12.0;
+        set.configure_cinema(cinema, None);
+        assert!(!set.cinema.enabled);
+        assert_eq!(
+            before,
+            set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 1.0).unwrap()
+        );
+        for (az, el) in [(0.0, 0.0), (30.0, 0.0), (-110.0, 0.0), (45.0, 45.0), (-30.0, 30.0)] {
+            let actual = set.mixed_speaker("channel", "7.1.4", az, el, 1.0).unwrap();
+            // Compare the complete interpolation, not a truncated copy: the
+            // fractional-delay tail is direct sound, not room reverberation.
+            let (l, r) = set.directional_grid.interpolate(&set.cache, az, el);
+            assert_eq!(actual, (l, r));
+            assert!(actual.0.iter().chain(&actual.1).all(|v| v.is_finite()));
+        }
+    }
+    #[test]
+    fn spatial_cue_gain_scales_only_residual_for_both_layouts() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
+            let mut full = NativeHrtfSet::load_calibrated(&path).unwrap();
+            full.spatial_cue_gain = 1.0;
+            let mut reduced = full.clone();
+            reduced.spatial_cue_gain = 0.5;
+            full.configure_spatial_cues(layout).unwrap();
+            reduced.configure_spatial_cues(layout).unwrap();
+            let profile = full.room_profile.as_ref().unwrap();
+            for speaker in &profile.speakers {
+                let render = |set: &NativeHrtfSet, wet| set.mixed_speaker(&speaker.name,
+                    &profile.layout, speaker.azimuth as f64, speaker.elevation as f64, wet).unwrap();
+                let dry = render(&full, 0.0);
+                assert_eq!(dry, render(&reduced, 0.0));
+                let a = render(&full, 0.04);
+                let b = render(&reduced, 0.04);
+                for ((d,a),b) in dry.0.iter().chain(&dry.1).zip(a.0.iter().chain(&a.1)).zip(b.0.iter().chain(&b.1)) {
+                    assert!((b - (d + (a-d)*0.5)).abs() < 1e-6);
+                }
+                assert!(b.0.iter().zip(&dry.0).any(|(b,d)| b != d));
+            }
+        }
+    }
+
 }

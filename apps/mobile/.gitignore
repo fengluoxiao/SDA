@@ -1,0 +1,12 @@
+node_modules/
+.npmrc
+/android/app/build/
+/modules/*/android/build/
+/android/.gradle/
+/android/build/
+/android/local.properties
+/android/gradle-build.log
+
+/ios/
+/modules/*/ios/SdaNative.xcframework*/
+/modules/*/ios/Resources/

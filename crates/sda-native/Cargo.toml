@@ -1,0 +1,37 @@
+[package]
+name = "sda-native"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Mobile engine facade: wires the sda-core decoders to the sda-native-renderer engine for Android/iOS hosts (JNI/UniFFI boundary lives above this crate)."
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# Desktop host output (cpal). Mobile hosts build with --no-default-features
+# and supply their own AudioOutput (AAudio sink on Android, T2.2).
+default = ["desktop-output"]
+desktop-output = ["sda-native-renderer/cpal-output"]
+ios-host = []
+pcm-diagnostic = ["sda-native-renderer/pcm-diagnostic"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rubato = "0.16.2"
+symphonia = { version = "0.5.4", default-features = false, features = ["mp3"] }
+sda-core = { path = "../../packages/core", default-features = false }
+sda-native-renderer = { path = "../../apps/native-renderer", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[build-dependencies]
+cc = "1"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

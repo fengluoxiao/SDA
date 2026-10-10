@@ -104,6 +104,14 @@ impl BusRenderer {
         })
     }
 
+    pub(super) fn transition_filters_from(&mut self, prepared: &Self) {
+        // Same layout and asset length: preserve PCM history, hardware and tails.
+        for (old, new) in self.buses.iter_mut().chain(&mut self.reflections)
+            .zip(prepared.buses.iter().chain(&prepared.reflections)) {
+            old.convolver.transition_to(new.convolver.prepared_filter(), convolution::DEFAULT_PARTITION);
+        }
+    }
+
     pub(super) fn bus_count(&self) -> usize {
         self.buses.len()
     }
