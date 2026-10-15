@@ -30,6 +30,12 @@ export function stageSharedExperiment(destination) {
     files.add(p[kind]);
   }
   if(experiment.directionCount===542) {
+    const horizontal=JSON.parse(readFileSync(join(root,'apps/mobile/ios-experiments/horizontal-support/hrtf-dense/hrtf-set.json'),'utf8'));
+    const coordinates=new Set(manifest.positions.map(p=>`${p.azimuth}/${p.elevation}`));
+    if(coordinates.size!==542 || horizontal.positions.length!==218 ||
+      horizontal.positions.some(p=>!coordinates.has(`${p.azimuth}/${p.elevation}`))) {
+      throw Error('Combined renderer must include all218 directions without duplicates');
+    }
     if(manifest.triangleSupportFile!=='triangle-grid.json')throw Error('Combined triangle algorithm not enabled');
     const data=readFileSync(join(source,'triangle-grid.json'));
     if(hash(data)!==experiment.triangleSupportSha256)throw Error('Triangle grid hash mismatch');

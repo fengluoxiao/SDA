@@ -4,5 +4,13 @@
   "assetSubdirectory": "fullheight-combined",
   "baselineDirectionCount": 61,
   "triangleSupportSha256": "564e49ec0818bc808146417e56c19bfbb2b2688cb9d0d1fe86651a897f9574eb",
-  "scope": "User authorized C experimental build: fullheight + symmetric triangle weights + common fractional timing on supplementary responses"
+  "scope": "User authorized C experimental build: fullheight + symmetric triangle weights + common fractional timing on supplementary responses",
+  "includedHorizontalDirectionSet": 218,
+  "enabledComponents": [
+    "horizontal-support",
+    "full-height-support",
+    "mirrored-triangle-interpolation",
+    "common-fractional-timing"
+  ],
+  "userFacingName": "高解析空间渲染"
 }

@@ -14,6 +14,12 @@ try {
   for(const root of roots.slice(1))assert.deepEqual(readFileSync(join(root,name)),readFileSync(join(roots[0],name)));
  }
  const manifest=JSON.parse(readFileSync(join(roots[0],'hrtf-dense/hrtf-set.json'),'utf8'));
+ const horizontal=JSON.parse(readFileSync('apps/mobile/ios-experiments/horizontal-support/hrtf-dense/hrtf-set.json','utf8'));
+ const coordinates=new Set(manifest.positions.map(p=>`${p.azimuth}/${p.elevation}`));
+ assert.equal(coordinates.size,542);
+ for(const p of horizontal.positions)assert(coordinates.has(`${p.azimuth}/${p.elevation}`),'218direction missing from combined renderer');
+ assert.equal(manifest.processing.spatialCues,true);
+ assert.equal(manifest.triangleSupportFile,'triangle-grid.json');
  writeFileSync(join(roots[0],'hrtf-dense',manifest.positions[0].dry),'broken');
  assert.throws(()=>verifySharedExperiment(roots[0]),/mismatch/);
  const read=p=>readFileSync(p,'utf8');

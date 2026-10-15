@@ -1,8 +1,8 @@
 [
   {
     "id": "object-dense",
-    "label": "高解析逐对象",
-    "description": "61 方向 KU100 · 历史兼容插值 · 逐对象实际方向 · 前后/上下空间线索",
+    "label": "高解析空间渲染",
+    "description": "逐对象渲染与实际方向定位，保留前后和上下空间线索，支持头部追踪",
     "hrtfSet": "dense",
     "assetDirectory": "hrtf-restored/hrtf-dense",
     "direct": true,

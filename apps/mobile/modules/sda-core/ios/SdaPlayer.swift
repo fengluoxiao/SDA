@@ -256,7 +256,7 @@ final class SdaPlayer {
     let data = try Data(contentsOf: experiment)
     let info = (try JSONSerialization.jsonObject(with:data)) as? [String:Any]
     let count = info?["directionCount"] as? Int ?? 0
-    hrtfState = count == 542 ? "实验版 · KU100 542 方向 · 全高度／镜像三角／公共时序校准" : "实验版 · KU100 218 方向 · 水平方位补充 · 高度响应及空间线索保留"
+    hrtfState = count > 0 ? "高解析空间渲染 · 实际方向定位 · 前后／上下空间线索" : hrtfState
    }
   } catch { stopNative(); throw error }
  }
