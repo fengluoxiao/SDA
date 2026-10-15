@@ -24,7 +24,9 @@ class MobileAssetsTest(unittest.TestCase):
 
     def test_horizontal_experiment_passes_and_rejects_corruption(self):
         source = ROOT / 'apps/mobile/ios-experiments'
-        shutil.copytree(source / 'horizontal-support/hrtf-dense',
+        active = json.loads((source / 'active.json').read_text())
+        directory = 'fullheight-combined' if active['directionCount'] == 542 else 'horizontal-support'
+        shutil.copytree(source / directory / 'hrtf-dense',
                         self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
         shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
         verify_mobile_ios_assets(self.app)
@@ -46,6 +48,19 @@ class MobileAssetsTest(unittest.TestCase):
             manifest['processing']['spatialCues'] = False
             manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
         verify_mobile_ios_assets(self.app)
+
+    def test_combined_triangle_sidecar_corruption_rejected(self):
+        source = ROOT / 'apps/mobile/ios-experiments'
+        active = json.loads((source / 'active.json').read_text())
+        if active['directionCount'] != 542:
+            self.skipTest('Combined experiment not selected')
+        shutil.copytree(source / 'fullheight-combined/hrtf-dense',
+                        self.bundle / 'hrtf-restored/hrtf-dense', dirs_exist_ok=True)
+        shutil.copy(source / 'active.json', self.bundle / 'ios-experiment.json')
+        verify_mobile_ios_assets(self.app)
+        (self.bundle / 'hrtf-restored/hrtf-dense/triangle-grid.json').write_bytes(b'{}')
+        with self.assertRaisesRegex(RuntimeError, 'triangle support corrupt'):
+            verify_mobile_ios_assets(self.app)
 
     def test_legacy_assets_rejected(self):
         for name in ['hrtf', 'hrtf-dense', 'hrtf-raw', 'hrtf-dense-raw', 'rooms']:

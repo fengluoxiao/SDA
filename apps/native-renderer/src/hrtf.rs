@@ -9,6 +9,8 @@ use std::{fs::read, path::Path};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
+    #[serde(default)]
+    triangle_support_file: Option<String>,
     sample_rate: u32,
     calibration_version: Option<u32>,
     complete_subject: Option<bool>,
@@ -321,6 +323,15 @@ impl NativeHrtfSet {
         // 61-point fallback until that provenance is added to the asset.
         let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
             || (is_dense_ku100 && manifest.subject_id.is_none());
+        let mut directional_grid=crate::directional::Grid::new_with_notch_guard(&cache,ku100_notch_guard)
+            .with_historical_interpolation(&cache,manifest.processing.historical_interpolation);
+        if let Some(file)=&manifest.triangle_support_file {
+            let relative=std::path::Path::new(file);
+            if relative.is_absolute() || relative.components().any(|c| !matches!(c,std::path::Component::Normal(_))) {
+                return Err("Triangle support path must stay within asset directory".into());
+            }
+            directional_grid=directional_grid.with_triangle_support(&root.join(relative),&cache)?;
+        }
         Ok(Self {
             preparation_id: Self::next_preparation_id(),
             historical_interpolation: manifest.processing.historical_interpolation,
@@ -335,10 +346,7 @@ impl NativeHrtfSet {
             subject_id: manifest.subject_id,
             complete_subject,
             positions: std::sync::Arc::new(manifest.positions),
-            directional_grid: crate::directional::Grid::new_with_notch_guard(
-                &cache,
-                ku100_notch_guard,
-            ).with_historical_interpolation(&cache, manifest.processing.historical_interpolation),
+            directional_grid,
             cache: std::sync::Arc::new(cache),
             speaker_set,
             prepared: std::collections::HashMap::new(),

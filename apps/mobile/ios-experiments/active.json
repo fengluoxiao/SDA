@@ -1,6 +1,8 @@
 {
-  "id": "horizontal-support-218-v1",
-  "directionCount": 218,
-  "scope": "iOS test build only; original61 + historical13lower +144horizontal supplements; original17fallback, cues enabled; no triangle mode",
-  "baselineDirectionCount": 61
+  "id": "fullheight-triangle-commonphase-542-v1",
+  "directionCount": 542,
+  "assetSubdirectory": "fullheight-combined",
+  "baselineDirectionCount": 61,
+  "triangleSupportSha256": "564e49ec0818bc808146417e56c19bfbb2b2688cb9d0d1fe86651a897f9574eb",
+  "scope": "User authorized C experimental build: fullheight + symmetric triangle weights + common fractional timing on supplementary responses"
 }

@@ -62,6 +62,7 @@ mod filter_preparation;
 mod audio_executor;
 pub mod direct_renderer;
 pub mod directional;
+mod triangle_support;
 pub mod dsp;
 pub mod focus;
 mod front_common;

@@ -10,9 +10,10 @@ def verify_mobile_ios_assets(app):
     direct_trial = len(presets) == 1 and presets[0].get('iosDirectReflectionTrial') is True
     experiment_path = bundle / 'ios-experiment.json'
     experiment = json.loads(experiment_path.read_text(encoding='utf-8')) if experiment_path.exists() else None
-    if experiment and (experiment.get('id') != 'horizontal-support-218-v1' or experiment.get('directionCount') != 218):
+    supported = {'horizontal-support-218-v1':218, 'fullheight-triangle-commonphase-542-v1':542}
+    if experiment and (experiment.get('id') not in supported or experiment.get('directionCount') != supported[experiment['id']]):
         raise RuntimeError('Unknown iOS experiment')
-    for directory, count in [('hrtf-dense', 218 if experiment else 61), ('hrtf', 17)]:
+    for directory, count in [('hrtf-dense', experiment['directionCount'] if experiment else 61), ('hrtf', 17)]:
         root = bundle / 'hrtf-restored' / directory
         manifest = json.loads((root / 'hrtf-set.json').read_text(encoding='utf-8'))
         positions = manifest['positions']
@@ -20,8 +21,17 @@ def verify_mobile_ios_assets(app):
         if experiment and directory == 'hrtf-dense':
             if manifest.get('iosExperiment') != experiment['id'] or manifest.get('subjectId') != 'ku100' or manifest.get('completeSubject') is not True:
                 raise RuntimeError('Invalid experiment provenance')
-            if any(p['elevation'] != 0 for p in positions[74:]):
+            if experiment['id'] == 'horizontal-support-218-v1' and any(p['elevation'] != 0 for p in positions[74:]):
                 raise RuntimeError('Unexpected added height response in horizontal experiment')
+            if experiment['id'] == 'fullheight-triangle-commonphase-542-v1':
+                if manifest.get('triangleSupportFile') != 'triangle-grid.json':
+                    raise RuntimeError('Combined experiment triangle support missing')
+                data = (root / 'triangle-grid.json').read_bytes()
+                if hashlib.sha256(data).hexdigest() != experiment.get('triangleSupportSha256'):
+                    raise RuntimeError('Combined experiment triangle support corrupt')
+                grid = json.loads(data)
+                if [(p['azimuth'],p['elevation']) for p in grid['positions']] != [(p['azimuth'],p['elevation']) for p in positions]:
+                    raise RuntimeError('Triangle direction order mismatch')
         if (len(positions) != count or manifest['sampleRate'] != 48000
                 or processing.get('calibrated') is not True
                 or processing.get('historicalInterpolation') is not True

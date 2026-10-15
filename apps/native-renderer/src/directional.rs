@@ -767,6 +767,7 @@ impl SpectralBank {
 
 pub struct Grid {
     directions: Vec<[f64; 3]>,
+    triangle_support: Option<std::sync::Arc<crate::triangle_support::TriangleSupport>>,
     historical_arrivals: Option<Vec<[usize; 2]>>,
     spectral_bank: Option<std::sync::Arc<SpectralBank>>,
     lower_support: Option<std::sync::Arc<LowerSupport>>,
@@ -798,6 +799,7 @@ impl Clone for Grid {
     fn clone(&self) -> Self {
         Self {
             directions: self.directions.clone(),
+            triangle_support: self.triangle_support.clone(),
             historical_arrivals: self.historical_arrivals.clone(),
             spectral_bank: self.spectral_bank.clone(),
             lower_support: self.lower_support.clone(),
@@ -890,6 +892,10 @@ fn waveform_alignment_lag(a: &[f32], b: &[f32], max_lag: isize) -> f64 {
 }
 
 impl Grid {
+    pub(crate) fn with_triangle_support(mut self, path:&std::path::Path, irs:&[StereoIr]) -> Result<Self,String> {
+        self.triangle_support=Some(crate::triangle_support::TriangleSupport::load(path,irs)?);
+        Ok(self)
+    }
     /// Shift `neighbour` onto `anchor`'s timeline.
     ///
     /// The cache is canonical: it stores only the lower-index anchor to
@@ -994,6 +1000,7 @@ impl Grid {
     }
     pub fn new_with_notch_guard(irs: &[StereoIr], ku100_notch_guard: bool) -> Self {
         Self {
+            triangle_support: None,
             directions: irs
                 .iter()
                 .map(|ir| unit(ir.azimuth, ir.elevation))
@@ -1140,6 +1147,9 @@ impl Grid {
 
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
         let u = unit(az, el);
+        if let Some(support) = &self.triangle_support {
+            if let Some(weights) = support.weights(u) { return weights; }
+        }
         let mut distances: Vec<_> = self
             .directions
             .iter()

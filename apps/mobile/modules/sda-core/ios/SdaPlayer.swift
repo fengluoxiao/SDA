@@ -253,7 +253,10 @@ final class SdaPlayer {
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
    let experiment = try assetRoot().appendingPathComponent("ios-experiment.json")
    if FileManager.default.fileExists(atPath: experiment.path) {
-    hrtfState = "实验版 · KU100 218 方向 · 水平方位补充 · 高度响应及空间线索保留"
+    let data = try Data(contentsOf: experiment)
+    let info = (try JSONSerialization.jsonObject(with:data)) as? [String:Any]
+    let count = info?["directionCount"] as? Int ?? 0
+    hrtfState = count == 542 ? "实验版 · KU100 542 方向 · 全高度／镜像三角／公共时序校准" : "实验版 · KU100 218 方向 · 水平方位补充 · 高度响应及空间线索保留"
    }
   } catch { stopNative(); throw error }
  }

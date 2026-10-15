@@ -9,7 +9,8 @@ assert.deepEqual([dense.id,dense.hrtfSet,dense.assetDirectory,dense.direct,dense
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const experimentPath='apps/mobile/ios-experiments/active.json';
 const experiment=fs.existsSync(experimentPath)?JSON.parse(fs.readFileSync(experimentPath,'utf8')):null;
-if(experiment)assert.deepEqual([experiment.id,experiment.directionCount],['horizontal-support-218-v1',218]);
+const experiments={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined']};
+if(experiment)assert.equal(experiments[experiment.id]?.[0],experiment.directionCount);
 for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  const source=`apps/mobile/assets/hrtf-restored/${directory}`;
  const manifest=JSON.parse(fs.readFileSync(`${source}/hrtf-set.json`,'utf8'));
@@ -22,9 +23,9 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
  const stagedRoot=`apps/mobile/modules/sda-core/ios/Resources/hrtf-restored/${directory}`;
  const staged=JSON.parse(fs.readFileSync(`${stagedRoot}/hrtf-set.json`,'utf8'));
  if(experiment && directory==='hrtf-dense') {
-  const expected=JSON.parse(fs.readFileSync('apps/mobile/ios-experiments/horizontal-support/hrtf-dense/hrtf-set.json','utf8'));
+  const expected=JSON.parse(fs.readFileSync(`apps/mobile/ios-experiments/${experiments[experiment.id][1]}/hrtf-dense/hrtf-set.json`,'utf8'));
   assert.deepEqual(staged,expected);
-  assert.equal(staged.positions.length,218);
+  assert.equal(staged.positions.length,experiment.directionCount);
   assert.equal(staged.iosExperiment,experiment.id);
   assert.equal(staged.processing.spatialCues,true);
   for(const p of staged.positions) {

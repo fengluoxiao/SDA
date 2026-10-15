@@ -9,10 +9,12 @@ cpSync(join(root,'apps/mobile/rendering-presets.json'),join(out,'rendering-prese
 const experimentPath=join(root,'apps/mobile/ios-experiments/active.json');
 if (existsSync(experimentPath)) {
   const experiment=JSON.parse(readFileSync(experimentPath,'utf8'));
-  if (experiment.id!=='horizontal-support-218-v1' || experiment.directionCount!==218) throw new Error('Unknown iOS experiment');
-  cpSync(join(root,'apps/mobile/ios-experiments/horizontal-support/hrtf-dense'),join(out,'hrtf-restored/hrtf-dense'),{recursive:true});
+  const supported={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined']};
+  const config=supported[experiment.id];
+  if (!config || experiment.directionCount!==config[0]) throw new Error('Unknown iOS experiment');
+  cpSync(join(root,'apps/mobile/ios-experiments',config[1],'hrtf-dense'),join(out,'hrtf-restored/hrtf-dense'),{recursive:true});
   cpSync(experimentPath,join(out,'ios-experiment.json'));
-  console.log('iOS TEST BUILD: horizontal-support-218-v1, original height responses and cues retained');
+  console.log(`iOS TEST BUILD: ${experiment.id} (${experiment.directionCount} directions)`);
 }
 // Explicit iOS audition configuration; shared measured HRIRs stay identical.
 const presets=JSON.parse(readFileSync(join(out,'rendering-presets.json'),'utf8'));
