@@ -323,28 +323,56 @@ export default class App extends React.Component<Record<string, never>, State> {
         multiple: true,
       });
       if (result.canceled) return;
-      const additions: QueueTrack[] = [];
-      const knownHashes = new Set(this.state.queue.map(track => track.contentHash));
-      for (const asset of result.assets) {
+      const knownHashes = new Set(this.state.queue.filter(track => !track.preparation).map(track => track.contentHash));
+      const batch = Date.now();
+      const pending: QueueTrack[] = result.assets.map((asset, i) => ({
+        contentHash: `pending:${batch}:${i}`, uri: asset.uri, name: asset.name, metadata: {},
+        preparation: { state: "loading", progress: 0, stage: "等待处理" },
+      }));
+      await new Promise<void>(resolve => this.setState(state => ({ queue: [...state.queue, ...pending] }), resolve));
+      let importError: string | null = null;
+      for (const [assetIndex, asset] of result.assets.entries()) {
+        const pendingId = pending[assetIndex]!.contentHash;
+        const patch = (update: Partial<QueueTrack>) => this.setState(state => ({
+          queue: state.queue.map(track => track.contentHash === pendingId ? { ...track, ...update } : track),
+        }));
+        const progress = (value: number, stage: string) => patch({ preparation: { state: "loading", progress: value, stage } });
+        try {
         const extension = asset.name.split(".").pop()?.toLowerCase();
         if (!extension || !["eac3", "ec3", "ac4", "m4a", "mp4", "mp3", "mhas"].includes(extension)) {
-          throw new Error("请选择 .eac3/.ec3、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA 音轨的 .m4a/.mp4 文件");
+          throw new Error("请选择 .eac3/.ec3、.ac4、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA 音轨的 .m4a/.mp4 文件");
         }
+        progress(.02, "校验文件");
         const contentHash = await this.getEngine().contentHash(asset.uri);
-        if (knownHashes.has(contentHash)) continue;
+        if (knownHashes.has(contentHash)) {
+          this.setState(state => {
+            const selected = state.queue[state.queueIndex]?.contentHash;
+            const queue = state.queue.filter(track => track.contentHash !== pendingId);
+            return { queue, queueIndex: selected ? queue.findIndex(track => track.contentHash === selected) : -1 };
+          });
+          continue;
+        }
+        progress(.08, "读取歌曲信息");
         const metadata = JSON.parse(await this.getEngine().metadata(asset.uri)) as TrackMetadata;
+        patch({ metadata });
         const track = { contentHash, uri: asset.uri, name: asset.name, metadata };
         // Prepare while the foreground import transaction is alive, not after EOF in background.
-        if (Platform.OS === "ios") await this.prepareTrack(track);
-        additions.push(track);
+        if (Platform.OS === "ios") await this.prepareTrack(track, p => progress(.12 + p.fraction * .86, p.stage));
+        progress(.99, "完成准备");
+        await new Promise<void>(resolve => this.setState(state => {
+          const queue = state.queue.map(item => item.contentHash === pendingId ? track : item);
+          if (state.queueIndex < 0) return { queue, queueIndex: queue.findIndex(item => item.contentHash === contentHash),
+            selectedUri: track.uri, fileName: track.name, metadata: track.metadata, durationMs: track.metadata.durationMs ?? 0 };
+          return { queue, queueIndex: state.queueIndex, selectedUri: state.selectedUri, fileName: state.fileName,
+            metadata: state.metadata, durationMs: state.durationMs };
+        }, () => { this.syncNativeQueue(); resolve(); }));
         knownHashes.add(contentHash);
+        } catch (error) {
+          importError = error instanceof Error ? error.message : String(error);
+          patch({ preparation: { state: "failed", progress: 0, stage: "准备失败", error: importError } });
+        }
       }
-      if (!additions.length) return;
-      const queue = [...this.state.queue, ...additions];
-      if (this.state.queueIndex < 0) {
-        const first = queue[0]!;
-        this.setState({ queue, queueIndex: 0, selectedUri: first.uri, fileName: first.name, metadata: first.metadata, durationMs: first.metadata.durationMs ?? 0 }, this.syncNativeQueue);
-      } else this.setState({ queue }, this.syncNativeQueue);
+      if (importError) this.setState({ error: importError });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -355,16 +383,16 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   // Keep iOS extractions alive for native EOF handoff. Android retains its existing lifetime.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
-  private prepareTrack = async (track: QueueTrack) => {
-    if (Platform.OS !== "ios") return prepare360RaMp4(this.getEngine(), track.uri, track.name);
+  private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
+    if (Platform.OS !== "ios") return prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress);
     if (!this.preparedTracks.has(track.contentHash)) {
-      this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name));
+      this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress));
     }
     return this.preparedTracks.get(track.contentHash) ?? null;
   };
   private syncNativeQueue = () => {
     if (Platform.OS !== "ios") return;
-    this.engine?.configurePlaybackQueue?.(JSON.stringify(this.state.queue.map(track => {
+    this.engine?.configurePlaybackQueue?.(JSON.stringify(this.state.queue.filter(track => !track.preparation).map(track => {
       const prepared = this.preparedTracks.get(track.contentHash);
       return { hash: track.contentHash, uri: prepared?.uri ?? track.uri, name: prepared?.name ?? track.name,
         metadata: { ...track.metadata, durationMs: prepared?.durationMs || track.metadata.durationMs } };
@@ -373,7 +401,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private setPlaybackMode = (playbackMode: PlaybackMode) => this.setState({ playbackMode }, this.syncNativeQueue);
 
   private skipTrack = (direction: 1 | -1) => {
-    const items = this.state.queue.map(track => ({ id: track.contentHash }));
+    const items = this.state.queue.filter(track => !track.preparation).map(track => ({ id: track.contentHash }));
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = adjacentPlaylistItemId(items, currentId, direction);
     if (nextId !== null) void this.selectTrack(this.state.queue.findIndex(track => track.contentHash === nextId));
@@ -383,7 +411,7 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private selectTrack = async (index: number) => {
     const track = this.state.queue[index];
-    if (this.changingTrack || this.state.busy || !track) return;
+    if (this.changingTrack || this.state.busy || !track || track.preparation) return;
     this.changingTrack = true;
     this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
       durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
@@ -472,7 +500,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private advancePlaylist() {
     // Native EOF owns iOS advancement even when JS is suspended. Never advance twice.
     if (Platform.OS === "ios" && this.engine?.configurePlaybackQueue) return;
-    const items = this.state.queue.map(track => ({ id: track.contentHash }));
+    const items = this.state.queue.filter(track => !track.preparation).map(track => ({ id: track.contentHash }));
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = nextPlaylistItemId(items, currentId, this.state.playbackMode);
     if (nextId !== null) void this.selectTrack(this.state.queue.findIndex(track => track.contentHash === nextId));

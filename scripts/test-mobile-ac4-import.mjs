@@ -51,7 +51,12 @@ function hostFor(input, failWrite = false) {
 const payloads = [1, 127, 65534, 65535, 300000].map((size, i) => Buffer.alloc(size, i + 1));
 const input = fixture('ac-4', payloads);
 const host = hostFor(input);
-const result = await prepare360RaMp4(host, 'fixture', 'song.M4A');
+const progress = [];
+const result = await prepare360RaMp4(host, 'fixture', 'song.M4A', value => progress.push(value));
+assert.equal(progress[0].fraction, 0);
+assert.equal(progress.at(-1).fraction, 1);
+assert(progress.some(value => value.stage === '提取 AC-4 音轨'));
+assert(progress.every((value, i) => value.fraction >= 0 && value.fraction <= 1 && (!i || value.fraction >= progress[i-1].fraction)));
 assert(result);
 assert.equal(result.name, 'song.M4A.ac4');
 assert.equal(result.uri, 'file://normalized.mhas');

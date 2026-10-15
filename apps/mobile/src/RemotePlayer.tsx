@@ -10,7 +10,10 @@ export interface TrackMetadata {
   title?: string; artist?: string; album?: string; albumArtist?: string;
   year?: string; track?: string; coverUri?: string; durationMs?: number;
 }
-export interface QueueTrack { contentHash: string; uri: string; name: string; metadata: TrackMetadata }
+export interface QueueTrack {
+  contentHash: string; uri: string; name: string; metadata: TrackMetadata;
+  preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
+}
 export interface PlayerProps {
   headTrackingEnabled: boolean; headTrackingStatus: string;
   setHeadTracking(enabled: boolean): void;

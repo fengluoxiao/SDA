@@ -15,6 +15,7 @@ import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
 import { artworkColor } from "./artwork-color";
 import { swiftUI } from "./IOSSystemTabs";
 import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
+import { QueuePreparationOverlay } from "./QueuePreparationOverlay";
 
 function Symbol({ name, fallback, size = 22, color = "#fff", theme = "dark" }: { name: string; fallback: string; size?: number; color?: string; theme?: "light" | "dark" }) {
   const native = !!swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "ImageView");
@@ -217,10 +218,11 @@ function ThemedPlayer(p: PlayerProps) {
             })}
           </View>
           <View style={[s.row, { marginTop: 28, marginBottom: 8 }]}>{label("播放列表", false, s.sectionTitle)}{label(p.queue.length + " 首", true, s.small)}</View>
-          {p.queue.map((track, index) => <Pressable key={track.contentHash} accessibilityRole="button" accessibilityState={{ selected: index === p.queueIndex, disabled: p.busy }} disabled={p.busy} onPress={() => { p.selectTrack(index); navigate(0); }} style={[s.queueRow, { borderBottomColor: c.line }]}>
+          {p.queue.map((track, index) => <Pressable key={track.contentHash} accessibilityRole="button" accessibilityLabel={`${trackTitle(track)}${track.preparation ? `，${track.preparation.stage}` : ""}`} accessibilityState={{ selected: index === p.queueIndex, disabled: p.busy || !!track.preparation, busy: track.preparation?.state === "loading" }} disabled={p.busy || !!track.preparation} onPress={() => { p.selectTrack(index); navigate(0); }} style={[s.queueRow, { borderBottomColor: c.line, overflow: "hidden" }]}>
             {track.metadata.coverUri ? <Image source={{ uri: track.metadata.coverUri }} resizeMode="cover" style={s.queueCover} /> : <View style={[s.queueCover, s.emptyCover, { backgroundColor: c.field }]}>{label("♫", true, { fontSize: 23 })}</View>}
             <View style={{ flex: 1 }}><Text numberOfLines={2} style={[s.queueTitle, { color: c.ink }]}>{trackTitle(track)}</Text><Text numberOfLines={1} style={[s.queueArtist, { color: c.muted }]}>{track.metadata.artist || track.metadata.albumArtist || "本机文件"}{track.metadata.album ? " · " + track.metadata.album : ""}</Text></View>
             {label(index === p.queueIndex ? "●" : "›", index !== p.queueIndex, { color: index === p.queueIndex ? c.accent : c.muted })}
+            <QueuePreparationOverlay preparation={track.preparation} dark={!isLight} accent={c.accent} />
           </Pressable>)}
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}

@@ -10,10 +10,12 @@ export interface MpeghMp4Host {
   discardMp4Import(token: string): Promise<void>;
 }
 const CHUNK = 256 * 1024;
-/** Use Windows's actual MP4 parser and mhaC/AU packet writer; the Android host
+export interface ImportProgress { fraction: number; stage: string }
+/** Use Windows's actual MP4 parser and AC-4/MPEG-H packet writers; the mobile host
  * only reads/writes bounded file chunks. Decoding remains entirely native. */
-export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string) {
+export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string, onProgress?: (progress: ImportProgress) => void) {
   if (!/\.(?:m4a|mp4)$/i.test(name)) return null;
+  onProgress?.({ fraction: 0, stage: "读取容器" });
   const { token, size } = JSON.parse(await host.beginMp4Import(uri)) as { token: string; size: number };
   let selected = false, otherCodec = false, raw = false, ac4 = false, durationMs = 0, failure: string | undefined;
   let packetCount = 0;
@@ -62,11 +64,13 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
       demuxer.push(bytes, offset);
       if (otherCodec) { await host.discardMp4Import(token); return null; }
       await writePackets();
+      onProgress?.({ fraction: .95 * Math.min(1, (offset + bytes.length) / size), stage: ac4 ? "提取 AC-4 音轨" : selected ? "提取 360 Reality Audio 音轨" : "解析音轨" });
     }
     demuxer.flush();
     await writePackets();
     if (!selected || !packetCount) throw new Error("MP4 中没有可播放的 Atmos/360RA 音轨");
     const playbackUri = await host.finishMp4Import(token);
+    onProgress?.({ fraction: 1, stage: "音轨已就绪" });
     return { uri: playbackUri, name: `${name}.${ac4 ? "ac4" : "mhas"}`, durationMs,
       release: () => host.discardMp4Import(token) };
   } catch (error) {
