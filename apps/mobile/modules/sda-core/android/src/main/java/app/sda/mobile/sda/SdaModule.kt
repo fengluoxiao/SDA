@@ -57,7 +57,15 @@ class SdaModule : Module() {
             check(hrtfDir.mkdirs() || hrtfDir.isDirectory) { "Cannot create KU100 asset directory: $hrtfDir" }
             val names = context.assets.list(assetDirectory)?.toList().orEmpty()
             val manifestName = "hrtf-set.json"
-            check(manifestName in names && names.count { it.endsWith("_dry.f32") } == (if (assetDirectory.endsWith("hrtf-dense")) 61 else 17)) {
+            val packedManifest = JSONObject(context.assets.open("$assetDirectory/$manifestName").bufferedReader().use { it.readText() })
+            val packedPositions = packedManifest.getJSONArray("positions")
+            val requiredResponses = mutableSetOf<String>()
+            for (i in 0 until packedPositions.length()) {
+                val row = packedPositions.getJSONObject(i)
+                requiredResponses.add(row.getString("dry")); requiredResponses.add(row.getString("wet"))
+            }
+            if (packedManifest.has("triangleSupportFile")) requiredResponses.add(packedManifest.getString("triangleSupportFile"))
+            check(manifestName in names && requiredResponses.all { it in names }) {
                 "Packaged KU100 HRTF asset set is incomplete"
             }
             names.forEach { name ->

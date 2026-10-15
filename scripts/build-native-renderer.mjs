@@ -2,6 +2,7 @@ import { copyFile, cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageSharedExperiment, verifySharedExperiment } from './stage-shared-render-experiment.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const renderer = join(root, "apps", "native-renderer");
@@ -9,9 +10,10 @@ const isWindows = process.platform === "win32";
 const exeSuffix = isWindows ? ".exe" : "";
 const exeName = `sda-native-renderer${exeSuffix}`;
 const targetName = `SdaNativeRenderer${exeSuffix}`;
+const targetTriple=process.env.SDA_NATIVE_TARGET;
 
 await new Promise((resolveRun, reject) => {
-  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline"], {
+  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", ...(targetTriple?["--target",targetTriple]:[])], {
     cwd: renderer,
     stdio: "inherit",
     windowsHide: true,
@@ -22,7 +24,7 @@ await new Promise((resolveRun, reject) => {
 
 const destination = join(root, "apps", "desktop", "native-renderer");
 await mkdir(destination, { recursive: true });
-const source = join(renderer, "target", "release", exeName);
+const source = join(renderer, "target", ...(targetTriple?[targetTriple]:[]), "release", exeName);
 const target = join(destination, targetName);
 await copyFile(source, target);
 if (!isWindows) {
@@ -67,4 +69,8 @@ async function verifyHrtfStage(set) {
 }
 
 await Promise.all(hrtfSets.map(verifyHrtfStage));
+// Windows and macOS use this same native asset stage. Overlay only the
+// explicitly selected experimental dense family; keep standard fallback.
+const experiment=stageSharedExperiment(hrtfDestination);
+if(experiment) { verifySharedExperiment(hrtfDestination); console.log(`Native experimental renderer: ${experiment.id}`); }
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);

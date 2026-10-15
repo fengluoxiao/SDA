@@ -1,6 +1,7 @@
 import {cpSync,mkdirSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {stageSharedExperiment} from './stage-shared-render-experiment.mjs';
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const out=join(root,'apps/mobile/modules/sda-core/ios/Resources');
 mkdirSync(out,{recursive:true});
@@ -12,7 +13,7 @@ if (existsSync(experimentPath)) {
   const supported={'horizontal-support-218-v1':[218,'horizontal-support'],'fullheight-triangle-commonphase-542-v1':[542,'fullheight-combined']};
   const config=supported[experiment.id];
   if (!config || experiment.directionCount!==config[0]) throw new Error('Unknown iOS experiment');
-  cpSync(join(root,'apps/mobile/ios-experiments',config[1],'hrtf-dense'),join(out,'hrtf-restored/hrtf-dense'),{recursive:true});
+  stageSharedExperiment(join(out,'hrtf-restored'));
   cpSync(experimentPath,join(out,'ios-experiment.json'));
   console.log(`iOS TEST BUILD: ${experiment.id} (${experiment.directionCount} directions)`);
 }

@@ -141,6 +141,8 @@ def mobileHrtfAssets = file('../../assets')
 def sharedAssets = layout.buildDirectory.dir('generated/sharedKu100Assets')
 android.sourceSets.main.assets.setSrcDirs([sharedAssets])
 def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
+    inputs.dir(new File(projectRoot, 'ios-experiments'))
+    inputs.file(new File(projectRoot, '../../scripts/stage-shared-render-experiment.mjs'))
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
@@ -150,6 +152,13 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
         def manifest = new groovy.json.JsonSlurper().parse(new File(mobileHrtfAssets, 'hrtf-restored/hrtf-dense/hrtf-set.json'))
         if (manifest.positions.size() != 61 || manifest.processing.historicalInterpolation != true || manifest.processing.spatialCues != true || manifest.processing.dryTapLimit != 512) {
             throw new GradleException('Expected calibrated 61-direction KU100 with historical interpolation and spatial cues')
+        }
+    }
+    doLast {
+        exec {
+            workingDir projectRoot
+            commandLine 'node', '../../scripts/stage-shared-render-experiment.mjs',
+                new File(sharedAssets.get().asFile, 'hrtf-restored').absolutePath
         }
     }
 }

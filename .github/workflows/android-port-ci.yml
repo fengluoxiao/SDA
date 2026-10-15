@@ -218,6 +218,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Verify actual APK rendering experiment
+        if: success()
+        run: python3 scripts/verify-android-render-experiment.py apps/mobile/android/app/build/outputs/apk/release
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:
