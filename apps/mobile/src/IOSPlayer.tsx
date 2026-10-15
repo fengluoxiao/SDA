@@ -75,7 +75,7 @@ function ThemedPlayer(p: PlayerProps) {
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
   };
-  const format = p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
+  const format = p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|ac4|ac-4|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
   const infoRows: [string, string][] = previewMetadata ? [
     ["数据来源", "Expo Go 模拟数据 · 仅开发预览"], ["文件名", "Preview.m4a"], ["标题", "示例歌曲"], ["艺人", "示例艺人"], ["专辑", "示例专辑"], ["容器", "M4A"], ["编码", "E-AC-3 JOC"], ["采样率", "48,000 Hz（模拟）"], ["音频格式", "杜比全景声"],
   ] : [

@@ -15,13 +15,14 @@ const CHUNK = 256 * 1024;
 export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string) {
   if (!/\.(?:m4a|mp4)$/i.test(name)) return null;
   const { token, size } = JSON.parse(await host.beginMp4Import(uri)) as { token: string; size: number };
-  let selected = false, otherCodec = false, raw = false, durationMs = 0, failure: string | undefined;
+  let selected = false, otherCodec = false, raw = false, ac4 = false, durationMs = 0, failure: string | undefined;
   let packetCount = 0;
   const packets: Uint8Array[] = [];
   const demuxer = new Mp4Demuxer({
     onTrack(track) {
-      if (track.codec !== "mha1" && track.codec !== "mhm1") { otherCodec = true; return; }
+      if (track.codec !== "mha1" && track.codec !== "mhm1" && track.codec !== "ac-4") { otherCodec = true; return; }
       selected = true;
+      ac4 = track.codec === "ac-4";
       raw = track.codec === "mha1";
       durationMs = (track.durationSec ?? 0) * 1000;
       if (raw) {
@@ -66,7 +67,7 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
     await writePackets();
     if (!selected || !packetCount) throw new Error("MP4 中没有可播放的 Atmos/360RA 音轨");
     const playbackUri = await host.finishMp4Import(token);
-    return { uri: playbackUri, name: `${name}.mhas`, durationMs,
+    return { uri: playbackUri, name: `${name}.${ac4 ? "ac4" : "mhas"}`, durationMs,
       release: () => host.discardMp4Import(token) };
   } catch (error) {
     await host.discardMp4Import(token);

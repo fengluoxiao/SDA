@@ -23,7 +23,7 @@ final class CompressedInput {
   scoped = url.startAccessingSecurityScopedResource()
   try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
-  if ["eac3", "ec3", "mhas", "mp3"].contains(ext) {
+  if ["eac3", "ec3", "ac4", "mhas", "mp3"].contains(ext) {
    file = try FileHandle(forReadingFrom: url)
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
