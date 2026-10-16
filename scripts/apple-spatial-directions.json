@@ -2753,5 +2753,25 @@
     "id": 550,
     "azimuth": 62.70042848459445,
     "elevation": 13.331226767827186
+  },
+  {
+    "id": 551,
+    "azimuth": 45,
+    "elevation": 45
+  },
+  {
+    "id": 552,
+    "azimuth": -45,
+    "elevation": 45
+  },
+  {
+    "id": 553,
+    "azimuth": 135,
+    "elevation": 45
+  },
+  {
+    "id": 554,
+    "azimuth": -135,
+    "elevation": 45
   }
 ]
