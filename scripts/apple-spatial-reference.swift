@@ -19,15 +19,19 @@ let separation = 16_384
 let totalFrames = firstImpulse + 2 * separation
 
 func capture(_ direction: Direction, algorithm: AVAudio3DMixingRenderingAlgorithm,
-             amplitude: Float) throws -> ([Float], [String: Any]) {
+             amplitude: Float, copies: Int = 1) throws -> ([Float], [String: Any]) {
+    guard copies > 0 else { throw ProbeFailure("Invalid source count") }
     let engine = AVAudioEngine()
     let environment = AVAudioEnvironmentNode()
-    let player = AVAudioPlayerNode()
+    let players = (0..<copies).map { _ in AVAudioPlayerNode() }
+    let player = players[0]
     let mono = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
     let stereo = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
     engine.attach(environment)
-    engine.attach(player)
-    engine.connect(player, to: environment, format: mono)
+    for node in players {
+        engine.attach(node)
+        engine.connect(node, to: environment, format: mono)
+    }
     engine.connect(environment, to: engine.mainMixerNode, format: stereo)
     engine.mainMixerNode.outputVolume = 1
     environment.outputVolume = 1
@@ -41,35 +45,38 @@ func capture(_ direction: Direction, algorithm: AVAudio3DMixingRenderingAlgorith
     environment.distanceAttenuationParameters.referenceDistance = 2
     environment.distanceAttenuationParameters.maximumDistance = 100
     environment.distanceAttenuationParameters.rolloffFactor = 1
-    player.renderingAlgorithm = algorithm
-    player.sourceMode = .pointSource
-    player.reverbBlend = 0
-    player.obstruction = 0
-    player.occlusion = 0
-    player.volume = 1
     let az = direction.azimuth * .pi / 180
     let el = direction.elevation * .pi / 180
     // SDA positive azimuth=left, elevation=up. Apple x=right,y=up,z=back.
-    player.position = AVAudio3DPoint(x: Float(-1.2 * sin(az) * cos(el)),
-                                    y: Float(1.2 * sin(el)),
-                                    z: Float(-1.2 * cos(az) * cos(el)))
+    let position = AVAudio3DPoint(x: Float(-1.2 * sin(az) * cos(el)),
+                                 y: Float(1.2 * sin(el)),
+                                 z: Float(-1.2 * cos(az) * cos(el)))
+    for node in players {
+        node.renderingAlgorithm = algorithm
+        node.sourceMode = .pointSource
+        node.reverbBlend = 0
+        node.obstruction = 0
+        node.occlusion = 0
+        node.volume = 1
+        node.position = position
+    }
     try engine.enableManualRenderingMode(.offline, format: stereo, maximumFrameCount: 1024)
     let input = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: AVAudioFrameCount(totalFrames))!
     input.frameLength = AVAudioFrameCount(totalFrames)
     let source = input.floatChannelData![0]
     for i in 0..<totalFrames { source[i] = 0 }
-    source[firstImpulse] = amplitude
-    source[firstImpulse + separation] = amplitude
-    player.scheduleBuffer(input)
+    source[firstImpulse] = amplitude / Float(copies)
+    source[firstImpulse + separation] = amplitude / Float(copies)
+    for node in players { node.scheduleBuffer(input) }
     engine.prepare()
     try engine.start()
-    defer { player.stop(); engine.stop() }
+    defer { for node in players { node.stop() }; engine.stop() }
     let applicable = environment.applicableRenderingAlgorithms.compactMap { ($0 as? NSNumber)?.intValue }
     if algorithm != .auto && !applicable.contains(algorithm.rawValue) {
         throw ProbeFailure("Requested algorithm \(algorithm.rawValue) unavailable: \(applicable)")
     }
-    guard player.renderingAlgorithm == algorithm else { throw ProbeFailure("Algorithm readback mismatch") }
-    player.play()
+    guard players.allSatisfy({ $0.renderingAlgorithm == algorithm }) else { throw ProbeFailure("Algorithm readback mismatch") }
+    for node in players { node.play() }
     let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: 1024)!
     var output = [Float](repeating: 0, count: totalFrames * 2)
     var cursor = 0
@@ -120,7 +127,7 @@ func capture(_ direction: Direction, algorithm: AVAudio3DMixingRenderingAlgorith
     return (kernel, ["id": direction.id, "azimuth": direction.azimuth,
                      "elevation": direction.elevation, "algorithmRequested": algorithm.rawValue,
                      "algorithmReadback": player.renderingAlgorithm.rawValue,
-                     "applicableAlgorithms": applicable, "inputAmplitude": amplitude,
+                     "applicableAlgorithms": applicable, "inputAmplitude": amplitude, "sourceCount": copies,
                      "repeatResidualDb": repeatDb, "repeatMaximumSampleError": maxError,
                      "tailEnergyDb": tailDb, "earEnergy": earEnergy, "earPeaks": peaks,
                      "renderStatuses": statuses,
@@ -138,6 +145,7 @@ func main() throws {
     else { throw ProbeFailure("Invalid or duplicate direction list") }
     var rows: [[String: Any]] = []
     var checks: [[String: Any]] = []
+    var sourceCountChecks: [[String: Any]] = []
     var firstKernels: [Int: [Float]] = [:]
     let calibration = Set(directions.filter { abs($0.azimuth) == 90 && $0.elevation == 45 || $0.azimuth == 0 && $0.elevation == 0 }.map { $0.id })
     for (i, direction) in directions.enumerated() {
@@ -163,6 +171,20 @@ func main() throws {
             row["normalizedLinearityMaximumError"] = maximum
             checks.append(row)
         }
+        for copies in [2, 15] {
+            let (kernel, data) = try autoreleasepool {
+                try capture(direction, algorithm: .HRTFHQ, amplitude: 0.1, copies: copies)
+            }
+            var energy = 0.0, error = 0.0, maximum = 0.0
+            for i in base.indices {
+                let d = Double(kernel[i] - base[i]); error += d * d
+                energy += Double(base[i]) * Double(base[i]); maximum = max(maximum, abs(d))
+            }
+            var row = data
+            row["sourceCountResidualDb"] = 10 * log10(max(error / energy, 1e-30))
+            row["sourceCountMaximumError"] = maximum
+            sourceCountChecks.append(row)
+        }
     }
     #if arch(arm64)
     let architecture = "arm64"
@@ -176,13 +198,14 @@ func main() throws {
         "sourceRadiusMetres": 1.2, "distanceReferenceMetres": 2, "distanceRolloff": 1,
         "reverbEnabled": false, "outputType": "headphones", "headPose": "identity",
         "impulseSamples": [firstImpulse, firstImpulse + separation],
-        "directions": rows, "linearityChecks": checks,
+        "directions": rows, "linearityChecks": checks, "sourceCountChecks": sourceCountChecks,
+        "sourceCountPassed": sourceCountChecks.allSatisfy { ($0["sourceCountResidualDb"] as! Double) < -60 },
         "stationarityPassed": rows.allSatisfy { ($0["repeatResidualDb"] as! Double) < -60 },
         "linearityPassed": checks.allSatisfy { ($0["normalizedLinearityResidualDb"] as! Double) < -60 }
     ]
     let encoded = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
     try encoded.write(to: destination.appendingPathComponent("report.json"))
-    guard (report["stationarityPassed"] as! Bool) && (report["linearityPassed"] as! Bool) else {
+    guard (report["stationarityPassed"] as! Bool) && (report["linearityPassed"] as! Bool) && (report["sourceCountPassed"] as! Bool) else {
         throw ProbeFailure("Responses captured, but LTI validation failed; do not use as convolution kernels")
     }
     print("Captured and validated \(rows.count) directions; \(checks.count) linearity checks")

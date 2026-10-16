@@ -2708,5 +2708,50 @@
     "id": 541,
     "azimuth": 178,
     "elevation": 0
+  },
+  {
+    "id": 542,
+    "azimuth": -45.0,
+    "elevation": 0.0
+  },
+  {
+    "id": 543,
+    "azimuth": 45.0,
+    "elevation": 10.678415466895073
+  },
+  {
+    "id": 544,
+    "azimuth": -45.0,
+    "elevation": 10.678415466895073
+  },
+  {
+    "id": 545,
+    "azimuth": 135.0,
+    "elevation": 0.0
+  },
+  {
+    "id": 546,
+    "azimuth": 55.885526677098355,
+    "elevation": 0.0
+  },
+  {
+    "id": 547,
+    "azimuth": 45.0,
+    "elevation": 0.0
+  },
+  {
+    "id": 548,
+    "azimuth": -62.70042848459445,
+    "elevation": 13.331226767827186
+  },
+  {
+    "id": 549,
+    "azimuth": -135.0,
+    "elevation": 0.0
+  },
+  {
+    "id": 550,
+    "azimuth": 62.70042848459445,
+    "elevation": 13.331226767827186
   }
 ]
