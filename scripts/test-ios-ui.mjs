@@ -97,8 +97,8 @@ assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360R
 
 // Exercise the UI adapter with mocked native components (not a visual/native
 // runtime test): appearances, controlled selection, capability-safe imports.
-const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-screens/experimental', 'react-native-safe-area-context'] });
-function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true, markerAvailable = false) {
+const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context'] });
+function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true) {
   const module = { exports: {} };
   let nativeImports = 0;
   const mockReact = {
@@ -109,9 +109,12 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
   };
   const mockRequire = name => {
     if (name === 'react') return mockReact;
-    if (name === 'react-native') return { Platform: { OS: platform, Version: version }, UIManager: { hasViewManagerConfig: name => available && (name !== "RNSScrollViewMarker" || markerAvailable) && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable) }, View: 'View' };
+    if (name === 'react-native') return { Platform: { OS: platform, Version: version }, UIManager: { hasViewManagerConfig: name => {
+      const known = ["RNSTabsHostIOS", "RNSTabsScreenIOS", "RNSTabsBottomAccessory", "RNSTabsBottomAccessoryContent"];
+      if (!known.includes(name)) throw new Error("Exception in HostFunction: unknown native component " + name);
+      return available && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable);
+    } }, View: 'View' };
     if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView' };
-    if (name === 'react-native-screens/experimental') { assert(markerAvailable && version >= 26 && platform === 'ios'); return { ScrollViewMarker: 'ScrollViewMarker' }; }
     if (name === 'react-native-screens') {
       nativeImports++;
       assert.equal(platform, 'ios');
@@ -547,15 +550,12 @@ assert.equal(leftPageInsets.paddingLeft,30);assert.equal(leftPageInsets.paddingR
 assert.equal(leftPageInsets.paddingLeft+leftPageInsets.paddingRight,36,'move the page right without shrinking it');
 console.log('Left rail stays fixed while page content moves 12 pt right using spare right padding.');
 
-const edgeAdapter=loadNativeTabs('ios',true,26,true,true);
+// Expo Go can throw from capability detection itself, rather than returning false.
+// The strict UIManager mock above reproduces this for unknown native managers.
+assert.doesNotMatch(uiKitTabs,/RNSScrollViewMarker|react-native-screens\/experimental/);
 const scrollFixture={type:'ScrollView',props:{contentContainerStyle:{paddingTop:8}}};
-const edgeTree=edgeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene']});
-const edgeViewport=edgeTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
-const marker=edgeViewport.props.children[0];
-assert.equal(marker.type,'ScrollViewMarker');assert.deepEqual(marker.props.scrollEdgeEffects,{bottom:'hidden'});
-assert.equal(marker.props.style.backgroundColor,'transparent');
-assert.equal(marker.props.children[0].type,'ScrollView');
-assert.deepEqual(marker.props.children[0].props.contentContainerStyle,[{paddingTop:8},{paddingBottom:24}]);
-const oldTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene']});
-assert.equal(oldTree.props.children[0].props.children[0][1].props.children[0].props.children[0].props.children[0].type,'ScrollView');
-console.log('Library bottom edge: hidden native scroll backdrop, glass appearance retained, missing manager safely skipped.');
+const compatibleTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene']});
+const compatibleScroll=compatibleTree.props.children[0].props.children[0][1].props.children[0].props.children[0].props.children[0];
+assert.equal(compatibleScroll.type,'ScrollView');
+assert.deepEqual(compatibleScroll.props.contentContainerStyle,[{paddingTop:8},{paddingBottom:24}]);
+console.log('Expo Go startup: no experimental component probe/import; normal library scrolling and tail padding retained.');

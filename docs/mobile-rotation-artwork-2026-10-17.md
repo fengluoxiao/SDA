@@ -119,3 +119,8 @@ The header was outside the shifted page host. In left-rail landscape mode its ti
 User confirmed left placement but rejected the inward-shifted right placement, supplying the earlier 12 pt screen-edge reference. Left remains max(14, left safe inset)+6, with the approved page/header shift untouched. Right now disables the dock right inset and uses 6 pt padding + 6 pt rail margin = 12 pt. Bottom placement is unchanged.
 
 Existing tab background/shadow props remain transparent. The library ScrollView now uses a capability-guarded RNSScrollViewMarker to hide its iOS 26 bottom scroll-edge effect, which is separate from the tab glass material. Only the library direct ScrollView is wrapped; content tail padding, native tab/accessory glass and the gray selected segment remain. Tests cover enabled and missing-manager paths. This is a targeted candidate for the reported bottom tint; physical visual confirmation remains pending.
+
+
+## Expo Go startup regression: remove scroll marker
+
+The supplied error stack maps exactly to the RNSScrollViewMarker hasViewManagerConfig call in the served iOS bundle at line 303170. Expo Go throws from unstable_hasComponent instead of reporting false. Remove the optional marker probe and experimental import entirely, restoring the normal library ScrollView. Tests now throw on unknown manager names rather than treating all capability probes as safe. Retain the accepted left/right placement, header alignment, capsule mini-player and symbol tint. The bottom tint investigation is not considered resolved by this rollback; its unsupported candidate is withdrawn.
