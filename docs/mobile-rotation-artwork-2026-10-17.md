@@ -90,3 +90,8 @@ Device feedback after external docking showed the neutral RN selection to the ri
 The approved dock uses 20 pt horizontal clearance. Settings > Interface now offers left/right placement, default right, persisted alongside the enable switch. Both positions move the whole rail, with native container inset suppression preserved. Preference tests cover older settings, invalid values, reload and late-read changes independently per field.
 
 Expo Go development mode without SdaEngine now loads a 12-row UI fixture with the original 1400x1400 エガクミライ cover and its sampled #3f4e3f bottom color. The fixture is UI-only (no audio decoding). Its image import sits behind the development/Expo Go gate. Verified the LAN iOS development bundle contains it and the minified production-mode bundle excludes expo-artwork-preview-, preview://artwork/ and egaku-cover. Native packaging has not been triggered; device UI review remains pending.
+
+
+## Left-side clearance and immersive landscape artwork
+
+Device feedback requested the Android reference artwork framing. Landscape artwork now uses a full-surface-height square anchored at x=0, instead of a smaller square centered in the safe-area left column. Image aspect ratio and the horizontal color fade are retained; control columns remain 50/50 and portrait framing is unchanged. The playback control column only reserves extra right spacing when the rail is on the right. Library/space clearance and mini-player margin now follow the selected side; the right scrollbar no longer reserves rail height for a left rail. TypeScript and layout/adapter regression checks pass; Expo Go device appearance remains subject to review.

@@ -524,13 +524,19 @@ console.log('Optional side navigation: retained native pages, hidden bottom bar 
 for(const [width,height,usable] of [[844,390,726],[1194,834,1194],[1097,617,1049],[932,430,814]]) {
   const frame=landscapeArtworkLayout(width,height,usable);
   assert.equal(frame.columnWidth*2,usable);
-  assert(frame.size<=height && frame.size<=frame.columnWidth);
-  assert.equal(frame.left+frame.size/2,(width-usable)/2+frame.columnWidth/2);
+  assert.equal(frame.size,height);
+  assert.equal(frame.left,0);
 }
-console.log('Landscape columns: equal measured halves and a contained, unstretched square cover passed.');
+console.log('Landscape columns: equal measured halves and edge-aligned full-height square artwork passed.');
 
 // External docking must hide the bottom bar without drawing a duplicate rail.
 const externalDockTree = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, sideBar:true, sideBarExternal:true});
 assert.equal(externalDockTree.props.children[0].props.tabBarHidden,true);
 assert.equal(externalDockTree.props.children[1],false);
 console.log('External landscape dock: one rail, native bottom bar hidden.');
+
+const leftDockTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,sideBarExternal:true,sideBarPosition:'left'});
+const leftDockLibrary=leftDockTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
+assert.equal(leftDockLibrary.props.children[1].props.style.marginLeft,38);
+assert.equal(leftDockLibrary.props.children[1].props.style.marginRight,undefined);
+console.log('Left dock: mini-player clearance follows the rail without a right-side reservation.');
