@@ -88,12 +88,18 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   })).current;
   const material = nativeUI ? require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers") : null;
   const glass = (shape: "capsule" | "circle", width: number, height: number) => nativeUI && material ?
-    <nativeUI.Host style={{ width, height }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
-      <nativeUI.VStack modifiers={[material.frame({ width, height }), material.glassEffect({ glass: { variant: "clear" }, shape })]}>{null}</nativeUI.VStack>
-    </nativeUI.Host> : <View style={{ width, height, borderRadius: width / 2, backgroundColor: shape === "circle" ? (dark ? "#ffffff24" : "#ffffff80") : dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
+    <nativeUI.Host style={{ width, height, backgroundColor: "transparent" }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
+      <nativeUI.VStack modifiers={[material.frame({ width, height }), material.glassEffect({ glass: { variant: "clear", ...(shape === "circle" ? { tint: `${accent}33` } : {}) }, shape })]}>{null}</nativeUI.VStack>
+    </nativeUI.Host> : <View style={{ width, height, borderRadius: width / 2, backgroundColor: shape === "circle" ? `${accent}33` : dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
   const visual = <Animated.View testID="side-tab-glass-bar" style={{ width: 48, height: 140, transform: [{ scale: barScale }] }}>
     {glass("capsule", 48, 140)}
-    <View style={StyleSheet.absoluteFill}>
+    {/* Keep the moving material below symbols: overlaying separate native
+        glass hosts produced an opaque disk on the device. */}
+    <Animated.View testID="side-tab-glass-selection" style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
+      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
+      {glass("circle", 44, 44)}
+    </Animated.View>
+    <View testID="side-tab-symbols" style={[StyleSheet.absoluteFill, { zIndex: 1 }]}>
       {nativeUI && material ? <nativeUI.Host style={{ width: 48, height: 140 }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
         <nativeUI.VStack spacing={2} modifiers={[material.padding({ all: 2 }), material.frame({ width: 48, height: 140 })]}>
           {IOS_TABS.map((label, index) => <nativeUI.VStack key={label} modifiers={[material.frame({ width: 44, height: 44 }),
@@ -108,12 +114,6 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
         {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")}</View>)}
       </View>}
     </View>
-    {/* Above the symbols: native glass can refract their color, rather than
-        drawing an empty selection disk behind them. Touches stay on the RN plane. */}
-    <Animated.View testID="side-tab-glass-selection" style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
-      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
-      {glass("circle", 44, 44)}
-    </Animated.View>
   </Animated.View>;
   return <View collapsable={false} style={{ width: 48, height: 140 }}>
     <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{visual}</View>

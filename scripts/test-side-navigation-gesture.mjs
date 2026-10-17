@@ -62,9 +62,11 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   assert.equal(iconContainers.length,3);
   for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#f5f5f7':'#1c1c1e');
   const glass=all.flatMap(n=>n.props?.modifiers??[]).filter(m=>m.name==='glassEffect');
-  assert.equal(glass.find(m=>m.args[0].shape==='circle').args[0].glass.tint,undefined,'native glass stays neutral; the selected symbol carries the accent');
+  assert.equal(glass.find(m=>m.args[0].shape==='circle').args[0].glass.tint,accent+'33');
   const bar=all.find(n=>n.props?.testID==='side-tab-glass-bar');
-  assert.equal(bar.props.children.at(-1).props.testID,'side-tab-glass-selection','selection glass must sample the symbols below it');
+  assert.equal(bar.props.children.at(-1).props.testID,'side-tab-symbols','native material must never cover the symbols');
+  assert.equal(bar.props.children.at(-1).props.style[1].zIndex,1);
+  assert.equal(bar.props.children[1].props.testID,'side-tab-glass-selection');
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
 }
-console.log('Side rail themes: all five accents, light/dark symbols and neutral refracting glass selection passed.');
+console.log('Side rail themes: all five accents, light/dark symbols and visible symbols above the moving glass selection passed.');

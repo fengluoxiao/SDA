@@ -58,3 +58,8 @@ The independent side-rail SwiftUI hosts now explicitly receive the selected them
 ## Reference-matched material ordering and whole-bar press response
 
 The user supplied the original bottom-tab press reference. The moving native glass selection is now drawn above the icon layer, rather than underneath it. No flat accent tint is applied to the glass; only the active icon uses the theme. The complete visual rail springs to1.04scale on press, together with the1.18selection lift, and both settle to1on release/cancel. The touch plane and page geometry do not scale. Duplicate settle requests after the controlled selection callback no longer restart the same spring. Tests cover press/release scales, stacking order and all theme variants; on-device optical appearance still needs visual confirmation.
+
+
+## Device regression rollback
+
+The user reported an opaque black circle covering the icons after the above-symbol glass composition. That composition is rejected. The moving native material has been returned below the symbol layer, its previous translucent theme tint restored, and symbol stacking is explicit. The whole-bar press response, drag selection and safe docking remain. Do not claim that a separate glass Host placed above symbols reproduces the system tab bar's optical refraction; device output contradicted the earlier assumption. Tests now enforce unobscured symbol stacking, while final visual confirmation still belongs to the device preview.
