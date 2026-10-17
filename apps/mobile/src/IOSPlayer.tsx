@@ -203,7 +203,9 @@ function ThemedPlayer(p: PlayerProps) {
     <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader]}>
+      {/* Match the left rail's content lane and the page host's 12 pt shift. */}
+      <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
+        sideNavigationActive && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}

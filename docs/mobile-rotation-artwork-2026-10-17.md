@@ -107,3 +107,8 @@ Fixed 20 pt screen-edge placement can intersect the Dynamic Island/notch. The fu
 The floating mini-player now uses a 52 pt capsule with a measured native regular-glass background, retaining the same artwork/text/playback content as the portrait system accessory. The system accessory keeps its own material (no duplicate backdrop). Missing/older native glass uses a translucent fallback. The playback SF Symbol now explicitly receives the requested color through Host seedColor and container foregroundColor/tint; its Host ignores container safe areas. This applies to both mini-player orientations and preserves the main player requested color.
 
 User clarified that the page should move right into the spare right padding, while the rail stays at its approved cutout-safe position. Restore the dock max(14, inset)+6 rule and original reserved lane. For left-side navigation only, the page host uses 30 pt left / 6 pt right padding instead of 18/18: content and mini-player move 12 pt right with unchanged total width. The screen-edge artwork stays independently anchored. UIKit and compatibility hosts share this rule. Changes remain in the Expo Go review stage.
+
+
+## Align the header with the left-rail content
+
+The header was outside the shifted page host. In left-rail landscape mode its title now includes the same reserved lane and 12 pt shift, and its trailing controls use the page's 6 pt inner edge. Header vertical spacing, the rail, and artwork stay unchanged.
