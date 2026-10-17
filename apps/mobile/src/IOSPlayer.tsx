@@ -318,7 +318,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={s.settingsActions}>{icon("arrow.counterclockwise", "重新播放", () => { setSettings(false); p.play(); }, p.busy || !p.selectedUri, 46, "⟲")}{icon("stop.fill", "停止播放", () => { setSettings(false); p.stop(); }, p.busy || !p.playing, 46, "□")}</View>
           {heading("播放")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
-            {toggle("音量平衡", "双声道 / 360RA 响度平衡，只衰减不增益", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
+            {toggle("音量平衡", "双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
             {divider()}
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>
@@ -328,8 +328,8 @@ function ThemedPlayer(p: PlayerProps) {
             {divider()}
             {toggle("空间平衡", "按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿，仅对 SDA 共享渲染生效", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>
-          {heading("360 Reality Audio")}
-          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "仅 360RA：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
+          {heading("360RA／Audio Vivid")}
+          <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "360RA / Audio Vivid：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
           {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。", true, s.groupHint)}
           {heading("ALAC 立体声")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>

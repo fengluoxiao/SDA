@@ -21,6 +21,7 @@ size_t sda_ios_speakers_channels(void *decoder);
 char *sda_ios_alac_speakers_feed(void *decoder, const uint8_t *pcm, size_t length, bool finish);
 // Control/PCM calls must be serialized by the host; no realtime callback uses this handle.
 void *sda_ios_speakers_create(char **error);
+void *sda_ios_av3a_speakers_create(char **error);
 char *sda_ios_speakers_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
 size_t sda_ios_speakers_read(void *decoder, float *pcm, size_t capacity_frames);
 char *sda_ios_speakers_objects(void *decoder, uint64_t consumed_frames);

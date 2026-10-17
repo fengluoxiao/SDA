@@ -2,7 +2,7 @@ import {PerformanceSink} from "./performance-sink";
 const perf=new PerformanceSink("decoder");
 import {DecoderDiagnostics} from './decoder-diagnostics';
 const diagnostic=new DecoderDiagnostics(()=>!!perf.endpoint,value=>perf.diagnostic(value));
-import { isStereoMasterFrame } from "./stereo-master.js";
+import { isStereoMasterFrame, isAv3aBedFrame, AV3A_714_WEIGHTS } from "./stereo-master.js";
 /**
  * Decoder worker script — runs demux + wasm decode off the UI thread.
  * Loaded as a module worker; messages:
@@ -75,8 +75,8 @@ function postFrame(frame: DecodedFrameData): void {
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
   // channel-layout weights to 118 objects is both incorrect and very costly.
-  if (frame.codec !== "mpegh" && isStereoMasterFrame(frame) && frame.channels[0]?.length) {
-    loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
+  if (frame.codec !== "mpegh" && (isStereoMasterFrame(frame) || isAv3aBedFrame(frame)) && frame.channels[0]?.length) {
+    loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length, isAv3aBedFrame(frame) ? AV3A_714_WEIGHTS : undefined);
     const at=perf.endpoint?performance.now():null;
     loudnessMeter.push(frame.channels);
     if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,(frame.channels[0]?.length ?? 0));

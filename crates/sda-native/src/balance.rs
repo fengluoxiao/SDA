@@ -1,5 +1,5 @@
 //! Windows packages/player/src/bs1770.ts and player.ts playback policy.
-//! Measure the original stereo master / upstream MPEG-H reference, never objects
+//! Measure the stereo master / verified speaker beds / MPEG-H reference, never objects
 //! or the KU100 output. Gain uses the shared renderer's sample-clock envelope.
 use sda_core::FrameData;
 use sda_native_renderer::Command;
@@ -29,6 +29,11 @@ pub fn stereo_master(f: &FrameData) -> bool {
         && f.events.is_empty()
         && ["L", "Left", "FrontLeft"].contains(&f.labels[0].as_str())
         && ["R", "Right", "FrontRight"].contains(&f.labels[1].as_str())
+}
+pub(crate) fn av3a_bed(frame: &FrameData) -> bool {
+    frame.codec == "av3a" && frame.sample_rate == 48000 && frame.channels.len() == 12
+        && frame.labels == ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]
+        && frame.events.is_empty() && frame.object_channels.is_empty()
 }
 #[derive(Clone)]
 struct Biquad {
@@ -244,7 +249,7 @@ impl VolumeBalance {
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
         let channels = if frame.codec == "mpegh" || crate::alac_pcm::is_upmixed(&frame) {
             reference.as_deref()
-        } else if stereo_master(&frame) {
+        } else if stereo_master(&frame) || av3a_bed(&frame) {
             Some(frame.channels.as_slice())
         } else {
             None
@@ -252,7 +257,7 @@ impl VolumeBalance {
         let mut measurement = None;
         if let Some(channels) = channels {
             self.meter
-                .get_or_insert_with(|| LoudnessMeter::new(frame.sample_rate))
+                .get_or_insert_with(|| if av3a_bed(&frame) { LoudnessMeter::speakers_7_1_4() } else { LoudnessMeter::new(frame.sample_rate) })
                 .push(channels);
             self.post_counter += 1;
             if self.post_counter % 8 == 0 {
@@ -264,10 +269,11 @@ impl VolumeBalance {
     pub fn route(&mut self, frame: &PendingFrame) -> Vec<Command> {
         let f = &frame.frame;
         let stereo = f.codec != "mpegh" && (stereo_master(f) || crate::alac_pcm::is_upmixed(f));
-        if f.codec != "mpegh" && !stereo {
+        let av3a = av3a_bed(f);
+        if f.codec != "mpegh" && !av3a && !stereo {
             self.non_stereo_seen = true;
         }
-        let eligible = !self.non_stereo_seen && (f.codec == "mpegh" || stereo);
+        let eligible = !self.non_stereo_seen && (f.codec == "mpegh" || av3a || stereo);
         let mut commands = vec![];
         if eligible != self.eligible {
             self.eligible = eligible;
@@ -282,7 +288,7 @@ impl VolumeBalance {
             if !self.settled {
                 self.gain_db = master_gain(
                     cached.integrated_lufs.unwrap(),
-                    if stereo { cached.true_peak_dbtp } else { None },
+                    if stereo || av3a { cached.true_peak_dbtp } else { None },
                 );
                 self.settled = true;
                 commands.push(Command::SetProgramGain {
@@ -299,7 +305,7 @@ impl VolumeBalance {
                 if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                     self.settled = true;
                     self.balanced_blocks = m.blocks;
-                    let gain = master_gain(lufs, if stereo { m.true_peak_dbtp } else { None });
+                    let gain = master_gain(lufs, if stereo || av3a { m.true_peak_dbtp } else { None });
                     let previous = self.gain_db;
                     self.gain_db = gain;
                     if early && (gain - previous).abs() >= 0.05 {
@@ -343,6 +349,33 @@ impl VolumeBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn av3a_frame(at: u64) -> FrameData {
+        let mut f = frame("av3a", at);
+        f.labels = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s|s.to_string()).collect();
+        f.raw_bed_labels = f.labels.clone(); f.channels = vec![vec![0.0;1024];12]; f
+    }
+    #[test]
+    fn av3a_balance_reuses_the_existing_stereo_policy_and_schedule() {
+        let mut vivid=VolumeBalance {enabled:true,..Default::default()};
+        let mut stereo=VolumeBalance {enabled:true,..Default::default()};
+        for (at,blocks,lufs,peak) in [(0,0,None,3.0),(19200,1,Some(-5.0),3.0),(268800,56,Some(-5.0),3.0),
+            (273600,57,Some(-5.0),3.0),(513600,107,Some(-1.0),3.0),(753600,157,Some(-28.0),-20.0),(993600,207,Some(-5.0),3.0)] {
+            let m=Measurement {integrated_lufs:lufs,blocks,true_peak_dbtp:Some(peak)};
+            let extract=|commands:Vec<Command>| commands.into_iter().filter_map(|c|if let Command::SetProgramGain{gain,at}=c {Some((gain,at))}else{None}).collect::<Vec<_>>();
+            let actual=extract(vivid.route(&PendingFrame{frame:av3a_frame(at),measurement:Some(m.clone())}));
+            let expected=extract(stereo.route(&PendingFrame{frame:frame("alac",at),measurement:Some(m)}));
+            assert_eq!(actual,expected,"AV3A must not use a separate volume policy");
+            assert_eq!(vivid.gain_db,stereo.gain_db);assert!(actual.iter().all(|(gain,_)|*gain<=1.0));
+        }
+    }
+    #[test]
+    fn av3a_balance_uses_twelve_bed_weights_with_existing_toggle_behavior() {
+        let mut b=VolumeBalance::default();let pending=b.measure(av3a_frame(0),None);
+        let commands=b.route(&pending);
+        assert!(b.eligible);assert!(commands.iter().any(|c|matches!(c,Command::SetProgramEnabled{enabled:false})));
+        assert_eq!(b.meter.as_ref().unwrap().weights,[1.0,1.0,1.0,0.0,1.41,1.41,1.41,1.41,1.0,1.0,1.0,1.0]);
+    }
+
 
     #[test]
     fn native_alac_startup_does_not_wait_six_seconds_or_schedule_seconds_ahead() {

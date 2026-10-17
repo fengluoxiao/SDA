@@ -350,6 +350,7 @@ class SdaModule : Module() {
             // imports and cannot reuse a result for a changed source file.
             val cacheKey = "sda-measured-lufs-v6:$contentHash:48000"
             val loudnessCache = context.getSharedPreferences("sda-loudness", 0)
+            val isAv3a = displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
             val isContainer = displayName.substringAfterLast('.', "").lowercase() in setOf("m4a", "mp4")
@@ -387,7 +388,7 @@ class SdaModule : Module() {
                     }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
                     check(balanceError.isEmpty()) { balanceError }
-                    loudnessCache.getString(cacheKey, null)?.let { cached ->
+                    if (!isAv3a) loudnessCache.getString(cacheKey, null)?.let { cached ->
                         // A damaged/stale cache is a miss, never a playback failure.
                         val valid = runCatching {
                             val m = JSONObject(cached)
@@ -488,7 +489,7 @@ class SdaModule : Module() {
                                     // Match Windows: save only successfully flushed full
                                     // decodes, not a stopped intro or a failed feed.
                                     val measurement = SdaEngine.nativeCompleteLoudness(ptr)
-                                    if (measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
+                                    if (!isAv3a && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
                                 }
                             }
                             while (!stopped) {

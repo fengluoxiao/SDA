@@ -493,7 +493,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {

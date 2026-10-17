@@ -6,6 +6,7 @@ import CoreMedia
 /// Atmos stays compressed for SDA Rust. Only stereo ALAC is decoded to 48 kHz PCM.
 final class CompressedInput {
  private(set) var isAlac = false
+ private(set) var isAv3a = false
  private var file: FileHandle?
  private var reader: AVAssetReader?
  private var trackOutput: AVAssetReaderTrackOutput?
@@ -23,6 +24,7 @@ final class CompressedInput {
   scoped = url.startAccessingSecurityScopedResource()
   try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
+  isAv3a = ext == "av3a"
   if ["eac3", "ec3", "ac4", "mhas", "mp3", "av3a"].contains(ext) {
    file = try FileHandle(forReadingFrom: url)
   } else if ["m4a", "mp4"].contains(ext) {

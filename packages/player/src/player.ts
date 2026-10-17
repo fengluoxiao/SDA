@@ -1,5 +1,5 @@
 import {connectPerformanceWorker} from "./performance-sink";
-import { isStereoMasterFrame } from "./stereo-master.js";
+import { isStereoMasterFrame, isAv3aBedFrame } from "./stereo-master.js";
 import { AlacStereoUpmixer, isAlacStereoFrame } from "./alac-stereo-upmix.js";
 import { masterBalanceGainDb } from "./bs1770.js";
 /**
@@ -1962,10 +1962,9 @@ export class SdaPlayer {
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
-    if (!mpegh && !stereoMaster) this.nonStereoProgrammeSeen = true;
-    const eligible = !this.nonStereoProgrammeSeen && (mpegh
-      ? true
-      : stereoMaster);
+    const av3aBed = isAv3aBedFrame(frame);
+    if (!mpegh && !av3aBed && !stereoMaster) this.nonStereoProgrammeSeen = true;
+    const eligible = !this.nonStereoProgrammeSeen && (mpegh || av3aBed || stereoMaster);
     if (eligible !== this.stereoBalanceEligible) {
       this.stereoBalanceEligible = eligible;
       this.setVolumeBalance(this.volumeBalanceEnabled);

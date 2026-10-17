@@ -871,10 +871,10 @@ export function App() {
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
           // Feed the persisted measurement so balance applies from sample 0.
-          const key = measuredLoudnessStorageKey(t, source);
+          const key = t.codec === "av3a" ? null : measuredLoudnessStorageKey(t, source);
           measuredLoudnessKeyRef.current = key;
           try {
-            const stored = localStorage.getItem(key);
+            const stored = key ? localStorage.getItem(key) : null;
             const cached = stored ? JSON.parse(stored) : null;
             createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.truePeakDbtp) ? cached.truePeakDbtp : null);
           } catch {

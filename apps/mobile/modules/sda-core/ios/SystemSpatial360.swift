@@ -2,9 +2,10 @@ import Foundation
 import AVFoundation
 import AudioToolbox
 
-/// MPEG-H 7.1.4 or ALAC stereo/upmix PCM -> Apple renderer. No SDA HRTF/room.
+/// MPEG-H / Audio Vivid 7.1.4 or ALAC stereo/upmix PCM -> Apple renderer. No SDA HRTF/room.
 /// Access only under SdaPlayer.lock, never from an audio realtime callback.
 final class SystemSpatial360 {
+ let sourceCodec: String
  var alacUpmix: Bool?
  var channels: Int
  var decoder: UnsafeMutableRawPointer
@@ -25,12 +26,13 @@ final class SystemSpatial360 {
  var pendingSamples: [(sample: CMSampleBuffer, end: UInt64)] = []
  var interruptionRecoveries = 0
  var pcm = [Float](repeating: 0, count: 1024*12)
- init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float, alacUpmix: Bool? = nil) throws {
+ init(decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any, volume: Float, alacUpmix: Bool? = nil, sourceCodec: String = "mpegh") throws {
+  self.sourceCodec = alacUpmix == nil ? sourceCodec : "alac"
   self.alacUpmix = alacUpmix
   channels = alacUpmix == false ? 2 : 12
   format = try Self.makeFormat(channels:channels)
   var error: UnsafeMutablePointer<CChar>?
-  guard let h = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频输出初始化失败") }
+  guard let h = (sourceCodec == "av3a" ? sda_ios_av3a_speakers_create(&error) : (alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error))) else { _ = try decodeReply(error); throw SdaError.message("系统音频输出初始化失败") }
   decoder = h
   renderer.allowedAudioSpatializationFormats = channels == 2 ? .monoAndStereo : .multichannel
   renderer.volume = volume
@@ -80,6 +82,7 @@ final class SystemSpatial360 {
  func feed(_ data: Data?, finish: Bool, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
   let value = try decodeInput(data, finish:finish, decodeReply:decodeReply)
   queued = ((value as? [String:Any])?["queuedFrames"] as? NSNumber)?.uint64Value ?? 0
+  if sourceCodec == "av3a", (value as? [String:Any])?["balanceMeasurementReady"] as? Bool == true { measurementReady = true }
   if finish { inputFinished = true }
   try pump()
  }
@@ -168,7 +171,9 @@ final class SystemSpatial360 {
  func objects(_ decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
- var preparingAudio: Bool { !started && balanceEnabled && !measurementReady }
+ // Audio Vivid estimates only the PCM passing through playback; no replay pass.
+ var requiresBalancePreanalysis: Bool { sourceCodec != "av3a" }
+ var preparingAudio: Bool { !started && balanceEnabled && !measurementReady && requiresBalancePreanalysis }
  // MPEG-H bridge is process-global: analyze and play sequentially, not with
  // concurrent owners. Called under SdaPlayer.lock before any PCM is submitted.
  func restartAfterMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
@@ -176,7 +181,7 @@ final class SystemSpatial360 {
   sda_ios_speakers_close(decoder)
   closed = true // Keep close/deinit safe if recreation fails.
   var error: UnsafeMutablePointer<CChar>?
-  guard let next = alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error) else { _ = try decodeReply(error); throw SdaError.message("系统音频播放源重建失败") }
+  guard let next = (sourceCodec == "av3a" ? sda_ios_av3a_speakers_create(&error) : (alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error))) else { _ = try decodeReply(error); throw SdaError.message("系统音频播放源重建失败") }
   decoder = next; closed = false
   sda_ios_speakers_balance(decoder,balanceEnabled)
   try setMeasurement(value,decodeReply:decodeReply)
@@ -188,8 +193,9 @@ final class SystemSpatial360 {
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
-   "fifoFrames":decoded-clock,"outputChannels":channels,"outputLayout":channels == 2 ? "2.0" : "7.1.4", "sourceCodec":alacUpmix == nil ? "mpegh" : "alac", "alacUpmixActive":alacUpmix == true,"systemSpatial360RAActive":true,
+   "fifoFrames":decoded-clock,"outputChannels":channels,"outputLayout":channels == 2 ? "2.0" : "7.1.4", "sourceCodec":sourceCodec, "alacUpmixActive":alacUpmix == true,"systemSpatial360RAActive":true,
    "systemOutputUnderruns":underruns,"systemOutputBuffering":buffering,"systemOutputQueuedFrames":enqueued-clock,
+   "volumeBalanceEnabled":balanceEnabled,"volumeBalanceEligible":true,
    "preparingAudio":preparingAudio,"balanceMeasurementReady":measurementReady,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
    "channelOrder":Array(["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].prefix(channels))]
  }

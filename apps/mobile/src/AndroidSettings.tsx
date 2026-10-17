@@ -63,7 +63,7 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
         {toggle("音量平衡", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}{separator()}
         {menu("播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], PLAYBACK_MODES.map(id => ({ id, label: PLAYBACK_MODE_LABELS[id] })), p.playbackMode,
           id => { if (PLAYBACK_MODES.includes(id as typeof p.playbackMode)) p.setPlaybackMode(id as typeof p.playbackMode); })}
-      </>, "双声道 / 360RA 响度平衡，只衰减不增益。")}
+      </>, "双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益。")}
       {section("声音增强", toggle("空间平衡", p.spatialEnhancementEnabled, p.setSpatialEnhancement, audioDisabled),
         "按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿。")}
       {section("360 Reality Audio", <View style={s.row}><View style={s.copy}>{text("系统空间音频", false, s.title)}{text("Android 系统多声道输出尚未接通", true, s.subtitle)}</View></View>,

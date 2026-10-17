@@ -303,7 +303,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.sourceCodec === "av3a" ? "播放中估计响度并联动衰减全部声道，不预扫描、不生成分析缓存" : p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {label("播放模式", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
@@ -316,11 +316,11 @@ function LegacyRemotePlayer(p: PlayerProps) {
             <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive} onValueChange={p.setSpatialEnhancement} /></View>
           </View>
           {Platform.OS === "ios" && <>
-            {label("360 Reality Audio", true, s.groupTitle)}
+            {label("360RA／Audio Vivid", true, s.groupTitle)}
             <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("仅 360RA：渲染成 12 声道交给苹果系统，旁路 SDA 共享渲染；支持统一音量平衡，不改变声道方向。关闭后恢复 SDA／HRTFHQ 双耳空间渲染，并非普通立体声下混。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:c.accent}} thumbColor="#ffffff" /></View>
+              <View style={s.settingRow}><View style={s.settingCopy}>{label("系统空间音频 · 7.1.4", false, s.settingTitle)}{label("360RA / Audio Vivid：12 声道交给苹果系统，旁路 SDA 共享渲染；支持统一音量平衡，不改变声道方向。关闭后恢复 SDA／HRTFHQ 双耳空间渲染，并非普通立体声下混。", true, s.settingDescription)}</View><Switch accessibilityLabel="360RA 和 Audio Vivid 系统空间音频 7.1.4" value={p.systemSpatial360RA} disabled={p.busy} onValueChange={p.setSystemSpatial360RA} trackColor={{false:c.line,true:c.accent}} thumbColor="#ffffff" /></View>
               {label("修改后下一次播放生效，不中断当前歌曲。实际空间化／头部跟踪由兼容耳机及系统设置决定。", true, s.groupHint)}
-              {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 360RA-13／HRTFHQ 渲染" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
+              {label(p.systemSpatial360RAActive ? p.systemSpatial360RA ? "当前：系统 7.1.4 输出（SDA 空间选项已旁路）" : "当前仍是系统 7.1.4；下次播放恢复 SDA／HRTFHQ 空间渲染" : "当前：SDA 渲染／等待播放", true, s.groupHint)}
             </View>
           </>}
           {renderExperiment.spatialCues !== false && <View style={[s.settingsCard, { backgroundColor: c.panel }]}>

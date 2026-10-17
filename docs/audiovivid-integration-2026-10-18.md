@@ -42,3 +42,16 @@ The public three-frame test excerpt is not a runtime music/mock asset. Source/na
 These are decoder, bridge, compiler and waveform checks on the development host. No four-platform device listening or new app-package installation is claimed.
 
 Shared core cross-target checks passed for `aarch64-apple-ios`, `aarch64-apple-darwin` and `aarch64-linux-android`; Windows native execution and wasm32 release execution passed. These checks compile decoder code, not complete signed platform packages.
+
+
+## Existing volume balance and Apple 7.1.4 output (2026-10-18 follow-up)
+
+User explicitly requested the same volume balance as 360RA/stereo. Audio Vivid's verified 12-channel bed is eligible for the existing programme-level balance. It uses the current BS.1770 meter, the existing -18 LUFS target, attenuation-only true-peak bound, estimation thresholds, update cadence and gain smoothing. There is no separate AV3A fast-attack, first-window policy, extra peak guard, boost, new user preset or per-channel compression. The former experimental early-AV3A policy was withdrawn before submission.
+
+The new measurement input uses the existing CICP19 speaker weights (centre/front/height 1.0, horizontal surrounds 1.41, LFE excluded from loudness) already used by the Apple 7.1.4 speaker path. The speaker-order predicate excludes object/HOA/unknown layouts. JavaScript worker and native facade pass the measurement through their existing programme-gain controllers. Regression tests assert identical gain events and sample-clock scheduling to the established stereo policy for the same measurements. All bed directions and relative levels remain linked.
+
+Audio Vivid now also uses the iOS Apple system 7.1.4 renderer under the existing shared system-output switch. Settings explicitly name 360RA/Audio Vivid; changes take effect on next playback, as before. A codec-specific C constructor selects the same shared Rust AV3A decoder and 48 kHz SRC. PCM goes directly to the existing AVSampleBufferAudioRenderer through explicit CICP19 channel descriptions; no SDA HRTF/room or MPEG-H decoder instance enters the AV3A system route. State reports `sourceCodec: av3a` and Audio Vivid output captions.
+
+The new AV3A route estimates loudness during normal decoding/playback, does not run an additional whole-file analysis pass, and does not load/save per-track loudness analysis caches. Existing 360RA/ALAC routes and their prior preparation behavior are retained. Windows, macOS, Android and iOS share the new volume-balance eligibility; the Apple system-output option is iOS-specific, matching existing 360RA support.
+
+The actual iOS speaker C ABI is tested against the common decoder for chunking, sample count, 12-channel order and sample-identical PCM when balancing is disabled. Gain tests confirm one linked attenuation across all 12 channels and restoration to unity when disabled. Node tests cover speaker weights/LFE exclusion, the actual worker open/push/flush path, and exact scheduling parity with the pre-existing stereo controller. The supplied file's first 10.00779 seconds measured -2.56172 LUFS and +1.08985 dBTP on its 12 speaker channels; the common gain rule yields -15.43828 dB for that segment. This is a measurement of the supplied song, not a fixed gain applied to every AV3A file.

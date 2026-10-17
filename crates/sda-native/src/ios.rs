@@ -617,6 +617,7 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
 // Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
 struct SpeakerHost {
     decoder: Option<mpegh::MpeghDecoder>,
+    av3a_decoder: Option<sda_core::StreamingDecoder>,
     alac: crate::alac_pcm::AlacPcm,
     channels: usize,
     upmix: bool,
@@ -636,8 +637,24 @@ struct SpeakerHost {
 pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
-        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: Some(decoder), alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(), events: Default::default(), active: Default::default(),
+        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: Some(decoder), av3a_decoder: None, alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(), events: Default::default(), active: Default::default(),
             meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false, measure_only: false, fixed_measurement: None })).cast(),
+        Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
+    }
+}
+// The shared AV3A decoder already emits 48 kHz labelled 7.1.4 PCM. No
+// HRTF, room, downmix or process-global MPEG-H decoder enters this route.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_av3a_speakers_create(error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(|| sda_core::StreamingDecoder::new("av3a"))
+        .unwrap_or_else(|_| Err("Audio Vivid speaker decoder panic".into()));
+    match result {
+        Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: None, av3a_decoder: Some(decoder),
+            alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(),
+            events: Default::default(), active: Default::default(),
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false,
+            measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false,
+            measure_only: false, fixed_measurement: None })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
 }
@@ -646,10 +663,25 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
     guarded(|| {
         if p.is_null() || (len > 0 && bytes.is_null()) || len > 65536 { return Err("invalid speaker input".into()); }
         let host = unsafe { &mut *p.cast::<SpeakerHost>() };
-        let decoder = host.decoder.as_mut().ok_or("not an MPEG-H source")?;
-        if finish { decoder.flush()?; }
-        else { decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
-        while let Some(frame) = decoder.next_frame() {
+        let data = if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } };
+        if let Some(decoder) = &mut host.decoder {
+            if finish { decoder.flush()?; } else { decoder.push(data)?; }
+        } else if let Some(decoder) = &mut host.av3a_decoder {
+            if finish { decoder.flush(); } else { decoder.push(data)?; }
+            let errors = decoder.drain_errors();
+            if !errors.is_empty() { return Err(errors.join("; ")); }
+        } else { return Err("not a compressed speaker source".into()); }
+        loop {
+            let next = if let Some(decoder) = &mut host.decoder { decoder.next_frame() }
+                else { host.av3a_decoder.as_mut().and_then(|decoder| decoder.next_frame()) };
+            let Some(frame) = next else { break; };
+            if frame.sample_rate != 48000 || frame.channels.len() != 12
+                || frame.channels[0].is_empty() || frame.channels.iter().any(|ch| ch.len() != frame.channels[0].len()) {
+                return Err("invalid system 7.1.4 speaker frame".into());
+            }
+            if host.av3a_decoder.is_some() && !crate::balance::av3a_bed(&frame) {
+                return Err("Audio Vivid system output requires the verified 7.1.4 speaker order".into());
+            }
             let frames = frame.channels[0].len();
             if host.events.len() + frame.events.len() > 262144 { return Err("speaker object timeline backlog exceeded".into()); }
             if !host.measure_only { host.events.extend(frame.events); }
@@ -672,13 +704,14 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
                 host.target_gain = 10_f64.powf(crate::balance::master_gain(lufs, m.true_peak_dbtp)/20.0) as f32;
             }
         }
-        Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000}))
+        Ok(json!({"queuedFrames":host.pcm.len()/12,"channels":12,"sampleRate":48000,
+            "balanceMeasurementReady":host.fixed_measurement.is_some() || host.meter.integrated().blocks >= crate::balance::MIN_BLOCKS}))
     })
 }
 // PCM-only speaker host: never acquires the process-global MPEG-H decoder.
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_alac_speakers_create(upmix: bool) -> *mut std::ffi::c_void {
-    Box::into_raw(Box::new(SpeakerHost { decoder:None, alac:Default::default(), channels:if upmix {12} else {2}, upmix,
+    Box::into_raw(Box::new(SpeakerHost { decoder:None, av3a_decoder:None, alac:Default::default(), channels:if upmix {12} else {2}, upmix,
         pcm:Default::default(), events:Default::default(), active:Default::default(), meter:crate::balance::LoudnessMeter::new(48000),
         balance_enabled:false, measured_frames:0, target_gain:1.0, gain:1.0, read_started:false, measure_only:false, fixed_measurement:None })).cast()
 }
@@ -686,7 +719,7 @@ pub unsafe extern "C" fn sda_ios_alac_speakers_create(upmix: bool) -> *mut std::
 pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, finish: bool) -> *mut c_char {
     guarded(|| {
         let host = unsafe { p.cast::<SpeakerHost>().as_mut() }.ok_or("speaker host unavailable")?;
-        if host.decoder.is_some() || (finish && len != 0) { return Err("invalid ALAC source".into()); }
+        if host.decoder.is_some() || host.av3a_decoder.is_some() || (finish && len != 0) { return Err("invalid ALAC source".into()); }
         if !finish {
             let pcm = unsafe { alac_samples(bytes,len)? };
             if !host.measure_only && host.pcm.len() + pcm.len() > 8*48000*2 { return Err("speaker PCM backlog exceeded".into()); }
@@ -743,7 +776,7 @@ pub unsafe extern "C" fn sda_ios_speakers_measured(p: *mut std::ffi::c_void, mea
 pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *mut f32, capacity_frames: usize) -> usize {
     if p.is_null() || out.is_null() || capacity_frames > 4096 { return 0; }
     let host = unsafe { &mut *p.cast::<SpeakerHost>() };
-    let alac = host.decoder.is_none();
+    let alac = host.decoder.is_none() && host.av3a_decoder.is_none();
     let frames = capacity_frames.min(host.pcm.len()/if alac { 2 } else { host.channels });
     if frames == 0 { return 0; }
     let converted = if alac {
@@ -774,7 +807,7 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_alac_speakers_upmix(p: *mut std::ffi::c_void, enabled: bool) {
     if let Some(host) = unsafe { p.cast::<SpeakerHost>().as_mut() } {
-        if host.decoder.is_none() { host.upmix = enabled; }
+        if host.decoder.is_none() && host.av3a_decoder.is_none() { host.upmix = enabled; }
     }
 }
 #[no_mangle]
@@ -1091,3 +1124,7 @@ mod alac_tests {
         assert_eq!(frame.frame.raw_bed_labels,vec!["L","R"]);
     }
 }
+
+#[cfg(test)]
+#[path = "av3a_system_tests.rs"]
+mod av3a_system_tests;
