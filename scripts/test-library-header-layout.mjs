@@ -39,7 +39,7 @@ for(const safe of [{left:59,right:59,top:0,bottom:21},{left:0,right:0,top:59,bot
  assert.equal(settings.props.style[1].right,-safe.right);
  assert.equal(settings.props.style[1].top,tree.props.style[1].top);
 }
-const blurBuild=await build({entryPoints:['apps/mobile/src/IOSHeaderBlur.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','expo-blur']});
+const blurBuild=await build({entryPoints:['apps/mobile/src/IOSHeaderBlur.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','expo-blur','@expo/ui/community/masked-view','*.png']});
 const previous=globalThis.expo;
 try {
  for(const available of [true,false,'throws']) {
@@ -47,14 +47,16 @@ try {
   globalThis.expo={getViewConfig:()=>{if(available==='throws')throw Error('missing');return available;}};
   new Function('require','module','exports','__DEV__',blurBuild.outputFiles[0].text)(name=>{
    if(name==='react')return react;
-   if(name==='react-native')return {Platform:{OS:'ios'},View:'View',Animated:{View:'AnimatedView'},StyleSheet:{absoluteFill:{position:'absolute'}}};
+   if(name==='react-native')return {Platform:{OS:'ios'},View:'View',Image:'Image',Animated:{View:'AnimatedView'},StyleSheet:{absoluteFill:{position:'absolute'}}};
    if(name==='expo-blur'){imports++;return {BlurView:'ExpoBlur'};}
+   if(name==='@expo/ui/community/masked-view')return {MaskedView:'MaskedView'};
+   if(name.endsWith('.png'))return 'edge-mask';
    throw Error(name);
   },m,m.exports,false);
   const tree=m.exports.IOSHeaderBlur({dark:false});
   assert.equal(imports,available===true?1:0);
   assert.equal(tree.props.pointerEvents,'none');
-  if(available===true){assert.equal(tree.type,'AnimatedView');const blur=tree.props.children[0];assert.equal(blur.type,'ExpoBlur');assert.equal(blur.props.intensity,100);assert.equal(blur.props.tint,'systemMaterialLight');assert.equal(tree.props.style[1].opacity,1);const idle=m.exports.IOSHeaderBlur({dark:false,opacity:0});assert.equal(idle.props.style[1].opacity,0);}
+  if(available===true){assert.equal(tree.type,'AnimatedView');const mask=tree.props.children[0];assert.equal(mask.type,'MaskedView');assert.equal(tree.props.style[2].bottom,-16);assert.equal(mask.props.maskElement.props.children[1].props.style.height,16);const blur=mask.props.children[0];assert.equal(blur.type,'ExpoBlur');assert.equal(blur.props.intensity,100);assert.equal(blur.props.tint,'systemChromeMaterialLight');assert.equal(tree.props.style[1].opacity,1);const idle=m.exports.IOSHeaderBlur({dark:false,opacity:0});assert.equal(idle.props.style[1].opacity,0);}
   else {assert.equal(tree.type,'View');assert.equal(tree.props.style[1].backgroundColor,'#f2f2f7','fallback must not expose overlapping text');}
  }
 } finally {globalThis.expo=previous;}
