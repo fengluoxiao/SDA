@@ -1,3 +1,4 @@
+import { IOSHeaderBlur } from "./IOSHeaderBlur";
 import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
 import React, { useState, useEffect } from "react";
@@ -106,9 +107,9 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   const appTheme = useAppTheme();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
-  const { Host, VStack, ZStack, HStack, Button, Text } = swiftUI;
+  const { Host, RNHostView, VStack, ZStack, HStack, Button, Text } = swiftUI;
   const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const overlayHeader = hasView("ZStackView");
+  const overlayHeader = hasView("ZStackView") && hasView("RNHostView");
   const headerHeight = 52;
   const surfaceModifiers = [
     frame({ maxWidth: width, alignment: "leading" }),
@@ -116,7 +117,6 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   ];
   const header = <HStack spacing={0} modifiers={[
     padding({ horizontal: 16 }), frame({ maxWidth: width, height: headerHeight }),
-    ...(overlayHeader ? [background({ type: "material", material: "bar" })] : []),
   ]}>
     <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
       buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
@@ -127,14 +127,17 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
     <Text modifiers={[frame({ width: 88 }), accessibilityLabel("")]}>{""}</Text>
   </HStack>;
   // Header and Form stay in one native Host for a unified push transition.
-  // The native bar material samples the scrolling Form underneath it. Initial
+  // The UIKit blur samples the scrolling Form underneath it. Initial
   // space belongs to the first section, so it scrolls away instead of clipping
   // the entire viewport below the header. No JS scroll/frame tracking is needed.
   return <View style={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }}>
     <Host style={{ flex: 1 }} colorScheme={theme}>
       {overlayHeader ? <ZStack alignment="top" modifiers={surfaceModifiers}>
         <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} />
-        {header}
+        <ZStack modifiers={[frame({ maxWidth: width, height: headerHeight })]}>
+          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSHeaderBlur dark={theme === "dark"} style={StyleSheet.absoluteFill} /></View></RNHostView>
+          {header}
+        </ZStack>
       </ZStack> : <VStack alignment="leading" spacing={0} modifiers={surfaceModifiers}>
         {header}
         <NativeSettingsForm player={player} onClose={onClose} />

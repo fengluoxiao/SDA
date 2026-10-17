@@ -30,11 +30,16 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
   // extends behind the native floating bar/accessory. Reserving the same inset
   // on this wrapper leaves a solid page-colored strip behind the glass instead.
   const libraryUnderlaysNativeBar = !sideBar && (!accessory || (hasUIKitTabAccessory && !!nativeAccessory));
+  const floatingLibraryAccessory = !!sideBar && !!accessory;
   const pageContent = (index: number) => {
     const page = pages[index];
-    if (index !== 1 || !React.isValidElement<{ contentContainerStyle?: object }>(page)) return page;
-    const scroll = React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: 24 }] });
-    return scroll;
+    if (index !== 1) return page;
+    const scroll = React.isValidElement<{ contentContainerStyle?: object }>(page)
+      ? React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: floatingLibraryAccessory ? 76 : 24 }] }) : page;
+    return floatingLibraryAccessory ? <View style={{ flex: 1, backgroundColor: "transparent" }}>
+      {scroll}
+      <View testID="floating-library-accessory" style={{ position: "absolute", bottom: 0, left: 0, right: 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
+    </View> : scroll;
   };
   // These properties configure UITabBarAppearance itself. Painting a background
   // behind the TabView cannot override its opaque native bar appearance.
@@ -71,7 +76,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
           <SafeAreaView edges={index === 1 && libraryUnderlaysNativeBar ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
-            {pageContent(index)}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
+            {pageContent(index)}{index !== 0 && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}

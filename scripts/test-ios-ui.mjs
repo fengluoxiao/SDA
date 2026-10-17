@@ -191,7 +191,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSHeaderBlur', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,height:844}) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -202,7 +202,8 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
-    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','ZStack','HStack','Button'].map(name => [name,name])) };
+    if (name === './IOSHeaderBlur') return {IOSHeaderBlur:'NativeHeaderBlur'};
+    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','ZStack','HStack','Button','RNHostView'].map(name => [name,name])) };
     if (name === '@expo/ui/swift-ui/modifiers') return new Proxy({}, {get: (_,name)=>(...args)=>({name,args})});
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
     throw new Error('Unexpected settings test dependency: ' + name);
@@ -482,7 +483,7 @@ assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
 
-assert.match(uiKitTabs, /paddingBottom: 24/);
+assert.match(uiKitTabs, /paddingBottom: floatingLibraryAccessory \? 76 : 24/);
 
 assert.match(ui, /const previewMetadata = false;/);
 assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
@@ -514,14 +515,14 @@ for (const sideBar of [undefined, 'side-rail']) {
   if(sideBar) {
     assert.equal(host.props.ios.bottomAccessory,undefined);
     assert.equal(host.props.ios.bottomAccessoryHidden,true);
-    assert.equal(library.props.children[1].props.children[0],'legacy-card');
+    assert.equal(library.props.children[0].props.children[1].props.children[0],'legacy-card');
     const dock=root.props.children[1];
     assert.deepEqual(dock.props.edges,["bottom"]);
     assert.equal(dock.props.style.justifyContent,"flex-end");
     assert.equal(dock.props.style.alignItems,"flex-end");
     assert.equal(dock.props.style.paddingBottom,8);
     assert.equal(dock.props.style.paddingRight,0);
-    assert.equal(library.props.children[1].props.style.marginRight,38);
+    assert.equal(library.props.children[0].props.children[1].props.style.marginRight,38);
   } else assert.equal(host.props.ios.bottomAccessory('regular'),'content-regular');
 }
 console.log('Optional side navigation: retained native pages, hidden bottom bar and single mini-player passed.');
@@ -542,8 +543,8 @@ console.log('External landscape dock: one rail, native bottom bar hidden.');
 
 const leftDockTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,sideBarExternal:true,sideBarPosition:'left'});
 const leftDockLibrary=leftDockTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
-assert.equal(leftDockLibrary.props.children[1].props.style.marginLeft,38);
-assert.equal(leftDockLibrary.props.children[1].props.style.marginRight,undefined);
+assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginLeft,38);
+assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginRight,undefined);
 console.log('Left dock: mini-player clearance follows the rail without a right-side reservation.');
 
 const leftPageInsets=leftDockLibrary.props.style;
@@ -583,9 +584,10 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
     assert.equal(column.props.alignment,'top');
     assert.equal(typeof column.props.children[0].type,'function','Form shares the header Host and renders behind it');
     assert.equal(column.props.children[0].props.topContentInset,52,'initial section clears the overlaid header');
-    const header=column.props.children[1];assert.equal(header.type,'HStack');
-    const material=header.props.modifiers.find(m=>m.name==='background');
-    assert.deepEqual(material.args[0],{type:'material',material:'bar'});
+    const overlay=column.props.children[1];assert.equal(overlay.type,'ZStack');
+    const nativeBlurHost=overlay.props.children[0];assert.equal(nativeBlurHost.type,'RNHostView');
+    assert.equal(nativeBlurHost.props.children[0].props.children[0].type,'NativeHeaderBlur');
+    const header=overlay.props.children[1];assert.equal(header.type,'HStack');
     const headerFrame=header.props.modifiers.find(m=>m.name==='frame');
     assert.equal(headerFrame.args[0].maxWidth,dimensions.width);
     assert.equal(headerFrame.args[0].width,undefined,'do not force full window width inside safe area');
@@ -602,3 +604,11 @@ for(const [adapter,props,expected] of [
   assert.deepEqual(viewport.props.edges,expected);
 }
 console.log('Landscape settings: single native surface for header and form; library underlays native bars while side/fallback layouts keep bottom protection.');
+
+const floatingTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene'],sideBar:true});
+const floatingViewport=floatingTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
+const floatingContent=floatingViewport.props.children[0];
+assert.equal(floatingViewport.props.children[1],false,'no second in-flow accessory');
+assert.equal(floatingContent.props.children[1].props.style.position,'absolute');
+assert.deepEqual(floatingContent.props.children[0].props.contentContainerStyle,[{paddingTop:8},{paddingBottom:76}]);
+console.log('Landscape library accessory overlays rows with scrollable tail clearance, no opaque footer area.');
