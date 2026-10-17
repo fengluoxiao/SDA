@@ -540,3 +540,8 @@ const leftDockLibrary=leftDockTree.props.children[0].props.children[0][1].props.
 assert.equal(leftDockLibrary.props.children[1].props.style.marginLeft,38);
 assert.equal(leftDockLibrary.props.children[1].props.style.marginRight,undefined);
 console.log('Left dock: mini-player clearance follows the rail without a right-side reservation.');
+
+const leftPageInsets=leftDockLibrary.props.style;
+assert.equal(leftPageInsets.paddingLeft,30);assert.equal(leftPageInsets.paddingRight,6);
+assert.equal(leftPageInsets.paddingLeft+leftPageInsets.paddingRight,36,'move the page right without shrinking it');
+console.log('Left rail stays fixed while page content moves 12 pt right using spare right padding.');

@@ -100,3 +100,10 @@ Device feedback requested the Android reference artwork framing. Landscape artwo
 ## Cutout-safe side navigation
 
 Fixed 20 pt screen-edge placement can intersect the Dynamic Island/notch. The full-surface dock now uses native SafeAreaView maximum mode on both horizontal edges with 14 pt base padding, plus 6 pt margin around the rail for press-animation overhang: effective selected-side gap = max(14, system inset) + 6. This keeps the approved 20 pt gap where safe, follows device/rotation insets without model-specific values, and does not apply safe-area padding to the edge-aligned artwork. Bottom inset plus 8 pt is unchanged; internal SwiftUI Hosts still ignore container insets to avoid independent shifting. Physical cutout clearance needs device review.
+
+
+## Landscape mini-player and symbol tint
+
+The floating mini-player now uses a 52 pt capsule with a measured native regular-glass background, retaining the same artwork/text/playback content as the portrait system accessory. The system accessory keeps its own material (no duplicate backdrop). Missing/older native glass uses a translucent fallback. The playback SF Symbol now explicitly receives the requested color through Host seedColor and container foregroundColor/tint; its Host ignores container safe areas. This applies to both mini-player orientations and preserves the main player requested color.
+
+User clarified that the page should move right into the spare right padding, while the rail stays at its approved cutout-safe position. Restore the dock max(14, inset)+6 rule and original reserved lane. For left-side navigation only, the page host uses 30 pt left / 6 pt right padding instead of 18/18: content and mini-player move 12 pt right with unchanged total width. The screen-edge artwork stays independently anchored. UIKit and compatibility hosts share this rule. Changes remain in the Expo Go review stage.
