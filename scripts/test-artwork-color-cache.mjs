@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+const output=await build({entryPoints:['apps/mobile/src/artwork-color-cache.ts'],bundle:true,platform:'node',format:'esm',write:false});
+const {createArtworkColorCache,validArtworkColor}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+assert(validArtworkColor('rgb(0,133,255)'));assert(!validArtworkColor('rgb(256,0,0)'));assert(!validArtworkColor('red'));
+let runs=0,release;
+const cache=createArtworkColorCache(async()=>{runs++;return new Promise(resolve=>{release=resolve;});});
+const first=cache.load('same-cover');const repeated=cache.load('same-cover');assert.equal(first,repeated);
+await Promise.resolve();assert.equal(runs,1);release('rgb(1,2,3)');assert.equal(await first,'rgb(1,2,3)');
+assert.equal(cache.peek('same-cover'),'rgb(1,2,3)');await cache.load('same-cover');assert.equal(runs,1);
+cache.prime('native','rgb(4,5,6)');assert.equal(cache.peek('native'),'rgb(4,5,6)');assert.equal(await cache.load('native'),'rgb(4,5,6)');assert.equal(runs,1);
+let fail=true;const retry=createArtworkColorCache(async()=>{if(fail){fail=false;throw Error('context unavailable');}return 'rgb(7,8,9)';});
+await assert.rejects(retry.load('retry'));assert.equal(retry.peek('retry'),undefined);assert.equal(await retry.load('retry'),'rgb(7,8,9)');
+let extracted=[];let finish;
+const queued=createArtworkColorCache(async uri=>{extracted.push(uri);if(uri==='slow')await new Promise(r=>{finish=r;});return 'rgb(9,9,9)';});
+const slow=queued.load('slow');await Promise.resolve();const next=queued.load('next');queued.prime('next','rgb(10,11,12)');finish();await slow;assert.equal(await next,'rgb(10,11,12)');assert.deepEqual(extracted,['slow']);
+const bounded=createArtworkColorCache(async()=> 'rgb(1,1,1)',2);for(const key of ['a','b','c'])bounded.prime(key,'rgb(1,2,3)');assert.equal(bounded.peek('a'),undefined);assert.equal(bounded.peek('c'),'rgb(1,2,3)');
+console.log('Artwork color: synchronous native metadata, single-flight requests, queued priming, failure retry and bounded memory cache passed.');

@@ -13,7 +13,7 @@ import { IOSPlayer } from "./IOSPlayer";
 
 export interface TrackMetadata {
   title?: string; artist?: string; album?: string; albumArtist?: string;
-  year?: string; track?: string; coverUri?: string; durationMs?: number;
+  year?: string; track?: string; coverUri?: string; artworkColor?: string; durationMs?: number;
 }
 export interface QueueTrack {
   contentHash: string; uri: string; name: string; metadata: TrackMetadata;

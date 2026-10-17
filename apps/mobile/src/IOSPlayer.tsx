@@ -17,7 +17,7 @@ import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNat
 import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, formatPlaybackTime } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
-import { artworkColor } from "./artwork-color";
+import { artworkColor, readArtworkColor } from "./artwork-color";
 import { swiftUI } from "./IOSSystemTabs";
 import { IOSPlaybackSymbol, IOSSkipSymbol } from "./IOSPlaybackSymbol";
 import { QueuePreparationOverlay } from "./QueuePreparationOverlay";
@@ -44,7 +44,11 @@ function ThemedPlayer(p: PlayerProps) {
   const appTheme = useAppTheme();
   const previewMetadata = false;
   const systemTheme = useColorScheme();
-  const { width, height } = useWindowDimensions();
+  const initialWindow = useWindowDimensions();
+  // Native rotation can publish window metrics before this navigation surface
+  // has resized. Artwork and controls share the measured surface in one commit.
+  const [surfaceSize, setSurfaceSize] = useState<{ width: number; height: number } | null>(null);
+  const { width, height } = surfaceSize || initialWindow;
   const landscapePlayer = width > height && (Platform.OS === "ios" || (Platform.OS === "android" && height >= 600));
   const compactLandscape = landscapePlayer && height < 600;
   const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
@@ -71,12 +75,13 @@ function ThemedPlayer(p: PlayerProps) {
   const artworkUri = p.metadata.coverUri || "";
   const hasArtwork = !!artworkUri && failedArtwork !== artworkUri;
   const [artworkTone, setArtworkTone] = useState({ uri: "", color: "#303034" });
-  const fadeColor = artworkTone.uri === artworkUri ? artworkTone.color : "#303034";
+  const preparedArtworkColor = readArtworkColor(artworkUri, p.metadata.artworkColor);
+  const fadeColor = preparedArtworkColor || (artworkTone.uri === artworkUri ? artworkTone.color : "#303034");
   useEffect(() => {
     let active = true;
-    if (hasArtwork) artworkColor(artworkUri).then(color => { if (active) setArtworkTone({ uri: artworkUri, color }); }).catch(() => { if (active) setArtworkTone({ uri: artworkUri, color: "#303034" }); });
+    if (hasArtwork && !preparedArtworkColor) artworkColor(artworkUri).then(color => { if (active) setArtworkTone({ uri: artworkUri, color }); }).catch(() => { if (active) setArtworkTone({ uri: artworkUri, color: "#303034" }); });
     return () => { active = false; };
-  }, [artworkUri, hasArtwork]);
+  }, [artworkUri, hasArtwork, preparedArtworkColor]);
   // Preserve the underlying player across the settings push/pop animation.
   const immersiveHome = page === 0;
   const homeBackground = immersiveHome ? "transparent" : c.bg;
@@ -85,14 +90,21 @@ function ThemedPlayer(p: PlayerProps) {
   const artist = p.metadata.artist || p.metadata.albumArtist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听");
   const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
-  const [playerHeight, setPlayerHeight] = useState(Math.max(300, height - 230));
-  const [playerBlocks, setPlayerBlocks] = useState({ status: 0, info: 62, controls: 106, volume: 44 });
+  const layoutKey = landscapePlayer ? "landscape" : "portrait";
+  const initialBlocks = { status: 0, info: 62, controls: 106, volume: 44 };
+  const [playerMeasurements, setPlayerMeasurements] = useState<Partial<Record<typeof layoutKey, number>>>({});
+  const [blockMeasurements, setBlockMeasurements] = useState<Partial<Record<typeof layoutKey, typeof initialBlocks>>>({});
+  const playerHeight = playerMeasurements[layoutKey] ?? Math.max(0, height - (compactLandscape ? 140 : 230));
+  const playerBlocks = blockMeasurements[layoutKey] || initialBlocks;
   const measuredBlockHeight = Object.values(playerBlocks).reduce((sum, value) => sum + value, 0);
   const { coverSize, gap: portraitGap } = iosPlayerLayout(width, playerHeight, measuredBlockHeight);
   const playerGap = landscapePlayer ? Math.max(0, Math.min(compactLandscape ? 12 : 32, (playerHeight - measuredBlockHeight - (compactLandscape ? 24 : 88)) / 4)) : portraitGap;
   const transportInset = compactLandscape ? 8 : 22;
+  const iosLandscape = Platform.OS === "ios" && landscapePlayer;
+  const landscapeControlPadding = iosLandscape ? Math.min(24, Math.max(0, playerHeight - measuredBlockHeight - playerGap * 3 - transportInset)) : 0;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
-    setPlayerBlocks(previous => Math.abs(previous[key] - value) < 0.5 ? previous : { ...previous, [key]: value });
+    setBlockMeasurements(previous => Math.abs((previous[layoutKey] || initialBlocks)[key] - value) < 0.5
+      ? previous : { ...previous, [layoutKey]: { ...(previous[layoutKey] || initialBlocks), [key]: value } });
   };
   const format = p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|ac4|ac-4|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
   const infoRows: [string, string][] = __DEV__ && previewMetadata ? [
@@ -156,13 +168,7 @@ function ThemedPlayer(p: PlayerProps) {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
   }}>{label(name, true, s.groupTitle)}</View>;
 
-  return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: c.bg }}>
-  {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
-    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={landscapePlayer
-      ? { position: "absolute", left: artworkSize * .35, top: artworkSize * .35, width: artworkSize, height: artworkSize * .30, tintColor: fadeColor, transform: [{ rotate: "-90deg" }] }
-      : { position: "absolute", top: artworkSize * .70, left: 0, width, height: artworkSize * .30, tintColor: fadeColor }} />
-  </View>}
+  return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: immersiveHome ? fadeColor : c.bg }}>
   <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
     {Platform.OS === "android" ? <AndroidAudioInfo rows={infoRows} dark={!isLight} onClose={() => setMetadataOpen(false)} /> :
     <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
@@ -171,13 +177,22 @@ function ThemedPlayer(p: PlayerProps) {
     </SafeAreaView>}
   </IOSMetadataSheet>
   <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <View collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={event => {
+    const { width, height } = event.nativeEvent.layout;
+    if (width > 0 && height > 0) setSurfaceSize(previous => previous?.width === width && previous?.height === height ? previous : { width, height });
+  }}>
+  {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
+    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
+    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: artworkSize * .70, top: 0, width: artworkSize * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
+  </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
     <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      <View style={[s.header, compactLandscape && np.compactHeader]}>
+      <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader]}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
         {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
@@ -198,10 +213,10 @@ function ThemedPlayer(p: PlayerProps) {
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
       <IOSSystemTabs selected={page} onChange={navigate} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
-          onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerHeight(previous => Math.abs(previous - available) < 0.5 ? previous : available); }}>
+          onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available }); }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent]}>
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: artworkSize, height: "100%" }]}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
-          <View style={[{ gap: playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls]}>
+          <View style={[{ gap: playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls, iosLandscape && { paddingTop: landscapeControlPadding }]}>
           <View style={[np.metadata, { transform: [{ translateY: landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
@@ -250,11 +265,11 @@ function ThemedPlayer(p: PlayerProps) {
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
         </ScrollView>
-        <View style={[s.page, s.otherContent, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
+        <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
-          <View style={[s.scene, { height: Math.max(270, Math.min(410, height * .42)) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
-          <View style={[s.row, s.sceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "KU100", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
-          {label("单指旋转 · 双指缩放", true, s.sceneHint)}
+          <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
+          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
+          {label("单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint])}
         </View>
       </IOSSystemTabs>
 
@@ -311,6 +326,7 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
+  </View>
   </IOSSettingsNavigation>
   </SafeAreaProvider>;
 }
@@ -319,6 +335,7 @@ const s = StyleSheet.create({
   libraryPlaybackModes: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20 },
   loopPill: { flex: 1, minHeight: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
   engineNotice: { fontSize: 12, lineHeight: 18, marginBottom: 12 },
+  presentationSurface: { flex: 1, overflow: "hidden" },
   safe: { flex: 1 }, root: { flex: 1, paddingHorizontal: 18, paddingBottom: 8 },
   header: { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 3 },
   eyebrow: { fontSize: 11, letterSpacing: 3 }, pageTitle: { fontSize: 24, fontWeight: "600", marginTop: 5 },
@@ -344,6 +361,11 @@ const s = StyleSheet.create({
   miniPlayback: { width: 44, height: 44, alignItems: "center", justifyContent: "center", backgroundColor: "transparent" },
   miniSong: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }, miniTitle: { fontSize: 13, lineHeight: 18 }, miniArtist: { fontSize: 11, marginTop: 3 },
   tabs: { marginTop: 10 }, fallbackTabs: { flexDirection: "row", padding: 5, borderWidth: StyleSheet.hairlineWidth, borderRadius: 26 }, fallbackTab: { flex: 1, minHeight: 50, alignItems: "center", justifyContent: "center", borderRadius: 22 },
+  sceneViewport: { flex: 1, minHeight: 0, maxHeight: 410 },
+  compactScenePage: { paddingTop: 4, paddingBottom: 6 },
+  compactSceneViewport: { marginTop: 8 },
+  compactSceneInfo: { marginTop: 8 },
+  compactSceneHint: { marginTop: 6 },
   scene: { marginTop: 17, borderRadius: 18, overflow: "hidden", backgroundColor: "#171a19" }, sceneInfo: { marginTop: 18, paddingHorizontal: 4 }, sceneHint: { textAlign: "center", fontSize: 12, marginTop: 18 },
   settingsPage: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 10 }, settingsHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingVertical: 8, overflow: "hidden" }, settingsTitle: { fontSize: 18, fontWeight: "600" },
   settingsContent: { paddingHorizontal: 3, paddingBottom: 28 }, groupTitle: { fontSize: 12, marginTop: 25, marginBottom: 8, marginLeft: 12 },
@@ -354,6 +376,7 @@ const s = StyleSheet.create({
 const np = StyleSheet.create({
   // Absorb unused artwork space above the whole control group on tall tablets.
   tabletControls: { marginTop: "auto" },
+  iosLandscapeHeader: { marginTop: 14 },
   compactHeader: { paddingVertical: 2 },
   compactContent: { paddingTop: 0, paddingBottom: 0 },
   compactTitle: { fontSize: 18, lineHeight: 22 },

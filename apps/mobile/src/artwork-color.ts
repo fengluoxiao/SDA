@@ -1,9 +1,17 @@
 import { GLView } from "expo-gl";
 import { Asset } from "expo-asset";
-const cache = new Map<string, string>();
+import { createArtworkColorCache, validArtworkColor } from "./artwork-color-cache";
+const cache = createArtworkColorCache(sampleArtworkColor);
+export function readArtworkColor(uri: string, prepared?: string): string | undefined {
+  return validArtworkColor(prepared) ? prepared : cache.peek(uri);
+}
+export function primeArtworkColor(uri: string, prepared?: string): Promise<string> {
+  cache.prime(uri, prepared);
+  return cache.load(uri);
+}
+export function artworkColor(uri: string): Promise<string> { return cache.load(uri); }
 // Read a small bottom-band sample from the actual artwork, not its filename.
-export async function artworkColor(uri: string): Promise<string> {
-  const cached = cache.get(uri); if (cached) return cached;
+async function sampleArtworkColor(uri: string): Promise<string> {
   const asset = Asset.fromURI(uri); await asset.downloadAsync();
   const gl = await GLView.createContextAsync();
   try {
@@ -36,8 +44,7 @@ export async function artworkColor(uri: string): Promise<string> {
     if(weight<1) throw new Error("Artwork sample empty");
     // Darken the sampled hue for readable controls, preserve color ratios.
     const rgb=sums.map(v=>Math.round(v/weight*.52));
-    const color=`rgb(${rgb.join(",")})`; cache.set(uri,color);
-    if(cache.size>24)cache.delete(cache.keys().next().value!);
+    const color=`rgb(${rgb.join(",")})`;
     return color;
   } finally { await GLView.destroyContextAsync(gl); }
 }

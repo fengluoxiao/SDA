@@ -1,3 +1,4 @@
+import { primeArtworkColor } from "./src/artwork-color";
 import React from "react";
 import { Platform, Linking, AppState, type NativeEventSubscription } from "react-native";
 import renderingPresets from "./rendering-presets.json";
@@ -353,6 +354,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         }
         progress(.08, "读取歌曲信息");
         const metadata = JSON.parse(await this.getEngine().metadata(asset.uri)) as TrackMetadata;
+        if (metadata.coverUri) void primeArtworkColor(metadata.coverUri, metadata.artworkColor).catch(() => {});
         patch({ metadata });
         const track = { contentHash, uri: asset.uri, name: asset.name, metadata };
         // Prepare while the foreground import transaction is alive, not after EOF in background.

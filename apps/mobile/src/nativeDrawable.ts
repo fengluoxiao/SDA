@@ -12,3 +12,14 @@ export function resetNativeDrawable(
   context.bindFramebuffer(context.FRAMEBUFFER, null);
   renderer.setViewport(0, 0, width, height);
 }
+
+/** Fiber replaces its root-state snapshot on layout. Read it for every frame:
+ * capturing onCreated's state.size stretches and offsets the scene after rotation.
+ */
+export function resetNativeSceneDrawable(
+  getState: () => { gl: Parameters<typeof resetNativeDrawable>[0]; size: { width: number; height: number } },
+  context: Parameters<typeof resetNativeDrawable>[1],
+) {
+  const current = getState();
+  resetNativeDrawable(current.gl, context, current.size.width, current.size.height);
+}

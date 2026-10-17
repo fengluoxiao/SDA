@@ -1,4 +1,4 @@
-import { resetNativeDrawable } from "./nativeDrawable";
+import { resetNativeSceneDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
 import { AppState, Platform, PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
@@ -30,8 +30,9 @@ function Scene({ objects, cameraInput, layout }: { layout: "2.0" | "7.1.4" | "36
   useFrame(() => {
     const spherical = new THREE.Spherical(cameraInput.distance, Math.PI / 2.9 + cameraInput.rotation.y, cameraInput.rotation.x);
     camera.position.setFromSpherical(spherical);
-    camera.position.y += 0.5;
-    camera.lookAt(0, 0.5, 0);
+    const centerY = layout === "360RA-13" ? 0 : 0.5;
+    camera.position.y += centerY;
+    camera.lookAt(0, centerY, 0);
   });
   return <>
     <color attach="background" args={[PALETTE.dark.bg]} />
@@ -161,7 +162,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
         // Rebind its current default FBO rather than retaining a deleted/stale
         // drawable after the native tab has laid out or resumed.
         if (Platform.OS === "ios") {
-          resetNativeDrawable(state.gl, context, state.size.width, state.size.height);
+          resetNativeSceneDrawable(state.get, context);
         }
         renderFrame(scene, camera);
         if (currentAttempt.current !== attempt || !alive.current) return;
@@ -200,10 +201,10 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
           for (let i = 0; i < buffer.length; i += 4) if (Math.max(buffer[i]!, buffer[i + 1]!, buffer[i + 2]!) > 70) brightPixels++;
           const result = { ok: true, brightPixels, bufferWidth: width, bufferHeight: height,
             pixelProbe: "explicit-render-target", glError: probeError, framebufferStatus: context.checkFramebufferStatus(context.FRAMEBUFFER),
-            camera: state.camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)),
+            camera: camera.position.toArray(), viewport: Array.from(context.getParameter(context.VIEWPORT)),
             programs: state.gl.info.programs?.map((program: any) => program.diagnostics),
             calls: state.gl.info.render.calls, triangles: state.gl.info.render.triangles,
-            width: state.size.width, height: state.size.height, attempt, frames };
+            width: state.get().size.width, height: state.get().size.height, attempt, frames };
           setTimeout(() => { if (alive.current && currentAttempt.current === attempt) report(result); }, 0);
         }
       };

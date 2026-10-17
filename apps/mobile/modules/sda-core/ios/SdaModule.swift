@@ -83,7 +83,7 @@ public final class SdaModule: Module {
   AsyncFunction("metadata") { (uri:String) in
    guard let u = URL(string:uri) else { throw SdaError.message("文件地址无效") }
    let asset = AVURLAsset(url:u); var result: [String:Any] = ["durationMs":player.mediaDuration(u)]
-   for item in asset.commonMetadata { if item.commonKey == .commonKeyTitle { result["title"] = item.stringValue }; if item.commonKey == .commonKeyArtist { result["artist"] = item.stringValue }; if item.commonKey == .commonKeyAlbumName { result["album"] = item.stringValue }; if item.commonKey == .commonKeyArtwork, let data = item.dataValue { result["coverUri"] = "data:image/jpeg;base64,"+data.base64EncodedString() } }
+   for item in asset.commonMetadata { if item.commonKey == .commonKeyTitle { result["title"] = item.stringValue }; if item.commonKey == .commonKeyArtist { result["artist"] = item.stringValue }; if item.commonKey == .commonKeyAlbumName { result["album"] = item.stringValue }; if item.commonKey == .commonKeyArtwork, let data = item.dataValue { result["coverUri"] = "data:image/jpeg;base64,"+data.base64EncodedString(); if let color = ArtworkColor.bottomBand(data) { result["artworkColor"] = color } } }
    return try player.json(result)
   }
   AsyncFunction("contentHash") { (uri:String) in

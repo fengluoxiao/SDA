@@ -39,7 +39,7 @@ const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
 assert.match(settings, /largeTitle: false/);
 assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
-assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader\]\}>/);
+assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader, iosLandscape && np\.iosLandscapeHeader\]\}>/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
 assert.match(settings, /systemImage="gearshape"/);
 assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(appTheme.accent\)/);

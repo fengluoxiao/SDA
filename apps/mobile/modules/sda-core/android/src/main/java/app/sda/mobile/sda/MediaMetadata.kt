@@ -58,6 +58,7 @@ object MediaMetadata {
                             val cover = File(directory, "$hash.jpg")
                             if (!cover.isFile) cover.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
                             result.put("coverUri", Uri.fromFile(cover).toString())
+                            ArtworkColor.bottomBand(bitmap)?.let { result.put("artworkColor", it) }
                         } finally { bitmap.recycle() }
                     }
                 }

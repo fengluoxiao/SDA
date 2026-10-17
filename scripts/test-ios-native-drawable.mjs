@@ -31,3 +31,27 @@ console.log('Scene readiness: first real draw is separate from one-shot CI pixel
 assert.match(sceneSource,/new THREE.WebGLRenderTarget/);
 assert.match(sceneSource,/state.gl.setRenderTarget\(previousTarget\)/);
 assert.match(sceneSource,/target.dispose\(\)/);
+
+// Native tab layout / rotation replaces Fiber state instead of mutating the
+// original onCreated snapshot. Rendering must use the new viewport every time.
+const {resetNativeSceneDrawable}=module.exports;
+const initialState={gl:renderer,size:{width:354,height:354}};
+let currentState=initialState;
+const getState=()=>currentState;
+for(const [width,height] of [[354,354],[844,220],[1194,410],[390,410],[844,180]]) {
+  currentState={...initialState,size:{width,height}};
+  calls.length=0;resetNativeSceneDrawable(getState,gl);
+  assert.deepEqual(calls.at(-1),['viewport',0,0,width,height]);
+  // A perspective camera resized by Fiber must use a matching GL viewport.
+  // Otherwise a circle becomes an ellipse and moves toward the left edge.
+  const aspect=width/height;
+  const viewport=calls.at(-1);
+  const horizontalRadius=viewport[3]/aspect;
+  const verticalRadius=viewport[4];
+  assert(Math.abs(horizontalRadius-verticalRadius)<1e-9);
+  assert.equal(viewport[3]/2,width/2);
+}
+assert.deepEqual(initialState.size,{width:354,height:354},'test must retain the stale creation snapshot');
+assert.match(sceneSource,/resetNativeSceneDrawable\(state\.get, context\)/);
+assert.doesNotMatch(sceneSource,/resetNativeDrawable\(state\.gl, context, state\.size/);
+console.log('Native rotation regression: replaced Fiber snapshots keep viewport, projection scale and center in sync.');
