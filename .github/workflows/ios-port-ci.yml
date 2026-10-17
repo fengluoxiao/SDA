@@ -117,6 +117,10 @@ jobs:
           node scripts/test-library-header-layout.mjs
           node scripts/test-side-navigation-background.mjs
           node scripts/test-side-navigation-dock.mjs
+          node scripts/test-ios-cutout-side.mjs
+          node scripts/test-mobile-surface-resume.mjs
+          node scripts/test-native-tab-selection.mjs
+          node scripts/test-ios-vertical-tab-bar.mjs
           node scripts/test-artwork-color-cache.mjs
           node scripts/test-navigation-preferences.mjs
           node scripts/test-side-navigation-gesture.mjs

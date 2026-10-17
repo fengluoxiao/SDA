@@ -5,7 +5,7 @@ import type { QueueTrack } from "../src/RemotePlayer";
 export function createArtworkPreview() {
   const metadata = { title: "エガクミライ", artist: "MyGO!!!!!",
     coverUri: Image.resolveAssetSource(require("./egaku-cover.jpg")).uri,
-    artworkColor: "#3f4e3f", durationMs: 240000 };
+    artworkColor: "rgb(63,78,63)", durationMs: 240000 };
   const queue: QueueTrack[] = Array.from({ length: 12 }, (_, index) => ({
     contentHash: `expo-artwork-preview-${index}`, uri: `preview://artwork/${index}`,
     name: index === 0 ? "05. エガクミライ.m4a" : `界面预览 ${index + 1}.m4a`,

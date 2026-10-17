@@ -151,7 +151,9 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     viewportHeight.current = height;
     setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
   }} {...pan.panHandlers}>
-    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={Platform.OS === "ios" && !renderActive ? "never" : "always"} style={{ width: viewport.width, height: viewport.height }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
+    {/* Let the native GL view resize with its parent immediately on resume;
+        cached viewport dimensions only gate the initial mount. */}
+    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={Platform.OS === "ios" && !renderActive ? "never" : "always"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
       const renderFrame = state.gl.render.bind(state.gl);
       const context = state.gl.getContext() as any;
       const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;

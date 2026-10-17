@@ -1,7 +1,9 @@
+import { IOSVerticalTabBar, hasNativeVerticalTabBar } from "./IOSVerticalTabBar";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Platform, PanResponder, StyleSheet, View, useWindowDimensions } from "react-native";
 import { createSideRailGesture, sideRailIndicatorOffset } from "./side-navigation-gesture";
 import { IOS_TABS } from "./ios-ui-model";
+import { sideNavigationAppearance } from "./side-navigation-appearance";
 
 export const SIDE_NAVIGATION_WIDTH = 48;
 const nativeUI: typeof import("@expo/ui/swift-ui") | null = Platform.OS === "ios" &&
@@ -10,10 +12,16 @@ const nativeUI: typeof import("@expo/ui/swift-ui") | null = Platform.OS === "ios
     ? require("@expo/ui/swift-ui") : null;
 const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"] as const;
 
-export function SideNavigationRail({ selected, onChange, accent, dark, renderIcon }: {
-  selected: number; onChange(index: number): void; accent: string; dark: boolean;
+type SideNavigationRailProps = {
+  selected: number; onChange(index: number): void; accent: string; dark: boolean; backgroundColor?: string;
   renderIcon(index: number, color: string): React.ReactNode;
-}) {
+};
+export function SideNavigationRail(props: SideNavigationRailProps) {
+  return hasNativeVerticalTabBar ? <IOSVerticalTabBar {...props} /> : <CustomSideNavigationRail {...props} />;
+}
+
+// Retained for older native hosts and as the recoverable custom implementation.
+export function CustomSideNavigationRail({ selected, onChange, accent, dark, backgroundColor, renderIcon }: SideNavigationRailProps) {
   const gesture = useRef(createSideRailGesture());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressed = useRef(false);
@@ -27,6 +35,7 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   const inside = useRef(true);
   const [hover, setHover] = useState<number | null>(null);
   const highlighted = hover ?? selected;
+  const appearance = sideNavigationAppearance(accent, dark, backgroundColor);
   const window = useWindowDimensions();
   const clearTimer = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
   const settle = (index: number) => {
@@ -101,23 +110,21 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   const visual = <Animated.View testID="side-tab-glass-bar" style={{ width: 48, height: 140, transform: [{ scale: barScale }] }}>
     {backdrop}
     {/* Neutral selection fill below the icons, with no extra backdrop sampling. */}
-    <Animated.View testID="side-tab-glass-selection" style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
-      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
-      <View testID="side-tab-neutral-selection" style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: dark ? "rgba(255,255,255,0.14)" : "rgba(118,118,128,0.18)" }} />
-    </Animated.View>
-    <View testID="side-tab-symbols" style={[StyleSheet.absoluteFill, { zIndex: 1 }]}>
-      {nativeUI && material ? <nativeUI.Host ignoreSafeArea="container" style={{ width: 48, height: 140 }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
+    <Animated.View collapsable={false} testID="side-tab-glass-selection" style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44, zIndex: 1, borderRadius: 22, backgroundColor: appearance.selectionFill,
+      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }} />
+    <View testID="side-tab-symbols" style={[StyleSheet.absoluteFill, { zIndex: 2 }]}>
+      {nativeUI && material ? <nativeUI.Host ignoreSafeArea="container" style={{ width: 48, height: 140, backgroundColor: "transparent" }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
         <nativeUI.VStack spacing={2} modifiers={[material.padding({ all: 2 }), material.frame({ width: 48, height: 140 })]}>
           {IOS_TABS.map((label, index) => <nativeUI.VStack key={label} modifiers={[material.frame({ width: 44, height: 44 }),
             // Apply color on the native container as well as the host tint:
             // SF Symbols must not fall back to the host's white/black label color.
-            material.foregroundColor(highlighted === index ? accent : dark ? "#FFFFFF" : "#000000"),
-            material.tint(highlighted === index ? accent : dark ? "#FFFFFF" : "#000000")]}>
+            material.foregroundColor(highlighted === index ? appearance.selectedIcon : appearance.inactiveIcon),
+            material.tint(highlighted === index ? appearance.selectedIcon : appearance.inactiveIcon)]}>
             <nativeUI.Image systemName={symbols[index]} size={hover === index ? 22 : 20} />
           </nativeUI.VStack>)}
         </nativeUI.VStack>
       </nativeUI.Host> : <View style={{ padding: 2, gap: 2 }}>
-        {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#FFFFFF" : "#000000")}</View>)}
+        {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? appearance.selectedIcon : appearance.inactiveIcon)}</View>)}
       </View>}
     </View>
   </Animated.View>;

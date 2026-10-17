@@ -1,8 +1,10 @@
+import { resolveNativeTabSelection } from "./native-tab-selection";
+import { iosTabAppearance } from "./ios-tab-appearance";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import type { NativeSyntheticEvent, ScrollViewProps } from "react-native";
 import type { TabSelectedEvent } from "react-native-screens";
-import { Platform, UIManager, View } from "react-native";
+import { AppState, Platform, UIManager, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { IOS_TABS } from "./ios-ui-model";
 
@@ -18,13 +20,15 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0 }: {
+  pageHeaders?: React.ReactNode[];
   libraryHeaderActions?: React.ReactNode;
-  sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number;
+  sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number; rightContentGap?: number; leftContentOffset?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
   const [provenance, setProvenance] = useState(0);
+  const lastProvenance = useRef(0);
   const [libraryHeaderHeight, setLibraryHeaderHeight] = useState(0);
   const screenInsets = useSafeAreaInsets();
   const libraryBottomInset = sideBar ? Math.max(0, screenInsets.bottom) : 0;
@@ -51,14 +55,18 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         }) : page;
     return floatingLibraryAccessory ? <View style={{ flex: 1, backgroundColor: "transparent" }}>
       {scroll}
-      <View testID="floating-library-accessory" style={{ position: "absolute", bottom: libraryBottomInset, left: 0, right: sideBarPosition === "left" ? 12 : 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
+      <View testID="floating-library-accessory" style={{ position: "absolute", bottom: libraryBottomInset, left: 0, right: sideBarPosition === "left" ? 12 : 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View>
     </View> : scroll;
   };
   const renderPage = (index: number) => {
+    const nativeHeader = index === 1 && hasNativePageHeader;
     const viewport = <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
+        <SafeAreaView edges={nativeHeader ? [] : ["top", "left", "right"]} style={{ flex: 1 }}>
+          {!nativeHeader && <View style={{ paddingHorizontal: 18 }}>{pageHeaders?.[index]}</View>}
           <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
-            {pageContent(index)}{index !== 0 && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
+            {pageContent(index)}{index !== 0 && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
+        </SafeAreaView>
         </SafeAreaProvider>;
     return index === 1 && hasNativePageHeader ? <IOSNativePage screenId="sda-library-content" title="资料库" theme={theme} accent={accent}
       onHeaderHeightChange={height => setLibraryHeaderHeight(previous => Math.abs(previous - height) < 0.5 ? previous : height)}
@@ -67,11 +75,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
   // These properties configure UITabBarAppearance itself. Painting a background
   // behind the TabView cannot override its opaque native bar appearance.
   // Keep the system glass effect; remove only the explicit fill and divider.
-  const appearance = {
-    tabBarBackgroundColor: "transparent",
-    tabBarShadowColor: "transparent",
-    tabBarBlurEffect: "systemDefault" as const,
-  };
+  const appearance = iosTabAppearance;
   return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor }}>
     <Tabs.Host
       tabBarHidden={!!sideBar}
@@ -84,9 +88,11 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         bottomAccessoryHidden: !!sideBar || selected === 0 || !nativeAccessory,
       }}
       onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {
-        setProvenance(nativeEvent.provenance);
-        const index = Number(nativeEvent.selectedScreenKey);
-        if (Number.isInteger(index) && index >= 0 && index < IOS_TABS.length && index !== selected) onChange(index);
+        const update = resolveNativeTabSelection(nativeEvent, lastProvenance.current, selected, AppState.currentState === "active", "main");
+        if (!update) return;
+        lastProvenance.current = update.provenance;
+        setProvenance(update.provenance);
+        if (update.index !== null) onChange(update.index);
       }}>
       {IOS_TABS.map((label, index) => <Tabs.Screen key={label} screenKey={String(index)} title={label}
         style={{ backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }} tabBarItemAccessibilityLabel={label}

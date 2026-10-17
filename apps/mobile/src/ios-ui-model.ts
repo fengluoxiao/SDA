@@ -66,15 +66,40 @@ export function landscapeArtworkLayout(surfaceWidth: number, surfaceHeight: numb
 
 // Keep the accepted row x-position (parent + 38), while moving the scroll
 // effect outside the left action lane, including devices with no side inset.
-export function iosLeftLibraryGutter(safeLeft: number) {
+export function iosLeftLibraryGutter(safeLeft: number, cutoutSide: IOSCutoutSide = null) {
   const paddingLeft = Math.min(8, Math.max(0, safeLeft));
-  return { marginLeft: 38 - paddingLeft, paddingLeft };
+  return { marginLeft: 38 - paddingLeft + iosLeftContentOffset(safeLeft, cutoutSide), paddingLeft };
 }
 
-// Preserve right-mode card and indicator screen coordinates while ending the
-// scroll-edge effect before the side controls. The gap adapts to device insets.
-export function iosRightLibraryGutter(safeRight: number) {
-  const indicatorRight = Math.min(12, (Math.max(0, safeRight) + 8) / 4);
+// Expo reports UIInterfaceOrientation, not the inverse UIDevice orientation.
+export type IOSCutoutSide = "left" | "right" | null;
+export function iosCutoutSideForOrientation(orientation: number): IOSCutoutSide {
+  if (orientation === 3) return "right";
+  if (orientation === 4) return "left";
+  return null;
+}
+
+// Unknown orientation stays conservative until the initial native query resolves.
+// Opposite the cutout, retain the exact previously approved centered position.
+export function leftSideDockInset(leftSafeInset: number, cutoutSide: IOSCutoutSide = null) {
+  const safe = Math.max(0, leftSafeInset);
+  return cutoutSide === "right" ? Math.max(20, (safe + 8) / 2) : Math.max(14, safe) + 6;
+}
+export function iosLeftContentOffset(leftSafeInset: number, cutoutSide: IOSCutoutSide = null) {
+  return leftSideDockInset(leftSafeInset, cutoutSide) - leftSideDockInset(leftSafeInset);
+}
+export function rightSideDockInset(rightSafeInset: number, cutoutSide: IOSCutoutSide = null) {
+  const safe = Math.max(0, rightSafeInset);
+  return cutoutSide === "left" ? (safe + 8) / 2 : safe + 4;
+}
+export function iosRightSideContentGap(rightSafeInset: number, cutoutSide: IOSCutoutSide = null) {
+  return rightSafeInset > 0 && cutoutSide !== "left" ? 20 : 8;
+}
+
+export function iosRightLibraryGutter(safeRight: number, cutoutSide: IOSCutoutSide = null) {
+  const indicatorRight = cutoutSide === "left"
+    ? Math.min(12, (Math.max(0, safeRight) + 8) / 4)
+    : 2;
   const paddingRight = indicatorRight * 2;
-  return { marginRight: 38 - paddingRight, paddingRight, indicatorRight };
+  return { marginRight: 48 + iosRightSideContentGap(safeRight, cutoutSide) - 18 - paddingRight, paddingRight, indicatorRight };
 }

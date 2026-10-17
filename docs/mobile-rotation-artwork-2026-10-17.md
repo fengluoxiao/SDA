@@ -238,3 +238,164 @@ The user meant removing the bottom background, not adding a cover. Withdraw the 
 ## Approved release request — 2026-10-17
 
 User approved the transparent bottom-region preview and authorized commit, push and iOS packaging. Preview/release UI parity is now a standing requirement for future bug fixes and optimizations, recorded in apps/mobile/AGENTS.md. iOS CI runs the native-page, library-layout, side-background and dock checks alongside the existing UI, theme and gesture checks. The withdrawn standalone-only scroll-edge module is not registered or shipped; only Expo Go mock data is omitted in production. The separate dirty native-renderer probe is excluded from this UI release commit. Installed-release visual confirmation is still a separate device check.
+
+
+## Right dock cutout safety in either landscape rotation
+
+Device feedback found that the right dock overlapped the Dynamic Island when rotated onto that side. The old (rightInset + 8) / 2 formula halved the cutout inset. The shared UI now preserves the full current right inset plus 4 pt, including clearance for the pressed capsule/selection expansion. Upper actions use the same dock. Library scrollbar/native edge bounds follow the available gap while card positions remain unchanged. Left docking and zero-right-inset positions are unchanged. Regression checks cover swapped left/right insets, both placements, press expansion and library bounds; mobile TypeScript and UI checks pass. Expo Go preview is updated for physical rotation review before another UI release.
+
+
+## Side-rail selected appearance matched to the portrait reference
+
+The user supplied portrait/native and landscape/custom screenshots: the portrait selection has a darker neutral fill and deeper accent, while the vertical selection looked nearly absent with a brighter icon. The rail now draws an explicit neutral selection above the single glass backdrop and below symbols. Light mode uses black at 34% for the selection and a same-hue/saturation shade (55% of original HSL lightness) for the selected icon; dark mode retains the bright theme accent and neutral light fill. The saved theme colors and portrait UIKit bar are unchanged. This is a custom visual approximation for Expo Go/release parity, not access to UIKit's internal adaptive tint. All themes share the rule, including held/dragged selection. Gesture/theme checks and TypeScript pass; physical screenshot matching awaits user review. The cutout-safety fix remains in this preview.
+
+
+## Limit selection deepening to light appearance over dark content
+
+Follow-up screenshots showed that applying the deeper selection to the light library was incorrect. The rail now receives the actual page backdrop (artwork fade on playback, page background elsewhere). Only light system appearance over a dark backdrop applies the deeper theme shade and darker neutral fill. Light pages/bright artwork retain the original accent and subtle gray selection; dark system appearance retains its previous bright accent and white inactive icons. All theme/background combinations are covered by the existing gesture/component tests.
+
+The right dock stays at the full safe inset plus 4 pt. Increase the page-to-rail gap from 4 to 16 pt by reserving 12 additional points in the playback controls, library rows/scrollbar, space page and floating mini-player. Share the spacing constant between UIKit and compatibility hosts. Left mode, artwork position and transparent side/bottom regions remain unchanged. UI/type/layout tests pass. Confirmed the existing Tailscale server at 100.74.135.31:8084 serves this integration checkout and both corrections. Preview-only pending visual approval; no push or new build.
+
+
+## Observe physical cutout side and restore opposite-side geometry
+
+The user clarified that cutout avoidance must apply only when the selected side rail is on the cutout side, then extended that requirement to left docking. Safe-area numbers may be symmetric across a 180-degree rotation, so add the SDK-compatible expo-screen-orientation 57.0.2 module in both Expo Go JS and the release dependency/lock. Observe interface-orientation events and refresh on foreground; do not lock orientation, poll, or add a release-only bridge. Expo orientation 3 maps to UIInterfaceOrientation.landscapeLeft (Home button left, portrait top/cutout right); 4 maps to landscapeRight (Home button right, cutout left). Verified against the official module Swift enum and Apple's UIInterfaceOrientation documentation. Initial/unknown orientation keeps conservative protection, and stale async reads cannot overwrite newer events.
+
+Right same-side mode retains full safe inset plus 4 and the 20 pt content reservation gap; opposite-side mode restores the exact old (inset+8)/2 position, 8 pt gap and old library indicator formula. Left same-side mode retains its approved max(14,inset)+6 position; opposite-side mode moves toward the edge with a 20 pt minimum. Header/content/mini-player follow the left displacement rather than leaving a dead content lane. Geometry tests include equal left/right safe insets, direct 180-degree rotation and either sidebar setting.
+
+For the reported missing playback selection, paint the neutral selected background directly on the non-collapsible animated overlay above glass and below the explicitly transparent symbol host. Keep the background-aware palette rule; left playback with missing artwork uses its actual #303034 backdrop instead of the right-side fade color. UI, gesture, orientation, layout and type checks pass. No claim of exact on-device parity: at verification both preview manifest requests timed out (8084 status also timed out), so this version has not been verified as delivered to the phone. Previous process restart attempts were blocked by automatic approval. No commit, push or new build for these pending UI changes.
+
+Dependency handling note: pnpm 11 rewrote unrelated lock sections; that rewrite was discarded and the lock regenerated using CI's pnpm 9.15.9. Shared preview node_modules linking hit an EPERM on an existing TypeScript folder; no recursive removal/reinstall was attempted. The added official orientation package resolves locally, pinned mobile JS dependency checks and TypeScript pass, and its manifest specifier matches the generated lock entry.
+
+
+## Playback selected state: fix RGB backdrop parsing
+
+New matched-background portrait/landscape screenshots exposed the actual palette bug: sideNavigationAppearance only parsed hex, but both native ArtworkColor metadata and the GL sampler provide rgb(r,g,b). Consequently the live sampled dark-green playback background did not activate either the darker selected fill or deeper theme icon. Accept bounded RGB triples (including whitespace) as well as hex and classify equivalent colors identically. Keep the approved light-page and system-dark rules. Fix the Expo-only fixture's prepared color from #3f4e3f to equivalent rgb(63,78,63), which the production metadata validator accepts.
+
+Regressions now cover all five accents, RGB/hex equivalence in both appearances, actual rgb(63,78,63), invalid RGB, real preview metadata validation and the rendered selection overlay. Mobile TypeScript, gesture/theme, artwork-cache and transparent-background checks pass. Tailscale 8084 is responding again and serves the corrected RGB parser, fixture and selected-fill code from this checkout. This establishes delivery of the fix, not pixel-identical physical appearance. Pending user visual approval; no push or build.
+
+
+## Native segmented picker vertical-presentation trial
+
+User asked to try vertical use of the segmented control. Add IOSVerticalSegmentedTabs using the existing Expo UI native Picker with segmented style, large control size and unmodified theme tint. Rotate its 140x48 Host by 90 degrees inside the existing 48x140 dock and counter-rotate each SF Symbol by -90 degrees. The native Picker owns selection and input; there is no RN PanResponder or custom selected-circle overlay in this path. Keep CustomSideNavigationRail recoverable and available to older/unsupported hosts. The same capability-based path runs in Expo Go and release; no dev-only visual branch is added. Dock orientation/cutout logic and page content geometry remain as previously previewed.
+
+TypeScript plus native-picker adapter, geometry, existing gesture and transparent-background tests pass. Tests prove JS wiring and transformed bounds, not native label rendering or physical drag behavior. Confirmed Tailscale 8084 serves the trial and accepts reload (HTTP 200). The key remaining on-device checks are whether SwiftUI preserves the inverse symbol transforms in segmented labels, whether rotated native hit testing/dragging works, and whether glass selection matches the requested reference. This is a rotation experiment, not an officially provided vertical segmented style. No commit/push/build before visual acceptance.
+
+
+## Vertical Picker feedback: upright symbols and background review
+
+Physical feedback found that the segmented image labels did not preserve inverse rotation or theme tint. Replace the Picker labels with blank tagged Text and keep the real rotated control for physical input/glass/selection. Draw three upright SF Symbols in a separate unrotated, touch-transparent native Host, explicitly applying the existing background-aware selected palette. Provide named RN accessibility tabs while hiding blank native labels from VoiceOver. No custom selected-circle layer is reintroduced. Adapter/theme/gesture checks and mobile TypeScript pass; Tailscale 8084 bundle contains this correction and accepted reload (HTTP 200).
+
+The user additionally reports a background problem without a screenshot of this Picker revision. The RN/Host wrappers are transparent, but the native segmented control still owns its own material/selected backing. No unsupported claim that this matches the previous capsule; obtain the current device screenshot before changing that layer. No commit/push/build.
+
+
+## Neutral native Picker backing preview
+
+User requested continued background work. Remove the character seedColor and tint modifier from the native Picker/touch Host, while retaining explicit colors on the independent upright symbol layer. Make the outer view explicitly transparent. Do not add another glass layer or claim a clear RN wrapper removes the Picker's internal backing. Native segmented selection and physical touch handling remain intact. Tests assert that the track no longer receives character tint and the icon theme remains; mobile TypeScript and side-background checks pass. Confirmed Tailscale 8084 serves the neutral-track version and reload returned HTTP 200. Exact physical background matching still awaits user feedback; the segmented control's native resting material remains. No commit/push/build.
+
+
+## Correct selected symbol color inheritance in the vertical Picker
+
+User clarified that the active icon remained black. Keep the native backing unchanged. Match the already-used IOSPlaybackSymbol pattern: each upright symbol now has its own VStack with foregroundColor, tint, font and fixed slot frame, and the Image also receives the resolved color. This avoids relying solely on image-level color/frame modifiers. Tests now validate inherited container color for all five themes, each selected tab, both appearances and light/dark page backgrounds rather than just inspecting Image.color. TypeScript passes. Tailscale served the native-container foreground/tint code; physical rendering still requires user confirmation. No commit/push/build.
+
+
+## Replace segmented backing with native TabBar; preview icon while scrubbing
+
+User accepted upright/theme-colored icons but rejected the segmented backing as unlike portrait, then requested the same selected color while dragging over another item before release. Withdraw IOSVerticalSegmentedTabs and its test (saved outside the repository in the preview evidence folder). Add IOSVerticalTabBar using react-native-screens Tabs.Host/Tabs.Screen, the same native UITabBarController family used in portrait. Extract the unchanged portrait appearance into ios-tab-appearance.ts and share it. A transparent 20x20 image template leaves native bar item geometry/accessibility intact while the accepted upright SF Symbols remain in the independent, touch-transparent colored layer. The native bar owns actual selection/gesture and hosts only three empty views, not additional player instances.
+
+Add createNativeSideTabPreview as a passive touch observer: measure the unrotated wrapper in window coordinates, follow the latest finger even if measurement completes late, color hover ?? selected with the same selected palette, restore on exit/cancel/multitouch/end, and never commit navigation. Native onTabSelected remains the only commit path. Upper/lower dock positioning and cutout logic are unchanged. JS tests cover shared appearances, original portrait configuration, hover/selected icon colors, preview-without-commit, native commits, delayed measurement, cancellation and capability fallback. TypeScript passes. Tailscale 8084 serves the new component/observer and reload returned HTTP 200.
+
+This remains a physical UI trial: a full native tab controller rotated into 140x48 can have intrinsic layout/gesture limitations not covered by JS tests. Verify actual bar bounds, blank-template loading and native touch propagation on the device before claiming background or scrub parity. No commit/push/build.
+
+
+## Retain native TabBar and correct inset layout / native touch preview
+
+Device feedback showed the small rotated UITabBar did not align with fixed upright symbols and the RN touch observer did not recolor while scrubbing. The initial restoration of the Picker was superseded by the user's explicit instruction to keep the native TabBar and fix its placement. Active path is again IOSVerticalTabBar, not Picker.
+
+Keep a fixed visible 140x48 unrotated stage, but provide extra native-controller width/height for its own insets and offset the leading inset before rotation. SafeAreaListener on the selected placeholder page feeds native inset changes back to the bounded compensation model; initial values use device insets. A thin-space title retains an invisible nonempty native item label. This compensation is a new candidate for the screenshot misalignment, not a claim that JS tests establish UIKit's exact floating-material bounds.
+
+Replace the failed RN onTouch stream with react-native-gesture-handler 2.32.0 (the SDK 57 bundled version): simultaneous native/manual recognizers, cancelsTouchesInView false, JS touch down/move/up/cancel callbacks, and no manual activation or navigation commit. Hover icon color uses the same selected palette; native onTabSelected is the commit path. The recognizer is hosted in a local GestureHandlerRootView and the same dependencies/code are included in release. UI/type/gesture/layout tests and the Tailscale bundle compile pass. Confirm native event delivery and actual bar alignment on the phone before declaring either resolved.
+
+Dependency lock was generated in an isolated manifest-only workspace using pnpm 9.15.9; the shared preview node_modules tree was not reinstalled. Official package tarballs were integrity-checked when materializing missing preview dependencies. Native TabBar/foreground changes remain uncommitted and unbuilt.
+
+
+## Put glyphs inside native tab items instead of an external overlay
+
+User correctly identified that icons were still outside the native bar. Remove the SwiftUI symbol overlay, custom selected-color calculation and manual/RN/GestureHandler preselection path from IOSVerticalTabBar. Each native Tabs.Screen now has its own nonempty templateSource icon. UIKit owns glyph position, selection tint and native drag highlight together with the background. The empty placeholder icon is removed. The three glyph silhouettes were retained as transparent alpha templates from user-provided device screenshots and pre-rotated counter-clockwise; the rotated native bar displays them upright. No runtime image generation or analysis is introduced. Source masks, 1x/2x/3x images and a reproducible generator are included with provenance.
+
+Remove the unused react-native-gesture-handler dependency and regenerate the lock in the isolated workspace. Existing side/cutout geometry and portrait native appearance are retained. Tests decode the generated PNGs using Node built-ins, verify visible alpha and inverse rotation, and verify that all three actual native items own distinct image sources and the chosen theme tint. They also assert the absence of external glyph/hover layers. Mobile TypeScript passes. Confirmed Tailscale 8084 serves the native image assets and no vertical-tab-upright-symbols overlay; reload returned HTTP 200. Physical native-bar sizing still requires device review; no commit/push/build.
+
+
+## Increase native item occupancy without scaling the glyphs
+
+User reported that the native items are vertically crowded. The template image canvas was 24x24 points, leaving the native horizontal bar to size content from very small items before rotation. Regenerate each image as 44x24 points with 10 pt transparent padding on both sides of the existing 24-point glyph canvas. After the parent rotates, that padding becomes vertical space; the glyph pixels themselves are unchanged. No outer icon overlay, fake selected layer or manual drag coloring is restored.
+
+PNG tests verify 1x/2x/3x canvas sizes, transparent added margins and byte-exact preservation of the 3x glyph alpha after inverse rotation. TypeScript passes. Confirmed all three assets in the live Tailscale bundle report width 44 / height 24 and reload returned HTTP 200. An attempt to read actual device layout through the inspector did not obtain measurements before the device disconnected; no claim of measured native floating-pill height is made. Temporary diagnostic global removed. Physical spacing remains pending user review; no commit/push/build.
+
+
+## Remove child-inset feedback that shrinks the native controller
+
+User reported no visible height change after wider icon canvases. Do not treat image dimensions as verification of the floating bar's physical length. Remove SafeAreaListener/reportedInsets from IOSVerticalTabBar: the child page's already-adjusted content insets must not overwrite the enclosing controller's device inset reservation. Size the controller from the parent screen insets and explicitly pass pixel width/height with flex:0 to Tabs.Host, preserving 140 points after the reserved horizontal insets.
+
+Tests now assert that child pages have no size-changing callback and cover parent left/right insets 0/44/59/62 and bottom 0/21/34. TypeScript and native-item asset tests pass. Live Tailscale bundle was checked for explicit controller dimensions and absence of the shrinking feedback; reload returned HTTP 200. Inspector briefly connected but did not yield reliable device layout data before disconnection, so the native floating-pill bounds remain unverified. No commit/push/build.
+
+
+## Reduce the working native side-bar length
+
+User confirmed the height fix took effect but found the bar too tall. Reduce the visible layout length from 140 to 120 points using a shared NATIVE_SIDE_TAB_LENGTH constant for the controller width, rotated stage and outer frame. Recompute rotation offsets from that length. Keep the dock's bottom anchor, width, glyph pixels, native backgrounds and selection handling unchanged. Native item/layout regression checks pass; reduced-height preview awaits user confirmation.
+
+
+## Match old visible bounds instead of equating host length with pill length
+
+The user supplied the still-too-long native result and the approved old rail. Both images are 2774x1280. The cropped reference pill is approximately 417 px high, the new pill approximately 484 px, with its bottom about 63 px lower. Relative to the old 140 pt rail this is about 163 pt visible height and 21 pt excessive bottom extension. The previous claim that changing the host constant to 120 had shortened the visible pill was not established and is withdrawn.
+
+Restore the outer visible footprint to the old 140 pt so the dock's bottom anchor and center match the reference. In the native controller compensation, subtract the already-reserved bottom-safe strip from each side clearance before extending the long axis. On the 59/59/21 case this changes controller width from 238 to 216 and leading offset from -59 to -38; the visible outer frame changes from 120 to 140, lifting its center by 10 pt at the fixed bottom anchor. This candidate is calibrated to the measured reference/current difference, not a claim of access to private UIKit floating-pill bounds. Template glyph sizes, native item ownership, theme and interaction remain unchanged. Regression coverage includes side insets smaller than the bottom inset and does not allow negative reserves. Physical appearance still awaits verification; no commit/push/build.
+
+
+## Center native item glyphs by removing invisible titles
+
+Device feedback showed every glyph shifted toward the top of its segment. The native items still had a thin-space title from the earlier placeholder experiment. Remove the title prop entirely, so react-native-screens passes isTitleUndefined and UIKit receives a nil title. A whitespace title still participates in inline icon/title layout; after the 90-degree rotation that reserved space displaces the icon vertically. Named accessibility labels remain. Controller geometry, glyph assets, native background and tint are unchanged. Regression checks require undefined titles for all items. Device centering still awaits confirmation; no commit/push/build.
+
+
+## Final optical centering adjustment
+
+User reported a small remaining center offset after removing titles. Measured the selected region and blue glyph in codex-clipboard-9f241582-2d41-40fc-aaa0-53e1cca56e89.jpg: glyph center is approximately 8.5 screenshot pixels below the selection center (about 2.85 pt), with only -0.5 px horizontal difference. Move the template glyph 3 pt toward the native horizontal leading edge before the bar's clockwise rotation, yielding a 3 pt upward adjustment on screen. The 44x24 item canvas, glyph scale, native hit targets, whole-bar bounds and theme remain unchanged. Generator padding becomes 7/13 instead of 10/10; PNG regression checks retain exact source glyph alpha and enforce the new offset at every scale. No commit/push/build.
+
+
+## Resume after rotating while backgrounded
+
+User reproduced 1–3 seconds of inconsistent orientation when leaving in portrait and returning in landscape, or the reverse. IOSPlayer always preferred the last surfaceSize over current window metrics; it never invalidated that measured size for background/foreground changes. MobileObjectScene also pinned Canvas to the previous JS viewport width/height.
+
+Replace that cache with usePlayerSurfaceLayout and a revision-guarded layout model. Leaving active clears the old measurement; returning reads current Dimensions and schedules a fresh native root measurement on the next frame, even if onLayout does not fire. Window changes invalidate old pending measurements. onLayout only requests a fresh measurement rather than consuming potentially queued event sizes. Same-revision live native measurements may supersede delayed Dimensions events. Foreground rotation retains the previous measured-surface policy until the native root changes. No fixed delays, fade masks, navigation remounts or audio changes.
+
+Gate the space scene's active rendering on current layout readiness and let Canvas flex with its native parent; keep the existing Canvas/camera/asset state mounted. Tests cover both background rotation directions, same-orientation return, delayed Dimensions, stale measurement callbacks, ignored background measurements, coalesced frame reads and unmount cleanup. Existing UI, drawable, cutout and playback-polling regressions plus TypeScript pass. Tailscale bundle contains the fix and reload returned HTTP 200. Device validation of the reported transition is pending; no commit/push/build. This addresses app layout synchronization, not the OS's app-switcher snapshot animation.
+
+
+## 2026-10-18: correct the resume regression and tab-state feedback
+
+User reported worse transitions with duplicate/mismatched headers, page content and selected tabs. The prior recovery patch was incomplete: it immediately cleared measured geometry on inactive/active transitions, then allowed a live read with the old orientation to replace the newly selected window orientation. It also used measure(), whose installed RN renderer implementation includes transforms. Native tab callbacks were unconditionally routed to the app even when emitted for implicit or programmatic selection, allowing the secondary controller's initialization to change the actual page.
+
+Keep a committed display size while inactive, record window changes without reflowing the snapshot, and accept two matching untransformed native layout reads on resume before committing one new display size. Prefer Fabric offsetWidth/offsetHeight; use measureLayout relative to the same view as a transform-free compatibility fallback. Never call measure() for presentation sizing. Reject old epochs and out-of-order reads; retain normal foreground resize behavior. Retries are bounded animation-frame reads, not fixed waits or fade masks. Freeze the visible cutout-side choice until layout readiness returns.
+
+Both native tab controllers now acknowledge monotonic provenance but only active, user-origin events may invoke app navigation. Implicit/programmatic acknowledgements and stale events cannot select a different page. Tests cover the failing old/new/old sequence, frozen inactive geometry, transform-free read APIs, reversed callback order, same/opposite-orientation resumes and initialization/sync events that previously fed back into app state. Existing UI, native-icon, drawable and playback-polling checks plus TypeScript pass. Live Tailscale bundle verified and full reload requested (HTTP 200). Device validation remains pending. No commit/push/build and no change to audio or the approved side-bar appearance.
+
+
+## Foreground rotation and correct preview reload transport
+
+User accepted background restoration but reported that switching inside the app still failed; this turn explicitly interpreted that as foreground portrait/landscape rotation. Extend the existing stable-layout handoff to active orientation changes regardless of event order (Dimensions first or root layout first). Set settling and invalidate layout readiness on that transition so the established cutout-side freeze and scene-render gate also apply. Same-orientation normal resizing stays on its previous path. Regression checks cover both directions, native-layout-first ordering and quickly reversing rotation while rejecting stale reads. Background-resume tests remain passing. No tab visual/selection behavior was changed in this turn.
+
+Critical correction: POST /reload on this Expo CLI returns an HTML fallback page with HTTP 200; it does NOT prove or trigger a full native reload. Earlier notes that inferred reload from that HTTP status were incorrect. Hot Refresh can preserve the layout controller stored in useRef, so subsequent tests may still execute old controller logic without a real reload. Use the installed CLI's actual local WebSocket message protocol instead: connect to ws://127.0.0.1:8084/message, request {version:2,id:"before",target:"server",method:"getpeers"}, then broadcast {version:2,method:"reload"}. The intended backend/local-client route validates local socket/origin; no security setting is changed. This turn found two connected preview clients and received Metro's reload broadcast echo. The socket IDs remained unchanged afterward, so this confirms broadcast, not device reload completion. Do not reuse POST /reload as a verification method.
+
+Served bundle contains the foreground rotation update; TypeScript and both resume/foreground regression scenarios pass. No commit/push/build. User device confirmation of foreground rotation is pending.
+
+## 2026-10-18: tab switching (user clarification; not device rotation)
+
+The user clarified that the remaining animation problem occurs when selecting tabs. Found a selection-dependent structural change: the shared Tabs.Host used to sit beneath a conditional outer header, and the outer safe-area edges changed to [] for the library only. Library gutters also depended on whether the library was currently selected. During native tab transitions this resized the whole host and changed the incoming/outgoing page geometry.
+
+Move playback/space headers into their own native tab pages, with stable per-page top/side safe areas. The shared UIKit host now always occupies the same outer safe-area envelope. The library retains its native navigation header and its existing gutters even while another tab is selected. Header titles/colors are derived from the owning page index. Compatibility and Android paths retain their external header. Keep the accepted background-resume handling, native side-bar icons/geometry and native selection semantics unchanged.
+
+Added regression coverage for repeated 0/1/2/1/0 selections in portrait and both side-bar positions, asserting stable host/page/header geometry. Updated existing native viewport assertions for the page-owned safe-area wrapper. Native-tab, mobile UI, library header, surface recovery, vertical native bar, side dock/gesture/cutout checks and TypeScript pass. Served Tailscale development bundle contains the change. Production minified bundle compiles and excludes the three preview fixture markers. Metro getpeers returned one iOS-role peer; the proper WebSocket reload broadcast was echoed. No inspector target was connected, so no on-device animation validation is claimed. Keep this preview pending user review; no commit/push/build in this turn.
+
+## 2026-10-18: accepted UI release
+
+User confirmed tab switching is now acceptable and authorized committing all accepted UI work and building iOS. The approved native side tabs, theme/drag colors, cutout-aware dock placement, stable background/foreground layout handling and page-owned tab headers are the release UI reference. Existing preview/release parity contract remains in force; preview fixtures stay development-only. Supplementary native-page/background/artwork/theme/playback/queue/session/drawable/head-tracking/resolver/diagnostics checks all pass. The unrelated offline Atmos probe edit remains outside this UI release commit.

@@ -16,7 +16,7 @@ console.log('Side rail: taps, hold-and-slide both ways, early scrubbing, outside
 // Exercise the component's responder handlers as well as its pure state model.
 // In particular, page/window coordinates intentionally disagree with local
 // coordinates here, as can happen inside native tab screen roots.
-const component=await build({entryPoints:['apps/mobile/src/SideNavigationRail.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','@expo/ui/swift-ui','@expo/ui/swift-ui/modifiers']});
+const component=await build({entryPoints:['apps/mobile/src/SideNavigationRail.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','@expo/ui/swift-ui','@expo/ui/swift-ui/modifiers','react-native-screens','react-native-safe-area-context','*.png']});
 const events=[],highlights=[],effects=[],animationValues=[],animationCalls=[];
 class Value { constructor(value){this.value=value;animationValues.push(this);} setValue(value){this.value=value;} stopAnimation(){} }
 const animated={Value,View:"AnimatedView",spring:(value,config)=>({start(){assert.equal(config.useNativeDriver,true);animationCalls.push(config);value.setValue(config.toValue);}}),parallel:animations=>({start(){animations.forEach(a=>a.start());}})};
@@ -26,9 +26,9 @@ const previous=globalThis.expo;
 globalThis.expo={modules:{ExpoUI:{}},getViewConfig:(_module,name)=>['HostView','VStackView','ImageView'].includes(name)};
 const module={exports:{}};
 const modifiers=new Proxy({},{get:(_target,name)=>(...args)=>({name,args})});
-const mockRequire=name=>name==='react'?react:name==='react-native'?native:name.endsWith('/modifiers')?modifiers:{Host:'NativeHost',VStack:'NativeStack',Image:'NativeImage'};
+const mockRequire=name=>name==='react-native-safe-area-context'?{}:name==='react'?react:name==='react-native'?native:name.endsWith('/modifiers')?modifiers:{Host:'NativeHost',VStack:'NativeStack',Image:'NativeImage'};
 try {new Function('require','module','exports','__DEV__','setTimeout','clearTimeout',component.outputFiles[0].text)(mockRequire,module,module.exports,false,()=>1,()=>{});}finally{globalThis.expo=previous;}
-const tree=module.exports.SideNavigationRail({selected:0,onChange:index=>events.push(index),accent:'#7799CC',dark:true,renderIcon:()=>null});
+const tree=module.exports.CustomSideNavigationRail({selected:0,onChange:index=>events.push(index),accent:'#7799CC',dark:true,renderIcon:()=>null});
 const plane=tree.props.children.at(-1);
 assert.equal(plane.props.pointerEvents,'auto');assert.equal(plane.props.collapsable,false);assert.equal(plane.props.style[1].zIndex,2);
 const h=plane.props;assert.equal(h.onStartShouldSetPanResponder(),true);
@@ -53,9 +53,43 @@ assert.equal(sideRailIndicatorOffset(-100),0);assert.equal(sideRailIndicatorOffs
 g=createSideRailGesture();g.begin(p(110),0);assert.equal(g.move({x:90,y:-30},100),0);assert.equal(g.end({x:90,y:-30},150),0,'diagonal endpoint overshoot should still choose the endpoint');
 console.log('Glass feedback: native-driven lift/settle, continuous position and bounded forgiving tracking passed.');
 
+const appearanceBundle=await build({entryPoints:['apps/mobile/src/side-navigation-appearance.ts'],bundle:true,platform:'node',format:'esm',write:false});
+const {sideNavigationAppearance}=await import('data:text/javascript;base64,'+Buffer.from(appearanceBundle.outputFiles[0].text).toString('base64'));
+assert.equal(sideNavigationAppearance('#EE5577',true).selectedIcon,'#EE5577');
+assert.equal(sideNavigationAppearance('invalid',false).selectedIcon,'invalid');
+for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) {
+  const light=sideNavigationAppearance(accent,false,'#f2f2f7'),dark=sideNavigationAppearance(accent,true,'#303034');
+  const darkSurface=sideNavigationAppearance(accent,false,'#303034');
+  const channels=hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  assert.equal(light.selectedIcon,accent,'light library retains its normal theme accent');
+  assert.equal(light.selectionFill,'rgba(118,118,128,0.18)','light library retains subtle selected fill');
+  assert.equal(sideNavigationAppearance(accent,false,'#eeddaa').selectedIcon,accent,'bright artwork does not deepen the theme');
+  assert.equal(sideNavigationAppearance(accent,false,'transparent').selectedIcon,accent,'unknown surface does not force the dark treatment');
+  assert(channels(darkSurface.selectedIcon).every((v,i)=>v<channels(accent)[i]),'only light mode over a dark surface deepens the theme');
+  assert.equal(dark.selectedIcon,accent,'dark appearance retains the bright accent');
+  assert.equal(light.inactiveIcon,'#000000');assert.equal(dark.inactiveIcon,'#FFFFFF');
+}
+// Actual native metadata and the GL sampler return RGB strings. Cover hex/RGB
+// equivalence across both appearances and all five theme colors.
+for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(const dark of [false,true]) {
+ for(const [hex,rgb] of [['#3f4e3f','rgb(63,78,63)'],['#303034','rgb(48,48,52)'],['#f2f2f7','rgb(242,242,247)']]) {
+  assert.deepEqual(sideNavigationAppearance(accent,dark,rgb),sideNavigationAppearance(accent,dark,hex));
+ }
+ assert.deepEqual(sideNavigationAppearance(accent,dark,'rgb(63, 78, 63)'),sideNavigationAppearance(accent,dark,'#3f4e3f'));
+}
+assert.notEqual(sideNavigationAppearance('#7799CC',false,'rgb(63,78,63)').selectedIcon,'#7799CC');
+assert.equal(sideNavigationAppearance('#7799CC',false,'rgb(63,78,63)').selectionFill,'rgba(0,0,0,0.34)');
+assert.equal(sideNavigationAppearance('#7799CC',false,'rgb(999,78,63)').selectedIcon,'#7799CC');
+const {readFileSync}=await import('node:fs');
+const previewSource=readFileSync('apps/mobile/dev-preview/fixture.ts','utf8');
+const previewColor=previewSource.match(/artworkColor: "([^"]+)"/)[1];
+const cacheBundle=await build({entryPoints:['apps/mobile/src/artwork-color-cache.ts'],bundle:true,platform:'node',format:'esm',write:false});
+const {validArtworkColor}=await import('data:text/javascript;base64,'+Buffer.from(cacheBundle.outputFiles[0].text).toString('base64'));
+assert(validArtworkColor(previewColor),'preview metadata must use the production artwork-color format');
+assert.equal(sideNavigationAppearance('#7799CC',false,previewColor).selectionFill,'rgba(0,0,0,0.34)');
 const nodes=value=>!value||typeof value!=='object'?[]:Array.isArray(value)?value.flatMap(nodes):[value,...nodes(value.props?.children)];
-for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(const dark of [false,true]) for(const selected of [0,1,2]) {
-  const tree=module.exports.SideNavigationRail({selected,onChange(){},accent,dark,renderIcon:()=>null});
+for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(const dark of [false,true]) for(const selected of [0,1,2]) for(const backgroundColor of ['#f2f2f7','#303034','#eeddaa','rgb(63,78,63)','rgb(242,242,247)']) {
+  const tree=module.exports.CustomSideNavigationRail({selected,onChange(){},accent,dark,backgroundColor,renderIcon:()=>null});
   const all=nodes(tree);const hosts=all.filter(n=>n.type==='NativeHost');
   assert.equal(hosts.length,2);
   assert.equal(hosts[0].props.colorScheme,undefined,"capsule inherits system appearance like the upper action buttons");
@@ -65,15 +99,17 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   assert.equal(hosts.filter(h=>h.props.seedColor===accent).length,1,"only the icon host needs the theme tint");
   const iconContainers=all.filter(n=>n.type==='NativeStack'&&n.props.modifiers?.some(m=>m.name==='foregroundColor'));
   assert.equal(iconContainers.length,3);
-  for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#FFFFFF':'#000000');
+  for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?sideNavigationAppearance(accent,dark,backgroundColor).selectedIcon:dark?'#FFFFFF':'#000000');
   const glass=all.flatMap(n=>n.props?.modifiers??[]).filter(m=>m.name==='glassEffect');
   assert.equal(glass.length,1,'do not restore the moving native-glass layer that turns black on-device');
-  const neutral=all.find(n=>n.props?.testID==='side-tab-neutral-selection');
-  assert.equal(neutral.props.style.backgroundColor,dark?'rgba(255,255,255,0.14)':'rgba(118,118,128,0.18)');
+  const neutral=all.find(n=>n.props?.testID==='side-tab-glass-selection');
+  assert.equal(neutral.props.collapsable,false);
+  assert.equal(neutral.props.style.backgroundColor,dark?'rgba(255,255,255,0.14)':['#303034','rgb(63,78,63)'].includes(backgroundColor)?'rgba(0,0,0,0.34)':'rgba(118,118,128,0.18)');
   const bar=all.find(n=>n.props?.testID==='side-tab-glass-bar');
   assert.equal(bar.props.children.at(-1).props.testID,'side-tab-symbols','native material must never cover the symbols');
-  assert.equal(bar.props.children.at(-1).props.style[1].zIndex,1);
+  assert.equal(bar.props.children.at(-1).props.style[1].zIndex,2);
   assert.equal(bar.props.children[1].props.testID,'side-tab-glass-selection');
+  assert.equal(bar.props.children[1].props.style.zIndex,1,'selection stays above the native backdrop and below symbols');
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.variant,'regular','use native regular glass with background blur');
 }

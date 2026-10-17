@@ -72,7 +72,7 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 // The home screen must not clip the native TabView at the bottom safe area
 // or show a different-color native page between the top/bottom backgrounds.
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
-assert.match(ui, /edges=\{nativeLibraryHeaderActive \? \[\] : hasSystemIOSTabs && Platform\.OS === "ios"/);
+assert.match(ui, /edges=\{hasUIKitIOSTabs \? \[\] : hasSystemIOSTabs && Platform\.OS === "ios"/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
 assert.match(ui, /backgroundColor="transparent" pageBackgroundColors=\{\["transparent", c.bg, c.bg\]\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
@@ -88,8 +88,8 @@ assert.match(tabs, /<VStack spacing=\{0\}>/);
 const uiKitTabs = readFileSync('apps/mobile/src/IOSUIKitTabs.tsx', 'utf8');
 assert.match(tabs, /if \(hasUIKitIOSTabs\) return <IOSUIKitTabs/);
 assert.match(uiKitTabs, /UIManager.hasViewManagerConfig\(name\)/);
-assert.match(uiKitTabs, /tabBarBackgroundColor: "transparent"/);
-assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
+assert.match(readFileSync("apps/mobile/src/ios-tab-appearance.ts","utf8"), /tabBarBackgroundColor: "transparent"/);
+assert.match(readFileSync("apps/mobile/src/ios-tab-appearance.ts","utf8"), /tabBarBlurEffect: "systemDefault"/);
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
@@ -108,10 +108,11 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
     cloneElement: (value, props) => ({ ...value, props: { ...value.props, ...props } }),
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
     useState: () => [stateSlot++ === 1 ? headerHeight : 0, () => {}],
+    useRef: value => ({current:value}),
   };
   const mockRequire = name => {
     if (name === 'react') return mockReact;
-    if (name === 'react-native') return { Platform: { OS: platform, Version: version }, UIManager: { hasViewManagerConfig: name => {
+    if (name === 'react-native') return { AppState:{currentState:'active'}, Platform: { OS: platform, Version: version }, UIManager: { hasViewManagerConfig: name => {
       const known = ["RNSTabsHostIOS", "RNSTabsScreenIOS", "RNSTabsBottomAccessory", "RNSTabsBottomAccessoryContent"];
       if (!known.includes(name)) throw new Error("Exception in HostFunction: unknown native component " + name);
       return available && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable);
@@ -132,7 +133,7 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
 function pageViewport(screen) {
   const page=screen.props.children[0];
   const provider=page.type==='NativePage'?page.props.children[0]:page;
-  return provider.props.children[0];
+  return provider.props.children[0].props.children[1];
 }
 const nativeAdapter = loadNativeTabs('ios', true);
 const selections = [];
@@ -147,8 +148,12 @@ for (const screen of tabHost.props.children[0]) {
   assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? ["left","right"] : ["bottom"]);
   assert.equal(safeViewport.props.style.backgroundColor, "transparent");
 }
-for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1 } });
+for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1, actionOrigin: "user" } });
 assert.deepEqual(selections, [1]);
+for(const actionOrigin of ['implicit','programmatic-js','programmatic-native'])tabHost.props.onTabSelected({nativeEvent:{selectedScreenKey:'2',provenance:2,actionOrigin}});
+assert.deepEqual(selections,[1],'rotation/programmatic acknowledgements do not route the parent');
+tabHost.props.onTabSelected({nativeEvent:{selectedScreenKey:'2',provenance:1,actionOrigin:'user'}});assert.deepEqual(selections,[1]);
+tabHost.props.onTabSelected({nativeEvent:{selectedScreenKey:'2',provenance:3,actionOrigin:'user'}});assert.deepEqual(selections,[1,2]);
 assert.equal(loadNativeTabs('ios', false).nativeImports, 0);
 assert.equal(loadNativeTabs('android', true).nativeImports, 0);
 console.log('Native tabs adapter checks passed: transparent bar appearances, controlled selection, guarded native imports');
@@ -465,7 +470,7 @@ assert.doesNotMatch(ui, /artworkTransition|transitionArtwork/);
 assert.match(ui, /tintColor: fadeColor/);
 
 assert.match(ui, /p.busy \|\| p.preparingAudio \? "正在准备音频…"/);
-assert.match(ui, /label\(homeTitle, false, \[s.pageTitle, \{ color: immersiveHome \? pc.ink : c.ink \}\]\)/);
+assert.match(ui, /s.pageTitle, \{ color: index === 0 \? pc.ink : c.ink \}/);
 assert.doesNotMatch(homePages, /正在准备音频/);
 assert.match(ui, /PlatformColor\("label"\), fontSize: 13, fontWeight: "600"/);
 
@@ -632,3 +637,15 @@ for (const bottomInset of [0,21,34]) for (const sideBarPosition of ['left','righ
   assert.equal(content.props.children[0].props.contentContainerStyle.at(-1).paddingBottom,76+bottomInset);
 }
 assert.doesNotMatch(uiKitTabs,/library-bottom-safe-area-cover/);
+
+for(const gap of [8,20]) {
+ const tree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,rightContentGap:gap});
+ const library=pageViewport(tree.props.children[0].props.children[0][1]);
+ assert.equal(library.props.children[0].props.children[1].props.style.marginRight,48+gap-18,'mini-player follows the shared cutout-side gap');
+}
+
+for(const offset of [0,-31.5]) {
+ const tree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,sideBarPosition:'left',leftContentOffset:offset});
+ const library=pageViewport(tree.props.children[0].props.children[0][1]);
+ assert.equal(library.props.children[0].props.children[1].props.style.marginLeft,38+offset);
+}
