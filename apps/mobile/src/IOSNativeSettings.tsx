@@ -67,7 +67,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   if (nativeScreens) {
     const { ScreenStack, ScreenStackItem } = nativeScreens;
     const { Host } = swiftUI;
-    if (__DEV__) console.info("[SDA UI] settings navigation: UIKit system header");
+    if (__DEV__) console.info("[SDA UI] settings navigation:", landscape ? "unified landscape header and form" : "UIKit system header");
     return <ScreenStack style={{ flex: 1 }}>
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
@@ -76,20 +76,19 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
         {children}
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
-        stackAnimation={landscape ? "simple_push" : "default"}
         onDismissed={() => onSettingsChange(false)}
-        // Keep the centered native title/back button, without a large title.
+        // Landscape uses the existing single-host header/Form so UIKit never
+        // transitions a separate header above independently moving content.
         headerConfig={{
-          title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-          largeTitle: false, translucent: !landscape, hideShadow: true,
-          color: PlatformColor("systemBlue"), backgroundColor: landscape ? PlatformColor("systemGroupedBackground") : "transparent",
+          hidden: landscape, title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
+          largeTitle: false, translucent: true, hideShadow: true,
+          color: PlatformColor("systemBlue"), backgroundColor: "transparent",
           experimental_userInterfaceStyle: theme }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
-        {/* In landscape the stack reserves the header's space before the Form.
-            Keep the Host's normal side/bottom safe-area handling. */}
-        <Host style={{ flex: 1 }} colorScheme={theme}>
-          <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
-        </Host>
+        {landscape ? <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} /> :
+          <Host style={{ flex: 1 }} colorScheme={theme}>
+            <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
+          </Host>}
       </ScreenStackItem>}
     </ScreenStack>;
   }
@@ -98,7 +97,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   </Modal></>;
 }
 
-// Compatibility header for environments without the UIKit screen stack.
+// A single native surface for landscape settings and older navigation hosts.
 // Keep the compatibility navigation row full-width with a balanced trailing
 // spacer, so the title stays centered and the back button stays at the left.
 function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
@@ -108,20 +107,20 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Host, VStack, HStack, Button, Text } = swiftUI;
-  const { frame, padding, font, buttonStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   // One full-screen host owns the safe area. Only the background extends
   // behind system chrome; controls retain SwiftUI's safe-area positioning.
   // Splitting this into RN SafeAreaView + two hosts creates visible edge bands.
   return <View style={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }}>
     <Host style={{ flex: 1 }} colorScheme={theme}>
       <VStack alignment="leading" spacing={0} modifiers={[
-        frame({ width, alignment: "leading" }),
+        frame({ maxWidth: width, alignment: "leading" }),
         background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
       ]}>
-        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ width, height: 52 })]}>
+        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width, height: 52 })]}>
           <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
-            buttonStyle(settingsButtonStyle), tint(appTheme.accent),
-            font({ textStyle: "body" }), frame({ minHeight: 44 }),
+            buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
+            font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
             frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
           ]} />
           <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>

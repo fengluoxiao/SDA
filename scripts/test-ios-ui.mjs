@@ -55,9 +55,9 @@ console.log('iOS UI regression checks passed: navigation, status, original 360RA
 assert.match(settings, /<IOSSettingsCompatibilityPage player=\{player\}/);
 assert.match(settings, /VStack alignment="leading"/);
 assert.match(settings, /font\(\{ textStyle: "headline", weight: "semibold" \}\)/);
-assert.match(settings, /frame\(\{ width, alignment: "leading" \}\)/);
+assert.match(settings, /frame\(\{ maxWidth: width, alignment: "leading" \}\)/);
 assert.match(settings, /PlatformColor\("systemGroupedBackground"\)/);
-assert.match(settings, /frame\(\{ minHeight: 44 \}\)/);
+assert.match(settings, /frame\(\{ (?:width: 44, )?minHeight: 44 \}\)/);
 assert.doesNotMatch(settings, /<HStack><Button label="返回"/);
 
 // Settings backgrounds extend to the screen edge; content keeps native insets.
@@ -179,8 +179,8 @@ assert.match(uiKitStack, /largeTitle: false/);
 assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
 console.log('Settings fullscreen checks passed: mounted home, inline settings title');
 
-assert.match(uiKitStack, /translucent: !landscape/);
-assert.match(uiKitStack, /backgroundColor: landscape \? PlatformColor\("systemGroupedBackground"\) : "transparent"/);
+assert.match(uiKitStack, /translucent: true/);
+assert.match(uiKitStack, /backgroundColor: "transparent"/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
 assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
 
@@ -202,7 +202,8 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
-    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text'].map(name => [name,name])) };
+    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','HStack','Button'].map(name => [name,name])) };
+    if (name === '@expo/ui/swift-ui/modifiers') return new Proxy({}, {get: (_,name)=>(...args)=>({name,args})});
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
     throw new Error('Unexpected settings test dependency: ' + name);
   };
@@ -564,12 +565,23 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
   const adapter=settingsAdapter(true,dimensions);
   const navigation=adapter.IOSSettingsNavigation({children:'approved-home',settings:true,onSettingsChange(){},title:'正在播放',player:{},theme:'light'});
   const screen=navigation.props.children[1];const landscape=dimensions.width>dimensions.height;
-  assert.equal(screen.props.stackAnimation,landscape?'simple_push':'default');
-  assert.equal(screen.props.headerConfig.translucent,!landscape);
-  assert.equal(screen.props.headerConfig.backgroundColor,landscape?'systemGroupedBackground':'transparent');
-  // The first child is a JSX comment slot; find the actual Host.
-  const host=screen.props.children.find(child=>child?.type==='Host');
-  assert.equal(host.props.ignoreSafeArea,undefined,'keep side/bottom safety on the settings Form');
+  assert.equal(screen.props.stackAnimation,undefined,'no special animation that splits native header and content');
+  assert.equal(screen.props.headerConfig.hidden,landscape);
+  assert.equal(screen.props.headerConfig.translucent,true);
+  assert.equal(screen.props.headerConfig.backgroundColor,'transparent');
+  if (landscape) {
+    const page=screen.props.children[0];
+    assert.equal(typeof page.type,'function');
+    const surface=page.type(page.props);const host=surface.props.children[0];
+    assert.equal(host.type,'Host');
+    assert.equal(host.props.ignoreSafeArea,undefined,'one Host preserves device safe areas');
+    const column=host.props.children[0];assert.equal(column.type,'VStack');
+    assert.equal(column.props.children[0].type,'HStack');
+    assert.equal(typeof column.props.children[1].type,'function','Form shares the header Host');
+    const headerFrame=column.props.children[0].props.modifiers.find(m=>m.name==='frame');
+    assert.equal(headerFrame.args[0].maxWidth,dimensions.width);
+    assert.equal(headerFrame.args[0].width,undefined,'do not force full window width inside safe area');
+  } else assert.equal(screen.props.children[0].type,'Host');
 }
 for(const [adapter,props,expected] of [
   [nativeAdapter,accessoryProps,[]],
@@ -581,4 +593,4 @@ for(const [adapter,props,expected] of [
   const viewport=root.props.children[0].props.children[0][1].props.children[0].props.children[0];
   assert.deepEqual(viewport.props.edges,expected);
 }
-console.log('Landscape settings: stable header ownership; library underlays native bars while side/fallback layouts keep bottom protection.');
+console.log('Landscape settings: single native surface for header and form; library underlays native bars while side/fallback layouts keep bottom protection.');
