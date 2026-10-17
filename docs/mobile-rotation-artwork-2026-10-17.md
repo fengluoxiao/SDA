@@ -146,3 +146,8 @@ The next device screenshot disproved the previous landscape simple_push/nontrans
 ## Center the right-side controls in their reserved lane
 
 User requested equal blank space on both sides of the right-side actions/rail, while preserving approved left placement. Both docks now share SideNavigationDock. Right content ends at rightSafeInset + 48 + 8 pt from the screen; centering a 48 pt rail leaves (rightSafeInset + 8)/2 pt on each side. This moves the right dock inward according to actual device insets instead of another fixed offset. Upper actions use the same centered lane. Left remains exactly max(14, leftInset)+6, with identical top/bottom spacing and content positions. Tests cover five safe-area values for both placements and assert left invariance.
+
+
+## Restore landscape scrolling header blur
+
+The unified landscape page fixed split transitions but its sequential VStack header kept all scrolling content below the title, losing the portrait header blur. When the already-bundled Expo ZStack view is available, use one native Host with a top-aligned ZStack: NativeSettingsForm behind, fixed 52 pt header above with SwiftUI bar material. The first section owns a 52 pt top inset which scrolls away, so initial controls remain visible and later rows pass beneath the material. No JS scroll tracking, separate header transition, new native manager or image blur is added. Older hosts without ZStack retain the sequential fallback. Portrait still uses the system navigation bar. Adapter checks verify ordering, material and initial inset; iPhone appearance still requires review.

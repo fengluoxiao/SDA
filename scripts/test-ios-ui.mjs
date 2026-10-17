@@ -152,10 +152,10 @@ assert.match(settings, /Number\(Platform.Version\) >= 26 \? "glass"/);
 assert.match(settings, /buttonStyle\(settingsButtonStyle\)/);
 assert.match(compatibilityPage, /<HStack spacing=\{0\}/);
 assert.match(compatibilityPage, /frame\(\{ width: 88, alignment: "leading" \}\)/);
-const nativeActions = settings.slice(settings.indexOf('<Section title="播放操作">'), settings.indexOf('<Section title="播放"'));
+const nativeActions = settings.slice(settings.indexOf('<Section title={topContentInset'), settings.indexOf('<Section title="播放"'));
 assert.match(nativeActions, /<HStack spacing=\{12\}>/);
 assert.equal((nativeActions.match(/<Button /g) || []).length, 2);
-assert.ok(settings.indexOf('<Section title="播放操作">') < settings.indexOf('<Section title="播放"'));
+assert.ok(settings.indexOf('<Section title={topContentInset') < settings.indexOf('<Section title="播放"'));
 assert.ok(ui.indexOf('<View style={s.settingsActions}>') < ui.indexOf('{heading("播放")}'));
 console.log('Settings layout checks passed: glass style, single-row navigation/actions, no redundant home controls');
 
@@ -202,7 +202,7 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
-    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','HStack','Button'].map(name => [name,name])) };
+    if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','ZStack','HStack','Button'].map(name => [name,name])) };
     if (name === '@expo/ui/swift-ui/modifiers') return new Proxy({}, {get: (_,name)=>(...args)=>({name,args})});
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
     throw new Error('Unexpected settings test dependency: ' + name);
@@ -572,13 +572,21 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
   if (landscape) {
     const page=screen.props.children[0];
     assert.equal(typeof page.type,'function');
-    const surface=page.type(page.props);const host=surface.props.children[0];
+    const previousExpo=globalThis.expo;
+    let surface;
+    try { globalThis.expo={getViewConfig:()=>true}; surface=page.type(page.props); }
+    finally { globalThis.expo=previousExpo; }
+    const host=surface.props.children[0];
     assert.equal(host.type,'Host');
     assert.equal(host.props.ignoreSafeArea,undefined,'one Host preserves device safe areas');
-    const column=host.props.children[0];assert.equal(column.type,'VStack');
-    assert.equal(column.props.children[0].type,'HStack');
-    assert.equal(typeof column.props.children[1].type,'function','Form shares the header Host');
-    const headerFrame=column.props.children[0].props.modifiers.find(m=>m.name==='frame');
+    const column=host.props.children[0];assert.equal(column.type,'ZStack');
+    assert.equal(column.props.alignment,'top');
+    assert.equal(typeof column.props.children[0].type,'function','Form shares the header Host and renders behind it');
+    assert.equal(column.props.children[0].props.topContentInset,52,'initial section clears the overlaid header');
+    const header=column.props.children[1];assert.equal(header.type,'HStack');
+    const material=header.props.modifiers.find(m=>m.name==='background');
+    assert.deepEqual(material.args[0],{type:'material',material:'bar'});
+    const headerFrame=header.props.modifiers.find(m=>m.name==='frame');
     assert.equal(headerFrame.args[0].maxWidth,dimensions.width);
     assert.equal(headerFrame.args[0].width,undefined,'do not force full window width inside safe area');
   } else assert.equal(screen.props.children[0].type,'Host');

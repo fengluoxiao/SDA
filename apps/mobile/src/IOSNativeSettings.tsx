@@ -106,39 +106,50 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   const appTheme = useAppTheme();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
-  const { Host, VStack, HStack, Button, Text } = swiftUI;
+  const { Host, VStack, ZStack, HStack, Button, Text } = swiftUI;
   const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  // One full-screen host owns the safe area. Only the background extends
-  // behind system chrome; controls retain SwiftUI's safe-area positioning.
-  // Splitting this into RN SafeAreaView + two hosts creates visible edge bands.
+  const overlayHeader = hasView("ZStackView");
+  const headerHeight = 52;
+  const surfaceModifiers = [
+    frame({ maxWidth: width, alignment: "leading" }),
+    background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
+  ];
+  const header = <HStack spacing={0} modifiers={[
+    padding({ horizontal: 16 }), frame({ maxWidth: width, height: headerHeight }),
+    ...(overlayHeader ? [background({ type: "material", material: "bar" })] : []),
+  ]}>
+    <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
+      buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
+      font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
+      frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
+    ]} />
+    <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>
+    <Text modifiers={[frame({ width: 88 }), accessibilityLabel("")]}>{""}</Text>
+  </HStack>;
+  // Header and Form stay in one native Host for a unified push transition.
+  // The native bar material samples the scrolling Form underneath it. Initial
+  // space belongs to the first section, so it scrolls away instead of clipping
+  // the entire viewport below the header. No JS scroll/frame tracking is needed.
   return <View style={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }}>
     <Host style={{ flex: 1 }} colorScheme={theme}>
-      <VStack alignment="leading" spacing={0} modifiers={[
-        frame({ maxWidth: width, alignment: "leading" }),
-        background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
-      ]}>
-        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width, height: 52 })]}>
-          <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
-            buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
-            font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
-            frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
-          ]} />
-          <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>
-          <Text modifiers={[frame({ width: 88 }), accessibilityLabel("")]}>{""}</Text>
-        </HStack>
+      {overlayHeader ? <ZStack alignment="top" modifiers={surfaceModifiers}>
+        <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} />
+        {header}
+      </ZStack> : <VStack alignment="leading" spacing={0} modifiers={surfaceModifiers}>
+        {header}
         <NativeSettingsForm player={player} onClose={onClose} />
-      </VStack>
+      </VStack>}
     </Host>
   </View>;
 }
 
-function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
+function NativeSettingsForm({ player: p, onClose, topContentInset = 0 }: { player: PlayerProps; onClose(): void; topContentInset?: number }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
-  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle, padding } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const audioDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
@@ -146,11 +157,12 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
     // The header owns the only title; the Form contains settings rows only.
     tint(appTheme.accent),
     scrollContentBackground("hidden"),
-    // No forced material or custom scroll-edge style: the native header/Form use
-    // the OS's default treatment, including the iOS 26 Liquid Glass edge effect.
+    // Portrait keeps its native navigation-bar treatment; landscape's material
+    // header overlays this same Form without a second opaque background layer.
     background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
   ]}>
-    <Section title="播放操作">
+    <Section title={topContentInset > 0 ? undefined : "播放操作"}
+      header={topContentInset > 0 ? <Text modifiers={[padding({ top: topContentInset })]}>播放操作</Text> : undefined}>
       <HStack spacing={12}>
         <Button label="重新播放" systemImage="arrow.counterclockwise" onPress={() => { onClose(); p.play(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.selectedUri)]} />
         <Button label="停止播放" systemImage="stop.fill" role="destructive" onPress={() => { onClose(); p.stop(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.playing)]} />
