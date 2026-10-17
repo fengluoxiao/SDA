@@ -50,5 +50,7 @@ export function iosLandscapeControlLayout(viewportHeight: number, blockHeight: n
   const spare = Math.max(0, viewportHeight - blockHeight);
   const topPadding = Math.min(24, spare);
   const scale = Math.min(1, Math.max(0, (spare - topPadding) / 118));
-  return { metadataGap: 44 * scale, transportGap: 42 * scale, volumeGap: 32 * scale, topPadding };
+  // Tighten both sides of the transport row without reallocating that space
+  // into another gap or reducing the buttons' touch height.
+  return { metadataGap: 44 * scale, transportGap: Math.max(0, 42 * scale - 4), volumeGap: Math.max(0, 32 * scale - 4), topPadding };
 }

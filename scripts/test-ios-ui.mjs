@@ -492,10 +492,6 @@ for (const viewport of [180, 220, 280, 350, 520]) {
     assert(Object.values(spacing).every(value => Number.isFinite(value) && value >= 0));
     const used = Object.values(spacing).reduce((sum, value) => sum + value, intrinsic);
     if (viewport >= intrinsic) assert(used <= viewport + 1e-8);
-    if (spacing.volumeGap > 0) {
-      assert(Math.abs(spacing.metadataGap / spacing.volumeGap - 44 / 32) < 1e-8);
-      assert(Math.abs(spacing.transportGap / spacing.volumeGap - 42 / 32) < 1e-8);
-    }
   }
 }
-console.log('Landscape control spacing preserves measured blocks and proportional gaps within the viewport.');
+console.log('Landscape control spacing preserves measured blocks and bounded gaps within the viewport.');
