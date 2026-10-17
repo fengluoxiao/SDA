@@ -7,7 +7,7 @@ export function uses360RaLowerLayer(codec?: string): boolean {
 
 export function formatAutoLayout(codec?: string): LayoutId | undefined {
   if (uses360RaLowerLayer(codec)) return "360RA-13";
-  if (["truehd", "eac3", "ac4", "iamf"].includes(codec ?? "")) return "7.1.4";
+  if (["truehd", "eac3", "ac4", "av3a", "iamf"].includes(codec ?? "")) return "7.1.4";
   return undefined;
 }
 /** ALAC upmix is an opt-in listening transform, not a container/codec claim. */

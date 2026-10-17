@@ -30,7 +30,7 @@ export default function PlaylistPanel({items,currentId,paused,onPlay,onRemove,on
     {items.length===0?<div className="playlist-empty"><ListMusic size={30}/><strong>还没有歌曲</strong><p>打开音频文件或添加文件夹，即可开始收听。</p></div>:<ol className="playlist-items">
       {items.map((item,index)=>{
         const current=item.id===currentId;
-        const extension=item.title.match(/\.(wav|m4a|mp4|mkv|flac|mp3|aac|ac4|ec3|eac3|ac3|ogg|opus|aiff|aif)$/i);
+        const extension=item.title.match(/\.(wav|m4a|mp4|mkv|flac|mp3|aac|ac4|av3a|ec3|eac3|ac3|ogg|opus|aiff|aif)$/i);
         const title=extension?item.title.slice(0,-extension[0].length):item.title;
         return <li key={item.id} ref={current?currentItemRef:undefined} className={current?"current":""} aria-current={current?"true":undefined}>
           <button className="playlist-select" onClick={()=>onPlay(item.id)} aria-label={`播放 ${item.title}`}>

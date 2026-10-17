@@ -991,7 +991,7 @@ export class SdaPlayer {
   }
 
   /** Play a File/Blob (browser) end-to-end. */
-  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto"): Promise<void> {
+  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto"): Promise<void> {
     if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
@@ -1077,7 +1077,7 @@ export class SdaPlayer {
   async prepareFileStream(
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
-    codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
+    codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto",
   ): Promise<void> {
     this.balanceAnalysisAbort.abort();
     const analysisAbort = this.balanceAnalysisAbort = new AbortController();
@@ -1092,7 +1092,7 @@ export class SdaPlayer {
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
     this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);

@@ -103,3 +103,8 @@ Rechecked public GitHub object/sample leads; no independently verifiable object-
 Resolved the old sample extraction without relying on the FFmpeg demuxer: reconstructed TS PID 257 payloads and stripped PES headers. sample1-pid257.av3a contains 482,304 bytes, 471 consecutive frames, all CRCs valid, no trailing bytes. Every frame is profile 0, channel config 8 (5.1.4), 48 kHz, 384 kbps; duration 10.048 seconds; zero independently coded objects. This supersedes the previous unknown status for the older sample.
 
 Three examined samples are now confirmed channel-only (5.1.4 / 5.1.4 / 7.1.4). Per the user's instruction to stop Audio Vivid if no object sample is found, Audio Vivid integration is stopped. Preserve research and fixtures for reference; do not add runtime support or imply object decoding has been validated.
+
+
+## Resumed integration with supplied file (2026-10-18)
+
+The user explicitly resumed Audio Vivid work and supplied a 7.1.4 channel-bed M4A. All 10,111 frames/CRCs and a full standalone PCM decode are now verified. The newer pure-Rust source decoder is integrated into the shared core and native/WASM host entry points; see `audiovivid-integration-2026-10-18.md` for scope and validation. This supersedes the earlier user-directed stop for channel-bed playback. Independent object/HOA routing is still not claimed.

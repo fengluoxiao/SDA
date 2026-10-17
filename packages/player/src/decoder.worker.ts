@@ -79,10 +79,10 @@ function postFrame(frame: DecodedFrameData): void {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
     const at=perf.endpoint?performance.now():null;
     loudnessMeter.push(frame.channels);
-    if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,frame.samplesPerChannel);
+    if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,(frame.channels[0]?.length ?? 0));
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
   }
-  perf.record("decode.output_audio",frame.codec,0,frame.samplesPerChannel/frame.sampleRate);
+  perf.record("decode.output_audio",frame.codec,0,(frame.channels[0]?.length ?? 0)/frame.sampleRate);
   if(perf.endpoint)perf.trace({type:"decodeTrace",sample:frame.samplePos,startedMs:perfDecodeStartMs,epoch,ids:frame.labels.map((label,i)=>label.startsWith("Obj_")?`obj:${label.slice(4)}`:`bed:${i}`)});
   post(
     { type: "frame", frame },
@@ -95,9 +95,9 @@ function drainFrames(): void {
   while (true) {
     const perfStart=perf.endpoint?performance.now():null;
     const frame = decoder.nextFrame();
-    if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?frame.samplesPerChannel/frame.sampleRate:0);
+    if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?(frame.channels[0]?.length ?? 0)/frame.sampleRate:0);
     if (!frame) break;
-    diagnostic.record('frame',{codec:frame.codec,sample:frame.samplePos,samples:frame.samplesPerChannel,rate:frame.sampleRate,channels:frame.labels.length,objects:frame.objectChannels.length,epoch});
+    diagnostic.record('frame',{codec:frame.codec,sample:frame.samplePos,samples:(frame.channels[0]?.length ?? 0),rate:frame.sampleRate,channels:frame.labels.length,objects:frame.objectChannels.length,epoch});
     acceptDecodedFrame(frame);
   }
   for (const message of decoder.drainErrors()) {
@@ -123,7 +123,7 @@ async function processDecodedFrames(): Promise<void> {
     const output = outputSampleRate && frame.sampleRate !== outputSampleRate
       ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
       : frame;
-    if(resampleStarted!==null)perf.record("decode.resample",frame.codec,performance.now()-resampleStarted,frame.samplesPerChannel);
+    if(resampleStarted!==null)perf.record("decode.resample",frame.codec,performance.now()-resampleStarted,(frame.channels[0]?.length ?? 0));
     if (output) {
       compactObjectEvents(output);
       frameBatcher.push(output);
@@ -229,9 +229,9 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
               decoder = new SdaDecoder("dts");
               decoderConfigurationError = null;
             }
-            if (t.codec === "ac-4") {
+            if (t.codec === "ac-4" || t.codec === "av3a") {
               decoder?.free();
-              decoder = new SdaDecoder("ac4");
+              decoder = new SdaDecoder(t.codec === "av3a" ? "av3a" : "ac4");
               decoderConfigurationError = null;
             }
             if (t.codec === "adm" || t.codec === "pcm") {

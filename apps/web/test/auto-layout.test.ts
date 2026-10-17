@@ -8,7 +8,7 @@ for(const codec of ["mpegh","mha1","mhm1"]){
 assert.equal(uses360RaLowerLayer("eac3"),false);
 assert.equal(resolveAutoLayout(["L","R"],false,"alac",true),"7.1.4");
 assert.notEqual(resolveAutoLayout(["L","R"],false,"alac",false),"7.1.4");
-for(const codec of ["eac3","truehd","ac4"]){
+for(const codec of ["eac3","truehd","ac4","av3a"]){
   assert.equal(resolveAutoLayout(["WideLeft","TopMiddleLeft","TopRearLeft"],true,codec),"7.1.4");
   assert.equal(resolveAutoLayout(["L","R","C"],false,codec),"7.1.4");
 }

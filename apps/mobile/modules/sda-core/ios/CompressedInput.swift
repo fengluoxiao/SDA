@@ -23,11 +23,11 @@ final class CompressedInput {
   scoped = url.startAccessingSecurityScopedResource()
   try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
-  if ["eac3", "ec3", "ac4", "mhas", "mp3"].contains(ext) {
+  if ["eac3", "ec3", "ac4", "mhas", "mp3", "av3a"].contains(ext) {
    file = try FileHandle(forReadingFrom: url)
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
-  } else { throw SdaError.message("支持立体声 ALAC、E-AC-3/Atmos M4A/MP4、MHAS 和 MP3") }
+  } else { throw SdaError.message("支持立体声 ALAC、E-AC-3/Atmos M4A/MP4、MHAS、AV3A 和 MP3") }
  }
  // Only change protection on SDA-owned imported copies, never a provider/source file.
  // copyItem can preserve a source file's complete/while-open protection class.

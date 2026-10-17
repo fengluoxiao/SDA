@@ -423,7 +423,8 @@ class SdaModule : Module() {
             alacStereoUpmix = renderingSettings().getBoolean("alacStereoUpmix")
             // Container AC-4 was normalized by the shared importer before opening.
             activeSourceCodec = if (isAlac) "alac" else if (isMpegh) "mpegh" else if (isMp3) "mp3"
-                else if (displayName.substringAfterLast('.', "").equals("ac4", ignoreCase = true)) "ac4" else "eac3"
+                else if (displayName.substringAfterLast('.', "").equals("ac4", ignoreCase = true)) "ac4"
+                else if (displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)) "av3a" else "eac3"
             activeInput = input
             val worker = Thread({
                 try {

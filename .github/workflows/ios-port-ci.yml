@@ -11,6 +11,9 @@ on:
       - 'crates/sda-native/**'
       - 'apps/native-renderer/**'
       - 'packages/core/**'
+      - 'vendor/avs3a/**'
+      - 'packages/demux/**'
+      - 'scripts/test-audiovivid.mjs'
       - 'scripts/*ios*'
       - 'scripts/prepare-mpegh.mjs'
       - 'pnpm-lock.yaml'
@@ -107,6 +110,7 @@ jobs:
           node scripts/test-shared-render-experiment.mjs
           node scripts/test-mobile-import-pending.mjs
           node scripts/test-mobile-ac4-import.mjs --platform=ios
+          node scripts/test-audiovivid.mjs
           node scripts/test/mobile-rendering-presets.test.cjs
           node scripts/test/mobile-spatial-cues.test.cjs
           python3 scripts/test-ios-mobile-assets.py
@@ -148,6 +152,7 @@ jobs:
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-mobile-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1 2>&1 | tee ios-artifacts/headphone-orientation-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios:: -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
       - name: Verify independent object routes and quiet height contributions

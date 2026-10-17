@@ -4,6 +4,7 @@
   "private": true,
   "description": "Spatial Decoder App — Dolby TrueHD/E-AC-3(Atmos)/DTS:X object audio decoder & 3D renderer for web, desktop and mobile. Rust decoder core from harletty-bridge compiled to WASM/native.",
   "scripts": {
+    "audiovivid:test": "node scripts/test-audiovivid.mjs",
     "core:build": "node scripts/build-core.mjs",
     "iamf:build": "node scripts/build-iamf.mjs",
     "iamf:test": "node scripts/test-iamf.mjs && node scripts/test-iamf-worker.mjs",

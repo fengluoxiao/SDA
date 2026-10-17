@@ -1,6 +1,6 @@
 //! SDA decoder core — WASM bindings over the harletty-bridge decoder crates.
 //!
-//! Feeds raw TrueHD / E-AC-3(JOC) / DTS bitstream bytes in, yields decoded
+//! Feeds TrueHD / E-AC-3(JOC) / DTS / AC-4 / AV3A bitstreams in, yields decoded
 //! frames: planar f32 PCM (bed channels first, then one channel per dynamic
 //! object) plus the object spatial events that were active for the frame.
 //!
@@ -18,6 +18,7 @@ use wasm_bindgen::prelude::*;
 
 pub mod alac_pipeline;
 pub mod ac4_pipeline;
+pub mod av3a_pipeline;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
@@ -252,7 +253,7 @@ impl StreamingDecoder {
                 None if sniff.len() >= 64 * 1024 => {
                     diagnostics::checkpoint("auto.sync_not_found");
                     return Err(
-                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS syncword)"
+                        "could not detect codec from first 64 KiB (no TrueHD/E-AC-3/AC-4/DTS/AV3A syncword)"
                             .into(),
                     );
                 }
@@ -290,7 +291,7 @@ impl StreamingDecoder {
 }
 
 /// Stateful streaming decoder. Construct with a codec name
-/// (`"auto" | "truehd" | "eac3" | "dts"`), `push()` raw bytes, then drain
+/// (`"auto" | "truehd" | "eac3" | "dts" | "ac4" | "av3a"`), `push()` raw bytes, then drain
 /// with `next_frame()` until it returns `undefined`. ALAC is constructed with
 /// `with_config()` because its MP4 codec cookie is required before decoding.
 #[cfg(feature = "wasm")]
@@ -355,6 +356,7 @@ pub(crate) fn build_pipeline(codec: &str) -> Result<Box<dyn Pipeline>, String> {
         "truehd" | "thd" | "mlp" => Ok(Box::new(truehd_pipeline::TruehdPipeline::new())),
         "eac3" | "ec3" | "ac3" => Ok(Box::new(eac3_pipeline::Eac3Pipeline::new())),
         "dts" | "dca" => Ok(Box::new(dts_pipeline::DtsPipeline::new())),
+        "av3a" | "avs3" | "audiovivid" => Ok(Box::new(av3a_pipeline::Av3aPipeline::new())),
         "ac4" | "ac-4" => Ok(Box::new(ac4_pipeline::Ac4Pipeline::new())),
         other => Err(format!("unknown codec: {other}")),
     }
@@ -375,6 +377,7 @@ fn detect_codec(data: &[u8]) -> Option<&'static str> {
         return Some("ac4");
     }
     let scan = &data[..data.len().min(64 * 1024)];
+    if avs3a::parse_header(scan).is_ok_and(|info| info.offset == 0) { return Some("av3a"); }
     let mut first_eac3 = None;
     let mut first_dts = None;
     for w in scan.windows(4) {

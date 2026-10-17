@@ -29,3 +29,9 @@ console.log('Staged and verified shared HRTF profile and matching speaker fallba
 cpSync(join(root,'crates/sda-native/tests/fixtures/ios-stereo-tones.m4a'),join(out,'ci-stereo-tones.m4a'));
 
 cpSync(join(root,"packages/core/mpegh/fixtures/motion.mhas"),join(out,"ci-360ra.mhas"));
+
+// Preserve decoder and normative-asset notices in the installed iOS bundle.
+const vividNotices=join(out,"licenses/avs3a");
+mkdirSync(vividNotices,{recursive:true});
+cpSync(join(root,"vendor/avs3a/LICENSE"),join(vividNotices,"LICENSE"));
+cpSync(join(root,"vendor/avs3a/assets/README.md"),join(vividNotices,"ASSET-NOTICES.md"));

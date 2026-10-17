@@ -1559,3 +1559,6 @@ mod tests {
         assert!(engine.poll_object_snapshot(&frames).is_none(), "inside throttle window");
     }
 }
+
+#[cfg(test)]
+mod av3a_tests;

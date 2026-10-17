@@ -346,8 +346,8 @@ export default class App extends React.Component<Record<string, never>, State> {
         const progress = (value: number, stage: string) => patch({ preparation: { state: "loading", progress: value, stage } });
         try {
         const extension = asset.name.split(".").pop()?.toLowerCase();
-        if (!extension || !["eac3", "ec3", "ac4", "m4a", "mp4", "mp3", "mhas"].includes(extension)) {
-          throw new Error("请选择 .eac3/.ec3、.ac4、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA 音轨的 .m4a/.mp4 文件");
+        if (!extension || !["eac3", "ec3", "ac4", "m4a", "mp4", "mp3", "mhas", "av3a"].includes(extension)) {
+          throw new Error("请选择 .eac3/.ec3、.ac4、.av3a、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA/Audio Vivid 音轨的 .m4a/.mp4 文件");
         }
         progress(.02, "校验文件");
         const contentHash = await this.getEngine().contentHash(asset.uri);
