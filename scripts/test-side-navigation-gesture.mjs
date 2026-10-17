@@ -58,6 +58,8 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   const tree=module.exports.SideNavigationRail({selected,onChange(){},accent,dark,renderIcon:()=>null});
   const all=nodes(tree);const hosts=all.filter(n=>n.type==='NativeHost');
   assert.equal(hosts.length,2);
+  assert(hosts.every(h=>h.props.ignoreSafeArea==="container"), "screen-edge placement must not independently inset native glass or symbols");
+  assert(hosts.every(h=>h.props.style.width===48 && h.props.style.height===140), "native layers share the RN rail frame");
   assert.equal(hosts.filter(h=>h.props.seedColor===accent).length,1,"only the icon host needs the theme tint");
   const iconContainers=all.filter(n=>n.type==='NativeStack'&&n.props.modifiers?.some(m=>m.name==='foregroundColor'));
   assert.equal(iconContainers.length,3);

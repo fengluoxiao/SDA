@@ -78,3 +78,8 @@ Removed the dock's extra 4 pt right padding in both UIKit and compatibility host
 ## Screen-edge landscape dock
 
 The previous 4 pt change left the outer horizontal safe-area inset in place. The rail now mounts as a sibling of the page SafeAreaView, on the full presentation surface, with 12 pt right spacing and the existing bottom inset plus 8 pt spacing. The native and compatibility hosts suppress their internal dock when externally docked. Content geometry stays unchanged, the full touch target stays inside the presentation surface, and settings hide the floating dock. Device preview confirmation remains required.
+
+
+## Align native layers at the screen edge
+
+Device feedback after external docking showed the neutral RN selection to the right of the native capsule and symbols. Both SwiftUI Hosts lacked ignoreSafeArea, allowing container insets to alter their contents independently of the RN selection and touch plane. Set ignoreSafeArea="container" on both fixed 48x140 Hosts; only the outer dock handles screen positioning and bottom safety. No per-layer translation is used. Regression checks enforce the shared native frame and inset policy; physical alignment still requires Expo Go device confirmation.
