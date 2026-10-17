@@ -17,7 +17,8 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 76 }: {
+  sideBar?: React.ReactNode; sideBarWidth?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
@@ -33,15 +34,16 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     tabBarShadowColor: "transparent",
     tabBarBlurEffect: "systemDefault" as const,
   };
-  return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor }}>
+  return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor, paddingLeft: sideBar ? sideBarWidth : 0 }}>
     <Tabs.Host
+      tabBarHidden={!!sideBar}
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
       nativeContainerStyle={{ backgroundColor }} colorScheme={theme}
       ios={{ tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never",
         // The factory is mounted twice by screens. Its content has no local
         // playback state/effects; both variants act on the same parent engine.
-        bottomAccessory: hasUIKitTabAccessory && nativeAccessory ? nativeAccessory : undefined,
-        bottomAccessoryHidden: selected === 0 || !nativeAccessory,
+        bottomAccessory: !sideBar && hasUIKitTabAccessory && nativeAccessory ? nativeAccessory : undefined,
+        bottomAccessoryHidden: !!sideBar || selected === 0 || !nativeAccessory,
       }}
       onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {
         setProvenance(nativeEvent.provenance);
@@ -59,10 +61,11 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
           <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor: "transparent" }}>
-            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: 24 }] }) : pages[index]}{index !== 0 && !(hasUIKitTabAccessory && nativeAccessory) && accessory}
+            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: 24 }] }) : pages[index]}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && accessory}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}
     </Tabs.Host>
+    {sideBar && <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: sideBarWidth, alignItems: "center", justifyContent: "center" }}>{sideBar}</View>}
   </View>;
 }

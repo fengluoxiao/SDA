@@ -187,7 +187,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './app-theme', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -196,6 +196,7 @@ function settingsAdapter(swiftNavigationAvailable) {
   const mockRequire = name => {
     if (name === 'react') return react;
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => ({ width: 390 }), View: 'View', Modal: 'Modal' };
+    if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text'].map(name => [name,name])) };
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
@@ -495,3 +496,20 @@ for (const viewport of [180, 220, 280, 350, 520]) {
   }
 }
 console.log('Landscape control spacing preserves measured blocks and bounded gaps within the viewport.');
+
+// Native pages stay in the same Tabs.Host when side navigation is toggled;
+// only bar visibility and content width change. Keep one usable mini-player.
+for (const sideBar of [undefined, 'side-rail']) {
+  const root=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar,sideBarWidth:76});
+  const host=root.props.children[0];
+  assert.equal(root.props.style.paddingLeft,sideBar ? 76 : 0);
+  assert.equal(host.props.tabBarHidden,!!sideBar);
+  assert.equal(host.props.navStateRequest.selectedScreenKey,'1');
+  const library=host.props.children[0][1].props.children[0].props.children[0];
+  if(sideBar) {
+    assert.equal(host.props.ios.bottomAccessory,undefined);
+    assert.equal(host.props.ios.bottomAccessoryHidden,true);
+    assert.equal(library.props.children[1],'legacy-card');
+  } else assert.equal(host.props.ios.bottomAccessory('regular'),'content-regular');
+}
+console.log('Optional side navigation: retained native pages, hidden bottom bar and single mini-player passed.');

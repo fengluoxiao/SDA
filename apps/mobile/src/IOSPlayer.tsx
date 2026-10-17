@@ -1,3 +1,5 @@
+import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
+import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
@@ -39,9 +41,10 @@ const time = formatPlaybackTime;
 
 // The approved remote-inspired presentation. All audio actions remain owned by
 // App/SdaPlayer; navigating between pages never stops or restarts a track.
-export function IOSPlayer(p: PlayerProps) { return <AppThemeProvider><ThemedPlayer {...p} /></AppThemeProvider>; }
+export function IOSPlayer(p: PlayerProps) { return <AppThemeProvider><NavigationPreferencesProvider><ThemedPlayer {...p} /></NavigationPreferencesProvider></AppThemeProvider>; }
 function ThemedPlayer(p: PlayerProps) {
   const appTheme = useAppTheme();
+  const navigationPreferences = useNavigationPreferences();
   const previewMetadata = false;
   const systemTheme = useColorScheme();
   const initialWindow = useWindowDimensions();
@@ -50,6 +53,8 @@ function ThemedPlayer(p: PlayerProps) {
   const [surfaceSize, setSurfaceSize] = useState<{ width: number; height: number } | null>(null);
   const { width, height } = surfaceSize || initialWindow;
   const landscapePlayer = width > height && (Platform.OS === "ios" || (Platform.OS === "android" && height >= 600));
+  const sideNavigationActive = Platform.OS === "ios" && navigationPreferences.landscapeSideTabs && landscapePlayer;
+  const artworkLeft = sideNavigationActive ? SIDE_NAVIGATION_WIDTH : landscapePlayer ? 0 : -24;
   const compactLandscape = landscapePlayer && height < 600;
   const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
@@ -183,9 +188,9 @@ function ThemedPlayer(p: PlayerProps) {
     if (width > 0 && height > 0) setSurfaceSize(previous => previous?.width === width && previous?.height === height ? previous : { width, height });
   }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: landscapePlayer ? 0 : -24, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: artworkLeft, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: artworkLeft, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
-    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: artworkSize * .70, top: 0, width: artworkSize * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
+    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: (sideNavigationActive ? SIDE_NAVIGATION_WIDTH : 0) + artworkSize * .70, top: 0, width: artworkSize * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
   </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
@@ -212,7 +217,8 @@ function ThemedPlayer(p: PlayerProps) {
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <IOSSystemTabs selected={page} onChange={navigate} sideBar={sideNavigationActive ? <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
+        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={25} />} /> : undefined} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available }); }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent]}>
@@ -316,6 +322,8 @@ function ThemedPlayer(p: PlayerProps) {
             {toggle("实际方向", "按对象真实位置定位声音", p.directionalObjects, value => p.setRendering(p.directObjects, value), audioOptionsDisabled)}
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
+          {heading("界面")}
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("横屏侧边导航", "横屏时将播放、资料库和空间移到左侧，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>
           {heading("应用与输出")}

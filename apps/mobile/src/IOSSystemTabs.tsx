@@ -10,12 +10,19 @@ export const swiftUI: typeof import("@expo/ui/swift-ui") | null =
     ? require("@expo/ui/swift-ui") : null;
 export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
-export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors }: {
+export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 76 }: {
+  sideBar?: React.ReactNode; sideBarWidth?: number;
   selected: number; onChange(index: number): void; children: React.ReactNode;
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
   const pages = React.Children.toArray(children);
-  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} />;
+  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} sideBar={sideBar} sideBarWidth={sideBarWidth} />;
+  // Compatibility hosts without UIKit's tab-bar visibility API still use the
+  // same page content and player callbacks; the current native path stays mounted.
+  if (sideBar) return <View style={{ flex: 1, marginHorizontal: -18, paddingLeft: sideBarWidth }}>
+    <View style={{ flex: 1, paddingHorizontal: 18 }}>{pages.map((page, index) => <View key={index} style={{ flex: 1, display: selected === index ? "flex" : "none" }}>{page}{index !== 0 && accessory}</View>)}</View>
+    <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: sideBarWidth, alignItems: "center", justifyContent: "center" }}>{sideBar}</View>
+  </View>;
   if (!swiftUI) return <><View style={{ flex: 1 }}>{pages}</View>{selected !== 0 && accessory}{fallback}</>;
   const { Host, TabView, RNHostView, VStack } = swiftUI;
   const { tabViewStyle, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");

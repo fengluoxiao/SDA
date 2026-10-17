@@ -1,3 +1,4 @@
+import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
 import React, { useState, useEffect } from "react";
 import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
@@ -129,6 +130,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 
 function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
   const appTheme = useAppTheme();
+  const navigationPreferences = useNavigationPreferences();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
@@ -179,6 +181,9 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
       </Picker>
     </Section>}
+    <Section title="界面" footer={<Text>横屏时使用左侧导航栏，竖屏保持底部导航。</Text>}>
+      <Toggle label="横屏侧边导航" isOn={navigationPreferences.landscapeSideTabs} onIsOnChange={navigationPreferences.setLandscapeSideTabs} />
+    </Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
     </Section>
