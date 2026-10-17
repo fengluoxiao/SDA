@@ -115,6 +115,12 @@ jobs:
 
       - name: Build web + package Electron (unsigned DMG)
         run: |
+          if [ '${{ matrix.arch }}' = 'arm64' ]; then export SDA_NATIVE_TARGET=aarch64-apple-darwin; else export SDA_NATIVE_TARGET=x86_64-apple-darwin; fi
+          rustup target add "$SDA_NATIVE_TARGET"
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          node scripts/build-head-tracking-helper.mjs
+          node scripts/build-native-renderer.mjs
           pnpm --filter @sda/web build
           pnpm --filter @sda/desktop exec electron-builder --mac dmg --${{ matrix.arch }} --publish never
 

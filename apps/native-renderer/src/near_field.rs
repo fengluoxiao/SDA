@@ -229,6 +229,16 @@ mod tests {
         assert_eq!(gains([0.0, 1.0, 0.0], None, s), [1.0; 2]);
         assert_eq!(gains([0.0, -1.0, 0.0], None, s), [1.0; 2]);
     }
+
+    #[test]
+    fn near_field_adds_radial_cues_but_cannot_replace_front_back_hrtf() {
+        let settings = Settings { enabled: true, ..Default::default() };
+        let close = gains([0.0, 0.3, 0.0], None, settings);
+        let farther = gains([0.0, 0.8, 0.0], None, settings);
+        assert!(close[0] > farther[0]);
+        assert_eq!(close, gains([0.0, -0.3, 0.0], None, settings));
+        assert_eq!(farther, gains([0.0, -0.8, 0.0], None, settings));
+    }
     #[test]
     fn bypass_is_exact_and_toggle_is_smooth() {
         let mut f = Filter::default();

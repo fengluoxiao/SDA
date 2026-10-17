@@ -13,7 +13,7 @@ export {decoderDiagnosticBuild} from './diagnostic-build';
 // @ts-ignore
 import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 
-export type CodecName = "auto" | "truehd" | "eac3" | "ac4" | "dts" | "alac";
+export type CodecName = "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" | "alac";
 
 export type ObjectAnchor = "room" | "screen" | "speaker";
 export type { AdmZone } from "./adm-zone.js";

@@ -1,0 +1,10 @@
+SADIE II Database: AudioLab, University of York; Gavin Cyril Kearney.
+Source record: https://doi.org/10.5281/zenodo.12092466
+Licensed under Apache License 2.0 (see LICENSE-APACHE-2.0.txt).
+
+These are modified/derived D1 KU100 responses, not original measurements:
+- pair-common alignment and calibration to mobile direct reference;
+- residual limited to 5-80 ms, no late room tail;
+- 7.1.4 upper residual interpolation; 360RA-13 lower measured residuals.
+See provenance.json for source archive and exact derived-file hashes.
+No commercial recording, artist stems or Apple renderer data is included.

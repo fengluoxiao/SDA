@@ -14,15 +14,8 @@ export function initMpegh(): Promise<void> {
 export function isMhas(data: Uint8Array): boolean {return data[0]===0xc0&&data[1]===1&&data[2]===0xa5;}
 /** Do not enter the stateful decoder until a complete audio AU is buffered. */
 const CICP_LABELS:Record<number,string>={0:'L',1:'R',2:'C',3:'LFE',4:'Ls',5:'Rs',6:'Lc',7:'Rc',8:'Lb',9:'Rb',10:'Cb',13:'Ls',14:'Rs',15:'Lw',16:'Rw',17:'Tfl',18:'Tfr',19:'Tfc',20:'Tbl',21:'Tbr',22:'Tbc',23:'Tsl',24:'Tsr',25:'Tc',26:'LFE',30:'Tbl',31:'Tbr',32:'Tfl',33:'Tfr',41:'Lb',42:'Rb'};
-/** MHAS packet header, ISO/IEC 23008-3 escapedValue syntax. */
-export function mhasPacket(type:number,payload:Uint8Array):Uint8Array {
-  const bits:number[]=[];
-  const put=(v:number,n:number)=>{for(let i=n-1;i>=0;i--)bits.push((v>>>i)&1);};
-  const escaped=(v:number,a:number,b:number,c:number)=>{const max=2**a-1;put(Math.min(v,max),a);if(v>=max){v-=max;const m=2**b-1;put(Math.min(v,m),b);if(v>=m)put(v-m,c);}};
-  escaped(type,3,8,8);escaped(1,2,8,32);escaped(payload.length,11,24,24);
-  const result=new Uint8Array(bits.length/8+payload.length);
-  bits.forEach((b,i)=>result[i>>3]!|=b<<(7-(i&7)));result.set(payload,bits.length/8);return result;
-}
+import {mhasPacket} from './mhas';
+export {mhasPacket} from './mhas';
 export class MpeghDecoder {
   private pending=new Uint8Array(0);
   private frames:DecodedFrameData[]=[];

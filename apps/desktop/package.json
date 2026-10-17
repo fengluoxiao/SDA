@@ -42,6 +42,7 @@
       "personal-hrtf-library.cjs",
       "parametric-hrtf.mjs",
       "generated-hrtf.cjs",
+      "hrtf-policy.cjs",
       "personal-hrtf-worker.cjs",
       "preload.cjs",
       "cinema-profiles.cjs",

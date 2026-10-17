@@ -1,0 +1,16 @@
+{
+  "recipe": "User-approved half-strength retained61 short residual",
+  "sampleRate": 48000,
+  "sourceManifest": "apps/mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json",
+  "sourceManifestSha256": "dc50e1ddbe2da4348bf96a35517eab6e2ba9214e4bc5c87fe92fd533973739b2",
+  "residualGain": 0.5,
+  "commonCalibration": 1.0006917288377972,
+  "commonShiftSamples": 0,
+  "files": {
+    "atmos714.f32": "834192d62cfe0fe61bb57d5a3725e06605612ecad0cd84443041f464dddf99db",
+    "atmos714.json": "f00216c3e3834ae5c0911cbbdcbba3b10b8be79e887821f4d53cc31169b4b8ce",
+    "sony360ra13.f32": "1fa2056d6338449f0f61f231107ff125d08970618312e67ebd72c62a01bb78cd",
+    "sony360ra13.json": "ab7746cb10df437f8c2756b5b0d99ed6bba1a950a3513ef91033468c8791b0f4"
+  },
+  "sourceCommit": "689c8371e8a18a07d1590cff933f27b03608340d"
+}

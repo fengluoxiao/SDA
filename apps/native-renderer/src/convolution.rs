@@ -27,6 +27,17 @@ pub struct PreparedStereoFilter {
 }
 
 impl PreparedStereoFilter {
+    pub(crate) fn from_pair(left: &[f32], right: &[f32], partition: usize) -> Self {
+        let fft_len = partition * 2;
+        static PLANNER: OnceLock<Mutex<FftPlanner<f32>>> = OnceLock::new();
+        let forward = {
+            let mut planner = PLANNER.get_or_init(|| Mutex::new(FftPlanner::new())).lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            plan_fft(&mut planner, fft_len, rustfft::FftDirection::Forward)
+        };
+        let (filters_left, filters_right) = prepare_filters_stereo(left, right, partition, fft_len, &forward);
+        Self { filters_left, filters_right }
+    }
     pub fn clear(&mut self) {
         for partition in self.filters_left.iter_mut().chain(&mut self.filters_right) {
             partition.fill(Complex32::new(0.0, 0.0));
@@ -127,8 +138,8 @@ impl StereoPartitionedConvolver {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             (
-                planner.plan_fft_forward(fft_len),
-                planner.plan_fft_inverse(fft_len),
+                plan_fft(&mut planner, fft_len, rustfft::FftDirection::Forward),
+                plan_fft(&mut planner, fft_len, rustfft::FftDirection::Inverse),
             )
         };
         let scratch_len = forward
@@ -179,6 +190,12 @@ impl StereoPartitionedConvolver {
             filters_left: self.filters_left.clone(),
             filters_right: self.filters_right.clone(),
         }
+    }
+    pub(crate) fn accepts_prepared_filter(&self, filter: &PreparedStereoFilter) -> bool {
+        let bins = self.fft_len / 2 + 1;
+        filter.filters_left.len() == self.history.len()
+            && filter.filters_right.len() == self.history.len()
+            && filter.filters_left.iter().chain(&filter.filters_right).all(|part| part.len() == bins)
     }
     pub fn prepare_pair(&mut self, left: &[f32], right: &[f32]) -> PreparedStereoFilter {
         let mut filter = self.spare_filter.take().unwrap_or_default();
@@ -389,6 +406,23 @@ impl StereoPartitionedConvolver {
     }
 }
 
+fn plan_fft(planner: &mut FftPlanner<f32>, length: usize, direction: rustfft::FftDirection) -> Arc<dyn Fft<f32>> {
+    #[cfg(target_vendor = "apple")]
+    {
+        type Plans = std::collections::HashMap<(usize, bool), Arc<dyn Fft<f32>>>;
+        static PLANS: OnceLock<Mutex<Plans>> = OnceLock::new();
+        let mut plans = PLANS.get_or_init(|| Mutex::new(Plans::new())).lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (length, direction == rustfft::FftDirection::Forward);
+        if let Some(plan) = plans.get(&key) { return plan.clone(); }
+        if let Some(plan) = crate::apple_fft::plan(length, direction) {
+            plans.insert(key, plan.clone());
+            return plan;
+        }
+    }
+    planner.plan_fft(length, direction)
+}
+
 fn accumulate_stereo(
     left: &mut [Complex32],
     right: &mut [Complex32],
@@ -412,7 +446,44 @@ fn accumulate_stereo(
         }
         return;
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // NEON is available on the supported ARM64 iOS/Android targets.
+        unsafe { accumulate_stereo_neon(left, right, input, filter_left, filter_right, count); }
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
     for bin in 0..count {
+        left[bin] += input[bin] * filter_left[bin];
+        right[bin] += input[bin] * filter_right[bin];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn accumulate_stereo_neon(
+    left: &mut [Complex32], right: &mut [Complex32], input: &[Complex32],
+    filter_left: &[Complex32], filter_right: &[Complex32], count: usize,
+) {
+    use std::arch::aarch64::*;
+    let end = count / 4 * 4;
+    // Deinterleave four complex bins. Separate mul/add operations intentionally
+    // avoid fused rounding differences relative to the scalar complex product.
+    unsafe {
+        for bin in (0..end).step_by(4) {
+            let x = vld2q_f32(input.as_ptr().add(bin).cast());
+            for (out, filter) in [(left.as_mut_ptr(), filter_left.as_ptr()),
+                                  (right.as_mut_ptr(), filter_right.as_ptr())] {
+                let h = vld2q_f32(filter.add(bin).cast());
+                let old = vld2q_f32(out.add(bin).cast());
+                let real = vsubq_f32(vmulq_f32(x.0, h.0), vmulq_f32(x.1, h.1));
+                let imag = vaddq_f32(vmulq_f32(x.0, h.1), vmulq_f32(x.1, h.0));
+                vst2q_f32(out.add(bin).cast(), float32x4x2_t(
+                    vaddq_f32(old.0, real), vaddq_f32(old.1, imag)));
+            }
+        }
+    }
+    for bin in end..count {
         left[bin] += input[bin] * filter_left[bin];
         right[bin] += input[bin] * filter_right[bin];
     }

@@ -82,6 +82,7 @@ export const MiniPlayer = memo(function MiniPlayer({
   onVolume,
 }: MiniPlayerProps) {
   if (!track) return null;
+  const codecLabel = track.codec === "av3a" ? "Audio Vivid" : track.codec;
   const progress = duration > 0 ? Math.min(1, position / duration) : 0;
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
@@ -95,13 +96,13 @@ export const MiniPlayer = memo(function MiniPlayer({
             </div>
             <div className="mp-meta">
               <div className="mp-title-row">
-                <div className="mp-title">{track.title ?? track.codec}</div>
+                <div className="mp-title">{track.title ?? codecLabel}</div>
                 <button type="button" className="mp-info" onClick={onShowMetadata} aria-label="查看歌曲元数据" title="歌曲元数据">
                   <Info size={15} strokeWidth={2} aria-hidden="true" />
                 </button>
               </div>
               <div className="mp-sub">
-                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : track.rawBedLabels ? "无声道床" : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
+                {codecLabel} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : track.rawBedLabels ? "无声道床" : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
               </div>
             </div>
           </div>

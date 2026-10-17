@@ -31,11 +31,15 @@ pub struct Context {
     pub head: Option<[f32; 4]>,
     pub extent: source_extent::Settings,
     pub near_active: bool,
+    pub bundled_cues: bool,
     pub near_field: crate::near_field::Settings,
     pub sample_rate: u32,
     pub start: u64,
     pub offset: usize,
     pub bass_crossover_hz: Option<f32>,
+    pub spatial_layer_gain_db: f32,
+    pub spatial_layer_slew: f32,
+    pub spatial_layer_main_restore_db: f32,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -131,7 +135,16 @@ pub fn mix(
             mix_source(source, buffer, controls, ctx, solver);
         }
     };
-    if let Some(pool) = pool {
+    if cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) && groups > 1 {
+        let pool = pool.expect("parallel groups require a pool");
+        let (local, remote) = sources.split_at_mut(chunk);
+        let (local_buffer, remote_buffers) = buffers.split_first_mut().unwrap();
+        crate::audio_executor::join_on(pool,
+            || process((local, local_buffer)),
+            || {
+                for pair in remote.chunks_mut(chunk).zip(remote_buffers.iter_mut()) { process(pair); }
+            });
+    } else if let Some(pool) = pool.filter(|_| groups > 1) {
         pool.install(|| {
             sources
                 .par_chunks_mut(chunk)
@@ -320,6 +333,7 @@ fn mix_source(
             * source.gain
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
+        sample *= crate::spatial_layer::source_gain(source, ctx.spatial_layer_gain_db, ctx.spatial_layer_main_restore_db, ctx.spatial_layer_slew, at);
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source
@@ -443,6 +457,7 @@ fn mix_source(
                 [1.0; 2]
             };
         }
+        let cue_gain = source.motion_cues.next(source.position, at, ctx.sample_rate, ctx.bundled_cues);
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
         if block_index == 0 {
@@ -471,7 +486,7 @@ fn mix_source(
             } else {
                 1.0
             };
-            input * proximity_dry
+            input * proximity_dry * cue_gain
         } else {
             0.0
         };

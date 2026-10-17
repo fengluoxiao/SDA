@@ -7,7 +7,7 @@ const LARGE_STEP: f32 = 0.7;
 const SCALE: f32 = 1_000_000.0;
 
 #[derive(Default)]
-pub(super) struct OutputTelemetry {
+pub struct OutputTelemetry {
     peak: AtomicU64,
     max_step: AtomicU64,
     max_step_sample: AtomicU64,

@@ -1,0 +1,102 @@
+{
+  "commonCalibration": 1.0006917288377972,
+  "commonShiftSamples": 0,
+  "layout": "360RA-13",
+  "residualGain": 0.5,
+  "sampleRate": 48000,
+  "source": "retained61 default35ms residual only",
+  "speakers": [
+    {
+      "azimuth": 30.0,
+      "elevation": 0.0,
+      "name": "FrontLeft",
+      "offsetFloats": 0,
+      "taps": 4608
+    },
+    {
+      "azimuth": -30.0,
+      "elevation": 0.0,
+      "name": "FrontRight",
+      "offsetFloats": 9216,
+      "taps": 4608
+    },
+    {
+      "azimuth": 0.0,
+      "elevation": 0.0,
+      "name": "Center",
+      "offsetFloats": 18432,
+      "taps": 4608
+    },
+    {
+      "azimuth": 110.0,
+      "elevation": 0.0,
+      "name": "SurroundLeft",
+      "offsetFloats": 27648,
+      "taps": 4608
+    },
+    {
+      "azimuth": -110.0,
+      "elevation": 0.0,
+      "name": "SurroundRight",
+      "offsetFloats": 36864,
+      "taps": 4608
+    },
+    {
+      "azimuth": 30.0,
+      "elevation": 30.0,
+      "name": "UpperFrontLeft",
+      "offsetFloats": 46080,
+      "taps": 4608
+    },
+    {
+      "azimuth": -30.0,
+      "elevation": 30.0,
+      "name": "UpperFrontRight",
+      "offsetFloats": 55296,
+      "taps": 4608
+    },
+    {
+      "azimuth": 0.0,
+      "elevation": 30.0,
+      "name": "UpperCenter",
+      "offsetFloats": 64512,
+      "taps": 4608
+    },
+    {
+      "azimuth": 110.0,
+      "elevation": 30.0,
+      "name": "UpperRearLeft",
+      "offsetFloats": 73728,
+      "taps": 4608
+    },
+    {
+      "azimuth": -110.0,
+      "elevation": 30.0,
+      "name": "UpperRearRight",
+      "offsetFloats": 82944,
+      "taps": 4608
+    },
+    {
+      "azimuth": 30.0,
+      "elevation": -20.0,
+      "name": "LowerFrontLeft",
+      "offsetFloats": 92160,
+      "taps": 4608
+    },
+    {
+      "azimuth": -30.0,
+      "elevation": -20.0,
+      "name": "LowerFrontRight",
+      "offsetFloats": 101376,
+      "taps": 4608
+    },
+    {
+      "azimuth": 0.0,
+      "elevation": -20.0,
+      "name": "LowerCenter",
+      "offsetFloats": 110592,
+      "taps": 4608
+    }
+  ],
+  "version": 1
+}

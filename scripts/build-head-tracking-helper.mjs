@@ -10,6 +10,7 @@ const cargo = process.env.CARGO ?? "cargo";
 const rustc = process.env.RUSTC ?? "rustc";
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
+const targetTriple=process.env.SDA_NATIVE_TARGET;
 
 if (!isWindows && !isMac) {
   console.log("AirPods helper: skipped on unsupported platform");
@@ -44,7 +45,7 @@ const cargoEnvironment = {
 };
 
 await new Promise((resolveRun, reject) => {
-  const child = spawn(cargo, ["build", "--release", "--locked", "--offline"], {
+  const child = spawn(cargo, ["build", "--release", "--locked", "--offline", ...(targetTriple?["--target",targetTriple]:[])], {
     cwd: helper,
     env: cargoEnvironment,
     stdio: "inherit",
@@ -58,7 +59,7 @@ const destination = join(root, "apps", "desktop", "head-tracking-helper");
 await mkdir(destination, { recursive: true });
 
 const binaryName = isWindows ? "SdaAirPodsHeadTracking.exe" : "SdaAirPodsHeadTracking";
-const sourceBinary = join(helper, "target", "release", binaryName);
+const sourceBinary = join(helper, "target", ...(targetTriple?[targetTriple]:[]), "release", binaryName);
 await Promise.all([
   copyFile(sourceBinary, join(destination, binaryName)),
   copyFile(join(helper, "LICENSE"), join(destination, "LICENSE.txt")),

@@ -1,0 +1,53 @@
+[package]
+name = "avs3a"
+version = "0.1.0"
+edition = "2024"
+description = "Memory-safe AVS3-P3 (AV3A) decoder foundation"
+license-file = "LICENSE"
+rust-version = "1.96"
+
+[lib]
+name = "avs3a"
+path = "src/lib.rs"
+
+[dependencies]
+rustfft = "6.4.1"
+wide = "1.6.1"
+
+[[bin]]
+name = "avs3a-inspect"
+path = "src/bin/avs3a-inspect.rs"
+
+[[bin]]
+name = "avs3a-decode"
+path = "src/bin/avs3a-decode.rs"
+
+[[bin]]
+name = "avs3a-model-inspect"
+path = "src/bin/avs3a-model-inspect.rs"
+
+[[bin]]
+name = "avs3a-mono-decode"
+path = "src/bin/avs3a-mono-decode.rs"
+
+[[bin]]
+name = "avs3a-wav-compare"
+path = "src/bin/avs3a-wav-compare.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.12.0"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+
+# Keep optimized code representative while retaining symbols for perf and
+# cargo-flamegraph. Normal release binaries remain unchanged.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
+
+[lints.rust]
+unsafe_code = "forbid"

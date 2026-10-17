@@ -1,0 +1,168 @@
+{
+  "source": {
+    "name": "SADIE II KU100, dense sphere (61 directions)",
+    "doi": "10.5281/zenodo.12092466",
+    "recordUrl": "https://zenodo.org/records/12092466",
+    "license": "Apache-2.0",
+    "archiveUrl": null,
+    "archiveMd5": null,
+    "archiveSha256": "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2",
+    "hrPath": "D1/D1_HRIR_WAV/48K_24bit",
+    "brPath": "D1/D1_BRIR_WAV/48K_24bit",
+    "hrirMeasurement": {
+      "monitor": "Genelec 8010",
+      "radiusMeters": 1.2
+    },
+    "brirMeasurement": {
+      "monitor": "Genelec 8030/40",
+      "radiusMeters": 1.5,
+      "grid": "50-point Lebedev"
+    }
+  },
+  "referenceManifestSha256": "d88b086c7fbe69150f143463ddfc3d2a6dcd23ba84d7ea15420c23aaabc64609",
+  "sampleRate": 48000,
+  "tapCountPerEar": 512,
+  "layout": "direction-major, left then right float32 little endian",
+  "positions": [
+    {
+      "azimuth": -180,
+      "elevation": -60
+    },
+    {
+      "azimuth": -150,
+      "elevation": -60
+    },
+    {
+      "azimuth": -120,
+      "elevation": -60
+    },
+    {
+      "azimuth": -90,
+      "elevation": -60
+    },
+    {
+      "azimuth": -60,
+      "elevation": -60
+    },
+    {
+      "azimuth": -30,
+      "elevation": -60
+    },
+    {
+      "azimuth": 0,
+      "elevation": -60
+    },
+    {
+      "azimuth": 30,
+      "elevation": -60
+    },
+    {
+      "azimuth": 60,
+      "elevation": -60
+    },
+    {
+      "azimuth": 90,
+      "elevation": -60
+    },
+    {
+      "azimuth": 120,
+      "elevation": -60
+    },
+    {
+      "azimuth": 150,
+      "elevation": -60
+    },
+    {
+      "azimuth": 0,
+      "elevation": -90
+    }
+  ],
+  "processing": {
+    "targetStereoEnergy": 1.0567686366908873,
+    "targetEnergyCentroidSamples": 170.03757095370827,
+    "bilateralSymmetry": "common sign and integer shift for mirror pairs; equal ears at median plane",
+    "level": "common scalar only",
+    "eq": false
+  },
+  "measurements": [
+    {
+      "azimuth": 0,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_0,0_ele_-60,0.wav",
+      "sourceSha256": "47acd0fef0c71d8cb97e22226252b94532a7d085a45fedea4b9b313b8d6fc154"
+    },
+    {
+      "azimuth": 30,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_30,0_ele_-60,0.wav",
+      "sourceSha256": "ba883972404cb1005fd514edaf96cffc3e521d6b920b5b9eac500e145fbcbea4"
+    },
+    {
+      "azimuth": -30,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_330,0_ele_-60,0.wav",
+      "sourceSha256": "005137b0f6402c827b3608f1e72bb2356757a896a05ad6707ea0f750260b9d9a"
+    },
+    {
+      "azimuth": 60,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_60,0_ele_-60,0.wav",
+      "sourceSha256": "d84fb7a7b92afd147353f38c3c6d205d9018404f892e2c910be4802a617ddabd"
+    },
+    {
+      "azimuth": -60,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_300,0_ele_-60,0.wav",
+      "sourceSha256": "5942b41ad12dc7668337cd104d150eb8caa112b3cb90bd2f1c48fbe9044b6e7a"
+    },
+    {
+      "azimuth": 90,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_90,0_ele_-60,0.wav",
+      "sourceSha256": "e58030949755dfba94afe4c13781b4bd3dc9f9314e0ac05084349cb795640fa3"
+    },
+    {
+      "azimuth": -90,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_270,0_ele_-60,0.wav",
+      "sourceSha256": "24ee0dec85e1724de43218d17f87f5d5da8d9af5ecaed68f1ed07399b8f3e930"
+    },
+    {
+      "azimuth": 120,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_120,0_ele_-60,0.wav",
+      "sourceSha256": "6ced0f157d5e2f0b4b6a2057212bf2ccee93ea614ab905f395038c4d189ea9db"
+    },
+    {
+      "azimuth": -120,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_240,0_ele_-60,0.wav",
+      "sourceSha256": "50c86845a048f2b6198f8bf22a0f7a8dbf000acb90d85bdba6058b664e2c1aaf"
+    },
+    {
+      "azimuth": 150,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_150,0_ele_-60,0.wav",
+      "sourceSha256": "8761956ca25baf2e8ace7c2105592a65f0746910729d32ccc6aa7508398967b0"
+    },
+    {
+      "azimuth": -150,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_210,0_ele_-60,0.wav",
+      "sourceSha256": "b5c5fa37fdf5f3955fcf391432ae34be6f22e0342b9fe3e83f0bf5c24d810b38"
+    },
+    {
+      "azimuth": 180,
+      "elevation": -60,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_180,0_ele_-60,0.wav",
+      "sourceSha256": "e4b2a73fd56ea432e6aad67ab225dc03384b6db9d8f30b4c1ebe153886f5d9f5"
+    },
+    {
+      "azimuth": 0,
+      "elevation": -90,
+      "sourcePath": "D1/D1_HRIR_WAV/48K_24bit/azi_0,0_ele_-90,0.wav",
+      "sourceSha256": "4232a5526055d9db3a5fe52ac7fac2afb3954cbbad635b4c46173ef1a6bdfbc1"
+    }
+  ],
+  "sha256": "0d034147d56f294db8b000ebf86b2f66b9e32bba03e71cb486a5b6ef04a88aeb"
+}

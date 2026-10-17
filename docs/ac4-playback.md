@@ -59,3 +59,32 @@ for the downloaded inputs and generated tables during the build.
 The verifier checks finite object PCM, continuous sample positions, event
 boundaries, object declarations, movement and energy. It writes a report to
 `tmp/ac4-verification/report.json`; it does not verify perceived audio quality.
+
+## Mobile Entry Points
+
+Android and iOS use the same `sda-core` Full A-JOC pipeline as Windows.
+The mobile file picker and native compressed readers now accept raw `.ac4`
+streams. For unencrypted AC-4 M4A/MP4, the existing mobile MP4 import flow
+uses the shared `Mp4Demuxer` and its `ac4SyncFrame` writer, then passes the
+result to the native engine with an `.ac4` display name. No system AC-4
+decoder or stereo downmix is involved. The temporary file may retain the
+import host's `.mhas` suffix; routing uses the explicit display name, not
+that storage suffix.
+
+Import remains chunked at 256 KiB and keeps the existing Android descriptor
+lifetime and iOS prepared-queue ownership. E-AC-3 and ALAC still use their
+existing paths. This does not add IMS support or expand the upstream Full
+A-JOC subset described above, and does not change HRTF experiments.
+
+```powershell
+node scripts/test-mobile-ac4-import.mjs
+node scripts/test-mpegh-import.mjs
+node scripts/test-ios-native-queue.mjs
+node scripts/test-ac4.mjs
+node scripts/test/android-alac.test.cjs
+```
+
+These checks cover transport payload preservation, short/extended frame
+sizes, bounded writes, failure cleanup, raw-reader wiring and existing
+MPEG-H/queue/ALAC behavior. Android/iOS device playback and Full A-JOC
+object-rendering parity still require rebuilt native apps and device tests.

@@ -3,18 +3,37 @@
     "name": "SDA",
     "slug": "sda",
     "version": "0.1.0",
-    "orientation": "portrait",
-    "userInterfaceStyle": "dark",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
     "backgroundColor": "#0c101c",
     "ios": {
       "bundleIdentifier": "app.sda.mobile",
       "infoPlist": {
-        "UIBackgroundModes": ["audio"]
-      }
+        "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向。",
+        "NSLocalNetworkUsageDescription": "开启远程诊断服务时，允许同网络电脑读取 SDA 的播放状态和头部姿态。",
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "UISupportedInterfaceOrientations~ipad": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationPortraitUpsideDown",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ],
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ]
+      },
+      "supportsTablet": true
     },
     "android": {
       "package": "app.sda.mobile"
     },
-    "plugins": []
+    "plugins": [
+      "./plugins/with-ios-deployment"
+    ],
+    "scheme": "sda"
   }
 }

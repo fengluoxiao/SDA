@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use eac3::{
     inspect_access_unit, merge_core_with_dependent, BedChannel, CorePcmFrame, FrameType,
-    OamdElementKind, OamdPayload, ObjectPcmPushResult, JOC_QMF_LATENCY_SAMPLES,
+    OamdElementKind, OamdPayload, ObjectPcmPushResult,
 };
 
 use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline, ProgramLoudnessMetadata};
@@ -170,6 +170,7 @@ impl Eac3Pipeline {
         let sample_pos = self.total_samples;
         self.total_samples += pcm.samples_per_channel() as u64;
 
+        let processing_latency = pcm.processing_latency_samples() as u64;
         let core = pcm.core;
         let raw_bed_labels = Self::raw_bed_labels(&core);
         let joc_slot_count = pcm.object_channels.len();
@@ -257,7 +258,7 @@ impl Eac3Pipeline {
         let mut events = Vec::new();
         for (oamd, sample_offset) in &pcm.oamd_payloads {
             let event_sample_pos =
-                sample_pos + sample_offset.unwrap_or(0) as u64 + JOC_QMF_LATENCY_SAMPLES as u64;
+                sample_pos + sample_offset.unwrap_or(0) as u64 + processing_latency;
             events.extend(extract_events(oamd, event_sample_pos, dynamic_count));
         }
         events.sort_by_key(|event| event.sample_pos);
@@ -489,6 +490,7 @@ fn extract_events(
                 .to_string();
 
                 events.push(ObjectEvent {
+                    diffuse: 0.0,
                     id,
                     sample_pos: base_sample_pos + sample_offset,
                     has_pos,

@@ -1,12 +1,6 @@
-//! Source-to-source occlusion. The Atmos/ADM model places objects
-//! independently, so a nearer object sitting on the same bearing as a farther
-//! one must shadow it — the far source reaches the blocked ear mostly by
-//! diffraction (low frequencies survive, highs do not) and loses overall
-//! level. Without this, front/back object pairs on one bearing collapse into
-//! an inseparable image, which reads as a depth-rendering defect.
-//!
-//! Per-block occlusion amounts come from the engine's pairwise pass; this
-//! module only applies the smoothed per-ear shadow.
+//! Low-level shadow filter and legacy position-only heuristic.
+//! Audio-object coordinates alone do not describe physical obstacles. Playback
+//! bypasses these heuristics: another emitter is not occlusion metadata.
 
 /// One-pole low shelf per ear. `1.0` = bypass; smaller = more shadow.
 #[derive(Clone, Copy, Debug, Default)]

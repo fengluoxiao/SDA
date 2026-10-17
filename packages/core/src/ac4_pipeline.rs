@@ -175,6 +175,7 @@ fn event(
         _ => [0.0; 3],
     };
     ObjectEvent {
+        diffuse: 0.0,
         id,
         sample_pos,
         has_pos: position.is_some(),

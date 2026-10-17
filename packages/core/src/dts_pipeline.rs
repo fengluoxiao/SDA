@@ -175,6 +175,7 @@ fn render_hd(
                 .map(|s| s.role)
             {
                 events.push(ObjectEvent {
+            diffuse: 0.0,
                     id,
                     sample_pos,
                     has_pos: true,

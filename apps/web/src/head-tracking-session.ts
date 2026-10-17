@@ -5,7 +5,7 @@ import {
   normalizeQuaternion,
   type HeadPose,
   type Quaternion,
-} from "@sda/renderer";
+} from "../../../packages/renderer/src/head-pose";
 
 // The AirPods helper emits yaw(Z) * pitch(X). Extract its Z twist rather
 // than projecting forward: spurious pitch beyond 90 degrees flips that

@@ -211,7 +211,7 @@ function renderState(state) {
   if(session)session.songDuration=Number(state.duration)||0;
   if(session&&state.playing&&!state.loading)session.pendingStart=false;
   const source=state.source;
-  const codecs={"ec-3":"E-AC-3","eac3":"E-AC-3","ac-3":"AC-3","ac3":"AC-3","ac-4":"AC-4","ac4":"AC-4","mlpa":"TrueHD","truehd":"TrueHD","alac":"ALAC","mp4a":"AAC","pcm":"PCM","adm":"ADM PCM"};
+  const codecs={"ec-3":"E-AC-3","eac3":"E-AC-3","ac-3":"AC-3","ac3":"AC-3","ac-4":"AC-4","ac4":"AC-4","av3a":"Audio Vivid","mlpa":"TrueHD","truehd":"TrueHD","alac":"ALAC","mp4a":"AAC","pcm":"PCM","adm":"ADM PCM"};
   const fields=[];
   if(source?.codec)fields.push(codecs[source.codec.toLowerCase()]||source.codec.toUpperCase());
   if(source?.sampleRate>0)fields.push(`${source.sampleRate/1000} kHz`);

@@ -1,0 +1,37 @@
+#ifndef SDA_BRIDGE_H
+#define SDA_BRIDGE_H
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+void *sda_ios_create(const char *config, const char *hrtf, char **error);
+void *sda_ios_prepare_cues(const char *path, const char *layout, float gain, char **error);
+char *sda_ios_apply_cues(void *engine, void *prepared);
+void sda_ios_free_cues(void *prepared);
+char *sda_ios_command(void *engine, const char *op, const char *args);
+char *sda_ios_feed(void *engine, const uint8_t *bytes, size_t length);
+void sda_ios_render(void *engine, float *left, float *right, size_t frames);
+void sda_ios_close(void *engine);
+void sda_ios_string_free(char *string);
+// Apple-decoded 48 kHz interleaved Float32 ALAC stereo, bounded control calls.
+char *sda_ios_alac_feed(void *engine, const uint8_t *pcm, size_t length, bool upmix);
+void *sda_ios_alac_speakers_create(bool upmix);
+// Live ALAC reads require capacity_frames * 12 floats; query stride after read.
+void sda_ios_alac_speakers_upmix(void *decoder, bool enabled);
+size_t sda_ios_speakers_channels(void *decoder);
+char *sda_ios_alac_speakers_feed(void *decoder, const uint8_t *pcm, size_t length, bool finish);
+// Control/PCM calls must be serialized by the host; no realtime callback uses this handle.
+void *sda_ios_speakers_create(char **error);
+char *sda_ios_speakers_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
+size_t sda_ios_speakers_read(void *decoder, float *pcm, size_t capacity_frames);
+char *sda_ios_speakers_objects(void *decoder, uint64_t consumed_frames);
+void sda_ios_speakers_balance(void *decoder, bool enabled);
+void sda_ios_speakers_measure_only(void *decoder);
+char *sda_ios_speakers_measurement(void *decoder);
+char *sda_ios_speakers_measured(void *decoder, const char *measurement);
+void sda_ios_speakers_close(void *decoder);
+// Experimental bounded source frames + OAM. Serialized non-realtime calls only.
+void *sda_ios_sources_create(char **error);
+char *sda_ios_sources_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
+char *sda_ios_sources_next(void *decoder);
+void sda_ios_sources_close(void *decoder);
+#endif

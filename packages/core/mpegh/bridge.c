@@ -29,12 +29,13 @@ void sda_capture_object(int id,int offset,float az,float el,float radius,float g
   p[6]=w;p[7]=h;p[8]=d;p[9]=diffuse;p[10]=screen;p[11]=duration;
 }
 void sda_close(void) {if(created)ia_mpegh_dec_delete(&out);created=0;memset(&in,0,sizeof(in));memset(&out,0,sizeof(out));frames=rows=0;}
-int sda_open(int raw) {
+int sda_open_layout(int raw, int layout) {
   sda_close();in.ui_mhas_flag=1;in.ui_raw_flag=raw;in.ui_pcm_wd_sz=24;
-  in.ui_cicp_layout_idx=2;in.i_preset_id=-1;
+  in.ui_cicp_layout_idx=layout;in.i_preset_id=-1;
   out.malloc_mpegh=alloc_mem;out.free_mpegh=free;
   int err=ia_mpegh_dec_create(&in,&out);created=1;return err;
 }
+int sda_open(int raw) { return sda_open_layout(raw, 2); }
 void *sda_input(void){return out.mem_info_table[2].mem_ptr;}
 int sda_capacity(void){return out.ui_inp_buf_size;}
 int sda_decode(int n){

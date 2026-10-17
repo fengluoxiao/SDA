@@ -1,0 +1,8 @@
+# Keep shared audio metadata identical in Windows, Android and Apple packages.
+apps/mobile/ios-experiments/**/*.json text eol=lf
+apps/mobile/assets/hrtf-restored/**/*.json text eol=lf
+apps/mobile/rendering-presets.json text eol=lf
+apps/mobile/assets/hrtf-restored/**/*.txt text eol=lf
+
+assets/hrtf/**/*.json text eol=lf
+assets/hrtf/**/*.f32 binary
