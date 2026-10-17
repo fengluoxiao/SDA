@@ -3,8 +3,8 @@ import { StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { IOSHeaderBlur } from "./IOSHeaderBlur";
 
-export function IOSLibraryHeaderBackdrop({ dark }: { dark: boolean }) {
+export function IOSLibraryHeaderBackdrop({ dark, horizontalPadding = 18 }: { dark: boolean; horizontalPadding?: number }) {
   const insets = useSafeAreaInsets();
   return <IOSHeaderBlur dark={dark} style={[StyleSheet.absoluteFill,
-    { top: -insets.top, left: -insets.left - 18, right: -insets.right - 18 }]} />;
+    { top: -insets.top, left: -insets.left - horizontalPadding, right: -insets.right - horizontalPadding }]} />;
 }

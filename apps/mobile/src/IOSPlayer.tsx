@@ -276,7 +276,7 @@ function ThemedPlayer(p: PlayerProps) {
         <ScrollView style={[s.page, s.libraryViewport, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, libraryHeaderOverlay && { paddingTop: homeHeaderHeight + 8 }, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: SIDE_NAVIGATION_WIDTH + 8 }]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs && !sideNavigationActive} scrollIndicatorInsets={{ top: libraryHeaderOverlay ? homeHeaderHeight + 10 : 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs && !sideNavigationActive} scrollIndicatorInsets={{ top: libraryHeaderOverlay ? homeHeaderHeight + 10 : 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : sideNavigationActive ? 15 : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>

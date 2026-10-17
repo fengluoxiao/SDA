@@ -191,7 +191,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSHeaderBlur', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSLibraryHeaderBackdrop', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,height:844}) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -202,7 +202,7 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
     if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
-    if (name === './IOSHeaderBlur') return {IOSHeaderBlur:'NativeHeaderBlur'};
+    if (name === './IOSLibraryHeaderBackdrop') return {IOSLibraryHeaderBackdrop:'NativeHeaderBlur'};
     if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','ZStack','HStack','Button','RNHostView'].map(name => [name,name])) };
     if (name === '@expo/ui/swift-ui/modifiers') return new Proxy({}, {get: (_,name)=>(...args)=>({name,args})});
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
@@ -587,6 +587,7 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
     const overlay=column.props.children[1];assert.equal(overlay.type,'ZStack');
     const nativeBlurHost=overlay.props.children[0];assert.equal(nativeBlurHost.type,'RNHostView');
     assert.equal(nativeBlurHost.props.children[0].props.children[0].type,'NativeHeaderBlur');
+    assert.equal(nativeBlurHost.props.children[0].props.children[0].props.horizontalPadding,0,'settings backdrop extends through the same screen safe areas');
     const header=overlay.props.children[1];assert.equal(header.type,'HStack');
     const headerFrame=header.props.modifiers.find(m=>m.name==='frame');
     assert.equal(headerFrame.args[0].maxWidth,dimensions.width);

@@ -1,4 +1,4 @@
-import { IOSHeaderBlur } from "./IOSHeaderBlur";
+import { IOSLibraryHeaderBackdrop as IOSScreenHeaderBackdrop } from "./IOSLibraryHeaderBackdrop";
 import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
 import React, { useState, useEffect } from "react";
@@ -135,7 +135,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
       {overlayHeader ? <ZStack alignment="top" modifiers={surfaceModifiers}>
         <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} />
         <ZStack modifiers={[frame({ maxWidth: width, height: headerHeight })]}>
-          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSHeaderBlur dark={theme === "dark"} style={StyleSheet.absoluteFill} /></View></RNHostView>
+          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSScreenHeaderBackdrop dark={theme === "dark"} horizontalPadding={0} /></View></RNHostView>
           {header}
         </ZStack>
       </ZStack> : <VStack alignment="leading" spacing={0} modifiers={surfaceModifiers}>

@@ -13,6 +13,12 @@ for(const height of [64,74,90]) for(const safeRight of [0,44,59,62]) {
   assert(indicatorX>contentRight,'indicator must not overlap row arrows');
   assert(indicatorX<railLeft,'indicator must not overlap side controls');
   assert.equal(indicator(true,height,false,48,false,{selectedUri:''},{right:safeRight}).right,3);
+  const leftMode=indicator(true,height,false,48,true,{selectedUri:'mock'},{right:safeRight});
+  assert.equal(leftMode.right,15);
+  const leftModeIndicatorX=932-safeRight+12-leftMode.right;
+  assert(leftModeIndicatorX<932-safeRight,'left mode indicator remains inside native screen clipping bounds');
+  assert(leftModeIndicatorX>932-safeRight-6,'left mode indicator clears row arrows');
+  assert.equal(inset.right,56-Math.min(12,(safeRight+8)/4),'approved right-side formula must remain unchanged');
 }
 assert(source.indexOf('{libraryHeaderOverlay && homeHeader}')>source.indexOf('</IOSSystemTabs>'),'mount blur after scrolling content');
 const built=await build({entryPoints:['apps/mobile/src/IOSLibraryHeaderBackdrop.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','react-native-safe-area-context','./IOSHeaderBlur']});
@@ -28,6 +34,10 @@ new Function('require','module','exports',built.outputFiles[0].text)(name=>{
 for(const safe of [{left:59,right:59,top:0,bottom:21},{left:0,right:0,top:59,bottom:34}]) {
  insets=safe;const tree=module.exports.IOSLibraryHeaderBackdrop({dark:false});
  assert.equal(tree.type,'NativeHeaderBlur');assert.equal(tree.props.style[1].left,-safe.left-18);assert.equal(tree.props.style[1].top,-safe.top);
+ const settings=module.exports.IOSLibraryHeaderBackdrop({dark:false,horizontalPadding:0});
+ assert.equal(settings.props.style[1].left,-safe.left);
+ assert.equal(settings.props.style[1].right,-safe.right);
+ assert.equal(settings.props.style[1].top,tree.props.style[1].top);
 }
 const blurBuild=await build({entryPoints:['apps/mobile/src/IOSHeaderBlur.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['react','react-native','expo-blur']});
 const previous=globalThis.expo;
