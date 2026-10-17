@@ -36,7 +36,8 @@ assert.match(tabs, /selection=\{String\(selected\)\}/);
 assert.match(ui, /<IOSSystemTabs selected=\{page\} onChange=\{navigate\}/);
 assert.doesNotMatch(tabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 const settings=readFileSync('apps/mobile/src/IOSNativeSettings.tsx','utf8');
-assert.match(settings, /largeTitle: false/);
+const nativePageSource=readFileSync('apps/mobile/src/IOSNativePage.tsx','utf8');
+assert.match(nativePageSource, /largeTitle: false/);
 assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader, iosLandscape && np\.iosLandscapeHeader/);
@@ -71,7 +72,7 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 // The home screen must not clip the native TabView at the bottom safe area
 // or show a different-color native page between the top/bottom backgrounds.
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
-assert.match(ui, /edges=\{hasSystemIOSTabs && Platform\.OS === "ios" \? \["top", "left", "right"\]/);
+assert.match(ui, /edges=\{nativeLibraryHeaderActive \? \[\] : hasSystemIOSTabs && Platform\.OS === "ios"/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
 assert.match(ui, /backgroundColor="transparent" pageBackgroundColors=\{\["transparent", c.bg, c.bg\]\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
@@ -80,7 +81,7 @@ assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
 // Never place an engine-error footer between the native tabs and home indicator.
 assert.doesNotMatch(ui, /<\/IOSSystemTabs>\s*\{!!p.error/);
 assert.ok(ui.indexOf('!!p.error && !engineUnavailable') < ui.indexOf('<IOSSystemTabs selected='));
-assert.match(ui, /engineUnavailable && <Text/);
+assert.match(ui, /engineUnavailable && (?:!?nativeLibraryHeaderActive && )?<Text/);
 assert.match(tabs, /<VStack spacing=\{0\}>/);
 
 // UIKit path exposes actual native bar appearances, not just page backgrounds.
@@ -92,20 +93,21 @@ assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
-assert.match(uiKitTabs, /edges=\{index === 1 && libraryUnderlaysNativeBar \? \[\] : \["bottom"\]\}/);
+assert.match(uiKitTabs, /edges=\{index === 1 \?/);
 assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 
 // Exercise the UI adapter with mocked native components (not a visual/native
 // runtime test): appearances, controlled selection, capability-safe imports.
-const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context'] });
-function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true) {
+const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context','./IOSNativePage'] });
+function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true, headerHeight = 0) {
   const module = { exports: {} };
   let nativeImports = 0;
+  let stateSlot = 0;
   const mockReact = {
     isValidElement: value => !!value && typeof value === "object" && "props" in value,
     cloneElement: (value, props) => ({ ...value, props: { ...value.props, ...props } }),
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
-    useState: () => [0, () => {}],
+    useState: () => [stateSlot++ === 1 ? headerHeight : 0, () => {}],
   };
   const mockRequire = name => {
     if (name === 'react') return mockReact;
@@ -114,6 +116,7 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
       if (!known.includes(name)) throw new Error("Exception in HostFunction: unknown native component " + name);
       return available && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable);
     } }, View: 'View' };
+    if (name === './IOSNativePage') return {IOSNativePage:'NativePage',hasNativePageHeader:true};
     if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView' };
     if (name === 'react-native-screens') {
       nativeImports++;
@@ -126,6 +129,11 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
   new Function('require', 'module', 'exports', '__DEV__', nativeTabsBundle.outputFiles[0].text)(mockRequire, module, module.exports, false);
   return { api: module.exports, nativeImports };
 }
+function pageViewport(screen) {
+  const page=screen.props.children[0];
+  const provider=page.type==='NativePage'?page.props.children[0]:page;
+  return provider.props.children[0];
+}
 const nativeAdapter = loadNativeTabs('ios', true);
 const selections = [];
 const tree = nativeAdapter.api.IOSUIKitTabs({ selected: 0, onChange: index => selections.push(index), pages: ['player', 'library', 'scene'], accent: '#28754a', theme: 'light', backgroundColor: '#f0f3f0' });
@@ -135,8 +143,8 @@ for (const screen of tabHost.props.children[0]) {
   assert.equal(screen.props.ios.standardAppearance.tabBarBackgroundColor, 'transparent');
   assert.deepEqual(screen.props.ios.standardAppearance, screen.props.ios.scrollEdgeAppearance);
   assert.equal(screen.props.ios.standardAppearance.tabBarBlurEffect, 'systemDefault');
-  const safeViewport = screen.props.children[0].props.children[0];
-  assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? [] : ["bottom"]);
+  const safeViewport = pageViewport(screen);
+  assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? ["left","right"] : ["bottom"]);
   assert.equal(safeViewport.props.style.backgroundColor, "transparent");
 }
 for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1 } });
@@ -152,20 +160,20 @@ assert.match(settings, /Number\(Platform.Version\) >= 26 \? "glass"/);
 assert.match(settings, /buttonStyle\(settingsButtonStyle\)/);
 assert.match(compatibilityPage, /<HStack spacing=\{0\}/);
 assert.match(compatibilityPage, /frame\(\{ width: 88, alignment: "leading" \}\)/);
-const nativeActions = settings.slice(settings.indexOf('<Section title={topContentInset'), settings.indexOf('<Section title="播放"'));
+const nativeActions = settings.slice(settings.indexOf('<Section title="播放操作">'), settings.indexOf('<Section title="播放"'));
 assert.match(nativeActions, /<HStack spacing=\{12\}>/);
 assert.equal((nativeActions.match(/<Button /g) || []).length, 2);
-assert.ok(settings.indexOf('<Section title={topContentInset') < settings.indexOf('<Section title="播放"'));
+assert.ok(settings.indexOf('<Section title="播放操作">') < settings.indexOf('<Section title="播放"'));
 assert.ok(ui.indexOf('<View style={s.settingsActions}>') < ui.indexOf('{heading("播放")}'));
 console.log('Settings layout checks passed: glass style, single-row navigation/actions, no redundant home controls');
 
 // One inline UIKit header owns the settings title and back button.
 // The hosted Form must not emit its own large navigation title.
-assert.match(settings, /hasUIKitSettingsNavigation = Platform.OS === "ios"/);
-assert.match(settings, /"RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"/);
+assert.match(settings, /hasUIKitSettingsNavigation = hasNativePageHeader/);
+assert.match(nativePageSource, /"RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"/);
 assert.match(settings, /hasUIKitSettingsNavigation \? require\("react-native-screens"\) : null/);
 assert.doesNotMatch(settings, /hasSwiftUISettingsNavigation|IOSSwiftUISettingsPage/);
-assert.match(settings, /title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false/);
+assert.match(settings, /<IOSNativePage screenId="sda-settings-content" title="设置"/);
 assert.match(settings, /onDismissed=\{\(\) => onSettingsChange\(false\)\}/);
 assert.match(settings, /screenId="sda-home" activityState=\{2\} freezeOnBlur=\{false\}/);
 console.log('Settings native-header checks passed: guarded UIKit stack, system title/back, mounted home');
@@ -175,12 +183,12 @@ assert.doesNotMatch(settings, /activityState=\{settings \?/);
 const uiKitStack = settings.slice(settings.indexOf('return <ScreenStack style='), settings.indexOf('return <>{children}<Modal'));
 assert.equal((uiKitStack.match(/style=\{StyleSheet.absoluteFill\}/g) || []).length, 2);
 assert.match(uiKitStack, /contentStyle=\{\{ flex: 1/);
-assert.match(uiKitStack, /largeTitle: false/);
+assert.match(nativePageSource, /largeTitle: false/);
 assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
 console.log('Settings fullscreen checks passed: mounted home, inline settings title');
 
-assert.match(uiKitStack, /translucent: true/);
-assert.match(uiKitStack, /backgroundColor: "transparent"/);
+assert.match(nativePageSource, /translucent: true/);
+assert.match(nativePageSource, /backgroundColor: "transparent"/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
 assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
 
@@ -191,7 +199,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSLibraryHeaderBackdrop', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSNativePage', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,height:844}) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -202,7 +210,7 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
     if (name === 'react-native') return { Animated: { Value: class {constructor(value){this.value=value;}}, timing:(value,config)=>({start(){assert.equal(config.useNativeDriver,true);value.value=config.toValue;}}) }, Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
-    if (name === './IOSLibraryHeaderBackdrop') return {IOSLibraryHeaderBackdrop:'NativeHeaderBlur'};
+    if (name === './IOSNativePage') return {IOSNativePage:'NativePage',hasNativePageHeader:true};
     if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text','VStack','ZStack','HStack','Button','RNHostView'].map(name => [name,name])) };
     if (name === '@expo/ui/swift-ui/modifiers') return new Proxy({}, {get: (_,name)=>(...args)=>({name,args})});
     if (name === 'react-native-screens') return { ScreenStack: 'OuterStack', ScreenStackItem: 'OuterScreen' };
@@ -218,10 +226,10 @@ for (const available of [true,false]) {
   const tree = adapter.IOSSettingsNavigation({ children: 'approved-home', settings: true, onSettingsChange: value => closed.push(value), title: '正在播放', player: {}, theme: 'dark' });
   const [home,settingsScreen] = tree.props.children;
   assert.equal(home.props.children[0], 'approved-home');
-  assert.equal(settingsScreen.props.headerConfig.title,'设置');
-  assert.equal(settingsScreen.props.headerConfig.largeTitle,false);
-  assert.notEqual(settingsScreen.props.headerConfig.hidden,true);
-  assert.equal(settingsScreen.props.children[0].type,'Host');
+  assert.equal(settingsScreen.props.headerConfig.hidden,true);
+  const nativePage=settingsScreen.props.children[0];
+  assert.equal(nativePage.type,'NativePage');assert.equal(nativePage.props.title,'设置');
+  assert.equal(nativePage.props.children[0].type,'Host');
   settingsScreen.props.onDismissed();
   assert.deepEqual(closed,[false]);
 }
@@ -230,7 +238,7 @@ console.log('Settings adapter checks passed: inline native title, no nested larg
 // Native ScrollView decides overflow including adjusted insets; never disable
 // gestures using a full-screen measurement that ignores the floating accessory.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs '), ui.indexOf('</IOSSystemTabs>'));
-assert.equal((homePages.match(/<Animated\.ScrollView /g) || []).length, 1);
+assert.equal((homePages.match(/<ScrollView /g) || []).length, 1);
 assert.match(homePages, /scrollEnabled bounces=\{false\} alwaysBounceVertical=\{false\}/);
 assert.match(homePages, /contentInsetAdjustmentBehavior="automatic"/);
 assert.doesNotMatch(ui, /libraryCanScroll|setLibrarySize/);
@@ -279,7 +287,7 @@ assert.equal(systemHost.props.ios.bottomAccessory('regular'), 'content-regular')
 assert.equal(systemHost.props.ios.bottomAccessory('inline'), 'content-inline');
 assert.equal(systemHost.props.ios.bottomAccessoryHidden, false);
 for (const screen of systemHost.props.children[0]) {
-  const page = screen.props.children[0].props.children[0];
+  const page = pageViewport(screen);
   assert.equal(page.props.children[1], false, 'native container must replace, not stack with, legacy card');
 }
 const playerHost = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, selected: 0}).props.children[0];
@@ -290,7 +298,7 @@ assert.equal(emptyHost.props.ios.bottomAccessoryHidden, true);
 for (const adapter of [loadNativeTabs('ios', true, 25), loadNativeTabs('ios', true, 26, false)]) {
   const fallbackHost = accessoryHost(adapter);
   assert.equal(fallbackHost.props.ios.bottomAccessory, undefined);
-  const library = fallbackHost.props.children[0][1].props.children[0].props.children[0];
+  const library = pageViewport(fallbackHost.props.children[0][1]);
   assert.equal(library.props.children[1], 'legacy-card');
 }
 assert.match(ui, /nativeAccessory=\{p.selectedUri \? miniPlayer : undefined\}/);
@@ -511,7 +519,7 @@ for (const sideBar of [undefined, 'side-rail']) {
   assert.equal(root.props.style.paddingLeft,undefined,"overlay rail must not resize page content");
   assert.equal(host.props.tabBarHidden,!!sideBar);
   assert.equal(host.props.navStateRequest.selectedScreenKey,'1');
-  const library=host.props.children[0][1].props.children[0].props.children[0];
+  const library=pageViewport(host.props.children[0][1]);
   if(sideBar) {
     assert.equal(host.props.ios.bottomAccessory,undefined);
     assert.equal(host.props.ios.bottomAccessoryHidden,true);
@@ -542,7 +550,7 @@ assert.equal(externalDockTree.props.children[1],false);
 console.log('External landscape dock: one rail, native bottom bar hidden.');
 
 const leftDockTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,sideBarExternal:true,sideBarPosition:'left'});
-const leftDockLibrary=leftDockTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
+const leftDockLibrary=pageViewport(leftDockTree.props.children[0].props.children[0][1]);
 assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginLeft,38);
 assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginRight,undefined);
 assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.right,12,'left library mini-player aligns with the dedicated scrollbar gutter');
@@ -558,65 +566,50 @@ console.log('Left rail stays fixed while page content moves 12 pt right using sp
 assert.doesNotMatch(uiKitTabs,/RNSScrollViewMarker|react-native-screens\/experimental/);
 const scrollFixture={type:'ScrollView',props:{contentContainerStyle:{paddingTop:8}}};
 const compatibleTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene']});
-const compatibleScroll=compatibleTree.props.children[0].props.children[0][1].props.children[0].props.children[0].props.children[0];
+const compatibleScroll=pageViewport(compatibleTree.props.children[0].props.children[0][1]).props.children[0];
 assert.equal(compatibleScroll.type,'ScrollView');
 assert.deepEqual(compatibleScroll.props.contentContainerStyle,[{paddingTop:8},{paddingBottom:24}]);
 console.log('Expo Go startup: no experimental component probe/import; normal library scrolling and tail padding retained.');
 
 for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:844,height:390}]) {
-  const adapter=settingsAdapter(true,dimensions);
-  const navigation=adapter.IOSSettingsNavigation({children:'approved-home',settings:true,onSettingsChange(){},title:'正在播放',player:{},theme:'light'});
-  const screen=navigation.props.children[1];const landscape=dimensions.width>dimensions.height;
-  assert.equal(screen.props.stackAnimation,undefined,'no special animation that splits native header and content');
-  assert.equal(screen.props.headerConfig.hidden,landscape);
-  assert.equal(screen.props.headerConfig.translucent,true);
-  assert.equal(screen.props.headerConfig.backgroundColor,'transparent');
-  if (landscape) {
-    const page=screen.props.children[0];
-    assert.equal(typeof page.type,'function');
-    const previousExpo=globalThis.expo;
-    let surface;
-    try { globalThis.expo={getViewConfig:()=>true}; surface=page.type(page.props); }
-    finally { globalThis.expo=previousExpo; }
-    const host=surface.props.children[0];
-    assert.equal(host.type,'Host');
-    assert.equal(host.props.ignoreSafeArea,undefined,'one Host preserves device safe areas');
-    const column=host.props.children[0];assert.equal(column.type,'ZStack');
-    assert.equal(column.props.alignment,'top');
-    assert.equal(typeof column.props.children[0].type,'function','Form shares the header Host and renders behind it');
-    assert.equal(column.props.children[0].props.topContentInset,52,'initial section clears the overlaid header');
-    const overlay=column.props.children[1];assert.equal(overlay.type,'ZStack');
-    const nativeBlurHost=overlay.props.children[0];assert.equal(nativeBlurHost.type,'RNHostView');
-    assert.equal(nativeBlurHost.props.children[0].props.children[0].type,'NativeHeaderBlur');
-    assert.equal(nativeBlurHost.props.children[0].props.children[0].props.horizontalPadding,0,'settings backdrop extends through the same screen safe areas');
-    const blurOpacity=nativeBlurHost.props.children[0].props.children[0].props.opacity;
-    const reportScroll=column.props.children[0].props.onScrollDepth;
-    assert.equal(blurOpacity.value,1,'keep a readable backdrop until native scroll observation responds');
-    reportScroll(0);assert.equal(blurOpacity.value,0,'no pale tint at the top');
-    reportScroll(20);assert.equal(blurOpacity.value,1,'native blur appears when content scrolls under title');
-    reportScroll(0);assert.equal(blurOpacity.value,0);
-    const header=overlay.props.children[1];assert.equal(header.type,'HStack');
-    const headerFrame=header.props.modifiers.find(m=>m.name==='frame');
-    assert.equal(headerFrame.args[0].maxWidth,dimensions.width);
-    assert.equal(headerFrame.args[0].width,undefined,'do not force full window width inside safe area');
-  } else assert.equal(screen.props.children[0].type,'Host');
+  const closed=[];const adapter=settingsAdapter(true,dimensions);
+  const navigation=adapter.IOSSettingsNavigation({children:'approved-home',settings:true,onSettingsChange:v=>closed.push(v),title:'正在播放',player:{},theme:'light',accent:'#7799CC'});
+  const screen=navigation.props.children[1];
+  assert.equal(screen.props.stackAnimation,undefined);
+  assert.deepEqual(screen.props.headerConfig,{hidden:true},'transition stack never changes its own header visibility');
+  const page=screen.props.children[0];assert.equal(page.type,'NativePage');assert.equal(page.props.title,'设置');
+  assert.equal(page.props.children[0].type,'Host');
+  page.props.headerLeft.props.onPress();assert.deepEqual(closed,[false]);
 }
 for(const [adapter,props,expected] of [
-  [nativeAdapter,accessoryProps,[]],
-  [nativeAdapter,{...accessoryProps,accessory:false,nativeAccessory:undefined},[]],
-  [nativeAdapter,{...accessoryProps,sideBar:true},['bottom']],
-  [loadNativeTabs('ios',true,26,false),accessoryProps,['bottom']],
+  [nativeAdapter,accessoryProps,["left","right"]],
+  [nativeAdapter,{...accessoryProps,accessory:false,nativeAccessory:undefined},["left","right"]],
+  [nativeAdapter,{...accessoryProps,sideBar:true},['left','right','bottom']],
+  [loadNativeTabs('ios',true,26,false),accessoryProps,['left','right','bottom']],
 ]) {
   const root=adapter.api.IOSUIKitTabs(props);
-  const viewport=root.props.children[0].props.children[0][1].props.children[0].props.children[0];
+  const viewport=pageViewport(root.props.children[0].props.children[0][1]);
   assert.deepEqual(viewport.props.edges,expected);
 }
-console.log('Landscape settings: single native surface for header and form; library underlays native bars while side/fallback layouts keep bottom protection.');
+console.log('Settings: native page-owned bar in both orientations; library underlays native bars while side/fallback layouts keep bottom protection.');
 
 const floatingTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene'],sideBar:true});
-const floatingViewport=floatingTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
+const floatingViewport=pageViewport(floatingTree.props.children[0].props.children[0][1]);
 const floatingContent=floatingViewport.props.children[0];
 assert.equal(floatingViewport.props.children[1],false,'no second in-flow accessory');
 assert.equal(floatingContent.props.children[1].props.style.position,'absolute');
 assert.deepEqual(floatingContent.props.children[0].props.contentContainerStyle,[{paddingTop:8},{paddingBottom:76}]);
 console.log('Landscape library accessory overlays rows with scrollable tail clearance, no opaque footer area.');
+
+const measuredAdapter=loadNativeTabs('ios',true,26,true,78);
+const measuredScroll={type:'ScrollView',props:{contentContainerStyle:{paddingTop:8},automaticallyAdjustsScrollIndicatorInsets:true,scrollIndicatorInsets:{top:10,right:62,bottom:62,left:0}}};
+const measuredTree=measuredAdapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',measuredScroll,'scene'],sideBar:true,sideBarPosition:'left'});
+const measuredViewport=pageViewport(measuredTree.props.children[0].props.children[0][1]);
+const measuredResult=measuredViewport.props.children[0].props.children[0];
+assert.equal(measuredResult.props.automaticallyAdjustsScrollIndicatorInsets,false);
+assert.deepEqual(measuredResult.props.scrollIndicatorInsets,{top:88,right:62,bottom:62,left:0});
+const rightMeasured=loadNativeTabs('ios',true,26,true,78).api.IOSUIKitTabs({...accessoryProps,pages:['player',measuredScroll,'scene'],sideBar:true,sideBarPosition:'right'});
+const rightMeasuredScroll=pageViewport(rightMeasured.props.children[0].props.children[0][1]).props.children[0].props.children[0];
+assert.equal(rightMeasuredScroll.props.automaticallyAdjustsScrollIndicatorInsets,true);
+assert.equal(rightMeasuredScroll.props.scrollIndicatorInsets,measuredScroll.props.scrollIndicatorInsets);
+console.log('Extended left viewport uses measured native header safety once; accepted right indicator handling is untouched.');

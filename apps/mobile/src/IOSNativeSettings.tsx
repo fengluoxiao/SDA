@@ -1,8 +1,8 @@
-import { IOSLibraryHeaderBackdrop as IOSScreenHeaderBackdrop } from "./IOSLibraryHeaderBackdrop";
+import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
 import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
-import React, { useState, useEffect, useRef } from "react";
-import { Alert, Animated, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
+import React, { useState, useEffect } from "react";
+import { Alert, Modal, Platform, PlatformColor, StyleSheet, View, useWindowDimensions } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
 import renderingPresets from "../rendering-presets.json";
@@ -14,9 +14,8 @@ const hasView = (name: string) => !!(globalThis as any).expo?.getViewConfig?.("E
 export const hasNativeIOSSettings = !!swiftUI && ["HostView", "FormView", "SectionView", "ToggleView", "PickerView", "TextView", "Button", "HStackView", "VStackView"].every(hasView);
 
 // Use the same UIKit settings stack in Expo Go and the standalone app.
-// Home keeps the approved SDA header; only settings owns a system nav bar.
-const hasUIKitSettingsNavigation = Platform.OS === "ios" &&
-  ["RNSScreen", "RNSScreenStack", "RNSScreenStackHeaderConfig"].every(name => UIManager.hasViewManagerConfig(name));
+// The transition stack hides its own bar; native pages own their headers.
+const hasUIKitSettingsNavigation = hasNativePageHeader;
 const nativeScreens: typeof import("react-native-screens") | null =
   hasUIKitSettingsNavigation ? require("react-native-screens") : null;
 
@@ -30,6 +29,17 @@ export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): vo
   const { Host, Button } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
+}
+
+function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
+  if (!swiftUI) return null;
+  const { Host, Button } = swiftUI;
+  const { labelStyle, buttonStyle, buttonBorderShape, accessibilityLabel } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  return <Host ignoreSafeArea="container" style={{ width: 44, height: 44 }}>
+    <Button label="返回" systemImage="chevron.left" onPress={onPress} modifiers={[
+      labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("返回播放器"),
+    ]} />
+  </Host>;
 }
 
 export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, sideDock = false }: {
@@ -62,13 +72,11 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void;
   title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean;
 }) {
-  const window = useWindowDimensions();
-  const landscape = window.width > window.height;
   if (!swiftUI || !hasNativeIOSSettings) return children;
   if (nativeScreens) {
     const { ScreenStack, ScreenStackItem } = nativeScreens;
     const { Host } = swiftUI;
-    if (__DEV__) console.info("[SDA UI] settings navigation:", landscape ? "unified landscape header and form" : "UIKit system header");
+    if (__DEV__) console.info("[SDA UI] settings navigation: native page-owned UINavigationBar");
     return <ScreenStack style={{ flex: 1 }}>
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
@@ -78,18 +86,14 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
         onDismissed={() => onSettingsChange(false)}
-        // Landscape uses the existing single-host header/Form so UIKit never
-        // transitions a separate header above independently moving content.
-        headerConfig={{
-          hidden: landscape, title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-          largeTitle: false, translucent: true, hideShadow: true,
-          color: PlatformColor("systemBlue"), backgroundColor: "transparent",
-          experimental_userInterfaceStyle: theme }}
+        headerConfig={{ hidden: true }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
-        {landscape ? <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} /> :
+        <IOSNativePage screenId="sda-settings-content" title="设置" theme={theme} accent={accent}
+          headerLeft={<IOSSettingsBackButton onPress={() => onSettingsChange(false)} />}>
           <Host style={{ flex: 1 }} colorScheme={theme}>
             <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
-          </Host>}
+          </Host>
+        </IOSNativePage>
       </ScreenStackItem>}
     </ScreenStack>;
   }
@@ -98,7 +102,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   </Modal></>;
 }
 
-// A single native surface for landscape settings and older navigation hosts.
+// Compatibility only for binaries without the UIKit navigation primitives.
 // Keep the compatibility navigation row full-width with a balanced trailing
 // spacer, so the title stays centered and the back button stays at the left.
 function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
@@ -106,82 +110,51 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 }) {
   const appTheme = useAppTheme();
   const { width } = useWindowDimensions();
-  const headerOpacity = useRef(new Animated.Value(1)).current;
-  const headerIsBlurred = useRef(true);
-  const scrollObserved = useRef(false);
-  const onScrollDepth = (depth: number) => {
-    if (!Number.isFinite(depth)) return;
-    if (!scrollObserved.current) {
-      scrollObserved.current = true;
-      if (__DEV__) console.info("[SDA UI] settings scroll observation active");
-    }
-    const blurred = depth > 0.5;
-    if (blurred === headerIsBlurred.current) return;
-    headerIsBlurred.current = blurred;
-    Animated.timing(headerOpacity, { toValue: blurred ? 1 : 0, duration: 120, useNativeDriver: true }).start();
-  };
   if (!swiftUI) return null;
-  const { Host, RNHostView, VStack, ZStack, HStack, Button, Text } = swiftUI;
+  const { Host, VStack, HStack, Button, Text } = swiftUI;
   const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const overlayHeader = hasView("ZStackView") && hasView("RNHostView");
-  const headerHeight = 52;
-  const surfaceModifiers = [
-    frame({ maxWidth: width, alignment: "leading" }),
-    background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
-  ];
-  const header = <HStack spacing={0} modifiers={[
-    padding({ horizontal: 16 }), frame({ maxWidth: width, height: headerHeight }),
-  ]}>
-    <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
-      buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
-      font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
-      frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
-    ]} />
-    <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>
-    <Text modifiers={[frame({ width: 88 }), accessibilityLabel("")]}>{""}</Text>
-  </HStack>;
-  // Header and Form stay in one native Host for a unified push transition.
-  // The UIKit blur samples the scrolling Form underneath it. Initial
-  // space belongs to the first section, so it scrolls away instead of clipping
-  // the entire viewport below the header. No JS scroll/frame tracking is needed.
+  // One full-screen host owns the safe area. Only the background extends
+  // behind system chrome; controls retain SwiftUI's safe-area positioning.
+  // Splitting this into RN SafeAreaView + two hosts creates visible edge bands.
   return <View style={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }}>
     <Host style={{ flex: 1 }} colorScheme={theme}>
-      {overlayHeader ? <ZStack alignment="top" modifiers={surfaceModifiers}>
-        <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} onScrollDepth={onScrollDepth} />
-        <ZStack modifiers={[frame({ maxWidth: width, height: headerHeight })]}>
-          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSScreenHeaderBackdrop dark={theme === "dark"} horizontalPadding={0} opacity={headerOpacity} /></View></RNHostView>
-          {header}
-        </ZStack>
-      </ZStack> : <VStack alignment="leading" spacing={0} modifiers={surfaceModifiers}>
-        {header}
+      <VStack alignment="leading" spacing={0} modifiers={[
+        frame({ maxWidth: width, alignment: "leading" }),
+        background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
+      ]}>
+        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width, height: 52 })]}>
+          <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
+            buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
+            font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
+            frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
+          ]} />
+          <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>
+          <Text modifiers={[frame({ width: 88 }), accessibilityLabel("")]}>{""}</Text>
+        </HStack>
         <NativeSettingsForm player={player} onClose={onClose} />
-      </VStack>}
+      </VStack>
     </Host>
   </View>;
 }
 
-function NativeSettingsForm({ player: p, onClose, topContentInset = 0, onScrollDepth }: { player: PlayerProps; onClose(): void; topContentInset?: number; onScrollDepth?(depth: number): void }) {
+function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
-  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle, padding, useScrollGeometryChange } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const scrollGeometry = useScrollGeometryChange(onScrollDepth ? geometry => onScrollDepth(geometry.contentOffsetY) : undefined);
+  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const audioDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
   return <Form modifiers={[
     // The header owns the only title; the Form contains settings rows only.
     tint(appTheme.accent),
-    ...(scrollGeometry ? [scrollGeometry] : []),
     scrollContentBackground("hidden"),
-    // Portrait keeps its native navigation-bar treatment; landscape's material
-    // header overlays this same Form without a second opaque background layer.
+    // The native navigation bar owns the scroll-edge appearance in both orientations.
     background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
   ]}>
-    <Section title={topContentInset > 0 ? undefined : "播放操作"}
-      header={topContentInset > 0 ? <Text modifiers={[padding({ top: topContentInset })]}>播放操作</Text> : undefined}>
+    <Section title="播放操作">
       <HStack spacing={12}>
         <Button label="重新播放" systemImage="arrow.counterclockwise" onPress={() => { onClose(); p.play(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.selectedUri)]} />
         <Button label="停止播放" systemImage="stop.fill" role="destructive" onPress={() => { onClose(); p.stop(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.playing)]} />

@@ -73,5 +73,6 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   assert.equal(bar.props.children.at(-1).props.style[1].zIndex,1);
   assert.equal(bar.props.children[1].props.testID,'side-tab-glass-selection');
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
+  assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.variant,'regular','use native regular glass with background blur');
 }
 console.log('Side rail themes: all five accents, light/dark symbols and neutral selection fill, visible themed symbols and one stationary glass backdrop passed.');

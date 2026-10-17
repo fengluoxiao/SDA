@@ -63,3 +63,18 @@ export function landscapeArtworkLayout(surfaceWidth: number, surfaceHeight: numb
   const size = Math.max(0, surfaceHeight);
   return { columnWidth, size, left: 0 };
 }
+
+// Keep the accepted row x-position (parent + 38), while moving the scroll
+// effect outside the left action lane, including devices with no side inset.
+export function iosLeftLibraryGutter(safeLeft: number) {
+  const paddingLeft = Math.min(8, Math.max(0, safeLeft));
+  return { marginLeft: 38 - paddingLeft, paddingLeft };
+}
+
+// Preserve right-mode card and indicator screen coordinates while ending the
+// scroll-edge effect before the side controls. The gap adapts to device insets.
+export function iosRightLibraryGutter(safeRight: number) {
+  const indicatorRight = Math.min(12, (Math.max(0, safeRight) + 8) / 4);
+  const paddingRight = indicatorRight * 2;
+  return { marginRight: 38 - paddingRight, paddingRight, indicatorRight };
+}

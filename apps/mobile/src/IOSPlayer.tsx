@@ -1,4 +1,5 @@
-import { IOSLibraryHeaderBackdrop } from "./IOSLibraryHeaderBackdrop";
+import { hasNativePageHeader } from "./IOSNativePage";
+import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
 import { SideNavigationDock } from "./SideNavigationDock";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
@@ -6,7 +7,7 @@ import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail"
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Animated, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
@@ -19,7 +20,7 @@ import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 import { AndroidSettings } from "./AndroidSettings";
 import { AndroidAudioInfo } from "./AndroidAudioInfo";
 import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
-import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, landscapeArtworkLayout, formatPlaybackTime } from "./ios-ui-model";
+import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, landscapeArtworkLayout, iosLeftLibraryGutter, iosRightLibraryGutter, formatPlaybackTime } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
 import { artworkColor, readArtworkColor } from "./artwork-color";
@@ -98,11 +99,7 @@ function ThemedPlayer(p: PlayerProps) {
   const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const layoutKey = landscapePlayer ? "landscape" : "portrait";
-  const [homeHeaderHeights, setHomeHeaderHeights] = useState<Partial<Record<typeof layoutKey, number>>>({});
-  const homeHeaderHeight = homeHeaderHeights[layoutKey] ?? (landscapePlayer ? (compactLandscape ? 64 : 86) : 74);
-  const libraryHeaderOverlay = Platform.OS === "ios" && page === 1 && !(p.error && !engineUnavailable);
-  const libraryScrollY = useRef(new Animated.Value(0)).current;
-  const libraryBlurOpacity = libraryScrollY.interpolate({ inputRange: [0, 12], outputRange: [0, 1], extrapolate: "clamp" });
+  const nativeLibraryHeaderActive = page === 1 && hasNativePageHeader && hasUIKitIOSTabs;
   const initialBlocks = { status: 0, info: 62, controls: 106, volume: 44 };
   const [playerWidths, setPlayerWidths] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const [playerMeasurements, setPlayerMeasurements] = useState<Partial<Record<typeof layoutKey, number>>>({});
@@ -197,10 +194,7 @@ function ThemedPlayer(p: PlayerProps) {
         </Pressable>)}
         {Platform.OS === "android" ? <AndroidGlassSettingsButton dark={immersiveHome || !isLight} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
   </>;
-  const homeHeader = <View pointerEvents="box-none" testID="home-header-surface"
-        onLayout={({ nativeEvent: { layout } }) => { if (layout.height > 0) setHomeHeaderHeights(previous => Math.abs((previous[layoutKey] ?? 0) - layout.height) < 0.5 ? previous : { ...previous, [layoutKey]: layout.height }); }}
-        style={libraryHeaderOverlay ? { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 } : undefined}>
-      {libraryHeaderOverlay && <IOSLibraryHeaderBackdrop dark={!isLight} opacity={libraryBlurOpacity} />}
+  const homeHeader = <View testID="home-header-surface">
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
@@ -232,15 +226,15 @@ function ThemedPlayer(p: PlayerProps) {
   </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
+  <SafeAreaView edges={nativeLibraryHeaderActive ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
     <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      {!libraryHeaderOverlay && homeHeader}
+      {!nativeLibraryHeaderActive && homeHeader}
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
-      {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      {!!p.error && !engineUnavailable && !nativeLibraryHeaderActive && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
+      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => {
             if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
@@ -275,12 +269,14 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           </View>
         </View>
-        <Animated.ScrollView style={[s.page, s.libraryViewport, sideNavigationActive && !sideNavigationRight && { marginRight: -6 }, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, libraryHeaderOverlay && { paddingTop: homeHeaderHeight + 8 }, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: SIDE_NAVIGATION_WIDTH + 8 }]}
-          onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: libraryScrollY } } }], { useNativeDriver: true })} scrollEventThrottle={16}
+        <ScrollView style={[s.page, s.libraryViewport, sideNavigationActive && (sideNavigationRight
+          ? (nativeLibraryHeaderActive ? { marginLeft: -18 - (screenInsets?.left ?? 0), marginRight: iosRightLibraryGutter(screenInsets?.right ?? 0).marginRight } : null)
+          : { marginLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).marginLeft, marginRight: -6 - (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) }), !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, sideNavigationActive && (sideNavigationRight ? (nativeLibraryHeaderActive ? { paddingLeft: 18 + (screenInsets?.left ?? 0), paddingRight: iosRightLibraryGutter(screenInsets?.right ?? 0).paddingRight } : { paddingRight: SIDE_NAVIGATION_WIDTH + 8 }) : { paddingLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).paddingLeft, paddingRight: 18 + (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) })]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs && !sideNavigationActive} scrollIndicatorInsets={{ top: libraryHeaderOverlay ? homeHeaderHeight + 10 : 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? (nativeLibraryHeaderActive ? Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4)) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
+          {!!p.error && !engineUnavailable && nativeLibraryHeaderActive && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
           <View style={s.libraryPlaybackModes}>
@@ -301,7 +297,7 @@ function ThemedPlayer(p: PlayerProps) {
           </Pressable>)}
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
-        </Animated.ScrollView>
+        </ScrollView>
         <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: Math.max(0, SIDE_NAVIGATION_WIDTH + 8 - 18) }, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
           <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
@@ -309,7 +305,6 @@ function ThemedPlayer(p: PlayerProps) {
           {label("单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint])}
         </View>
       </IOSSystemTabs>}</SafeAreaInsetsContext.Consumer>
-      {libraryHeaderOverlay && homeHeader}
 
       </View>
       {settings && Platform.OS === "android" && <AndroidSettings player={p} dark={!isLight} onClose={() => setSettings(false)} />}

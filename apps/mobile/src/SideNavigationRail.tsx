@@ -94,7 +94,7 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   // an independent glass Host over it produced an opaque disk on real devices.
   const backdrop = nativeUI && material ?
     <nativeUI.Host ignoreSafeArea="container" style={{ width: 48, height: 140, backgroundColor: "transparent" }} colorScheme={dark ? "dark" : "light"}>
-      <nativeUI.VStack modifiers={[material.frame({ width: 48, height: 140 }), material.glassEffect({ glass: { variant: "clear" }, shape: "capsule" })]}>{null}</nativeUI.VStack>
+      <nativeUI.VStack modifiers={[material.frame({ width: 48, height: 140 }), material.glassEffect({ glass: { variant: "regular" }, shape: "capsule" })]}>{null}</nativeUI.VStack>
     </nativeUI.Host> : <View style={{ width: 48, height: 140, borderRadius: 24, backgroundColor: dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
   const visual = <Animated.View testID="side-tab-glass-bar" style={{ width: 48, height: 140, transform: [{ scale: barScale }] }}>
     {backdrop}
