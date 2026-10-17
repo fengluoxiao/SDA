@@ -6,7 +6,7 @@ import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail"
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, Animated, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
@@ -101,6 +101,8 @@ function ThemedPlayer(p: PlayerProps) {
   const [homeHeaderHeights, setHomeHeaderHeights] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const homeHeaderHeight = homeHeaderHeights[layoutKey] ?? (landscapePlayer ? (compactLandscape ? 64 : 86) : 74);
   const libraryHeaderOverlay = Platform.OS === "ios" && page === 1 && !(p.error && !engineUnavailable);
+  const libraryScrollY = useRef(new Animated.Value(0)).current;
+  const libraryBlurOpacity = libraryScrollY.interpolate({ inputRange: [0, 12], outputRange: [0, 1], extrapolate: "clamp" });
   const initialBlocks = { status: 0, info: 62, controls: 106, volume: 44 };
   const [playerWidths, setPlayerWidths] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const [playerMeasurements, setPlayerMeasurements] = useState<Partial<Record<typeof layoutKey, number>>>({});
@@ -198,7 +200,7 @@ function ThemedPlayer(p: PlayerProps) {
   const homeHeader = <View pointerEvents="box-none" testID="home-header-surface"
         onLayout={({ nativeEvent: { layout } }) => { if (layout.height > 0) setHomeHeaderHeights(previous => Math.abs((previous[layoutKey] ?? 0) - layout.height) < 0.5 ? previous : { ...previous, [layoutKey]: layout.height }); }}
         style={libraryHeaderOverlay ? { position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 } : undefined}>
-      {libraryHeaderOverlay && <IOSLibraryHeaderBackdrop dark={!isLight} />}
+      {libraryHeaderOverlay && <IOSLibraryHeaderBackdrop dark={!isLight} opacity={libraryBlurOpacity} />}
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
@@ -273,10 +275,11 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           </View>
         </View>
-        <ScrollView style={[s.page, s.libraryViewport, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, libraryHeaderOverlay && { paddingTop: homeHeaderHeight + 8 }, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: SIDE_NAVIGATION_WIDTH + 8 }]}
+        <Animated.ScrollView style={[s.page, s.libraryViewport, sideNavigationActive && !sideNavigationRight && { marginRight: -6 }, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, libraryHeaderOverlay && { paddingTop: homeHeaderHeight + 8 }, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: SIDE_NAVIGATION_WIDTH + 8 }]}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: libraryScrollY } } }], { useNativeDriver: true })} scrollEventThrottle={16}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs && !sideNavigationActive} scrollIndicatorInsets={{ top: libraryHeaderOverlay ? homeHeaderHeight + 10 : 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : sideNavigationActive ? 15 : 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs && !sideNavigationActive} scrollIndicatorInsets={{ top: libraryHeaderOverlay ? homeHeaderHeight + 10 : 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
@@ -298,7 +301,7 @@ function ThemedPlayer(p: PlayerProps) {
           </Pressable>)}
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
-        </ScrollView>
+        </Animated.ScrollView>
         <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, sideNavigationActive && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: Math.max(0, SIDE_NAVIGATION_WIDTH + 8 - 18) }, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
           <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>

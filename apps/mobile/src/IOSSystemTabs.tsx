@@ -22,7 +22,7 @@ export function IOSSystemTabs({ selected, onChange, children, accessory, nativeA
       const scroll = React.isValidElement<{ contentContainerStyle?: object }>(page)
         ? React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: 76 }] }) : page;
       return <View style={{ flex: 1, backgroundColor: "transparent" }}>{scroll}
-        <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
+        <View style={{ position: "absolute", bottom: 0, left: 0, right: sideBarPosition === "left" ? 12 : 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
       </View>;
     }
     return <>{page}{index !== 0 && <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>}</>;

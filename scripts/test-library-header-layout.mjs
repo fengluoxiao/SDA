@@ -14,10 +14,10 @@ for(const height of [64,74,90]) for(const safeRight of [0,44,59,62]) {
   assert(indicatorX<railLeft,'indicator must not overlap side controls');
   assert.equal(indicator(true,height,false,48,false,{selectedUri:''},{right:safeRight}).right,3);
   const leftMode=indicator(true,height,false,48,true,{selectedUri:'mock'},{right:safeRight});
-  assert.equal(leftMode.right,15);
-  const leftModeIndicatorX=932-safeRight+12-leftMode.right;
+  assert.equal(leftMode.right,3);
+  const leftModeIndicatorX=932-safeRight-leftMode.right;
   assert(leftModeIndicatorX<932-safeRight,'left mode indicator remains inside native screen clipping bounds');
-  assert(leftModeIndicatorX>932-safeRight-6,'left mode indicator clears row arrows');
+  assert.equal(leftModeIndicatorX-(932-safeRight-18),15,'left mode reserves a real 15 pt card-to-scrollbar gap');
   assert.equal(inset.right,56-Math.min(12,(safeRight+8)/4),'approved right-side formula must remain unchanged');
 }
 assert(source.indexOf('{libraryHeaderOverlay && homeHeader}')>source.indexOf('</IOSSystemTabs>'),'mount blur after scrolling content');
@@ -47,14 +47,14 @@ try {
   globalThis.expo={getViewConfig:()=>{if(available==='throws')throw Error('missing');return available;}};
   new Function('require','module','exports','__DEV__',blurBuild.outputFiles[0].text)(name=>{
    if(name==='react')return react;
-   if(name==='react-native')return {Platform:{OS:'ios'},View:'View'};
+   if(name==='react-native')return {Platform:{OS:'ios'},View:'View',Animated:{View:'AnimatedView'},StyleSheet:{absoluteFill:{position:'absolute'}}};
    if(name==='expo-blur'){imports++;return {BlurView:'ExpoBlur'};}
    throw Error(name);
   },m,m.exports,false);
   const tree=m.exports.IOSHeaderBlur({dark:false});
   assert.equal(imports,available===true?1:0);
   assert.equal(tree.props.pointerEvents,'none');
-  if(available===true){assert.equal(tree.type,'ExpoBlur');assert.equal(tree.props.intensity,100);assert.equal(tree.props.tint,'systemMaterialLight');}
+  if(available===true){assert.equal(tree.type,'AnimatedView');const blur=tree.props.children[0];assert.equal(blur.type,'ExpoBlur');assert.equal(blur.props.intensity,100);assert.equal(blur.props.tint,'systemMaterialLight');assert.equal(tree.props.style[1].opacity,1);const idle=m.exports.IOSHeaderBlur({dark:false,opacity:0});assert.equal(idle.props.style[1].opacity,0);}
   else {assert.equal(tree.type,'View');assert.equal(tree.props.style[1].backgroundColor,'#f2f2f7','fallback must not expose overlapping text');}
  }
 } finally {globalThis.expo=previous;}

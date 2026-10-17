@@ -1,8 +1,8 @@
 import { IOSLibraryHeaderBackdrop as IOSScreenHeaderBackdrop } from "./IOSLibraryHeaderBackdrop";
 import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
-import React, { useState, useEffect } from "react";
-import { Alert, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
+import React, { useState, useEffect, useRef } from "react";
+import { Alert, Animated, Modal, Platform, PlatformColor, UIManager, StyleSheet, View, useWindowDimensions } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
 import type { PlayerProps } from "./RemotePlayer";
 import renderingPresets from "../rendering-presets.json";
@@ -106,6 +106,20 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 }) {
   const appTheme = useAppTheme();
   const { width } = useWindowDimensions();
+  const headerOpacity = useRef(new Animated.Value(1)).current;
+  const headerIsBlurred = useRef(true);
+  const scrollObserved = useRef(false);
+  const onScrollDepth = (depth: number) => {
+    if (!Number.isFinite(depth)) return;
+    if (!scrollObserved.current) {
+      scrollObserved.current = true;
+      if (__DEV__) console.info("[SDA UI] settings scroll observation active");
+    }
+    const blurred = depth > 0.5;
+    if (blurred === headerIsBlurred.current) return;
+    headerIsBlurred.current = blurred;
+    Animated.timing(headerOpacity, { toValue: blurred ? 1 : 0, duration: 120, useNativeDriver: true }).start();
+  };
   if (!swiftUI) return null;
   const { Host, RNHostView, VStack, ZStack, HStack, Button, Text } = swiftUI;
   const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
@@ -133,9 +147,9 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   return <View style={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }}>
     <Host style={{ flex: 1 }} colorScheme={theme}>
       {overlayHeader ? <ZStack alignment="top" modifiers={surfaceModifiers}>
-        <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} />
+        <NativeSettingsForm player={player} onClose={onClose} topContentInset={headerHeight} onScrollDepth={onScrollDepth} />
         <ZStack modifiers={[frame({ maxWidth: width, height: headerHeight })]}>
-          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSScreenHeaderBackdrop dark={theme === "dark"} horizontalPadding={0} /></View></RNHostView>
+          <RNHostView><View pointerEvents="none" style={{ flex: 1 }}><IOSScreenHeaderBackdrop dark={theme === "dark"} horizontalPadding={0} opacity={headerOpacity} /></View></RNHostView>
           {header}
         </ZStack>
       </ZStack> : <VStack alignment="leading" spacing={0} modifiers={surfaceModifiers}>
@@ -146,19 +160,21 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   </View>;
 }
 
-function NativeSettingsForm({ player: p, onClose, topContentInset = 0 }: { player: PlayerProps; onClose(): void; topContentInset?: number }) {
+function NativeSettingsForm({ player: p, onClose, topContentInset = 0, onScrollDepth }: { player: PlayerProps; onClose(): void; topContentInset?: number; onScrollDepth?(depth: number): void }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
-  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle, padding } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle, padding, useScrollGeometryChange } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const scrollGeometry = useScrollGeometryChange(onScrollDepth ? geometry => onScrollDepth(geometry.contentOffsetY) : undefined);
   const audioDisabled = p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
   return <Form modifiers={[
     // The header owns the only title; the Form contains settings rows only.
     tint(appTheme.accent),
+    ...(scrollGeometry ? [scrollGeometry] : []),
     scrollContentBackground("hidden"),
     // Portrait keeps its native navigation-bar treatment; landscape's material
     // header overlays this same Form without a second opaque background layer.

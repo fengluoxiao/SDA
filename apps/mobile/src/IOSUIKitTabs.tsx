@@ -38,7 +38,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
       ? React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: floatingLibraryAccessory ? 76 : 24 }] }) : page;
     return floatingLibraryAccessory ? <View style={{ flex: 1, backgroundColor: "transparent" }}>
       {scroll}
-      <View testID="floating-library-accessory" style={{ position: "absolute", bottom: 0, left: 0, right: 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
+      <View testID="floating-library-accessory" style={{ position: "absolute", bottom: 0, left: 0, right: sideBarPosition === "left" ? 12 : 0, [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>
     </View> : scroll;
   };
   // These properties configure UITabBarAppearance itself. Painting a background

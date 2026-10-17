@@ -196,10 +196,10 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
   globalThis.expo = { getViewConfig: (_module, name) => !['NavigationStackView', 'SlotView'].includes(name) || swiftNavigationAvailable };
-  const react = { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
+  const react = { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }), useRef: current => ({current}) };
   const mockRequire = name => {
     if (name === 'react') return react;
-    if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
+    if (name === 'react-native') return { Animated: { Value: class {constructor(value){this.value=value;}}, timing:(value,config)=>({start(){assert.equal(config.useNativeDriver,true);value.value=config.toValue;}}) }, Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSLibraryHeaderBackdrop') return {IOSLibraryHeaderBackdrop:'NativeHeaderBlur'};
@@ -230,7 +230,7 @@ console.log('Settings adapter checks passed: inline native title, no nested larg
 // Native ScrollView decides overflow including adjusted insets; never disable
 // gestures using a full-screen measurement that ignores the floating accessory.
 const homePages = ui.slice(ui.indexOf('<IOSSystemTabs '), ui.indexOf('</IOSSystemTabs>'));
-assert.equal((homePages.match(/<ScrollView /g) || []).length, 1);
+assert.equal((homePages.match(/<Animated\.ScrollView /g) || []).length, 1);
 assert.match(homePages, /scrollEnabled bounces=\{false\} alwaysBounceVertical=\{false\}/);
 assert.match(homePages, /contentInsetAdjustmentBehavior="automatic"/);
 assert.doesNotMatch(ui, /libraryCanScroll|setLibrarySize/);
@@ -545,6 +545,7 @@ const leftDockTree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:tru
 const leftDockLibrary=leftDockTree.props.children[0].props.children[0][1].props.children[0].props.children[0];
 assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginLeft,38);
 assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.marginRight,undefined);
+assert.equal(leftDockLibrary.props.children[0].props.children[1].props.style.right,12,'left library mini-player aligns with the dedicated scrollbar gutter');
 console.log('Left dock: mini-player clearance follows the rail without a right-side reservation.');
 
 const leftPageInsets=leftDockLibrary.props.style;
@@ -588,6 +589,12 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
     const nativeBlurHost=overlay.props.children[0];assert.equal(nativeBlurHost.type,'RNHostView');
     assert.equal(nativeBlurHost.props.children[0].props.children[0].type,'NativeHeaderBlur');
     assert.equal(nativeBlurHost.props.children[0].props.children[0].props.horizontalPadding,0,'settings backdrop extends through the same screen safe areas');
+    const blurOpacity=nativeBlurHost.props.children[0].props.children[0].props.opacity;
+    const reportScroll=column.props.children[0].props.onScrollDepth;
+    assert.equal(blurOpacity.value,1,'keep a readable backdrop until native scroll observation responds');
+    reportScroll(0);assert.equal(blurOpacity.value,0,'no pale tint at the top');
+    reportScroll(20);assert.equal(blurOpacity.value,1,'native blur appears when content scrolls under title');
+    reportScroll(0);assert.equal(blurOpacity.value,0);
     const header=overlay.props.children[1];assert.equal(header.type,'HStack');
     const headerFrame=header.props.modifiers.find(m=>m.name==='frame');
     assert.equal(headerFrame.args[0].maxWidth,dimensions.width);
