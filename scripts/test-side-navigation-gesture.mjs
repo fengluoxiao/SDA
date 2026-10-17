@@ -36,11 +36,13 @@ for(const effect of effects)effect();
 const down={nativeEvent:{locationX:24,locationY:24,pageX:19000,pageY:8000,touches:[]}};
 h.onPanResponderGrant(down,{numberActiveTouches:1});
 assert.equal(animationValues[1].value,1.18,"press must lift the glass indicator");
+assert.equal(animationValues[2].value,1.04,"press must also expand the whole bar slightly");
 h.onPanResponderMove({nativeEvent:{pageX:19000,pageY:8000}},{numberActiveTouches:1,dx:0,dy:92});
 assert.equal(highlights.at(-1),2);
 assert.equal(animationValues[0].value,92,"indicator must follow the drag continuously");
 h.onPanResponderRelease({}, {dx:0,dy:92});assert.deepEqual(events,[2]);
 assert.equal(animationValues[1].value,1,"release must restore the resting glass size");
+assert.equal(animationValues[2].value,1,"release must also restore the bar size");
 h.onPanResponderGrant(down,{numberActiveTouches:1});h.onPanResponderRelease({}, {dx:0,dy:0});assert.deepEqual(events,[2,0]);
 h.onPanResponderGrant(down,{numberActiveTouches:1});h.onPanResponderMove({}, {numberActiveTouches:2,dx:0,dy:50});h.onPanResponderRelease({}, {dx:0,dy:50});assert.deepEqual(events,[2,0]);
 assert(!JSON.stringify(tree).includes('NativeButton'),'decorative native controls must not compete for touch');
@@ -60,7 +62,9 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   assert.equal(iconContainers.length,3);
   for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#f5f5f7':'#1c1c1e');
   const glass=all.flatMap(n=>n.props?.modifiers??[]).filter(m=>m.name==='glassEffect');
-  assert.equal(glass.find(m=>m.args[0].shape==='circle').args[0].glass.tint,accent+'33');
+  assert.equal(glass.find(m=>m.args[0].shape==='circle').args[0].glass.tint,undefined,'native glass stays neutral; the selected symbol carries the accent');
+  const bar=all.find(n=>n.props?.testID==='side-tab-glass-bar');
+  assert.equal(bar.props.children.at(-1).props.testID,'side-tab-glass-selection','selection glass must sample the symbols below it');
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
 }
-console.log('Side rail themes: all five accents, light/dark symbols and translucent native glass selection passed.');
+console.log('Side rail themes: all five accents, light/dark symbols and neutral refracting glass selection passed.');

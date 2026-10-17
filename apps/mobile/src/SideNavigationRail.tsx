@@ -22,22 +22,29 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   const selectedRef = useRef(selected); selectedRef.current = selected;
   const indicatorY = useRef(new Animated.Value(selected * 46)).current;
   const indicatorScale = useRef(new Animated.Value(1)).current;
+  const barScale = useRef(new Animated.Value(1)).current;
+  const settledIndex = useRef(selected);
   const inside = useRef(true);
   const [hover, setHover] = useState<number | null>(null);
   const highlighted = hover ?? selected;
   const window = useWindowDimensions();
   const clearTimer = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
   const settle = (index: number) => {
+    settledIndex.current = index;
     Animated.parallel([
       Animated.spring(indicatorY, { toValue: index * 46, stiffness: 320, damping: 26, mass: 0.8, useNativeDriver: true }),
       Animated.spring(indicatorScale, { toValue: 1, stiffness: 300, damping: 22, mass: 0.7, useNativeDriver: true }),
+      Animated.spring(barScale, { toValue: 1, stiffness: 280, damping: 24, mass: 0.8, useNativeDriver: true }),
     ]).start();
   };
-  const lift = () => Animated.spring(indicatorScale, { toValue: 1.18, stiffness: 300, damping: 22, mass: 0.7, useNativeDriver: true }).start();
+  const lift = () => Animated.parallel([
+    Animated.spring(indicatorScale, { toValue: 1.18, stiffness: 300, damping: 22, mass: 0.7, useNativeDriver: true }),
+    Animated.spring(barScale, { toValue: 1.04, stiffness: 280, damping: 24, mass: 0.8, useNativeDriver: true }),
+  ]).start();
   const cancel = () => { clearTimer(); pressed.current = false; gesture.current.cancel(); setHover(null); settle(selectedRef.current); };
   useEffect(cancel, [window.width, window.height]);
-  useEffect(() => { if (!pressed.current) settle(selected); }, [selected]);
-  useEffect(() => () => { clearTimer(); pressed.current = false; gesture.current.cancel(); indicatorY.stopAnimation(); indicatorScale.stopAnimation(); }, []);
+  useEffect(() => { if (!pressed.current && settledIndex.current !== selected) settle(selected); }, [selected]);
+  useEffect(() => () => { clearTimer(); pressed.current = false; gesture.current.cancel(); indicatorY.stopAnimation(); indicatorScale.stopAnimation(); barScale.stopAnimation(); }, []);
   // The topmost RN view is the only physical touch target. Its local start
   // coordinates plus PanResponder's translation stay in one coordinate space;
   // no asynchronous window measurement or SwiftUI Button recognizer competes.
@@ -82,14 +89,10 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   const material = nativeUI ? require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers") : null;
   const glass = (shape: "capsule" | "circle", width: number, height: number) => nativeUI && material ?
     <nativeUI.Host style={{ width, height }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
-      <nativeUI.VStack modifiers={[material.frame({ width, height }), material.glassEffect({ glass: { variant: "clear", ...(shape === "circle" ? { tint: `${accent}33` } : {}) }, shape })]}>{null}</nativeUI.VStack>
-    </nativeUI.Host> : <View style={{ width, height, borderRadius: width / 2, backgroundColor: shape === "circle" ? `${accent}33` : dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
-  const visual = <View style={{ width: 48, height: 140 }}>
+      <nativeUI.VStack modifiers={[material.frame({ width, height }), material.glassEffect({ glass: { variant: "clear" }, shape })]}>{null}</nativeUI.VStack>
+    </nativeUI.Host> : <View style={{ width, height, borderRadius: width / 2, backgroundColor: shape === "circle" ? (dark ? "#ffffff24" : "#ffffff80") : dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
+  const visual = <Animated.View testID="side-tab-glass-bar" style={{ width: 48, height: 140, transform: [{ scale: barScale }] }}>
     {glass("capsule", 48, 140)}
-    <Animated.View style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
-      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
-      {glass("circle", 44, 44)}
-    </Animated.View>
     <View style={StyleSheet.absoluteFill}>
       {nativeUI && material ? <nativeUI.Host style={{ width: 48, height: 140 }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
         <nativeUI.VStack spacing={2} modifiers={[material.padding({ all: 2 }), material.frame({ width: 48, height: 140 })]}>
@@ -105,7 +108,13 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
         {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")}</View>)}
       </View>}
     </View>
-  </View>;
+    {/* Above the symbols: native glass can refract their color, rather than
+        drawing an empty selection disk behind them. Touches stay on the RN plane. */}
+    <Animated.View testID="side-tab-glass-selection" style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
+      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
+      {glass("circle", 44, 44)}
+    </Animated.View>
+  </Animated.View>;
   return <View collapsable={false} style={{ width: 48, height: 140 }}>
     <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{visual}</View>
     <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { padding: 2, gap: 2 }]}>

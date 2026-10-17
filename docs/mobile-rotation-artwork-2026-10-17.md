@@ -52,4 +52,9 @@ Right-side layout is now consistent across playback, library cards, space canvas
 
 ## Landscape theme propagation
 
-The independent side-rail SwiftUI hosts now explicitly receive the selected theme as seedColor. The selected SF Symbol inherits both foregroundColor and tint from its native container, while inactive symbols follow light/dark appearance. The moving native glass selection gets the same accent with20%alpha; the outer capsule remains neutral glass. This avoids an opaque accent disk and does not reset gesture/selection state when the theme changes. All five theme accents were exercised across three selected tabs and both appearances in the actual component adapter.
+The independent side-rail SwiftUI hosts now explicitly receive the selected theme as seedColor. The selected SF Symbol inherits both foregroundColor and tint from its native container, while inactive symbols follow light/dark appearance. The selected symbol carries the accent. The moving glass selection and outer capsule remain neutral glass; the selection is composited above the symbols so it can sample their colors. This avoids an opaque accent disk and does not reset gesture/selection state when the theme changes. All five theme accents were exercised across three selected tabs and both appearances in the actual component adapter.
+
+
+## Reference-matched material ordering and whole-bar press response
+
+The user supplied the original bottom-tab press reference. The moving native glass selection is now drawn above the icon layer, rather than underneath it. No flat accent tint is applied to the glass; only the active icon uses the theme. The complete visual rail springs to1.04scale on press, together with the1.18selection lift, and both settle to1on release/cancel. The touch plane and page geometry do not scale. Duplicate settle requests after the controlled selection callback no longer restart the same spring. Tests cover press/release scales, stacking order and all theme variants; on-device optical appearance still needs visual confirmation.
