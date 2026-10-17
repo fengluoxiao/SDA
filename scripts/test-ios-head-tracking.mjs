@@ -47,11 +47,13 @@ assert.match(read('crates/sda-native/src/ios.rs'), /"pose" => e.set_head_orienta
 assert.ok(JSON.parse(read('apps/mobile/app.json')).expo.ios.infoPlist.NSMotionUsageDescription);
 assert.match(read(root + 'SdaCore.podspec'), /'CoreMotion'/);
 const ui = read('apps/mobile/src/IOSPlayer.tsx');
-// The header may combine its base style with responsive landscape styles.
-const headerStart = ui.search(/<View style=\{(?:s\.header|\[s\.header\b[^\n]*\])\}>/);
-const headerEnd = ui.indexOf('{/* Status belongs', headerStart);
-assert.ok(headerStart >= 0 && headerEnd > headerStart, 'Playback header boundaries must exist');
+// The same actions move from the portrait header to the landscape side dock.
+const headerStart = ui.indexOf('const headerActions =');
+const headerEnd = ui.indexOf('const heading =', headerStart);
+assert.ok(headerStart >= 0 && headerEnd > headerStart, 'Shared header actions must exist');
 const header = ui.slice(headerStart, headerEnd);
+assert.match(ui, /!sideNavigationActive && headerActions/);
+assert.match(ui, /testID="landscape-side-actions-dock"/);
 assert.match(header, /accessibilityRole="switch"/);
 assert.match(header, /checked: p.headTrackingEnabled/);
 assert.match(header, /<IOSHeadTrackingButton enabled=\{p.headTrackingEnabled\}/);

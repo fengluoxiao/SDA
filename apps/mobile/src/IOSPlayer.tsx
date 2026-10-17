@@ -175,6 +175,21 @@ function ThemedPlayer(p: PlayerProps) {
       <IOSPlaybackSymbol playing={playing} color={c.accent} />
     </Pressable>
   </View>;
+  const headerActions = <>
+        {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} sideDock={sideNavigationActive}
+          disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
+          onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
+          accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
+          accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
+          disabled={p.busy || p.systemSpatial360RAActive}
+          onPress={() => p.setHeadTracking(!p.headTrackingEnabled)}
+          style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center",
+            opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
+          <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
+            fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
+        </Pressable>)}
+        {Platform.OS === "android" ? <AndroidGlassSettingsButton dark={immersiveHome || !isLight} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+  </>;
   const heading = (name: string, stage = "") => <View onLayout={event => {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
   }}>{label(name, true, s.groupTitle)}</View>;
@@ -207,19 +222,7 @@ function ThemedPlayer(p: PlayerProps) {
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
         <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: immersiveHome ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(homeTitle, false, [s.pageTitle, { color: immersiveHome ? pc.ink : c.ink }])}</View>
-        {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled}
-          disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
-          onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
-          accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
-          accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
-          disabled={p.busy || p.systemSpatial360RAActive}
-          onPress={() => p.setHeadTracking(!p.headTrackingEnabled)}
-          style={({ pressed }) => ({ width: 44, height: 44, marginRight: 8, alignItems: "center", justifyContent: "center",
-            opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
-          <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
-            fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
-        </Pressable>)}
-        {Platform.OS === "android" ? <AndroidGlassSettingsButton dark={immersiveHome || !isLight} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+        {!sideNavigationActive && headerActions}
       </View>
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
@@ -347,6 +350,13 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
+  {sideNavigationActive && !settings && <SafeAreaView testID="landscape-side-actions-dock"
+    edges={{ top: "additive", left: "maximum", right: "off" }} pointerEvents="box-none"
+    style={[StyleSheet.absoluteFill, { alignItems: navigationPreferences.sideTabPosition === "left" ? "flex-start" : "flex-end", paddingTop: 16, paddingLeft: 14, paddingRight: 6 }]}>
+    <View pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, marginHorizontal: 6, alignItems: "center", gap: 8 }}>
+      {headerActions}
+    </View>
+  </SafeAreaView>}
   {/* Left placement keeps its approved cutout clearance: max(14, inset) + 6.
       Right placement uses the reference's 12 pt edge gap (6 + 6), independently.
       Artwork stays outside this dock. */}

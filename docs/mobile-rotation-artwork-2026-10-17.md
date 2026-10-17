@@ -124,3 +124,8 @@ Existing tab background/shadow props remain transparent. The library ScrollView 
 ## Expo Go startup regression: remove scroll marker
 
 The supplied error stack maps exactly to the RNSScrollViewMarker hasViewManagerConfig call in the served iOS bundle at line 303170. Expo Go throws from unstable_hasComponent instead of reporting false. Remove the optional marker probe and experimental import entirely, restoring the normal library ScrollView. Tests now throw on unknown manager names rather than treating all capability probes as safe. Retain the accepted left/right placement, header alignment, capsule mini-player and symbol tint. The bottom tint investigation is not considered resolved by this rollback; its unsupported candidate is withdrawn.
+
+
+## Landscape upper-side actions
+
+With side navigation enabled in iOS landscape, the existing head-tracking and settings actions move from the title row to a vertical stack above the rail on the selected side. Use the same 48 pt lane and horizontal dock rules, 16 pt plus top-safe-area spacing, 44 pt buttons and an 8 pt gap. The existing bottom rail and page layout are unchanged. Only one set of controls is mounted; portrait/disabled side navigation retains the original header row. Docked native button Hosts ignore container safe areas and remove the portrait head-tracking trailing margin, preventing independent native displacement. Settings hides the dock. TypeScript, UI regressions and head-tracking action contracts pass; physical preview remains to be checked.

@@ -24,26 +24,26 @@ const nativeScreens: typeof import("react-native-screens") | null =
 
 const settingsButtonStyle = Platform.OS === "ios" && Number(Platform.Version) >= 26 ? "glass" : "bordered";
 
-export function IOSSettingsButton({ onPress }: { onPress(): void }) {
+export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): void; sideDock?: boolean }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Button } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  return <Host style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
+  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
 }
 
-export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect }: {
-  enabled: boolean; disabled: boolean; accent: string; onSelect(enabled: boolean): void;
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, sideDock = false }: {
+  enabled: boolean; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean;
 }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Menu, Picker, Text } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const label = enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
-  if (!hasView("MenuView")) return <Host style={{ width: 44, height: 44, marginRight: 8 }}>
+  if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <swiftUI.Button label={label} systemImage="person.crop.circle" onPress={() => Alert.alert("空间音频", "", [
       { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
     ])} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), disabled(isDisabled)]} />
   </Host>;
-  return <Host style={{ width: 44, height: 44, marginRight: 8 }}><Menu label={label}
+  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}><Menu label={label}
     systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"}
     modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
       accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]}>
