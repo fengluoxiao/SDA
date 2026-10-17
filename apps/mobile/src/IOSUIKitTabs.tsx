@@ -16,6 +16,11 @@ if (__DEV__ && Platform.OS === "ios") {
 }
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
+// iOS 26's scroll-edge backdrop is separate from UITabBarAppearance fill.
+// Guard the manager before importing this surface in older binaries/Expo Go.
+const ScrollViewMarker: typeof import("react-native-screens/experimental").ScrollViewMarker | null =
+  hasUIKitIOSTabs && Number(Platform.Version) >= 26 && UIManager.hasViewManagerConfig("RNSScrollViewMarker")
+    ? require("react-native-screens/experimental").ScrollViewMarker : null;
 
 export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
   sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number;
@@ -26,6 +31,12 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
   if (!screens) return null;
   const { Tabs } = screens;
   const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"];
+  const pageContent = (index: number) => {
+    const page = pages[index];
+    if (index !== 1 || !React.isValidElement<{ contentContainerStyle?: object }>(page)) return page;
+    const scroll = React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: 24 }] });
+    return ScrollViewMarker ? <ScrollViewMarker style={{ flex: 1, backgroundColor: "transparent" }} scrollEdgeEffects={{ bottom: "hidden" }}>{scroll}</ScrollViewMarker> : scroll;
+  };
   // These properties configure UITabBarAppearance itself. Painting a background
   // behind the TabView cannot override its opaque native bar appearance.
   // Keep the system glass effect; remove only the explicit fill and divider.
@@ -61,7 +72,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
           <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
-            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: 24 }] }) : pages[index]}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
+            {pageContent(index)}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}

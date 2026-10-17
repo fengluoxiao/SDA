@@ -112,3 +112,10 @@ User clarified that the page should move right into the spare right padding, whi
 ## Align the header with the left-rail content
 
 The header was outside the shifted page host. In left-rail landscape mode its title now includes the same reserved lane and 12 pt shift, and its trailing controls use the page's 6 pt inner edge. Header vertical spacing, the rail, and artwork stay unchanged.
+
+
+## Separate left/right docking and library bottom backdrop
+
+User confirmed left placement but rejected the inward-shifted right placement, supplying the earlier 12 pt screen-edge reference. Left remains max(14, left safe inset)+6, with the approved page/header shift untouched. Right now disables the dock right inset and uses 6 pt padding + 6 pt rail margin = 12 pt. Bottom placement is unchanged.
+
+Existing tab background/shadow props remain transparent. The library ScrollView now uses a capability-guarded RNSScrollViewMarker to hide its iOS 26 bottom scroll-edge effect, which is separate from the tab glass material. Only the library direct ScrollView is wrapped; content tail padding, native tab/accessory glass and the gray selected segment remain. Tests cover enabled and missing-manager paths. This is a targeted candidate for the reported bottom tint; physical visual confirmation remains pending.
