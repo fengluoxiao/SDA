@@ -115,6 +115,7 @@ jobs:
           node scripts/test-ios-ui.mjs
           node scripts/test-artwork-color-cache.mjs
           node scripts/test-navigation-preferences.mjs
+          node scripts/test-side-navigation-gesture.mjs
           node scripts/test/character-theme-colors.test.cjs
           node scripts/test-ios-spatial-enhancement.mjs
           node scripts/test-ios-playback-polling.mjs

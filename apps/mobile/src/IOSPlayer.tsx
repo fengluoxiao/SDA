@@ -16,7 +16,7 @@ import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 import { AndroidSettings } from "./AndroidSettings";
 import { AndroidAudioInfo } from "./AndroidAudioInfo";
 import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
-import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, formatPlaybackTime } from "./ios-ui-model";
+import { IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, landscapeArtworkLayout, formatPlaybackTime } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
 import { artworkColor, readArtworkColor } from "./artwork-color";
@@ -54,7 +54,6 @@ function ThemedPlayer(p: PlayerProps) {
   const { width, height } = surfaceSize || initialWindow;
   const landscapePlayer = width > height && (Platform.OS === "ios" || (Platform.OS === "android" && height >= 600));
   const sideNavigationActive = Platform.OS === "ios" && navigationPreferences.landscapeSideTabs && landscapePlayer;
-  const artworkLeft = landscapePlayer ? 0 : -24;
   const compactLandscape = landscapePlayer && height < 600;
   const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
   const [sceneSmoke] = useState(() => (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true);
@@ -74,7 +73,6 @@ function ThemedPlayer(p: PlayerProps) {
   const isLight = systemTheme !== "dark";
   const md3 = androidMaterialTheme(appTheme.id, !isLight);
   const c = Platform.OS === "android" ? { ...palettes[isLight ? "light" : "dark"], bg: md3.bg, panel: md3.panel, ink: md3.ink, muted: md3.muted, line: md3.line, field: md3.panel, accent: md3.primary } : { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
-  const artworkSize = landscapePlayer ? height : width + 48; // Slight uniform zoom, never stretch the square.
   const pc = { ink: "#ffffff", muted: "#c9c9ce", line: "rgba(255,255,255,.24)", field: "rgba(255,255,255,.10)" };
   const [failedArtwork, setFailedArtwork] = useState("");
   const artworkUri = p.metadata.coverUri || "";
@@ -97,8 +95,12 @@ function ThemedPlayer(p: PlayerProps) {
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const layoutKey = landscapePlayer ? "landscape" : "portrait";
   const initialBlocks = { status: 0, info: 62, controls: 106, volume: 44 };
+  const [playerWidths, setPlayerWidths] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const [playerMeasurements, setPlayerMeasurements] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const [blockMeasurements, setBlockMeasurements] = useState<Partial<Record<typeof layoutKey, typeof initialBlocks>>>({});
+  const artworkLayout = landscapeArtworkLayout(width, height, playerWidths[layoutKey] ?? width);
+  const artworkSize = landscapePlayer ? artworkLayout.size : width + 48;
+  const artworkLeft = landscapePlayer ? artworkLayout.left : -24;
   const playerHeight = playerMeasurements[layoutKey] ?? Math.max(0, height - (compactLandscape ? 140 : 230));
   const playerBlocks = blockMeasurements[layoutKey] || initialBlocks;
   const measuredBlockHeight = Object.values(playerBlocks).reduce((sum, value) => sum + value, 0);
@@ -190,7 +192,7 @@ function ThemedPlayer(p: PlayerProps) {
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
     {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: 0, left: artworkLeft, width: artworkSize, height: artworkSize }} /> : <View style={{ position: "absolute", top: 0, left: artworkLeft, width: artworkSize, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
-    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: artworkSize * .70, top: 0, width: artworkSize * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
+    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: artworkLeft + artworkSize * .70, top: 0, width: artworkSize * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
   </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
@@ -220,10 +222,14 @@ function ThemedPlayer(p: PlayerProps) {
       <IOSSystemTabs selected={page} onChange={navigate} sideBar={sideNavigationActive ? <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
         renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} /> : undefined} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
-          onLayout={event => { const available = event.nativeEvent.layout.height; if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available }); }}>
+          onLayout={event => {
+            const { width: measuredWidth, height: available } = event.nativeEvent.layout;
+            if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available });
+            if (measuredWidth > 0) setPlayerWidths(previous => Math.abs((previous[layoutKey] ?? 0) - measuredWidth) < 0.5 ? previous : { ...previous, [layoutKey]: measuredWidth });
+          }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: artworkSize, height: "100%" }]}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
-          <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }]}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
+          <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls, sideNavigationActive && { paddingRight: SIDE_NAVIGATION_WIDTH + 12 }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }]}>
           <View style={[np.metadata, { transform: [{ translateY: landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
@@ -251,7 +257,7 @@ function ThemedPlayer(p: PlayerProps) {
         <ScrollView style={[s.page, s.libraryViewport, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={false} scrollIndicatorInsets={{ top: 10, bottom: 10, right: 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={false} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive ? 156 : 10, right: 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
@@ -277,7 +283,7 @@ function ThemedPlayer(p: PlayerProps) {
         <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
           <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
-          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
+          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, sideNavigationActive && { marginRight: SIDE_NAVIGATION_WIDTH + 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
           {label("单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint])}
         </View>
       </IOSSystemTabs>
@@ -323,7 +329,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}
-          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("横屏侧边导航", "横屏时将播放、资料库和空间移到左侧，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}</View>
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("横屏侧边导航", "横屏时在右下角显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>
           {heading("应用与输出")}
@@ -395,8 +401,8 @@ const np = StyleSheet.create({
   compactTitle: { fontSize: 18, lineHeight: 22 },
   compactArtist: { fontSize: 15, lineHeight: 20 },
   compactTransportTouch: { height: 48 },
-  landscapeContent: { flexDirection: "row", paddingHorizontal: 0, gap: 24 },
-  landscapeControls: { flex: 1, minWidth: 0, justifyContent: "center", paddingRight: 25 },
+  landscapeContent: { flexDirection: "row", paddingHorizontal: 0, gap: 0 },
+  landscapeControls: { width: "50%", flexShrink: 0, minWidth: 0, justifyContent: "center", paddingLeft: 12, paddingRight: 25 },
   landscapeBlock: { transform: [{ translateY: 0 }] },
   iosLandscapeControlsDown: { transform: [{ translateY: 8 }] },
   landscapeTransportTouch: { flex: 1, width: 0, minWidth: 48, maxWidth: 76 },

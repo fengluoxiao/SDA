@@ -181,7 +181,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
       </Picker>
     </Section>}
-    <Section title="界面" footer={<Text>横屏时使用左侧导航栏，竖屏保持底部导航。</Text>}>
+    <Section title="界面" footer={<Text>横屏时使用右下角导航栏，长按后滑动选择，竖屏保持底部导航。</Text>}>
       <Toggle label="横屏侧边导航" isOn={navigationPreferences.landscapeSideTabs} onIsOnChange={navigationPreferences.setLandscapeSideTabs} />
     </Section>
     <Section title="主题色">

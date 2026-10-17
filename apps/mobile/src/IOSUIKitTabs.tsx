@@ -61,11 +61,11 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
           <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, backgroundColor: "transparent" }}>
-            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: 24 }] }) : pages[index]}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && accessory}
+            {index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(pages[index]) ? React.cloneElement(pages[index], { contentContainerStyle: [pages[index].props.contentContainerStyle, { paddingBottom: sideBar ? 164 : 24 }] }) : pages[index]}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ marginRight: sideBarWidth + 12 }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaProvider>
       </Tabs.Screen>)}
     </Tabs.Host>
-    {sideBar && <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: sideBarWidth, alignItems: "center", justifyContent: "center" }}>{sideBar}</View>}
+    {sideBar && <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 8, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
   </View>;
 }

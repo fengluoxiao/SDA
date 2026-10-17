@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+const output=await build({entryPoints:['apps/mobile/src/side-navigation-gesture.ts'],bundle:true,platform:'node',format:'esm',write:false});
+const {createSideRailGesture,sideRailIndex}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+const p=y=>({x:24,y});
+assert.deepEqual([24,70,116].map(y=>sideRailIndex(p(y))),[0,1,2]);
+assert.equal(sideRailIndex({x:100,y:70}),null);
+let g=createSideRailGesture();g.begin(p(24),0);assert.equal(g.end(p(24),100),0);
+g=createSideRailGesture();g.begin(p(24),0);g.hold(300);assert.equal(g.move(p(70),350),1);assert.equal(g.move(p(116),400),2);assert.equal(g.end(p(116),450),2);
+g=createSideRailGesture();g.begin(p(116),0);g.hold(310);assert.equal(g.move(p(70),340),1);assert.equal(g.end(p(24),400),0);
+g=createSideRailGesture();g.begin(p(24),0);assert.equal(g.move(p(116),100),null);assert.equal(g.end(p(116),500),null,'quick swipe must not become a long-press drag');
+g=createSideRailGesture();g.begin(p(24),0);g.hold(300);assert.equal(g.end({x:100,y:116},350),null);
+g=createSideRailGesture();g.begin(p(24),0);g.hold(300);g.cancel();assert.equal(g.end(p(70),400),null);
+console.log('Side rail: taps, hold-and-slide both ways, early movement, outside release and cancellation passed.');

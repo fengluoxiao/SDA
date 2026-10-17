@@ -54,3 +54,12 @@ export function iosLandscapeControlLayout(viewportHeight: number, blockHeight: n
   // into another gap or reducing the buttons' touch height.
   return { metadataGap: 44 * scale, transportGap: Math.max(0, 42 * scale - 4), volumeGap: Math.max(0, 32 * scale - 4), topPadding };
 }
+
+// Both columns use half of the measured tab viewport, not a screen-height-wide
+// artwork column. Artwork is a contained square centered within its half.
+export function landscapeArtworkLayout(surfaceWidth: number, surfaceHeight: number, viewportWidth: number) {
+  const available = Math.max(0, Math.min(surfaceWidth, viewportWidth));
+  const columnWidth = available / 2;
+  const size = Math.max(0, Math.min(surfaceHeight, columnWidth));
+  return { columnWidth, size, left: (surfaceWidth - available) / 2 + (columnWidth - size) / 2 };
+}

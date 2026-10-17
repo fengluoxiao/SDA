@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 const result = await build({ entryPoints: ['apps/mobile/src/ios-ui-model.ts'], bundle: true, platform: 'node', format: 'esm', write: false });
-const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, landscapeArtworkLayout } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 assert.deepEqual(IOS_TABS, ['播放', '资料库', '空间']);
 assert.equal(trackTitle({name:'file.m4a',metadata:{title:'Song'}}),'Song');
 assert.equal(trackTitle({name:'file.m4a',metadata:{}}),'file.m4a');
@@ -398,7 +398,7 @@ assert.match(ui, /artworkColor\(artworkUri\)/);
 assert.match(ui, /width: artworkSize, height: artworkSize/);
 assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
-assert.match(ui, /const artworkSize = landscapePlayer \? height : width \+ 48/);
+assert.match(ui, /const artworkSize = landscapePlayer \? artworkLayout.size : width \+ 48/);
 assert.match(ui, /landscapePlayer = width > height && \(Platform\.OS === "ios" \|\| \(Platform\.OS === "android" && height >= 600\)\)/);
 const useLandscape = new Function('Platform', 'width', 'height', 'return ' + ui.match(/const landscapePlayer = ([^;]+);/)[1]);
 for (const [os, width, height, expected] of [
@@ -477,7 +477,7 @@ assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
 
-assert.match(uiKitTabs, /paddingBottom: 24/);
+assert.match(uiKitTabs, /paddingBottom: sideBar \? 164 : 24/);
 
 assert.match(ui, /const previewMetadata = false;/);
 assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
@@ -509,7 +509,20 @@ for (const sideBar of [undefined, 'side-rail']) {
   if(sideBar) {
     assert.equal(host.props.ios.bottomAccessory,undefined);
     assert.equal(host.props.ios.bottomAccessoryHidden,true);
-    assert.equal(library.props.children[1],'legacy-card');
+    assert.equal(library.props.children[1].props.children[0],'legacy-card');
+    const dock=root.props.children[1];
+    assert.deepEqual(dock.props.edges,["bottom"]);
+    assert.equal(dock.props.style.justifyContent,"flex-end");
+    assert.equal(dock.props.style.alignItems,"flex-end");
+    assert.equal(dock.props.style.paddingBottom,8);
   } else assert.equal(host.props.ios.bottomAccessory('regular'),'content-regular');
 }
 console.log('Optional side navigation: retained native pages, hidden bottom bar and single mini-player passed.');
+
+for(const [width,height,usable] of [[844,390,726],[1194,834,1194],[1097,617,1049],[932,430,814]]) {
+  const frame=landscapeArtworkLayout(width,height,usable);
+  assert.equal(frame.columnWidth*2,usable);
+  assert(frame.size<=height && frame.size<=frame.columnWidth);
+  assert.equal(frame.left+frame.size/2,(width-usable)/2+frame.columnWidth/2);
+}
+console.log('Landscape columns: equal measured halves and a contained, unstretched square cover passed.');

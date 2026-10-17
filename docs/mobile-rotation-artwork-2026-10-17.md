@@ -30,3 +30,12 @@ The user requested a settings switch rather than automatic replacement. Added Se
 TypeScript and UI adapter tests passed, including bottom-bar/accessory visibility and preserved selected screen. Preference tests cover default-off, persisted reload, serialized writes, invalid data, and late disk reads not overriding a user toggle. Preview is updated on port8083; physical-device visual confirmation remains outstanding. This is SDA's opt-in side navigation, not a claim of a verified device-specific iPhone Duo native API.
 
 The user rejected the initial oversized reserved-column rail. The current overlay width leaves page geometry unchanged, uses box-none hit testing outside the actual rail, and reduces icons to20points. The settings gate and persistence are unchanged.
+
+
+## Right-bottom navigation, drag selection and equal columns
+
+At the user's request the48x140point rail now docks at the lower right, within the bottom safe area plus8points; horizontal safe insets remain owned by the enclosing home view. Empty dock space uses box-none hit testing. The main right-hand controls, scene metadata and mini-player leave room for the overlay, and the library can scroll its final rows above it.
+
+A300ms hold enables drag preview through the three tabs; releasing commits one selection. Taps still work; an early swipe, outside release, interruption, multiple touches or rotation cancels selection. A common RN gesture surface operates over the native Liquid Glass visuals, with independent accessible tab actions. Native SwiftUI buttons alone did not implement this cross-tab gesture.
+
+Landscape columns now have explicit50% widths with internal padding rather than a screen-height-wide cover plus a remainder column. The cover is a contained square computed from the measured tab viewport, centered in the left half, with its original aspect ratio. Existing portrait geometry is unchanged. Geometry/bounds, gesture-state, native-tab/safe-dock and TypeScript checks passed; native device gesture/visual confirmation remains for the Expo Go preview.
