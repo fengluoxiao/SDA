@@ -498,11 +498,11 @@ for (const viewport of [180, 220, 280, 350, 520]) {
 console.log('Landscape control spacing preserves measured blocks and bounded gaps within the viewport.');
 
 // Native pages stay in the same Tabs.Host when side navigation is toggled;
-// only bar visibility and content width change. Keep one usable mini-player.
+// only bar visibility changes; the rail overlays unchanged content width. Keep one usable mini-player.
 for (const sideBar of [undefined, 'side-rail']) {
-  const root=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar,sideBarWidth:76});
+  const root=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar,sideBarWidth:60});
   const host=root.props.children[0];
-  assert.equal(root.props.style.paddingLeft,sideBar ? 76 : 0);
+  assert.equal(root.props.style.paddingLeft,undefined,"overlay rail must not resize page content");
   assert.equal(host.props.tabBarHidden,!!sideBar);
   assert.equal(host.props.navStateRequest.selectedScreenKey,'1');
   const library=host.props.children[0][1].props.children[0].props.children[0];

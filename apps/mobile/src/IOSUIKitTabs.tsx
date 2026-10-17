@@ -17,7 +17,7 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 76 }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 60 }: {
   sideBar?: React.ReactNode; sideBarWidth?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
@@ -34,7 +34,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     tabBarShadowColor: "transparent",
     tabBarBlurEffect: "systemDefault" as const,
   };
-  return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor, paddingLeft: sideBar ? sideBarWidth : 0 }}>
+  return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor }}>
     <Tabs.Host
       tabBarHidden={!!sideBar}
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
@@ -66,6 +66,6 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         </SafeAreaProvider>
       </Tabs.Screen>)}
     </Tabs.Host>
-    {sideBar && <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: sideBarWidth, alignItems: "center", justifyContent: "center" }}>{sideBar}</View>}
+    {sideBar && <View pointerEvents="box-none" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: sideBarWidth, alignItems: "center", justifyContent: "center" }}>{sideBar}</View>}
   </View>;
 }
