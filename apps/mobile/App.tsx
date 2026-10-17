@@ -150,6 +150,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
   private lifecycleSubscriptions: NativeEventSubscription[] = [];
   private engine?: SdaEngineModule;
+  private artworkPreview = false;
   private changingTrack = false;
   private poller?: ReturnType<typeof setInterval>;
 
@@ -163,6 +164,12 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   componentDidMount() {
+    if (__DEV__ && !(globalThis as any).expo?.modules?.SdaEngine &&
+        require("expo-constants").default.executionEnvironment === "storeClient") {
+      this.artworkPreview = true;
+      this.setState(require("./dev-preview/fixture").createArtworkPreview());
+      return;
+    }
     const showPlayback = () => this.setState(previous => ({ playbackPageRequest: previous.playbackPageRequest + 1 }));
     this.lifecycleSubscriptions.push(Linking.addEventListener("url", ({ url }) => {
       if (/^(sda|app\.sda\.mobile):\/\/now-playing(?:[/?#]|$)/.test(url)) showPlayback();
@@ -575,9 +582,19 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   render() {
+    const previewProps = __DEV__ && this.artworkPreview ? {
+      selectTrack: (index: number) => {
+        const track = this.state.queue[index];
+        if (track) this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata, positionMs: 0 });
+      },
+      play: () => this.setState({ playing: true, paused: false }),
+      togglePause: () => this.setState(state => ({ playing: true, paused: !state.paused })),
+      stop: () => this.setState({ playing: false, paused: true, positionMs: 0 }),
+      setVolume: (volume: number) => this.setState({ volume }),
+    } : {};
     return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
   }
 }

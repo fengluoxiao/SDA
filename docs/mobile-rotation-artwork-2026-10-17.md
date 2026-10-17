@@ -83,3 +83,10 @@ The previous 4 pt change left the outer horizontal safe-area inset in place. The
 ## Align native layers at the screen edge
 
 Device feedback after external docking showed the neutral RN selection to the right of the native capsule and symbols. Both SwiftUI Hosts lacked ignoreSafeArea, allowing container insets to alter their contents independently of the RN selection and touch plane. Set ignoreSafeArea="container" on both fixed 48x140 Hosts; only the outer dock handles screen positioning and bottom safety. No per-layer translation is used. Regression checks enforce the shared native frame and inset policy; physical alignment still requires Expo Go device confirmation.
+
+
+## Configurable dock side and cover preview
+
+The approved dock uses 20 pt horizontal clearance. Settings > Interface now offers left/right placement, default right, persisted alongside the enable switch. Both positions move the whole rail, with native container inset suppression preserved. Preference tests cover older settings, invalid values, reload and late-read changes independently per field.
+
+Expo Go development mode without SdaEngine now loads a 12-row UI fixture with the original 1400x1400 エガクミライ cover and its sampled #3f4e3f bottom color. The fixture is UI-only (no audio decoding). Its image import sits behind the development/Expo Go gate. Verified the LAN iOS development bundle contains it and the minified production-mode bundle excludes expo-artwork-preview-, preview://artwork/ and egaku-cover. Native packaging has not been triggered; device UI review remains pending.

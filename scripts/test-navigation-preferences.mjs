@@ -34,3 +34,16 @@ const expression=ui.match(/const sideNavigationActive = ([^;]+);/)[1];
 const enabled=new Function('Platform','navigationPreferences','landscapePlayer','return '+expression);
 for(const os of ['ios','android'])for(const pref of [false,true])for(const landscape of [false,true])assert.equal(enabled({OS:os},{landscapeSideTabs:pref},landscape),os==='ios'&&pref&&landscape);
 console.log('Side navigation preference: default off, save order, reload, late-read protection and portrait/platform gates passed.');
+
+const sides=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true})));
+assert.equal(sides.render().sideTabPosition,'right');await tick();
+sides.render().setSideTabPosition('left');sides.render().setLandscapeSideTabs(false);await tick();
+assert.deepEqual(sides.writes.at(-1),{landscapeSideTabs:false,sideTabPosition:'left'});
+const sideReload=harness(Promise.resolve(JSON.stringify(sides.writes.at(-1))));sideReload.render();await tick();
+assert.equal(sideReload.render().sideTabPosition,'left');
+let releasePosition;const sideRace=harness(new Promise(resolve=>{releasePosition=resolve;}));
+sideRace.render().setSideTabPosition('right');releasePosition(JSON.stringify({landscapeSideTabs:true,sideTabPosition:'left'}));await tick();
+assert.equal(sideRace.render().sideTabPosition,'right');assert.equal(sideRace.render().landscapeSideTabs,true);
+assert.deepEqual(sideRace.writes.at(-1),{landscapeSideTabs:true,sideTabPosition:'right'});
+const invalidSide=harness(Promise.resolve(JSON.stringify({sideTabPosition:'top'})));invalidSide.render();await tick();assert.equal(invalidSide.render().sideTabPosition,'right');
+console.log('Side position: default right, migration, persistence, independent late-read protection passed.');

@@ -181,8 +181,12 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
       </Picker>
     </Section>}
-    <Section title="界面" footer={<Text>横屏时使用右下角导航栏，长按后滑动选择，竖屏保持底部导航。</Text>}>
+    <Section title="界面" footer={<Text>横屏时在所选侧的下角显示导航栏，长按后滑动选择，竖屏保持底部导航。</Text>}>
       <Toggle label="横屏侧边导航" isOn={navigationPreferences.landscapeSideTabs} onIsOnChange={navigationPreferences.setLandscapeSideTabs} />
+      <Picker label="导航栏位置" selection={navigationPreferences.sideTabPosition} onSelectionChange={(value: string) => { if (value === "left" || value === "right") navigationPreferences.setSideTabPosition(value); }} modifiers={[pickerStyle("menu")]}>
+        <Text modifiers={[tag("left")]}>左边</Text>
+        <Text modifiers={[tag("right")]}>右边</Text>
+      </Picker>
     </Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>

@@ -328,7 +328,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}
-          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("横屏侧边导航", "横屏时在右下角显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}</View>
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("横屏侧边导航", "横屏时在所选侧显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}{divider()}{actionRow("sidebar.left", "导航栏位置", navigationPreferences.sideTabPosition === "left" ? "左边" : "右边", () => Alert.alert("导航栏位置", undefined, [{ text: "左边", onPress: () => navigationPreferences.setSideTabPosition("left") }, { text: "右边", onPress: () => navigationPreferences.setSideTabPosition("right") }, { text: "取消", style: "cancel" }]))}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>
           {heading("应用与输出")}
@@ -345,7 +345,7 @@ function ThemedPlayer(p: PlayerProps) {
   {/* Dock against the full presentation surface, outside the page's horizontal
       safe-area padding. Keep the touch target inside its parent bounds. */}
   {sideNavigationActive && !settings && <SafeAreaView testID="landscape-side-tab-dock" edges={["bottom"]} pointerEvents="box-none"
-    style={[StyleSheet.absoluteFill, { alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 12, paddingBottom: 8 }]}>
+    style={[StyleSheet.absoluteFill, { alignItems: navigationPreferences.sideTabPosition === "left" ? "flex-start" : "flex-end", justifyContent: "flex-end", paddingHorizontal: 20, paddingBottom: 8 }]}>
     <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
         renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} />
   </SafeAreaView>}
