@@ -31,8 +31,12 @@ const restored=harness(Promise.resolve(JSON.stringify(delayed.writes.at(-1))));r
 for(const invalid of ['bad JSON',JSON.stringify({landscapeSideTabs:'true'})]) {const h=harness(Promise.resolve(invalid));h.render();await tick();assert.equal(h.render().landscapeSideTabs,false);}
 const ui=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');
 const expression=ui.match(/const sideNavigationActive = ([^;]+);/)[1];
-const enabled=new Function('Platform','navigationPreferences','landscapePlayer','return '+expression);
-for(const os of ['ios','android'])for(const pref of [false,true])for(const landscape of [false,true])assert.equal(enabled({OS:os},{landscapeSideTabs:pref},landscape),os==='ios'&&pref&&landscape);
+const enabled=new Function('Platform','navigationPreferences','landscapePlayer','hasAndroidChrome','return '+expression);
+for(const os of ['ios','android','web'])for(const chrome of [false,true])for(const pref of [false,true])for(const landscape of [false,true]) {
+  const expected=(os==='ios'||(os==='android'&&chrome))&&pref&&landscape;
+  assert.equal(enabled({OS:os},{landscapeSideTabs:pref},landscape,chrome),expected,
+    `${os}: native chrome=${chrome}, preference=${pref}, landscape=${landscape}`);
+}
 console.log('Side navigation preference: default off, save order, reload, late-read protection and portrait/platform gates passed.');
 
 const sides=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true})));
