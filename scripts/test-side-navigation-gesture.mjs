@@ -57,16 +57,19 @@ const nodes=value=>!value||typeof value!=='object'?[]:Array.isArray(value)?value
 for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(const dark of [false,true]) for(const selected of [0,1,2]) {
   const tree=module.exports.SideNavigationRail({selected,onChange(){},accent,dark,renderIcon:()=>null});
   const all=nodes(tree);const hosts=all.filter(n=>n.type==='NativeHost');
-  assert.equal(hosts.length,3);assert(hosts.every(h=>h.props.seedColor===accent));
+  assert.equal(hosts.length,2);
+  assert.equal(hosts.filter(h=>h.props.seedColor===accent).length,1,"only the icon host needs the theme tint");
   const iconContainers=all.filter(n=>n.type==='NativeStack'&&n.props.modifiers?.some(m=>m.name==='foregroundColor'));
   assert.equal(iconContainers.length,3);
   for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#f5f5f7':'#1c1c1e');
   const glass=all.flatMap(n=>n.props?.modifiers??[]).filter(m=>m.name==='glassEffect');
-  assert.equal(glass.find(m=>m.args[0].shape==='circle').args[0].glass.tint,accent+'33');
+  assert.equal(glass.length,1,'do not restore the moving native-glass layer that turns black on-device');
+  const neutral=all.find(n=>n.props?.testID==='side-tab-neutral-selection');
+  assert.equal(neutral.props.style.backgroundColor,dark?'rgba(255,255,255,0.14)':'rgba(118,118,128,0.18)');
   const bar=all.find(n=>n.props?.testID==='side-tab-glass-bar');
   assert.equal(bar.props.children.at(-1).props.testID,'side-tab-symbols','native material must never cover the symbols');
   assert.equal(bar.props.children.at(-1).props.style[1].zIndex,1);
   assert.equal(bar.props.children[1].props.testID,'side-tab-glass-selection');
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
 }
-console.log('Side rail themes: all five accents, light/dark symbols and visible symbols above the moving glass selection passed.');
+console.log('Side rail themes: all five accents, light/dark symbols and neutral selection fill, visible themed symbols and one stationary glass backdrop passed.');

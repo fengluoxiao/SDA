@@ -66,6 +66,6 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         </SafeAreaProvider>
       </Tabs.Screen>)}
     </Tabs.Host>
-    {sideBar && <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 4, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
+    {sideBar && <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 0, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
   </View>;
 }

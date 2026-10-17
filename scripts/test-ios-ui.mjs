@@ -515,7 +515,7 @@ for (const sideBar of [undefined, 'side-rail']) {
     assert.equal(dock.props.style.justifyContent,"flex-end");
     assert.equal(dock.props.style.alignItems,"flex-end");
     assert.equal(dock.props.style.paddingBottom,8);
-    assert.equal(dock.props.style.paddingRight,4);
+    assert.equal(dock.props.style.paddingRight,0);
     assert.equal(library.props.children[1].props.style.marginRight,38);
   } else assert.equal(host.props.ios.bottomAccessory('regular'),'content-regular');
 }

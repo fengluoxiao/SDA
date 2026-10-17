@@ -63,3 +63,13 @@ The user supplied the original bottom-tab press reference. The moving native gla
 ## Device regression rollback
 
 The user reported an opaque black circle covering the icons after the above-symbol glass composition. That composition is rejected. The moving native material has been returned below the symbol layer, its previous translucent theme tint restored, and symbol stacking is explicit. The whole-bar press response, drag selection and safe docking remain. Do not claim that a separate glass Host placed above symbols reproduces the system tab bar's optical refraction; device output contradicted the earlier assumption. Tests now enforce unobscured symbol stacking, while final visual confirmation still belongs to the device preview.
+
+
+## Remove the failing moving glass surface
+
+Device feedback showed that restoring layer order alone still left a dark disk. The independently moving native glass Host is therefore removed entirely. Only the stationary outer capsule uses native Liquid Glass. The moving selection is a neutral semitransparent gray RN view below the symbols (white14% in dark appearance;118/118/128 at18% in light appearance), as requested by the user. It never takes the accent tint. The active symbol remains themed. Press/scrub/settle and whole-bar feedback remain, but no optical-refraction claim is made for the selection fill. Tests explicitly require exactly one stationary glass effect and a neutral selection across all themes and selections.
+
+
+## Small rightward dock adjustment
+
+Removed the dock's extra 4 pt right padding in both UIKit and compatibility hosts. The rail moves 4 pt right within the existing horizontal safe area; page widths, bottom spacing and touch bounds are unchanged.
