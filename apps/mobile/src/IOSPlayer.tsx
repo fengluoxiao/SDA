@@ -221,7 +221,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={[np.metadata, { transform: [{ translateY: landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
-          <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
+          <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock]}>
             <View accessibilityRole="progressbar" accessibilityLabel="播放进度（当前不支持拖动定位）" accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></View>
             <View style={np.times}><Text style={[np.time, { color: pc.muted }]}>{time(p.positionMs)}</Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
@@ -232,7 +232,7 @@ function ThemedPlayer(p: PlayerProps) {
             <Pressable accessibilityRole="button" accessibilityLabel="下一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.next} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="next" color={pc.ink} size={30} /></Pressable>
           </View>
           </View>
-          <View style={[np.volume, np.controlsDown, landscapePlayer && np.landscapeBlock, landscapeSpacing && { marginTop: landscapeSpacing.volumeGap }]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
+          <View style={[np.volume, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.volumeGap }]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
             <Symbol name="speaker.fill" fallback="◂" size={13} color={pc.muted} />
             <View accessible accessibilityRole="adjustable" accessibilityLabel="音量滑块" accessibilityValue={{ min: 0, max: 100, now: Math.round(p.volume * 100) }} accessibilityActions={[{ name: "increment" }, { name: "decrement" }]} onAccessibilityAction={e => p.setVolume(Math.max(0, Math.min(1, p.volume + (e.nativeEvent.actionName === "increment" ? .05 : -.05))))} {...volumeGesture.panHandlers} onLayout={e => { volumeWidth.current = Math.max(1, e.nativeEvent.layout.width); }} style={np.volumeTouch}><View style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${Math.max(0, Math.min(1, p.volume)) * 100}%` }]} /></View></View>
             <Symbol name="speaker.wave.2.fill" fallback="▸" size={18} color={pc.muted} />
@@ -390,6 +390,7 @@ const np = StyleSheet.create({
   landscapeContent: { flexDirection: "row", paddingHorizontal: 0, gap: 24 },
   landscapeControls: { flex: 1, minWidth: 0, justifyContent: "center", paddingRight: 25 },
   landscapeBlock: { transform: [{ translateY: 0 }] },
+  iosLandscapeControlsDown: { transform: [{ translateY: 8 }] },
   landscapeTransportTouch: { flex: 1, width: 0, minWidth: 48, maxWidth: 76 },
   controlsDown: { transform: [{ translateY: 24 }] },
   infoProgressOffset: { transform: [{ translateY: 12 }] },
