@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { trackingModule } from './ios-tracking-test-module.mjs';
-const bundle = await build({entryPoints:['apps/mobile/App.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['*']});
+// Node has no Metro globals; exercise the production app, excluding Expo Go mock data.
+const bundle = await build({entryPoints:['apps/mobile/App.tsx'],bundle:true,platform:'node',format:'cjs',write:false,define:{__DEV__:'false'}, external:['*']});
 function fixture(platform='ios') {
  let preparations=0, releases=0, stops=0, plays=0, configured, currentHash='a';
  class Component { setState(update, callback) {this.state={...this.state,...update};callback?.();} }

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { trackingModule } from './ios-tracking-test-module.mjs';
-const bundle = await build({entryPoints:['apps/mobile/App.tsx'], bundle:true, platform:'node', format:'cjs', write:false, external:['*']});
+// Node has no Metro globals; exercise the production app, excluding Expo Go mock data.
+const bundle = await build({entryPoints:['apps/mobile/App.tsx'], bundle:true, platform:'node', format:'cjs', write:false, define:{__DEV__:'false'}, external:['*']});
 function makeApp(platform = 'ios') {
  const listeners = {}, timers = new Map(); let sequence = 0, writes = 0;
  class Component {
