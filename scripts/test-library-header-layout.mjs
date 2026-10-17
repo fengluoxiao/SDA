@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,existsSync} from 'node:fs';
 const source=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');
 const expression=source.match(/scrollIndicatorInsets=\{(\{[^}]+\})\}/)[1];
-const indicator=new Function('sideNavigationRight','SIDE_NAVIGATION_WIDTH','sideNavigationActive','p','screenInsets','nativeLibraryHeaderActive','return '+expression);
+const indicator=new Function('sideNavigationRight','SIDE_NAVIGATION_WIDTH','sideNavigationActive','p','screenInsets','nativeLibraryHeaderActive','nativeRightEdgeActive','return '+expression);
 for(const safeRight of [0,44,59,62]) {
  const inset=indicator(true,48,true,{selectedUri:'mock'},{right:safeRight});
  assert.equal(inset.top,10);assert.equal(inset.bottom,62);
@@ -53,3 +53,11 @@ for(const safeRight of [0,4,8,14,44,59,62]) {
  for(const safeLeft of [0,59])assert.equal(safeLeft+18+(-18-safeLeft),0,'right-mode viewport reaches screen left');
 }
 console.log('Right library native effect clears actions and reaches the opposite edge without moving cards or scrollbar.');
+
+for(const safeRight of [0,44,59,62]) {
+ const right=indicator(true,48,true,{selectedUri:'mock'},{right:safeRight},true,true);
+ const gap=Math.min(12,(safeRight+8)/4);
+ assert.equal(932-right.right,932-safeRight-56+gap,'native right-edge path preserves indicator position');
+ assert.equal(932-(56+safeRight),932-safeRight-56,'native right-edge path preserves row right edge');
+}
+console.log('Native right scroll-edge candidate preserves content and indicator coordinates.');

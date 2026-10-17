@@ -18,8 +18,8 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
-  libraryHeaderActions?: React.ReactNode;
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, libraryHeaderActions, nativeRightEdgeActive = false, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
+  libraryHeaderActions?: React.ReactNode; nativeRightEdgeActive?: boolean;
   sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
@@ -40,7 +40,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     const scroll = React.isValidElement<ScrollViewProps>(page)
       ? React.cloneElement(page, {
           contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: floatingLibraryAccessory ? 76 : 24 }],
-          ...(sideBar && sideBarPosition === "left" && hasNativePageHeader ? {
+          ...(sideBar && (sideBarPosition === "left" || nativeRightEdgeActive) && hasNativePageHeader ? {
             // Its viewport extends through the right safe inset for the native
             // edge effect. Apply indicator safety once, using the measured bar.
             automaticallyAdjustsScrollIndicatorInsets: false,
