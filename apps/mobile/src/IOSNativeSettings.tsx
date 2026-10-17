@@ -61,6 +61,8 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
   children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void;
   title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean;
 }) {
+  const window = useWindowDimensions();
+  const landscape = window.width > window.height;
   if (!swiftUI || !hasNativeIOSSettings) return children;
   if (nativeScreens) {
     const { ScreenStack, ScreenStackItem } = nativeScreens;
@@ -74,14 +76,17 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
         {children}
       </ScreenStackItem>
       {settings && <ScreenStackItem screenId="sda-settings" activityState={2} stackPresentation="push"
+        stackAnimation={landscape ? "simple_push" : "default"}
         onDismissed={() => onSettingsChange(false)}
         // Keep the centered native title/back button, without a large title.
         headerConfig={{
           title: "设置", backButtonDisplayMode: "minimal", backTitleVisible: false,
-          largeTitle: false, translucent: true, hideShadow: true,
-          color: PlatformColor("systemBlue"), backgroundColor: "transparent",
+          largeTitle: false, translucent: !landscape, hideShadow: true,
+          color: PlatformColor("systemBlue"), backgroundColor: landscape ? PlatformColor("systemGroupedBackground") : "transparent",
           experimental_userInterfaceStyle: theme }}
         contentStyle={{ flex: 1, backgroundColor: PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
+        {/* In landscape the stack reserves the header's space before the Form.
+            Keep the Host's normal side/bottom safe-area handling. */}
         <Host style={{ flex: 1 }} colorScheme={theme}>
           <NativeSettingsForm player={player} onClose={() => onSettingsChange(false)} />
         </Host>

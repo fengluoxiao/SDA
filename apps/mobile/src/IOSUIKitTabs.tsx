@@ -26,6 +26,10 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
   if (!screens) return null;
   const { Tabs } = screens;
   const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"];
+  // ScrollView's automatic content inset keeps rows reachable while its viewport
+  // extends behind the native floating bar/accessory. Reserving the same inset
+  // on this wrapper leaves a solid page-colored strip behind the glass instead.
+  const libraryUnderlaysNativeBar = !sideBar && (!accessory || (hasUIKitTabAccessory && !!nativeAccessory));
   const pageContent = (index: number) => {
     const page = pages[index];
     if (index !== 1 || !React.isValidElement<{ contentContainerStyle?: object }>(page)) return page;
@@ -66,7 +70,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         {/* The page owns its content inset, while its background remains full
             screen behind the floating bar. Pages stay mounted across selection. */}
         <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
-          <SafeAreaView edges={["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
+          <SafeAreaView edges={index === 1 && libraryUnderlaysNativeBar ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
             {pageContent(index)}{index !== 0 && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaProvider>

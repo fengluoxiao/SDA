@@ -92,7 +92,7 @@ assert.match(uiKitTabs, /tabBarBlurEffect: "systemDefault"/);
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
-assert.match(uiKitTabs, /<SafeAreaView edges=\{\["bottom"\]\}/);
+assert.match(uiKitTabs, /edges=\{index === 1 && libraryUnderlaysNativeBar \? \[\] : \["bottom"\]\}/);
 assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 
 // Exercise the UI adapter with mocked native components (not a visual/native
@@ -136,7 +136,7 @@ for (const screen of tabHost.props.children[0]) {
   assert.deepEqual(screen.props.ios.standardAppearance, screen.props.ios.scrollEdgeAppearance);
   assert.equal(screen.props.ios.standardAppearance.tabBarBlurEffect, 'systemDefault');
   const safeViewport = screen.props.children[0].props.children[0];
-  assert.deepEqual(safeViewport.props.edges, ["bottom"]);
+  assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? [] : ["bottom"]);
   assert.equal(safeViewport.props.style.backgroundColor, "transparent");
 }
 for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1 } });
@@ -179,11 +179,11 @@ assert.match(uiKitStack, /largeTitle: false/);
 assert.doesNotMatch(uiKitStack, /backTitle: "返回"/);
 console.log('Settings fullscreen checks passed: mounted home, inline settings title');
 
-assert.match(uiKitStack, /translucent: true/);
-assert.match(uiKitStack, /backgroundColor: "transparent",\s*experimental_userInterfaceStyle/);
+assert.match(uiKitStack, /translucent: !landscape/);
+assert.match(uiKitStack, /backgroundColor: landscape \? PlatformColor\("systemGroupedBackground"\) : "transparent"/);
 assert.doesNotMatch(uiKitStack, /scrollEdgeEffects=|blurEffect:/);
 assert.match(uiKitStack, /<Host style=\{\{ flex: 1 \}\} colorScheme=\{theme\}>/);
-assert.doesNotMatch(uiKitStack, /ignoreSafeArea=/);
+
 assert.match(uiKitStack, /<NativeSettingsForm/);
 assert.doesNotMatch(settings, /navigationTitle\(|<NavigationStack|<NavigationDestination/);
 assert.doesNotMatch(settings, /scrollEdgeEffectStyle\(|blurEffect:/);
@@ -192,14 +192,14 @@ console.log('Settings header checks passed: single inline title, no large Form t
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
 const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
-function settingsAdapter(swiftNavigationAvailable) {
+function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,height:844}) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
   globalThis.expo = { getViewConfig: (_module, name) => !['NavigationStackView', 'SlotView'].includes(name) || swiftNavigationAvailable };
   const react = { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
   const mockRequire = name => {
     if (name === 'react') return react;
-    if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => ({ width: 390 }), View: 'View', Modal: 'Modal' };
+    if (name === 'react-native') return { Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSSystemTabs') return { swiftUI: Object.fromEntries(['Host','NavigationStack','NavigationDestination','Text'].map(name => [name,name])) };
@@ -559,3 +559,26 @@ const compatibleScroll=compatibleTree.props.children[0].props.children[0][1].pro
 assert.equal(compatibleScroll.type,'ScrollView');
 assert.deepEqual(compatibleScroll.props.contentContainerStyle,[{paddingTop:8},{paddingBottom:24}]);
 console.log('Expo Go startup: no experimental component probe/import; normal library scrolling and tail padding retained.');
+
+for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:844,height:390}]) {
+  const adapter=settingsAdapter(true,dimensions);
+  const navigation=adapter.IOSSettingsNavigation({children:'approved-home',settings:true,onSettingsChange(){},title:'正在播放',player:{},theme:'light'});
+  const screen=navigation.props.children[1];const landscape=dimensions.width>dimensions.height;
+  assert.equal(screen.props.stackAnimation,landscape?'simple_push':'default');
+  assert.equal(screen.props.headerConfig.translucent,!landscape);
+  assert.equal(screen.props.headerConfig.backgroundColor,landscape?'systemGroupedBackground':'transparent');
+  // The first child is a JSX comment slot; find the actual Host.
+  const host=screen.props.children.find(child=>child?.type==='Host');
+  assert.equal(host.props.ignoreSafeArea,undefined,'keep side/bottom safety on the settings Form');
+}
+for(const [adapter,props,expected] of [
+  [nativeAdapter,accessoryProps,[]],
+  [nativeAdapter,{...accessoryProps,accessory:false,nativeAccessory:undefined},[]],
+  [nativeAdapter,{...accessoryProps,sideBar:true},['bottom']],
+  [loadNativeTabs('ios',true,26,false),accessoryProps,['bottom']],
+]) {
+  const root=adapter.api.IOSUIKitTabs(props);
+  const viewport=root.props.children[0].props.children[0][1].props.children[0].props.children[0];
+  assert.deepEqual(viewport.props.edges,expected);
+}
+console.log('Landscape settings: stable header ownership; library underlays native bars while side/fallback layouts keep bottom protection.');
