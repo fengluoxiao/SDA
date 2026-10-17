@@ -1,3 +1,4 @@
+import { IOSSideNavigationBackground } from "./IOSSideNavigationBackground";
 import { hasNativePageHeader } from "./IOSNativePage";
 import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
 import { SideNavigationDock } from "./SideNavigationDock";
@@ -361,6 +362,7 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
+  {sideNavigationActive && sideNavigationRight && !settings && <IOSSideNavigationBackground dark={immersiveHome || !isLight} />}
   {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top">
     {headerActions}
   </SideNavigationDock>}

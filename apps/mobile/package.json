@@ -26,7 +26,8 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
     "react-native-worklets": "0.10.1",
-    "three": "0.159.0"
+    "three": "0.159.0",
+    "expo-blur": "~57.0.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",

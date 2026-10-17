@@ -21,7 +21,7 @@ assert.match(source,/automaticallyAdjustsScrollIndicatorInsets=\{Platform.OS ===
 assert.match(source,/contentInsetAdjustmentBehavior="automatic"/);
 assert.doesNotMatch(source,/libraryHeaderOverlay|homeHeaderHeight|libraryScrollY|IOSHeaderBlur|IOSLibraryHeaderBackdrop/);
 for(const file of ['apps/mobile/src/IOSHeaderBlur.tsx','apps/mobile/src/IOSLibraryHeaderBackdrop.tsx','apps/mobile/assets/header-blur-edge-mask.png'])assert.equal(existsSync(file),false,'retired imitation must not remain in the app');
-assert.equal(JSON.parse(readFileSync('apps/mobile/package.json','utf8')).dependencies['expo-blur'],undefined);
+assert.doesNotMatch(readFileSync('apps/mobile/src/IOSNativePage.tsx','utf8'),/expo-blur|BlurView|glassEffect/,'page headers must stay native navigation bars');
 console.log('Library native header: automatic insets, accepted indicator gutters, no manual header blur/opacity/mask.');
 
 // The left-mode scroll edge must exclude the action lane without shifting rows.
