@@ -95,3 +95,8 @@ Expo Go development mode without SdaEngine now loads a 12-row UI fixture with th
 ## Left-side clearance and immersive landscape artwork
 
 Device feedback requested the Android reference artwork framing. Landscape artwork now uses a full-surface-height square anchored at x=0, instead of a smaller square centered in the safe-area left column. Image aspect ratio and the horizontal color fade are retained; control columns remain 50/50 and portrait framing is unchanged. The playback control column only reserves extra right spacing when the rail is on the right. Library/space clearance and mini-player margin now follow the selected side; the right scrollbar no longer reserves rail height for a left rail. TypeScript and layout/adapter regression checks pass; Expo Go device appearance remains subject to review.
+
+
+## Cutout-safe side navigation
+
+Fixed 20 pt screen-edge placement can intersect the Dynamic Island/notch. The full-surface dock now uses native SafeAreaView maximum mode on both horizontal edges with 14 pt base padding, plus 6 pt margin around the rail for press-animation overhang: effective selected-side gap = max(14, system inset) + 6. This keeps the approved 20 pt gap where safe, follows device/rotation insets without model-specific values, and does not apply safe-area padding to the edge-aligned artwork. Bottom inset plus 8 pt is unchanged; internal SwiftUI Hosts still ignore container insets to avoid independent shifting. Physical cutout clearance needs device review.

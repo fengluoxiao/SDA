@@ -343,12 +343,15 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
-  {/* Dock against the full presentation surface, outside the page's horizontal
-      safe-area padding. Keep the touch target inside its parent bounds. */}
-  {sideNavigationActive && !settings && <SafeAreaView testID="landscape-side-tab-dock" edges={["bottom"]} pointerEvents="box-none"
-    style={[StyleSheet.absoluteFill, { alignItems: navigationPreferences.sideTabPosition === "left" ? "flex-start" : "flex-end", justifyContent: "flex-end", paddingHorizontal: 20, paddingBottom: 8 }]}>
+  {/* Native maximum insets follow either landscape orientation/device cutout.
+      max(14, inset) + 6 gives a 20 pt minimum edge gap and protects the
+      pressed indicator's overhang. Artwork stays outside this safe-area dock. */}
+  {sideNavigationActive && !settings && <SafeAreaView testID="landscape-side-tab-dock" edges={{ left: "maximum", right: "maximum", bottom: "additive" }} pointerEvents="box-none"
+    style={[StyleSheet.absoluteFill, { alignItems: navigationPreferences.sideTabPosition === "left" ? "flex-start" : "flex-end", justifyContent: "flex-end", paddingHorizontal: 14, paddingBottom: 8 }]}>
+    <View pointerEvents="box-none" style={{ marginHorizontal: 6 }}>
     <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
         renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} />
+    </View>
   </SafeAreaView>}
   </View>
   </IOSSettingsNavigation>
