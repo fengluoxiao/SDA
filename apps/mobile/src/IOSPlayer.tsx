@@ -1,5 +1,3 @@
-import { IOSRightScrollEdge, hasNativeRightScrollEdge } from "./IOSRightScrollEdge";
-import { IOSSideNavigationBackground } from "./IOSSideNavigationBackground";
 import { hasNativePageHeader } from "./IOSNativePage";
 import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
 import { SideNavigationDock } from "./SideNavigationDock";
@@ -9,13 +7,13 @@ import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail"
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, BackHandler, findNodeHandle, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme, useWindowDimensions } from "react-native";
 import { SafeAreaProvider, SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
 import type { PlayerProps } from "./RemotePlayer";
 import { MobileObjectScene } from "./MobileObjectScene";
-import { hasNativeIOSChrome, IOSAction, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
+import { hasNativeIOSChrome, IOSGlassTabs, IOSMaterialSurface } from "./IOSNativeChrome";
 import { hasNativePlayerTabs as hasSystemIOSTabs, PlatformPlayerTabs as IOSSystemTabs } from "./PlatformPlayerTabs";
 import { AndroidSymbol } from "./AndroidSymbol";
 import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
@@ -102,15 +100,6 @@ function ThemedPlayer(p: PlayerProps) {
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
   const layoutKey = landscapePlayer ? "landscape" : "portrait";
   const nativeLibraryHeaderActive = page === 1 && hasNativePageHeader && hasUIKitIOSTabs;
-  const nativeRightEdgeActive = nativeLibraryHeaderActive && sideNavigationRight && hasNativeRightScrollEdge;
-  const libraryScrollRef = useRef<ScrollView>(null);
-  const [libraryScrollTag, setLibraryScrollTag] = useState(0);
-  const bindLibraryScrollView = () => {
-    if (!hasNativeRightScrollEdge) return;
-    const node = libraryScrollRef.current?.getScrollableNode();
-    const tag = typeof node === "number" ? node : node ? findNodeHandle(node) : null;
-    if (tag) setLibraryScrollTag(previous => previous === tag ? previous : tag);
-  };
   const initialBlocks = { status: 0, info: 62, controls: 106, volume: 44 };
   const [playerWidths, setPlayerWidths] = useState<Partial<Record<typeof layoutKey, number>>>({});
   const [playerMeasurements, setPlayerMeasurements] = useState<Partial<Record<typeof layoutKey, number>>>({});
@@ -177,9 +166,7 @@ function ThemedPlayer(p: PlayerProps) {
     <View style={s.settingCopy}>{label(name, false, s.settingTitle)}{!!description && label(description, true, s.settingHint)}</View>
     <Switch accessibilityLabel={name} value={value} onValueChange={onValueChange} disabled={disabled} trackColor={{ false: c.line, true: c.accent }} />
   </View>;
-  const actionRow = (symbol: string, name: string, description: string, action: () => void, disabled = false, selected = false) => hasNativeIOSChrome
-    ? <IOSAction row symbol={symbol} title={name} subtitle={description} selected={selected} disabled={disabled} onPress={action} />
-    : <Pressable accessibilityRole="button" accessibilityLabel={name} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={action} style={[s.settingRow, { opacity: disabled ? .4 : 1 }]}><View style={s.settingCopy}>{label(name, false, s.settingTitle)}{!!description && label(description, true, s.settingHint)}</View>{label(selected ? "✓" : "›", true)}</Pressable>;
+  const actionRow = (symbol: string, name: string, description: string, action: () => void, disabled = false, selected = false) => <Pressable accessibilityRole="button" accessibilityLabel={name} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={action} style={[s.settingRow, { opacity: disabled ? .4 : 1 }]}><View style={s.settingCopy}>{label(name, false, s.settingTitle)}{!!description && label(description, true, s.settingHint)}</View>{label(selected ? "✓" : "›", true)}</Pressable>;
   const cover = (size: number) => p.metadata.coverUri
     ? <Image source={{ uri: p.metadata.coverUri }} resizeMode="cover" accessibilityLabel={(p.metadata.album || title) + " 封面"} style={{ width: size, height: size, borderRadius: size > 100 ? 18 : 8 }} />
     : <View accessibilityLabel="无专辑封面" style={[s.emptyCover, { width: size, height: size, borderRadius: size > 100 ? 18 : 8, backgroundColor: c.field }]}>{label("♫", true, { fontSize: size > 100 ? 56 : 23 })}</View>;
@@ -213,15 +200,6 @@ function ThemedPlayer(p: PlayerProps) {
         {!sideNavigationActive && headerActions}
       </View>
       </View>;
-  const sideControls = <>
-  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top">
-    {headerActions}
-  </SideNavigationDock>}
-  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom">
-    <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
-        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} />
-  </SideNavigationDock>}
-  </>;
   const heading = (name: string, stage = "") => <View onLayout={event => {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
   }}>{label(name, true, s.groupTitle)}</View>;
@@ -254,7 +232,7 @@ function ThemedPlayer(p: PlayerProps) {
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && !nativeLibraryHeaderActive && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} nativeRightEdgeActive={nativeRightEdgeActive} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => {
             if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
@@ -289,12 +267,12 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           </View>
         </View>
-        <ScrollView ref={libraryScrollRef} onLayout={bindLibraryScrollView} style={[s.page, s.libraryViewport, sideNavigationActive && (sideNavigationRight
-          ? (nativeLibraryHeaderActive ? { marginLeft: -18 - (screenInsets?.left ?? 0), marginRight: nativeRightEdgeActive ? -18 - (screenInsets?.right ?? 0) : iosRightLibraryGutter(screenInsets?.right ?? 0).marginRight } : null)
-          : { marginLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).marginLeft, marginRight: -6 - (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) }), !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, sideNavigationActive && (sideNavigationRight ? (nativeLibraryHeaderActive ? { paddingLeft: 18 + (screenInsets?.left ?? 0), paddingRight: nativeRightEdgeActive ? SIDE_NAVIGATION_WIDTH + 8 + (screenInsets?.right ?? 0) : iosRightLibraryGutter(screenInsets?.right ?? 0).paddingRight } : { paddingRight: SIDE_NAVIGATION_WIDTH + 8 }) : { paddingLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).paddingLeft, paddingRight: 18 + (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) })]}
+        <ScrollView style={[s.page, s.libraryViewport, sideNavigationActive && (sideNavigationRight
+          ? (nativeLibraryHeaderActive ? { marginLeft: -18 - (screenInsets?.left ?? 0), marginRight: iosRightLibraryGutter(screenInsets?.right ?? 0).marginRight } : null)
+          : { marginLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).marginLeft, marginRight: -6 - (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) }), !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, sideNavigationActive && (sideNavigationRight ? (nativeLibraryHeaderActive ? { paddingLeft: 18 + (screenInsets?.left ?? 0), paddingRight: iosRightLibraryGutter(screenInsets?.right ?? 0).paddingRight } : { paddingRight: SIDE_NAVIGATION_WIDTH + 8 }) : { paddingLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0).paddingLeft, paddingRight: 18 + (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) })]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? (nativeLibraryHeaderActive ? (nativeRightEdgeActive ? SIDE_NAVIGATION_WIDTH + 8 + (screenInsets?.right ?? 0) - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4)) : SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4)) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? (nativeLibraryHeaderActive ? Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4) : SIDE_NAVIGATION_WIDTH + 8 - Math.min(12, ((screenInsets?.right ?? 0) + 8) / 4)) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
           {!!p.error && !engineUnavailable && nativeLibraryHeaderActive && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
           {label("音乐留在你的设备上", true, s.lead)}
@@ -381,8 +359,13 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
-  {sideNavigationActive && sideNavigationRight && !nativeRightEdgeActive && !settings && <IOSSideNavigationBackground dark={immersiveHome || !isLight} />}
-  {nativeRightEdgeActive && !settings ? <IOSRightScrollEdge scrollViewTag={libraryScrollTag}>{sideControls}</IOSRightScrollEdge> : sideControls}
+  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top">
+    {headerActions}
+  </SideNavigationDock>}
+  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom">
+    <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight}
+        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={isLight ? "light" : "dark"} size={20} />} />
+  </SideNavigationDock>}
   </View>
   </IOSSettingsNavigation>
   </SafeAreaProvider>;

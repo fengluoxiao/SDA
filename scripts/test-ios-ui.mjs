@@ -99,7 +99,7 @@ assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360R
 // Exercise the UI adapter with mocked native components (not a visual/native
 // runtime test): appearances, controlled selection, capability-safe imports.
 const nativeTabsBundle = await build({ entryPoints: ['apps/mobile/src/IOSUIKitTabs.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', 'react-native-safe-area-context','./IOSNativePage'] });
-function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true, headerHeight = 0) {
+function loadNativeTabs(platform, available, version = 26, accessoryAvailable = true, headerHeight = 0, bottomInset = 0) {
   const module = { exports: {} };
   let nativeImports = 0;
   let stateSlot = 0;
@@ -117,7 +117,7 @@ function loadNativeTabs(platform, available, version = 26, accessoryAvailable = 
       return available && (!name.startsWith("RNSTabsBottomAccessory") || accessoryAvailable);
     } }, View: 'View' };
     if (name === './IOSNativePage') return {IOSNativePage:'NativePage',hasNativePageHeader:true};
-    if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView' };
+    if (name === 'react-native-safe-area-context') return { SafeAreaProvider: 'SafeAreaProvider', SafeAreaView: 'SafeAreaView', useSafeAreaInsets: () => ({top:0,left:0,right:0,bottom:bottomInset}) };
     if (name === 'react-native-screens') {
       nativeImports++;
       assert.equal(platform, 'ios');
@@ -230,6 +230,12 @@ for (const available of [true,false]) {
   const nativePage=settingsScreen.props.children[0];
   assert.equal(nativePage.type,'NativePage');assert.equal(nativePage.props.title,'设置');
   assert.equal(nativePage.props.children[0].type,'Host');
+  const back=nativePage.props.headerLeft.type(nativePage.props.headerLeft.props);
+  assert.equal(back.props.style.width,44);assert.equal(back.props.style.height,44);
+  const modifiers=back.props.children[0].props.modifiers;
+  assert.equal(modifiers.find(m=>m.name==='controlSize').args[0],'large');
+  assert.equal(modifiers.find(m=>m.name==='font').args[0].size,22);
+  assert.deepEqual(modifiers.find(m=>m.name==='frame').args[0],{width:44,height:44});
   settingsScreen.props.onDismissed();
   assert.deepEqual(closed,[false]);
 }
@@ -491,7 +497,7 @@ assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
 
-assert.match(uiKitTabs, /paddingBottom: floatingLibraryAccessory \? 76 : 24/);
+assert.match(uiKitTabs, /paddingBottom: floatingLibraryAccessory \? 76 \+ libraryBottomInset : 24 \+ libraryBottomInset/);
 
 assert.match(ui, /const previewMetadata = false;/);
 assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
@@ -584,7 +590,7 @@ for (const dimensions of [{width:390,height:844},{width:932,height:430},{width:8
 for(const [adapter,props,expected] of [
   [nativeAdapter,accessoryProps,["left","right"]],
   [nativeAdapter,{...accessoryProps,accessory:false,nativeAccessory:undefined},["left","right"]],
-  [nativeAdapter,{...accessoryProps,sideBar:true},['left','right','bottom']],
+  [nativeAdapter,{...accessoryProps,sideBar:true},['left','right']],
   [loadNativeTabs('ios',true,26,false),accessoryProps,['left','right','bottom']],
 ]) {
   const root=adapter.api.IOSUIKitTabs(props);
@@ -613,3 +619,16 @@ const rightMeasuredScroll=pageViewport(rightMeasured.props.children[0].props.chi
 assert.equal(rightMeasuredScroll.props.automaticallyAdjustsScrollIndicatorInsets,true);
 assert.equal(rightMeasuredScroll.props.scrollIndicatorInsets,measuredScroll.props.scrollIndicatorInsets);
 console.log('Extended left viewport uses measured native header safety once; accepted right indicator handling is untouched.');
+
+// Landscape content reaches the bottom edge while the floating player stays safe.
+for (const bottomInset of [0,21,34]) for (const sideBarPosition of ['left','right']) {
+  const adapter=loadNativeTabs('ios',true,26,true,0,bottomInset);
+  const tree=adapter.api.IOSUIKitTabs({...accessoryProps,pages:['player',scrollFixture,'scene'],sideBar:true,sideBarPosition});
+  const viewport=pageViewport(tree.props.children[0].props.children[0][1]);
+  assert(!viewport.props.edges.includes('bottom'));
+  assert.equal(viewport.props.style.backgroundColor,'transparent');
+  const content=viewport.props.children[0];
+  assert.equal(content.props.children[1].props.style.bottom,bottomInset);
+  assert.equal(content.props.children[0].props.contentContainerStyle.at(-1).paddingBottom,76+bottomInset);
+}
+assert.doesNotMatch(uiKitTabs,/library-bottom-safe-area-cover/);

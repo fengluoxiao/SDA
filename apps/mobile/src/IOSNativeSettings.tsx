@@ -34,10 +34,11 @@ export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): vo
 function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
   if (!swiftUI) return null;
   const { Host, Button } = swiftUI;
-  const { labelStyle, buttonStyle, buttonBorderShape, accessibilityLabel } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { labelStyle, buttonStyle, buttonBorderShape, accessibilityLabel, controlSize, font, frame } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   return <Host ignoreSafeArea="container" style={{ width: 44, height: 44 }}>
     <Button label="返回" systemImage="chevron.left" onPress={onPress} modifiers={[
-      labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("返回播放器"),
+      labelStyle("iconOnly"), controlSize("large"), font({ size: 22, weight: "semibold" }),
+      buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), frame({ width: 44, height: 44 }), accessibilityLabel("返回播放器"),
     ]} />
   </Host>;
 }
@@ -112,7 +113,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Host, VStack, HStack, Button, Text } = swiftUI;
-  const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { frame, padding, font, buttonStyle, buttonBorderShape, labelStyle, controlSize, tint, accessibilityLabel, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   // One full-screen host owns the safe area. Only the background extends
   // behind system chrome; controls retain SwiftUI's safe-area positioning.
   // Splitting this into RN SafeAreaView + two hosts creates visible edge bands.
@@ -124,8 +125,8 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
       ]}>
         <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width, height: 52 })]}>
           <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
-            buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), tint(appTheme.accent),
-            font({ textStyle: "body" }), frame({ width: 44, minHeight: 44 }),
+            buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), controlSize("large"), tint(appTheme.accent),
+            font({ size: 22, weight: "semibold" }), frame({ width: 44, minHeight: 44 }),
             frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
           ]} />
           <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>

@@ -11,8 +11,8 @@ export const swiftUI: typeof import("@expo/ui/swift-ui") | null =
     ? require("@expo/ui/swift-ui") : null;
 export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
-export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, libraryHeaderActions, nativeRightEdgeActive = false, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
-  libraryHeaderActions?: React.ReactNode; nativeRightEdgeActive?: boolean;
+export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48 }: {
+  libraryHeaderActions?: React.ReactNode;
   sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number;
   selected: number; onChange(index: number): void; children: React.ReactNode;
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
@@ -28,7 +28,7 @@ export function IOSSystemTabs({ selected, onChange, children, accessory, nativeA
     }
     return <>{page}{index !== 0 && <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>}</>;
   };
-  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} libraryHeaderActions={libraryHeaderActions} nativeRightEdgeActive={nativeRightEdgeActive} sideBar={sideBar} sideBarExternal={sideBarExternal} sideBarPosition={sideBarPosition} sideBarWidth={sideBarWidth} />;
+  if (hasUIKitIOSTabs) return <IOSUIKitTabs selected={selected} onChange={onChange} pages={pages} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} libraryHeaderActions={libraryHeaderActions} sideBar={sideBar} sideBarExternal={sideBarExternal} sideBarPosition={sideBarPosition} sideBarWidth={sideBarWidth} />;
   // Compatibility hosts without UIKit's tab-bar visibility API still use the
   // same page content and player callbacks; the current native path stays mounted.
   if (sideBar) return <View style={{ flex: 1, marginHorizontal: -18 }}>

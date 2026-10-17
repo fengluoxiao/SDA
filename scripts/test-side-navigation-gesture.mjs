@@ -58,12 +58,14 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   const tree=module.exports.SideNavigationRail({selected,onChange(){},accent,dark,renderIcon:()=>null});
   const all=nodes(tree);const hosts=all.filter(n=>n.type==='NativeHost');
   assert.equal(hosts.length,2);
+  assert.equal(hosts[0].props.colorScheme,undefined,"capsule inherits system appearance like the upper action buttons");
+  assert.equal(hosts[1].props.colorScheme,dark?"dark":"light","immersive symbol contrast remains independent of the glass");
   assert(hosts.every(h=>h.props.ignoreSafeArea==="container"), "screen-edge placement must not independently inset native glass or symbols");
   assert(hosts.every(h=>h.props.style.width===48 && h.props.style.height===140), "native layers share the RN rail frame");
   assert.equal(hosts.filter(h=>h.props.seedColor===accent).length,1,"only the icon host needs the theme tint");
   const iconContainers=all.filter(n=>n.type==='NativeStack'&&n.props.modifiers?.some(m=>m.name==='foregroundColor'));
   assert.equal(iconContainers.length,3);
-  for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#f5f5f7':'#1c1c1e');
+  for(const [index,n] of iconContainers.entries())assert.equal(n.props.modifiers.find(m=>m.name==='foregroundColor').args[0],index===selected?accent:dark?'#FFFFFF':'#000000');
   const glass=all.flatMap(n=>n.props?.modifiers??[]).filter(m=>m.name==='glassEffect');
   assert.equal(glass.length,1,'do not restore the moving native-glass layer that turns black on-device');
   const neutral=all.find(n=>n.props?.testID==='side-tab-neutral-selection');
@@ -75,4 +77,4 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955']) for(con
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.tint,undefined);
   assert.equal(glass.find(m=>m.args[0].shape==='capsule').args[0].glass.variant,'regular','use native regular glass with background blur');
 }
-console.log('Side rail themes: all five accents, light/dark symbols and neutral selection fill, visible themed symbols and one stationary glass backdrop passed.');
+console.log('Side rail themes: all five accents, light/dark inactive symbols and neutral selection fill, visible themed symbols and one stationary glass backdrop passed.');

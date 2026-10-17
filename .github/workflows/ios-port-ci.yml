@@ -113,6 +113,10 @@ jobs:
           python3 scripts/verify-spatial-cues.py
           node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
           node scripts/test-ios-ui.mjs
+          node scripts/test-ios-native-page.mjs
+          node scripts/test-library-header-layout.mjs
+          node scripts/test-side-navigation-background.mjs
+          node scripts/test-side-navigation-dock.mjs
           node scripts/test-artwork-color-cache.mjs
           node scripts/test-navigation-preferences.mjs
           node scripts/test-side-navigation-gesture.mjs

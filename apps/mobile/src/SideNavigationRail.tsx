@@ -92,8 +92,10 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   // even when the entire rail is repositioned near a screen edge.
   // Only the stationary outer capsule uses a native glass backdrop. Moving
   // an independent glass Host over it produced an opaque disk on real devices.
+  // Match the upper settings/tracking buttons: let the glass inherit the
+  // system appearance. Symbol colors are configured separately below.
   const backdrop = nativeUI && material ?
-    <nativeUI.Host ignoreSafeArea="container" style={{ width: 48, height: 140, backgroundColor: "transparent" }} colorScheme={dark ? "dark" : "light"}>
+    <nativeUI.Host ignoreSafeArea="container" style={{ width: 48, height: 140, backgroundColor: "transparent" }}>
       <nativeUI.VStack modifiers={[material.frame({ width: 48, height: 140 }), material.glassEffect({ glass: { variant: "regular" }, shape: "capsule" })]}>{null}</nativeUI.VStack>
     </nativeUI.Host> : <View style={{ width: 48, height: 140, borderRadius: 24, backgroundColor: dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
   const visual = <Animated.View testID="side-tab-glass-bar" style={{ width: 48, height: 140, transform: [{ scale: barScale }] }}>
@@ -109,13 +111,13 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
           {IOS_TABS.map((label, index) => <nativeUI.VStack key={label} modifiers={[material.frame({ width: 44, height: 44 }),
             // Apply color on the native container as well as the host tint:
             // SF Symbols must not fall back to the host's white/black label color.
-            material.foregroundColor(highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e"),
-            material.tint(highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")]}>
+            material.foregroundColor(highlighted === index ? accent : dark ? "#FFFFFF" : "#000000"),
+            material.tint(highlighted === index ? accent : dark ? "#FFFFFF" : "#000000")]}>
             <nativeUI.Image systemName={symbols[index]} size={hover === index ? 22 : 20} />
           </nativeUI.VStack>)}
         </nativeUI.VStack>
       </nativeUI.Host> : <View style={{ padding: 2, gap: 2 }}>
-        {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")}</View>)}
+        {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#FFFFFF" : "#000000")}</View>)}
       </View>}
     </View>
   </Animated.View>;
