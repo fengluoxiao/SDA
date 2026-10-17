@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 const result = await build({ entryPoints: ['apps/mobile/src/ios-ui-model.ts'], bundle: true, platform: 'node', format: 'esm', write: false });
-const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle, iosPlayerLayout } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+const { IOS_TABS, playbackStatus, compatibleRooms, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 assert.deepEqual(IOS_TABS, ['播放', '资料库', '空间']);
 assert.equal(trackTitle({name:'file.m4a',metadata:{title:'Song'}}),'Song');
 assert.equal(trackTitle({name:'file.m4a',metadata:{}}),'file.m4a');
@@ -373,8 +373,8 @@ for (const height of [520, 650, 780]) {
  assert.ok(unused >= -1 && unused < 24, `unexpected empty bottom: ${unused}`);
 }
 
-assert.match(ui, /marginTop: playerGap \+ transportInset/);
-assert.match(ui, /layout.height - playerGap - transportInset/);
+assert.match(ui, /marginTop: transportMargin/);
+assert.match(ui, /layout.height - transportMargin/);
 
 assert.equal((homePages.match(/np.infoProgressOffset/g) || []).length, 1);
 assert.match(ui, /infoProgressOffset: \{ transform: \[\{ translateY: 12 \}\]/);
@@ -483,3 +483,19 @@ assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
 
 assert.match(ui, /AppThemeProvider/);
 assert.match(settings, /角色代表色/);
+
+// Empty-song metadata, wrapped titles and compact landscape screens must not
+// trade control height for whitespace or push the volume row below the page.
+for (const viewport of [180, 220, 280, 350, 520]) {
+  for (const intrinsic of [150, 178, 210, 250]) {
+    const spacing = iosLandscapeControlLayout(viewport, intrinsic);
+    assert(Object.values(spacing).every(value => Number.isFinite(value) && value >= 0));
+    const used = Object.values(spacing).reduce((sum, value) => sum + value, intrinsic);
+    if (viewport >= intrinsic) assert(used <= viewport + 1e-8);
+    if (spacing.volumeGap > 0) {
+      assert(Math.abs(spacing.metadataGap / spacing.volumeGap - 44 / 32) < 1e-8);
+      assert(Math.abs(spacing.transportGap / spacing.volumeGap - 42 / 32) < 1e-8);
+    }
+  }
+}
+console.log('Landscape control spacing preserves measured blocks and proportional gaps within the viewport.');

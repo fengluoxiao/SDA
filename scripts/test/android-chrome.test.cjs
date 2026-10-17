@@ -93,3 +93,44 @@ assert.match(shared, /BackHandler\.addEventListener\("hardwareBackPress"/);
 assert.match(shared, /artwork-color-fade\.png/);
 assert.match(shared, /Platform\.OS === "ios" && <>\{heading\("声音增强"\)/);
 console.log('Android chrome state matrix, tab validation and adapter wiring passed.');
+
+
+// Exercise the actual tab wrapper: the library's native scroll viewport must
+// end above both forms of the floating footer, not merely pad its last row.
+const tabsModule={exports:{}};
+const react={
+  createElement:(type,props,...children)=>({type,props:{...props,children}}),
+  Children:{toArray:value=>value},
+  isValidElement:value=>!!value?.props,
+  cloneElement:(value,props)=>({...value,props:{...value.props,...props}}),
+};
+const imports={
+  react,
+  'react-native':{Platform:{OS:'android'},View:'View'},
+  './app-theme':{useAppTheme:()=>({id:'sakiko'})},
+  './android-material-theme':{androidMaterialTheme:()=>({bg:'#fff'})},
+  './IOSSystemTabs':{hasSystemIOSTabs:false,IOSSystemTabs:'IOSSystemTabs'},
+  './AndroidChrome':{hasAndroidChrome:true,AndroidChrome:'AndroidChrome'},
+  './android-chrome-model':mod.exports,
+};
+new Function('require','module','exports',transformSync(tabs,{loader:'tsx',format:'cjs'}).code)(name=>{assert(name in imports,name);return imports[name];},tabsModule,tabsModule.exports);
+for(const selectedUri of ['', 'file:///song']) {
+  const player={selectedUri,playing:true,paused:false,busy:false};
+  const pages=[{type:'Player',props:{}},{type:'ScrollView',props:{contentContainerStyle:{paddingTop:8}}},{type:'Scene',props:{}}];
+  const tree=tabsModule.exports.PlatformPlayerTabs({player,selected:1,theme:'light',children:pages});
+  const wrappers=tree.props.children[0].props.children[0];
+  const library=wrappers[1];
+  const footerHeight=androidChromeState(player,1).height;
+  assert.equal(library.props.style.paddingBottom,footerHeight);
+  const scroll=library.props.children[0];
+  assert.equal(scroll.props.contentContainerStyle.at(-1).paddingBottom,20);
+  // Reserving the footer in the viewport retains the previous scroll range,
+  // while keeping its indicator out of the footer overlay.
+  for(const screenHeight of [300,650]) {
+    const contentHeight=1000;
+    const before=contentHeight+footerHeight+20-screenHeight;
+    const after=contentHeight+20-(screenHeight-library.props.style.paddingBottom);
+    assert.equal(after,before);
+  }
+}
+console.log('Android library: tab and mini-player viewport reservations preserve the last-row scroll range.');

@@ -16,7 +16,7 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
   const footerHeight = androidChromeState(player, props.selected).height;
   return <View style={{ flex: 1, marginHorizontal: -18 }}>
     <View style={{ flex: 1, paddingHorizontal: 18 }}>{React.Children.toArray(props.children).map((page, index) =>
-      <View key={index} style={{ flex: 1, paddingBottom: index === 1 ? 0 : footerHeight, display: props.selected === index ? "flex" : "none" }}>{index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(page) ? React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: footerHeight + 20 }] as unknown as object }) : page}</View>)}</View>
+      <View key={index} style={{ flex: 1, paddingBottom: footerHeight, display: props.selected === index ? "flex" : "none" }}>{index === 1 && React.isValidElement<{ contentContainerStyle?: object }>(page) ? React.cloneElement(page, { contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: 20 }] as unknown as object }) : page}</View>)}</View>
     <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, paddingHorizontal: 16, overflow: "visible" }}><AndroidChrome player={player} selected={props.selected} onSelect={props.onChange}
       dark={props.selected === 0 || props.theme === "dark"} backgroundColor={props.selected === 0 ? "#111113" : md3.bg} /></View>
   </View>;
