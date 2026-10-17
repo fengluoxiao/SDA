@@ -197,6 +197,16 @@ jobs:
           cargo ndk --version | tee -a "$GITHUB_STEP_SUMMARY"
           df -h "$GITHUB_WORKSPACE" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify Android UI layout and native adapters
+        run: |
+          node apps/mobile/node_modules/typescript/bin/tsc -p apps/mobile/tsconfig.json --noEmit
+          node scripts/test/android-chrome.test.cjs
+          node scripts/test/android-settings.test.cjs
+          node scripts/test-android-metadata-sheet.mjs
+          node scripts/test-mobile-surface-resume.mjs
+          node scripts/test-side-navigation-dock.mjs
+          node scripts/test-navigation-preferences.mjs
+
       - name: Build Expo Release APK
         id: expo-build
         shell: bash

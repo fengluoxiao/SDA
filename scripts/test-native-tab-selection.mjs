@@ -29,7 +29,7 @@ const {readFileSync}=await import('node:fs');
 const player=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');
 assert.match(player,/const nativeLibraryHeaderActive = hasNativePageHeader && hasUIKitIOSTabs;/);
 assert.match(player,/edges=\{hasUIKitIOSTabs \? \[\]/);
-assert.match(player,/!hasUIKitIOSTabs && pageHeader\(page\)/);
+assert.match(player,/!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader\(page\)/);
 const tabsBundle=await build({entryPoints:['apps/mobile/src/IOSUIKitTabs.tsx'],bundle:true,platform:'node',format:'cjs',write:false,define:{__DEV__:'false'},external:['react','react-native','react-native-screens','react-native-safe-area-context','./IOSNativePage']});
 const mod={exports:{}};
 const element=(type,props,...children)=>({type,props:{...props,children}});

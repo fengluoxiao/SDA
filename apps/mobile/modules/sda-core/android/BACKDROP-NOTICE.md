@@ -13,3 +13,10 @@ selection observation. The host provides its existing native background bridge.
 LiquidButton is also derived from the same tag. Local additions provide enabled
 state, an accessibility action label, configurable height and content padding
 for SDA's song area and separate playback control.
+
+LiquidSideTabs and LiquidSideTab are vertical adaptations of the same 1.0.6
+BottomTabs/BottomTab sources. Layout, hit testing, dragging and the tint capture
+pass use vertical coordinates; native icons remain upright. Cancellation restores
+the committed selection. LiquidToggle is copied from tag 1.0.6 with explicit
+theme/accent, enabled state, fresh callbacks and accessibility switch actions.
+The source license continues to apply to all adapted files.

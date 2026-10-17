@@ -424,11 +424,11 @@ assert.match(ui, /width: artworkSize, height: artworkSize/);
 assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
 assert.match(ui, /const artworkSize = landscapePlayer \? artworkLayout.size : width \+ 48/);
-assert.match(ui, /landscapePlayer = width > height && \(Platform\.OS === "ios" \|\| \(Platform\.OS === "android" && height >= 600\)\)/);
+assert.match(ui, /landscapePlayer = width > height && \(Platform\.OS === "ios" \|\| Platform\.OS === "android"\)/);
 const useLandscape = new Function('Platform', 'width', 'height', 'return ' + ui.match(/const landscapePlayer = ([^;]+);/)[1]);
 for (const [os, width, height, expected] of [
  ['ios',1194,834,true], ['ios',1366,1024,true], ['android',1097,617,true],
- ['ios',844,390,true], ['android',915,412,false], ['ios',834,1194,false], ['web',1194,834,false],
+ ['ios',844,390,true], ['android',915,412,true], ['ios',834,1194,false], ['web',1194,834,false],
 ]) assert.equal(useLandscape({OS:os}, width, height), expected, `${os} ${width}x${height}`);
 const expoConfig = JSON.parse(readFileSync('apps/mobile/app.json','utf8')).expo;
 const { setOrientation } = await import('@expo/config-plugins/build/ios/Orientation.js');

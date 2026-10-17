@@ -6,7 +6,7 @@ const react={createElement:(type,props,...children)=>({type,props:{...props,chil
 const module={exports:{}};
 new Function('require','module','exports',built.outputFiles[0].text)(name=>{
   if(name==='react')return react;
-  if(name==='react-native')return {StyleSheet:{absoluteFill:{position:'absolute',left:0,right:0,top:0,bottom:0}},View:'View'};
+  if(name==='react-native')return {Platform:{OS:'ios'},StyleSheet:{absoluteFill:{position:'absolute',left:0,right:0,top:0,bottom:0}},View:'View'};
   if(name==='react-native-safe-area-context')return {SafeAreaView:'SafeAreaView',useSafeAreaInsets:()=>insets};
   if(name==='./SideNavigationRail')return {SIDE_NAVIGATION_WIDTH:48};
   throw new Error(name);

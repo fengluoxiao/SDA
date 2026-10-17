@@ -1,3 +1,4 @@
+import { AndroidGlassAction, hasAndroidChrome } from "./AndroidChrome";
 import { androidMaterialTheme } from "./android-material-theme";
 import { useAppTheme } from "./app-theme";
 import React from "react";
@@ -5,13 +6,13 @@ import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 
-export function AndroidAudioInfo({ rows, dark, onClose }: { rows: [string, string][]; dark: boolean; onClose(): void }) {
+export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows: [string, string][]; dark: boolean; onClose(): void; sheet?: boolean }) {
   const appTheme = useAppTheme();
   const c = androidMaterialTheme(appTheme.id, dark);
-  return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={["top", "bottom", "left", "right"]}>
-    <StatusBar translucent backgroundColor="transparent" barStyle={dark ? "light-content" : "dark-content"} />
-    <View style={s.header}><View style={s.back}><AndroidGlassSettingsButton back dark={dark} onPress={onClose} /></View>
-      <Text accessibilityRole="header" style={[s.title, { color: c.ink }]}>音频信息</Text></View>
+  return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={sheet ? ["bottom"] : ["top", "bottom", "left", "right"]}>
+    {!sheet && <StatusBar translucent backgroundColor="transparent" barStyle={dark ? "light-content" : "dark-content"} />}
+    <View style={s.header}>{!hasAndroidChrome && <View style={s.back}><AndroidGlassSettingsButton back dark={dark} onPress={onClose} /></View>}
+      <Text accessibilityRole="header" style={[s.title, { color: c.ink, flex: 1 }]}>歌曲元数据</Text>{hasAndroidChrome && <AndroidGlassAction title="完成" dark={dark} accent={c.primary} onPress={onClose} />}</View>
     <ScrollView contentContainerStyle={s.content}>
       <Text style={[s.section, { color: c.primary }]}>文件与播放</Text>
       {rows.map(([name, value]) => <View key={name} style={s.row}>

@@ -13,6 +13,7 @@ export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
 export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0 }: {
   pageHeaders?: React.ReactNode[];
+  onOpenSettings?(): void;
   libraryHeaderActions?: React.ReactNode;
   sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number; rightContentGap?: number; leftContentOffset?: number;
   selected: number; onChange(index: number): void; children: React.ReactNode;

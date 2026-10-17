@@ -1,3 +1,4 @@
+import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
 import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
 import { hasNativePageHeader } from "./IOSNativePage";
 import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
@@ -58,8 +59,8 @@ function ThemedPlayer(p: PlayerProps) {
   const stableCutoutSide = useRef(nativeCutoutSide);
   React.useLayoutEffect(() => { if (layoutReady) stableCutoutSide.current = nativeCutoutSide; }, [layoutReady, nativeCutoutSide]);
   const cutoutSide = layoutReady ? nativeCutoutSide : stableCutoutSide.current;
-  const landscapePlayer = width > height && (Platform.OS === "ios" || (Platform.OS === "android" && height >= 600));
-  const sideNavigationActive = Platform.OS === "ios" && navigationPreferences.landscapeSideTabs && landscapePlayer;
+  const landscapePlayer = width > height && (Platform.OS === "ios" || Platform.OS === "android");
+  const sideNavigationActive = (Platform.OS === "ios" || (Platform.OS === "android" && hasAndroidChrome)) && navigationPreferences.landscapeSideTabs && landscapePlayer;
   const sideNavigationRight = sideNavigationActive && navigationPreferences.sideTabPosition === "right";
   const compactLandscape = landscapePlayer && height < 600;
   const androidTabletPortrait = Platform.OS === "android" && width >= 600 && height > width;
@@ -116,7 +117,8 @@ function ThemedPlayer(p: PlayerProps) {
   const { coverSize, gap: portraitGap } = iosPlayerLayout(width, playerHeight, measuredBlockHeight);
   const playerGap = landscapePlayer ? Math.max(0, Math.min(compactLandscape ? 12 : 32, (playerHeight - measuredBlockHeight - (compactLandscape ? 24 : 88)) / 4)) : portraitGap;
   const transportInset = compactLandscape ? 8 : 22;
-  const iosLandscape = Platform.OS === "ios" && landscapePlayer;
+  // Shared compact landscape spacing; Android phones use the approved columns too.
+  const iosLandscape = landscapePlayer;
   const landscapeSpacing = iosLandscape ? iosLandscapeControlLayout(Math.max(0, playerHeight - (compactLandscape ? 0 : 22)), measuredBlockHeight) : null;
   const transportMargin = landscapeSpacing?.transportGap ?? playerGap + transportInset;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
@@ -231,8 +233,8 @@ function ThemedPlayer(p: PlayerProps) {
       <View style={{ flex: 1 }} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       {/* UIKit pages own their headers/insets so selecting a tab never resizes
           the host underneath an in-flight native page transition. */}
-      {!hasUIKitIOSTabs && pageHeader(page)}
-      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} pageHeaders={hasUIKitIOSTabs ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      {!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader(page)}
+      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} onOpenSettings={() => setSettings(true)} pageHeaders={hasUIKitIOSTabs || hasAndroidChrome ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => {
             if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
@@ -274,7 +276,7 @@ function ThemedPlayer(p: PlayerProps) {
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
           automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: sideNavigationRight ? (nativeLibraryHeaderActive ? iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight : SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) - iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
-          {!!p.error && !engineUnavailable && nativeLibraryHeaderActive && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
+          {!!p.error && !engineUnavailable && (nativeLibraryHeaderActive || hasAndroidChrome) && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
           {label("音乐留在你的设备上", true, s.lead)}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{actionRow("folder.open", "打开本机文件", "从「文件」选择音乐", p.chooseFile, p.busy)}</View>
           <View style={s.libraryPlaybackModes}>
@@ -363,8 +365,8 @@ function ThemedPlayer(p: PlayerProps) {
     {headerActions}
   </SideNavigationDock>}
   {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom" cutoutSide={cutoutSide}>
-    <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight} backgroundColor={immersiveHome ? (!sideNavigationRight && !hasArtwork ? "#303034" : fadeColor) : c.bg}
-        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={isLight ? "light" : "dark"} size={20} />} />
+    {Platform.OS === "android" ? <AndroidSideTabs selected={page} onChange={navigate} accent={c.accent} dark={!isLight} /> : <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight} backgroundColor={immersiveHome ? (!sideNavigationRight && !hasArtwork ? "#303034" : fadeColor) : c.bg}
+        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={isLight ? "light" : "dark"} size={20} />} />}
   </SideNavigationDock>}
   </View>
   </IOSSettingsNavigation>

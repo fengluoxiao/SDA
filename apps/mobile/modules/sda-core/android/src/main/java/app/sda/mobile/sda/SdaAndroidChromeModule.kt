@@ -31,12 +31,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -52,6 +54,9 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
+import com.kyant.backdrop.catalog.components.LiquidToggle
+import com.kyant.backdrop.catalog.components.LiquidSideTabs
+import com.kyant.backdrop.catalog.components.LiquidSideTab
 import com.kyant.backdrop.catalog.components.LiquidButton
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.modules.Module
@@ -66,7 +71,11 @@ class SdaAndroidChromeModule : Module() {
         Name("SdaAndroidChrome")
         Function("effectLevel") { if (Build.VERSION.SDK_INT >= 33) "refraction" else if (Build.VERSION.SDK_INT >= 31) "blur" else "solid" }
         View(SdaAndroidChromeView::class) {
-            Events("onSelect", "onExpand", "onPlayback")
+            Events("onSelect", "onExpand", "onPlayback", "onToggle")
+            Prop("presentation") { view: SdaAndroidChromeView, value: String -> view.presentation = if (value in listOf("bottom", "rail", "mini", "header", "toggle", "button")) value else "bottom" }
+            Prop("checked") { view: SdaAndroidChromeView, value: Boolean -> view.checked = value }
+            Prop("blurred") { view: SdaAndroidChromeView, value: Boolean -> view.blurred = value }
+            Prop("headerAction") { view: SdaAndroidChromeView, value: Boolean -> view.headerAction = value }
             Prop("selected") { view: SdaAndroidChromeView, value: Int -> view.selected = value.coerceIn(0, 2) }
             Prop("accentColorValue") { view: SdaAndroidChromeView, value: String -> view.accentColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFF7799CC)) }
             Prop("dark") { view: SdaAndroidChromeView, value: Boolean -> view.dark = value }
@@ -85,9 +94,14 @@ class SdaAndroidChromeModule : Module() {
 
 class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
     override val shouldUseAndroidLayout = true
+    private val onToggle by EventDispatcher()
     private val onSelect by EventDispatcher()
     private val onExpand by EventDispatcher()
     private val onPlayback by EventDispatcher()
+    var checked by mutableStateOf(false)
+    var blurred by mutableStateOf(false)
+    var headerAction by mutableStateOf(true)
+    var presentation by mutableStateOf("bottom")
     var selected by mutableIntStateOf(0)
     var accentColor by mutableStateOf(Color(0xFF7799CC))
     var dark by mutableStateOf(false)
@@ -105,10 +119,11 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private var interactionGeneration by mutableIntStateOf(0)
     private var capturing = false
     private var observedTree: ViewTreeObserver? = null
+    private val visibleBounds = android.graphics.Rect()
     private val location = IntArray(2)
     private val rootLocation = IntArray(2)
     private val captureListener = ViewTreeObserver.OnPreDrawListener {
-        if (!capturing && isShown && hasWindowFocus() && windowVisibility == VISIBLE && width > 0 && height > 0) {
+        if (!capturing && isShown && hasWindowFocus() && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
             recordBackground()
         }
         true
@@ -205,10 +220,10 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
 
     @Composable
     private fun Chrome() {
-        val ink = if (dark) Color(0xFFF5F5F7) else Color(0xFF171C19)
-        val muted = if (dark) Color(0xFFA0AAA4) else Color(0xFF727C75)
+        val ink = if (dark) Color(0xFFF5F5F7) else Color(0xFF1C1C1E)
+        val muted = if (dark) Color(0xFFA0A0A8) else Color(0xFF74747C)
         val accent = accentColor
-        val showMini = hasTrack && selected != 0
+        val showMini = hasTrack && selected != 0 && presentation != "rail"
         val cover by produceState<ImageBitmap?>(null, coverUri) {
             value = null
             if (coverUri.isNotBlank()) {
@@ -239,7 +254,41 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                 }
             }
         }
-        val revision = backgroundRevision
+        if (presentation == "button") {
+            LiquidButton(onClick = { if (!busy) onExpand(emptyMap<String, Any>()) }, backdrop = backgroundAt(0f),
+                enabled = !busy, label = title, height = 44.dp, contentPadding = 12.dp,
+                modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
+                Text(title, color = accent, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            }
+            return
+        }
+        if (presentation == "toggle") {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                LiquidToggle(selected = { checked }, onSelect = { if (!busy) onToggle(mapOf("value" to it)) },
+                    backdrop = backgroundAt(0f), dark = dark, accentColor = accent, enabled = !busy, label = title,
+                    modifier = Modifier.drawWithContent { backgroundRevision; drawContent() })
+            }
+            return
+        }
+        if (presentation == "header") {
+            val backdrop = backgroundAt(0f)
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val buttonBackdrop = backgroundAt(with(density) { 6.dp.toPx() }, if (backButton) with(density) { 6.dp.toPx() } else width.toFloat() - with(density) { 50.dp.toPx() })
+            val surface = if (blurred) Modifier.drawBackdrop(backdrop = backdrop, shape = { RectangleShape },
+                highlight = { null }, shadow = { null }, effects = { blur(20.dp.toPx()) },
+                onDrawSurface = { drawRect(surfaceColor.copy(alpha = .35f)) }) else Modifier
+            Box(Modifier.fillMaxSize().then(surface).drawWithContent { backgroundRevision; drawContent() }, contentAlignment = Alignment.Center) {
+                Text(title, color = ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 56.dp).semantics { heading() }, overflow = TextOverflow.Ellipsis)
+                if (headerAction) Box(Modifier.align(if (backButton) Alignment.CenterStart else Alignment.CenterEnd).padding(horizontal = 6.dp)) {
+                    LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = buttonBackdrop,
+                        label = if (backButton) "返回" else "更多设置", height = 44.dp, contentPadding = 0.dp, modifier = Modifier.width(44.dp)) {
+                        Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)
+                    }
+                }
+            }
+            return
+        }
         if (settingsButton) {
             val backdrop = backgroundAt(0f)
             LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = backdrop,
@@ -249,9 +298,27 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             }
             return
         }
-        val miniBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { 8.dp.toPx() })
+        if (presentation == "rail") {
+            val selection = remember { { selected } }
+            LiquidSideTabs(selectedTabIndex = selection, onTabSelected = { index ->
+                if (index != selected) onSelect(mapOf("index" to index))
+            }, backdrop = backgroundAt(0f), tabsCount = 3, dark = dark, accentColor = accent,
+                modifier = Modifier.fillMaxSize().drawWithContent { backgroundRevision; drawContent() }) {
+                val labels = listOf("播放", "资料库", "空间")
+                val icons = listOf(Icons.Default.PlayCircle, Icons.Default.LibraryMusic, Icons.Default.ViewInAr)
+                labels.forEachIndexed { index, label ->
+                    LiquidSideTab(onClick = { if (selected != index) onSelect(mapOf("index" to index)) },
+                        modifier = Modifier.semantics { this.selected = this@SdaAndroidChromeView.selected == index }) {
+                        Icon(icons[index], label, Modifier.size(23.dp), tint = if (selected == index) accent else ink)
+                    }
+                }
+            }
+            return
+        }
+        val miniOnly = presentation == "mini"
+        val miniBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (miniOnly) 0.dp else 8.dp).toPx() })
         val tabsBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (showMini) 62.dp else 8.dp).toPx() })
-        Column(Modifier.fillMaxSize().padding(top = 8.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.fillMaxSize().padding(top = if (miniOnly) 0.dp else 8.dp, bottom = if (miniOnly) 0.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (showMini) {
                 LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = miniBackdrop, label = "展开正在播放", height = 48.dp, contentPadding = 10.dp,
                     modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
@@ -271,6 +338,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                     }
                 }
             }
+            if (miniOnly) return@Column
             val selection = remember { { selected } }
             LiquidBottomTabs(selectedTabIndex = selection, onTabSelected = { index ->
                 if (index != selected) onSelect(mapOf("index" to index))

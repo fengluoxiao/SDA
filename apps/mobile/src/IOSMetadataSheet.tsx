@@ -1,3 +1,4 @@
+import { AndroidMetadataSheet } from "./AndroidMetadataSheet";
 import React from "react";
 import { Modal, Platform, Pressable, Text, View } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
@@ -21,6 +22,7 @@ export function IOSMetadataDoneButton({ onPress, theme, accent }: { onPress(): v
 export function IOSMetadataSheet({ open, onChange, children, theme }: {
   open: boolean; onChange(value: boolean): void; children: React.ReactNode; theme: "light" | "dark";
 }) {
+  if (Platform.OS === "android") return <AndroidMetadataSheet open={open} onChange={onChange} theme={theme}>{children}</AndroidMetadataSheet>;
   const native = !!swiftUI && ["BottomSheetView", "GroupView", "RNHostView"].every(name =>
     !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", name));
   if (native && swiftUI) {

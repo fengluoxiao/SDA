@@ -19,7 +19,7 @@ for(const safeRight of [0,44,59,62]) {
  assert.equal(parentRight-marginRight,932,'native scroll-edge effect reaches screen right');
  assert.equal(932-(18+safeRight),932-safeRight-18,'row/card right edge stays unchanged');
 }
-assert.match(source,/!hasUIKitIOSTabs && pageHeader\(page\)/);
+assert.match(source,/!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader\(page\)/);
 assert.match(source,/const nativeLibraryHeaderActive = hasNativePageHeader && hasUIKitIOSTabs;/);
 assert.match(source,/automaticallyAdjustsScrollIndicatorInsets=\{Platform.OS === "ios" && hasSystemIOSTabs\}/);
 assert.match(source,/contentInsetAdjustmentBehavior="automatic"/);

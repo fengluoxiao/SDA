@@ -1,3 +1,5 @@
+import { AndroidGlassToggle, AndroidPageHeader, hasAndroidChrome } from "./AndroidChrome";
+import { useNavigationPreferences } from "./navigation-preferences";
 import renderExperiment from "../ios-experiments/active.json";
 import { androidMaterialTheme } from "./android-material-theme";
 import { CHARACTER_THEMES, useAppTheme } from "./app-theme";
@@ -14,6 +16,8 @@ const compose: typeof import("@expo/ui/jetpack-compose") | null = Platform.OS ==
 
 export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerProps; dark: boolean; onClose(): void }) {
   const appTheme = useAppTheme();
+  const navigation = useNavigationPreferences();
+  const [scrolled, setScrolled] = React.useState(false);
   const [selection, setSelection] = React.useState<null | { title: string; options: { id: string; label: string }[]; selected: string; choose(id: string): void }>(null);
   const c = androidMaterialTheme(appTheme.id, dark);
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
@@ -27,7 +31,7 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
   </View>;
   const toggle = (title: string, value: boolean, onChange: (value: boolean) => void, disabled: boolean, subtitle?: string) => <View style={[s.row, { opacity: disabled ? .45 : 1 }]}>
     <View style={s.copy}>{text(title, false, s.title)}{!!subtitle && text(subtitle, true, s.subtitle)}</View>
-    {compose ? <View accessibilityLabel={title} style={{ width: 60, height: 48 }}><compose.Host style={{ width: 60, height: 48 }} colorScheme={dark ? "dark" : "light"} seedColor={appTheme.accent}>
+    {hasAndroidChrome ? <AndroidGlassToggle label={title} value={value} onChange={onChange} disabled={disabled} dark={dark} accent={c.primary} /> : compose ? <View accessibilityLabel={title} style={{ width: 60, height: 48 }}><compose.Host style={{ width: 60, height: 48 }} colorScheme={dark ? "dark" : "light"} seedColor={appTheme.accent}>
       <compose.Switch value={value} enabled={!disabled} onCheckedChange={onChange} colors={{ checkedTrackColor: c.primary, checkedThumbColor: c.onPrimary, uncheckedTrackColor: c.panel, uncheckedThumbColor: c.muted, uncheckedBorderColor: c.muted }} />
     </compose.Host></View> : <Switch accessibilityLabel={title} disabled={disabled} value={value} onValueChange={onChange}
       trackColor={{ false: c.line, true: c.primary }} thumbColor={value ? c.onPrimary : c.muted} />}
@@ -46,11 +50,11 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
     <Text style={{ color: destructive ? c.error : c.onContainer, fontSize: 14, fontWeight: "500" }}>{label}</Text>
   </Pressable>;
   return <View style={[StyleSheet.absoluteFill, { backgroundColor: c.bg }]} accessibilityViewIsModal>
-    <View style={[s.header, { backgroundColor: c.bg }]}>
+    {!hasAndroidChrome && <View style={[s.header, { backgroundColor: c.bg }]}>
       <View style={s.back}><AndroidGlassSettingsButton back dark={dark} onPress={onClose} /></View>
       <Text accessibilityRole="header" style={[s.headerTitle, { color: c.ink }]}>设置</Text>
-    </View>
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.content}>
+    </View>}
+    <ScrollView showsVerticalScrollIndicator scrollEventThrottle={32} onScroll={event => setScrolled(event.nativeEvent.contentOffset.y > 1)} contentContainerStyle={[s.content, hasAndroidChrome && { paddingTop: 56 }]} scrollIndicatorInsets={{ top: hasAndroidChrome ? 56 : 0 }}>
       {section("播放操作", <View style={s.actions}>
         {action("重新播放", "arrow.counterclockwise", p.play, p.busy || !p.selectedUri)}
         {action("停止播放", "stop.fill", p.stop, p.busy || !p.playing, true)}
@@ -74,6 +78,12 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
       {renderExperiment.spatialCues !== false && section("空间线索强度", menu("辅助空间效果", `${p.spatialCueDb} dB`, [0, -3, -6, -9, -12].map(db => ({ id: String(db), label: `${db} dB${db === -6 ? " · 默认" : ""}` })), String(p.spatialCueDb),
         id => p.setSpatialCueDb(Number(id)), p.spatialCueBusy || p.busy),
         "仅调节额外空间线索，不改变主音量或干声增益。播放中平滑切换，已缓冲的声音播放完后生效。")}
+      {section("导航栏", <>
+        {toggle("横屏侧边导航栏", navigation.landscapeSideTabs, navigation.setLandscapeSideTabs, false)}
+        {navigation.landscapeSideTabs && menu("侧边导航栏位置", navigation.sideTabPosition === "left" ? "左边" : "右边",
+          [{ id: "left", label: "左边" }, { id: "right", label: "右边" }], navigation.sideTabPosition,
+          value => { if (value === "left" || value === "right") navigation.setSideTabPosition(value); })}
+      </>, "横屏时将导航栏放在侧边；默认在右边，竖屏仍使用底部导航栏。")}
       {section("主题色", <>{CHARACTER_THEMES.map(t => <Pressable key={t.id} onPress={() => appTheme.setTheme(t.id)} accessibilityRole="button" accessibilityState={{ selected: appTheme.id === t.id }} style={s.row}><View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: t.color, marginRight: 12 }} />{text(t.name, false, s.title)}{text(appTheme.id === t.id ? "✓" : "", false)}</Pressable>)}</>)}
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}
@@ -83,6 +93,7 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
         </Pressable>
       </>)}
     </ScrollView>
+    {hasAndroidChrome && <AndroidPageHeader title="设置" dark={dark} backgroundColor={c.bg} scrolled={scrolled} onAction={onClose} back style={{ position: "absolute", top: 0 }} />}
     <Modal transparent visible={selection !== null} animationType="fade" onRequestClose={() => setSelection(null)}>
       <View style={s.scrim}>
         <Pressable accessibilityLabel="取消选择" onPress={() => setSelection(null)} style={StyleSheet.absoluteFill} />
