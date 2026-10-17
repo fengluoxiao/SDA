@@ -528,3 +528,9 @@ for(const [width,height,usable] of [[844,390,726],[1194,834,1194],[1097,617,1049
   assert.equal(frame.left+frame.size/2,(width-usable)/2+frame.columnWidth/2);
 }
 console.log('Landscape columns: equal measured halves and a contained, unstretched square cover passed.');
+
+// External docking must hide the bottom bar without drawing a duplicate rail.
+const externalDockTree = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, sideBar:true, sideBarExternal:true});
+assert.equal(externalDockTree.props.children[0].props.tabBarHidden,true);
+assert.equal(externalDockTree.props.children[1],false);
+console.log('External landscape dock: one rail, native bottom bar hidden.');

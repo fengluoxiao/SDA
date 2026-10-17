@@ -73,3 +73,8 @@ Device feedback showed that restoring layer order alone still left a dark disk. 
 ## Small rightward dock adjustment
 
 Removed the dock's extra 4 pt right padding in both UIKit and compatibility hosts. The rail moves 4 pt right within the existing horizontal safe area; page widths, bottom spacing and touch bounds are unchanged.
+
+
+## Screen-edge landscape dock
+
+The previous 4 pt change left the outer horizontal safe-area inset in place. The rail now mounts as a sibling of the page SafeAreaView, on the full presentation surface, with 12 pt right spacing and the existing bottom inset plus 8 pt spacing. The native and compatibility hosts suppress their internal dock when externally docked. Content geometry stays unchanged, the full touch target stays inside the presentation surface, and settings hide the floating dock. Device preview confirmation remains required.

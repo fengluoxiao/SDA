@@ -17,8 +17,8 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 48 }: {
-  sideBar?: React.ReactNode; sideBarWidth?: number;
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarExternal = false, sideBarWidth = 48 }: {
+  sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarWidth?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
 }) {
@@ -66,6 +66,6 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         </SafeAreaProvider>
       </Tabs.Screen>)}
     </Tabs.Host>
-    {sideBar && <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 0, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
+    {sideBar && !sideBarExternal && <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 0, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
   </View>;
 }

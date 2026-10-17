@@ -219,8 +219,7 @@ function ThemedPlayer(p: PlayerProps) {
       {/* Status belongs above the native tabs, never below their full-screen
           host, where it steals the home-indicator inset from the tab bar. */}
       {!!p.error && !engineUnavailable && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
-      <IOSSystemTabs selected={page} onChange={navigate} sideBar={sideNavigationActive ? <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
-        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} /> : undefined} sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <IOSSystemTabs selected={page} onChange={navigate} sideBar={sideNavigationActive || undefined} sideBarExternal sideBarWidth={SIDE_NAVIGATION_WIDTH} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => {
             const { width: measuredWidth, height: available } = event.nativeEvent.layout;
@@ -343,6 +342,13 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
+  {/* Dock against the full presentation surface, outside the page's horizontal
+      safe-area padding. Keep the touch target inside its parent bounds. */}
+  {sideNavigationActive && !settings && <SafeAreaView testID="landscape-side-tab-dock" edges={["bottom"]} pointerEvents="box-none"
+    style={[StyleSheet.absoluteFill, { alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 12, paddingBottom: 8 }]}>
+    <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={immersiveHome || !isLight}
+        renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={immersiveHome || !isLight ? "dark" : "light"} size={20} />} />
+  </SafeAreaView>}
   </View>
   </IOSSettingsNavigation>
   </SafeAreaProvider>;
