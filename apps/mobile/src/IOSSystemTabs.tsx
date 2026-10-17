@@ -11,7 +11,7 @@ export const swiftUI: typeof import("@expo/ui/swift-ui") | null =
     ? require("@expo/ui/swift-ui") : null;
 export const hasSystemIOSTabs = hasUIKitIOSTabs || swiftUI !== null;
 
-export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 60 }: {
+export function IOSSystemTabs({ selected, onChange, children, accessory, nativeAccessory, fallback, accent, theme, backgroundColor, pageBackgroundColors, sideBar, sideBarWidth = 48 }: {
   sideBar?: React.ReactNode; sideBarWidth?: number;
   selected: number; onChange(index: number): void; children: React.ReactNode;
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; fallback: React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
@@ -21,8 +21,8 @@ export function IOSSystemTabs({ selected, onChange, children, accessory, nativeA
   // Compatibility hosts without UIKit's tab-bar visibility API still use the
   // same page content and player callbacks; the current native path stays mounted.
   if (sideBar) return <View style={{ flex: 1, marginHorizontal: -18 }}>
-    <View style={{ flex: 1, paddingHorizontal: 18 }}>{pages.map((page, index) => <View key={index} style={{ flex: 1, display: selected === index ? "flex" : "none" }}>{page}{index !== 0 && <View style={{ marginRight: sideBarWidth + 12 }}>{accessory}</View>}</View>)}</View>
-    <SafeAreaView edges={hasSystemIOSTabs ? ["bottom"] : []} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 8, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>
+    <View style={{ flex: 1, paddingHorizontal: 18 }}>{pages.map((page, index) => <View key={index} style={{ flex: 1, display: selected === index ? "flex" : "none" }}>{page}{index !== 0 && <View style={{ marginRight: Math.max(0, sideBarWidth + 8 - 18) }}>{accessory}</View>}</View>)}</View>
+    <SafeAreaView edges={hasSystemIOSTabs ? ["bottom"] : []} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "flex-end", justifyContent: "flex-end", paddingRight: 4, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>
   </View>;
   if (!swiftUI) return <><View style={{ flex: 1 }}>{pages}</View>{selected !== 0 && accessory}{fallback}</>;
   const { Host, TabView, RNHostView, VStack } = swiftUI;

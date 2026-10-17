@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Platform, PanResponder, StyleSheet, View, useWindowDimensions } from "react-native";
-import { createSideRailGesture } from "./side-navigation-gesture";
+import { Animated, Platform, PanResponder, StyleSheet, View, useWindowDimensions } from "react-native";
+import { createSideRailGesture, sideRailIndicatorOffset } from "./side-navigation-gesture";
 import { IOS_TABS } from "./ios-ui-model";
 
-export const SIDE_NAVIGATION_WIDTH = 60;
+export const SIDE_NAVIGATION_WIDTH = 48;
 const nativeUI: typeof import("@expo/ui/swift-ui") | null = Platform.OS === "ios" &&
   Number(Platform.Version) >= 26 && (globalThis as any).expo?.modules?.ExpoUI &&
-  ["HostView", "VStackView", "Button"].every(name => (globalThis as any).expo?.getViewConfig?.("ExpoUI", name))
+  ["HostView", "VStackView", "ImageView"].every(name => (globalThis as any).expo?.getViewConfig?.("ExpoUI", name))
     ? require("@expo/ui/swift-ui") : null;
 const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"] as const;
 
@@ -14,77 +14,106 @@ export function SideNavigationRail({ selected, onChange, accent, dark, renderIco
   selected: number; onChange(index: number): void; accent: string; dark: boolean;
   renderIcon(index: number, color: string): React.ReactNode;
 }) {
-  const view = useRef<View>(null);
-  const origin = useRef({ x: 0, y: 0 });
   const gesture = useRef(createSideRailGesture());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressed = useRef(false);
-  const touchSequence = useRef(0);
-  const touch = useRef({ pageX: 0, pageY: 0 });
+  const startPoint = useRef({ x: 0, y: 0 });
   const callback = useRef(onChange); callback.current = onChange;
+  const selectedRef = useRef(selected); selectedRef.current = selected;
+  const indicatorY = useRef(new Animated.Value(selected * 46)).current;
+  const indicatorScale = useRef(new Animated.Value(1)).current;
+  const inside = useRef(true);
   const [hover, setHover] = useState<number | null>(null);
   const highlighted = hover ?? selected;
   const window = useWindowDimensions();
   const clearTimer = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
-  const measure = () => view.current?.measureInWindow((x, y) => { origin.current = { x, y }; });
-  const point = (event: { pageX: number; pageY: number }) => ({ x: event.pageX - origin.current.x, y: event.pageY - origin.current.y });
-  useEffect(() => { clearTimer(); pressed.current = false; touchSequence.current++; gesture.current.cancel(); setHover(null); measure(); }, [window.width, window.height]);
-  useEffect(() => () => { clearTimer(); pressed.current = false; gesture.current.cancel(); }, []);
+  const settle = (index: number) => {
+    Animated.parallel([
+      Animated.spring(indicatorY, { toValue: index * 46, stiffness: 320, damping: 26, mass: 0.8, useNativeDriver: true }),
+      Animated.spring(indicatorScale, { toValue: 1, stiffness: 300, damping: 22, mass: 0.7, useNativeDriver: true }),
+    ]).start();
+  };
+  const lift = () => Animated.spring(indicatorScale, { toValue: 1.18, stiffness: 300, damping: 22, mass: 0.7, useNativeDriver: true }).start();
+  const cancel = () => { clearTimer(); pressed.current = false; gesture.current.cancel(); setHover(null); settle(selectedRef.current); };
+  useEffect(cancel, [window.width, window.height]);
+  useEffect(() => { if (!pressed.current) settle(selected); }, [selected]);
+  useEffect(() => () => { clearTimer(); pressed.current = false; gesture.current.cancel(); indicatorY.stopAnimation(); indicatorScale.stopAnimation(); }, []);
+  // The topmost RN view is the only physical touch target. Its local start
+  // coordinates plus PanResponder's translation stay in one coordinate space;
+  // no asynchronous window measurement or SwiftUI Button recognizer competes.
   const pan = useRef(PanResponder.create({
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponderCapture: () => true,
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
     onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: event => {
-      clearTimer();
-      if (event.nativeEvent.touches.length !== 1) { pressed.current = false; gesture.current.cancel(); setHover(null); return; }
-      pressed.current = true; touch.current = event.nativeEvent;
-      const started = Date.now(); const initialTouch = event.nativeEvent; const sequence = ++touchSequence.current;
-      setHover(gesture.current.begin(point(event.nativeEvent), started));
-      view.current?.measureInWindow((x, y) => {
-        if (touchSequence.current !== sequence) return;
-        origin.current = { x, y };
-        if (pressed.current) { gesture.current.begin(point(initialTouch), started); setHover(gesture.current.move(point(touch.current), Date.now())); }
-      });
+    onPanResponderGrant: (event, state) => {
+      cancel(); if (state.numberActiveTouches > 1) return;
+      const point = { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY };
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+      pressed.current = true; startPoint.current = point;
+      setHover(gesture.current.begin(point, Date.now()));
+      inside.current = true;
+      Animated.spring(indicatorY, { toValue: sideRailIndicatorOffset(point.y), stiffness: 320, damping: 26, mass: 0.8, useNativeDriver: true }).start();
+      lift();
+      if (__DEV__) console.info("[SDA SideNav] touch", point);
       timer.current = setTimeout(() => { if (pressed.current) setHover(gesture.current.hold(Date.now())); }, 300);
     },
-    onPanResponderMove: event => {
-      touch.current = event.nativeEvent;
-      if (event.nativeEvent.touches.length > 1) { clearTimer(); pressed.current = false; gesture.current.cancel(); setHover(null); return; }
-      setHover(gesture.current.move(point(event.nativeEvent), Date.now()));
+    onPanResponderMove: (_event, state) => {
+      if (!pressed.current) return;
+      if (state.numberActiveTouches > 1) { cancel(); return; }
+      const point = { x: startPoint.current.x + state.dx, y: startPoint.current.y + state.dy };
+      const target = gesture.current.move(point, Date.now());
+      setHover(target);
+      if (target !== null) {
+        if (!inside.current) lift();
+        indicatorY.stopAnimation(); indicatorY.setValue(sideRailIndicatorOffset(point.y));
+      } else if (inside.current) settle(selectedRef.current);
+      inside.current = target !== null;
     },
-    onPanResponderRelease: event => {
+    onPanResponderRelease: (_event, state) => {
       clearTimer(); pressed.current = false;
-      const target = gesture.current.end(point(event.nativeEvent), Date.now());
-      setHover(null); if (target !== null) callback.current(target);
+      const target = gesture.current.end({ x: startPoint.current.x + state.dx, y: startPoint.current.y + state.dy }, Date.now());
+      if (__DEV__) console.info("[SDA SideNav] release", { dx: state.dx, dy: state.dy, target });
+      setHover(null); settle(target ?? selectedRef.current);
+      if (target !== null) callback.current(target);
     },
-    onPanResponderTerminate: () => { clearTimer(); pressed.current = false; gesture.current.cancel(); setHover(null); },
+    onPanResponderTerminate: cancel,
   })).current;
-  let visual: React.ReactNode;
-  if (nativeUI) {
-    const { frame, padding, glassEffect, buttonStyle, labelStyle, foregroundStyle, font, accessibilityLabel, accessibilityValue } =
-      require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-    visual = <nativeUI.Host style={{ width: 48, height: 140 }} colorScheme={dark ? "dark" : "light"}>
-      <nativeUI.VStack spacing={2} modifiers={[padding({ all: 2 }), frame({ width: 48, height: 140 }), glassEffect({ glass: { variant: "clear" }, shape: "capsule" })]}>
-        {IOS_TABS.map((label, index) => <nativeUI.Button key={label} label={label} systemImage={symbols[index]} onPress={() => onChange(index)}
-          modifiers={[buttonStyle("plain"), labelStyle("iconOnly"), font({ size: 20 }), frame({ width: 44, height: 44 }),
-            foregroundStyle(highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e"),
-            accessibilityLabel(label), accessibilityValue(highlighted === index ? "已选择" : "未选择"),
-            ...(highlighted === index ? [glassEffect({ glass: { variant: "clear", interactive: true }, shape: "circle" })] : [])]} />)}
-      </nativeUI.VStack>
-    </nativeUI.Host>;
-  } else visual = <View style={[s.rail, { backgroundColor: dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }]}>
-    {IOS_TABS.map((label, index) => <View key={label} style={[s.tab, { backgroundColor: highlighted === index ? (dark ? "#ffffff22" : "#0000000a") : "transparent" }]}>
-      {renderIcon(index, highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")}
-    </View>)}
+  const material = nativeUI ? require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers") : null;
+  const glass = (shape: "capsule" | "circle", width: number, height: number) => nativeUI && material ?
+    <nativeUI.Host style={{ width, height }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
+      <nativeUI.VStack modifiers={[material.frame({ width, height }), material.glassEffect({ glass: { variant: "clear", ...(shape === "circle" ? { tint: `${accent}33` } : {}) }, shape })]}>{null}</nativeUI.VStack>
+    </nativeUI.Host> : <View style={{ width, height, borderRadius: width / 2, backgroundColor: shape === "circle" ? `${accent}33` : dark ? "rgba(55,55,60,.65)" : "rgba(245,245,250,.65)" }} />;
+  const visual = <View style={{ width: 48, height: 140 }}>
+    {glass("capsule", 48, 140)}
+    <Animated.View style={{ position: "absolute", left: 2, top: 2, width: 44, height: 44,
+      transform: [{ translateY: indicatorY }, { scale: indicatorScale }] }}>
+      {glass("circle", 44, 44)}
+    </Animated.View>
+    <View style={StyleSheet.absoluteFill}>
+      {nativeUI && material ? <nativeUI.Host style={{ width: 48, height: 140 }} colorScheme={dark ? "dark" : "light"} seedColor={accent}>
+        <nativeUI.VStack spacing={2} modifiers={[material.padding({ all: 2 }), material.frame({ width: 48, height: 140 })]}>
+          {IOS_TABS.map((label, index) => <nativeUI.VStack key={label} modifiers={[material.frame({ width: 44, height: 44 }),
+            // Apply color on the native container as well as the host tint:
+            // SF Symbols must not fall back to the host's white/black label color.
+            material.foregroundColor(highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e"),
+            material.tint(highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")]}>
+            <nativeUI.Image systemName={symbols[index]} size={hover === index ? 22 : 20} />
+          </nativeUI.VStack>)}
+        </nativeUI.VStack>
+      </nativeUI.Host> : <View style={{ padding: 2, gap: 2 }}>
+        {IOS_TABS.map((label, index) => <View key={label} style={s.tab}>{renderIcon(index, highlighted === index ? accent : dark ? "#f5f5f7" : "#1c1c1e")}</View>)}
+      </View>}
+    </View>
   </View>;
-  return <View ref={view} collapsable={false} onLayout={measure} style={{ width: 48, height: 140 }} {...pan.panHandlers}>
+  return <View collapsable={false} style={{ width: 48, height: 140 }}>
     <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{visual}</View>
     <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { padding: 2, gap: 2 }]}>
       {IOS_TABS.map((label, index) => <View key={label} accessible accessibilityRole="tab" accessibilityLabel={label}
         accessibilityState={{ selected: index === selected }} accessibilityActions={[{ name: "activate" }]}
         onAccessibilityTap={() => onChange(index)} onAccessibilityAction={() => onChange(index)} style={s.tab} />)}
     </View>
+    <View collapsable={false} accessible={false} pointerEvents="auto" style={[StyleSheet.absoluteFill, { zIndex: 2 }]} {...pan.panHandlers} />
   </View>;
 }
 const s = StyleSheet.create({

@@ -477,7 +477,7 @@ assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);
 
-assert.match(uiKitTabs, /paddingBottom: sideBar \? 164 : 24/);
+assert.match(uiKitTabs, /paddingBottom: 24/);
 
 assert.match(ui, /const previewMetadata = false;/);
 assert.doesNotMatch(ui, /mockQueue|mock:\/\//);
@@ -500,7 +500,7 @@ console.log('Landscape control spacing preserves measured blocks and bounded gap
 // Native pages stay in the same Tabs.Host when side navigation is toggled;
 // only bar visibility changes; the rail overlays unchanged content width. Keep one usable mini-player.
 for (const sideBar of [undefined, 'side-rail']) {
-  const root=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar,sideBarWidth:60});
+  const root=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar,sideBarWidth:48});
   const host=root.props.children[0];
   assert.equal(root.props.style.paddingLeft,undefined,"overlay rail must not resize page content");
   assert.equal(host.props.tabBarHidden,!!sideBar);
@@ -515,6 +515,8 @@ for (const sideBar of [undefined, 'side-rail']) {
     assert.equal(dock.props.style.justifyContent,"flex-end");
     assert.equal(dock.props.style.alignItems,"flex-end");
     assert.equal(dock.props.style.paddingBottom,8);
+    assert.equal(dock.props.style.paddingRight,4);
+    assert.equal(library.props.children[1].props.style.marginRight,38);
   } else assert.equal(host.props.ios.bottomAccessory('regular'),'content-regular');
 }
 console.log('Optional side navigation: retained native pages, hidden bottom bar and single mini-player passed.');

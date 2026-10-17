@@ -229,7 +229,7 @@ function ThemedPlayer(p: PlayerProps) {
           }}>
           <View style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent]}>
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }]}>{!hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}</Pressable>
-          <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls, sideNavigationActive && { paddingRight: SIDE_NAVIGATION_WIDTH + 12 }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }]}>
+          <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, androidTabletPortrait && np.tabletControls, landscapePlayer && np.landscapeControls, sideNavigationActive && { paddingRight: SIDE_NAVIGATION_WIDTH + 8 }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }]}>
           <View style={[np.metadata, { transform: [{ translateY: landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
@@ -254,7 +254,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           </View>
         </View>
-        <ScrollView style={[s.page, s.libraryViewport, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent]}
+        <ScrollView style={[s.page, s.libraryViewport, !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, sideNavigationActive && { paddingRight: SIDE_NAVIGATION_WIDTH + 8 }]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
           automaticallyAdjustsScrollIndicatorInsets={false} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive ? 156 : 10, right: 3, left: 0 }}
@@ -280,10 +280,10 @@ function ThemedPlayer(p: PlayerProps) {
           {!p.queue.length && <View style={s.emptyLibrary}>{label("还没有歌曲", false, s.sectionTitle)}{label("打开本机文件，添加到播放列表", true, s.lead)}</View>}
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
         </ScrollView>
-        <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
+        <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, sideNavigationActive && { paddingRight: Math.max(0, SIDE_NAVIGATION_WIDTH + 8 - 18) }, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
           <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings} />}</View>
-          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, sideNavigationActive && { marginRight: SIDE_NAVIGATION_WIDTH + 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
+          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
           {label("单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint])}
         </View>
       </IOSSystemTabs>
