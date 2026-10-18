@@ -114,6 +114,7 @@ jobs:
           node scripts/test-av3a-output.mjs
           node scripts/test/mobile-volume-balance.test.cjs
           node scripts/test/mobile-rendering-presets.test.cjs
+          node scripts/test-spatial-playback-modes.mjs
           node scripts/test/mobile-spatial-cues.test.cjs
           python3 scripts/test-ios-mobile-assets.py
           python3 scripts/verify-spatial-cues.py

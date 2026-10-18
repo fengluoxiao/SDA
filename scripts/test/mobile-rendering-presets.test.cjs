@@ -49,10 +49,12 @@ for(const [directory,count] of [['hrtf-dense',61],['hrtf',17]]) {
   assert.deepEqual(expectedData,fs.readFileSync(`${stagedRoot}/${stagedPosition.dry}`),'selected measured response must remain byte-identical');
  }
 }
-for(const view of ['RemotePlayer.tsx','IOSPlayer.tsx','IOSNativeSettings.tsx']){
+for(const view of ['RemotePlayer.tsx','IOSPlayer.tsx','IOSNativeSettings.tsx','AndroidSettings.tsx']){
  const text=fs.readFileSync(`apps/mobile/src/${view}`,'utf8');
  assert.doesNotMatch(text,/p\.setNearField|p\.setRoom|近场渲染|房间仿真|距离与房间/);
- assert.match(text,/逐对象渲染/);assert.match(text,/实际方向/);
+ assert.doesNotMatch(text,/(?:label=|toggle\()"(?:对象渲染|逐对象渲染|实际方向)"/,
+  'object/direction settings are internal defaults, not user-facing switches');
+ assert.doesNotMatch(text,/p\.setRendering\(/,'settings must not offer manual object/direction toggles');
 }
 const gradle=fs.readFileSync('apps/mobile/android/app/build.gradle','utf8');
 assert.match(gradle,/exclude 'hrtf\*\/\*\*', 'rooms\/\*\*'/);
@@ -62,10 +64,14 @@ assert.match(gradle,/inputs\.file\(new File\(projectRoot, 'rendering-presets\.js
 const bridge=fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt','utf8');
 assert.match(bridge,/listOf\("hrtf-restored\/hrtf-dense", "hrtf-restored\/hrtf"\)/);
 assert.match(bridge,/putInt\("mobileDirectVersion", 1\)/);
+assert.match(bridge,/getInt\("objectRenderingVersion", 0\) < 2/);
+assert.match(bridge,/putInt\("objectRenderingVersion", 2\)\.putBoolean\("direct", true\)\.putBoolean\("directional", true\)/);
 assert.match(bridge,/\.put\("hrtfWetWeight", 0.0\)/);
 assert.match(bridge,/\.put\("roomId", ""\)/);
 assert.match(bridge,/\.put\("nearField", false\)/);
 const swift=fs.readFileSync('apps/mobile/modules/sda-core/ios/SdaPlayer.swift','utf8');
+assert.match(swift,/integer\(forKey:"sda.objectRenderingVersion"\) < 2/);
+assert.match(swift,/prefs\.set\(true,forKey:"sda.direct"\); prefs\.set\(true,forKey:"sda.directional"\)/);
 assert.match(swift,/sda.mobileDirectVersion/);assert.match(swift,/let directory = "hrtf-restored\/hrtf-dense"/);
 const pod=fs.readFileSync('apps/mobile/modules/sda-core/ios/SdaCore.podspec','utf8');
 assert.doesNotMatch(pod,/Resources\/rooms|Resources\/hrtf-dense|Resources\/hrtf-raw/);
