@@ -389,9 +389,6 @@ assert.ok(iosPlayerLayout(390, 780, 237).coverSize > 260);
 assert.doesNotMatch(homePages, /np.footer|歌词（尚未支持）|选择输出设备（尚未支持）|待播清单/);
 
 assert.doesNotMatch(ui, /lowerPlaybackGroup|marginVertical: playerGap/);
-assert.match(ui, /androidTabletPortrait = Platform\.OS === "android" && width >= 600 && height > width/);
-assert.match(ui, /androidTabletPortrait && np\.tabletControls/);
-assert.match(ui, /tabletControls: \{ marginTop: "auto" \}/);
 for (const height of [520, 650, 780]) {
  const layout = iosPlayerLayout(390, height, 236);
  assert.ok(layout.gap >= 0 && layout.gap <= 48);
@@ -420,7 +417,8 @@ assert.match(ui, /immersiveHome && <View pointerEvents="none"/);
 assert.match(ui, /backgroundColor: fadeColor/);
 assert.match(ui, /artworkColor\(artworkUri\)/);
 
-assert.match(ui, /width: artworkSize, height: artworkSize/);
+assert.match(ui, /width: artworkWidth, height: artworkSize/);
+assert.match(ui, /const artworkWidth = landscapePlayer \? artworkLayout.width : artworkSize/);
 assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
 
 assert.match(ui, /const artworkSize = landscapePlayer \? artworkLayout.size : width \+ 48/);
@@ -550,6 +548,7 @@ for(const [width,height,usable] of [[844,390,726],[1194,834,1194],[1097,617,1049
   const frame=landscapeArtworkLayout(width,height,usable);
   assert.equal(frame.columnWidth*2,usable);
   assert.equal(frame.size,height);
+  assert.equal(frame.width,height,"phone artwork remains square");
   assert.equal(frame.left,0);
 }
 console.log('Landscape columns: equal measured halves and edge-aligned full-height square artwork passed.');
@@ -649,3 +648,26 @@ for(const offset of [0,-31.5]) {
  const library=pageViewport(tree.props.children[0].props.children[0][1]);
  assert.equal(library.props.children[0].props.children[1].props.style.marginLeft,38+offset);
 }
+
+// Tablet artwork is an in-flow complete square; its ambient background fills
+// the surface independently of the foreground cover and control geometry.
+assert.match(ui, /isTabletPlayer\(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height\)/);
+assert.match(ui, /testID="tablet-ambient-artwork"[^>]+resizeMode="cover" blurRadius=\{48\}/);
+assert.match(ui, /testID="tablet-complete-artwork"/);
+assert.match(ui, /hasArtwork \? <Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
+assert.match(ui, /tabletLayout && \{ width: tabletLayout.controlsWidth/);
+assert.doesNotMatch(ui,/ipad-artwork-backdrop|immersiveTabletArtwork/);
+
+// Tablet pages reserve the rail at their shared parent. Native page adapters
+// must not reserve a second lane or shift the mini-player/left content again.
+for(const sideBarPosition of ['left','right']) {
+ const tree=nativeAdapter.api.IOSUIKitTabs({...accessoryProps,sideBar:true,sideBarExternal:true,sideBarPosition,sideBarInsetReserved:true});
+ const library=pageViewport(tree.props.children[0].props.children[0][1]);
+ const body=library;
+ assert.equal(body.props.style.paddingLeft,undefined);
+ assert.equal(body.props.style.paddingRight,undefined);
+ const mini=body.props.children[0].props.children[1];
+ assert.equal(mini.props.style.right,0);
+ assert.equal(mini.props.style[sideBarPosition==='left'?'marginLeft':'marginRight'],0);
+}
+console.log('Tablet page adapters: one shared navigation lane, no duplicate left/right inset or mini-player offset.');

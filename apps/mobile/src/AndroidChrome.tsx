@@ -1,16 +1,17 @@
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { androidMaterialTheme } from "./android-material-theme";
 import { useAppTheme } from "./app-theme";
 import React from "react";
 import { Platform, type NativeSyntheticEvent, type StyleProp, type ViewStyle } from "react-native";
 import { requireNativeView } from "expo";
 import type { PlayerProps } from "./RemotePlayer";
-import { androidChromeState, isAndroidTabIndex } from "./android-chrome-model";
+import { androidChromeState, androidHeaderLayout, isAndroidTabIndex } from "./android-chrome-model";
 
 interface ChromeProps {
   selected?: number; dark: boolean; title?: string; artist?: string; coverUri?: string;
   accentColorValue?: string; hasTrack?: boolean; playing?: boolean; busy?: boolean; backgroundColorValue?: string;
   presentation?: "bottom" | "rail" | "mini" | "header" | "toggle" | "button";
-  checked?: boolean; blurred?: boolean; headerAction?: boolean; backButton?: boolean;
+  topInset?: number; checked?: boolean; blurred?: boolean; headerAction?: boolean; backButton?: boolean;
   style: StyleProp<ViewStyle>;
   onSelect?(event: NativeSyntheticEvent<{ index: number }>): void;
   onExpand?(): void; onPlayback?(): void;
@@ -29,12 +30,13 @@ export function AndroidChrome({ player, selected, onSelect, dark, backgroundColo
   const { primary: accent } = androidMaterialTheme(id, dark);
   if (!NativeChrome) return null;
   const state = androidChromeState(player, selected);
+  const compact = presentation === "bottom" && !state.showMini;
   return <NativeChrome presentation={presentation} accentColorValue={accent} selected={selected} dark={dark}
     title={player.metadata.title || player.fileName || "等待选择歌曲"}
     artist={player.metadata.artist || player.metadata.albumArtist || "未知艺人"}
     coverUri={player.metadata.coverUri || ""} hasTrack={state.hasTrack}
     playing={state.playing} busy={player.busy}
-    backgroundColorValue={backgroundColor} style={{ width: "100%", height: presentation === "mini" ? 48 : state.height }}
+    backgroundColorValue={backgroundColor} style={{ width: "100%", height: presentation === "mini" ? 48 : state.height, ...(compact ? { maxWidth: 320, alignSelf: "center" as const } : {}) }}
     onSelect={event => { if (isAndroidTabIndex(event.nativeEvent.index)) onSelect(event.nativeEvent.index); }} onExpand={() => onSelect(0)}
     onPlayback={() => player.playing ? player.togglePause() : player.play()} />;
 }
@@ -62,9 +64,10 @@ export function AndroidGlassToggle({ value, onChange, label, disabled = false, d
 export function AndroidPageHeader({ title, dark, backgroundColor, scrolled, onAction, back = false, style }: {
   title: string; dark: boolean; backgroundColor: string; scrolled: boolean; onAction?(): void; back?: boolean; style?: StyleProp<ViewStyle>;
 }) {
-  return NativeChrome ? <NativeChrome presentation="header" title={title} dark={dark} backgroundColorValue={backgroundColor}
+  const header = androidHeaderLayout(useSafeAreaInsets().top);
+  return NativeChrome ? <NativeChrome topInset={header.top} presentation="header" title={title} dark={dark} backgroundColorValue={backgroundColor}
     blurred={scrolled} headerAction={!!onAction} backButton={back} onExpand={onAction}
-    style={[{ height: 56, width: "100%" }, style]} /> : null;
+    style={[{ height: header.height, width: "100%" }, style]} /> : null;
 }
 
 export function AndroidGlassAction({ title, onPress, dark, accent }: {

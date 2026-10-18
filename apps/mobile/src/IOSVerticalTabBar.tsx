@@ -4,7 +4,8 @@ import { AppState, Platform, UIManager, View, type NativeSyntheticEvent } from "
 import type { TabSelectedEvent } from "react-native-screens";
 import { IOS_TABS } from "./ios-ui-model";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { nativeSideTabFrame, NATIVE_SIDE_TAB_LENGTH } from "./native-side-tab-layout";
+import { nativeSideTabFrame, NATIVE_SIDE_TAB_LENGTH, NATIVE_TABLET_SIDE_TAB_LENGTH, NATIVE_TABLET_SIDE_TAB_VISIBLE_LENGTH } from "./native-side-tab-layout";
+import { iosTabletTabIcons } from "./ios-tablet-tab-icons";
 import { iosTabAppearance } from "./ios-tab-appearance";
 
 function supportsNativeTabBar() {
@@ -33,12 +34,16 @@ export function IOSVerticalTabBar({ selected, onChange, accent, dark }: {
   const screenInsets = useSafeAreaInsets();
   // Child pages report content-safe insets after UIKit has already laid out
   // the bar. Feeding those values back into the controller shrinks it again.
-  const nativeFrame = nativeSideTabFrame(screenInsets);
+  const tablet = Platform.OS === "ios" && !!Platform.isPad;
+  const length = tablet ? NATIVE_TABLET_SIDE_TAB_LENGTH : NATIVE_SIDE_TAB_LENGTH;
+  const visibleLength = tablet ? NATIVE_TABLET_SIDE_TAB_VISIBLE_LENGTH : length;
+  const icons = tablet ? iosTabletTabIcons : nativeIcons;
+  const nativeFrame = nativeSideTabFrame(screenInsets, length);
   if (!screens) return null;
   const { Tabs } = screens;
   return <View testID="native-vertical-tab-bar" collapsable={false}
-    style={{ width: 48, height: NATIVE_SIDE_TAB_LENGTH, overflow: "visible", backgroundColor: "transparent" }}>
-    <View testID="vertical-tab-touch-layer" style={{ position: "absolute", width: NATIVE_SIDE_TAB_LENGTH, height: 48, left: (48 - NATIVE_SIDE_TAB_LENGTH) / 2, top: (NATIVE_SIDE_TAB_LENGTH - 48) / 2,
+    style={{ width: 48, height: visibleLength, overflow: "visible", backgroundColor: "transparent" }}>
+    <View testID="vertical-tab-touch-layer" style={{ position: "absolute", width: length, height: 48, left: (48 - length) / 2, top: (visibleLength - 48) / 2,
       backgroundColor: "transparent", transform: [{ rotate: "90deg" }] }}>
       <View testID="vertical-tab-inset-compensation" style={{ position: "absolute", ...nativeFrame, backgroundColor: "transparent" }}>
       <Tabs.Host style={{ width: nativeFrame.width, height: nativeFrame.height, flex: 0 }} navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
@@ -56,7 +61,7 @@ export function IOSVerticalTabBar({ selected, onChange, accent, dark }: {
         {IOS_TABS.map((label, index) => <Tabs.Screen key={label} screenKey={String(index)}
           tabBarItemAccessibilityLabel={label} style={{ backgroundColor: "transparent" }} ios={{
             experimental_userInterfaceStyle: dark ? "dark" : "light",
-            icon: { type: "templateSource", templateSource: nativeIcons[index]! },
+            icon: { type: "templateSource", templateSource: icons[index]! },
             standardAppearance: iosTabAppearance, scrollEdgeAppearance: iosTabAppearance,
           }}><View pointerEvents="none" style={{ flex: 1, backgroundColor: "transparent" }} /></Tabs.Screen>)}
       </Tabs.Host>

@@ -190,6 +190,9 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {[0, -3, -6, -9, -12].map(db => <Text key={db} modifiers={[tag(String(db))]}>{`${db} dB${db === -6 ? " · 默认" : ""}`}</Text>)}
       </Picker>
     </Section>}
+    {Platform.OS === "ios" && !Platform.isPad && <Section title="界面布局" footer={<Text>竖屏使用平板布局，横屏只改为模糊背景，封面保持原样；关闭恢复原有样式。</Text>}>
+      <Toggle label="平板风格界面" isOn={navigationPreferences.tabletPortraitLayout} onIsOnChange={navigationPreferences.setTabletPortraitLayout} />
+    </Section>}
     <Section title="界面" footer={<Text>横屏时在所选侧的下角显示导航栏，长按后滑动选择，竖屏保持底部导航。</Text>}>
       <Toggle label="横屏侧边导航" isOn={navigationPreferences.landscapeSideTabs} onIsOnChange={navigationPreferences.setLandscapeSideTabs} />
       <Picker label="导航栏位置" selection={navigationPreferences.sideTabPosition} onSelectionChange={(value: string) => { if (value === "left" || value === "right") navigationPreferences.setSideTabPosition(value); }} modifiers={[pickerStyle("menu")]}>

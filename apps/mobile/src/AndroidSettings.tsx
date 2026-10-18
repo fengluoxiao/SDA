@@ -1,3 +1,5 @@
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { androidHeaderLayout } from "./android-chrome-model";
 import { AndroidGlassToggle, AndroidPageHeader, hasAndroidChrome } from "./AndroidChrome";
 import { useNavigationPreferences } from "./navigation-preferences";
 import renderExperiment from "../ios-experiments/active.json";
@@ -14,8 +16,10 @@ import { PLAYBACK_MODES, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrde
 const compose: typeof import("@expo/ui/jetpack-compose") | null = Platform.OS === "android" && (globalThis as any).expo?.modules?.ExpoUI
   ? require("@expo/ui/jetpack-compose") : null;
 
-export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerProps; dark: boolean; onClose(): void }) {
+export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions = true }: { player: PlayerProps; dark: boolean; onClose(): void; phoneLayoutOptions?: boolean }) {
   const appTheme = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const header = androidHeaderLayout(insets.top);
   const navigation = useNavigationPreferences();
   const [scrolled, setScrolled] = React.useState(false);
   const [selection, setSelection] = React.useState<null | { title: string; options: { id: string; label: string }[]; selected: string; choose(id: string): void }>(null);
@@ -51,10 +55,10 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
   </Pressable>;
   return <View style={[StyleSheet.absoluteFill, { backgroundColor: c.bg }]} accessibilityViewIsModal>
     {!hasAndroidChrome && <View style={[s.header, { backgroundColor: c.bg }]}>
-      <View style={s.back}><AndroidGlassSettingsButton back dark={dark} onPress={onClose} /></View>
+      <View style={s.back}><AndroidGlassSettingsButton back onPress={onClose} /></View>
       <Text accessibilityRole="header" style={[s.headerTitle, { color: c.ink }]}>设置</Text>
     </View>}
-    <ScrollView showsVerticalScrollIndicator scrollEventThrottle={32} onScroll={event => setScrolled(event.nativeEvent.contentOffset.y > 1)} contentContainerStyle={[s.content, hasAndroidChrome && { paddingTop: 56 }]} scrollIndicatorInsets={{ top: hasAndroidChrome ? 56 : 0 }}>
+    <ScrollView showsVerticalScrollIndicator scrollEventThrottle={32} onScroll={event => setScrolled(event.nativeEvent.contentOffset.y > 1)} contentContainerStyle={[s.content, hasAndroidChrome && { paddingTop: header.height, paddingBottom: 32 + insets.bottom }]} scrollIndicatorInsets={{ top: hasAndroidChrome ? header.height : 0, bottom: insets.bottom }}>
       {section("播放操作", <View style={s.actions}>
         {action("重新播放", "arrow.counterclockwise", p.play, p.busy || !p.selectedUri)}
         {action("停止播放", "stop.fill", p.stop, p.busy || !p.playing, true)}
@@ -78,6 +82,7 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
       {renderExperiment.spatialCues !== false && section("空间线索强度", menu("辅助空间效果", `${p.spatialCueDb} dB`, [0, -3, -6, -9, -12].map(db => ({ id: String(db), label: `${db} dB${db === -6 ? " · 默认" : ""}` })), String(p.spatialCueDb),
         id => p.setSpatialCueDb(Number(id)), p.spatialCueBusy || p.busy),
         "仅调节额外空间线索，不改变主音量或干声增益。播放中平滑切换，已缓冲的声音播放完后生效。")}
+      {phoneLayoutOptions && section("界面布局", toggle("平板风格界面", navigation.tabletPortraitLayout, navigation.setTabletPortraitLayout, false), "竖屏使用平板布局，横屏只改为模糊背景，封面保持原样；关闭恢复原有样式。")}
       {section("导航栏", <>
         {toggle("横屏侧边导航栏", navigation.landscapeSideTabs, navigation.setLandscapeSideTabs, false)}
         {navigation.landscapeSideTabs && menu("侧边导航栏位置", navigation.sideTabPosition === "left" ? "左边" : "右边",
@@ -94,7 +99,7 @@ export function AndroidSettings({ player: p, dark, onClose }: { player: PlayerPr
       </>)}
     </ScrollView>
     {hasAndroidChrome && <AndroidPageHeader title="设置" dark={dark} backgroundColor={c.bg} scrolled={scrolled} onAction={onClose} back style={{ position: "absolute", top: 0 }} />}
-    <Modal transparent visible={selection !== null} animationType="fade" onRequestClose={() => setSelection(null)}>
+    <Modal transparent statusBarTranslucent navigationBarTranslucent visible={selection !== null} animationType="fade" onRequestClose={() => setSelection(null)}>
       <View style={s.scrim}>
         <Pressable accessibilityLabel="取消选择" onPress={() => setSelection(null)} style={StyleSheet.absoluteFill} />
         <View style={[s.dialog, { backgroundColor: c.panel }]} accessibilityViewIsModal>

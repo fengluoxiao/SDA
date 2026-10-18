@@ -25,8 +25,13 @@ class MainActivity : ReactActivity() {
     super.onCreate(null)
     WindowCompat.setDecorFitsSystemWindows(window, false)
     window.statusBarColor = Color.TRANSPARENT
+    window.navigationBarColor = Color.TRANSPARENT
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      window.navigationBarDividerColor = Color.TRANSPARENT
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       window.isStatusBarContrastEnforced = false
+      window.isNavigationBarContrastEnforced = false
     }
   }
 

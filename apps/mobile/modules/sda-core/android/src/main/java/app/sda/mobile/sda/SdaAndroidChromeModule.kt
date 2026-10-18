@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.net.Uri
 import android.os.Build
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -57,6 +58,8 @@ import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidToggle
 import com.kyant.backdrop.catalog.components.LiquidSideTabs
 import com.kyant.backdrop.catalog.components.LiquidSideTab
+import com.kyant.backdrop.catalog.components.LiquidGlassBlurRadius
+import com.kyant.backdrop.catalog.components.liquidGlassSurfaceColor
 import com.kyant.backdrop.catalog.components.LiquidButton
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.modules.Module
@@ -70,14 +73,25 @@ class SdaAndroidChromeModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("SdaAndroidChrome")
         Function("effectLevel") { if (Build.VERSION.SDK_INT >= 33) "refraction" else if (Build.VERSION.SDK_INT >= 31) "blur" else "solid" }
+        Function("setNavigationBarAppearance") { light: Boolean ->
+            val activity = appContext.currentActivity
+            if (activity != null) activity.runOnUiThread {
+                if (!activity.isDestroyed && !activity.isFinishing) {
+                    WindowCompat.getInsetsController(activity.window, activity.window.decorView).isAppearanceLightNavigationBars = light
+                }
+            }
+            Unit
+        }
         View(SdaAndroidChromeView::class) {
             Events("onSelect", "onExpand", "onPlayback", "onToggle")
             Prop("presentation") { view: SdaAndroidChromeView, value: String -> view.presentation = if (value in listOf("bottom", "rail", "mini", "header", "toggle", "button")) value else "bottom" }
+            Prop("topInset") { view: SdaAndroidChromeView, value: Float -> view.topInset = value.coerceAtLeast(0f) }
             Prop("checked") { view: SdaAndroidChromeView, value: Boolean -> view.checked = value }
             Prop("blurred") { view: SdaAndroidChromeView, value: Boolean -> view.blurred = value }
             Prop("headerAction") { view: SdaAndroidChromeView, value: Boolean -> view.headerAction = value }
             Prop("selected") { view: SdaAndroidChromeView, value: Int -> view.selected = value.coerceIn(0, 2) }
             Prop("accentColorValue") { view: SdaAndroidChromeView, value: String -> view.accentColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFF7799CC)) }
+            Prop("glassDark") { view: SdaAndroidChromeView, value: Boolean? -> view.glassDark = value }
             Prop("dark") { view: SdaAndroidChromeView, value: Boolean -> view.dark = value }
             Prop("title") { view: SdaAndroidChromeView, value: String -> view.title = value }
             Prop("artist") { view: SdaAndroidChromeView, value: String -> view.artist = value }
@@ -98,6 +112,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val onSelect by EventDispatcher()
     private val onExpand by EventDispatcher()
     private val onPlayback by EventDispatcher()
+    var topInset by mutableFloatStateOf(0f)
     var checked by mutableStateOf(false)
     var blurred by mutableStateOf(false)
     var headerAction by mutableStateOf(true)
@@ -105,6 +120,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var selected by mutableIntStateOf(0)
     var accentColor by mutableStateOf(Color(0xFF7799CC))
     var dark by mutableStateOf(false)
+    var glassDark by mutableStateOf<Boolean?>(null)
     var title by mutableStateOf("")
     var artist by mutableStateOf("")
     var coverUri by mutableStateOf("")
@@ -223,6 +239,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
         val ink = if (dark) Color(0xFFF5F5F7) else Color(0xFF1C1C1E)
         val muted = if (dark) Color(0xFFA0A0A8) else Color(0xFF74747C)
         val accent = accentColor
+        val navigationSurface = liquidGlassSurfaceColor(glassDark ?: dark)
         val showMini = hasTrack && selected != 0 && presentation != "rail"
         val cover by produceState<ImageBitmap?>(null, coverUri) {
             value = null
@@ -273,15 +290,16 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
         if (presentation == "header") {
             val backdrop = backgroundAt(0f)
             val density = androidx.compose.ui.platform.LocalDensity.current
-            val buttonBackdrop = backgroundAt(with(density) { 6.dp.toPx() }, if (backButton) with(density) { 6.dp.toPx() } else width.toFloat() - with(density) { 50.dp.toPx() })
+            val buttonBackdrop = backgroundAt(with(density) { (topInset.dp + 6.dp).toPx() }, if (backButton) with(density) { 6.dp.toPx() } else width.toFloat() - with(density) { 50.dp.toPx() })
             val surface = if (blurred) Modifier.drawBackdrop(backdrop = backdrop, shape = { RectangleShape },
                 highlight = { null }, shadow = { null }, effects = { blur(20.dp.toPx()) },
                 onDrawSurface = { drawRect(surfaceColor.copy(alpha = .35f)) }) else Modifier
-            Box(Modifier.fillMaxSize().then(surface).drawWithContent { backgroundRevision; drawContent() }, contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().then(surface).drawWithContent { backgroundRevision; drawContent() }.padding(top = topInset.dp), contentAlignment = Alignment.Center) {
                 Text(title, color = ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                     modifier = Modifier.padding(horizontal = 56.dp).semantics { heading() }, overflow = TextOverflow.Ellipsis)
                 if (headerAction) Box(Modifier.align(if (backButton) Alignment.CenterStart else Alignment.CenterEnd).padding(horizontal = 6.dp)) {
                     LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = buttonBackdrop,
+                        surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
                         label = if (backButton) "返回" else "更多设置", height = 44.dp, contentPadding = 0.dp, modifier = Modifier.width(44.dp)) {
                         Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)
                     }
@@ -292,6 +310,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
         if (settingsButton) {
             val backdrop = backgroundAt(0f)
             LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = backdrop,
+                surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
                 enabled = !busy, label = if (backButton) "返回" else "更多设置", height = 44.dp, contentPadding = 0.dp,
                 modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
                 Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)

@@ -5,11 +5,11 @@ import {build} from 'esbuild';
 const source=readFileSync('apps/mobile/src/IOSVerticalTabBar.tsx','utf8');
 assert.doesNotMatch(source,/vertical-tab-upright-symbols|GestureDetector|onTouchMove|sideNavigationAppearance|setReportedInsets|SafeAreaListener/,'native items own glyph placement and highlight');
 const bundle=await build({entryPoints:['apps/mobile/src/IOSVerticalTabBar.tsx'],bundle:true,platform:'node',format:'cjs',write:false,define:{__DEV__:'false'},external:['react','react-native','react-native-screens','react-native-safe-area-context','*.png']});
-function load({os='ios',version=26,available=true,insets={left:59,right:59,bottom:21},reported=null}={}) {
+function load({os='ios',isPad=false,version=26,available=true,insets={left:59,right:59,bottom:21},reported=null}={}) {
  const mod={exports:{}},updates=[];let slot=0;
  new Function('require','module','exports',bundle.outputFiles[0].text)(name=>{
   if(name==='react')return {useRef:value=>({current:value}),createElement:(type,props,...children)=>({type,props:{...props,children}}),useState:initial=>{const index=slot++;return[index===1?reported:initial,value=>updates.push([index,value])];}};
-  if(name==='react-native')return {AppState:{currentState:'active'},Platform:{OS:os,Version:version},UIManager:{hasViewManagerConfig:()=>available},View:'View'};
+  if(name==='react-native')return {AppState:{currentState:'active'},Platform:{OS:os,Version:version,isPad},UIManager:{hasViewManagerConfig:()=>available},View:'View'};
   if(name==='react-native-safe-area-context')return {useSafeAreaInsets:()=>insets,SafeAreaListener:'SafeAreaListener'};
   if(name==='react-native-screens')return {Tabs:{Host:'NativeTabsHost',Screen:'NativeTabsScreen'}};
   if(name.endsWith('.png'))return name;
@@ -53,7 +53,7 @@ assert.match(readFileSync('apps/mobile/src/IOSUIKitTabs.tsx','utf8'),/const appe
 // Decode these generated RGBA PNGs with only Node built-ins. An all-transparent
 // placeholder would pass layout tests but leave the real tab items invisible.
 function png(path) {
- const data=readFileSync(path),chunks=[];let w,h;
+ const data=Buffer.isBuffer(path)?path:readFileSync(path),chunks=[];let w,h;
  for(let p=8;p<data.length;) {const len=data.readUInt32BE(p),type=data.toString('ascii',p+4,p+8),chunk=data.subarray(p+8,p+8+len);p+=12+len;
   if(type==='IHDR'){w=chunk.readUInt32BE(0);h=chunk.readUInt32BE(4);assert.equal(chunk[8],8);assert.equal(chunk[9],6);}
   if(type==='IDAT')chunks.push(chunk);
@@ -87,3 +87,36 @@ for(const left of [0,44,59,62])for(const right of [0,44,59,62])for(const bottom 
  assert.equal(compensation.props.style.left,-Math.max(0,left-bottom));assert.equal(host.props.style.height-bottom,48);
  for(const page of host.props.children[0])assert.equal(page.props.children[0].props.onChange,undefined);
 }
+
+// Tablet fitting space remains wide while its visible capsule docks in a compact frame.
+for(const bottom of [0,20,34]) {
+ const tree=load({isPad:true,insets:{left:0,right:0,bottom}}).IOSVerticalTabBar({selected:0,onChange(){},accent:'#7799CC',dark:false});
+ const rotation=tree.props.children[0],host=rotation.props.children[0].props.children[0];
+ assert.equal(tree.props.style.height,160);assert.equal(rotation.props.style.width,320);
+ assert.equal(rotation.props.style.left,(48-320)/2);assert.equal(rotation.props.style.top,(160-48)/2);
+ assert.equal(rotation.props.style.top+24,tree.props.style.height/2,"native capsule center follows the visible dock, not blank controller space");
+ assert.equal(host.props.style.width,320);assert.equal(host.props.style.height,48+bottom);
+ assert.equal(host.props.children[0].length,3);
+}
+
+// iPad templates have no wide transparent phone canvas and no network URI.
+for(const dark of [false,true])for(const selected of [0,1,2]) {
+ const events=[];
+ const tree=load({isPad:true}).IOSVerticalTabBar({selected,onChange:index=>events.push(index),accent:'#EE5577',dark});
+ const host=tree.props.children[0].props.children[0].props.children[0];
+ assert.equal(host.props.ios.tabBarTintColor,'#EE5577');
+ const items=host.props.children[0];
+ for(const [index,name] of ['play','library','space'].entries()) {
+  const icon=items[index].props.ios.icon;
+  assert.equal(icon.type,'templateSource');
+  assert.match(icon.templateSource.uri,/^data:image\/png;base64,/);
+  assert.equal(icon.templateSource.width,24);assert.equal(icon.templateSource.height,24);assert.equal(icon.templateSource.scale,3);
+  const image=png(Buffer.from(icon.templateSource.uri.split(',')[1],'base64'));
+  const upright=png(`apps/mobile/assets/side-tabs/sources/${name}.png`);
+  assert.equal(image.w,72);assert.equal(image.h,72);
+  for(let y=0;y<72;y++)for(let x=0;x<72;x++)assert.equal(image.pixels[((71-x)*72+y)*4+3],upright.pixels[(y*72+x)*4+3],'tablet glyph preserves silhouette and inverse rotation without wide padding');
+ }
+ host.props.onTabSelected({nativeEvent:{selectedScreenKey:String((selected+1)%3),provenance:7,actionOrigin:'user'}});
+ assert.deepEqual(events,[(selected+1)%3]);
+}
+console.log('iPad icons: square 24pt alpha templates, inverse rotation, inline loading, theme tint and native selection passed.');

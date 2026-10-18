@@ -55,13 +55,13 @@ export function iosLandscapeControlLayout(viewportHeight: number, blockHeight: n
   return { metadataGap: 44 * scale, transportGap: Math.max(0, 42 * scale - 4), volumeGap: Math.max(0, 32 * scale - 4), topPadding };
 }
 
-// Controls keep equal halves of the measured viewport. Immersive artwork is
-// independent of those safe-area columns: a full-height square at the screen edge.
+// The phone's immersive artwork remains an edge-aligned full-height square.
+// Tablet artwork is laid out in flow by tabletPlayerLayout instead.
 export function landscapeArtworkLayout(surfaceWidth: number, surfaceHeight: number, viewportWidth: number) {
   const available = Math.max(0, Math.min(surfaceWidth, viewportWidth));
   const columnWidth = available / 2;
   const size = Math.max(0, surfaceHeight);
-  return { columnWidth, size, left: 0 };
+  return { columnWidth, size, width: size, left: 0, top: 0 };
 }
 
 // Keep the accepted row x-position (parent + 38), while moving the scroll

@@ -82,7 +82,7 @@ assert.match(liquid, /interactiveHighlight.gestureModifier/);
 assert.match(liquid, /InnerShadow\(/);
 assert.doesNotMatch(chrome, /Bitmap.createBitmap|SystemClock|postInvalidateDelayed|lastCapture/);
 assert.match(chrome, /drawWithContent \{ backgroundRevision; drawContent\(\) \}/);
-assert.match(tabs, /position: "absolute", bottom: 0/);
+assert.match(tabs, /position: "absolute", bottom: insets.bottom/);
 const bridge = fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt', 'utf8');
 assert.match(bridge, /activeSourceCodec = if \(isAlac\) "alac" else if \(isMpegh\) "mpegh" else if \(isMp3\) "mp3"/);
 assert.match(bridge, /equals\("ac4", ignoreCase = true\)\) "ac4"/);
@@ -105,8 +105,10 @@ const react={
   isValidElement:value=>!!value?.props,
   cloneElement:(value,props)=>({...value,props:{...value.props,...props}}),
 };
+let safeInsets={top:0,bottom:0,left:0,right:0};
 const imports={
   react,
+  'react-native-safe-area-context':{useSafeAreaInsets:()=>safeInsets},
   'react-native':{Platform:{OS:'android'},View:'View'},
   './app-theme':{useAppTheme:()=>({id:'sakiko'})},
   './android-material-theme':{androidMaterialTheme:()=>({bg:'#fff'})},
@@ -115,7 +117,8 @@ const imports={
   './android-chrome-model':mod.exports,
 };
 new Function('require','module','exports',transformSync(tabs,{loader:'tsx',format:'cjs'}).code)(name=>{assert(name in imports,name);return imports[name];},tabsModule,tabsModule.exports);
-for(const selectedUri of ['', 'file:///song']) for(const sideBar of [false,true]) for(const sideBarPosition of ['left','right']) {
+for(const top of [0,24,48]) for(const bottom of [0,24,48]) for(const selectedUri of ['', 'file:///song']) for(const sideBar of [false,true]) for(const sideBarPosition of ['left','right']) {
+  safeInsets={top,bottom,left:0,right:0};
   const player={selectedUri,playing:true,paused:false,busy:false};
   const pages=[{type:'Player',props:{}},{type:'ScrollView',props:{contentContainerStyle:{paddingTop:8}}},{type:'Scene',props:{}}];
   const tree=tabsModule.exports.PlatformPlayerTabs({player,selected:1,theme:'light',children:pages,sideBar,sideBarPosition});
@@ -123,15 +126,40 @@ for(const selectedUri of ['', 'file:///song']) for(const sideBar of [false,true]
   const footerHeight=sideBar?(selectedUri?64:0):androidChromeState(player,1).height;
   assert.equal(library.props.style.paddingBottom,0,'list continues underneath the glass instead of exposing an opaque footer');
   const scroll=library.props.children[0].props.children[0];
-  assert.equal(scroll.props.contentContainerStyle[1].paddingBottom,footerHeight+24,'last row can scroll above glass');
-  assert.equal(scroll.props.contentContainerStyle[1].paddingTop,64,'first row clears native header');
-  assert.equal(scroll.props.scrollIndicatorInsets.top,56);
-  if(sideBar)assert(scroll.props.style[1][sideBarPosition==='right'?'marginRight':'marginLeft']>0,'Android viewport itself clears the rail');
+  assert.equal(scroll.props.contentContainerStyle[1].paddingBottom,footerHeight+bottom+24,'last row can scroll above glass');
+  assert.equal(scroll.props.contentContainerStyle[1].paddingTop,top+64,'first row clears native header');
+  assert.equal(scroll.props.scrollIndicatorInsets.top,top+56);
+  if(sideBar) {
+    const edge=sideBarPosition==='left'?'Left':'Right';
+    const parentInset=sideBarPosition==='left'?30:18;
+    const viewportInset=parentInset+scroll.props.style[1]['margin'+edge];
+    const rowInset=viewportInset+scroll.props.contentContainerStyle[2]['padding'+edge];
+    assert.equal(viewportInset-(8+48),6,'scrollbar clears the physical rail');
+    assert.equal(rowInset-(8+48),12,'rows clear the physical rail equally on either side');
+    if(selectedUri)assert.equal(tree.props.children[1].props.style[sideBarPosition]+16,rowInset,'mini-player and row edges align');
+  }
+  const oldScrollRange=1000+64+footerHeight+24-(800-top-bottom);
+  const newScrollRange=1000+scroll.props.contentContainerStyle[1].paddingTop+scroll.props.contentContainerStyle[1].paddingBottom-800;
+  assert.equal(newScrollRange,oldScrollRange,'drawing behind both bars preserves list reachability and visible spacing');
   const footer=tree.props.children[1];
   if(sideBar&&!selectedUri)assert.equal(footer,false);
-  else assert.equal(footer.props.children[0].props.presentation,sideBar?'mini':'bottom');
+  else { assert.equal(footer.props.children[0].props.presentation,sideBar?'mini':'bottom'); assert.equal(footer.props.style.bottom,bottom,'floating controls stay above navigation gestures/buttons'); }
 }
 console.log('Android native layout: persistent pages, floating glass, scroll reachability, left/right rail gutters and mini-only landscape footer.');
+for(const sideBarPosition of ['left','right']) {
+ safeInsets={top:24,bottom:20,left:0,right:0};
+ const pages=[{type:'Player',props:{}},{type:'ScrollView',props:{contentContainerStyle:{paddingTop:8}}},{type:'Scene',props:{}}];
+ const tree=tabsModule.exports.PlatformPlayerTabs({player:{selectedUri:'file:///song',playing:false,paused:false,busy:false},selected:1,theme:'light',children:pages,sideBar:true,sideBarPosition,sideBarInsetReserved:true});
+ const library=tree.props.children[0].props.children[0][1];
+ const scroll=library.props.children[0].props.children[0];
+ assert.deepEqual(scroll.props.style[1],{marginLeft:-18,marginRight:-18});
+ assert.deepEqual(scroll.props.contentContainerStyle[2],{paddingLeft:18,paddingRight:18});
+ assert.equal(tree.props.children[1].props.style.left,0);assert.equal(tree.props.children[1].props.style.right,0);
+ assert.equal(library.props.children[0].props.children[1].props.style.left,-18);
+ assert.equal(library.props.children[0].props.children[1].props.style.right,-18);
+}
+console.log('Android tablet pages: header, rows, scrollbar and mini-player share the externally reserved lane without duplicate side offsets.');
+
 
 // Verify actual native adapters route only valid events, retain explicit theme
 // colors and keep disabled glass switches from issuing playback-setting writes.
@@ -139,7 +167,7 @@ const chromeModule={exports:{}};
 const oldExpo=globalThis.expo;
 globalThis.expo={modules:{SdaAndroidChrome:{}}};
 new Function('require','module','exports',transformSync(adapter,{loader:'tsx',format:'cjs'}).code)(name=>{
- const values={react,'react-native':{Platform:{OS:'android'}},expo:{requireNativeView:()=> 'NativeChrome'},'./app-theme':{useAppTheme:()=>({id:'sakiko'})},'./android-material-theme':{androidMaterialTheme:()=>({primary:'#7799CC'})},'./android-chrome-model':mod.exports};
+ const values={'react-native-safe-area-context':{useSafeAreaInsets:()=>safeInsets},react,'react-native':{Platform:{OS:'android'}},expo:{requireNativeView:()=> 'NativeChrome'},'./app-theme':{useAppTheme:()=>({id:'sakiko'})},'./android-material-theme':{androidMaterialTheme:()=>({primary:'#7799CC'})},'./android-chrome-model':mod.exports};
  assert(name in values,name);return values[name];
 },chromeModule,chromeModule.exports);
 globalThis.expo=oldExpo;
@@ -169,3 +197,50 @@ console.log('Android glass adapters: upright vertical drag/tint pass, active tab
 const manifest=fs.readFileSync('apps/mobile/android/app/src/main/AndroidManifest.xml','utf8');
 assert.match(manifest,/android:screenOrientation="unspecified"/,'release activity must allow the shared landscape UI');
 assert.match(manifest,/android:configChanges="[^"]*orientation[^"]*screenSize/,'rotation keeps the playback activity mounted');
+
+// Settings icons and glass both follow the system appearance on every page.
+let systemScheme='light';
+const settingsAdapter={exports:{}};
+const savedExpo=globalThis.expo;globalThis.expo={modules:{SdaAndroidChrome:{}}};
+new Function('require','module','exports',transformSync(fs.readFileSync('apps/mobile/src/AndroidGlassSettingsButton.tsx','utf8'),{loader:'tsx',format:'cjs'}).code)(name=>{
+ const modules={react,expo:{requireNativeView:()=> 'NativeSettingsButton'},'react-native':{Platform:{OS:'android'},useColorScheme:()=>systemScheme}};
+ assert(name in modules,name);return modules[name];
+},settingsAdapter,settingsAdapter.exports);
+globalThis.expo=savedExpo;
+for(const scheme of ['light','dark',null]) {
+ systemScheme=scheme;
+ const action=()=>{};
+ const button=settingsAdapter.exports.AndroidGlassSettingsButton({onPress:action});
+ assert.equal(button.props.dark,scheme==='dark','light icons are dark; dark-mode icons are light, including the immersive player');
+ assert.equal(button.props.glassDark,scheme==='dark','glass follows the same system appearance as tabs');
+ assert.equal(button.props.onExpand,action);
+ assert.deepEqual(button.props.style,{width:44,height:44});
+}
+console.log('Settings button: system light/dark icon contrast and matching glass appearance passed.');
+
+for(const top of [0,24,48]) {
+ safeInsets={top,bottom:24,left:0,right:0};
+ const header=chromeModule.exports.AndroidPageHeader({title:'设置',dark:false,backgroundColor:'#fff',scrolled:true});
+ assert.equal(header.props.topInset,top,'native title/buttons avoid the status bar');
+ assert.equal(header.props.style[0].height,top+56,'one native background covers status and title together');
+}
+const activityStyles=fs.readFileSync('apps/mobile/android/app/src/main/res/values/styles.xml','utf8');
+assert.match(activityStyles,/android:statusBarColor">@android:color\/transparent/);
+assert.match(activityStyles,/android:navigationBarColor">@android:color\/transparent/);
+assert.match(activity,/window.navigationBarColor = Color.TRANSPARENT/);
+assert.match(activity,/window.isNavigationBarContrastEnforced = false/);
+assert.match(shared,/hasAndroidChrome \? \["left", "right"\]/,'root must not reserve solid top/bottom strips');
+console.log('Android edge-to-edge: continuous full-height header, unchanged scroll range and system navigation clearance passed.');
+
+
+for(const selected of [0,1,2])for(const selectedUri of ['', 'file:///song']) {
+ const player={selectedUri,playing:false,paused:false,busy:false,metadata:{},fileName:'Song'};
+ const state=androidChromeState(player,selected);
+ const bar=chromeModule.exports.AndroidChrome({player,selected,dark:false,backgroundColor:'transparent',onSelect(){}});
+ assert.equal(bar.props.style.maxWidth,state.showMini?undefined:320);
+ assert.equal(bar.props.style.alignSelf,state.showMini?undefined:'center');
+ assert.equal(bar.props.style.height,state.height);
+ const mini=chromeModule.exports.AndroidChrome({player,selected,dark:false,backgroundColor:'transparent',onSelect(){},presentation:'mini'});
+ assert.equal(mini.props.style.maxWidth,undefined,'standalone landscape mini-player retains its full content width');
+}
+console.log('Android bottom tabs: compact whenever Mini Player is absent, full width with Mini Player, independent of page selection.');

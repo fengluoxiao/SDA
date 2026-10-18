@@ -40,6 +40,7 @@ fun LiquidButton(
     isInteractive: Boolean = true,
     tint: Color = Color.Unspecified,
     surfaceColor: Color = Color.Unspecified,
+    blurRadius: androidx.compose.ui.unit.Dp = 2.dp,
     enabled: Boolean = true,
     label: String? = null,
     height: androidx.compose.ui.unit.Dp = 48.dp,
@@ -64,7 +65,7 @@ fun LiquidButton(
                 shadow = { if (framed) com.kyant.backdrop.shadow.Shadow(radius = 10.dp, color = Color.Black.copy(alpha = .06f)) else null },
                 effects = {
                     vibrancy()
-                    blur(2f.dp.toPx())
+                    blur(blurRadius.toPx())
                     val progress = if (framed) 1f else interactiveHighlight.pressProgress
                     lens(12f.dp.toPx() * progress, 24f.dp.toPx() * progress)
                 },

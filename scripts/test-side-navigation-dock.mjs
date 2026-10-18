@@ -44,3 +44,12 @@ for (const rightInset of [0,44,59,62]) for(const placement of ['top','bottom']) 
  assert.equal(leftSame.props.style[1].paddingLeft,Math.max(14,rightInset)+6);
  assert.equal(leftOpposite.props.style[1].paddingLeft,Math.max(20,(rightInset+8)/2));
 }
+
+for(const side of ['left','right'])for(const placement of ['top','bottom']) {
+ insets={left:24,right:12,top:24,bottom:20};
+ const dock=module.exports.SideNavigationDock({side,placement,testID:'tablet-dock',children:'rail',tablet:true});
+ const style=dock.props.style[1];
+ assert.equal(style.justifyContent,placement==='top'?'flex-start':'flex-end');
+ assert.equal(side==='left'?style.paddingLeft:style.paddingRight,(side==='left'?insets.left:insets.right)+20);
+}
+console.log('Tablet docks: bottom-anchored native navigation, top actions and inset-aware 20pt outer clearance passed.');
