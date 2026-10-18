@@ -127,6 +127,8 @@ pub struct PlaybackStatus {
     pub volume_balance_enabled: bool,
     pub volume_balance_eligible: bool,
     pub program_gain_db: f64,
+    pub rendered_program_gain_db: f64,
+    pub renderer_program_enabled: bool,
 }
 
 /// Latest object snapshot per id (plan T1.10): UI polls at its own cadence
@@ -588,6 +590,8 @@ impl MobileEngine {
             volume_balance_enabled: self.balance.enabled,
             volume_balance_eligible: self.balance.eligible,
             program_gain_db: self.balance.gain_db,
+            rendered_program_gain_db: self.pipeline.as_ref().map_or(0.0, |p| p.telemetry.applied_program_gain_db()),
+            renderer_program_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.program_enabled.load(std::sync::atomic::Ordering::Acquire)),
             room_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.room_enabled.load(std::sync::atomic::Ordering::Acquire)),
             spatial_cues_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_cues_enabled.load(std::sync::atomic::Ordering::Acquire)),
         }

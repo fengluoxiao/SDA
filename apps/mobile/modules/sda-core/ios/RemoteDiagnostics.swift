@@ -76,8 +76,12 @@ extension SdaPlayer {
    return self.locked {
     let status=(self.hasPlayback ? (try? self.command("status")) as? [String:Any] : nil) ?? [:]
     var playback:[String:Any]=[:]
-    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros","renderWorstStagesMicros","rendererRevision","fftBackend"] { playback[key]=status[key] }
+    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros","renderWorstStagesMicros","rendererRevision","fftBackend","volumeBalanceEnabled","volumeBalanceEligible","programGainDb","renderedProgramGainDb","rendererProgramEnabled"] { playback[key]=status[key] }
     return ["schema":1,"time":Date().timeIntervalSince1970,"playback":playback,
+     "appVersion":Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") ?? "",
+     "appBuild":Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") ?? "",
+     "volumeBalancePreference":self.prefs.bool(forKey:"sda.balance"),
+     "systemSpatialPreference":self.prefs.bool(forKey:"sda.systemSpatial360RA"),
      "playing":self.hasPlayback && !self.done,"paused":self.isPaused,"background":self.inBackground,
      "generation":self.generation,"route":self.systemSpatial == nil ? "KU100" : "Apple",
      "thermalState":ProcessInfo.processInfo.thermalState.rawValue,"engineRunning":self.audio?.isRunning ?? false,

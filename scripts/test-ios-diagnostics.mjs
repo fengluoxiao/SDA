@@ -11,6 +11,9 @@ assert.match(source, /Cache-Control: no-store/);
 assert.match(source, /self.listener\?\.cancel/);
 assert.match(source, /client.cancel\(\)/);
 assert.doesNotMatch(source, /URLSession|httpMethod|Authorization/);
+for (const key of ['volumeBalanceEnabled', 'volumeBalanceEligible', 'programGainDb',
+  'renderedProgramGainDb', 'rendererProgramEnabled', 'appBuild', 'appVersion',
+  'volumeBalancePreference', 'systemSpatialPreference']) assert.ok(source.includes(`"${key}"`), key);
 const ui = read('apps/mobile/src/IOSNativeSettings.tsx');
 const settings = ui.slice(ui.indexOf('function RemoteDiagnosticsSettings'));
 assert.match(settings, /engine.configureDiagnostics\(next\)/);

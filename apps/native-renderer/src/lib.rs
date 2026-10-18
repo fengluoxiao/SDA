@@ -895,6 +895,9 @@ pub struct RuntimeTelemetry {
     pub near_field_enabled: AtomicBool,
     pub room_enabled: AtomicBool,
     pub spatial_cues_enabled: AtomicBool,
+    /// Actual renderer envelope, separate from the controller's scheduled gain.
+    program_gain_db_bits: AtomicU64,
+    pub program_enabled: AtomicBool,
     pub object_convolver_count: AtomicU64,
     pub continuous_object_count: AtomicU64,
     /// Renderer-applied pause state exposed to mobile status polling.
@@ -920,6 +923,9 @@ pub struct RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
+    pub fn applied_program_gain_db(&self) -> f64 {
+        f64::from_bits(self.program_gain_db_bits.load(Ordering::Acquire))
+    }
     pub fn callback_missing_frames(&self) -> u64 {
         self.callback_fifo_underrun_frames.load(Ordering::Relaxed)
     }
@@ -935,6 +941,8 @@ impl RuntimeTelemetry {
          &self.render_worst_bus_micros].map(|value| value.load(Ordering::Relaxed))
     }
     fn publish_rendering_state(&self, engine: &Engine) {
+        self.program_enabled.store(engine.program_enabled, Ordering::Release);
+        self.program_gain_db_bits.store((20.0 * f64::from(engine.program_gain).max(1e-12).log10()).to_bits(), Ordering::Release);
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);
         self.directional_hrtf.store(engine.directional_hrtf, Ordering::Release);

@@ -55,3 +55,54 @@ Audio Vivid now also uses the iOS Apple system 7.1.4 renderer under the existing
 The new AV3A route estimates loudness during normal decoding/playback, does not run an additional whole-file analysis pass, and does not load/save per-track loudness analysis caches. Existing 360RA/ALAC routes and their prior preparation behavior are retained. Windows, macOS, Android and iOS share the new volume-balance eligibility; the Apple system-output option is iOS-specific, matching existing 360RA support.
 
 The actual iOS speaker C ABI is tested against the common decoder for chunking, sample count, 12-channel order and sample-identical PCM when balancing is disabled. Gain tests confirm one linked attenuation across all 12 channels and restoration to unity when disabled. Node tests cover speaker weights/LFE exclusion, the actual worker open/push/flush path, and exact scheduling parity with the pre-existing stereo controller. The supplied file's first 10.00779 seconds measured -2.56172 LUFS and +1.08985 dBTP on its 12 speaker channels; the common gain rule yields -15.43828 dB for that segment. This is a measurement of the supplied song, not a fixed gain applied to every AV3A file.
+
+
+## Follow-up: balance with system spatial disabled
+
+The iOS non-system route forwards the persisted `sda.balance` preference and live
+switch to `MobileEngine::set_volume_balance`. AV3A bed eligibility is detected on
+the first decoded frame; the existing loudness controller emits the same linked
+programme-gain commands used by the other eligible sources. The final stereo
+renderer applies that envelope before the linked peak guard. No AV3A fast-start
+policy, fixed attenuation, equalisation, new analysis pass or analysis cache was
+added in this follow-up.
+
+The new `av3a_native_balance_reaches_hrtf_output_without_system_spatial` regression
+uses the active production asset family selected in `ios-experiments/active.json`
+and the production direct/directional, dry 7.1.4 setup. It checks the final native
+stereo FIFO, not just eligibility or emitted commands. A 15-second low-level bed
+verifies the attenuation envelope and unchanged first five seconds. The optional
+`SDA_AV3A_BALANCE_BITSTREAM` input exercises the real compressed decoder with an
+original approximately 15-second excerpt of the supplied song. The optional
+`SDA_AV3A_BALANCE_PCM` input is a decoded-PCM diagnostic. These are explicit test
+inputs and do not run or create analysis files during app playback.
+
+An initial local output test used the legacy 61-direction assets. Those results
+are retained in local logs but do not constitute validation of the release's
+HRTFHQ profile; production-profile tests replace them for this investigation.
+A peak-limited bypass is not a linear unity reference: the controller's target
+attenuation must not be presented as the measured difference between two final
+outputs.
+
+Native status now distinguishes `programGainDb` (controller target) from
+`renderedProgramGainDb` (renderer envelope) and `rendererProgramEnabled` (applied
+switch). The latter is the render worker's state and can be ahead of the hardware
+callback because of buffered output. The existing opt-in, read-only iOS diagnostic
+endpoint exposes those fields, eligibility, saved preferences and installed build
+information. This does not change the audio mix or the accepted mobile UI.
+
+The reported no-effect behavior on the user's installed iPhone remains a separate
+device verification requirement; a passing host regression must not be described
+as having fixed that device report.
+
+
+Production-profile compressed-source result: the first 646 original AV3A access
+units (about 15 seconds) were fed to the ordinary native decoder and stereo FIFO
+with system spatial absent. HRTFHQ 542, wet weight zero, direct/directional on:
+measured final-output energy difference over source seconds 12–14 was -5.191 dB
+(on versus off). The controller's latest source-loudness target was -15.802 dB;
+these are different quantities because source programme loudness, a short final
+output segment and peak protection are not equivalent. The first five seconds
+matched within the regression tolerance before the common policy activates.
+Both renderer switch state and the applied negative gain were asserted. The
+regression passed; this is a host result, not an iPhone listening result.

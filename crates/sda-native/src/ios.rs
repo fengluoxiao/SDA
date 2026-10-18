@@ -1128,3 +1128,7 @@ mod alac_tests {
 #[cfg(test)]
 #[path = "av3a_system_tests.rs"]
 mod av3a_system_tests;
+
+#[cfg(test)]
+#[path = "av3a_native_tests.rs"]
+mod av3a_native_tests;
