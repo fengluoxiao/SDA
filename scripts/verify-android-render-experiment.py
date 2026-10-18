@@ -32,7 +32,7 @@ for path in paths:
             libraries=[name for name in apk.namelist() if name.startswith('lib/') and name.endswith('/libsda_native.so')]
             assert libraries, 'Missing shared native renderer'
             for name in libraries:
-                assert b'Shared HRTFHQ depth profile v1' in apk.read(name), 'Stale native HRTF library: '+name
+                assert b'Shared HRTFHQ clarity profile v1' in apk.read(name), 'Stale native HRTF library: '+name
                 assert b'Java_com_sda_nativebridge_SdaEngine_nativeSetBinauralEnabled' in apk.read(name), 'Stale native spatial-mode API: '+name
         if len(sys.argv)>2:
             with zipfile.ZipFile(sys.argv[2]) as ios:

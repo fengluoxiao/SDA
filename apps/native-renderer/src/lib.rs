@@ -55,6 +55,9 @@ pub mod callback_output;
 pub mod cinema;
 mod spatial_cues;
 mod shared_depth;
+mod shared_clarity;
+#[cfg(test)]
+mod shared_clarity_integration_tests;
 mod front_ear;
 pub mod convolution;
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");

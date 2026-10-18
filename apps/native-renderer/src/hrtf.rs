@@ -19,6 +19,8 @@ struct Manifest {
     parametric_hrtf_version: Option<u32>,
     measured_response_version: Option<u32>,
     shared_depth_version: Option<u32>,
+    #[serde(default)]
+    shared_clarity_version: Option<u32>,
     processing: Processing,
     positions: Vec<Position>,
 }
@@ -79,6 +81,7 @@ pub struct NativeHrtfSet {
     spatial_cue_motion: SpatialCueMotion,
     spatial_cues_active: bool,
     shared_depth_enabled: bool,
+    shared_clarity_enabled: bool,
     shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
     front_ear_isolation: bool,
     pub cinema: crate::cinema::Settings,
@@ -130,6 +133,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: self.spatial_cue_motion,
             spatial_cues_active: self.spatial_cues_active,
             shared_depth_enabled: self.shared_depth_enabled,
+            shared_clarity_enabled: self.shared_clarity_enabled,
             shared_depth: self.shared_depth.clone(),
             front_ear_isolation: self.front_ear_isolation,
             cinema: self.cinema.clone(),
@@ -228,6 +232,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: Default::default(),
             spatial_cues_active: false,
             shared_depth_enabled: false,
+            shared_clarity_enabled: false,
             shared_depth: None,
             front_ear_isolation: false,
             cinema: crate::cinema::Settings::default(),
@@ -252,17 +257,30 @@ impl NativeHrtfSet {
     }
 
     pub fn load_calibrated(manifest_path: &Path) -> Result<Self, String> {
+        Self::load_calibrated_policy(manifest_path, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_without_shared_clarity(manifest_path: &Path) -> Result<Self, String> {
+        Self::load_calibrated_policy(manifest_path, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_clarity_active(&self) -> bool { self.shared_clarity_enabled }
+
+    fn load_calibrated_policy(manifest_path: &Path, apply_clarity: bool) -> Result<Self, String> {
         let manifest: Manifest =
             serde_json::from_slice(&read(manifest_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
         if manifest.subject_id.as_deref() == Some("apple-public-hrtfhq")
-            && !matches!(manifest.measured_response_version, Some(1 | 2))
+            && !matches!(manifest.measured_response_version, Some(1 | 2 | 3))
         {
             return Err("Measured response profile version missing or unsupported".into());
         }
         if let Some(version) = manifest.measured_response_version {
-            if !matches!(version,1 | 2)
-                || manifest.shared_depth_version != (version==2).then_some(1)
+            if !matches!(version,1 | 2 | 3)
+                || manifest.shared_depth_version != (version>=2).then_some(1)
+                || manifest.shared_clarity_version != (version==3).then_some(1)
                 || manifest.calibration_version.is_some()
                 || manifest.subject_id.as_deref() != Some("apple-public-hrtfhq")
                 || manifest.complete_subject != Some(true) || manifest.sample_rate != 48000
@@ -273,6 +291,9 @@ impl NativeHrtfSet {
             {
                 return Err("Measured response profile must preserve its calibrated transfer without KU100 processing".into());
             }
+        }
+        if manifest.shared_clarity_version.is_some() && manifest.measured_response_version != Some(3) {
+            return Err(format!("{}: incompatible response family", crate::shared_clarity::PROFILE_MARKER));
         }
         if !manifest.processing.spatial_cue_gain.is_finite()
             || manifest.processing.spatial_cue_gain <= 0.0
@@ -313,7 +334,7 @@ impl NativeHrtfSet {
         if !raw_ku100
             && !personal_sofa
             && !parametric
-            && !matches!(manifest.measured_response_version, Some(1 | 2))
+            && !matches!(manifest.measured_response_version, Some(1 | 2 | 3))
             && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated)
         {
             return Err("native object renderer requires calibrated HRTF v4".into());
@@ -330,7 +351,7 @@ impl NativeHrtfSet {
             .parent()
             .ok_or("manifest has no parent directory")?
             .to_path_buf();
-        let cache = manifest
+        let mut cache = manifest
             .positions
             .iter()
             .map(|position| {
@@ -361,6 +382,12 @@ impl NativeHrtfSet {
                     .into(),
             );
         }
+        // Validate the original measurement layout first. The versioned
+        // presentation acts only on preparation copies, exactly once per load.
+        let shared_clarity_enabled = apply_clarity && manifest.shared_clarity_version == Some(1);
+        if shared_clarity_enabled {
+            crate::shared_clarity::apply_bank(&mut cache)?;
+        }
         // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
         // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
@@ -377,9 +404,14 @@ impl NativeHrtfSet {
         }
         .map(|name| {
             let parent = root.parent().ok_or("HRTF asset root has no parent")?;
-            Self::load_calibrated(&parent.join(name).join("hrtf-set.json")).map(Box::new)
+            Self::load_calibrated_policy(&parent.join(name).join("hrtf-set.json"), apply_clarity).map(Box::new)
         })
         .transpose()?;
+        if let Some(companion) = &speaker_set {
+            if companion.shared_clarity_enabled != shared_clarity_enabled {
+                return Err(format!("{}: dense/fallback policy mismatch", crate::shared_clarity::PROFILE_MARKER));
+            }
+        }
         // KU100 is a complete dummy-head measurement set, not an individual
         // subject profile. Its measured pinna notches remain valid at both the
         // standard and dense resolutions, but a time-domain mix of adjacent
@@ -415,6 +447,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: manifest.processing.spatial_cue_motion,
             spatial_cues_active: false,
             shared_depth_enabled: manifest.shared_depth_version==Some(1),
+            shared_clarity_enabled,
             shared_depth: None,
             front_ear_isolation: manifest.processing.front_ear_isolation,
             cinema: crate::cinema::Settings::default(),
@@ -744,6 +777,15 @@ impl NativeHrtfSet {
     pub(crate) fn diagnostic_without_shared_depth(&self) -> Self {
         let mut set=self.clone();set.shared_depth_enabled=false;set.shared_depth=None;
         set.preparation_id=Self::next_preparation_id();set.speaker_prepared.clear();set.prepared.clear();set
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_front_ear_isolation(mut self, enabled: bool) -> Self {
+        self.front_ear_isolation = enabled;
+        self.preparation_id = Self::next_preparation_id();
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        self
     }
 
     /// Measurement control only: same active profiles/routing/filter lengths,
@@ -2138,7 +2180,7 @@ mod measured_response_tests {
     }
     #[test]
     fn shared_hrtfhq_preserves_every_measured_anchor_and_its_matching_fallback() {
-        let mut set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let mut set=NativeHrtfSet::load_without_shared_clarity(&manifest()).unwrap();
         assert_eq!(set.positions.len(),542);
         assert_eq!(set.subject_id.as_deref(),Some("apple-public-hrtfhq"));
         let fallback=set.speaker_set.as_ref().unwrap();

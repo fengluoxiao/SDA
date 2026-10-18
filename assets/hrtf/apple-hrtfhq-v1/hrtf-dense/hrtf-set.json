@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "measuredResponseVersion": 2,
+  "measuredResponseVersion": 3,
   "sampleRate": 48000,
   "subjectId": "apple-public-hrtfhq",
   "completeSubject": true,
@@ -15,7 +15,7 @@
     "dryTapLimit": 512,
     "wetTapLimit": 512,
     "runtimeEnergyNormalization": false,
-    "note": "Common front-impulse calibration only. Preserve measured direction levels, ear ratios, phase and waveform; no KU100-specific processing."
+    "note": "Original calibrated measurement files preserved. Versioned shared clarity is applied to preparation copies only; no KU100 far-ear policy or runtime energy normalization."
   },
   "levelMatchDb": 0,
   "positions": [
@@ -9797,5 +9797,6 @@
   },
   "sharedRenderProfile": "apple-hrtfhq-542-v1",
   "triangleSupportFile": "triangle-grid.json",
-  "sharedDepthVersion": 1
+  "sharedDepthVersion": 1,
+  "sharedClarityVersion": 1
 }

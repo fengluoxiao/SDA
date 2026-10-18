@@ -158,7 +158,7 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
         if (selected.id == 'apple-hrtfhq-542-v1') {
             sharedAbis.each { abi ->
                 def nativeLibrary = file("src/main/jniLibs/${abi}/libsda_native.so")
-                if (!nativeLibrary.isFile() || !new String(nativeLibrary.bytes, 'ISO-8859-1').contains('Shared HRTFHQ depth profile v1')) {
+                if (!nativeLibrary.isFile() || !new String(nativeLibrary.bytes, 'ISO-8859-1').contains('Shared HRTFHQ clarity profile v1')) {
                     throw new GradleException("Shared HRTFHQ requires a rebuilt Rust JNI library for ${abi}; build sda-native before assembling the APK")
                 }
             }

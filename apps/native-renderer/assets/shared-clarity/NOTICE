@@ -1,0 +1,7 @@
+Archived SDA H13-guided KU100 clarity band coefficients, derived from SADIE II data.
+Source metadata: apps/mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json, processing.clarityExperiment.bands.
+SADIE II Database: AudioLab, University of York; Gavin Cyril Kearney.
+Source record: https://doi.org/10.5281/zenodo.12092466
+Apache License 2.0; see LICENSE-APACHE-2.0.txt.
+This package contains band coefficients, not music or Apple response samples.
+SDA applies these coefficients as an explicitly versioned supplemental presentation, not a claim of physical HRTF calibration.

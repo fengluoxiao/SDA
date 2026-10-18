@@ -9,7 +9,7 @@ async function stageWeb() {
   if (activeExperiment()) {
     const executable=join(__dirname,'native-renderer',process.platform==='win32'?'SdaNativeRenderer.exe':'SdaNativeRenderer');
     await access(executable);
-    if(activeExperiment().measured && !(await readFile(executable)).includes(Buffer.from('Shared HRTFHQ depth profile v1')))
+    if(activeExperiment().measured && !(await readFile(executable)).includes(Buffer.from('Shared HRTFHQ clarity profile v1')))
       throw new Error('Native renderer is stale; rebuild it before packaging the shared HRTFHQ resources');
     verifySharedExperiment(join(__dirname,'native-renderer','hrtf-assets'));
   }

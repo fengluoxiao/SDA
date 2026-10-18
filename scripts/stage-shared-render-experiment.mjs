@@ -27,9 +27,9 @@ function validateFamily(source,active,dense) {
  const count=dense?experiment.directionCount:17;
  if(manifest.positions.length!==count || manifest.sampleRate!==48000) throw Error('HRTF topology mismatch');
  if(measured) {
-  if(experiment.measuredResponseVersion!==2 || experiment.sharedDepthVersion!==1) throw Error("Measured depth selection mismatch");
+  if(experiment.measuredResponseVersion!==3 || experiment.sharedDepthVersion!==1 || experiment.sharedClarityVersion!==1) throw Error("Measured depth selection mismatch");
   if(manifest.sharedRenderProfile!==experiment.id || manifest.subjectId!=='apple-public-hrtfhq'
-    || manifest.measuredResponseVersion!==2 || manifest.sharedDepthVersion!==1 || manifest.calibrationVersion!==undefined || manifest.completeSubject!==true
+    || manifest.measuredResponseVersion!==3 || manifest.sharedDepthVersion!==1 || manifest.sharedClarityVersion!==1 || manifest.calibrationVersion!==undefined || manifest.completeSubject!==true
     || manifest.processing?.preserveMeasurements!==true || manifest.processing?.calibrated!==true
     || manifest.processing?.historicalInterpolation!==false || manifest.processing?.spatialCues!==false
     || manifest.processing?.frontEarIsolation!==false || manifest.processing?.mobileDirectOnly!==false)

@@ -11,15 +11,18 @@
     "shared-object-convolution",
     "head-tracking",
     "aligned-pairwise-waveform",
-    "approved-legacy61-half-residual"
+    "approved-legacy61-half-residual",
+    "approved-rear-balance",
+    "shared-legacy-midrange-clarity"
   ],
-  "userFacingName": "HRTFHQ 空间渲染",
+  "userFacingName": "HRTFHQ \u7a7a\u95f4\u6e32\u67d3",
   "subjectId": "apple-public-hrtfhq",
-  "measuredResponseVersion": 2,
+  "measuredResponseVersion": 3,
   "historicalInterpolation": false,
   "spatialCues": false,
   "frontEarIsolation": false,
-  "renderRevision": "shared-hrtfhq-depth-20261017",
-  "scope": "Approved HRTFHQ direct plus fixed half-strength retained61 residual, shared on all four platforms; no per-song analysis.",
-  "sharedDepthVersion": 1
+  "renderRevision": "shared-hrtfhq-clarity-20261019",
+  "scope": "Approved HRTFHQ with half-strength retained61 residual, rear balance and common-ear midrange presentation; no per-song analysis.",
+  "sharedDepthVersion": 1,
+  "sharedClarityVersion": 1
 }

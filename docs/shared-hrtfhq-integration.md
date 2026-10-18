@@ -27,7 +27,7 @@ The measured profile now uses a pairwise weighted waveform clock, without a domi
 
 ## Stale-build protection
 
-The measured manifest uses `measuredResponseVersion:2` plus `sharedDepthVersion:1` and deliberately omits the legacy `calibrationVersion`. A pre-HRTFHQ native renderer was tested and correctly rejects it. It cannot quietly apply its old generic interpolation to the new bank.
+The measured manifest uses `measuredResponseVersion:3` plus `sharedDepthVersion:1` and `sharedClarityVersion:1` and deliberately omits the legacy `calibrationVersion`. A pre-HRTFHQ native renderer was tested and correctly rejects it. It cannot quietly apply its old generic interpolation to the new bank.
 
 Android Gradle and APK verification reject JNI libraries lacking the measured-response loader. The normal Android workflow rebuilds both ARM64 and x86_64 from source before assembling the APK. The checked-in prebuilt libraries inherited from the Android merge are old and must be rebuilt for a local native APK build. Desktop packaging similarly rejects an old sidecar or web bundle lacking the shared-profile migration. Do not distribute only new response files with older native binaries.
 
@@ -63,3 +63,16 @@ Actual integrated output was compared against the stored approved offline candid
 Both response manifests now require schema2/depth1, so older native loaders reject them. Android JNI and desktop sidecar package checks require the new depth loader marker. iOS smoke checks expect the separate depth layer while the legacy processing flags remain off. The residual banks are compiled into the same native crate on iOS, Android, Windows and macOS.
 
 Local integration validation:326 native engine tests passed,0failed,33ignored offline/fixture tests;9iOS resource tests passed. Shared four-platform staging bytes, desktop integration, mobile preset, head-tracking and Android settings/ALAC checks passed. Fresh four-runtime parity CI is required for this revision; earlier v1 parity numbers above do not validate this new revision.
+
+
+## Approved midrange integration — 2026-10-19
+
+The user approved the Seiza restoration audition and requested shared-renderer integration. The accepted rear gain was already integrated by cdde6ca; this change preserves it without adding a second gain stage. Profile v3 additionally applies the archived common-ear500–2000Hz band-curve presentation to preparation copies. The original542+17 response files remain unchanged. The compiled recipe, FIR, continuous curve mapping and640tap preparation are the accepted candidate, not a claim of Apple output identity or physical HRTF calibration.
+
+The response-family presentation is explicit in sharedClarityVersion1. It belongs to the selected HRTF profile, like the earlier calibrated KU100 responses. The existing enhancement control continues to govern the high shelf and auxiliary/rear gains; the top-level Off route bypasses HRTF/colouration through the compatible/plain output path. Reloads begin from the raw asset files, so EQ does not accumulate; preparation snapshots retain the policy. Other HRTF families receive no extra layer. Profiles1/2 remain readable for references. Version3 rejects missing/unsupported policy fields, and old native loaders reject the new version.
+
+All platform staging validators and Android/desktop stale-binary checks require the clarity version/marker. Windows host validation:343native tests passed,0failed,34ignored; production non-test library check passed;4destination staging, desktop profile,9iOS resource tests and2mobile preset/control scripts passed. The obsolete-loader rejection was exercised using an actual prior binary.
+
+Actual production-profile output versus the audition, without alignment or gain fitting: Seiza258.24s maximum sample error2.3841858e-7, residual-129.988dB; Yudie25.024s maximum1.1920929e-7, residual-130.322dB. These compare shared-engine output before hardware and are not4newly built devices. No installer was produced by this task.
+
+The user subsequently requested independent listening choices for the other historical song optimizations. Those alternatives remain offline choices, not additional default DSP. See song-optimization-restoration-audit-2026-10-19.md and the listening folder in Downloads/SDA-restored-auditions-20261019.
