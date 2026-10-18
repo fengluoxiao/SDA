@@ -33,6 +33,7 @@ for path in paths:
             assert libraries, 'Missing shared native renderer'
             for name in libraries:
                 assert b'Shared HRTFHQ depth profile v1' in apk.read(name), 'Stale native HRTF library: '+name
+                assert b'Java_com_sda_nativebridge_SdaEngine_nativeSetBinauralEnabled' in apk.read(name), 'Stale native spatial-mode API: '+name
         if len(sys.argv)>2:
             with zipfile.ZipFile(sys.argv[2]) as ios:
                 prefix=next(name[:-len('hrtf-restored/hrtf-dense/hrtf-set.json')]

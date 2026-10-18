@@ -6,7 +6,7 @@ use sda_native_renderer::Command;
 use serde::{Deserialize, Serialize};
 
 pub const MIN_BLOCKS: usize = 57;
-/// Bounded decoded preroll; long silent intros must not hold playback forever.
+/// Shared stereo / Audio Vivid decoded preroll; silence must not hold playback forever.
 pub const AV3A_STARTUP_MAX_SECONDS: u64 = 7;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +36,10 @@ pub(crate) fn av3a_bed(frame: &FrameData) -> bool {
     frame.codec == "av3a" && frame.sample_rate == 48000 && frame.channels.len() == 12
         && frame.labels == ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]
         && frame.events.is_empty() && frame.object_channels.is_empty()
+}
+/// Gate only verified masters, never a stereo core of an object programme.
+pub(crate) fn startup_program(frame: &FrameData) -> bool {
+    av3a_bed(frame) || (frame.codec != "mpegh" && (stereo_master(frame) || crate::alac_pcm::is_upmixed(frame)))
 }
 #[derive(Clone)]
 struct Biquad {
@@ -269,13 +273,13 @@ impl VolumeBalance {
         PendingFrame { frame, measurement }
     }
     pub fn startup_measurement_ready(&self) -> bool {
-        self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
+        self.cached.is_some() || self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
     }
     /// Use the normal measurement/target before any PCM is made audible. This
     /// consumes the existing decode preroll, never a second pass or cache.
     pub fn prime_av3a_startup(&mut self, origin: u64, ended: bool) -> Option<Command> {
         if !self.enabled || self.settled { return None; }
-        let m = self.meter.as_ref()?.integrated();
+        let m = self.cached.clone().or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
         if !ended && m.blocks < MIN_BLOCKS { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
         self.gain_db = master_gain(lufs, m.true_peak_dbtp);
@@ -447,7 +451,7 @@ mod tests {
         assert_eq!(multichannel.integrated().true_peak_dbtp,stereo.integrated().true_peak_dbtp);
     }
     fn frame(codec: &'static str, at: u64) -> FrameData {
-        FrameData {
+        FrameData { compatibility_bed: None,
             codec,
             sample_rate: 48000,
             sample_pos: at,

@@ -58,6 +58,7 @@ class SdaAndroidSymbolView(context: Context, appContext: AppContext) : ExpoView(
                     "forward.fill" -> Icons.Default.FastForward
                     "speaker.fill" -> Icons.Default.VolumeDown
                     "speaker.wave.2.fill" -> Icons.Default.VolumeUp
+                    "person.crop.circle", "person.crop.circle.fill" -> Icons.Default.AccountCircle
                     "gearshape" -> Icons.Default.Settings
                     "chevron.left" -> Icons.Default.ChevronLeft
                     "arrow.left" -> Icons.AutoMirrored.Filled.ArrowBack

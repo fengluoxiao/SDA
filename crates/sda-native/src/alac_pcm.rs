@@ -40,7 +40,7 @@ impl AlacPcm {
             let values = [l*0.8,r*0.8,mono*0.5,self.lfe*0.25,side*0.34,-side*0.34,side*0.2,-side*0.2,side*0.14,-side*0.14,side*0.1,-side*0.1];
             for (channel,value) in channels.iter_mut().zip(values) { channel.push(value); }
         }
-        Ok(FrameData { codec:"alac", sample_rate:48000, sample_pos, channels,
+        Ok(FrameData { compatibility_bed: None, codec:"alac", sample_rate:48000, sample_pos, channels,
             labels:labels.iter().map(|v| (*v).into()).collect(), raw_bed_labels:vec!["L".into(),"R".into()],
             events:vec![], object_channels:vec![], program_loudness:None, ramp_duration:0 })
     }

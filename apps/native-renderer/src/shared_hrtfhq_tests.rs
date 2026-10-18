@@ -9,6 +9,9 @@ fn render(layout:vbap::LayoutId,chunk:usize,mode:&str) -> Vec<f32> {
     render_recipe(layout,chunk,mode,false)
 }
 fn render_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool) -> Vec<f32> {
+    render_rear_recipe(layout,chunk,mode,explicit,3.0)
+}
+fn render_rear_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool,rear_db:f32) -> Vec<f32> {
     let is_bed=mode!="objects";
     let count=if mode=="stereo" {2} else {8};
     let labels=["FrontLeft","FrontRight","Center","SurroundLeft","SurroundRight","TopFrontLeft","TopRearRight","LFE"];
@@ -18,9 +21,11 @@ fn render_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool) -> V
     if explicit {e.set_spatial_enhancement(true).unwrap();}
     e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);e.direct_mix=1.0;
     assert_eq!(e.spatial_layer_gain_db(),1.5);
+    assert_eq!(e.spatial_layer.rear_db,3.0);
     e.set_spatial_balance(false);e.front_common.enabled=false;
     e.set_master_preamp_db(-12.0).unwrap();
     e.set_program_codec(if mode=="stereo" {"alac"} else if layout==vbap::LayoutId::Dolby7_1_4 {"eac3"} else {"mpegh"}.into());
+    e.spatial_layer.rear_db=rear_db;
     e.output_active=true;e.paused=false;
     for (index,position) in [[0.,1.,0.],[-1.,0.,1.],[1.,0.,1.],[0.,-1.,0.],[-1.,1.,0.],
         [1.,1.,0.],[-0.7,-1.,0.6],[0.4,0.7,-0.5]].into_iter().take(count).enumerate() {
@@ -110,5 +115,16 @@ fn shared_hrtfhq_depth_preserves_direct_and_respects_layout_and_user_room() {
         enabled.configure_spatial_cues(layout).unwrap();assert!(enabled.spatial_cues_active());
         enabled.configure_cinema(cinema::Settings{enabled:true,..Default::default()},None);
         enabled.configure_spatial_cues(layout).unwrap();assert!(!enabled.spatial_cues_active(),"user room must not acquire bundled residual");
+    }
+}
+
+#[test]
+fn rear_candidate_engine_callback_head_pose_and_layouts() {
+    for (layout,mode) in [(vbap::LayoutId::Dolby7_1_4,"objects"),(vbap::LayoutId::Sony360Ra13,"objects"),(vbap::LayoutId::Dolby7_1_4,"beds"),(vbap::LayoutId::Stereo2_0,"stereo")] {
+        let a=render_rear_recipe(layout,128,mode,false,3.0);let b=render_rear_recipe(layout,512,mode,false,3.0);
+        let error=a.iter().zip(&b).map(|(x,y)|(x-y).abs()).fold(0.0f32,f32::max);assert!(error<2e-6,"candidate callback partition error {error}");
+        let base=render_rear_recipe(layout,128,mode,false,0.0);
+        if mode=="stereo" {assert_eq!(a,base,"rear gain altered frontal stereo");}
+        else {assert!(a.iter().zip(&base).any(|(a,b)|(a-b).abs()>1e-5),"candidate was not applied in {} {mode}",layout.as_str());}
     }
 }

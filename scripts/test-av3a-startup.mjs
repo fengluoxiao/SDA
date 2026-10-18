@@ -44,3 +44,20 @@ const ios=readFileSync('apps/mobile/modules/sda-core/ios/SystemSpatial360.swift'
 assert.match(ios,/queued < 7\*48000/);assert.match(ios,/requiresBalancePreanalysis: Bool \{ sourceCodec != "av3a" \}/);
 const android=readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt','utf8');assert.match(android,/!preparingBalance && \(decoded - consumed/);
 console.log('Audio Vivid startup: unchanged target, initial gain before PCM/start, bounded silent preroll, short EOF, and decoder pacing passed.');
+
+// The same bounded first-output gate applies to verified stereo masters.
+for (const codec of ['alac','aac','mp3','flac','pcm']) {
+ calls.length=0;
+ Object.assign(p,{trackCodec:codec,stereoStartupEligible:true,volumeBalanceEnabled:true,stereoBalanceEligible:true,
+ playbackStarted:false,av3aStartupPrepared:false,cachedMeasuredLufs:null,measuredLoudness:m(56),
+ startupOrigin:96000,ended:false,aheadSeconds:()=>5.9});
+ assert.equal(p.prepareAv3aStartup(),false,codec);assert.deepEqual(calls,[]);
+ p.measuredLoudness=m(57);p.aheadSeconds=()=>6.2;
+ assert.equal(p.prepareAv3aStartup(),true,codec);assert.deepEqual(calls,[['web',-13,96000],['native',-13,96000]]);
+ p.av3aStartupPrepared=false;p.cachedMeasuredLufs=-10;assert.equal(p.av3aStartupPending(),false,'cache skips startup gate');
+ p.cachedMeasuredLufs=null;p.volumeBalanceEnabled=false;assert.equal(p.av3aStartupPending(),false,'disabled balance starts immediately');
+}
+Object.assign(p,{trackCodec:'mpegh',volumeBalanceEnabled:true,stereoStartupEligible:false,av3aStartupPrepared:false});
+assert.equal(p.av3aStartupPending(),false,'object reference is not a stereo master');
+assert.match(source,/stereoStartupEligible = frame.codec !== "mpegh" && stereoMaster/);
+console.log('Stereo startup: shared first-output gain, cache/disabled bypass and object exclusion passed.');

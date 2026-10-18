@@ -30,6 +30,7 @@ declare const self: {
 
 import {initIamf,isIamf,IamfDecoder} from "../../core/src/iamf.js";
 
+let objectRenderingEnabled = true;
 let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | null = null;
 let demuxer: Demuxer | null = null;
 let sniffPrefix = new Uint8Array(0);
@@ -94,6 +95,7 @@ function drainFrames(): void {
   if (!decoder) return;
   while (true) {
     const perfStart=perf.endpoint?performance.now():null;
+    (decoder as unknown as { setObjectRendering?(enabled: boolean): void }).setObjectRendering?.(objectRenderingEnabled);
     const frame = decoder.nextFrame();
     if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?(frame.channels[0]?.length ?? 0)/frame.sampleRate:0);
     if (!frame) break;
@@ -163,7 +165,13 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       post({ type: "ready" });
       break;
     }
+    case "objectRendering": {
+      objectRenderingEnabled = msg.enabled !== false;
+      (decoder as unknown as { setObjectRendering?(enabled: boolean): void } | null)?.setObjectRendering?.(objectRenderingEnabled);
+      break;
+    }
     case "open": {
+      objectRenderingEnabled = msg.objectRendering !== false;
       drainDecoderCheckpoints();diagnostic.reset();diagnostic.record('open',{codec:msg.codec,epoch});
       decoder?.free();
       resampler?.destroy();

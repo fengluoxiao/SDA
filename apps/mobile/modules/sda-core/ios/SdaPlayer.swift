@@ -184,10 +184,15 @@ final class SdaPlayer {
    for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room","")] as [(String,Any)] { prefs.set(v,forKey:k) }
    prefs.set(1,forKey:"sda.mobileDirectVersion")
   }
+  if prefs.integer(forKey:"sda.objectRenderingVersion") < 2 {
+   prefs.set(true,forKey:"sda.direct"); prefs.set(true,forKey:"sda.directional")
+   prefs.set(2,forKey:"sda.objectRenderingVersion")
+  }
   return ["alacStereoUpmix":prefs.bool(forKey:"sda.alacStereoUpmix"), "systemSpatialStereo":prefs.bool(forKey:"sda.systemSpatialStereo"), "systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
    "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
    "spatialEnhancementEnabled": prefs.bool(forKey:"sda.spatialEnhancement"),
    "headTrackingEnabled": prefs.bool(forKey:"sda.headTracking"),
+   "binauralEnabled": prefs.object(forKey:"sda.binauralEnabled") ?? true,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
    "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
@@ -229,7 +234,7 @@ final class SdaPlayer {
   let sessionReady = try activatePlaybackSession()
   let s = settings()
   let config = try json(["sampleRate":48000,"outputChannels":2,"layout":layout,
-   "directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!])
+   "objectRendering":(s["direct"] as? Bool ?? true),"binauralEnabled":s["binauralEnabled"]!,"directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!])
   var error: UnsafeMutablePointer<CChar>?
   guard let h = sda_ios_create(config, try hrtfPath(s["hrtfSet"] as! String), &error) else {
    _ = try decodeReply(error); throw SdaError.message("引擎初始化失败")
@@ -452,7 +457,7 @@ final class SdaPlayer {
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
    layout = input.isAlac ? (alacUpmixActive ? "7.1.4" : "2.0") : (ext == "mhas" ? "360RA-13" : "7.1.4")
    do {
-    if (["mhas", "av3a"].contains(ext) && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo")) {
+    if (prefs.object(forKey:"sda.binauralEnabled") as? Bool ?? true) && ((["mhas", "av3a"].contains(ext) && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo"))) {
      stopHeadTracking()
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])

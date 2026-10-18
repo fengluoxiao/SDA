@@ -324,6 +324,7 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     outputActive: telemetry.outputActive === true,
     hrtfReady: telemetry.hrtfReady === true,
     directionalHrtf: telemetry.directionalHrtf === true,
+    binauralEnabled: telemetry.binauralEnabled !== false,
     programCodecSupported: typeof telemetry.programCodecSupported === "boolean"
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
@@ -1821,6 +1822,14 @@ ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId)
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 })));
+ipcMain.handle("sda:native-renderer-object-rendering", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  return nativeRendererCommandAck({ type: "setObjectRendering", enabled }, "setObjectRendering");
+});
+ipcMain.handle("sda:native-renderer-binaural-enabled", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  return nativeRendererCommandAck({ type: "setBinauralEnabled", enabled }, "setBinauralEnabled");
+});
 ipcMain.handle("sda:native-renderer-object-hrtf", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;
   const accepted = await nativeRendererCommandAck({ type: "setObjectHrtf", enabled }, "setObjectHrtf");

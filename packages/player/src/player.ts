@@ -285,6 +285,7 @@ export class SdaPlayer {
   readonly id = SdaPlayer.nextId++;
 
   private worker: Worker;
+  private objectRenderingEnabled = true;
   private renderer: SpatialRenderer | null = null;
   private readonly headPoseOptions: HeadPoseOptions | undefined;
   private readonly outputBackend: OutputBackend;
@@ -391,6 +392,7 @@ export class SdaPlayer {
   /** Measurement balance for this track has been scheduled (or found unnecessary). */
   private measuredLoudnessSettled = false;
   private av3aStartupPrepared = false;
+  private stereoStartupEligible = false;
   private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
@@ -581,9 +583,15 @@ export class SdaPlayer {
   }
 
   /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
+  setObjectRenderingEnabled(enabled: boolean): void {
+    this.objectRenderingEnabled = enabled;
+    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: enabled && this.outputMode !== "stereo" });
+  }
+
   setOutputMode(mode: OutputMode): void {
     if (!this.initArgs) return;
     this.initArgs.mode = mode;
+    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: this.objectRenderingEnabled && mode !== "stereo" });
     this.renderer?.setOutputMode(mode);
     this.emitHealth();
   }
@@ -1099,7 +1107,7 @@ export class SdaPlayer {
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
+    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, objectRendering:this.objectRenderingEnabled && this.outputMode !== "stereo", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
@@ -1192,6 +1200,7 @@ export class SdaPlayer {
     this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
     this.av3aStartupPrepared = false;
+    this.stereoStartupEligible = false;
     this.cachedMeasuredLufs = null;
     this.cachedMeasuredTruePeakDbtp = null;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -1261,7 +1270,7 @@ export class SdaPlayer {
   }
 
   private av3aStartupPending(): boolean {
-    return this.trackCodec === "av3a" && this.volumeBalanceEnabled && this.stereoBalanceEligible
+    return (this.trackCodec === "av3a" || this.stereoStartupEligible) && this.volumeBalanceEnabled && this.stereoBalanceEligible
       && !this.playbackStarted && !this.av3aStartupPrepared && this.cachedMeasuredLufs == null;
   }
 
@@ -1985,6 +1994,7 @@ export class SdaPlayer {
     // listening transform. Its single program gain must stay linked across
     // the generated bed, never be calculated separately per copied channel.
     const stereoMaster = isStereoMasterFrame(frame);
+    this.stereoStartupEligible = frame.codec !== "mpegh" && stereoMaster;
     const alacStereoSource = isAlacStereoFrame(frame);
     const upmixed = this.alacStereoUpmixEnabled && alacStereoSource;
     if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);

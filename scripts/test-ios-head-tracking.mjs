@@ -54,13 +54,14 @@ assert.ok(headerStart >= 0 && headerEnd > headerStart, 'Shared header actions mu
 const header = ui.slice(headerStart, headerEnd);
 assert.match(ui, /!sideNavigationActive && headerActions/);
 assert.match(ui, /testID="landscape-side-actions-dock"/);
-assert.match(header, /accessibilityRole="switch"/);
-assert.match(header, /checked: p.headTrackingEnabled/);
+assert.match(header, /accessibilityRole="button"/);
+assert.match(header, /text: "关闭"/);
+assert.match(header, /p.setBinauralEnabled\?\.\(false\)/);
 assert.match(header, /<IOSHeadTrackingButton enabled=\{p.headTrackingEnabled\}/);
 const settings = read('apps/mobile/src/IOSNativeSettings.tsx');
 assert.match(settings, /export function IOSHeadTrackingButton/);
 assert.match(settings, /<Menu label=\{label\}/);
-assert.match(settings, /selection=\{enabled \? "tracking" : "fixed"\}/);
+assert.match(settings, /selection=\{!spatialEnabled \? "off" : enabled \? "tracking" : "fixed"\}/);
 assert.match(settings, /onSelect\(value === "tracking"\)/);
 assert.doesNotMatch(settings, /后台头追实验/);
 assert.match(settings.slice(settings.indexOf('export function IOSHeadTrackingButton')), /buttonStyle\(settingsButtonStyle\)/);

@@ -59,10 +59,13 @@ impl MpeghDecoder {
             }
             if error != 0 { return Err(format!("MPEG-H decode: 0x{:x}", error as u32)); }
             if used < 0 || used as usize > n { return Err("MPEG-H invalid consumption".into()); }
-            if let Some(frame) = self.take_frame()? {
+            if let Some(mut frame) = self.take_frame()? {
                 // bridge output is overwritten by the next access unit. Capture
                 // the matching reference here, not after an entire input chunk.
                 let reference = if self.speaker_output { Vec::new() } else { self.reference_stereo()? };
+                if frame.labels.iter().any(|label| label.starts_with("Obj_")) && reference.len() == 2 {
+                    frame.compatibility_bed = Some(sda_core::CompatibilityBed { channels: reference.clone(), labels: vec!["L".into(), "R".into()] });
+                }
                 self.frames.push_back((frame, reference));
             }
             if used == 0 { break; }
@@ -119,7 +122,7 @@ impl MpeghDecoder {
             channels = self.reference_stereo()?;
         }
         let frames = channels[0].len();
-        let frame = FrameData { codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
+        let frame = FrameData { compatibility_bed: None, codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
             raw_bed_labels: labels.iter().filter(|l| !l.starts_with("Obj_")).cloned().collect(),
             channels, labels, events, object_channels: declarations, program_loudness: None, ramp_duration: 0 };
         self.sample_pos += frames as u64;
@@ -168,7 +171,7 @@ impl MpeghDecoder {
         }
         // impeg hd_cicp_2_geometry_rom.c: CICP19 is rear BEFORE side.
         let labels: Vec<String> = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s| s.to_string()).collect();
-        let frame = FrameData { codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
+        let frame = FrameData { compatibility_bed: None, codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
             raw_bed_labels: labels.clone(), channels, labels, events: Self::capture_events(unsafe { sda_info(5) }, self.sample_pos)?, object_channels: vec![], program_loudness: None, ramp_duration: 0 };
         self.sample_pos += (bytes/36) as u64;
         Ok(Some(frame))

@@ -75,9 +75,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
       {section("ALAC 立体声", toggle("立体声上混 · 7.1.4", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy),
         "直接使用 SDA 共享上混处理，经共享 HRTF 渲染为双声道。不是原生 Atmos 或独立对象；播放中平滑切换，已缓冲音频播完后生效。")}
       {section("空间渲染", <>
-        {menu("渲染预设", preset?.label || "自定义", renderingPresets.map(profile => ({ id: profile.id, label: profile.label })), preset?.id || "custom", p.setRenderingPreset, presetDisabled)}{separator()}
-        {toggle("逐对象渲染", p.directObjects, value => p.setRendering(value, p.directionalObjects), audioDisabled, "每个对象独立生成双耳声音")}{separator()}
-        {toggle("实际方向", p.directionalObjects, value => p.setRendering(p.directObjects, value), audioDisabled, "按对象真实位置定位声音")}
+        {menu("渲染预设", preset?.label || "自定义", renderingPresets.map(profile => ({ id: profile.id, label: profile.label })), preset?.id || "custom", p.setRenderingPreset, presetDisabled)}
       </>, `${preset?.description || "当前使用自定义渲染设置。"} 切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。`)}
       {renderExperiment.spatialCues !== false && section("空间线索强度", menu("辅助空间效果", `${p.spatialCueDb} dB`, [0, -3, -6, -9, -12].map(db => ({ id: String(db), label: `${db} dB${db === -6 ? " · 默认" : ""}` })), String(p.spatialCueDb),
         id => p.setSpatialCueDb(Number(id)), p.spatialCueBusy || p.busy),

@@ -120,7 +120,7 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
                                 .collect()
                         })
                         .collect();
-                    let frame = sda_core::FrameData {
+                    let frame = sda_core::FrameData { compatibility_bed: None,
                         codec: "av3a".into(),
                         sample_rate: 48000,
                         sample_pos: start as u64,

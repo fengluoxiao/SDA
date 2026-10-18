@@ -196,18 +196,27 @@ function ThemedPlayer(p: PlayerProps) {
     </Pressable>
   </View>;
   const headerActions = <>
-        {Platform.OS === "ios" && (hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} sideDock={sideNavigationActive}
+        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} sideDock={sideNavigationActive}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
-          onSelect={p.setHeadTracking} /> : <Pressable accessibilityRole="switch"
-          accessibilityLabel="AirPods 头部追踪" accessibilityHint={p.headTrackingStatus}
-          accessibilityState={{ checked: p.headTrackingEnabled, disabled: p.busy || p.systemSpatial360RAActive }}
+          onDisable={() => p.setBinauralEnabled?.(false)}
+          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton spatial sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
+          accessibilityLabel={p.binauralEnabled === false ? "空间音频 · 关闭" : "空间音频 · 固定"}
+          onPress={() => Alert.alert("空间音频", undefined, [
+            { text: "关闭", onPress: () => p.setBinauralEnabled?.(false) },
+            { text: "固定", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(false); } },
+            { text: "取消", style: "cancel" },
+          ])} /> : <Pressable accessibilityRole="button"
+          accessibilityLabel={p.binauralEnabled === false ? "空间音频 · 关闭" : "空间音频 · 固定"}
           disabled={p.busy || p.systemSpatial360RAActive}
-          onPress={() => p.setHeadTracking(!p.headTrackingEnabled)}
-          style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center",
-            opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
-          <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"}
-            fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
-        </Pressable>)}
+          onPress={() => Alert.alert("空间音频", undefined, [
+            { text: "关闭", onPress: () => p.setBinauralEnabled?.(false) },
+            { text: "固定", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(false); } },
+            ...(Platform.OS === "ios" ? [{ text: "头部追踪", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(true); } }] : []),
+            { text: "取消", style: "cancel" },
+          ])}
+          style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center", opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
+          <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"} fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
+        </Pressable>}
         {Platform.OS === "android" ? <AndroidGlassSettingsButton onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
   </>;
   const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined}>
@@ -368,9 +377,6 @@ function ThemedPlayer(p: PlayerProps) {
           {heading("空间渲染", "settings-spatial")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {renderingPresets.map(profile => <View key={profile.id}>{actionRow(isPresetSelected(p, profile) ? "checkmark.circle.fill" : "circle", profile.label, profile.description, () => p.setRenderingPreset(profile.id), presetDisabled, isPresetSelected(p, profile))}{divider()}</View>)}
-            {toggle("逐对象渲染", "每个对象独立生成双耳声音", p.directObjects, value => p.setRendering(value, p.directionalObjects), audioOptionsDisabled)}
-            {divider()}
-            {toggle("实际方向", "按对象真实位置定位声音", p.directionalObjects, value => p.setRendering(p.directObjects, value), audioOptionsDisabled)}
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}

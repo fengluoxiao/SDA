@@ -216,6 +216,8 @@ for(const scheme of ['light','dark',null]) {
  assert.equal(button.props.onExpand,action);
  assert.deepEqual(button.props.style,{width:44,height:44});
 }
+const spatialButton=settingsAdapter.exports.AndroidGlassSettingsButton({onPress(){},spatial:true,disabled:true,accessibilityLabel:'空间音频 · 关闭'});
+assert.equal(spatialButton.props.spatialButton,true);assert.equal(spatialButton.props.busy,true);assert.equal(spatialButton.props.accessibilityLabel,'空间音频 · 关闭');
 console.log('Settings button: system light/dark icon contrast and matching glass appearance passed.');
 
 for(const top of [0,24,48]) {

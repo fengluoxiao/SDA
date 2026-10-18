@@ -20,6 +20,8 @@ export class MpeghDecoder {
   private pending=new Uint8Array(0);
   private frames:DecodedFrameData[]=[];
   private samplePos=0;
+  private objectRendering=true;
+  private compatibleFrames=new Map<number,Float32Array[]>();
   private dead=false;
   constructor(private rawAu=false,config?:Uint8Array,private referenceOnly?: (channels: Float32Array[], sampleRate: number) => void, private emitSourcesWithReference=false){
     if(!runtime)throw codecFailure("mpegh.failure_01",'MPEG-H runtime not initialized');
@@ -52,14 +54,15 @@ export class MpeghDecoder {
     const m=runtime, info=(k:number)=>m._sda_info(k);
     let n=info(3);if(!n)return;
     const objects=info(5),beds=info(6),hoa=info(7),rate=info(2);
-    if(this.referenceOnly){
+    if(this.referenceOnly || !this.objectRendering){
       const count=info(11),samples=info(10)/(count*3);
       if(count!==2 || !Number.isInteger(samples) || samples<=0)throw codecFailure("mpegh.failure_10",'MPEG-H invalid reference mix');
       const reference=[new Float32Array(samples),new Float32Array(samples)];
       const bytes=m.HEAPU8;let p=m._sda_rendered();
       for(let i=0;i<samples;i++)for(let c=0;c<2;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;reference[c]![i]=(v<<8>>8)/8388608;}
-      this.referenceOnly(reference,rate);
-      if(!this.emitSourcesWithReference){this.samplePos+=samples;return;}
+      if(this.emitSourcesWithReference || !this.referenceOnly) this.compatibleFrames.set(this.samplePos,reference);
+      this.referenceOnly?.(reference,rate);
+      if(this.referenceOnly && !this.emitSourcesWithReference){this.samplePos+=samples;return;}
     }
 
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
@@ -98,7 +101,13 @@ export class MpeghDecoder {
     this.frames.push({codec:'mpegh',sampleRate:rate,samplePos:this.samplePos,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels,programLoudness:null,rampDuration:0});
     this.samplePos+=n;
   }
-  nextFrame():DecodedFrameData|null{return this.frames.shift()??null;}
+  setObjectRendering(enabled:boolean):void{this.objectRendering=enabled;}
+  nextFrame():DecodedFrameData|null{
+    const frame=this.frames.shift()??null;if(!frame)return null;
+    const compatible=this.compatibleFrames.get(frame.samplePos);this.compatibleFrames.delete(frame.samplePos);
+    if(!this.objectRendering&&compatible){frame.channels=compatible;frame.labels=['L','R'];frame.rawBedLabels=['L','R'];frame.events=[];frame.objectChannels=[];}
+    return frame;
+  }
   drainErrors():string[]{return [];}
   flush():void{if(this.pending.length)throw codecFailure("mpegh.failure_16",`MPEG-H truncated stream (${this.pending.length} bytes remain)`);}
   free():void{if(!this.dead){runtime._sda_close();this.dead=true;this.frames=[];this.pending=new Uint8Array(0);}}

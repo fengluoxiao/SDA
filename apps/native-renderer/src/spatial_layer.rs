@@ -20,13 +20,26 @@ fn weight(position:[f32;3])->f32 {
     let height=smooth((z.abs()/r/0.5) as f32);
     (1.0-(1.0-side)*(1.0-height)).clamp(0.0,1.0)
 }
+// Accepted generic rear presentation. World-space spherical cap avoids
+// a pole discontinuity and is independent of head pose, IDs and source level.
+fn rear_weight(position:[f32;3])->f32 {
+    if !position.iter().all(|v|v.is_finite()) {return 0.0;}
+    let [x,y,z]=position.map(f64::from);let r=(x*x+y*y+z*z).sqrt();
+    if r<1e-6 {return 0.0;}
+    let start=0.25881904f32;
+    smooth(((-y/r) as f32-start)/(std::f32::consts::FRAC_1_SQRT_2-start))
+}
+fn speaker_rear_weight(azimuth:f32,elevation:f32)->f32 {
+    let a=azimuth.to_radians();let e=elevation.to_radians();
+    rear_weight([-a.sin()*e.cos(),a.cos()*e.cos(),e.sin()])
+}
 fn speaker_weight(azimuth:f32,elevation:f32)->f32 {
     let a=azimuth.to_radians();let e=elevation.to_radians();
     weight([-a.sin()*e.cos(),a.cos()*e.cos(),e.sin()])
 }
-pub(crate) struct Settings {pub db:f32,pub main_restore_db:f32,pub slew:f32}
+pub(crate) struct Settings {pub db:f32,pub main_restore_db:f32,pub rear_db:f32,pub slew:f32}
 impl Settings {
-    pub fn new(rate:u32)->Self {Self {db:0.0,main_restore_db:0.0,slew:(10.0f32.powf(MAX_DB/20.0)-1.0)/(rate.max(1) as f32*0.03)}}
+    pub fn new(rate:u32)->Self {Self {db:0.0,main_restore_db:0.0,rear_db:0.0,slew:(10.0f32.powf(MAX_DB/20.0)-1.0)/(rate.max(1) as f32*0.03)}}
     pub fn set(&mut self,db:f32,rate:u32)->Result<(),String> {
         if !db.is_finite() || !(0.0..=MAX_DB).contains(&db) {return Err("spatial layer gain must be finite and between 0 and +6 dB".into());}
         self.db=db;self.slew=Self::new(rate).slew;Ok(())
@@ -35,24 +48,29 @@ impl Settings {
     pub fn refresh_beds(&self,sources:&mut HashMap<String,Source>,solver:&vbap::VbapSolver) {
         // The accepted preset has no auxiliary lift, but still restores the
         // horizontal main layer. Its bed weights must not stay zero/stale.
-        if self.db==0.0 && self.main_restore_db==0.0 {return;}
+        if self.db==0.0 && self.main_restore_db==0.0 && self.rear_db==0.0 {return;}
         for s in sources.values_mut().filter(|s|s.kind==SourceKind::Bed) {
             let route=crate::bed_route(s.bed_label.as_deref().unwrap_or(""),solver);
-            if route.lfe>0.0 {s.spatial_layer_bed_weight=0.0;continue;}
-            let mut w=0.0f32;let mut total=0.0f32;
+            if route.lfe>0.0 {s.spatial_layer_bed_weight=0.0;s.spatial_layer_rear_bed_weight=0.0;continue;}
+            let mut w=0.0f32;let mut rear=0.0f32;let mut total=0.0f32;
             for (gain,speaker) in route.buses.iter().zip(vbap::speakers(solver.layout())) {
-                let p=gain*gain;total+=p;w+=p*speaker_weight(speaker.azimuth,speaker.elevation);
+                let p=gain*gain;total+=p;w+=p*speaker_weight(speaker.azimuth,speaker.elevation);rear+=p*speaker_rear_weight(speaker.azimuth,speaker.elevation);
             }
             s.spatial_layer_bed_weight=if total>1e-12 {(w/total).clamp(0.0,1.0)} else {0.0};
+            s.spatial_layer_rear_bed_weight=if total>1e-12 {(rear/total).clamp(0.0,1.0)} else {0.0};
         }
     }
 }
 pub(crate) fn source_gain(s:&mut Source,db:f32,main_restore_db:f32,slew:f32,at:u64)->f32 {
+    source_gain_with_rear(s,db,main_restore_db,0.0,slew,at)
+}
+pub(crate) fn source_gain_with_rear(s:&mut Source,db:f32,main_restore_db:f32,rear_db:f32,slew:f32,at:u64)->f32 {
     if s.lfe_gain>0.0 || s.lfe_target>0.0 {s.spatial_layer_gain=1.0;s.spatial_layer_target=1.0;return 1.0;}
-    if db==0.0 && main_restore_db==0.0 && s.spatial_layer_gain==1.0 {return 1.0;}
+    if db==0.0 && main_restore_db==0.0 && rear_db==0.0 && s.spatial_layer_gain==1.0 {return 1.0;}
     if at.is_multiple_of(128) {
         let w=if s.kind==SourceKind::Object {weight(s.position)} else {s.spatial_layer_bed_weight};
-        s.spatial_layer_target=10.0f32.powf((db*w-main_restore_db*(1.0-w))/20.0);
+        let rear=if s.kind==SourceKind::Object {rear_weight(s.position)} else {s.spatial_layer_rear_bed_weight};
+        s.spatial_layer_target=10.0f32.powf((db*w-main_restore_db*(1.0-w)+rear_db*rear)/20.0);
     }
     s.spatial_layer_gain+=(s.spatial_layer_target-s.spatial_layer_gain).clamp(-slew,slew);
     if (s.spatial_layer_target-s.spatial_layer_gain).abs()<1e-6 {s.spatial_layer_gain=s.spatial_layer_target;}
@@ -302,9 +320,11 @@ mod tests {
         e.set_spatial_enhancement(true).unwrap();
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
         assert_eq!(e.spatial_layer.main_restore_db,0.0);
+        assert_eq!(e.spatial_layer.rear_db,3.0);
         assert_eq!(e.final_output_trim.target_db(),0.0);
         e.set_spatial_enhancement(false).unwrap();
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
+        assert_eq!(e.spatial_layer.rear_db,0.0);
         let command:crate::Command=serde_json::from_str(r#"{"type":"setSpatialEnhancement","enabled":true}"#).unwrap();
         assert!(matches!(command,crate::Command::SetSpatialEnhancement{enabled:true}));
     }
@@ -322,4 +342,42 @@ mod tests {
         assert!((upper.spatial_layer_gain*master-10.0f32.powf(8.0/20.0)).abs()<1e-6);
     }
 
+}
+
+#[cfg(test)]
+mod rear_candidate_tests {
+    use super::*;
+    #[test]
+    fn rear_candidate_geometry_excludes_front_sides_poles_and_is_mirrored() {
+        for p in [[0.,1.,0.],[-1.,0.,0.],[1.,0.,0.],[0.,0.,1.],[0.,0.,-1.],[0.;3],[f32::NAN,0.,0.]] {assert_eq!(rear_weight(p),0.0);}
+        for p in [[0.,-1.,0.],[-1.,-1.,0.],[1.,-1.,0.]] {assert!((rear_weight(p)-1.0).abs()<1e-6);}
+        for el in -90..=90 {for az in -180..=180 {
+            let a=(az as f32).to_radians();let e=(el as f32).to_radians();let p=[a.sin()*e.cos(),a.cos()*e.cos(),e.sin()];let w=rear_weight(p);
+            assert!((0.0..=1.0).contains(&w));assert_eq!(w,rear_weight([-p[0],p[1],p[2]]));assert!((w-rear_weight(p.map(|x|x*7.0))).abs()<1e-5);
+        }}
+    }
+    #[test]
+    fn rear_candidate_slew_bypass_lfe_and_source_id_independence() {
+        let settings=Settings::new(48000);
+        let mut a=Source{kind:SourceKind::Object,object_id:Some(1),position:[-1.,-1.,0.],..Default::default()};
+        let mut b=Source{kind:SourceKind::Object,object_id:Some(9999),position:[1.,-1.,0.],..Default::default()};
+        let mut previous=1.0;
+        for at in 0..4096 {let ga=source_gain_with_rear(&mut a,1.5,0.,3.,settings.slew,at);let gb=source_gain_with_rear(&mut b,1.5,0.,3.,settings.slew,at);assert_eq!(ga,gb);assert!((ga-previous).abs()<settings.slew+1e-6);previous=ga;}
+        assert!((previous-10f32.powf(4.5/20.)).abs()<1e-6);
+        for at in 4096..8192 {let g=source_gain_with_rear(&mut a,1.5,0.,0.,settings.slew,at);assert!((g-previous).abs()<settings.slew+1e-6);previous=g;}
+        assert!((previous-10f32.powf(1.5/20.)).abs()<1e-6);
+        b.lfe_gain=1.;assert_eq!(source_gain_with_rear(&mut b,1.5,0.,3.,settings.slew,8192),1.0);
+    }
+    #[test]
+    fn rear_candidate_beds_use_authored_layout_directions() {
+        for layout in [vbap::LayoutId::Dolby7_1_4,vbap::LayoutId::Sony360Ra13,vbap::LayoutId::Stereo2_0] {
+            let solver=vbap::VbapSolver::with_layout(layout);let settings=Settings{rear_db:3.,..Settings::new(48000)};
+            let mut sources=HashMap::new();
+            for label in ["FrontLeft","FrontRight","Center","LFE","RearLeft","RearRight"] {sources.insert(label.to_string(),Source{kind:SourceKind::Bed,bed_label:Some(label.to_string()),..Default::default()});}
+            settings.refresh_beds(&mut sources,&solver);
+            for label in ["FrontLeft","FrontRight","Center","LFE"] {assert!(sources[label].spatial_layer_rear_bed_weight<1e-6);}
+            assert!((sources["RearLeft"].spatial_layer_rear_bed_weight-sources["RearRight"].spatial_layer_rear_bed_weight).abs()<1e-6);
+            if layout==vbap::LayoutId::Dolby7_1_4 {assert!(sources["RearLeft"].spatial_layer_rear_bed_weight>0.99);}
+        }
+    }
 }

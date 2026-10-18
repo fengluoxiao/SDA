@@ -1,14 +1,14 @@
+import { readObjectRendering, enableObjectRenderingDefaults } from "./object-rendering-preference";
 import sharedRenderProfile from "../../mobile/ios-experiments/active.json";
 import {migrateSharedHrtf, playbackHrtfSet, SHARED_HRTF_PROFILE} from "./shared-hrtf-profile";
 import {LiveObjectView, createObjectViewStore} from "./components/LiveObjectView";
 import {formatAutoLayout, resolveAutoLayout, uses360RaLowerLayer} from "./auto-layout";
-import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
 import {GlassRefraction} from "./components/GlassRefraction";
 import SheetHeading from "./components/SheetHeading";
 import { readAhead } from "./read-ahead";
 import { Slider } from "./components/Slider";
 import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "./playbackOrder";
-import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
+import {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
 import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
 import SourceExtentPanel, {readSourceExtent} from "./components/SourceExtentPanel";
 import type { HrtfTestVisual, PhrtfParameters } from "./phrtf";
@@ -362,6 +362,7 @@ export function App() {
   const retiringPlayerRef = useRef<SdaPlayer | null>(null);
   const [playerReady, setPlayerReady] = useState<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
+  const outputLayoutRestore = useRef<LayoutId | "auto" | null>(null);
   /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
   const [layoutId, setLayoutId] = useState<LayoutId | "auto">("auto");
   /** Latest requested layout, including a selection made while sidecar/HRTF
@@ -473,8 +474,7 @@ export function App() {
   const currentCodecRef = useRef<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("output");
-  const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
-  const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
+  const [directObjectHrtf, setDirectObjectHrtf] = useState(readObjectRendering);
   const [stereoRenderMode, setStereoRenderMode] = useState(readStereoRenderMode);
   const [stereoRenderBusy, setStereoRenderBusy] = useState(false);
   const [alacStereoUpmixEnabled, setAlacStereoUpmixEnabled] = useState(readAlacStereoUpmixEnabled);
@@ -598,9 +598,10 @@ export function App() {
       if (desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
       if (desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
       if (desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
-      if (!await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+      if (!await desktop.nativeRendererObjectRendering?.(readObjectRendering())) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
+      if (desktop.nativeRendererBinauralEnabled && !await desktop.nativeRendererBinauralEnabled(m !== "stereo")) throw new Error("空间音频输出模式未被接受");
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       // Configuration is ready; only this replacement may submit new sources.
@@ -996,6 +997,7 @@ export function App() {
         },
       });
       createdPlayer = player;
+      player.setObjectRenderingEnabled(readObjectRendering());
       player.setAlacStereoUpmixEnabled(alacStereoUpmixEnabledRef.current);
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = (labels: readonly string[], hasDynamics: boolean, codec?: string) => {
@@ -1254,7 +1256,8 @@ export function App() {
       if (next.running && desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
       if (next.running && desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
       if (next.running && desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
-      if (next.running && !await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+      if (next.running && desktop.nativeRendererBinauralEnabled && !await desktop.nativeRendererBinauralEnabled(playerRef.current?.outputMode !== "stereo")) throw new Error("输出模式恢复失败");
+      if (next.running && !await desktop.nativeRendererObjectRendering?.(readObjectRendering())) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
       setNativeRendererStatus(next);
@@ -1266,23 +1269,6 @@ export function App() {
     }
   }, [nativeRendererStatus?.running]);
 
-  const changeDirectObjectHrtf = async (enabled: boolean) => {
-    if (directObjectHrtfBusy) return;
-    setDirectObjectHrtfBusy(true);
-    try {
-      const desktop = window.sdaDesktop;
-      const status = await desktop?.getNativeRendererStatus?.();
-      if (status?.running && !await desktop?.nativeRendererObjectHrtf?.(enabled)) {
-        throw new Error("原生渲染器未接受设置");
-      }
-      localStorage.setItem("sda-direct-object-hrtf", String(enabled));
-      setDirectObjectHrtf(enabled);
-    } catch (error) {
-      setErrors((prev) => [...prev, `逐对象 HRTF 切换失败: ${String(error)}`]);
-    } finally {
-      setDirectObjectHrtfBusy(false);
-    }
-  };
   const changeStereoRenderMode = async (next: StereoRenderMode) => {
     if (stereoRenderBusy) return;
     setStereoRenderBusy(true);
@@ -1625,14 +1611,30 @@ export function App() {
   }, [playing, paused, play]);
 
   const changeOutputMode = useCallback((next: OutputMode) => {
-    playerRef.current?.setOutputMode(next);
-    if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
-      layoutIdRef.current = "2.0";
-      setLayoutId("2.0");
-      setDetectedLayout(null);
-      playerRef.current?.setLayout(LAYOUTS["2.0"]);
-    }
-    setMode(next);
+    const apply = async () => {
+      const api = window.sdaDesktop;
+      if ((await api?.getNativeRendererStatus?.())?.running && !await api?.nativeRendererBinauralEnabled?.(next !== "stereo")) {
+        setErrors(previous => [...previous, "原生渲染器未接受输出模式，请更新后重试"]);
+        return;
+      }
+      if (next === "stereo" && outputLayoutRestore.current === null) outputLayoutRestore.current = layoutId;
+      playerRef.current?.setOutputMode(next);
+      if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
+        layoutIdRef.current = "2.0";
+        setLayoutId("2.0");
+        setDetectedLayout(null);
+        playerRef.current?.setLayout(LAYOUTS["2.0"]);
+      } else if (next !== "stereo" && outputLayoutRestore.current !== null) {
+        const restore = outputLayoutRestore.current;
+        outputLayoutRestore.current = null;
+        layoutIdRef.current = restore;
+        setLayoutId(restore);
+        if (restore === "auto") playerRef.current?.setAutoLayout();
+        else playerRef.current?.setLayout(LAYOUTS[restore]);
+      }
+      setMode(next);
+    };
+    void apply().catch(error => setErrors(previous => [...previous, String(error)]));
   }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
@@ -1796,7 +1798,7 @@ export function App() {
     const previousDirectional = readDirectionalHrtf();
     try {
       if (next === "hrtfhq" && api) {
-        if (!await api.nativeRendererObjectHrtf?.(true) || !await api.nativeRendererDirectionalHrtf?.(true)) {
+        if (!await api.nativeRendererObjectRendering?.(true)) {
           throw new Error("原生渲染器未接受共享 HRTFHQ 配置");
         }
       }
@@ -1815,6 +1817,8 @@ export function App() {
     if (next === "hrtfhq") {
       localStorage.setItem("sda-direct-object-hrtf", "true");
       localStorage.setItem("sda-directional-hrtf-v1", "true");
+      enableObjectRenderingDefaults();
+      playerRef.current?.setObjectRenderingEnabled(true);
       setDirectObjectHrtf(true);
     }
     setBinauralHead(next);
@@ -2294,13 +2298,6 @@ export function App() {
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>
-                <label className="settings-switch" title="独立启用基础逐对象处理。关闭后，连续方向或近场仍可自动启用对象处理。">
-                  <span>基础逐对象双耳渲染 <small>实验性</small></span>
-                  <input type="checkbox" role="switch" checked={directObjectHrtf}
-                    disabled={directObjectHrtfBusy || nativeRendererBusy}
-                    onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
-                </label>
-                <ObjectRenderingStatus direct={directObjectHrtf}/>
                 <label className="settings-switch" title={`启动或停止桌面唯一的 Rust/${isMac ? "CoreAudio" : "WASAPI"} 空间输出。停止后桌面不会退回 Web Audio 输出。`}>
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
@@ -2308,7 +2305,7 @@ export function App() {
                 </label>
               </fieldset>
             )}
-            {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel codec={track?.codec}/><SourceExtentPanel/><NearFieldPanel/></>}
+            {window.sdaDesktop?.startNativeRenderer&&<fieldset disabled={!directObjectHrtf} style={{border:0,padding:0,margin:0}}><SourceExtentPanel/><NearFieldPanel/></fieldset>}
             </div>
             <div className="settings-content" id="settings-content-eq" role="tabpanel" aria-labelledby="settings-tab-eq" hidden={settingsTab !== "eq"}>
             {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}

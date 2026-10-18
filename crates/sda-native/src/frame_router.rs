@@ -52,6 +52,14 @@ impl FrameRouter {
             }
             self.objects = mapping;
         }
+        let wanted: std::collections::BTreeSet<String> = (0..frame.channels.len()).map(|channel| {
+            self.objects.iter().find_map(|(&id,&ch)| (ch == channel).then_some(format!("obj:{id}"))).unwrap_or_else(|| format!("bed:{channel}"))
+        }).collect();
+        let retired: Vec<_> = self.declared.keys().filter(|id| !wanted.contains(*id)).cloned().collect();
+        for id in retired {
+            self.declared.remove(&id);
+            commands.push(RenderCommand::Command(Command::RemoveSource { id, at: frame.sample_pos }));
+        }
         let mut entries = Vec::with_capacity(frame.channels.len());
         for (ch, samples) in frame.channels.into_iter().enumerate() {
             let object = self.objects.iter().find_map(|(&id, &channel)| (channel == ch).then_some(id));
@@ -109,7 +117,7 @@ mod tests {
     }
 
     fn frame(at: u64, labels: &[&str], mapping: &[(u32, u32)]) -> FrameData {
-        FrameData { codec: "eac3", sample_rate: 48000, sample_pos: at,
+        FrameData { compatibility_bed: None, codec: "eac3", sample_rate: 48000, sample_pos: at,
             channels: labels.iter().enumerate().map(|(i,_)| vec![i as f32 + 1.0; 16]).collect(),
             labels: labels.iter().map(|s| s.to_string()).collect(), raw_bed_labels: vec![],
             events: vec![], object_channels: mapping.iter().map(|&(id,channel)| ObjectChannelDecl {id,channel}).collect(),

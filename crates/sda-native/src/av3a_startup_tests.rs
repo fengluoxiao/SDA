@@ -10,6 +10,9 @@ fn setup() -> MobileEngine {
     engine
 }
 fn feed(engine: &mut MobileEngine, start: usize, count: usize, silent: bool) {
+    feed_program(engine, start, count, silent, "av3a");
+}
+fn feed_program(engine: &mut MobileEngine, start: usize, count: usize, silent: bool, codec: &'static str) {
     let labels = [
         "L", "R", "C", "LFE", "Lb", "Rb", "Ls", "Rs", "Tfl", "Tfr", "Tbl", "Tbr",
     ]
@@ -28,7 +31,7 @@ fn feed(engine: &mut MobileEngine, start: usize, count: usize, silent: bool) {
                 .collect()
         })
         .collect();
-    let frame = FrameData {
+    let frame = FrameData { compatibility_bed: None,
         codec: "av3a",
         sample_rate: 48000,
         sample_pos: start as u64,
@@ -40,6 +43,14 @@ fn feed(engine: &mut MobileEngine, start: usize, count: usize, silent: bool) {
         program_loudness: None,
         ramp_duration: 0,
     };
+    let mut frame = frame;
+    if codec != "av3a" {
+        frame.codec = codec;
+        frame.channels.truncate(2);
+        for channel in &mut frame.channels {for sample in channel {*sample *= 5.0;}}
+        frame.labels = vec!["L".into(), "R".into()];
+        frame.raw_bed_labels = frame.labels.clone();
+    }
     let frame = engine.balance.measure(frame, None);
     engine.pending.lock().unwrap().push_back(frame);
     engine.drain_pending_into_pipeline().unwrap();
@@ -97,4 +108,37 @@ fn av3a_startup_switch_off_releases_existing_preroll() {
     assert!(engine.startup.lock().unwrap().started);
     assert!(engine.pending.lock().unwrap().is_empty());
     assert_eq!(engine.balance.gain_db, 0.0);
+}
+
+#[test]
+fn stereo_startup_initial_gain_precedes_pcm_and_start_for_uncached_masters() {
+    for codec in ["alac", "aac", "mp3", "flac", "pcm"] {
+        let mut engine=setup();
+        feed_program(&mut engine,0,48000,false,codec);
+        assert!(engine.playback_status().preparing_audio,"{codec}");
+        assert_eq!(engine.pipeline.as_ref().unwrap().commands.pending_len_for_debug(),0);
+        for start in (48000..48000*7).step_by(4800) {
+            feed_program(&mut engine,start,4800,false,codec);
+            if engine.startup.lock().unwrap().started {break;}
+        }
+        assert!(engine.startup.lock().unwrap().started,"{codec}");
+        assert!(engine.balance.gain_db < -1.0,"{codec}: {}",engine.balance.gain_db);
+        assert!(!engine.playback_status().preparing_audio);
+        assert_eq!(engine.complete_loudness_json(),"null");
+        assert!(engine.pipeline.as_ref().unwrap().commands.pending_len_for_debug()>10);
+    }
+}
+#[test]
+fn stereo_startup_short_eof_silence_disable_and_cached_measurement() {
+    let mut engine=setup();feed_program(&mut engine,0,48000,false,"alac");
+    engine.finish().unwrap();assert!(engine.startup.lock().unwrap().started);assert!(engine.balance.gain_db < -1.0);
+    let mut engine=setup();
+    for start in (0..48000*7).step_by(4800) {feed_program(&mut engine,start,4800,true,"flac");}
+    assert!(engine.startup.lock().unwrap().started);assert_eq!(engine.balance.gain_db,0.0);
+    let mut engine=setup();feed_program(&mut engine,0,48000,false,"mp3");engine.set_volume_balance(false).unwrap();
+    assert!(engine.startup.lock().unwrap().started);assert_eq!(engine.balance.gain_db,0.0);
+    let mut engine=setup();
+    engine.balance.set_cached(balance::Measurement{integrated_lufs:Some(-10.0),blocks:100,true_peak_dbtp:Some(-3.0)});
+    feed_program(&mut engine,0,24000,false,"aac");
+    assert!(engine.startup.lock().unwrap().started,"cached gain must skip preroll");assert_eq!(engine.balance.gain_db,-8.0);
 }

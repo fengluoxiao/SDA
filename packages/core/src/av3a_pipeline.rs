@@ -192,7 +192,7 @@ impl Av3aPipeline {
             channel.drain(..skip);
             channel.truncate(count);
         }
-        out.push_back(FrameData {
+        out.push_back(FrameData { compatibility_bed: None,
             codec: "av3a",
             sample_rate: OUTPUT_RATE,
             sample_pos: self.output_samples,

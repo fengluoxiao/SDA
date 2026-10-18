@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewInAr
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.*
@@ -99,6 +100,7 @@ class SdaAndroidChromeModule : Module() {
             Prop("hasTrack") { view: SdaAndroidChromeView, value: Boolean -> view.hasTrack = value }
             Prop("playing") { view: SdaAndroidChromeView, value: Boolean -> view.playing = value }
             Prop("busy") { view: SdaAndroidChromeView, value: Boolean -> view.busy = value }
+            Prop("spatialButton") { view: SdaAndroidChromeView, value: Boolean -> view.spatialButton = value }
             Prop("settingsButton") { view: SdaAndroidChromeView, value: Boolean -> view.settingsButton = value }
             Prop("backButton") { view: SdaAndroidChromeView, value: Boolean -> view.backButton = value }
             Prop("backgroundColorValue") { view: SdaAndroidChromeView, value: String -> view.surfaceColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFFF2F2F7)) }
@@ -128,6 +130,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var playing by mutableStateOf(false)
     var busy by mutableStateOf(false)
     var settingsButton by mutableStateOf(false)
+    var spatialButton by mutableStateOf(false)
     var backButton by mutableStateOf(false)
     var surfaceColor by mutableStateOf(Color(0xFFF2F2F7))
     private val backgroundNode = if (Build.VERSION.SDK_INT >= 29) RenderNode("SDA glass background") else null
@@ -311,9 +314,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             val backdrop = backgroundAt(0f)
             LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = backdrop,
                 surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
-                enabled = !busy, label = if (backButton) "返回" else "更多设置", height = 44.dp, contentPadding = 0.dp,
+                enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = 44.dp, contentPadding = 0.dp,
                 modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
-                Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)
+                Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)
             }
             return
         }

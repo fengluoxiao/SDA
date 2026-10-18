@@ -87,6 +87,7 @@ impl ProgramLoudnessMetadata {
 
 /// Decoded frame handed to JavaScript.
 pub struct FrameData {
+    pub compatibility_bed: Option<CompatibilityBed>,
     pub codec: &'static str,
     pub sample_rate: u32,
     pub sample_pos: u64,
@@ -101,7 +102,29 @@ pub struct FrameData {
     pub ramp_duration: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompatibilityBed {
+    pub channels: Vec<Vec<f32>>,
+    pub labels: Vec<String>,
+}
+impl CompatibilityBed {
+    pub fn from_frame(frame: FrameData) -> Self { Self { channels: frame.channels, labels: frame.labels } }
+}
+impl FrameData {
+    pub fn select_compatibility_bed(&mut self) -> bool {
+        let Some(bed) = self.compatibility_bed.take() else { return false; };
+        self.channels = bed.channels;
+        self.labels = bed.labels;
+        self.raw_bed_labels = self.labels.clone();
+        self.events.clear();
+        self.object_channels.clear();
+        self.ramp_duration = 0;
+        true
+    }
+}
+
 pub trait Pipeline {
+    fn set_object_rendering(&mut self, _enabled: bool) {}
     fn codec_name(&self) -> &'static str;
     fn push(&mut self, data: &[u8], out: &mut VecDeque<FrameData>, errors: &mut Vec<String>);
     fn reset(&mut self);
@@ -192,6 +215,9 @@ impl DecodedFrame {
 /// Platform-neutral streaming decoder (auto-detect + pipeline dispatch). This
 /// is the shared core; the wasm `SdaDecoder` below is a thin binding over it.
 pub struct StreamingDecoder {
+    object_rendering: bool,
+    restore_object_mapping: bool,
+    object_targets: std::collections::BTreeMap<u32, ObjectEvent>,
     pipeline: Box<dyn Pipeline>,
     sniff: Option<Vec<u8>>,
     queue: VecDeque<FrameData>,
@@ -209,12 +235,14 @@ impl StreamingDecoder {
                 sniff: Some(Vec::with_capacity(64 * 1024)),
                 queue: VecDeque::new(),
                 errors: Vec::new(),
+                object_rendering: true, restore_object_mapping: false, object_targets: Default::default(),
             }),
             _ => Ok(StreamingDecoder {
                 pipeline: build_pipeline(codec)?,
                 sniff: None,
                 queue: VecDeque::new(),
                 errors: Vec::new(),
+                object_rendering: true, restore_object_mapping: false, object_targets: Default::default(),
             }),
         }
     }
@@ -234,6 +262,7 @@ impl StreamingDecoder {
             sniff: None,
             queue: VecDeque::new(),
             errors: Vec::new(),
+                object_rendering: true, restore_object_mapping: false, object_targets: Default::default(),
         })
     }
 
@@ -246,6 +275,7 @@ impl StreamingDecoder {
                 Some(codec) => {
                     let buffered = std::mem::take(sniff);
                     self.pipeline = build_pipeline(codec)?;
+                    self.pipeline.set_object_rendering(self.object_rendering);
                     self.sniff = None;
                     self.pipeline
                         .push(&buffered, &mut self.queue, &mut self.errors);
@@ -267,7 +297,38 @@ impl StreamingDecoder {
 
     /// Pop the next decoded frame, or `None` when more input is needed.
     pub fn next_frame(&mut self) -> Option<FrameData> {
-        self.queue.pop_front()
+        self.queue.pop_front().map(|mut frame| {
+            for event in &frame.events {
+                let mut target = event.clone();
+                if !event.has_pos {
+                    if let Some(previous) = self.object_targets.get(&event.id) {
+                        target = previous.clone();
+                        target.gain_db = event.gain_db;
+                        target.sample_pos = event.sample_pos;
+                        target.ramp_duration = event.ramp_duration;
+                    }
+                }
+                self.object_targets.insert(event.id, target);
+            }
+            if !self.object_rendering { frame.select_compatibility_bed(); }
+            else if self.restore_object_mapping && frame.labels.iter().any(|label| label.starts_with("Obj_")) {
+                frame.object_channels = frame.labels.iter().enumerate().filter_map(|(channel,label)| label.strip_prefix("Obj_").and_then(|id| id.parse::<u32>().ok()).map(|id| ObjectChannelDecl { id, channel: channel as u32 })).collect();
+                for declaration in &frame.object_channels {
+                    if !frame.events.iter().any(|event| event.id == declaration.id) {
+                        if let Some(target) = self.object_targets.get(&declaration.id) {
+                            let mut event = target.clone(); event.sample_pos = frame.sample_pos; event.ramp_duration = 0; frame.events.push(event);
+                        }
+                    }
+                }
+                self.restore_object_mapping = false;
+            }
+            frame
+        })
+    }
+
+    pub fn set_object_rendering(&mut self, enabled: bool) {
+        if enabled && !self.object_rendering { self.restore_object_mapping = true; }
+        self.object_rendering = enabled; self.pipeline.set_object_rendering(enabled);
     }
 
     /// Codec actually in use (meaningful after auto-detection kicked in).
@@ -282,6 +343,8 @@ impl StreamingDecoder {
 
     pub fn reset(&mut self) {
         self.pipeline.reset();
+        self.object_targets.clear();
+        self.restore_object_mapping = false;
         self.queue.clear();
     }
 
@@ -329,6 +392,9 @@ impl SdaDecoder {
             .next_frame()
             .map(|data| DecodedFrame { data })
     }
+
+    #[wasm_bindgen(js_name = setObjectRendering)]
+    pub fn set_object_rendering(&mut self, enabled: bool) { self.inner.set_object_rendering(enabled); }
 
     /// Codec actually in use (meaningful after auto-detection kicked in).
     #[wasm_bindgen(getter)]
@@ -413,6 +479,41 @@ mod tests {
         );
         std::fs::read(path)
             .unwrap_or_else(|error| panic!("fixture missing ({error}); run `git submodule update --init`"))
+    }
+
+    #[test]
+    fn compatibility_mode_uses_original_joc_core_without_changing_the_clock() {
+        let mut decoder = StreamingDecoder::new("eac3").unwrap();
+        decoder.push(&joc_fixture()).unwrap(); decoder.flush();
+        let frame = decoder.next_frame().unwrap();
+        assert!(frame.compatibility_bed.is_some(), "JOC must retain pre-reconstruction PCM");
+        let first_length = frame.channels[0].len() as u64;
+        decoder.set_object_rendering(false);
+        let bed = decoder.next_frame().unwrap();
+        assert_eq!(bed.sample_pos, frame.sample_pos + first_length);
+        assert!(bed.events.is_empty() && bed.object_channels.is_empty());
+        assert!(bed.labels.iter().all(|label| !label.starts_with("Obj_")));
+        assert!(bed.channels.len() <= 8);
+        decoder.set_object_rendering(true);
+        let objects = decoder.next_frame().unwrap();
+        assert_eq!(objects.sample_pos, bed.sample_pos + bed.channels[0].len() as u64);
+        assert!(objects.labels.iter().any(|label| label.starts_with("Obj_")));
+        assert!(!objects.object_channels.is_empty(), "returning objects need a complete declaration");
+    }
+
+    #[test]
+    fn compatibility_resume_preserves_position_across_gain_only_updates() {
+        let mut decoder=StreamingDecoder::new("eac3").unwrap();
+        let target=ObjectEvent { id:42,sample_pos:0,has_pos:true,pos:[-0.7,0.7,0.2],gain_db:0.0,size:[0.0;3],anchor:"room".into(),diffuse:0.0,distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:0 };
+        for index in 0..3 {
+            let events=if index==0 { vec![target.clone()] } else if index==1 { let mut gain=target.clone();gain.has_pos=false;gain.pos=[0.0;3];gain.gain_db=-6.0;gain.sample_pos=16;vec![gain] } else { vec![] };
+            decoder.queue.push_back(FrameData { compatibility_bed:Some(CompatibilityBed {channels:vec![vec![0.2;16],vec![0.3;16]],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:index*16,channels:vec![vec![0.5;16]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events,object_channels:vec![],program_loudness:None,ramp_duration:0 });
+        }
+        decoder.next_frame().unwrap();decoder.set_object_rendering(false);decoder.next_frame().unwrap();
+        decoder.set_object_rendering(true);let resumed=decoder.next_frame().unwrap();
+        assert_eq!(resumed.object_channels,vec![ObjectChannelDecl {id:42,channel:0}]);
+        assert_eq!(resumed.events[0].pos,target.pos);assert!(resumed.events[0].has_pos);
+        assert_eq!(resumed.events[0].gain_db,-6.0);assert_eq!(resumed.events[0].sample_pos,32);
     }
 
     /// Event JSON keys must stay camelCase and field-complete: the web app

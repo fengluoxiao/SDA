@@ -106,6 +106,8 @@ class SdaModule : Module() {
         val config = JSONObject().put("sampleRate", 48000).put("outputChannels", 2)
             .put("layout", layout).put("directObjectHrtf", settings.getBoolean("direct"))
             .put("directionalHrtf", settings.getBoolean("directional"))
+            .put("binauralEnabled", settings.optBoolean("binauralEnabled", true))
+            .put("objectRendering", settings.getBoolean("direct") || settings.getBoolean("directional"))
             .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
         val assetDirectory = "hrtf-restored/hrtf-dense"
         val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
@@ -309,6 +311,14 @@ class SdaModule : Module() {
                 }
                 val preferences = context.getSharedPreferences("sda-rendering", 0).edit().putString("roomId", id)
                 preferences.apply()
+            }
+        }
+
+        Function("setBinauralEnabled") { enabled: Boolean ->
+            synchronized(nativeLock) {
+                if (handle != 0L) check(SdaEngine.nativeSetBinauralEnabled(handle, enabled) == 0) { "空间音频设置未被原生引擎接受" }
+                val context = appContext.reactContext ?: error("no react context")
+                context.getSharedPreferences("sda-rendering", 0).edit().putBoolean("binauralEnabled", enabled).apply()
             }
         }
 
@@ -645,10 +655,14 @@ class SdaModule : Module() {
                 .putFloat("hrtfWetWeight", 0f).putBoolean("direct", true).putBoolean("directional", true)
                 .putBoolean("nearField", false).putString("roomId", "").commit()) { "无法迁移移动端渲染设置" }
         }
+        if (preferences.getInt("objectRenderingVersion", 0) < 2) {
+            check(preferences.edit().putInt("objectRenderingVersion", 2).putBoolean("direct", true).putBoolean("directional", true).commit()) { "无法迁移对象渲染设置" }
+        }
         return JSONObject().put("layout", activeLayout)
             // One-time migration also resets legacy object switches to the mobile defaults.
             .put("hrtfSet", "dense")
             .put("hrtfWetWeight", 0.0)
+            .put("binauralEnabled", preferences.getBoolean("binauralEnabled", true))
             .put("direct", preferences.getBoolean("direct", true))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
             .put("spatialEnhancementEnabled", preferences.getBoolean("spatialEnhancementEnabled", false))

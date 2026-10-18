@@ -145,6 +145,13 @@ export class SdaDecoder {
     this.inner.push(data);
   }
 
+  setObjectRendering(enabled: boolean): void {
+    const decoder = this.inner as unknown as { setObjectRendering?(enabled: boolean): void };
+    if (!decoder.setObjectRendering && enabled) return;
+    if (!decoder.setObjectRendering) throw new Error("Decoder WASM must be rebuilt for compatibility-bed output");
+    decoder.setObjectRendering(enabled);
+  }
+
   nextFrame(): DecodedFrameData | null {
     const frame = this.inner.nextFrame();
     if (!frame) return null;

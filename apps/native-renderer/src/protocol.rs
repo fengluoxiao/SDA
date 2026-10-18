@@ -105,7 +105,7 @@ fn handle_command(
         }
         Command::AddSource {
             id,
-            at: _,
+            at,
             bed_label,
         } => {
             if state.sources.len() >= MAX_SOURCES && !state.sources.contains_key(&id) {
@@ -136,6 +136,14 @@ fn handle_command(
                         state.head_pose,
                     )
                 });
+                if let Some(existing) = state.sources.get_mut(&source_id) {
+                    existing.remove_at = None;
+                    if !is_object && at.is_some_and(|at| at > sample_pos) && existing.bed_label != bed_label {
+                        existing.bed_events.insert(at.unwrap(), bed_label.clone().unwrap_or_else(|| "Bed_0".into()));
+                        write_event(&Event::Ack { command: "addSource", accepted: true, detail: None });
+                        return true;
+                    }
+                }
                 let source = state.sources.entry(id).or_insert_with(|| Source {
                     gain: 1.0,
                     target_gain: 1.0,
@@ -346,6 +354,14 @@ fn handle_command(
                     Some("invalid extent settings")
                 },
             });
+        }
+        Command::SetBinauralEnabled { enabled } => {
+            state.set_binaural_enabled(enabled);
+            write_event(&Event::Ack { command: "setBinauralEnabled", accepted: true, detail: None });
+        }
+        Command::SetObjectRendering { enabled } => {
+            let result = state.set_object_rendering(enabled);
+            write_event(&Event::Ack { command: "setObjectRendering", accepted: result.is_ok(), detail: result.as_ref().err().map(String::as_str) });
         }
         Command::SetDirectionalHrtf { enabled } => {
             state.set_directional_hrtf(enabled);
@@ -767,8 +783,13 @@ pub(super) fn apply_render_command(
             handle_command(state, command, fifo, telemetry)
         }
         render_command::RenderCommand::ObjectRendering { direct, directional } => {
-            handle_command(state, Command::SetDirectionalHrtf { enabled: directional }, fifo, telemetry);
-            handle_command(state, Command::SetObjectHrtf { enabled: direct }, fifo, telemetry)
+            if direct == directional {
+                handle_command(state, Command::SetObjectRendering { enabled: direct }, fifo, telemetry)
+            } else {
+                state.bed_compatibility = false;
+                handle_command(state, Command::SetDirectionalHrtf { enabled: directional }, fifo, telemetry);
+                handle_command(state, Command::SetObjectHrtf { enabled: direct }, fifo, telemetry)
+            }
         }
         render_command::RenderCommand::HrtfPreset { set, wet, direct, directional, reply } => {
             let result = state.configure_hrtf_preset(*set, wet, direct, directional);
@@ -1446,6 +1467,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetSourceExtent { .. } => "setSourceExtent",
         Command::SetNearField { .. } => "setNearField",
         Command::SetDirectionalHrtf { .. } => "setDirectionalHrtf",
+        Command::SetBinauralEnabled { .. } => "setBinauralEnabled",
+        Command::SetObjectRendering { .. } => "setObjectRendering",
         Command::SetObjectHrtf { .. } => "setObjectHrtf",
         Command::SetStereoMode { .. } => "setStereoMode",
         Command::SetCinema { .. } => "setCinema",
@@ -2126,10 +2149,12 @@ impl Engine {
         // A preset swap is not a seek: do not flush PCM or rebase callback clocks.
         self.render_epoch = epoch;
         self.near_field.enabled = false;
+        self.bed_compatibility = !direct && !directional;
         self.set_directional_hrtf(directional);
         // Source renderers are rebuilt lazily at the next audio block, just as
         // after configure_room. No fallible mutation after publishing the graph.
         self.direct_objects = direct;
+        self.bed_compatibility = !direct && !directional;
         self.lfe_path.reset();
         Ok(())
     }

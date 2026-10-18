@@ -183,6 +183,7 @@ pub unsafe extern "C" fn sda_ios_command(
             }
             "near" => e.set_near_field(boolean("enabled")?, number("scale")?)?,
             "room" => e.set_room(str_arg("path")?)?,
+            "binaural" => e.set_binaural_enabled(boolean("enabled")?)?,
             "rendering" => e.set_object_rendering(boolean("direct")?, boolean("directional")?)?,
             "spatialCueGain" => e.set_spatial_cue_gain(str_arg("path")?, number("gain")?)?,
             "preset" => e.set_hrtf_preset(

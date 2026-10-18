@@ -50,6 +50,16 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetNearField(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetBinauralEnabled(
+    _env: JNIEnv, _class: JClass, ptr: jlong, enabled: jni::sys::jboolean,
+) -> jint {
+    match take_engine(ptr) {
+        Some(engine) => engine.set_binaural_enabled(enabled != 0).map(|_| 0).unwrap_or(-1),
+        None => -2,
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetObjectRendering(
     _env: JNIEnv,
     _class: JClass,

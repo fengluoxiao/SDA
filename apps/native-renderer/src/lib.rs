@@ -66,6 +66,7 @@ pub mod direct_renderer;
 pub mod directional;
 mod triangle_support;
 pub mod dsp;
+pub mod plain_downmix;
 pub mod focus;
 mod front_common;
 mod spatial_balance;
@@ -143,6 +144,8 @@ pub enum Command {
     SetDirectionalHrtf {
         enabled: bool,
     },
+    SetBinauralEnabled { enabled: bool },
+    SetObjectRendering { enabled: bool },
     SetLfeMuted {
         muted: bool,
     },
@@ -533,6 +536,7 @@ pub struct Health {
     reference_mix: bool,
     output_active: bool,
     hrtf_ready: bool,
+    binaural_enabled: bool,
     route_update_count: u64,
     layout: &'static str,
     spatial_bus_count: usize,
@@ -752,6 +756,7 @@ pub struct Source {
     kind: SourceKind,
     /// Canonical decoder bed label retained so a layout change can re-resolve it.
     bed_label: Option<String>,
+    bed_events: BTreeMap<u64, String>,
     /// Parsed once at declaration; avoids source-ID parsing in the mix loop.
     object_id: Option<u32>,
     activity_until: u64,
@@ -759,6 +764,7 @@ pub struct Source {
     spatial_layer_gain: f32,
     spatial_layer_target: f32,
     spatial_layer_bed_weight: f32,
+    spatial_layer_rear_bed_weight: f32,
     gain: f32,
     target_gain: f32,
     ramp_remaining: u32,
@@ -817,12 +823,14 @@ impl Default for Source {
             near_target: [1.0; 2],
             kind: SourceKind::Bed,
             bed_label: None,
+            bed_events: BTreeMap::new(),
             object_id: None,
             activity_until: 0,
             gain_events: BTreeMap::new(),
             spatial_layer_gain: 1.0,
             spatial_layer_target: 1.0,
             spatial_layer_bed_weight: 0.0,
+            spatial_layer_rear_bed_weight: 0.0,
             gain: 0.0,
             target_gain: 0.0,
             ramp_remaining: 0,
@@ -1040,6 +1048,11 @@ pub struct Engine {
     vbap: vbap::VbapSolver,
     bus_renderer: Option<bus_renderer::BusRenderer>,
     direct_objects: bool,
+    binaural_enabled: bool,
+    binaural_mix: f32,
+    plain_warmup: usize,
+    bed_compatibility: bool,
+    plain_delay: [[f32; 2]; convolution::DEFAULT_PARTITION],
     source_extent: source_extent::Settings,
     near_field: near_field::Settings,
     /// User preference for continuous directional object rendering. The
@@ -1177,6 +1190,11 @@ impl Engine {
             vbap: vbap::VbapSolver::new(),
             bus_renderer: None,
             direct_objects: false,
+            binaural_enabled: true,
+            binaural_mix: 1.0,
+            plain_warmup: 0,
+            bed_compatibility: false,
+            plain_delay: [[0.0; 2]; convolution::DEFAULT_PARTITION],
             source_extent: Default::default(),
             near_field: Default::default(),
             directional_hrtf_requested: false,
@@ -1249,6 +1267,19 @@ impl Engine {
             .unwrap_or_else(|| std::path::PathBuf::from("hrtf-assets"))
     }
 
+    pub fn set_binaural_enabled(&mut self, enabled: bool) {
+        if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
+        self.binaural_enabled = enabled;
+        if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
+    }
+
+    pub fn set_object_rendering(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_direct_objects(enabled)?;
+        self.bed_compatibility = !enabled;
+        self.set_directional_hrtf(enabled);
+        Ok(())
+    }
+
     pub fn set_direct_objects(&mut self, enabled: bool) -> Result<(), String> {
         if enabled && !self.cinema.monitor.hardware.enabled {
             let set = self
@@ -1288,7 +1319,7 @@ impl Engine {
         // A full per-object room convolution cannot meet the 128-sample
         // deadline for dense ADM masters. The continuous direct path keeps
         // each object's exact HRTF while the layout-aware room remains shared.
-        self.directional_hrtf = self.directional_hrtf_requested || self.is_high_density_adm();
+        self.directional_hrtf = !self.bed_compatibility && (self.directional_hrtf_requested || self.is_high_density_adm());
         // The codec can become known after PCM sources have already started.
         // Changing only this flag would leave those sources holding filters
         // built for the previous object path until an unrelated cinema/monitor
@@ -1725,8 +1756,9 @@ impl Engine {
         self.set_master_preamp_db(0.0)?;
         self.set_spatial_layer_gain_db(if enabled { 1.5 } else { 0.0 })?;
         self.final_output_trim.set(0.0, self.output_sample_rate, !self.output_active)?;
-        // No master makeup or paired attenuation: total auxiliary lift is
-        // bounded at +1.5dB; horizontal main and LFE remain at baseline.
+        // Accepted rear balance adds up to 3 dB to the auxiliary 1.5 dB.
+        // Front, side, poles and LFE retain the existing source gains.
+        self.spatial_layer.rear_db = if enabled { 3.0 } else { 0.0 };
         self.spatial_layer.main_restore_db = 0.0;
         Ok(())
     }
@@ -1884,6 +1916,9 @@ impl Engine {
         self.cinema_sub_cursor = 0;
         self.cinema_bass_mix = 0.0;
         self.stereo_delay.fill([0.0; 2]);
+        self.plain_delay.fill([0.0; 2]);
+        self.plain_warmup = 0;
+        self.binaural_mix = if self.binaural_enabled { 1.0 } else { 0.0 };
         self.stereo_background = std::array::from_fn(|_| focus::BackgroundFilter::default());
         self.stereo_dry_bus = None;
         self.stereo_weights = [0.0, 0.0, 1.0];
@@ -1982,6 +2017,7 @@ impl Engine {
             reference_mix: self.active_hrtf_set.is_none(),
             output_active: self.output_active,
             hrtf_ready: self.active_hrtf_set.is_some(),
+            binaural_enabled: self.binaural_enabled,
             route_update_count: self.route_update_count,
             layout: self.layout.as_str(),
             spatial_bus_count: self.vbap.bus_count(),
@@ -2247,6 +2283,7 @@ impl Engine {
             spatial_layer_gain_db: self.spatial_layer.db,
             spatial_layer_slew: self.spatial_layer.slew,
             spatial_layer_main_restore_db: self.spatial_layer.main_restore_db,
+            spatial_layer_rear_db: self.spatial_layer.rear_db,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2350,7 +2387,7 @@ impl Engine {
         // Fixed user-requested presentation compensation, not loudness analysis.
         // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
         // retain unity. Both ears share the envelope before peak protection.
-        let atmos_db = if self.program_codec.as_deref() == Some("eac3")
+        let atmos_db = if self.binaural_enabled && self.program_codec.as_deref() == Some("eac3")
             && self.sources.values().any(|s| s.kind == SourceKind::Object) { 2.0 } else { 0.0 };
         if self.atmos_output_gain.target_db() != atmos_db {
             self.atmos_output_gain.set(atmos_db, self.output_sample_rate, false).unwrap();
@@ -2387,6 +2424,33 @@ impl Engine {
         } else {
             2
         };
+        // Apply fixed-channel rebinding at the codec clock, not when a host
+        // decodes a future compatibility frame ahead of playback.
+        for source in self.sources.values_mut() {
+            while source.bed_events.first_key_value().is_some_and(|(at, _)| *at <= self.sample_pos) {
+                let (_, label) = source.bed_events.pop_first().expect("checked event");
+                let route = bed_route_with_head(&label, &self.vbap, self.head_pose);
+                source.bed_label = Some(label);
+                Self::set_source_route(source, route, 0);
+            }
+        }
+        let flat_gains: HashMap<_, _> = if !self.binaural_enabled || self.binaural_mix < 1.0 {
+            let ids: Vec<_> = self.sources.iter().filter(|(_, s)| s.remove_at.is_none_or(|at| at > self.sample_pos)).map(|(id,_)| id.clone()).collect();
+            let matrix: Vec<[f32;2]> = ids.iter().map(|id| {
+                let source=&self.sources[id];
+                if let Some(label)=source.bed_label.as_deref() { return plain_downmix::gains(label); }
+                // Formats without a carried compatibility bed first render
+                // their scene into the fixed speaker layout, then fold it.
+                let buses=self.vbap.pan(source.position,source.spread);
+                let mut stereo=[0.0;2];
+                for (index,speaker) in vbap::speakers(self.layout).iter().enumerate() {
+                    let gains=plain_downmix::gains(speaker.name);
+                    stereo[0]+=buses[index]*gains[0];stereo[1]+=buses[index]*gains[1];
+                }
+                stereo
+            }).collect();
+            ids.into_iter().zip(matrix).collect()
+        } else { HashMap::new() };
         let mut underruns = 0_u64;
         let stage_started = Instant::now();
         let vbap = self.vbap.clone();
@@ -2397,13 +2461,13 @@ impl Engine {
                 .map_or(1.0, |speaker| self.speaker_target(speaker.name))
         });
         let lfe_target = self.speaker_target("LFE");
-        let near_active = self.near_field.enabled
+        let near_active = !self.bed_compatibility && self.near_field.enabled
             && (!self.cinema.monitor.hardware.enabled || self.directional_hrtf);
         let base_effective_direct = self.directional_hrtf
             || ((self.direct_objects || near_active) && !self.cinema.monitor.hardware.enabled);
         let layout_ceiling = self.vbap.highest_elevation();
         let auto_sky_codec =
-            !self.directional_hrtf && Self::is_dolby_object_codec(self.program_codec.as_deref());
+            !self.bed_compatibility && !self.directional_hrtf && Self::is_dolby_object_codec(self.program_codec.as_deref());
         // Offline path-isolation only. Release always retains the existing
         // sky-object fallback; disabling it is not a production proposal.
         #[cfg(test)]
@@ -2446,12 +2510,11 @@ impl Engine {
         }
         let prepare_micros = stage_started.elapsed().as_micros() as u64;
         let stage_started = Instant::now();
-        self.mix_continuous_objects(
-            output.len() / channels,
-            speaker_targets,
-            effective_direct,
-            near_active,
-        );
+        if self.binaural_enabled {
+            self.mix_continuous_objects(output.len() / channels, speaker_targets, effective_direct, near_active);
+        } else {
+            for source in self.sources.values_mut() { source.fast_mixed = false; }
+        }
         let fast_mix_micros = stage_started.elapsed().as_micros() as u64;
         // Reduce completed object outputs source-major. Reading 108 widely
         // separated convolver allocations once per sample thrashes the cache;
@@ -2527,6 +2590,7 @@ impl Engine {
             });
             self.stereo_delay[block_index] = [0.0; 2];
             let mut lfe_sum = 0.0_f32;
+            let mut plain_sum = [0.0_f32; 2];
             let mut direct_sum = object_output[block_index];
             if let Some(center) = &self.front_common.center {
                 for ear in 0..2 {
@@ -2548,6 +2612,11 @@ impl Engine {
                 if let Some(direct) = &source.direct {
                     direct_sum[0] += direct.left[block_index];
                     direct_sum[1] += direct.right[block_index];
+                }
+                if let Some(label) = source.bed_events.remove(&at) {
+                    let route = bed_route_with_head(&label, &vbap, head_pose);
+                    source.bed_label = Some(label);
+                    Self::set_source_route(source, route, 0);
                 }
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
                     continue;
@@ -2732,12 +2801,17 @@ impl Engine {
                 {
                     source.suspended = true;
                 }
+                let flat_sample = raw.unwrap_or(0.0) * source.availability * source.gain * if source.muted { 0.0 } else { 1.0 };
+                if let Some(gains) = flat_gains.get(perf_id) {
+                    plain_sum[0] += flat_sample * gains[0];
+                    plain_sum[1] += flat_sample * gains[1];
+                }
                 let mut sample = raw.unwrap_or(0.0)
                     * source.availability
                     * source.gain
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
-                sample *= spatial_layer::source_gain(source, self.spatial_layer.db, self.spatial_layer.main_restore_db, self.spatial_layer.slew, at);
+                sample *= spatial_layer::source_gain_with_rear(source, self.spatial_layer.db, self.spatial_layer.main_restore_db, self.spatial_layer.rear_db, self.spatial_layer.slew, at);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
@@ -3065,12 +3139,22 @@ impl Engine {
             // Same shelf for both ears, complete mix before linked protection.
             let equalized = std::array::from_fn::<_, 2, _>(|ear|
                 self.output_clarity[ear].process(equalized[ear]));
+            let plain = self.plain_delay[block_index];
+            self.plain_delay[block_index] = plain_sum;
+            let target = if self.binaural_enabled || self.plain_warmup > 0 { 1.0 } else { 0.0 };
+            self.plain_warmup = self.plain_warmup.saturating_sub(1);
+            self.binaural_mix += (target - self.binaural_mix).clamp(-1.0 / 480.0, 1.0 / 480.0);
+            let equalized = if self.binaural_mix == 0.0 { plain } else if self.binaural_mix == 1.0 { equalized } else {
+                std::array::from_fn(|ear| equalized[ear] * self.binaural_mix + plain[ear] * (1.0 - self.binaural_mix))
+            };
             let pre_guard = [
                 equalized[0] * self.output_gain * self.comparison_gain,
                 equalized[1] * self.output_gain * self.comparison_gain,
             ];
             // One linked master gain after the complete mix, before protection.
-            let master = self.master_preamp.gain() * self.atmos_output_gain.gain();
+            let atmos_gain = self.atmos_output_gain.gain();
+            let presentation_gain = if self.binaural_mix == 1.0 { atmos_gain } else { 1.0 + (atmos_gain - 1.0) * self.binaural_mix };
+            let master = self.master_preamp.gain() * presentation_gain;
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
                 pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
@@ -3573,6 +3657,62 @@ pub fn record_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_mode_bypasses_hrtf_eq_and_preserves_the_stereo_pcm() {
+        let mut engine = calibrated_engine();
+        engine.set_spatial_enhancement(true).unwrap();
+        assert_eq!(engine.spatial_layer.rear_db,3.0);
+        engine.set_binaural_enabled(false);
+        engine.binaural_eq = StereoEq::new(48_000, [-12.0; 3], true).unwrap();
+        engine.paused = false;
+        let frames = 8192;
+        for (id,label,level) in [("bed:0","FrontLeft",0.01_f32),("bed:1","FrontRight",-0.02_f32)] {
+            let mut source = Source { kind: SourceKind::Bed, bed_label: Some(label.into()), gain: 1.0, target_gain: 1.0,
+                availability: 1.0, availability_target: 1.0, ..Source::default() };
+            Engine::set_source_route(&mut source, bed_route(label,&engine.vbap),0);
+            source.samples.write(0,0,&vec![level;frames]);engine.sources.insert(id.into(),source);
+        }
+        let mut output=vec![0.0;frames*2];engine.render_into(&mut output,2);
+        assert!(engine.active_hrtf_set.is_some(), "the reversible HRTF graph stays available");
+        assert_eq!(engine.sample_pos,frames as u64);
+        for frame in output.chunks_exact(2).skip(4096).take(1024) {
+            assert!((frame[0]-0.01).abs()<1e-6,"left {}",frame[0]);
+            assert!((frame[1]+0.02).abs()<1e-6,"right {}",frame[1]);
+        }
+    }
+
+    #[test]
+    fn object_switch_controls_both_paths_and_the_compatibility_gate() {
+        let mut engine=calibrated_engine();let clock=engine.sample_pos;let paused=engine.paused;
+        engine.set_object_rendering(false).unwrap();
+        assert!(!engine.direct_objects && !engine.directional_hrtf_requested && engine.bed_compatibility);
+        engine.set_object_rendering(true).unwrap();
+        assert!(engine.direct_objects && engine.directional_hrtf_requested && !engine.bed_compatibility);
+        assert_eq!(engine.sample_pos,clock);assert_eq!(engine.paused,paused);
+    }
+
+    #[test]
+    fn compatibility_bed_rebinds_at_the_codec_boundary() {
+        let mut engine=calibrated_engine();engine.paused=false;
+        let fifo=stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES);let telemetry=RuntimeTelemetry::default();
+        protocol::apply_render_command(&mut engine,render_command::RenderCommand::Command(Command::AddSource { id:"bed:0".into(),at:Some(0),bed_label:Some("LFE".into()) }),&fifo,&telemetry);
+        protocol::apply_render_command(&mut engine,render_command::RenderCommand::Command(Command::AddSource { id:"bed:0".into(),at:Some(512),bed_label:Some("FrontLeft".into()) }),&fifo,&telemetry);
+        assert_eq!(engine.sources["bed:0"].bed_label.as_deref(),Some("LFE"));
+        engine.render_into(&mut vec![0.0;1024],2);
+        assert_eq!(engine.sources["bed:0"].bed_label.as_deref(),Some("LFE"));
+        engine.render_into(&mut [0.0;2],2);
+        assert_eq!(engine.sources["bed:0"].bed_label.as_deref(),Some("FrontLeft"));
+    }
+
+    #[test]
+    fn compatibility_mode_prevents_the_dense_adm_automatic_override() {
+        let mut engine=Engine::new(48_000,2);engine.program_codec=Some("adm".into());
+        for id in 0..HIGH_DENSITY_ADM_OBJECTS { engine.sources.insert(format!("obj:{id}"),Source { kind:SourceKind::Object,..Source::default() }); }
+        engine.refresh_directional_hrtf();assert!(engine.directional_hrtf);
+        engine.set_object_rendering(false).unwrap();assert!(!engine.directional_hrtf);
+        assert!(engine.bed_compatibility);
+    }
 
     /// The exact MobileEngine command sequence (unpause -> setLayout ->
     /// addSource -> PcmFrame frames) must render audible output. Two earlier

@@ -118,6 +118,8 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   roomLabGenerate: (config) => ipcRenderer.invoke("sda:room-lab-generate", config),
   roomLabCancel: () => ipcRenderer.invoke("sda:room-lab-cancel"),
   nativeRendererComparisonGain: (gainDb) => ipcRenderer.invoke("sda:comparison-gain",gainDb),
+  nativeRendererObjectRendering: (enabled) => ipcRenderer.invoke("sda:native-renderer-object-rendering", enabled),
+  nativeRendererBinauralEnabled: (enabled) => ipcRenderer.invoke("sda:native-renderer-binaural-enabled", enabled),
   nativeRendererObjectHrtf: (enabled) => ipcRenderer.invoke("sda:native-renderer-object-hrtf", enabled),
   nativeRendererDirectionalHrtf: (enabled) => ipcRenderer.invoke("sda:native-renderer-directional-hrtf", enabled),
   nativeRendererProgramCodec: (codec) => ipcRenderer.invoke("sda:native-renderer-program-codec", codec),

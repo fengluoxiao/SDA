@@ -20,6 +20,7 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  binauralEnabled?: boolean; setBinauralEnabled?(enabled: boolean): void;
   headTrackingEnabled: boolean; headTrackingStatus: string;
   setHeadTracking(enabled: boolean): void;
   alacStereoUpmix: boolean; systemSpatialStereo: boolean; sourceCodec: string; alacUpmixActive: boolean; outputChannels: number;
@@ -341,13 +342,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
                 <View style={s.settingCopy}>{label(profile.label, false, s.settingTitle)}{label(profile.description, true, s.settingDescription)}</View>{label(selected ? "●" : "○", !selected, { fontSize: 20 })}
               </Pressable>;
             })}
-            {label("切换预设会保留播放进度和播放／暂停状态，并恢复默认对象选项；加载时可能短暂缓冲。", true, s.groupHint)}
-            <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("逐对象渲染", false, s.settingTitle)}{label("为每个对象独立生成双耳声音", true, s.settingDescription)}</View><Switch accessibilityLabel="基础逐对象双耳渲染" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.directObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(value, p.directionalObjects)} /></View>
-            <View style={[s.cardDivider, { backgroundColor: c.line }]} />
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("实际方向", false, s.settingTitle)}{label("按对象的真实位置定位声音", true, s.settingDescription)}</View><Switch accessibilityLabel="按对象实际方向渲染" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.directionalObjects} disabled={p.systemSpatial360RAActive || p.busy} onValueChange={value => p.setRendering(p.directObjects, value)} /></View>
+            {label("切换预设会保留播放进度和播放／暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           </View>
-          {label("实际方向会自动启用逐对象处理；两项均关闭时使用虚拟扬声器。", true, s.groupHint)}
           {label("主题色", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             {CHARACTER_THEMES.map(theme => <Pressable key={theme.id} accessibilityRole="radio" accessibilityLabel={theme.name} accessibilityState={{ checked: appTheme.id === theme.id }} onPress={() => appTheme.setTheme(theme.id)} style={s.settingRow}>

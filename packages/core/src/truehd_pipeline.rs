@@ -153,13 +153,20 @@ impl Pipeline for TruehdPipeline {
                 });
             }
 
-            let decoded = match self.decoder.decode_presentation(&access_unit, PRESENTATION) {
-                Ok(d) => d,
+            let mut presentations = match self.decoder.decode_presentations(&access_unit, &[false, false, true, true]) {
+                Ok(decoded) => decoded,
                 Err(e) => {
                     errors.push(crate::diagnostics::failure("truehd.failure_03", format!("TrueHD decode error: {e}")));
                     continue;
                 }
             };
+            let compatibility = presentations[2].take();
+            let Some(decoded) = presentations[PRESENTATION].take().or_else(|| compatibility.clone()) else { continue; };
+            let compatibility_bed = compatibility.filter(|bed| bed.channel_count <= 8 && bed.channel_labels.len() >= bed.channel_count && bed.sample_length == decoded.sample_length)
+                .map(|bed| crate::CompatibilityBed {
+                    labels: bed.channel_labels.iter().take(bed.channel_count).map(|label| format!("{label:?}")).collect(),
+                    channels: (0..bed.channel_count).map(|ch| bed.pcm_data.iter().take(bed.sample_length).map(|row| row[ch] as f32 / 8_388_608.0).collect()).collect(),
+                });
 
             // Duplicate AUs carry no new audio time — discard (CLI parity).
             if decoded.is_duplicate {
@@ -252,7 +259,7 @@ impl Pipeline for TruehdPipeline {
                 .map(|b| b.ramp_duration as u32)
                 .unwrap_or(0);
 
-            out.push_back(FrameData {
+            out.push_back(FrameData { compatibility_bed,
                 codec: "truehd",
                 sample_rate: decoded.sampling_frequency,
                 sample_pos,

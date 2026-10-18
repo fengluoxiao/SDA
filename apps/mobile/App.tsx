@@ -9,6 +9,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  binauralEnabled?: boolean; objectRendering?: boolean;
   outputLayout: "2.0" | "7.1.4" | "360RA-13";
   sourceCodec: string;
   alacUpmixActive: boolean;
@@ -45,6 +46,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setHeadYaw(degrees: number): void;
   resetHeadPose(): void;
   setHeadTracking?(enabled: boolean): void;
+  setBinauralEnabled?(enabled: boolean): void;
   headTrackingStatus?(): string;
   feedError(): string | null;
   feedDone(): boolean;
@@ -65,6 +67,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  binauralEnabled: boolean;
   headTrackingEnabled: boolean;
   headTrackingStatus: string;
   alacStereoUpmix: boolean; systemSpatialStereo: boolean;
@@ -112,6 +115,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    binauralEnabled: true,
     headTrackingEnabled: false, headTrackingStatus: "未启用",
     alacStereoUpmix: false, systemSpatialStereo: false, sourceCodec: "", alacUpmixActive: false, outputChannels: 2,
     spatialCueDb: -6, spatialCueBusy: false,
@@ -187,7 +191,8 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const settings = JSON.parse(this.getEngine().renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
-        headTrackingEnabled: settings.headTrackingEnabled === true,
+        binauralEnabled: settings.binauralEnabled !== false,
+        headTrackingEnabled: settings.binauralEnabled !== false && settings.headTrackingEnabled === true,
         alacStereoUpmix: settings.alacStereoUpmix === true, systemSpatialStereo: settings.systemSpatialStereo === true,
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
@@ -201,11 +206,21 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   }
 
+  private setBinauralEnabled = (enabled: boolean) => {
+    try {
+      const engine = this.getEngine();
+      if (!engine.setBinauralEnabled) throw new Error("请更新原生模块以切换空间音频");
+      engine.setBinauralEnabled(enabled);
+      this.setState(previous => ({ binauralEnabled: enabled, headTrackingEnabled: enabled && previous.headTrackingEnabled, headYaw: enabled ? previous.headYaw : 0, error: null }));
+    } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
+  };
+
   private setHeadTracking = (enabled: boolean) => {
     if (Platform.OS !== "ios") return;
     try {
       const engine = this.getEngine();
       if (!engine.setHeadTracking) throw new Error("请更新 iOS 原生模块以启用头部追踪");
+      if (enabled && !this.state.binauralEnabled) { engine.setBinauralEnabled?.(true); this.setState({ binauralEnabled: true }); }
       engine.setHeadTracking(enabled);
       this.setState({ headTrackingEnabled: enabled, headYaw: 0,
         headTrackingStatus: engine.headTrackingStatus?.() ?? "", error: null });
@@ -493,7 +508,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : value.binauralEnabled === false ? "直接下混 · HRTF 已关闭" : value.objectRendering === false ? "床声道兼容 · HRTF" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`,
       }, () => {
         if (feedDone && !feedError) {
@@ -591,8 +606,11 @@ export default class App extends React.Component<Record<string, never>, State> {
       togglePause: () => this.setState(state => ({ playing: true, paused: !state.paused })),
       stop: () => this.setState({ playing: false, paused: true, positionMs: 0 }),
       setVolume: (volume: number) => this.setState({ volume }),
+      setBinauralEnabled: (binauralEnabled: boolean) => this.setState(previous => ({ binauralEnabled, headTrackingEnabled: binauralEnabled && previous.headTrackingEnabled })),
+      setHeadTracking: (headTrackingEnabled: boolean) => this.setState({ headTrackingEnabled }),
+      setRendering: (directObjects: boolean, directionalObjects: boolean) => this.setState({ directObjects, directionalObjects }),
     } : {};
-    return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
+    return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;

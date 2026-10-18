@@ -43,15 +43,16 @@ function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
   </Host>;
 }
 
-export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, sideDock = false }: {
-  enabled: boolean; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean;
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, onDisable, spatialEnabled = true, sideDock = false }: {
+  enabled: boolean; spatialEnabled?: boolean; onDisable?(): void; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean;
 }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Menu, Picker, Text } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const label = enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
+  const label = !spatialEnabled ? "空间音频 · 关闭" : enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
   if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <swiftUI.Button label={label} systemImage="person.crop.circle" onPress={() => Alert.alert("空间音频", "", [
+      ...(onDisable ? [{ text: "关闭", onPress: onDisable }] : []),
       { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
     ])} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), disabled(isDisabled)]} />
   </Host>;
@@ -59,8 +60,9 @@ export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, o
     systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"}
     modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
       accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]}>
-    <Picker label="空间音频" selection={enabled ? "tracking" : "fixed"}
-      onSelectionChange={(value: string) => onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
+    <Picker label="空间音频" selection={!spatialEnabled ? "off" : enabled ? "tracking" : "fixed"}
+      onSelectionChange={(value: string) => value === "off" ? onDisable?.() : onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
+      {!!onDisable && <Text modifiers={[tag("off")]}>关闭</Text>}
       <Text modifiers={[tag("fixed")]}>固定</Text>
       <Text modifiers={[tag("tracking")]}>头部追踪</Text>
     </Picker>
@@ -182,8 +184,6 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {!preset && <Text modifiers={[tag("custom")]}>自定义</Text>}
         {renderingPresets.map(profile => <Text key={profile.id} modifiers={[tag(profile.id)]}>{profile.label}</Text>)}
       </Picker>
-      <Toggle label="逐对象渲染" isOn={p.directObjects} onIsOnChange={value => p.setRendering(value, p.directionalObjects)} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]}><Text>逐对象渲染</Text><Text>每个对象独立生成双耳声音</Text></Toggle>
-      <Toggle label="实际方向" isOn={p.directionalObjects} onIsOnChange={value => p.setRendering(p.directObjects, value)} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]}><Text>实际方向</Text><Text>按对象真实位置定位声音</Text></Toggle>
     </Section>
     {sharedRenderProfile.spatialCues !== false && <Section title="空间线索强度" footer={<Text>仅调节 SDA / KU100 额外空间线索，不调整主音量或干声增益。播放中平滑切换，不暂停或重新播放；已缓冲的声音播放完后生效。系统空间音频旁路时仅保存设置，恢复 SDA 渲染后生效。</Text>}>
       <Picker label="辅助空间效果" selection={String(p.spatialCueDb)} onSelectionChange={(value: string) => p.setSpatialCueDb(Number(value))} modifiers={[pickerStyle("menu"), disabled(p.spatialCueBusy || p.busy)]}>

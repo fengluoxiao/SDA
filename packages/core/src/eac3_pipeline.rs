@@ -172,6 +172,9 @@ impl Eac3Pipeline {
 
         let processing_latency = pcm.processing_latency_samples() as u64;
         let core = pcm.core;
+        let compatibility_bed = Some(crate::CompatibilityBed::from_frame(bed_frame(
+            "eac3", core.clone(), Vec::new(), Vec::new(), Some(loudness.clone()), sample_pos, &[],
+        )));
         let raw_bed_labels = Self::raw_bed_labels(&core);
         let joc_slot_count = pcm.object_channels.len();
         let Some(slot_layout) = consistent_joc_slot_layout(
@@ -216,7 +219,7 @@ impl Eac3Pipeline {
             }
             let object_channels =
                 self.sparse_declare(dynamic_object_declarations(&slot_layout.slots, joc_channel_base));
-            return FrameData {
+            return FrameData { compatibility_bed,
                 codec: "eac3",
                 sample_rate: core.sample_rate,
                 sample_pos,
@@ -265,7 +268,7 @@ impl Eac3Pipeline {
 
         let declarations = dynamic_object_declarations(&slot_layout.slots, joc_channel_base);
         let object_channels = self.sparse_declare(declarations);
-        FrameData {
+        FrameData { compatibility_bed,
             codec: "eac3",
             sample_rate: core.sample_rate,
             sample_pos,
@@ -537,7 +540,7 @@ fn bed_frame(
         channels.push(lfe);
         labels.push("LFE".to_string());
     }
-    FrameData {
+    FrameData { compatibility_bed: None,
         codec,
         sample_rate: core.sample_rate,
         sample_pos,
