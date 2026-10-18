@@ -24,7 +24,7 @@ Off uses the ordinary icon color. Fixed uses the selected theme accent and a sta
 
 ## Verification
 
-- Shared renderer release-profile host suite: **349 passed, 0 failed, 35 ignored**. This includes Atmos/7.1.4 and Sony 360RA-13, serial and parallel object paths, queued PCM without new input, retained convolver identity, compatible-output samples, malformed transaction rejection, reset behavior and applied listener-yaw telemetry.
+- Shared renderer release-profile host suite: **350 passed, 0 failed, 35 ignored**. This includes Atmos/7.1.4 and Sony 360RA-13, serial and parallel object paths, queued PCM without new input, retained convolver identity, compatible-output samples, malformed transaction rejection, reset behavior, applied listener-yaw telemetry and lower-speaker HRTFHQ interpolation.
 - Mobile facade release-profile `ios-host` suite: **105 passed, 0 failed, 2 ignored**. A real MHAS fixture exercises the MPEG-H decoder, compatible reference and object snapshot through Off/Fixed. Unknown future codec labels cover uneven packets, delayed initial/intermediate reference delivery, release of multiple pending frames and non-Obj_ channel names.
 - Mobile TypeScript and `test-ios-ui`, `test-spatial-playback-modes`, `test-mobile-spatial-indicator`, `test-artwork-edge-blend`, `test-tablet-player-layout`, `test-ios-spatial-enhancement` checks passed. The edge-mask generator's `--check` passed.
 - `test-mobile-production-fixtures` passed using an in-memory production bundle; development preview/mock media are excluded.
@@ -44,3 +44,13 @@ The head icon also consumes renderer-applied listener yaw from the common native
 ## Packaging follow-up authorized on 2026-10-19
 
 After accepting the source fixes, the user requested a Git push and iOS CI packaging, plus a locally built Android Universal APK. This supersedes the earlier packaging deferral for the follow-up delivery. Only the iOS workflow is dispatched; Android packaging runs locally for the project's supported arm64-v8a and x86_64 ABIs. The physical-device validation limitation above still applies.
+
+## HRTFHQ lower-speaker follow-up
+
+The user asked whether the historical 360RA bottom optimization was still present. Continuous object rendering is retained, and the selected 542-direction HRTFHQ bank has 181 measured lower-hemisphere directions down to -90 degrees. The historical KU100 61+13 lower-support bank remains exclusive to its original profile; it is not mixed into HRTFHQ.
+
+A separate omission was reproduced in speaker preparation: the 360RA-13 lower speakers are at azimuth 0/+30/-30, elevation -20 degrees, between the HRTFHQ bank's -15/-30 rings. With neither an exact dense measurement nor an exact companion measurement, speaker_ir previously fell back to the 17-direction companion bank (horizontal and upper measurements), returning a horizontal response. The before-fix regression failed with LowerFrontLeft reporting 0 instead of -20 degrees.
+
+The common speaker fallback now interpolates the selected HRTFHQ field for missing lower directions when its measurement range covers that elevation. Exact anchors keep their existing priority; upper/horizontal fallback, the approved B gains/shelf, object metadata and the historical KU100 policy remain unchanged. There is no codec/layout whitelist in this fallback. The regression exercises all three 360RA lower speakers plus the two missing 22.2 lower anchors, compares actual mixed-speaker output to the selected interpolator and verifies the accepted upper fallback remains intact. Packaging is refreshed from the commit containing this correction.
+
+The complete renderer host suite after the lower-speaker correction passed: **350 passed, 0 failed, 35 ignored**.

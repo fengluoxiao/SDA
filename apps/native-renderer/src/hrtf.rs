@@ -503,11 +503,14 @@ impl NativeHrtfSet {
             .filter(|set| set.has_exact_measurement(azimuth, elevation)) {
             return companion.nearest(azimuth, elevation);
         }
-        if self.historical_interpolation && self.spatial_cues_active {
-            // Neither bank contains this physical speaker direction. Using the
-            // companion's nearest response can collapse a below-ear speaker to
-            // the horizontal plane. Use the selected object's directional field
-            // instead; exact primary/companion measurements above stay intact.
+        let measured_lower = self.uses_shared_measured_response() && elevation < 0.0
+            && self.positions.iter().any(|p| p.elevation <= elevation);
+        if (self.historical_interpolation && self.spatial_cues_active) || measured_lower {
+            // Neither bank contains this physical speaker direction. A horizontal
+            // companion must not flatten a lower speaker when the selected field
+            // already measures that hemisphere. Use that field's own interpolator;
+            // exact primary/companion anchors and other measured directions retain
+            // their existing priority. No KU100 response is added to HRTFHQ.
             // Bundled cues add their own separate residual, so no legacy wet IR
             // is replaced or synthesized by this dry-response interpolation.
             let (mut left, right) = self.directional_grid.interpolate(&self.cache, azimuth, elevation);
@@ -2178,6 +2181,37 @@ mod measured_response_tests {
         std::env::var_os("SDA_SHARED_PROFILE_MANIFEST").map(std::path::PathBuf::from)
             .unwrap_or_else(||Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json"))
     }
+    #[test]
+    fn shared_hrtfhq_lower_speaker_fallback_retains_the_selected_lower_field() {
+        let set = NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let companion = set.speaker_set.as_ref().unwrap();
+        let mut checked = 0;
+        for layout in [crate::vbap::LayoutId::Sony360Ra13, crate::vbap::LayoutId::Itu22_2] {
+            for speaker in crate::vbap::speakers(layout).iter().filter(|s| s.elevation < 0.0) {
+                let azimuth = f64::from(speaker.azimuth);
+                let elevation = f64::from(speaker.elevation);
+                if set.has_exact_measurement(azimuth, elevation)
+                    || companion.has_exact_measurement(azimuth, elevation) { continue; }
+                let actual = set.speaker_ir(azimuth, elevation).unwrap();
+                assert_eq!(actual.elevation, elevation, "{} lost its lower elevation", speaker.name);
+                let (left, right) = set.directional_grid.interpolate(&set.cache, azimuth, elevation);
+                assert_eq!(actual.dry, [left, right].concat());
+                assert!(actual.dry.iter().all(|v| v.is_finite()));
+                assert!(actual.dry.iter().any(|v| v.abs() > 1e-6));
+                assert_ne!(actual.dry, companion.nearest(azimuth, elevation).unwrap().dry);
+                let mut expected = set.directional_grid.interpolate(&set.cache, azimuth, elevation);
+                expected.0.resize(set.speaker_filter_len(), 0.0);
+                expected.1.resize(set.speaker_filter_len(), 0.0);
+                assert_eq!(set.mixed_speaker(speaker.name, layout.as_str(), azimuth, elevation, 0.0).unwrap(), expected);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 4, "both layouts must exercise missing lower speaker anchors");
+        // The accepted upper-speaker response remains on its existing fallback.
+        assert_eq!(set.speaker_ir(135.0, 35.0).unwrap().dry,
+            companion.nearest(135.0, 35.0).unwrap().dry);
+    }
+
     #[test]
     fn shared_hrtfhq_preserves_every_measured_anchor_and_its_matching_fallback() {
         let mut set=NativeHrtfSet::load_without_shared_clarity(&manifest()).unwrap();

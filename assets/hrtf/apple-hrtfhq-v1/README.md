@@ -24,3 +24,5 @@ Compatibility guard: these manifests use measuredResponseVersion3 plus sharedDep
 
 
 Profile revision3 (2026-10-19) retains these512tap measurement files and explicitly adds the user-approved common-ear midrange layer during native preparation. Prepared filters are640taps to preserve the added FIR tail. See apps/native-renderer/assets/shared-clarity. The current common-base preset replaces the separately integrated rear gain; no second rear lift is applied. This is SDA's enhanced presentation, not unchanged Apple output. Older libraries must reject version3, and packaging checks require the Shared HRTFHQ clarity profile v1 marker.
+
+Lower-speaker preparation uses this bank's own lower hemisphere for missing below-ear speaker anchors, rather than flattening them through the 17-direction companion bank. This includes 360RA-13's -20-degree lower speakers between the measured -15/-30 rings. Exact measured speaker anchors retain priority. The historical KU100 supplementary lower bank is not added to this response family.
