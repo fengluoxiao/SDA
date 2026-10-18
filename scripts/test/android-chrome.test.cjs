@@ -200,10 +200,12 @@ assert.match(manifest,/android:configChanges="[^"]*orientation[^"]*screenSize/,'
 
 // Settings icons and glass both follow the system appearance on every page.
 let systemScheme='light';
+const spatialIndicator={exports:{}};
+new Function('module','exports',transformSync(fs.readFileSync('apps/mobile/src/spatial-head-indicator.ts','utf8'),{loader:'ts',format:'cjs'}).code)(spatialIndicator,spatialIndicator.exports);
 const settingsAdapter={exports:{}};
 const savedExpo=globalThis.expo;globalThis.expo={modules:{SdaAndroidChrome:{}}};
 new Function('require','module','exports',transformSync(fs.readFileSync('apps/mobile/src/AndroidGlassSettingsButton.tsx','utf8'),{loader:'tsx',format:'cjs'}).code)(name=>{
- const modules={react,expo:{requireNativeView:()=> 'NativeSettingsButton'},'react-native':{Platform:{OS:'android'},useColorScheme:()=>systemScheme}};
+ const modules={react,expo:{requireNativeView:()=> 'NativeSettingsButton'},'react-native':{Platform:{OS:'android'},useColorScheme:()=>systemScheme},'./spatial-head-indicator':spatialIndicator.exports};
  assert(name in modules,name);return modules[name];
 },settingsAdapter,settingsAdapter.exports);
 globalThis.expo=savedExpo;
