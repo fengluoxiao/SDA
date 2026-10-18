@@ -71,7 +71,7 @@ The new `av3a_native_balance_reaches_hrtf_output_without_system_spatial` regress
 uses the active production asset family selected in `ios-experiments/active.json`
 and the production direct/directional, dry 7.1.4 setup. It checks the final native
 stereo FIFO, not just eligibility or emitted commands. A 15-second low-level bed
-verifies the attenuation envelope and unchanged first five seconds. The optional
+verifies the attenuation envelope and attenuation from the initial audible segment. The optional
 `SDA_AV3A_BALANCE_BITSTREAM` input exercises the real compressed decoder with an
 original approximately 15-second excerpt of the supplied song. The optional
 `SDA_AV3A_BALANCE_PCM` input is a decoded-PCM diagnostic. These are explicit test
@@ -91,9 +91,10 @@ callback because of buffered output. The existing opt-in, read-only iOS diagnost
 endpoint exposes those fields, eligibility, saved preferences and installed build
 information. This does not change the audio mix or the accepted mobile UI.
 
-The reported no-effect behavior on the user's installed iPhone remains a separate
-device verification requirement; a passing host regression must not be described
-as having fixed that device report.
+The phone was reached over Tailscale and confirmed `av3a`, ordinary SDA stereo
+output and installed renderer revision `ee5368e`. The user subsequently clarified
+that the switch does work after several seconds. The remaining problem was the
+startup boundary, rather than a missing normal-route switch.
 
 
 Production-profile compressed-source result: the first 646 original AV3A access
@@ -106,3 +107,36 @@ output segment and peak protection are not equivalent. The first five seconds
 matched within the regression tolerance before the common policy activates.
 Both renderer switch state and the applied negative gain were asserted. The
 regression passed; this is a host result, not an iPhone listening result.
+
+
+## Startup correction after the device clarification
+
+Audio Vivid previously started its audio clock after the normal half-second
+reserve, then waited for 57 gated windows (approximately six seconds of active
+source audio) and scheduled the initial attenuation staircase. This explains why
+the first few audible seconds escaped volume balance.
+
+The native Android/iOS facade now holds the decoded AV3A preroll in memory until
+the existing measurement threshold is available, primes the existing programme
+gain at the source origin, then submits the retained PCM and starts output. The
+Windows/macOS player performs the same preparation before submitting PCM to its
+output ring, so the ring does not have to hold six seconds of audio. Ordinary
+measurement weights, -18 LUFS target, true-peak bound, attenuation-only rule and
+later update policy are retained. iOS Apple system output also holds its initial
+AV3A PCM until its existing meter is ready, without using the MPEG-H whole-file
+preanalysis path. The mobile feed loops allow this bounded preparation beyond
+their usual four-second decode lead, avoiding a preparation deadlock.
+
+Preparation is capped at seven seconds of decoded source coverage, not seven
+seconds of wall-clock delay. A silent intro releases at that cap without an
+invented gain; a short EOF uses the available complete-clip measurement and
+releases retained PCM. Turning balance off during preparation releases the
+buffer. No track replay, whole-song preanalysis, analysis file or persistent
+loudness cache is added. This is an initial estimate, with normal live updates
+afterwards, rather than a claim to know future sections of the song.
+
+The new startup tests cover gain before the first audible output, unchanged
+ongoing target/switch behavior, bounded silence, short EOF, switching off while
+preparing, and web/native decoder pacing. Existing stereo/360RA balance golden
+vectors remain required. Device listening of the newly changed startup has not
+been claimed before installing the updated application.

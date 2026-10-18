@@ -303,7 +303,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.sourceCodec === "av3a" ? "播放中估计响度并联动衰减全部声道，不预扫描、不生成分析缓存" : p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label(p.sourceCodec === "av3a" ? "起播前用短缓冲估计响度，播放中联动衰减全部声道，不预扫描整首、不生成分析缓存" : p.systemSpatial360RAActive ? "按 7.1.4 PCM 测量响度，12 声道统一衰减，不改变声场；起播前预读测量，避免开头先响后轻" : "与 Windows 相同：双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {label("播放模式", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>

@@ -173,7 +173,10 @@ final class SystemSpatial360 {
  }
  // Audio Vivid estimates only the PCM passing through playback; no replay pass.
  var requiresBalancePreanalysis: Bool { sourceCodec != "av3a" }
- var preparingAudio: Bool { !started && balanceEnabled && !measurementReady && requiresBalancePreanalysis }
+ var preparingAudio: Bool {
+  !started && balanceEnabled && !measurementReady &&
+   (requiresBalancePreanalysis || (!inputFinished && queued < 7*48000))
+ }
  // MPEG-H bridge is process-global: analyze and play sequentially, not with
  // concurrent owners. Called under SdaPlayer.lock before any PCM is submitted.
  func restartAfterMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {

@@ -1,3 +1,4 @@
+import { av3aStartupDecision, AV3A_STARTUP_MAX_SECONDS } from "./av3a-startup.js";
 import {connectPerformanceWorker} from "./performance-sink";
 import { isStereoMasterFrame, isAv3aBedFrame } from "./stereo-master.js";
 import { AlacStereoUpmixer, isAlacStereoFrame } from "./alac-stereo-upmix.js";
@@ -389,6 +390,7 @@ export class SdaPlayer {
   private measuredLoudnessBlocks = 0;
   /** Measurement balance for this track has been scheduled (or found unnecessary). */
   private measuredLoudnessSettled = false;
+  private av3aStartupPrepared = false;
   private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
@@ -1189,6 +1191,7 @@ export class SdaPlayer {
     this.measuredLoudnessBlocks = 0;
     this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
+    this.av3aStartupPrepared = false;
     this.cachedMeasuredLufs = null;
     this.cachedMeasuredTruePeakDbtp = null;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -1257,6 +1260,28 @@ export class SdaPlayer {
     }
   }
 
+  private av3aStartupPending(): boolean {
+    return this.trackCodec === "av3a" && this.volumeBalanceEnabled && this.stereoBalanceEligible
+      && !this.playbackStarted && !this.av3aStartupPrepared && this.cachedMeasuredLufs == null;
+  }
+
+  private prepareAv3aStartup(): boolean {
+    if (!this.av3aStartupPending()) return true;
+    const decision = av3aStartupDecision(this.measuredLoudness, this.aheadSeconds(), this.ended);
+    if (!decision.ready) return false;
+    this.av3aStartupPrepared = true;
+    if (decision.gainDb != null) {
+      const origin = this.startupOrigin ?? this.pcmQueue[0]?.samplePos ?? 0;
+      this.programLoudnessGainDb = decision.gainDb;
+      this.scheduledProgramLoudnessGainDb = decision.gainDb;
+      this.measuredLoudnessSettled = true;
+      this.balancedLoudnessBlocks = this.measuredLoudness?.blocks ?? 0;
+      this.renderer?.setProgramLoudnessGainDb(decision.gainDb, origin);
+      this.setNativeProgramGainDb(decision.gainDb, origin);
+    }
+    return true;
+  }
+
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
     const effective = enabled && this.stereoBalanceEligible;
@@ -1269,6 +1294,7 @@ export class SdaPlayer {
     } catch (error) {
       console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
     }
+    this.pumpPcm();
   }
 
   /** 码流携带的节目响度元数据（Dolby dialnorm），无元数据时为 null。 */
@@ -1580,9 +1606,10 @@ export class SdaPlayer {
       || this.nativeStartPending
       || this.startupOrigin === null
     ) return;
+    if (this.av3aStartupPending()) return;
     const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
     const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
-    if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
+    if (!force && !this.ended && this.startupAcceptedEnd - this.startupOrigin < required) return;
     if (this.pausedState) return;
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin;
@@ -1854,7 +1881,8 @@ export class SdaPlayer {
     // renderer 为 null（重建中）也要继续节流：queuedSamples 仍在累计，
     // 否则整个文件会在重建窗口内灌进 worker 解码（帧随即因 renderer 缺席堆积，
     // 缓冲爆炸）。disposed 时退出避免死等。
-    while (!this.disposed && epoch === this.decodeEpoch && this.aheadSeconds() > this.targetAheadSeconds()) {
+    while (!this.disposed && epoch === this.decodeEpoch && this.aheadSeconds() > (this.av3aStartupPending()
+      ? Math.max(this.targetAheadSeconds(), AV3A_STARTUP_MAX_SECONDS + 0.5) : this.targetAheadSeconds())) {
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -1937,6 +1965,7 @@ export class SdaPlayer {
           this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp);
         }
         this.ended = true;
+        this.pumpPcm();
         {let end=this.submittedEndSample();for(const frame of this.pcmQueue)end=Math.max(end,frame.samplePos+(frame.channels[0]?.length??0));void this.nativeRendererSink?.endAt?.(end);}
         this.startPlaybackIfReady(true);
         this.checkEnded();
@@ -2019,6 +2048,7 @@ export class SdaPlayer {
   /** 把队列里的帧泵入 worklet 环形缓冲，保持喂入量领先播放头 ~TARGET 秒。 */
   private pumpPcm(): void {
     if ((this.outputBackend === "web-audio" && !this.renderer) || !this.initialRendererReady || this.recreatePending > 0) return;
+    if (!this.prepareAv3aStartup()) return;
     let outstandingSamples = [...this.inFlight.values()].reduce((sum, pending) => sum + pending.samples, 0);
     while (
       this.inFlight.size < MAX_IN_FLIGHT_BATCHES &&

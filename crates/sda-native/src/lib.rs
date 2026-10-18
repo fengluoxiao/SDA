@@ -129,6 +129,7 @@ pub struct PlaybackStatus {
     pub program_gain_db: f64,
     pub rendered_program_gain_db: f64,
     pub renderer_program_enabled: bool,
+    pub preparing_audio: bool,
 }
 
 /// Latest object snapshot per id (plan T1.10): UI polls at its own cadence
@@ -548,6 +549,7 @@ impl MobileEngine {
         let status = self.feed(&[])?;
         self.balance.finish();
         self.startup.lock().expect("startup lock").ended = true;
+        self.drain_pending_into_pipeline()?;
         self.start_playback_if_ready()?;
         Ok(status)
     }
@@ -589,6 +591,9 @@ impl MobileEngine {
             near_field_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.near_field_enabled.load(std::sync::atomic::Ordering::Acquire)),
             volume_balance_enabled: self.balance.enabled,
             volume_balance_eligible: self.balance.eligible,
+            preparing_audio: self.balance.enabled && pending_len > 0
+                && self.pending.lock().expect("pending lock").front().is_some_and(|p| balance::av3a_bed(&p.frame))
+                && !self.startup.lock().expect("startup lock").started,
             program_gain_db: self.balance.gain_db,
             rendered_program_gain_db: self.pipeline.as_ref().map_or(0.0, |p| p.telemetry.applied_program_gain_db()),
             renderer_program_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.program_enabled.load(std::sync::atomic::Ordering::Acquire)),
@@ -632,6 +637,7 @@ impl MobileEngine {
             )).map_err(|_| "volume balance command queue full")?;
         }
         self.balance.enabled=enabled;
+        self.drain_pending_into_pipeline()?;
         Ok(())
     }
     pub fn set_measured_loudness(&mut self, json: &str) -> EngineResult<()> {
@@ -837,6 +843,22 @@ impl MobileEngine {
     fn drain_pending_into_pipeline(&mut self) -> EngineResult<()> {
         let Some(pipeline) = &self.pipeline else { return Ok(()) };
         let mut pending = self.pending.lock().expect("pending lock");
+        if self.balance.enabled && pending.front().is_some_and(|p| balance::av3a_bed(&p.frame)) {
+            let startup = self.startup.lock().expect("startup lock");
+            if !startup.started {
+                let origin = pending.front().unwrap().frame.sample_pos;
+                let last = &pending.back().unwrap().frame;
+                let end = last.sample_pos + last.channels[0].len() as u64;
+                if !startup.ended && !self.balance.startup_measurement_ready()
+                    && end.saturating_sub(origin) < balance::AV3A_STARTUP_MAX_SECONDS * u64::from(self.config.sample_rate) {
+                    return Ok(());
+                }
+                if let Some(command) = self.balance.prime_av3a_startup(origin, startup.ended) {
+                    pipeline.commands.push(render_command::RenderCommand::Command(command))
+                        .map_err(|_| "startup balance command queue full")?;
+                }
+            }
+        }
         while let Some(pending_frame) = pending.pop_front() {
             for command in self.balance.route(&pending_frame) {
                 pipeline.commands.push(render_command::RenderCommand::Command(command))
@@ -1566,3 +1588,7 @@ mod tests {
 
 #[cfg(test)]
 mod av3a_tests;
+
+#[cfg(test)]
+#[path = "av3a_startup_tests.rs"]
+mod av3a_startup_tests;

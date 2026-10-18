@@ -449,14 +449,15 @@ class SdaModule : Module() {
                                 Thread.sleep(20)
                                 continue
                             }
-                            if (consumed != lastConsumed) {
+                            val preparingBalance = state.optBoolean("preparingAudio", false)
+                            if (consumed != lastConsumed || preparingBalance) {
                                 lastConsumed = consumed
                                 lastProgressNs = System.nanoTime()
                             }
                             check(decoded == 0L || System.nanoTime() - lastProgressNs < 15_000_000_000L) {
                                 "Audio consumption stalled (decoded=$decoded consumed=$consumed)"
                             }
-                            if (decoded - consumed > maxLead || fifoFrames > maxLead) {
+                            if (!preparingBalance && (decoded - consumed > maxLead || fifoFrames > maxLead)) {
                                 Thread.sleep(20)
                                 continue
                             }

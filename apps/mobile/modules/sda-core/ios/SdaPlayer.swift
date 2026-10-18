@@ -540,7 +540,7 @@ final class SdaPlayer {
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      if consumed > 0 { finishPreparation() }
      if consumed != lastClock { lastClock = consumed; lastProgress = Date() }
-     if decoded > 0 && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
+     if decoded > 0 && status["preparingAudio"] as? Bool != true && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
      if Date().timeIntervalSince(lastInfo) > 1 {
       // Advance metadata even while React polling is suspended. Keep future
       // events, coalesce consumed events to the current object snapshot.

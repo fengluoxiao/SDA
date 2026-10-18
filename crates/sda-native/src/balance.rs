@@ -6,6 +6,8 @@ use sda_native_renderer::Command;
 use serde::{Deserialize, Serialize};
 
 pub const MIN_BLOCKS: usize = 57;
+/// Bounded decoded preroll; long silent intros must not hold playback forever.
+pub const AV3A_STARTUP_MAX_SECONDS: u64 = 7;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Measurement {
@@ -265,6 +267,21 @@ impl VolumeBalance {
             }
         }
         PendingFrame { frame, measurement }
+    }
+    pub fn startup_measurement_ready(&self) -> bool {
+        self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
+    }
+    /// Use the normal measurement/target before any PCM is made audible. This
+    /// consumes the existing decode preroll, never a second pass or cache.
+    pub fn prime_av3a_startup(&mut self, origin: u64, ended: bool) -> Option<Command> {
+        if !self.enabled || self.settled { return None; }
+        let m = self.meter.as_ref()?.integrated();
+        if !ended && m.blocks < MIN_BLOCKS { return None; }
+        let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
+        self.gain_db = master_gain(lufs, m.true_peak_dbtp);
+        self.balanced_blocks = m.blocks;
+        self.settled = true;
+        Some(Command::SetProgramGain { gain: 10_f64.powf(self.gain_db / 20.0) as f32, at: Some(origin) })
     }
     pub fn route(&mut self, frame: &PendingFrame) -> Vec<Command> {
         let f = &frame.frame;

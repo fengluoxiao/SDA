@@ -161,7 +161,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Button label="停止播放" systemImage="stop.fill" role="destructive" onPress={() => { onClose(); p.stop(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.playing)]} />
       </HStack>
     </Section>
-    <Section title="播放" footer={<Text>双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益。Audio Vivid 播放中估计，不预先扫描整首歌曲。</Text>}>
+    <Section title="播放" footer={<Text>双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益。Audio Vivid 起播前用短缓冲估计初始响度，播放中继续更新，不扫描整首歌曲。</Text>}>
       <Toggle label="音量平衡" isOn={p.volumeBalanceEnabled} onIsOnChange={p.setVolumeBalance} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
       <Picker label="播放模式" selection={p.playbackMode} onSelectionChange={p.setPlaybackMode} modifiers={[pickerStyle("menu")]}>
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}

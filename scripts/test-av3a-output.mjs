@@ -76,3 +76,5 @@ const firstEstimate=messages.find(m=>m.type==="frame"&&m.frame.loudness?.integra
 assert(firstEstimate);assert(firstEstimate.frame.loudness.blocks>=1);
 await send({type:"flush",epoch:1});assert(messages.some(m=>m.type==="loudness-complete"));
 console.log("Audio Vivid worker: actual open/push/flush path, existing loudness reporting and no extra SRC passed.");
+
+await import("./test-av3a-startup.mjs");
