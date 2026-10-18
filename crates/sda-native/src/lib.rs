@@ -27,6 +27,7 @@
 //! `obj:{codec object id}`, bed channels are `bed:{channel index}`.
 
 mod frame_router;
+mod presentation_queue;
 #[cfg(feature = "ios-host")]
 pub mod ios;
 #[cfg(feature = "ios-host")]
@@ -123,6 +124,7 @@ pub struct PlaybackStatus {
     pub paused: bool,
     pub hrtf_ready: bool,
     pub binaural_enabled: bool,
+    pub listener_yaw_degrees: f64,
     pub object_rendering: bool,
     pub hrtf_directions: usize,
     pub direct_object_hrtf: bool,
@@ -149,6 +151,11 @@ fn snapshot_at_clock(
     active: &mut ObjectSnapshot,
     clock: u64,
 ) -> ObjectSnapshot {
+    advance_object_snapshot(events,active,clock);
+    active.clone()
+}
+
+fn advance_object_snapshot(events:&mut VecDeque<ObjectEvent>,active:&mut ObjectSnapshot,clock:u64) {
     while events.front().is_some_and(|event| event.sample_pos <= clock) {
         let event = events.pop_front().expect("front checked");
         if event.has_pos {
@@ -157,7 +164,6 @@ fn snapshot_at_clock(
             active.remove(&event.id);
         }
     }
-    active.clone()
 }
 
 /// Errors surfaced across the FFI boundary as plain strings.
@@ -301,7 +307,7 @@ impl MobileEngine {
         let _ = commands.push(render_command::RenderCommand::Command(Command::SetBinauralEnabled { enabled: self.config.binaural_enabled }));
         self.pipeline = Some(RenderPipeline { fifo: fifo.clone(), commands: commands.clone(), telemetry: telemetry.clone() });
         if !self.config.object_rendering { let _ = commands.push(render_command::RenderCommand::Command(Command::SetObjectRendering { enabled: false })); }
-        self.decoder.set_object_rendering(self.config.binaural_enabled && self.config.object_rendering);
+        self.decoder.set_object_rendering(self.config.object_rendering);
         self.drain_pending_into_pipeline()?;
         // Start the output last, on its own thread: AudioOutput::run owns a
         // long-lived loop and must never block the caller - a blocking
@@ -360,8 +366,8 @@ impl MobileEngine {
         self.config.direct_object_hrtf = direct;
         self.config.directional_hrtf = directional;
         self.config.object_rendering = direct || directional;
-        if !self.config.binaural_enabled || !self.config.object_rendering { self.object_events.lock().expect("object events lock").clear(); self.active_objects.lock().expect("active objects lock").clear(); }
-        self.decoder.set_object_rendering(self.config.binaural_enabled && self.config.object_rendering);
+        if !self.config.object_rendering { self.object_events.lock().expect("object events lock").clear(); self.active_objects.lock().expect("active objects lock").clear(); }
+        self.decoder.set_object_rendering(self.config.object_rendering);
         self.hrtf_directions = directions;
         self.hrtf_loaded = true;
         Ok(())
@@ -525,25 +531,27 @@ impl MobileEngine {
         }
         let mut frames_pushed = 0_u32;
         let mut sample_pos = self.decoded_sample_pos();
+        let consumed_sample_pos = self.playback_status().consumed_sample_pos;
         {
             let mut pending = self.pending.lock().expect("pending lock");
             while let Some((mut frame, reference)) = if let Some(decoder) = &mut self.mpegh_decoder {
                 decoder.next_frame_with_reference().map(|(frame, reference)| (frame, Some(reference)))
             } else { self.decoder.next_frame().map(|frame| (frame, None)) } {
-                if !self.config.binaural_enabled || !self.config.object_rendering { frame.select_compatibility_bed(); }
+                if !self.config.object_rendering { frame.select_compatibility_bed(); }
                 if frame.sample_rate != self.config.sample_rate {
                     return Err(format!("Native {} Hz output requires sample-clock conversion for {} {} Hz", self.config.sample_rate, frame.codec, frame.sample_rate));
                 }
                 sample_pos = frame.sample_pos + frame.channels.first().map_or(0, |pcm| pcm.len()) as u64;
                 {
                     let mut timeline = self.object_events.lock().expect("object events lock");
+                    advance_object_snapshot(&mut timeline,&mut self.active_objects.lock().expect("active objects lock"),consumed_sample_pos);
                     let available = OBJECT_EVENT_CAPACITY.saturating_sub(timeline.len());
                     if frame.events.len() > available {
                         return Err(format!(
                             "object metadata timeline full (capacity {OBJECT_EVENT_CAPACITY}); feed was rejected before enqueuing this frame"
                         ));
                     }
-                    if self.config.binaural_enabled && self.config.object_rendering { timeline.extend(frame.events.iter().cloned()); }
+                    if self.config.object_rendering { timeline.extend(frame.events.iter().cloned()); }
                 }
                 pending.push_back(self.balance.measure(frame, reference));
                 frames_pushed += 1;
@@ -599,6 +607,7 @@ impl MobileEngine {
             paused,
             hrtf_ready: self.pipeline.as_ref().map_or(self.hrtf_directions > 0, |p| p.telemetry.hrtf_ready.load(std::sync::atomic::Ordering::Acquire)),
             binaural_enabled: self.config.binaural_enabled,
+            listener_yaw_degrees: self.pipeline.as_ref().map_or(0.0,|p|p.telemetry.listener_yaw_degrees()),
             object_rendering: self.config.object_rendering,
             hrtf_directions: self.hrtf_directions,
             direct_object_hrtf: self.pipeline.as_ref().is_some_and(|p| p.telemetry.direct_object_hrtf.load(std::sync::atomic::Ordering::Acquire)),
@@ -712,8 +721,8 @@ impl MobileEngine {
         self.config.direct_object_hrtf = direct;
         self.config.directional_hrtf = directional;
         self.config.object_rendering = direct || directional;
-        if !self.config.binaural_enabled || !self.config.object_rendering { self.object_events.lock().expect("object events lock").clear(); self.active_objects.lock().expect("active objects lock").clear(); }
-        self.decoder.set_object_rendering(self.config.binaural_enabled && self.config.object_rendering);
+        if !self.config.object_rendering { self.object_events.lock().expect("object events lock").clear(); self.active_objects.lock().expect("active objects lock").clear(); }
+        self.decoder.set_object_rendering(self.config.object_rendering);
         Ok(())
     }
 
@@ -723,8 +732,7 @@ impl MobileEngine {
                 .map_err(|_| "command queue full".to_string())?;
         } else if let Some(renderer) = &mut self.renderer { renderer.set_binaural_enabled(enabled); }
         self.config.binaural_enabled = enabled;
-        if !self.config.binaural_enabled || !self.config.object_rendering { self.object_events.lock().expect("object events lock").clear(); self.active_objects.lock().expect("active objects lock").clear(); }
-        self.decoder.set_object_rendering(enabled && self.config.object_rendering);
+        *self.last_poll.lock().expect("poll lock") = None;
         Ok(())
     }
 
@@ -803,13 +811,12 @@ impl MobileEngine {
     /// Latest valid object positions at the audio presentation clock. Events
     /// decoded ahead of playback are retained but never exposed early.
     pub fn object_snapshot(&self) -> ObjectSnapshot {
-        if !self.config.binaural_enabled || !self.config.object_rendering { return ObjectSnapshot::new(); }
         let clock = self.playback_status().consumed_sample_pos;
-        snapshot_at_clock(
-            &mut self.object_events.lock().expect("object events lock"),
-            &mut self.active_objects.lock().expect("active objects lock"),
-            clock,
-        )
+        let mut events=self.object_events.lock().expect("object events lock");
+        let mut active=self.active_objects.lock().expect("active objects lock");
+        advance_object_snapshot(&mut events,&mut active,clock);
+        if self.config.binaural_enabled && self.config.object_rendering {active.clone()}
+        else {ObjectSnapshot::new()}
     }
 
     /// Latest object positions, coalesced to at most one snapshot per
@@ -898,32 +905,47 @@ impl MobileEngine {
                     .map_err(|_| "volume balance command queue full")?;
             }
             let mut frame = pending_frame.frame;
-            if !self.config.binaural_enabled || !self.config.object_rendering { frame.select_compatibility_bed(); }
-            let origin = frame.sample_pos;
-            let end = origin + frame.channels.first().map_or(0, Vec::len) as u64;
-            for command in self.frame_router.route(frame)? {
-                // The unconfigured reference-mix utility is not a calibrated
-                // playback session and does not advance the source-ring clock.
-                if self.hrtf_directions == 0 {
-                    pipeline.commands.push(command).map_err(|_| "render command queue full")?;
-                    continue;
-                }
-                if let render_command::RenderCommand::PcmFrame { start, entries, events } = command {
-                    let (reply, received) = std::sync::mpsc::channel();
-                    pipeline.commands.push(render_command::RenderCommand::PcmFrameWithAck { start, entries, events, reply })
-                        .map_err(|_| "render command queue is full; feed must be paced")?;
-                    let accepted = received.recv_timeout(Duration::from_secs(10))
-                        .map_err(|_| "desktop PCM frame acknowledgement timed out")?;
-                    if !accepted { return Err(format!("desktop renderer rejected PCM frame at {start}")); }
-                } else {
-                    pipeline.commands.push(command)
-                        .map_err(|_| "render command queue is full; feed must be paced")?;
+            if !self.config.object_rendering { frame.select_compatibility_bed(); }
+            let commands=self.frame_router.route(frame)?;
+            self.submit_frame_commands(commands)?;
+        }
+        if self.startup.lock().expect("startup lock").ended {
+            let commands=self.frame_router.finish()?;
+            self.submit_frame_commands(commands)?;
+        }
+        Ok(())
+    }
+
+    /// Publish the clock of frames actually committed after presentation joining,
+    /// not the newest decoder packet (which may contain only a partial reference).
+    fn submit_frame_commands(&self,commands:Vec<render_command::RenderCommand>)->EngineResult<()> {
+        let Some(pipeline)=&self.pipeline else {return Ok(());};
+        for command in commands {
+            let range=match &command {
+                render_command::RenderCommand::PcmFrame{start,entries,..}
+                | render_command::RenderCommand::PcmFrameWithCompatibility{start,entries,..} =>
+                    Some((*start,*start+entries.first().map_or(0,|(_,pcm)|pcm.len()) as u64)),
+                _=>None,
+            };
+            if self.hrtf_directions==0 {
+                pipeline.commands.push(command).map_err(|_|"render command queue full")?;
+            } else {
+                let (reply,received)=std::sync::mpsc::channel();
+                let command=match command {
+                    render_command::RenderCommand::PcmFrame{start,entries,events}=>
+                        render_command::RenderCommand::PcmFrameWithAck{start,entries,events,reply},
+                    render_command::RenderCommand::PcmFrameWithCompatibility{start,entries,events,compatibility,..}=>
+                        render_command::RenderCommand::PcmFrameWithCompatibility{start,entries,events,compatibility,reply:Some(reply)},
+                    other=>{pipeline.commands.push(other).map_err(|_|"render command queue full")?;continue;}
+                };
+                pipeline.commands.push(command).map_err(|_|"render command queue full; feed must be paced")?;
+                if !received.recv_timeout(Duration::from_secs(10)).map_err(|_|"PCM frame acknowledgement timed out")? {
+                    return Err(format!("renderer rejected PCM frame at {:?}",range.map(|r|r.0)));
                 }
             }
-            {
-                let mut startup = self.startup.lock().expect("startup lock");
-                startup.origin.get_or_insert(origin);
-                startup.accepted_end = end;
+            if let Some((origin,end))=range {
+                let mut startup=self.startup.lock().expect("startup lock");
+                startup.origin.get_or_insert(origin);startup.accepted_end=end;
             }
             self.start_playback_if_ready()?;
         }
@@ -1618,6 +1640,47 @@ mod tests {
             latest.sample_pos);
         assert!(engine.poll_object_snapshot(&frames).is_none(), "inside throttle window");
     }
+    #[test]
+    fn off_keeps_scene_convolvers_and_metadata_ready_before_fixed_is_enabled() {
+        let mut engine=MobileEngine::new(EngineConfig{binaural_enabled:false,direct_object_hrtf:true,directional_hrtf:true,..EngineConfig::default()},None).unwrap();
+        engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),"/../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json")).unwrap();
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        let event=ObjectEvent{diffuse:0.,id:42,sample_pos:0,has_pos:true,pos:[0.7,-0.7,0.3],gain_db:0.,size:[0.;3],anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:128};
+        engine.object_events.lock().unwrap().push_back(event.clone());
+        let frame=FrameData{compatibility_bed:Some(sda_core::CompatibilityBed{channels:vec![vec![0.001;32768];2],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.0001;32768]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events:vec![event],object_channels:vec![sda_core::ObjectChannelDecl{id:42,channel:0}],program_loudness:None,ramp_duration:128};
+        engine.pending.lock().unwrap().push_back(engine.balance.measure(frame,None));
+        *engine.newest_sample_pos.lock().unwrap()=32768;
+        engine.drain_pending_into_pipeline().unwrap();
+        wait_mobile_status(&engine,|s|s.continuous_object_count>0);
+        assert!(engine.object_snapshot().is_empty(),"Off hides object visuals while retaining their state");
+        assert!(engine.active_objects.lock().unwrap().contains_key(&42));
+        engine.set_binaural_enabled(true).unwrap();
+        assert!(engine.object_snapshot().contains_key(&42),"Fixed must have a snapshot before any new decoded frame arrives");
+        assert_eq!(engine.decoded_sample_pos(),32768);
+        engine.set_binaural_enabled(false).unwrap();engine.set_binaural_enabled(true).unwrap();
+        assert!(engine.object_snapshot().contains_key(&42));engine.stop();
+    }
+
+    #[test]
+    fn real_mpegh_off_to_fixed_preserves_objects_and_the_codec_reference() {
+        let mut engine=MobileEngine::new(EngineConfig{layout:"360RA-13".into(),binaural_enabled:false,direct_object_hrtf:true,directional_hrtf:true,..EngineConfig::default()},None).unwrap();
+        engine.open_mpegh().unwrap();
+        engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),"/../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json")).unwrap();
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        let fixture=include_bytes!("../../../packages/core/mpegh/fixtures/motion.mhas");
+        for bytes in fixture.chunks(1024) {assert!(engine.feed(bytes).unwrap().errors.is_empty());}
+        engine.finish().unwrap();
+        wait_mobile_status(&engine,|s|s.continuous_object_count>=2);
+        let decoded=engine.decoded_sample_pos();assert!(decoded>0);
+        assert!(engine.object_snapshot().is_empty());
+        assert!(engine.active_objects.lock().unwrap().len()>=2,"MPEG-H object targets must survive Off");
+        engine.set_binaural_enabled(true).unwrap();
+        assert!(engine.object_snapshot().len()>=2,"360RA Fixed must not wait for another MHAS object frame");
+        assert_eq!(engine.decoded_sample_pos(),decoded);
+        engine.set_binaural_enabled(false).unwrap();engine.set_binaural_enabled(true).unwrap();
+        assert!(engine.object_snapshot().len()>=2);engine.stop();
+    }
+
 }
 
 #[cfg(test)]

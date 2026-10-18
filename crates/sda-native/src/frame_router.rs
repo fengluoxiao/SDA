@@ -8,6 +8,7 @@ pub(crate) struct FrameRouter {
     objects: BTreeMap<u32, usize>,
     declared: BTreeMap<String, Option<String>>,
     targets: BTreeMap<u32, ObjectEvent>,
+    presentations:crate::presentation_queue::PresentationQueue,
 }
 
 fn same_target(a: &ObjectEvent, b: &ObjectEvent) -> bool {
@@ -18,9 +19,20 @@ fn same_target(a: &ObjectEvent, b: &ObjectEvent) -> bool {
 }
 
 impl FrameRouter {
-    pub fn route(&mut self, frame: FrameData) -> EngineResult<Vec<RenderCommand>> {
+    pub fn route(&mut self,frame:FrameData)->EngineResult<Vec<RenderCommand>> {
+        let frames=self.presentations.push(frame)?;self.route_ready(frames)
+    }
+    pub fn finish(&mut self)->EngineResult<Vec<RenderCommand>> {
+        let frames=self.presentations.finish()?;self.route_ready(frames)
+    }
+    fn route_ready(&mut self,frames:Vec<crate::presentation_queue::ReadyFrame>)->EngineResult<Vec<RenderCommand>> {
+        let mut commands=Vec::new();
+        for ready in frames {commands.extend(self.route_scene(ready.frame,ready.compatibility)?);}
+        Ok(commands)
+    }
+    fn route_scene(&mut self,frame:FrameData,compatibility:Option<[Vec<f32>;2]>)->EngineResult<Vec<RenderCommand>> {
         let mut mapping = BTreeMap::new();
-        let has_objects = frame.labels.iter().any(|s| s.starts_with("Obj_"));
+        let has_objects = !frame.object_channels.is_empty() || frame.labels.iter().any(|s| s.starts_with("Obj_"));
         if !frame.object_channels.is_empty() {
             for entry in &frame.object_channels {
                 if entry.channel as usize >= frame.channels.len()
@@ -86,7 +98,9 @@ impl FrameRouter {
                 self.targets.insert(event.id, event);
             }
         }
-        commands.push(RenderCommand::PcmFrame { start: frame.sample_pos, entries, events });
+        commands.push(if let Some(compatibility)=compatibility {
+            RenderCommand::PcmFrameWithCompatibility {start:frame.sample_pos,entries,events,compatibility,reply:None}
+        } else { RenderCommand::PcmFrame { start: frame.sample_pos, entries, events } });
         Ok(commands)
     }
 }
@@ -186,4 +200,37 @@ mod tests {
             assert_eq!(events, &[expected], "distance transition {i} was lost or changed");
         }
     }
+    #[test]
+    fn compatible_output_carries_the_full_object_scene_without_redeclaring_it() {
+        let mut router=FrameRouter::default();
+        for at in [0,16] {
+            let mut f=frame(at,&["Obj_42"],&[(42,0)]);f.events=vec![event(at)];
+            f.compatibility_bed=Some(sda_core::CompatibilityBed{channels:vec![vec![0.1;16],vec![0.2;16],vec![0.3;16],vec![0.99;16]],labels:vec!["L".into(),"R".into(),"C".into(),"LFE".into()]});
+            let commands=router.route(f).unwrap();
+            assert!(!commands.iter().any(|c|matches!(c,RenderCommand::Command(Command::RemoveSource{..}))));
+            let RenderCommand::PcmFrameWithCompatibility{entries,compatibility,..}=commands.last().unwrap() else {panic!("scene and plain output must be one transaction")};
+            assert_eq!(entries[0].0,"obj:42");assert_eq!(entries[0].1,vec![1.;16]);
+            assert!((compatibility[0][0]-(0.1+0.3*std::f32::consts::FRAC_1_SQRT_2)).abs()<1e-7);
+            assert!((compatibility[1][0]-(0.2+0.3*std::f32::consts::FRAC_1_SQRT_2)).abs()<1e-7);
+        }
+    }
+    #[test]
+    fn malformed_compatible_bed_cannot_retire_or_redeclare_scene_sources() {
+        let mut router=FrameRouter::default();let mut f=frame(0,&["Obj_42"],&[(42,0)]);
+        f.compatibility_bed=Some(sda_core::CompatibilityBed{channels:vec![vec![0.;15],vec![0.;16]],labels:vec!["L".into(),"R".into()]});
+        assert!(router.route(f).is_err());assert!(router.objects.is_empty());assert!(router.declared.is_empty());
+    }
+
+    #[test]
+    fn explicit_object_declarations_work_without_codec_specific_channel_names() {
+        let mut router=FrameRouter::default();
+        for (at,count) in [(0,1),(192,0)] {
+            let mut f=frame(at,&["FutureStem"],&[(42,0)]);f.events=vec![event(at)];
+            let commands=router.route(f).unwrap();
+            let RenderCommand::PcmFrame{entries,events,..}=commands.last().unwrap() else {panic!()};
+            assert_eq!(entries[0].0,"obj:42");assert_eq!(events.len(),count);
+            assert!(!commands.iter().any(|c|matches!(c,RenderCommand::Command(Command::RemoveSource{..}))));
+        }
+    }
+
 }

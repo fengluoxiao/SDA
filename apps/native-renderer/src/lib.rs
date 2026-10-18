@@ -58,6 +58,10 @@ mod shared_depth;
 mod shared_clarity;
 #[cfg(test)]
 mod shared_clarity_integration_tests;
+#[cfg(test)]
+mod selected_base_tests;
+#[cfg(test)]
+mod spatial_mode_transition_tests;
 mod front_ear;
 pub mod convolution;
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
@@ -70,6 +74,7 @@ pub mod directional;
 mod triangle_support;
 pub mod dsp;
 pub mod plain_downmix;
+mod compatible_pcm;
 pub mod focus;
 mod front_common;
 mod spatial_balance;
@@ -908,6 +913,7 @@ pub struct RuntimeTelemetry {
     pub spatial_cues_enabled: AtomicBool,
     /// Actual renderer envelope, separate from the controller's scheduled gain.
     program_gain_db_bits: AtomicU64,
+    listener_yaw_degrees_bits: AtomicU64,
     pub program_enabled: AtomicBool,
     pub object_convolver_count: AtomicU64,
     pub continuous_object_count: AtomicU64,
@@ -937,6 +943,9 @@ impl RuntimeTelemetry {
     pub fn applied_program_gain_db(&self) -> f64 {
         f64::from_bits(self.program_gain_db_bits.load(Ordering::Acquire))
     }
+    pub fn listener_yaw_degrees(&self) -> f64 {
+        f64::from_bits(self.listener_yaw_degrees_bits.load(Ordering::Acquire))
+    }
     pub fn callback_missing_frames(&self) -> u64 {
         self.callback_fifo_underrun_frames.load(Ordering::Relaxed)
     }
@@ -952,6 +961,11 @@ impl RuntimeTelemetry {
          &self.render_worst_bus_micros].map(|value| value.load(Ordering::Relaxed))
     }
     fn publish_rendering_state(&self, engine: &Engine) {
+        let yaw = engine.head_pose.and_then(spatial::normalize_quaternion).map_or(0.0, |q| {
+            let [x,y,z,w]=q.map(f64::from);
+            (2.0*(w*z+x*y)).atan2(1.0-2.0*(y*y+z*z)).to_degrees()
+        });
+        self.listener_yaw_degrees_bits.store(yaw.to_bits(),Ordering::Release);
         self.program_enabled.store(engine.program_enabled, Ordering::Release);
         self.program_gain_db_bits.store((20.0 * f64::from(engine.program_gain).max(1e-12).log10()).to_bits(), Ordering::Release);
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
@@ -1056,6 +1070,7 @@ pub struct Engine {
     plain_warmup: usize,
     bed_compatibility: bool,
     plain_delay: [[f32; 2]; convolution::DEFAULT_PARTITION],
+    compatible_pcm: Option<compatible_pcm::CompatiblePcm>,
     source_extent: source_extent::Settings,
     near_field: near_field::Settings,
     /// User preference for continuous directional object rendering. The
@@ -1088,6 +1103,7 @@ pub struct Engine {
     speaker_lfe_level: f32,
     spatial_layer: spatial_layer::Settings,
     master_preamp: master_preamp::MasterPreamp,
+    spatial_preamp: master_preamp::MasterPreamp,
     atmos_output_gain: master_preamp::MasterPreamp,
     final_output_trim: master_preamp::MasterPreamp,
     output_gain: f32,
@@ -1198,6 +1214,7 @@ impl Engine {
             plain_warmup: 0,
             bed_compatibility: false,
             plain_delay: [[0.0; 2]; convolution::DEFAULT_PARTITION],
+            compatible_pcm: None,
             source_extent: Default::default(),
             near_field: Default::default(),
             directional_hrtf_requested: false,
@@ -1226,6 +1243,7 @@ impl Engine {
             speaker_lfe_level: 1.0,
             spatial_layer: spatial_layer::Settings::new(sample_rate),
             master_preamp: Default::default(),
+            spatial_preamp: Default::default(),
             atmos_output_gain: Default::default(),
             final_output_trim: Default::default(),
             output_gain: 1.0,
@@ -1751,17 +1769,24 @@ impl Engine {
         Ok(())
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
-    /// Atomic listener preset for the accepted general enhancement recipe.
+    /// User-selected B: main +2 dB, full auxiliary +6 dB, common 4 kHz shelf +1.5 dB.
+    /// The linked +2 dB belongs to the spatial path so plain output stays unity.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 1.5 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
         self.set_master_preamp_db(0.0)?;
-        self.set_spatial_layer_gain_db(if enabled { 1.5 } else { 0.0 })?;
+        self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 },
+            self.output_sample_rate, !self.output_active)?;
+        self.set_spatial_layer_gain_db(if enabled { 4.0 } else { 0.0 })?;
+        self.spatial_layer.geometry = if enabled {
+            spatial_layer::Geometry::Front45
+        } else {
+            spatial_layer::Geometry::ProtectedSides
+        };
         self.final_output_trim.set(0.0, self.output_sample_rate, !self.output_active)?;
-        // Accepted rear balance adds up to 3 dB to the auxiliary 1.5 dB.
-        // Front, side, poles and LFE retain the existing source gains.
-        self.spatial_layer.rear_db = if enabled { 3.0 } else { 0.0 };
+        // The accepted B includes the shelf; no separate rear +3 dB is added.
+        self.spatial_layer.rear_db = 0.0;
         self.spatial_layer.main_restore_db = 0.0;
         Ok(())
     }
@@ -1815,6 +1840,7 @@ impl Engine {
     fn advance_output_envelopes(&mut self) {
         self.atmos_output_gain.advance();
         self.master_preamp.advance();
+        self.spatial_preamp.advance();
         self.final_output_trim.advance();
         self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
         if self.output_gain_ramp_remaining > 0 {
@@ -1910,6 +1936,7 @@ impl Engine {
     fn reset_session(&mut self, origin: u64) {
         performance::reset();
         self.master_preamp.settle();
+        self.spatial_preamp.settle();
         self.final_output_trim.settle();
         self.front_common.reset();
         self.spatial_balance.reset();
@@ -1920,6 +1947,7 @@ impl Engine {
         self.cinema_bass_mix = 0.0;
         self.stereo_delay.fill([0.0; 2]);
         self.plain_delay.fill([0.0; 2]);
+        if let Some(plain)=self.compatible_pcm.as_mut() { plain.clear(); }
         self.plain_warmup = 0;
         self.binaural_mix = if self.binaural_enabled { 1.0 } else { 0.0 };
         self.stereo_background = std::array::from_fn(|_| focus::BackgroundFilter::default());
@@ -2283,10 +2311,7 @@ impl Engine {
             start: self.sample_pos,
             offset: self.block_offset,
             bass_crossover_hz,
-            spatial_layer_gain_db: self.spatial_layer.db,
-            spatial_layer_slew: self.spatial_layer.slew,
-            spatial_layer_main_restore_db: self.spatial_layer.main_restore_db,
-            spatial_layer_rear_db: self.spatial_layer.rear_db,
+            spatial_layer: self.spatial_layer,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2390,7 +2415,7 @@ impl Engine {
         // Fixed user-requested presentation compensation, not loudness analysis.
         // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
         // retain unity. Both ears share the envelope before peak protection.
-        let atmos_db = if self.binaural_enabled && self.program_codec.as_deref() == Some("eac3")
+        let atmos_db = if self.program_codec.as_deref() == Some("eac3")
             && self.sources.values().any(|s| s.kind == SourceKind::Object) { 2.0 } else { 0.0 };
         if self.atmos_output_gain.target_db() != atmos_db {
             self.atmos_output_gain.set(atmos_db, self.output_sample_rate, false).unwrap();
@@ -2513,7 +2538,10 @@ impl Engine {
         }
         let prepare_micros = stage_started.elapsed().as_micros() as u64;
         let stage_started = Instant::now();
-        if self.binaural_enabled {
+        // A complete carried plain block lets the scene keep its exact fast path while Off.
+        let compatible_block = self.compatible_pcm.as_ref()
+            .is_some_and(|plain| plain.available(self.sample_pos,output.len()/channels));
+        if self.binaural_enabled || compatible_block {
             self.mix_continuous_objects(output.len() / channels, speaker_targets, effective_direct, near_active);
         } else {
             for source in self.sources.values_mut() { source.fast_mixed = false; }
@@ -2814,7 +2842,7 @@ impl Engine {
                     * source.gain
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
-                sample *= spatial_layer::source_gain_with_rear(source, self.spatial_layer.db, self.spatial_layer.main_restore_db, self.spatial_layer.rear_db, self.spatial_layer.slew, at);
+                sample *= self.spatial_layer.source_gain(source, at);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
@@ -3141,9 +3169,10 @@ impl Engine {
             let equalized = self.binaural_eq.process(compensated[0], compensated[1]);
             // Same shelf for both ears, complete mix before linked protection.
             let equalized = std::array::from_fn::<_, 2, _>(|ear|
-                self.output_clarity[ear].process(equalized[ear]));
+                self.output_clarity[ear].process(equalized[ear]) * self.spatial_preamp.gain());
             let plain = self.plain_delay[block_index];
-            self.plain_delay[block_index] = plain_sum;
+            self.plain_delay[block_index] = self.compatible_pcm.as_mut()
+                .and_then(|plain| plain.take(at)).unwrap_or(plain_sum);
             let target = if self.binaural_enabled || self.plain_warmup > 0 { 1.0 } else { 0.0 };
             self.plain_warmup = self.plain_warmup.saturating_sub(1);
             self.binaural_mix += (target - self.binaural_mix).clamp(-1.0 / 480.0, 1.0 / 480.0);
@@ -3665,7 +3694,8 @@ mod tests {
     fn plain_mode_bypasses_hrtf_eq_and_preserves_the_stereo_pcm() {
         let mut engine = calibrated_engine();
         engine.set_spatial_enhancement(true).unwrap();
-        assert_eq!(engine.spatial_layer.rear_db,3.0);
+        assert_eq!(engine.spatial_layer.rear_db,0.0);
+        assert_eq!(engine.spatial_preamp.target_db(),2.0);
         engine.set_binaural_enabled(false);
         engine.binaural_eq = StereoEq::new(48_000, [-12.0; 3], true).unwrap();
         engine.paused = false;

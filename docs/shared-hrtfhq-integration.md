@@ -1,5 +1,10 @@
 # Shared HRTFHQ presentation
 
+Latest update — accepted B and fixed-gain export: the user confirmed B (+2/+6 base plus the 4 kHz/+1.5 dB shelf) for the other 11 materials, while explicitly withholding a Very First Night decision because the old long/short exports differed in loudness. The default source recipe is now B. All audition excerpts now share one fixed gain per track/profile/mode, verified with sample-identical overlaps. The historical A–E research and tests below remain provenance, not a claim that the pending song was accepted.
+
+
+Latest presentation update (2026-10-19): the user-selected common base is now net +2 dB main / +6 dB auxiliary, using front-45-to-side-90 geometry. The linked +2 dB is spatial-only; the previous auxiliary/rear/shelf recipe below is historical. Existing HRTFHQ v3 clarity and depth processing remain. See [common-base integration and fusion audit](hrtfhq-common-base-fusion-2026-10-19.md).
+
 The user accepted the public-HRTFHQ response audition and explicitly requested the same presentation on iOS, Android, Windows and macOS. This supersedes keeping KU100/G80 as the default for this change. The old measured assets remain available. On2026-10-17 the user additionally approved the isolated half-strength retained61 short residual for front/rear motion and360RA overhead motion; this is now the shared default. It is separate from the old direct-HRTF corrections and later G80 preset.
 
 ## Implementation

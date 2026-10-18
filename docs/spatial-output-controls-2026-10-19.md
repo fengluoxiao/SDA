@@ -1,5 +1,10 @@
 # Spatial output controls — 2026-10-19
 
+Latest update — accepted B and fixed-gain export: the user confirmed B (+2/+6 base plus the 4 kHz/+1.5 dB shelf) for the other 11 materials, while explicitly withholding a Very First Night decision because the old long/short exports differed in loudness. The default source recipe is now B. All audition excerpts now share one fixed gain per track/profile/mode, verified with sample-identical overlaps. The historical A–E research and tests below remain provenance, not a claim that the pending song was accepted.
+
+
+Latest presentation update (2026-10-19): the user-selected common base is now net +2 dB main / +6 dB auxiliary, using front-45-to-side-90 geometry. The linked +2 dB is spatial-only; the previous auxiliary/rear/shelf recipe below is historical. Existing HRTFHQ v3 clarity and depth processing remain. See [common-base integration and fusion audit](hrtfhq-common-base-fusion-2026-10-19.md).
+
 The settings pages no longer expose direct-object, actual-direction, or a combined object-rendering switch. Android and iOS migrate preferences older than objectRenderingVersion 2 to direct=true and directional=true. Desktop restores the equivalent legacy storage keys to true. Existing spatial-off preferences are preserved.
 
 The person menu selects Off, Fixed, or head tracking where available. Off uses compatible channels and bypasses HRTF and binaural coloration. Fixed and head tracking use the default object and actual-direction rendering. Low-level object-rendering and binaural controls remain separate for compatibility and tests; ordinary settings no longer offer an object-mode toggle.

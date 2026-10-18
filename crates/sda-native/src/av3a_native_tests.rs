@@ -25,6 +25,9 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
     }
     let _close = Close(h);
     let host = unsafe { &*h.cast::<Host>() };
+    // Keep the gain-ratio probe below the linked guard with the accepted B lift.
+    // Listener volume is shared by both runs and is not part of the loudness meter.
+    host.engine.lock().unwrap().set_volume(0.5).unwrap();
     host.engine
         .lock()
         .unwrap()

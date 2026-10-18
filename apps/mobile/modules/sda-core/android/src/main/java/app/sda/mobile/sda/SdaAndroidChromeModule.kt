@@ -30,6 +30,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
@@ -101,6 +104,9 @@ class SdaAndroidChromeModule : Module() {
             Prop("playing") { view: SdaAndroidChromeView, value: Boolean -> view.playing = value }
             Prop("busy") { view: SdaAndroidChromeView, value: Boolean -> view.busy = value }
             Prop("spatialButton") { view: SdaAndroidChromeView, value: Boolean -> view.spatialButton = value }
+            Prop("spatialEnabled") { view: SdaAndroidChromeView, value: Boolean -> view.spatialEnabled = value }
+            Prop("spatialTracking") { view: SdaAndroidChromeView, value: Boolean -> view.spatialTracking = value }
+            Prop("headYawDegrees") { view: SdaAndroidChromeView, value: Float -> view.headYawDegrees = if (value.isFinite()) value.coerceIn(-45f,45f) else 0f }
             Prop("settingsButton") { view: SdaAndroidChromeView, value: Boolean -> view.settingsButton = value }
             Prop("backButton") { view: SdaAndroidChromeView, value: Boolean -> view.backButton = value }
             Prop("backgroundColorValue") { view: SdaAndroidChromeView, value: String -> view.surfaceColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFFF2F2F7)) }
@@ -131,6 +137,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var busy by mutableStateOf(false)
     var settingsButton by mutableStateOf(false)
     var spatialButton by mutableStateOf(false)
+    var spatialEnabled by mutableStateOf(false)
+    var spatialTracking by mutableStateOf(false)
+    var headYawDegrees by mutableFloatStateOf(0f)
     var backButton by mutableStateOf(false)
     var surfaceColor by mutableStateOf(Color(0xFFF2F2F7))
     private val backgroundNode = if (Build.VERSION.SDK_INT >= 29) RenderNode("SDA glass background") else null
@@ -311,12 +320,13 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             return
         }
         if (settingsButton) {
+            val headAngle by animateFloatAsState(if (spatialButton && spatialEnabled && spatialTracking) headYawDegrees else 0f, tween(100), label = "spatialHeadYaw")
             val backdrop = backgroundAt(0f)
             LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = backdrop,
                 surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
                 enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = 44.dp, contentPadding = 0.dp,
                 modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
-                Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp), tint = ink)
+                Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
             }
             return
         }

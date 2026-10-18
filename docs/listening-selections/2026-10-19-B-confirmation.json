@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-19",
+  "source": "explicit-user-chat",
+  "profile": "base-shelf",
+  "interpretation": "User confirmed B generally; The Very First Night is excluded pending corrected export loudness.",
+  "confirmedTracks": [
+    "rain",
+    "seiza",
+    "how-love",
+    "ether",
+    "wonderful-world",
+    "lose-dance",
+    "hitoshizuku",
+    "egaku",
+    "doll",
+    "2step",
+    "montero"
+  ],
+  "pendingTracks": {
+    "very-first": "Unable to judge because short and long exports used different gains."
+  },
+  "recipe": {
+    "mainNetDb": 2,
+    "auxiliaryNetDb": 6,
+    "auxiliaryExtraDb": 4,
+    "highShelfHz": 4000,
+    "highShelfDb": 1.5,
+    "rearExtraDb": 0,
+    "geometry": "Front45"
+  },
+  "requiredAuditionCorrection": "One fixed gain per track/profile/mode for every excerpt, with sample-identical overlap."
+}

@@ -16,6 +16,11 @@ for(const platform of ['ios','android']) {
  assert.equal(app.state.positionMs,23000);assert.equal(app.state.playing,true);assert.equal(app.state.paused,false);
  assert(!calls.some(call=>call[0]==='stop'||call[0]==='play'),'live controls must not reopen playback');
  if(platform==='ios'){app.setBinauralEnabled(false);app.setHeadTracking(true);assert.equal(app.state.binauralEnabled,true);assert.equal(app.state.headTrackingEnabled,true);}
+ app.engine=engine;
+ engine.feedError=()=>null;engine.feedDone=()=>false;engine.objects=()=>"{}";engine.hrtfStatus=()=>"ready";
+ engine.status=()=>JSON.stringify({listenerYawDegrees:27,sourceCodec:"mpegh",hrtfReady:true,binauralEnabled:true});
+ app.state.headTrackingEnabled=true;app.state.headYaw=0;app.pollStatus();assert.equal(app.state.headYaw,27,'head icon must use native applied pose, not only manual yaw');
+ app.state.headTrackingEnabled=false;app.state.headYaw=11;app.pollStatus();assert.equal(app.state.headYaw,11,'Fixed must retain its manual heading without following tracking telemetry');
  const before=app.state.binauralEnabled;engine.setBinauralEnabled=()=>{throw Error('rejected')};app.setBinauralEnabled(false);assert.equal(app.state.binauralEnabled,before);assert.equal(app.state.error,'rejected');
 }
 for(const file of ['AndroidSettings.tsx','IOSNativeSettings.tsx','IOSPlayer.tsx','RemotePlayer.tsx']) {
@@ -43,3 +48,14 @@ for (const [file, pattern] of [
  ['apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt', /getInt\("objectRenderingVersion", 0\) < 2/],
 ]) assert.match(readFileSync(file,'utf8'),pattern);
 console.log('Legacy disabled object preferences migrate to enabled; repeat reads remain stable.');
+
+// Mode switching and decoded-frame alignment must also work for future codecs.
+for(const file of ['crates/sda-native/src/presentation_queue.rs','crates/sda-native/src/frame_router.rs']) {
+ const shared=readFileSync(file,'utf8').split('#[cfg(test)]')[0];
+ assert.doesNotMatch(shared,/"(?:eac3|mpegh|ac4|truehd|av3a)"/,'shared presentation logic must not dispatch by codec name');
+}
+const switchBody=readFileSync('crates/sda-native/src/lib.rs','utf8').split('pub fn set_binaural_enabled')[1].split('pub fn set_near_field')[0];
+assert.doesNotMatch(switchBody,/"(?:eac3|mpegh|ac4|truehd|av3a)"/);
+console.log('Native-pose UI binding and codec-independent Off/Fixed frame routing passed.');
+
+assert.doesNotMatch(switchBody,/self\.decoder|object_events|active_objects/,"output-mode toggles must not reconfigure a decoder or clear object state");

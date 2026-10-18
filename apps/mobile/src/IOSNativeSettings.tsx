@@ -1,3 +1,4 @@
+import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
 import { useNavigationPreferences } from "./navigation-preferences";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
@@ -43,30 +44,34 @@ function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
   </Host>;
 }
 
-export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, onDisable, spatialEnabled = true, sideDock = false }: {
-  enabled: boolean; spatialEnabled?: boolean; onDisable?(): void; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean;
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, onDisable, spatialEnabled = true, sideDock = false, headYaw = 0, inactiveColor = "#ffffff" }: {
+  enabled: boolean; spatialEnabled?: boolean; onDisable?(): void; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean; headYaw?: number; inactiveColor?: string;
 }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Menu, Picker, Text } = swiftUI;
-  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const label = !spatialEnabled ? "空间音频 · 关闭" : enabled ? "空间音频 · 头部追踪" : "空间音频 · 固定";
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle, rotation3DEffect } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const indicator = spatialHeadIndicator(spatialEnabled, enabled, headYaw, accent, inactiveColor);
+  const label = indicator.label;
+  const image = hasView("ImageView") ? <swiftUI.Image systemName={indicator.symbol} size={22} color={indicator.color}
+    modifiers={[rotation3DEffect({ angle: indicator.poseDegrees, axis: { y: 1 }, perspective: .35 })]} /> : null;
+  const modifiers = [labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
+    accessibilityLabel(label), disabled(isDisabled), tint(indicator.color)];
   if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
-    <swiftUI.Button label={label} systemImage="person.crop.circle" onPress={() => Alert.alert("空间音频", "", [
+    <swiftUI.Button label={image ? undefined : label} systemImage={image ? undefined : indicator.symbol} onPress={() => Alert.alert("空间音频", "", [
       ...(onDisable ? [{ text: "关闭", onPress: onDisable }] : []),
       { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
-    ])} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), disabled(isDisabled)]} />
+    ])} modifiers={modifiers}>{image || undefined}</swiftUI.Button>
   </Host>;
-  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}><Menu label={label}
-    systemImage={enabled ? "person.crop.circle.fill" : "person.crop.circle"}
-    modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
-      accessibilityLabel(label), disabled(isDisabled), ...(enabled ? [tint(accent)] : [])]}>
-    <Picker label="空间音频" selection={!spatialEnabled ? "off" : enabled ? "tracking" : "fixed"}
-      onSelectionChange={(value: string) => value === "off" ? onDisable?.() : onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
-      {!!onDisable && <Text modifiers={[tag("off")]}>关闭</Text>}
-      <Text modifiers={[tag("fixed")]}>固定</Text>
-      <Text modifiers={[tag("tracking")]}>头部追踪</Text>
-    </Picker>
-  </Menu></Host>;
+  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
+    <Menu label={image || label} systemImage={image ? undefined : indicator.symbol} modifiers={modifiers}>
+      <Picker label="空间音频" selection={!spatialEnabled ? "off" : enabled ? "tracking" : "fixed"}
+        onSelectionChange={(value: string) => value === "off" ? onDisable?.() : onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
+        {!!onDisable && <Text modifiers={[tag("off")]}>关闭</Text>}
+        <Text modifiers={[tag("fixed")]}>固定</Text>
+        <Text modifiers={[tag("tracking")]}>头部追踪</Text>
+      </Picker>
+    </Menu>
+  </Host>;
 }
 
 // A single native navigation stack stays mounted over the existing player.

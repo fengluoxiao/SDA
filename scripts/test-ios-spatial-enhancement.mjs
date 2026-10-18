@@ -22,7 +22,13 @@ console.log('iOS spatial enhancement checks passed: shared-profile default, pers
 
 const recipe=read("apps/native-renderer/src/lib.rs").split("pub fn set_spatial_enhancement")[1].split("fn set_output_volume")[0];
 assert.ok(recipe.includes("self.set_master_preamp_db(0.0)"));
-assert.ok(recipe.includes("if enabled { 1.5 } else { 0.0 }"));
+assert.ok(recipe.includes("if enabled { 4.0 } else { 0.0 }"));
 assert.ok(recipe.includes("self.spatial_layer.main_restore_db = 0.0"));
 assert.ok(read("apps/native-renderer/src/spatial_cues.rs").includes("taper_residual_tail(&mut p, 20.0)"));
 for (const path of ["apps/mobile/src/IOSNativeSettings.tsx","apps/mobile/src/IOSPlayer.tsx"]) assert.ok(!read(path).includes("−0.75 dB"));
+
+assert.ok(recipe.includes("self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 }"));
+assert.ok(recipe.includes("spatial_layer::Geometry::Front45"));
+assert.ok(recipe.includes("self.spatial_layer.rear_db = 0.0"));
+
+assert.ok(recipe.includes("if enabled { 1.5 } else { 0.0 }"), "accepted B shelf must follow the enhancement control");

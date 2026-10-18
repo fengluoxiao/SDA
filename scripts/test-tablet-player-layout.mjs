@@ -76,3 +76,8 @@ assert(source.indexOf('<PhoneLandscapeBlur uri=')<source.indexOf('key={artworkUr
 assert.match(source,/!phoneLandscapeBlur && <>/,'only the optional phone landscape style suppresses both existing gradient masks');
 assert.match(source,/key=\{artworkUri\} source=\{\{ uri: artworkUri \}\} resizeMode="contain".*top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize/,'foreground artwork geometry and contain mode are unchanged');
 console.log('Phone style switch: portrait tablet layout, landscape blur-only backdrop, original sharp cover geometry and off-state gradient retained.');
+
+// Tablet artwork/background styles reuse the approved gradient-player typography.
+assert.match(source,/style=\{\[np\.title, compactLandscape && np\.compactTitle/);
+assert.match(source,/style=\{\[np\.artist, tabletPlayer && \{ marginTop: 7 \}, compactLandscape && np\.compactArtist/);
+assert.doesNotMatch(source,/tabletPlayer && \{ fontSize: (?:28|20), lineHeight:/);

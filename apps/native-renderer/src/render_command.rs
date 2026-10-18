@@ -11,7 +11,7 @@ use std::{
 
 use super::Command;
 
-const MAX_QUEUED_PCM_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_QUEUED_PCM_BYTES: usize = 16 * 1024 * 1024;
 
 pub enum RenderCommand {
     Command(Command),
@@ -62,6 +62,15 @@ pub enum RenderCommand {
         events: Vec<crate::NativeObjectEvent>,
         reply: std::sync::mpsc::Sender<bool>,
     },
+    /// Full scene and compatible plain output committed at the same sample clock.
+    /// The scene remains warm while only the final binaural output is bypassed.
+    PcmFrameWithCompatibility {
+        start: u64,
+        entries: Vec<(String, Vec<f32>)>,
+        events: Vec<crate::NativeObjectEvent>,
+        compatibility: [Vec<f32>; 2],
+        reply: Option<std::sync::mpsc::Sender<bool>>,
+    },
     HeadphoneFir {
         preamp: f32,
         left: Vec<f32>,
@@ -80,6 +89,9 @@ impl RenderCommand {
                 .iter()
                 .map(|(_, samples)| samples.len() * size_of::<f32>())
                 .sum(),
+            Self::PcmFrameWithCompatibility { entries, compatibility, .. } =>
+                (entries.iter().map(|(_, pcm)| pcm.len()).sum::<usize>()
+                    + compatibility.iter().map(Vec::len).sum::<usize>()) * size_of::<f32>(),
             Self::HeadphoneFir { left, right, .. } => (left.len() + right.len()) * size_of::<f32>(),
             _ => 0,
         }

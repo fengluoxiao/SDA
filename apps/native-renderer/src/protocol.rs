@@ -831,6 +831,11 @@ pub(super) fn apply_render_command(
             let _ = reply.send(accepted);
             true
         }
+        render_command::RenderCommand::PcmFrameWithCompatibility { start, entries, events, compatibility, reply } => {
+            let accepted = accept_pcm_frame_with_compatibility(state, start, entries, events, compatibility);
+            if let Some(reply) = reply { let _ = reply.send(accepted); }
+            true
+        }
         render_command::RenderCommand::HeadphoneFir {
             preamp,
             left,
@@ -939,6 +944,23 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
             };
         }
     }
+}
+
+fn accept_pcm_frame_with_compatibility(state:&mut Engine, start:u64, entries:Vec<(String,Vec<f32>)>,
+    events:Vec<NativeObjectEvent>, compatibility:[Vec<f32>;2]) -> bool {
+    let samples=entries.first().map_or(0,|(_,pcm)|pcm.len());
+    let valid=compatibility.iter().all(|ear|ear.len()==samples && ear.iter().all(|v|v.is_finite()))
+        && state.compatible_pcm.as_ref().is_none_or(|plain|plain.can_write(state.sample_pos,start,samples));
+    if !valid {
+        write_event(&Event::BatchAck {start,samples:samples as u32,accepted:false,detail:Some("invalid compatible PCM")});
+        return false;
+    }
+    if !accept_pcm_frame(state,start,entries,events) {return false;}
+    if start.saturating_add(samples as u64)>state.sample_pos {
+        let plain=state.compatible_pcm.get_or_insert_with(crate::compatible_pcm::CompatiblePcm::new);
+        plain.write(state.sample_pos,start,&compatibility);
+    }
+    true
 }
 
 // Both desktop IPC and mobile submission use this exact validation/commit path.

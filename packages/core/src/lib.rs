@@ -102,6 +102,13 @@ pub struct FrameData {
     pub ramp_duration: u32,
 }
 
+/// Alternate programme PCM on the scene's sample rate and presentation origin.
+/// Chunks are ordered but need not have the same length as individual scene
+/// frames. Consumers join them on the common programme clock; selecting a
+/// listening mode must not discard the scene or its object metadata.
+/// A delayed reference announces itself with labelled empty channels on the
+/// first scene frame. After that, None means no new reference chunk this frame.
+/// Streams without a compatible reference leave this field None throughout.
 #[derive(Debug, Clone)]
 pub struct CompatibilityBed {
     pub channels: Vec<Vec<f32>>,

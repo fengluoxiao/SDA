@@ -1,3 +1,5 @@
+import { ArtworkEdgeBlend } from "./ArtworkEdgeBlend";
+import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
 import { isTabletPlayer, tabletPlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
@@ -195,18 +197,19 @@ function ThemedPlayer(p: PlayerProps) {
       <IOSPlaybackSymbol playing={playing} color={c.accent} />
     </Pressable>
   </View>;
+  const headIndicator = spatialHeadIndicator(p.binauralEnabled !== false, p.headTrackingEnabled, p.headYaw, c.accent, immersiveHome ? pc.ink : c.ink);
   const headerActions = <>
-        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} sideDock={sideNavigationActive}
+        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onDisable={() => p.setBinauralEnabled?.(false)}
-          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton spatial sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
-          accessibilityLabel={p.binauralEnabled === false ? "空间音频 · 关闭" : "空间音频 · 固定"}
+          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
+          accessibilityLabel={headIndicator.label}
           onPress={() => Alert.alert("空间音频", undefined, [
             { text: "关闭", onPress: () => p.setBinauralEnabled?.(false) },
             { text: "固定", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(false); } },
             { text: "取消", style: "cancel" },
           ])} /> : <Pressable accessibilityRole="button"
-          accessibilityLabel={p.binauralEnabled === false ? "空间音频 · 关闭" : "空间音频 · 固定"}
+          accessibilityLabel={headIndicator.label}
           disabled={p.busy || p.systemSpatial360RAActive}
           onPress={() => Alert.alert("空间音频", undefined, [
             { text: "关闭", onPress: () => p.setBinauralEnabled?.(false) },
@@ -215,7 +218,7 @@ function ThemedPlayer(p: PlayerProps) {
             { text: "取消", style: "cancel" },
           ])}
           style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center", opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
-          <Symbol name={p.headTrackingEnabled ? "person.crop.circle.fill" : "person.crop.circle"} fallback="HT" size={24} color={p.headTrackingEnabled ? c.accent : immersiveHome ? pc.ink : c.ink} />
+          <View style={{ transform: [{ perspective: 400 }, { rotateY: `${headIndicator.poseDegrees}deg` }] }}><Symbol name={headIndicator.symbol} fallback="HT" size={24} color={headIndicator.color} /></View>
         </Pressable>}
         {Platform.OS === "android" ? <AndroidGlassSettingsButton onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
   </>;
@@ -276,13 +279,13 @@ function ThemedPlayer(p: PlayerProps) {
           <View testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
             {tabletLayout && <View testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
-              {hasArtwork ? <Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
+              {hasArtwork ? <ArtworkEdgeBlend><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </View>}
             {!tabletPlayer && !hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}
           </Pressable>
           <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, landscapePlayer && np.landscapeControls, sideNavigationRight && { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }, tabletLayout && { width: tabletLayout.controlsWidth, alignSelf: "center", paddingLeft: 0, paddingRight: 0, paddingTop: 0, gap: 0 }]}>
           <View style={[np.metadata, { transform: [{ translateY: tabletPlayer || landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
-            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, tabletPlayer && { fontSize: 28, lineHeight: 35 }, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { fontSize: 20, lineHeight: 28, marginTop: 7 }, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
+            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>

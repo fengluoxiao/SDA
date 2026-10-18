@@ -5,10 +5,18 @@ use std::collections::HashMap;
 const MAX_DB:f32=6.0;
 fn smooth(v:f32)->f32 {let t=v.clamp(0.0,1.0);t*t*(3.0-2.0*t)}
 /// World coordinates: no PCM/loudness, object IDs or head pose enters this rule.
-/// Ear-level front and sides through ±105deg belong to the protected main layer.
-/// Rear 105..135deg and ±30deg height blend into the auxiliary layer. These are enhancement
-/// design choices, not a normative Dolby/Apple coordinate mapping.
-fn weight(position:[f32;3])->f32 {
+/// Explicit enhancement geometries; neither policy depends on PCM, IDs or head pose.
+/// ProtectedSides retains the later 105..135 degree policy for manual controls.
+/// Front45 is the selected base: protected through 45 degrees, full lift at 90.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Geometry {
+    #[default]
+    ProtectedSides,
+    Front45,
+}
+#[cfg(test)]
+fn weight(position:[f32;3])->f32 { weight_for(position, Geometry::ProtectedSides) }
+fn weight_for(position:[f32;3], geometry:Geometry)->f32 {
     if !position.iter().all(|v|v.is_finite()) {return 0.0;}
     let [x,y,z]=position.map(f64::from);let h=(x*x+y*y).sqrt();let r=(h*h+z*z).sqrt();
     if r<1e-6 {return 0.0;}
@@ -16,7 +24,11 @@ fn weight(position:[f32;3])->f32 {
     // Horizontal side sources can carry lead material. Do not blindly lift
     // the whole lateral plane: auxiliary rear starts behind the side region.
     let rear_start=0.25881904f32; // sin(15deg), i.e. azimuth 105deg.
-    let side=smooth((-front-rear_start)/(std::f32::consts::FRAC_1_SQRT_2-rear_start));
+    let side=match geometry {
+        Geometry::ProtectedSides => smooth((-front-rear_start)/(std::f32::consts::FRAC_1_SQRT_2-rear_start)),
+        // Selected +2/+6 audition: front 45 degrees protected, full lift at 90.
+        Geometry::Front45 => smooth((std::f32::consts::FRAC_1_SQRT_2-front)/std::f32::consts::FRAC_1_SQRT_2),
+    };
     let height=smooth((z.abs()/r/0.5) as f32);
     (1.0-(1.0-side)*(1.0-height)).clamp(0.0,1.0)
 }
@@ -33,16 +45,20 @@ fn speaker_rear_weight(azimuth:f32,elevation:f32)->f32 {
     let a=azimuth.to_radians();let e=elevation.to_radians();
     rear_weight([-a.sin()*e.cos(),a.cos()*e.cos(),e.sin()])
 }
-fn speaker_weight(azimuth:f32,elevation:f32)->f32 {
+fn speaker_weight(azimuth:f32,elevation:f32,geometry:Geometry)->f32 {
     let a=azimuth.to_radians();let e=elevation.to_radians();
-    weight([-a.sin()*e.cos(),a.cos()*e.cos(),e.sin()])
+    weight_for([-a.sin()*e.cos(),a.cos()*e.cos(),e.sin()],geometry)
 }
-pub(crate) struct Settings {pub db:f32,pub main_restore_db:f32,pub rear_db:f32,pub slew:f32}
+#[derive(Clone, Copy)]
+pub(crate) struct Settings {pub db:f32,pub main_restore_db:f32,pub rear_db:f32,pub slew:f32,pub geometry:Geometry}
 impl Settings {
-    pub fn new(rate:u32)->Self {Self {db:0.0,main_restore_db:0.0,rear_db:0.0,slew:(10.0f32.powf(MAX_DB/20.0)-1.0)/(rate.max(1) as f32*0.03)}}
+    pub fn new(rate:u32)->Self {Self {db:0.0,main_restore_db:0.0,rear_db:0.0,geometry:Geometry::ProtectedSides,slew:(10.0f32.powf(MAX_DB/20.0)-1.0)/(rate.max(1) as f32*0.03)}}
     pub fn set(&mut self,db:f32,rate:u32)->Result<(),String> {
         if !db.is_finite() || !(0.0..=MAX_DB).contains(&db) {return Err("spatial layer gain must be finite and between 0 and +6 dB".into());}
         self.db=db;self.slew=Self::new(rate).slew;Ok(())
+    }
+    pub fn source_gain(&self,source:&mut Source,at:u64)->f32 {
+        source_gain_with_geometry(source,self.db,self.main_restore_db,self.rear_db,self.slew,self.geometry,at)
     }
     /// Bed routes use canonical world layout, never the rotated listener route.
     pub fn refresh_beds(&self,sources:&mut HashMap<String,Source>,solver:&vbap::VbapSolver) {
@@ -54,21 +70,26 @@ impl Settings {
             if route.lfe>0.0 {s.spatial_layer_bed_weight=0.0;s.spatial_layer_rear_bed_weight=0.0;continue;}
             let mut w=0.0f32;let mut rear=0.0f32;let mut total=0.0f32;
             for (gain,speaker) in route.buses.iter().zip(vbap::speakers(solver.layout())) {
-                let p=gain*gain;total+=p;w+=p*speaker_weight(speaker.azimuth,speaker.elevation);rear+=p*speaker_rear_weight(speaker.azimuth,speaker.elevation);
+                let p=gain*gain;total+=p;w+=p*speaker_weight(speaker.azimuth,speaker.elevation,self.geometry);rear+=p*speaker_rear_weight(speaker.azimuth,speaker.elevation);
             }
             s.spatial_layer_bed_weight=if total>1e-12 {(w/total).clamp(0.0,1.0)} else {0.0};
             s.spatial_layer_rear_bed_weight=if total>1e-12 {(rear/total).clamp(0.0,1.0)} else {0.0};
         }
     }
 }
+#[cfg(test)]
 pub(crate) fn source_gain(s:&mut Source,db:f32,main_restore_db:f32,slew:f32,at:u64)->f32 {
     source_gain_with_rear(s,db,main_restore_db,0.0,slew,at)
 }
+#[cfg(test)]
 pub(crate) fn source_gain_with_rear(s:&mut Source,db:f32,main_restore_db:f32,rear_db:f32,slew:f32,at:u64)->f32 {
+    source_gain_with_geometry(s,db,main_restore_db,rear_db,slew,Geometry::ProtectedSides,at)
+}
+fn source_gain_with_geometry(s:&mut Source,db:f32,main_restore_db:f32,rear_db:f32,slew:f32,geometry:Geometry,at:u64)->f32 {
     if s.lfe_gain>0.0 || s.lfe_target>0.0 {s.spatial_layer_gain=1.0;s.spatial_layer_target=1.0;return 1.0;}
     if db==0.0 && main_restore_db==0.0 && rear_db==0.0 && s.spatial_layer_gain==1.0 {return 1.0;}
     if at.is_multiple_of(128) {
-        let w=if s.kind==SourceKind::Object {weight(s.position)} else {s.spatial_layer_bed_weight};
+        let w=if s.kind==SourceKind::Object {weight_for(s.position,geometry)} else {s.spatial_layer_bed_weight};
         let rear=if s.kind==SourceKind::Object {rear_weight(s.position)} else {s.spatial_layer_rear_bed_weight};
         s.spatial_layer_target=10.0f32.powf((db*w-main_restore_db*(1.0-w)+rear_db*rear)/20.0);
     }
@@ -318,11 +339,15 @@ mod tests {
         let mut e=crate::Engine::new(48000,2);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
+        assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),4.0);
+        assert_eq!(e.spatial_preamp.target_db(),2.0);
+        assert_eq!(e.spatial_layer.geometry,Geometry::Front45);
         assert_eq!(e.spatial_layer.main_restore_db,0.0);
-        assert_eq!(e.spatial_layer.rear_db,3.0);
+        assert_eq!(e.spatial_layer.rear_db,0.0);
         assert_eq!(e.final_output_trim.target_db(),0.0);
         e.set_spatial_enhancement(false).unwrap();
+        assert_eq!(e.spatial_preamp.target_db(),0.0);
+        assert_eq!(e.spatial_layer.geometry,Geometry::ProtectedSides);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         assert_eq!(e.spatial_layer.rear_db,0.0);
         let command:crate::Command=serde_json::from_str(r#"{"type":"setSpatialEnhancement","enabled":true}"#).unwrap();

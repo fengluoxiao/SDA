@@ -654,7 +654,7 @@ for(const offset of [0,-31.5]) {
 assert.match(ui, /isTabletPlayer\(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height\)/);
 assert.match(ui, /testID="tablet-ambient-artwork"[^>]+resizeMode="cover" blurRadius=\{48\}/);
 assert.match(ui, /testID="tablet-complete-artwork"/);
-assert.match(ui, /hasArtwork \? <Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
+assert.match(ui, /hasArtwork \? <ArtworkEdgeBlend><Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
 assert.match(ui, /tabletLayout && \{ width: tabletLayout.controlsWidth/);
 assert.doesNotMatch(ui,/ipad-artwork-backdrop|immersiveTabletArtwork/);
 

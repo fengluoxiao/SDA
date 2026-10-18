@@ -9,7 +9,7 @@ fn render(layout:vbap::LayoutId,chunk:usize,mode:&str) -> Vec<f32> {
     render_recipe(layout,chunk,mode,false)
 }
 fn render_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool) -> Vec<f32> {
-    render_rear_recipe(layout,chunk,mode,explicit,3.0)
+    render_rear_recipe(layout,chunk,mode,explicit,0.0)
 }
 fn render_rear_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool,rear_db:f32) -> Vec<f32> {
     let is_bed=mode!="objects";
@@ -20,8 +20,8 @@ fn render_rear_recipe(layout:vbap::LayoutId,chunk:usize,mode:&str,explicit:bool,
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
     if explicit {e.set_spatial_enhancement(true).unwrap();}
     e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);e.direct_mix=1.0;
-    assert_eq!(e.spatial_layer_gain_db(),1.5);
-    assert_eq!(e.spatial_layer.rear_db,3.0);
+    assert_eq!(e.spatial_layer_gain_db(),4.0);
+    assert_eq!(e.spatial_layer.rear_db,0.0);
     e.set_spatial_balance(false);e.front_common.enabled=false;
     e.set_master_preamp_db(-12.0).unwrap();
     e.set_program_codec(if mode=="stereo" {"alac"} else if layout==vbap::LayoutId::Dolby7_1_4 {"eac3"} else {"mpegh"}.into());
@@ -74,15 +74,17 @@ fn shared_hrtfhq_synthetic_output_is_callback_partition_invariant() {
 fn shared_hrtfhq_default_presentation_is_host_independent_and_reload_is_idempotent() {
     let mut e=Engine::new(48000,2);
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
-    assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),1.5);
+    assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),4.0);
     assert_eq!(e.spatial_layer.main_restore_db,0.0);
-    e.reset_session(0);assert_eq!(e.spatial_layer_gain_db(),1.5,"track reset lost presentation defaults");
+    assert_eq!(e.spatial_preamp.target_db(),2.0);
+    assert_eq!(e.spatial_layer.geometry,spatial_layer::Geometry::Front45);
+    e.reset_session(0);assert_eq!(e.spatial_layer_gain_db(),4.0,"track reset lost presentation defaults");
     e.set_spatial_enhancement(false).unwrap();
     e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0).unwrap();
     assert_eq!(e.spatial_layer_gain_db(),0.0,"same-profile reload must retain an explicit override");
     let mut live=Engine::new(48000,2);
     live.configure_hrtf_preset(hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap(),0.0,true,true).unwrap();
-    assert_eq!(live.spatial_layer_gain_db(),1.5,"live preset path must apply the same recipe");
+    assert_eq!(live.spatial_layer_gain_db(),4.0,"live preset path must apply the same recipe");
 }
 
 #[test]

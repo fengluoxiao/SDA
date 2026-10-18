@@ -9,7 +9,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
-  binauralEnabled?: boolean; objectRendering?: boolean;
+  binauralEnabled?: boolean; objectRendering?: boolean; listenerYawDegrees?: number;
   outputLayout: "2.0" | "7.1.4" | "360RA-13";
   sourceCodec: string;
   alacUpmixActive: boolean;
@@ -497,6 +497,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({
         preparingAudio: (value as Partial<PlaybackStatus> & { preparingAudio?: boolean }).preparingAudio === true,
         positionMs: value.positionMs ?? 0,
+        headYaw: this.state.headTrackingEnabled && Number.isFinite(value.listenerYawDegrees) ? value.listenerYawDegrees! : this.state.headYaw,
         decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
         fifoFrames: value.fifoFrames ?? 0,
         sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
