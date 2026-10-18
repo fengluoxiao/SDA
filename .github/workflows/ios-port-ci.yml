@@ -138,6 +138,10 @@ jobs:
           node scripts/test-ios-session-recovery.mjs
           node scripts/test-ios-native-drawable.mjs
           node scripts/test-ios-head-tracking.mjs
+          node scripts/test-mobile-spatial-indicator.mjs
+          node scripts/test-artwork-edge-blend.mjs
+          node scripts/test-tablet-player-layout.mjs
+          node scripts/test-mobile-production-fixtures.mjs
           node scripts/test-ios-tracking-session.mjs
           node scripts/test-ios-shared-resolver.mjs
           node scripts/test-ios-diagnostics.mjs
