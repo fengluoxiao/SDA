@@ -178,7 +178,7 @@ jobs:
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib object_eac3_has_no_extra_presentation_gain_over_the_shared_base
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
-          SDA_ACCEPTED_FRONT_RECEIPT=ios-artifacts/front-presentation.json cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib front_presentation_tests -- --test-threads=1 2>&1 | tee ios-artifacts/front-presentation-tests.log
+          SDA_ACCEPTED_FRONT_RECEIPT="$GITHUB_WORKSPACE/ios-artifacts/front-presentation.json" cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib front_presentation_tests -- --test-threads=1 2>&1 | tee ios-artifacts/front-presentation-tests.log
       - name: Verify integrated depth, elevation and harmony regressions
         if: steps.sdk.outputs.available == 'true'
         run: |
