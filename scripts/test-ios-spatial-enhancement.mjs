@@ -31,4 +31,4 @@ assert.ok(recipe.includes("self.spatial_preamp.set(if enabled { 2.0 } else { 0.0
 assert.ok(recipe.includes("spatial_layer::Geometry::Front45"));
 assert.ok(recipe.includes("self.spatial_layer.rear_db = 0.0"));
 
-assert.ok(recipe.includes("if enabled { 1.5 } else { 0.0 }"), "accepted B shelf must follow the enhancement control");
+assert.ok(recipe.includes("if enabled { 0.6 } else { 0.0 }"), "common output shelf must follow the enhancement control with a +0.6 dB cap");

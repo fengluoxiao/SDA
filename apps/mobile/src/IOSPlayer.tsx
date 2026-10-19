@@ -411,7 +411,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             <View style={s.settingRow}>{label("外观", false, s.settingTitle)}{label("跟随系统", true, s.small)}</View>{divider()}
             <View style={s.settingRow}><View style={s.settingCopy}>{label("音频输出", false, s.settingTitle)}{label(p.playing ? p.renderingStatus : "等待播放", true, s.settingHint)}{label(p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道", true, s.settingHint)}</View></View>{divider()}
-            {actionRow("info.circle", "关于 SDA", "Spatial Decoder App", () => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器"))}
+            {actionRow("info.circle", "关于 SDA", "Spatial Decoder Atelier", () => Alert.alert("SDA", "Spatial Decoder Atelier\n本机空间音频播放器"))}
           </View>
 
         </ScrollView>

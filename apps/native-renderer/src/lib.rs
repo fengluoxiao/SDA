@@ -1779,11 +1779,12 @@ impl Engine {
         Ok(())
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
-    /// User-selected B: main +2 dB, full auxiliary +6 dB, common 4 kHz shelf +1.5 dB.
+    /// User-selected B layers: main +2 dB, full auxiliary +6 dB.
+    /// The common 4 kHz shelf is capped at +0.6 dB by the 2026-10-19 preference.
     /// The linked +2 dB belongs to the spatial path so plain output stays unity.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
-            std::f32::consts::FRAC_1_SQRT_2, if enabled { 1.5 } else { 0.0 })?;
+            std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
         self.set_master_preamp_db(0.0)?;
         self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 },

@@ -225,6 +225,7 @@ jobs:
           set -o pipefail
           cd apps/mobile
           pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
+          node ../../scripts/verify-mobile-branding.cjs --ios-assets ios/SDA/Images.xcassets/AppIcon.appiconset --receipt ../../ios-artifacts/app-branding.json
           cd ios
           pod install 2>&1 | tee ../../../ios-artifacts/pods.log
       - name: Build simulator app

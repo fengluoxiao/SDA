@@ -91,7 +91,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}
         <View style={s.row}><View style={s.copy}>{text("音频输出：" + (p.playing ? p.renderingStatus : "等待播放"), false, s.output)}{text("48 kHz · 浮点 PCM · 双声道", true, s.subtitle)}</View></View>{separator()}
-        <Pressable accessibilityRole="button" accessibilityLabel="关于 SDA" onPress={() => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器")} style={s.row}>
+        <Pressable accessibilityRole="button" accessibilityLabel="关于 SDA" onPress={() => Alert.alert("SDA", "Spatial Decoder Atelier\n本机空间音频播放器")} style={s.row}>
           <View style={s.about}><AndroidSymbol name="info.circle" size={24} color={c.muted} /><Text style={{ color: c.ink, fontSize: 16 }}>关于 SDA</Text></View><AndroidSymbol name="chevron.right" size={24} color={c.muted} />
         </Pressable>
       </>)}

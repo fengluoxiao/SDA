@@ -218,7 +218,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Text>外观 · 跟随系统</Text>
       <Text>{"音频输出：" + (p.playing ? p.renderingStatus : "等待播放")}</Text>
       <Text>{p.systemSpatial360RAActive && p.outputChannels === 12 ? "48 kHz · 浮点 PCM · 7.1.4" : "48 kHz · 浮点 PCM · 双声道"}</Text>
-      <Button label="关于 SDA" systemImage="info.circle" onPress={() => Alert.alert("SDA", "Spatial Decoder App\n本机空间音频播放器")} />
+      <Button label="关于 SDA" systemImage="info.circle" onPress={() => Alert.alert("SDA", "Spatial Decoder Atelier\n本机空间音频播放器")} />
     </Section>
     <RemoteDiagnosticsSettings />
   </Form>;

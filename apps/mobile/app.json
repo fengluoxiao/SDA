@@ -26,14 +26,27 @@
           "UIInterfaceOrientationLandscapeRight"
         ]
       },
-      "supportsTablet": true
+      "supportsTablet": true,
+      "icon": "./assets/app-icon.png"
     },
     "android": {
-      "package": "app.sda.mobile"
+      "package": "app.sda.mobile",
+      "icon": "./assets/app-icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochromeImage": "./assets/monochrome-icon.png",
+        "backgroundColor": "#202223"
+      }
     },
     "plugins": [
       "./plugins/with-ios-deployment"
     ],
-    "scheme": "sda"
+    "scheme": "sda",
+    "icon": "./assets/app-icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    }
   }
 }

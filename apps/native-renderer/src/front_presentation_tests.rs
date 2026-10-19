@@ -5,7 +5,19 @@ fn shared() -> hrtf::NativeHrtfSet {
         .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
     hrtf::NativeHrtfSet::load_calibrated(&p).unwrap()
 }
+// Alternating samples measure the shelf's high-frequency asymptote. Check
+// the configured filter itself across On/Off, reload and session reset.
+fn output_shelf_db(e: &Engine) -> f64 {
+    let mut filter=e.output_clarity[0];filter.reset();
+    let mut amplitude=0.0f64;
+    for n in 0..4096 {
+        let out=filter.process(if n%2==0 {1.0} else {-1.0});
+        if n>=3072 {amplitude+=f64::from(out.abs())/1024.;}
+    }
+    20.*amplitude.log10()
+}
 fn assert_accepted(e: &Engine, enabled: bool) {
+    assert!((output_shelf_db(e)-if enabled {0.6} else {0.0}).abs()<1e-4);
     assert_eq!(e.front_common.enabled, enabled);
     assert!(e.front_common.grouped);
     assert_eq!(e.front_common.presence_db(), 3.);
@@ -24,7 +36,8 @@ fn accepted_front_policy_follows_enhancement_reload_and_transport_reset() {
             "frontCommonEnabled":e.front_common.enabled,"grouped":e.front_common.grouped,
             "presenceDb":e.front_common.presence_db(),"presenceHz":3000,"presenceQ":0.9,
             "spatialPreampDb":e.spatial_preamp.target_db(),"auxiliaryExtraMaxDb":e.spatial_layer.db,
-            "rearExtraDb":e.spatial_layer.rear_db});
+            "rearExtraDb":e.spatial_layer.rear_db,"outputShelfHz":4000,
+            "outputShelfMaxDb":output_shelf_db(&e)});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
     e.reset_session(48000);
