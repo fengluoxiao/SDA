@@ -676,12 +676,12 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
             let next = if let Some(decoder) = &mut host.decoder { decoder.next_frame() }
                 else { host.av3a_decoder.as_mut().and_then(|decoder| decoder.next_frame()) };
             let Some(frame) = next else { break; };
+            if host.av3a_decoder.is_some() && !crate::balance::av3a_bed(&frame) {
+                return Err("Audio Vivid system output requires the verified 7.1.4 speaker order; object scenes use the shared native renderer".into());
+            }
             if frame.sample_rate != 48000 || frame.channels.len() != 12
                 || frame.channels[0].is_empty() || frame.channels.iter().any(|ch| ch.len() != frame.channels[0].len()) {
                 return Err("invalid system 7.1.4 speaker frame".into());
-            }
-            if host.av3a_decoder.is_some() && !crate::balance::av3a_bed(&frame) {
-                return Err("Audio Vivid system output requires the verified 7.1.4 speaker order".into());
             }
             let frames = frame.channels[0].len();
             if host.events.len() + frame.events.len() > 262144 { return Err("speaker object timeline backlog exceeded".into()); }

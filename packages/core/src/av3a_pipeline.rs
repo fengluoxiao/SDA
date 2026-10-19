@@ -1,7 +1,10 @@
-//! Audio Vivid / AV3A channel beds. One source decoder and sample clock on
+//! Audio Vivid / AV3A channel beds and metadata-mapped Mix scenes. One source decoder and sample clock on
 //! native and WASM hosts; no vendor binaural mix, gain boost or object guessing.
-use crate::{FrameData, Pipeline};
-use avs3a::backend::{McDecoderBackend, MonoDecoderBackend, StereoDecoderBackend};
+use crate::av3a_objects::ObjectScene;
+use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline};
+use avs3a::backend::{
+    McDecoderBackend, MixDecoderBackend, MonoDecoderBackend, StereoDecoderBackend,
+};
 use avs3a::decode::PendingDecoder;
 use avs3a::header::{ChannelConfig, CodecProfile};
 use avs3a::{BuiltinDecoder, EncodedFrame, FrameStream, StreamEvent};
@@ -71,11 +74,26 @@ fn mc_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
     )))
 }
 
+#[inline(never)]
+fn mix_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
+    let backend = MixDecoderBackend::new_builtin().map_err(|e| e.to_string())?;
+    Ok(BuiltinDecoder::Mix(Box::new(
+        PendingDecoder::new(backend)
+            .configure(h)
+            .map_err(|e| e.to_string())?,
+    )))
+}
+
 pub struct Av3aPipeline {
     parser: FrameStream,
     decoder: Option<BuiltinDecoder>,
     resampler: Option<SincFixedIn<f32>>,
     labels: Vec<String>,
+    raw_beds: Vec<String>,
+    declarations: Vec<ObjectChannelDecl>,
+    objects: Option<ObjectScene>,
+    events: VecDeque<ObjectEvent>,
+    transport_channels: usize,
     source_rate: u32,
     input_samples: u64,
     output_samples: u64,
@@ -90,6 +108,11 @@ impl Av3aPipeline {
             decoder: None,
             resampler: None,
             labels: Vec::new(),
+            raw_beds: Vec::new(),
+            declarations: Vec::new(),
+            objects: None,
+            events: VecDeque::new(),
+            transport_channels: 0,
             source_rate: OUTPUT_RATE,
             input_samples: 0,
             output_samples: 0,
@@ -98,27 +121,36 @@ impl Av3aPipeline {
             finished: false,
         }
     }
-    fn configure(&mut self, frame: &EncodedFrame) -> Result<(), String> {
-        let h = frame.header();
-        if h.profile != CodecProfile::ChannelBased {
-            return Err("Audio Vivid mixed-object/HOA routing is not validated; refusing to treat object or HOA PCM as speaker beds".into());
+    fn configure(&mut self, h: &avs3a::FrameHeader) -> Result<(), String> {
+        if h.samples_per_channel as usize != FRAME_SAMPLES {
+            return Err("invalid Audio Vivid sample count".into());
         }
-        self.labels = bed_labels(
-            h.channel_config
-                .ok_or("Audio Vivid channel configuration missing")?,
-        )?;
-        if self.labels.len() != h.channels as usize
-            || h.samples_per_channel as usize != FRAME_SAMPLES
-        {
-            return Err("invalid Audio Vivid channel/sample count".into());
+        self.transport_channels = usize::from(h.channels);
+        match h.profile {
+            CodecProfile::ChannelBased => {
+                self.objects = None;
+                self.labels = bed_labels(h.channel_config.ok_or("Audio Vivid channel configuration missing")?)?;
+                if self.labels.len() != self.transport_channels { return Err("invalid Audio Vivid channel count".into()); }
+                self.raw_beds = self.labels.clone();
+            }
+            CodecProfile::Mixed => {
+                if self.objects.as_ref().map(ObjectScene::transport_channels) != Some(self.transport_channels) {
+                    self.objects = Some(ObjectScene::new(self.transport_channels));
+                }
+            }
+            CodecProfile::Hoa => return Err("Audio Vivid HOA routing is not validated; refusing to treat coefficients as speaker beds".into()),
         }
         self.source_rate = h.sample_rate;
-        self.decoder = Some(match h.channel_config {
-            Some(ChannelConfig::Mono) => mono_decoder(h)?,
-            Some(ChannelConfig::Stereo) => stereo_decoder(h)?,
-            _ => mc_decoder(h)?,
+        self.decoder = Some(if h.profile == CodecProfile::Mixed {
+            mix_decoder(h)?
+        } else {
+            match h.channel_config {
+                Some(ChannelConfig::Mono) => mono_decoder(h)?,
+                Some(ChannelConfig::Stereo) => stereo_decoder(h)?,
+                _ => mc_decoder(h)?,
+            }
         });
-        if h.sample_rate != OUTPUT_RATE {
+        if h.sample_rate != OUTPUT_RATE && h.profile != CodecProfile::Mixed {
             let resampler = SincFixedIn::<f32>::new(
                 OUTPUT_RATE as f64 / h.sample_rate as f64,
                 1.0,
@@ -147,7 +179,7 @@ impl Av3aPipeline {
             return Err("Audio Vivid CRC mismatch".into());
         }
         if self.decoder.is_none() {
-            self.configure(frame)?;
+            self.configure(frame.header())?;
         }
         let decoder = self.decoder.as_mut().unwrap();
         let mut pcm = vec![0.0; decoder.sample_count().map_err(|e| e.to_string())?];
@@ -156,7 +188,7 @@ impl Av3aPipeline {
             .map_err(|e| e.to_string())?;
         // Upstream float synthesis is in PCM16 units. Normalise exactly once,
         // retain headroom (no PCM16 clipping/quantisation before spatial mixing).
-        let n = self.labels.len();
+        let n = self.transport_channels;
         let mut planar = vec![vec![0.0; FRAME_SAMPLES]; n];
         for (i, samples) in pcm.chunks_exact(n).enumerate() {
             for (ch, value) in samples.iter().enumerate() {
@@ -164,6 +196,41 @@ impl Av3aPipeline {
                     return Err("non-finite Audio Vivid PCM".into());
                 }
                 planar[ch][i] = value / avs3a::decode::FLOAT_FULL_SCALE;
+            }
+        }
+        if let Some(scene) = &mut self.objects {
+            let at = (self.input_samples * u64::from(OUTPUT_RATE)
+                + u64::from(self.source_rate) / 2)
+                / u64::from(self.source_rate);
+            let end = ((self.input_samples + FRAME_SAMPLES as u64) * u64::from(OUTPUT_RATE)
+                + u64::from(self.source_rate) / 2)
+                / u64::from(self.source_rate);
+            let meta = decoder
+                .last_metadata_values()
+                .ok_or("Audio Vivid Mix metadata missing")?;
+            let routed = scene.process(planar, meta, at, (end - at) as u32)?;
+            self.labels = routed.labels;
+            self.raw_beds = routed.beds;
+            self.declarations = routed.declarations;
+            self.events.extend(routed.events);
+            planar = routed.channels;
+            if self.source_rate != OUTPUT_RATE && self.resampler.is_none() {
+                let src = SincFixedIn::<f32>::new(
+                    OUTPUT_RATE as f64 / self.source_rate as f64,
+                    1.0,
+                    SincInterpolationParameters {
+                        sinc_len: 256,
+                        f_cutoff: 0.95,
+                        interpolation: SincInterpolationType::Cubic,
+                        oversampling_factor: 256,
+                        window: WindowFunction::BlackmanHarris2,
+                    },
+                    FRAME_SAMPLES,
+                    self.labels.len(),
+                )
+                .map_err(|e| e.to_string())?;
+                self.delay = src.output_delay();
+                self.resampler = Some(src);
             }
         }
         self.input_samples += FRAME_SAMPLES as u64;
@@ -192,15 +259,25 @@ impl Av3aPipeline {
             channel.drain(..skip);
             channel.truncate(count);
         }
-        out.push_back(FrameData { compatibility_bed: None,
+        out.push_back(FrameData {
+            compatibility_bed: None,
             codec: "av3a",
             sample_rate: OUTPUT_RATE,
             sample_pos: self.output_samples,
             channels,
             labels: self.labels.clone(),
-            raw_bed_labels: self.labels.clone(),
-            events: vec![],
-            object_channels: vec![],
+            raw_bed_labels: self.raw_beds.clone(),
+            events: {
+                let end = self.output_samples + count as u64;
+                let mut events = Vec::new();
+                while self.events.front().is_some_and(|e| e.sample_pos < end) {
+                    let e = self.events.pop_front().unwrap();
+                    debug_assert!(e.sample_pos >= self.output_samples);
+                    events.push(e);
+                }
+                events
+            },
+            object_channels: self.declarations.clone(),
             program_loudness: None,
             ramp_duration: 0,
         });
@@ -258,7 +335,14 @@ impl Pipeline for Av3aPipeline {
         }
     }
     fn reset(&mut self) {
+        // Reset is a seek within a programme. Keep its static scene mapping;
+        // fresh metadata can replace it before new PCM is emitted.
+        let mut scene = self.objects.take();
+        if let Some(scene) = &mut scene {
+            scene.reset_dynamic();
+        }
         *self = Self::new();
+        self.objects = scene;
     }
 }
 
@@ -299,6 +383,49 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+    #[test]
+    fn av3a_mix_selects_object_transport_without_guessing_speaker_labels() {
+        let frame = FrameStream::new()
+            .push(FIXTURE)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| {
+                if let StreamEvent::Frame(frame) = e {
+                    Some(frame)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let mut h = frame.header().clone();
+        h.profile = CodecProfile::Mixed;
+        h.channel_config = None;
+        h.sound_bed_type = Some(avs3a::header::SoundBedType::ObjectsOnly);
+        h.objects = 16;
+        h.bed_channels = 0;
+        h.channels = 16;
+        h.has_lfe = false;
+        h.sample_rate = 48000;
+        h.bitrate = 1536000;
+        h.bed_bitrate = None;
+        h.object_bitrate = Some(96000);
+        h.header_len = 8;
+        h.payload_len = 4088;
+        h.payload_bits = 4088 * 8;
+        h.frame_len = 4096;
+        let mut pipeline = Av3aPipeline::new();
+        pipeline.configure(&h).unwrap();
+        assert_eq!(
+            pipeline.decoder.as_ref().unwrap().sample_count().unwrap(),
+            16 * 1024
+        );
+        assert_eq!(
+            pipeline.decoder.as_ref().unwrap().config().profile,
+            CodecProfile::Mixed
+        );
+        assert!(pipeline.labels.is_empty() && pipeline.raw_beds.is_empty());
+        assert_eq!(pipeline.objects.as_ref().unwrap().transport_channels(), 16);
     }
     #[test]
     fn av3a_chunking_clock_and_layout() {

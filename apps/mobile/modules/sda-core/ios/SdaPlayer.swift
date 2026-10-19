@@ -457,7 +457,7 @@ final class SdaPlayer {
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
    layout = input.isAlac ? (alacUpmixActive ? "7.1.4" : "2.0") : (ext == "mhas" ? "360RA-13" : "7.1.4")
    do {
-    if (prefs.object(forKey:"sda.binauralEnabled") as? Bool ?? true) && ((["mhas", "av3a"].contains(ext) && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo"))) {
+    if (prefs.object(forKey:"sda.binauralEnabled") as? Bool ?? true) && (!input.isAv3a || input.av3aSpeakerBed) && ((["mhas", "av3a"].contains(ext) && prefs.bool(forKey:"sda.systemSpatial360RA")) || (input.isAlac && prefs.bool(forKey:"sda.systemSpatialStereo"))) {
      stopHeadTracking()
      let session = AVAudioSession.sharedInstance()
      try session.setCategory(.playback, mode:.default, options:[])

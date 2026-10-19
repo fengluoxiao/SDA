@@ -7,6 +7,7 @@ import CoreMedia
 final class CompressedInput {
  private(set) var isAlac = false
  private(set) var isAv3a = false
+ private(set) var av3aSpeakerBed = false
  private var file: FileHandle?
  private var reader: AVAssetReader?
  private var trackOutput: AVAssetReaderTrackOutput?
@@ -26,10 +27,26 @@ final class CompressedInput {
   let ext = (name as NSString).pathExtension.lowercased()
   isAv3a = ext == "av3a"
   if ["eac3", "ec3", "ac4", "mhas", "mp3", "av3a"].contains(ext) {
-   file = try FileHandle(forReadingFrom: url)
+   let input = try FileHandle(forReadingFrom: url)
+   file = input
+   if isAv3a {
+    av3aSpeakerBed = Self.av3aSpeakerBedHeader(try input.read(upToCount:9) ?? Data())
+    try input.seek(toOffset:0)
+   }
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
   } else { throw SdaError.message("支持立体声 ALAC、E-AC-3/Atmos M4A/MP4、MHAS、AV3A 和 MP3") }
+ }
+ // The Apple speaker route accepts the verified channel-based 7.1.4 profile.
+ // Mix/HOA transport counts do not identify speaker layouts; keep their scene
+ // metadata on the shared native path. Full framing/CRC validation stays in Rust.
+ static func av3aSpeakerBedHeader(_ prefix: Data) -> Bool {
+  let b = Array(prefix)
+  guard b.count >= 7, b[0] == 0xff, b[1] == 0xf2,
+   (b[2] & 0x80) == 0, ((b[2] >> 4) & 7) <= 1,
+   ((b[2] >> 1) & 7) == 0 else { return false }
+  let config = Int(b[4] & 0x1f) * 4 + Int(b[5] >> 6)
+  return config == 10
  }
  // Only change protection on SDA-owned imported copies, never a provider/source file.
  // copyItem can preserve a source file's complete/while-open protection class.

@@ -78,6 +78,8 @@ jobs:
           set -o pipefail
           xcrun swiftc -swift-version 5 scripts/ios-reader-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/reader-probe
           ios-artifacts/reader-probe crates/sda-native/tests/fixtures/ios-stereo-tones.m4a crates/sda-native/tests/fixtures/ios-stereo-tones.eac3 2>&1 | tee ios-artifacts/reader-probe.log
+          xcrun swiftc -swift-version 5 scripts/ios-av3a-route-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/av3a-route-probe
+          ios-artifacts/av3a-route-probe packages/core/tests/fixtures/av3a-7-1-4-three-frames.av3a 2>&1 | tee ios-artifacts/av3a-route-probe.log
       - name: Verify stereo ALAC decoding and recovery
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -160,6 +162,7 @@ jobs:
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
+          cargo test --manifest-path packages/core/Cargo.toml --no-default-features --locked --lib av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-core-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-mobile-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked balance::tests -- --test-threads=1 2>&1 | tee ios-artifacts/volume-balance-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1 2>&1 | tee ios-artifacts/headphone-orientation-tests.log

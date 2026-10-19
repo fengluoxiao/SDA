@@ -121,7 +121,7 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     use std::io::{BufRead, Read, Write};
     let dir = PathBuf::from(std::env::var("SDA_APPROVED_SCENE_DIR").unwrap());
     let codec = std::env::var("SDA_APPROVED_SCENE_CODEC").unwrap_or_else(|_| "eac3".into());
-    assert!(matches!(codec.as_str(), "eac3" | "mpegh" | "adm"));
+    assert!(matches!(codec.as_str(), "eac3" | "mpegh" | "adm" | "av3a"));
     let seconds: u64 = std::env::var("SDA_APPROVED_SCENE_SECONDS")
         .unwrap()
         .parse()

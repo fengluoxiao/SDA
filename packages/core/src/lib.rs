@@ -19,6 +19,7 @@ use wasm_bindgen::prelude::*;
 pub mod alac_pipeline;
 pub mod ac4_pipeline;
 pub mod av3a_pipeline;
+mod av3a_objects;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
 pub mod truehd_pipeline;
@@ -94,7 +95,8 @@ pub struct FrameData {
     /// Planar PCM: bed channels first, then dynamic-object channels.
     pub channels: Vec<Vec<f32>>,
     pub labels: Vec<String>,
-    /// Original fixed bed labels before object reconstruction/downstream routing.
+    /// Decoded direct-speaker labels before downstream spatial rendering.
+    /// Metadata-defined logical channels can differ from codec transports.
     pub raw_bed_labels: Vec<String>,
     pub events: Vec<ObjectEvent>,
     pub object_channels: Vec<ObjectChannelDecl>,
