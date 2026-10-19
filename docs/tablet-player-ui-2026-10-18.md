@@ -18,3 +18,8 @@ APK SHA-256: `4a46a2c300f2790948d37141cdd59a83c740b7cd2274d1a997c4e0fb2f139131`.
 The user authorized a local UI commit after preview review. No push, CI trigger or iOS packaging is authorized for this step. Unrelated native audio research and build scratch files are excluded from the UI commit.
 
 Final centering follow-up: the page uses matching outer gutters, so its center stays on the physical screen center for either rail position. The foreground cover occupies only its visible width, preventing an oversized invisible left column from biasing the group. MuMu was temporarily configured as a larger 1366×1024dp tablet to exercise the capped artwork size. The installed APK screenshot with left navigation confirms equal outer whitespace; the device dimensions/density and orientation settings were restored afterward. iPad's real capsule is now centered in its compact visible docking frame while retaining the wider native fitting controller. Expo Go has been reloaded; final iPad appearance remains subject to device review.
+
+
+Follow-up correction (2026-10-19): device review rejected the later four-edge portrait artwork mask. Portrait again displays the original complete sharp cover. The accepted Gaussian right-edge transition is shared by native tablet landscape and optional phone landscape only, using the same full-surface backdrop and measured cover coordinates. Settings/head actions use matching native 22pt symbols.
+
+Latest landscape overlap clarification: Gaussian and original gradient now share the same rightmost-30% transition region and alpha ramp. It overlays the image progressively from inside its right edge, while preserving the original image geometry and sharp portrait rendering.

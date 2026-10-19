@@ -1104,7 +1104,6 @@ pub struct Engine {
     spatial_layer: spatial_layer::Settings,
     master_preamp: master_preamp::MasterPreamp,
     spatial_preamp: master_preamp::MasterPreamp,
-    atmos_output_gain: master_preamp::MasterPreamp,
     final_output_trim: master_preamp::MasterPreamp,
     output_gain: f32,
     comparison_gain: f32,
@@ -1244,7 +1243,6 @@ impl Engine {
             spatial_layer: spatial_layer::Settings::new(sample_rate),
             master_preamp: Default::default(),
             spatial_preamp: Default::default(),
-            atmos_output_gain: Default::default(),
             final_output_trim: Default::default(),
             output_gain: 1.0,
             comparison_gain: 1.0,
@@ -1838,7 +1836,6 @@ impl Engine {
     }
 
     fn advance_output_envelopes(&mut self) {
-        self.atmos_output_gain.advance();
         self.master_preamp.advance();
         self.spatial_preamp.advance();
         self.final_output_trim.advance();
@@ -1964,7 +1961,6 @@ impl Engine {
         self.pending_object_events.clear();
         self.sources.clear();
         self.program_codec = None;
-        self.atmos_output_gain.set(0.0, self.output_sample_rate, true).unwrap();
         self.refresh_directional_hrtf();
         self.pcm_coverage = pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
@@ -2412,14 +2408,6 @@ impl Engine {
             }
         }
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
-        // Fixed user-requested presentation compensation, not loudness analysis.
-        // Object-bearing E-AC-3 only: ordinary stereo AC-3/E-AC-3 and 360RA
-        // retain unity. Both ears share the envelope before peak protection.
-        let atmos_db = if self.program_codec.as_deref() == Some("eac3")
-            && self.sources.values().any(|s| s.kind == SourceKind::Object) { 2.0 } else { 0.0 };
-        if self.atmos_output_gain.target_db() != atmos_db {
-            self.atmos_output_gain.set(atmos_db, self.output_sample_rate, false).unwrap();
-        }
         let stereo = self.sources.len() == 2
             && self
                 .sources
@@ -3184,9 +3172,7 @@ impl Engine {
                 equalized[1] * self.output_gain * self.comparison_gain,
             ];
             // One linked master gain after the complete mix, before protection.
-            let atmos_gain = self.atmos_output_gain.gain();
-            let presentation_gain = if self.binaural_mix == 1.0 { atmos_gain } else { 1.0 + (atmos_gain - 1.0) * self.binaural_mix };
-            let master = self.master_preamp.gain() * presentation_gain;
+            let master = self.master_preamp.gain();
             let guarded = self.peak_guard.process(
                 pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
                 pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
@@ -4630,18 +4616,45 @@ mod tests {
     }
 
     #[test]
-    fn atmos_presentation_gain_is_object_eac3_only_and_resets() {
-        for (codec,object,expected) in [("eac3",true,2.0),("eac3",false,0.0),
-            ("mpegh",true,0.0),("alac",false,0.0),("ac3",true,0.0)] {
-            let mut e=calibrated_engine();e.paused=false;
+    fn object_eac3_has_no_extra_presentation_gain_over_the_shared_base() {
+        fn render(codec: &str, object: bool, spatial: bool) -> Vec<f32> {
+            let mut e = Engine::new(48_000, 2);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+            e.replace_hrtf(hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+            e.set_binaural_enabled(spatial);
+            e.reset_session(0);
             e.set_program_codec(codec.into());
-            e.sources.insert("route-check".into(),Source {kind:if object {SourceKind::Object} else {SourceKind::Bed},..Default::default()});
-            e.render_into(&mut vec![0.0;4096],2);
-            assert_eq!(e.atmos_output_gain.target_db(),expected);
-            assert_eq!(e.master_preamp_db(),0.0);
-            e.sources.clear();e.render_into(&mut vec![0.0;4096],2);
-            assert_eq!(e.atmos_output_gain.target_db(),0.0);
+            e.set_direct_objects(true).unwrap();
+            e.set_directional_hrtf(true);
+            assert_eq!(e.spatial_preamp.target_db(), 2.0);
+            assert_eq!(e.spatial_layer_gain_db(), 4.0);
+            assert_eq!(e.master_preamp_db(), 0.0);
+            e.output_active = true; e.paused = false;
+            let n = 8192;
+            let mut source = Source {
+                kind: if object { SourceKind::Object } else { SourceKind::Bed },
+                object_id: object.then_some(1),
+                bed_label: (!object).then(|| "FrontLeft".into()),
+                position: [0.3, 1.0, 0.0], gain: 1.0, target_gain: 1.0,
+                availability: 1.0, availability_target: 1.0, ..Default::default()
+            };
+            if !object { Engine::set_source_route(&mut source, bed_route("FrontLeft", &e.vbap), 0); }
+            let pcm: Vec<_> = (0..n).map(|i| (i as f32 * 0.13).sin() * 0.005).collect();
+            source.samples.write(0, 0, &pcm);
+            e.sources.insert("gain-check".into(), source);
+            e.route_source_now("gain-check", 0).unwrap();
+            let mut output = vec![0.0; n * 2]; e.render_into(&mut output, 2);
+            assert_eq!(e.peak_guard.diagnostic_gain(), 1.0);
+            assert!(output.iter().any(|v| v.abs() > 1e-6));
+            output
         }
+        for object in [false, true] { for spatial in [false, true] {
+            let dolby = render("eac3", object, spatial);
+            let reference = render("mpegh", object, spatial);
+            let error = dolby.iter().zip(reference).map(|(a,b)| (a-b).abs()).fold(0.0, f32::max);
+            assert!(error < 2e-6, "codec added gain: object={object}, spatial={spatial}, error={error}");
+        }}
     }
 
     #[test]

@@ -22,10 +22,24 @@ for(const menu of [true,false]) {
  for(const [spatial,tracking,yaw] of [[false,true,30],[true,false,30],[true,true,30],[true,true,-30]]) {
   const changes=[];const element=mod.IOSHeadTrackingButton({enabled:tracking,spatialEnabled:spatial,headYaw:yaw,accent:'accent',inactiveColor:'neutral',disabled:false,onSelect:v=>changes.push(v),onDisable:()=>changes.push('off')});
   const control=element.props.children;const image=menu?control.props.label:control.props.children;
+  const gearHost=mod.IOSSettingsButton({onPress(){}});const gear=gearHost.props.children.props.children;
+  assert.equal(gear.props.systemName,'gearshape');assert.equal(gear.props.size,image.props.size);assert.equal(gear.props.size,22);
+  assert.equal(gearHost.props.style.width,element.props.style.width);assert.equal(gearHost.props.style.height,element.props.style.height);
   assert.equal(image.props.color,spatial?'accent':'neutral');
   assert.equal(image.props.modifiers[0].name,'rotation3DEffect');assert.equal(image.props.modifiers[0].args[0].angle,spatial&&tracking?yaw:0);
   if(menu){const picker=control.props.children;assert.equal(picker.props.selection,!spatial?'off':tracking?'tracking':'fixed');picker.props.onSelectionChange('fixed');picker.props.onSelectionChange('tracking');picker.props.onSelectionChange('off');assert.deepEqual(changes,[false,true,'off']);}
  }
+}
+// Native Image is optional; both controls retain the same 22pt fallback font.
+{
+ globalThis.expo={getViewConfig:(_module,name)=>name!=='ImageView'};
+ const ui=Object.fromEntries(['Host','Menu','Picker','Text','Image','Button','Form','Section','HStack','VStack'].map(x=>[x,x]));
+ const modifiers=new Proxy({}, {get:(_obj,name)=>(...args)=>({name,args})});
+ const mod=load(code,name=>name==='react'?React:name==='react-native'?{Platform:{OS:'ios',Version:26},StyleSheet:{create:x=>x},Alert:{alert(){}},PlatformColor:x=>x}:name==='./IOSSystemTabs'?{swiftUI:ui}:name==='./IOSNativePage'?{hasNativePageHeader:false}:name==='./spatial-head-indicator'?model:name==='@expo/ui/swift-ui/modifiers'?modifiers:{});
+ const gear=mod.IOSSettingsButton({onPress(){}}).props.children;
+ const head=mod.IOSHeadTrackingButton({enabled:false,spatialEnabled:true,accent:'a',disabled:false,onSelect(){}}).props.children;
+ for(const control of [gear,head])assert.equal(control.props.modifiers.find(m=>m.name==='font').args[0].size,22);
+ assert.equal(gear.props.systemImage,'gearshape');assert.equal(head.props.systemImage,'person.crop.circle');
 }
 globalThis.expo={modules:{SdaAndroidChrome:true}};
 // Native view availability is evaluated while importing the module.

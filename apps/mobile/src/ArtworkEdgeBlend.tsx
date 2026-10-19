@@ -1,22 +1,20 @@
 import React from "react";
-import { Image, Platform, StyleSheet } from "react-native";
+import { View } from "react-native";
+import { PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
 
-function artworkMask() {
-  if (Platform.OS !== "ios" && Platform.OS !== "android") return null;
-  try {
-    const expo = (globalThis as any).expo;
-    if (!expo?.modules?.ExpoUI || (expo.getViewConfig && !expo.getViewConfig("ExpoUI", "MaskView"))) return null;
-    return (require("@expo/ui/community/masked-view") as typeof import("@expo/ui/community/masked-view")).MaskedView;
-  } catch { return null; }
-}
+export type ArtworkFrame = { left: number; top: number; width: number; height: number };
 
-// Fade only the artwork edge, revealing the actual screen-aligned blurred
-// backdrop underneath. The cover's dimensions, aspect ratio and center stay intact.
-export function ArtworkEdgeBlend({ children }: { children: React.ReactElement }) {
-  const MaskedView = artworkMask();
-  if (!MaskedView) return children;
-  return <MaskedView testID="tablet-artwork-edge-blend" style={{ width: "100%", height: "100%" }}
-    maskElement={<Image source={require("../assets/artwork-edge-blend-mask.png")} resizeMode="stretch" style={StyleSheet.absoluteFill} />}>
+// Keep the original sharp image intact. Landscape alone overlays the existing
+// screen-aligned Gaussian backdrop into the small right-edge transition.
+export function ArtworkEdgeBlend({ children, landscape, uri, surfaceWidth, surfaceHeight, frame, backgroundColor }: {
+  children: React.ReactElement; landscape: boolean; uri: string;
+  surfaceWidth: number; surfaceHeight: number; backgroundColor: string; frame: ArtworkFrame | null;
+}) {
+  if (!landscape || !frame) return children;
+  return <View testID="tablet-landscape-artwork-blend" style={{ width: "100%", height: "100%" }}>
     {children}
-  </MaskedView>;
+    <PhoneLandscapeBlur edge uri={uri} surfaceWidth={surfaceWidth} surfaceHeight={surfaceHeight}
+      artworkLeft={frame.left} artworkTop={frame.top} artworkWidth={frame.width} artworkHeight={frame.height}
+      parentLeft={frame.left} parentTop={frame.top} backgroundColor={backgroundColor} />
+  </View>;
 }

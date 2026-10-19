@@ -1,6 +1,7 @@
-import { ArtworkEdgeBlend } from "./ArtworkEdgeBlend";
+import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
+import { phoneLandscapeBlurEdge } from "./phone-landscape-blur-model";
 import { isTabletPlayer, tabletPlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
 import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
@@ -13,7 +14,7 @@ import { NavigationPreferencesProvider, useNavigationPreferences } from "./navig
 import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme } from "react-native";
 import { SafeAreaProvider, SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
@@ -125,6 +126,7 @@ function ThemedPlayer(p: PlayerProps) {
   const artworkLeft = landscapePlayer ? artworkLayout.left : -24;
   const artworkTop = landscapePlayer ? artworkLayout.top : 0;
   const artworkWidth = landscapePlayer ? artworkLayout.width : artworkSize;
+  const landscapeFade = phoneLandscapeBlurEdge(artworkLeft, artworkTop, artworkWidth, artworkSize);
   const playerHeight = playerMeasurements[layoutKey] ?? Math.max(0, height - (compactLandscape ? 140 : 230));
   const playerBlocks = blockMeasurements[layoutKey] || initialBlocks;
   const measuredBlockHeight = Object.values(playerBlocks).reduce((sum, value) => sum + value, 0);
@@ -135,6 +137,25 @@ function ThemedPlayer(p: PlayerProps) {
   const iosLandscape = landscapePlayer;
   const landscapeSpacing = iosLandscape ? iosLandscapeControlLayout(Math.max(0, playerHeight - (compactLandscape ? 0 : 22)), measuredBlockHeight) : null;
   const tabletLayout = tabletPlayer ? tabletPlayerLayout(playerWidths[layoutKey] ?? width, playerHeight, measuredBlockHeight, landscapePlayer, sideNavigationActive && !tabletSideNavigation) : null;
+  const tabletArtworkRef = useRef<View>(null);
+  const [measuredTabletArtwork, setMeasuredTabletArtwork] = useState<{ key: string; frame: ArtworkFrame } | null>(null);
+  const tabletArtworkKey = `${width}:${height}:${tabletLayout?.coverSize ?? 0}`;
+  const measureTabletArtwork = useCallback(() => {
+    const surface = surfaceRef.current;
+    if (!tabletPlayer || !landscapePlayer || !surface) { setMeasuredTabletArtwork(null); return; }
+    tabletArtworkRef.current?.measureLayout(surface, (left, top, width, height) => {
+      if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return;
+      const frame = { left, top, width, height };
+      setMeasuredTabletArtwork(previous => previous?.key === tabletArtworkKey
+        && Object.keys(frame).every(key => Math.abs(previous.frame[key as keyof ArtworkFrame] - frame[key as keyof ArtworkFrame]) < .5)
+        ? previous : { key: tabletArtworkKey, frame });
+    }, () => setMeasuredTabletArtwork(null));
+  }, [tabletPlayer, landscapePlayer, surfaceRef, tabletArtworkKey]);
+  useEffect(() => {
+    const pending = requestAnimationFrame(measureTabletArtwork);
+    return () => cancelAnimationFrame(pending);
+  }, [measureTabletArtwork, page, layoutReady]);
+  const tabletArtworkFrame = layoutReady && measuredTabletArtwork?.key === tabletArtworkKey ? measuredTabletArtwork.frame : null;
   const transportMargin = tabletLayout?.transportGap ?? landscapeSpacing?.transportGap ?? playerGap + transportInset;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setBlockMeasurements(previous => Math.abs((previous[layoutKey] || initialBlocks)[key] - value) < 0.5
@@ -250,12 +271,12 @@ function ThemedPlayer(p: PlayerProps) {
       {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: .45 }]} />}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,.24)" }]} />
     </> : <>
-    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
+    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize }} /> : <View style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
-    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
+    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     {!phoneLandscapeBlur && <>
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
-    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", left: artworkLeft + artworkWidth * .70, top: artworkTop, width: artworkWidth * .30, height: artworkSize, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
+    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
     </>}
     </>}
   </View>}
@@ -278,8 +299,8 @@ function ThemedPlayer(p: PlayerProps) {
           }}>
           <View testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
-            {tabletLayout && <View testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
-              {hasArtwork ? <ArtworkEdgeBlend><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
+            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
+              {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </View>}
             {!tabletPlayer && !hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}
           </Pressable>

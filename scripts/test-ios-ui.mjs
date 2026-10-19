@@ -42,7 +42,7 @@ assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader, iosLandscape && np\.iosLandscapeHeader/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
-assert.match(settings, /systemImage="gearshape"/);
+assert.match(settings, /systemName="gearshape" size=\{playerActionIconSize\}/);
 assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(appTheme.accent\)/);
 for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering']) assert.ok(settings.includes('p.' + callback));
 assert.match(ui, /settings && !hasNativeIOSSettings/);
@@ -654,7 +654,7 @@ for(const offset of [0,-31.5]) {
 assert.match(ui, /isTabletPlayer\(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height\)/);
 assert.match(ui, /testID="tablet-ambient-artwork"[^>]+resizeMode="cover" blurRadius=\{48\}/);
 assert.match(ui, /testID="tablet-complete-artwork"/);
-assert.match(ui, /hasArtwork \? <ArtworkEdgeBlend><Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
+assert.match(ui, /hasArtwork \? <ArtworkEdgeBlend landscape=\{landscapePlayer\}[^>]*><Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
 assert.match(ui, /tabletLayout && \{ width: tabletLayout.controlsWidth/);
 assert.doesNotMatch(ui,/ipad-artwork-backdrop|immersiveTabletArtwork/);
 

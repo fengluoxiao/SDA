@@ -140,6 +140,7 @@ jobs:
           node scripts/test-ios-head-tracking.mjs
           node scripts/test-mobile-spatial-indicator.mjs
           node scripts/test-artwork-edge-blend.mjs
+          node scripts/test-phone-landscape-blur.mjs
           node scripts/test-tablet-player-layout.mjs
           node scripts/test-mobile-production-fixtures.mjs
           node scripts/test-ios-tracking-session.mjs
@@ -174,6 +175,7 @@ jobs:
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib delayed_preparation
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib worker_policy_tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib shared_hrtfhq_lower_speaker_fallback_retains_the_selected_lower_field
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib object_eac3_has_no_extra_presentation_gain_over_the_shared_base
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
       - name: Verify integrated depth, elevation and harmony regressions

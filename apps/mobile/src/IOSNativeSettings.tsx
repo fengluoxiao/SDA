@@ -25,11 +25,17 @@ const nativeScreens: typeof import("react-native-screens") | null =
 
 const settingsButtonStyle = Platform.OS === "ios" && Number(Platform.Version) >= 26 ? "glass" : "bordered";
 
+const playerActionIconSize = 22;
+
 export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): void; sideDock?: boolean }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Button } = swiftUI;
-  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44 }}><Button label="更多设置" systemImage="gearshape" onPress={onPress} modifiers={[labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]} /></Host>;
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const image = hasView("ImageView") ? <swiftUI.Image systemName="gearshape" size={playerActionIconSize} /> : undefined;
+  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44 }}>
+    <Button label={image ? undefined : "更多设置"} systemImage={image ? undefined : "gearshape"} onPress={onPress}
+      modifiers={[labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]}>{image}</Button>
+  </Host>;
 }
 
 function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
@@ -49,12 +55,12 @@ export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, o
 }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Menu, Picker, Text } = swiftUI;
-  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle, rotation3DEffect } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle, rotation3DEffect, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const indicator = spatialHeadIndicator(spatialEnabled, enabled, headYaw, accent, inactiveColor);
   const label = indicator.label;
-  const image = hasView("ImageView") ? <swiftUI.Image systemName={indicator.symbol} size={22} color={indicator.color}
+  const image = hasView("ImageView") ? <swiftUI.Image systemName={indicator.symbol} size={playerActionIconSize} color={indicator.color}
     modifiers={[rotation3DEffect({ angle: indicator.poseDegrees, axis: { y: 1 }, perspective: .35 })]} /> : null;
-  const modifiers = [labelStyle("iconOnly"), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
+  const modifiers = [labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
     accessibilityLabel(label), disabled(isDisabled), tint(indicator.color)];
   if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <swiftUI.Button label={image ? undefined : label} systemImage={image ? undefined : indicator.symbol} onPress={() => Alert.alert("空间音频", "", [

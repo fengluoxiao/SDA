@@ -1,7 +1,7 @@
-// Feather only the final 8% (at most 32pt) of the existing sharp cover.
-// A transparent-to-opaque alpha mask reveals the screen-aligned blurred
-// backdrop, matching it exactly at the original cover's right boundary.
+// Use the original landscape gradient's rightmost 30% coverage. Its existing
+// alpha ramp starts transparent and progressively covers the sharp artwork,
+// reaching the complete screen-aligned blurred backdrop at the right boundary.
 export function phoneLandscapeBlurEdge(left: number, top: number, width: number, height: number) {
-  const span = Math.min(32, Math.max(0, width) * .08);
+  const span = Math.max(0, width) * .30;
   return { left: left + Math.max(0, width) - span, top, width: span, height: Math.max(0, height) };
 }

@@ -73,3 +73,7 @@ Reproducible utilities: scripts/export-hrtfhq-auditions.py --root <delivery> and
 
 
 Accepted-B production verification: 346 native release tests passed, 35 diagnostic tests ignored; production non-test library check and enhancement-control checks passed. Twelve actual default-path replays match the original selected B without gain fitting or alignment, maximum sample error 1.0430813e-07, worst residual -130.171 dB. The corrected fixed-gain delivery contains 235 verified WAV files and 31 bit-exact PCM overlap comparisons. Browser checks confirm all 235 files load, actual muted playback works, 0–12 and 0–65 remain distinct, and pre-correction Very First Night selections are excluded from confirmation/export. No installer was generated.
+
+## Subsequent user gain correction
+
+After installing the integrated build, the user explicitly requested removal of the independent object-bearing E-AC-3 +2 dB presentation gain because the shared base already supplies net +2 dB. That codec-only stage is now removed; the common spatial +2 dB and auxiliary extra +4 dB remain. Earlier audition figures above used the previous engine baseline and remain historical listening records. Ordinary decoder dialogue/programme loudness handling is unchanged.
