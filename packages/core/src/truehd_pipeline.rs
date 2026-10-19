@@ -259,7 +259,7 @@ impl Pipeline for TruehdPipeline {
                 .map(|b| b.ramp_duration as u32)
                 .unwrap_or(0);
 
-            out.push_back(FrameData { compatibility_bed,
+            out.push_back(FrameData { reference_loudness:None, compatibility_bed,
                 codec: "truehd",
                 sample_rate: decoded.sampling_frequency,
                 sample_pos,

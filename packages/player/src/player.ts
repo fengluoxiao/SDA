@@ -383,6 +383,7 @@ export class SdaPlayer {
   private mpeghMeasurement: FrameLoudness | null = null;
   private balanceAnalysisAbort = new AbortController();
   private nonStereoProgrammeSeen = false;
+  private decodedProgrammeReference = false;
   private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
@@ -1194,6 +1195,7 @@ export class SdaPlayer {
     this.scheduledProgramLoudnessGainDb = undefined;
     this.stereoBalanceEligible = false;
     this.nonStereoProgrammeSeen = false;
+    this.decodedProgrammeReference = false;
     this.setVolumeBalance(this.volumeBalanceEnabled);
     this.measuredLoudness = null;
     this.measuredLoudnessBlocks = 0;
@@ -1314,7 +1316,7 @@ export class SdaPlayer {
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
   setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
-    if (this.mpeghMeasurement) return;
+    if (this.mpeghMeasurement || this.decodedProgrammeReference) return;
     this.cachedMeasuredTruePeakDbtp = truePeakDbtp;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
@@ -1968,10 +1970,10 @@ export class SdaPlayer {
       case "flushed":
         // Only a complete decode is a track measurement. A stopped intro must
         // never replace a complete cached value or freeze the next playback.
-        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+        if (!this.decodedProgrammeReference && this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
             && this.measuredLoudness?.integratedLufs != null
             && Number.isFinite(this.measuredLoudness.integratedLufs)) {
-          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp);
+          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp ?? undefined);
         }
         this.ended = true;
         this.pumpPcm();
@@ -1994,14 +1996,17 @@ export class SdaPlayer {
     // listening transform. Its single program gain must stay linked across
     // the generated bed, never be calculated separately per copied channel.
     const stereoMaster = isStereoMasterFrame(frame);
-    this.stereoStartupEligible = frame.codec !== "mpegh" && stereoMaster;
+    if (frame.referenceLoudness && !this.decodedProgrammeReference) {
+      this.decodedProgrammeReference=true;this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;this.measuredLoudnessSettled=false;
+    }
+    this.stereoStartupEligible = frame.codec !== "mpegh" && stereoMaster || frame.referenceLoudness != null;
     const alacStereoSource = isAlacStereoFrame(frame);
     const upmixed = this.alacStereoUpmixEnabled && alacStereoSource;
     if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
-    const av3aBed = isAv3aBedFrame(frame);
+    const av3aBed = isAv3aBedFrame(frame) || frame.referenceLoudness != null;
     if (!mpegh && !av3aBed && !stereoMaster) this.nonStereoProgrammeSeen = true;
     const eligible = !this.nonStereoProgrammeSeen && (mpegh || av3aBed || stereoMaster);
     if (eligible !== this.stereoBalanceEligible) {
@@ -2073,7 +2078,7 @@ export class SdaPlayer {
         // MPEG-H reference loudness supplies one linked master gain.
         // The upstream reference is quantized, not a true-peak measurement of
         // SDA's object render: never use it to justify positive gain.
-        const stereoMaster = frame.codec !== "mpegh";
+        const stereoMaster = frame.codec !== "mpegh" || frame.referenceLoudness != null;
         if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
           // A cached complete-track measurement applies from the first submitted sample.
           const gainDb = masterBalanceGainDb(this.cachedMeasuredLufs, stereoMaster ? this.cachedMeasuredTruePeakDbtp : null);

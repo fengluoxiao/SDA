@@ -61,7 +61,7 @@ export interface ProgramLoudnessMetadata {
 export interface FrameLoudness {
   peakDbfs?: number;
   /** 4x/2x BS.1770-style true-peak estimate, in dBTP. */
-  truePeakDbtp?: number;
+  truePeakDbtp?: number | null;
   /** Gated integrated loudness in LUFS, or null while nothing passes the absolute gate. */
   integratedLufs: number | null;
   /** Completed 400 ms blocks above the absolute gate. */
@@ -82,6 +82,8 @@ export interface DecodedFrameData {
   rampDuration: number;
   /** Running BS.1770-4 measurement; present on a subset of frames. */
   loudness?: FrameLoudness;
+  /** Neutral speaker-reference measurement from the shared decoder (not raw object channels). */
+  referenceLoudness?: FrameLoudness;
 }
 
 let initPromise: Promise<unknown> | null = null;
@@ -172,6 +174,8 @@ export class SdaDecoder {
       programLoudness: JSON.parse(frame.programLoudnessJson) as ProgramLoudnessMetadata | null,
       rampDuration: frame.rampDuration,
     };
+    const reference = (frame as unknown as { referenceLoudnessJson?: string }).referenceLoudnessJson;
+    if (reference) data.referenceLoudness = JSON.parse(reference) ?? undefined;
     frame.free();
     return data;
   }

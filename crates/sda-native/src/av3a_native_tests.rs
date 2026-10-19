@@ -2,6 +2,9 @@ use super::*;
 
 // Exercise the ordinary HRTF -> stereo FIFO used when system spatial is off.
 fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
+    render_kind(enabled, toggle, false)
+}
+fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let active: Value = serde_json::from_slice(
         &std::fs::read(root.join("apps/mobile/ios-experiments/active.json")).unwrap(),
@@ -33,7 +36,17 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
         .unwrap()
         .set_volume_balance(enabled)
         .unwrap();
-    let frames = 48000 * if toggle { 20 } else { 15 };
+    let private = objects
+        .then(|| std::env::var("SDA_OBJECT_BALANCE_INPUT").ok())
+        .flatten();
+    let frames = if private.is_some() {
+        std::env::var("SDA_OBJECT_BALANCE_SAMPLES")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+    } else {
+        48000 * if toggle { 20 } else { 15 }
+    };
     // A real decoded excerpt can be supplied for diagnostic regression.
     let pcm = (!toggle)
         .then(|| std::env::var("SDA_AV3A_BALANCE_PCM").ok())
@@ -90,10 +103,12 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
             }
         };
         let gain = {
-            if let Some(path) = (!toggle)
-                .then(|| std::env::var("SDA_AV3A_BALANCE_BITSTREAM").ok())
-                .flatten()
-            {
+            let mut reference_meter = balance::LoudnessMeter::speakers_7_1_4();
+            if let Some(path) = private.clone().or_else(|| {
+                (!toggle)
+                    .then(|| std::env::var("SDA_AV3A_BALANCE_BITSTREAM").ok())
+                    .flatten()
+            }) {
                 let bytes = std::fs::read(path).unwrap();
                 for chunk in bytes.chunks(2415 * 8) {
                     service();
@@ -123,7 +138,9 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
                                 .collect()
                         })
                         .collect();
-                    let frame = sda_core::FrameData { compatibility_bed: None,
+                    let mut frame = sda_core::FrameData {
+                        reference_loudness: None,
+                        compatibility_bed: None,
                         codec: "av3a".into(),
                         sample_rate: 48000,
                         sample_pos: start as u64,
@@ -140,6 +157,51 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
                         program_loudness: None,
                         ramp_duration: 0,
                     };
+                    if objects {
+                        reference_meter.push(&frame.channels);
+                        frame.reference_loudness = Some(reference_meter.integrated());
+                        let dirs: [(f64, f64); 12] = [
+                            (30., 0.),
+                            (-30., 0.),
+                            (0., 0.),
+                            (0., 0.),
+                            (135., 0.),
+                            (-135., 0.),
+                            (90., 0.),
+                            (-90., 0.),
+                            (45., 45.),
+                            (-45., 45.),
+                            (135., 45.),
+                            (-135., 45.),
+                        ];
+                        for ch in (0..12).filter(|ch| *ch != 3) {
+                            let id = 100 + ch as u32;
+                            frame.labels[ch] = format!("Obj_{id}");
+                            frame.object_channels.push(sda_core::ObjectChannelDecl {
+                                id,
+                                channel: ch as u32,
+                            });
+                            if start == 0 {
+                                let (az, el) = (dirs[ch].0.to_radians(), dirs[ch].1.to_radians());
+                                frame.events.push(sda_core::ObjectEvent {
+                                    id,
+                                    sample_pos: 0,
+                                    has_pos: true,
+                                    pos: [-az.sin() * el.cos(), az.cos() * el.cos(), el.sin()],
+                                    gain_db: 0.,
+                                    size: [0.; 3],
+                                    diffuse: 0.,
+                                    anchor: "room".into(),
+                                    distance_m: None,
+                                    distance_infinite: false,
+                                    screen_factor: None,
+                                    depth_factor: None,
+                                    ramp_duration: 1,
+                                });
+                            }
+                        }
+                        frame.raw_bed_labels = vec!["LFE".into()];
+                    }
                     let mut engine = host.engine.lock().unwrap();
                     let pending = engine.balance.measure(frame, None);
                     engine.pending.lock().unwrap().push_back(pending);
@@ -169,7 +231,11 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
         assert_eq!(status.volume_balance_enabled, enabled);
         assert_eq!(status.renderer_program_enabled, enabled);
         if enabled {
-            assert!(status.rendered_program_gain_db < -3.0);
+            assert!(if private.is_some() {
+                status.rendered_program_gain_db <= 0.001
+            } else {
+                status.rendered_program_gain_db < -3.0
+            });
         } else {
             assert_eq!(status.rendered_program_gain_db, 0.0);
         }
@@ -232,4 +298,86 @@ fn av3a_native_live_balance_switch_changes_the_same_playback_output() {
         (on_delta - gain).abs() < 0.2,
         "live switch on ineffective: {on_delta}"
     );
+}
+
+#[test]
+fn av3a_object_reference_balance_reaches_hrtf_and_live_switch() {
+    let (off, _) = render_kind(false, false, true);
+    let (on, gain) = render_kind(true, false, true);
+    let energy = |p: &[f32]| p.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+    let range = 12 * 48000 * 2..14 * 48000 * 2;
+    let db = 10. * (energy(&on[range.clone()]) / energy(&off[range])).log10();
+    assert!(gain < -3.);
+    assert!((db - gain).abs() < 0.1, "object target {gain}, output {db}");
+    let (live, gain) = render_kind(true, true, true);
+    let energy_at = |a: usize, b: usize| {
+        energy(&live[a * 48000 * 2..b * 48000 * 2]) / ((b - a) * 48000 * 2) as f64
+    };
+    let delta_off = 10. * (energy_at(14, 15) / energy_at(10, 11)).log10();
+    let delta_on = 10. * (energy_at(18, 19) / energy_at(14, 15)).log10();
+    assert!(
+        (delta_off + gain).abs() < 0.2,
+        "object live OFF {delta_off}, target {gain}"
+    );
+    assert!(
+        (delta_on - gain).abs() < 0.2,
+        "object live ON {delta_on}, target {gain}"
+    );
+}
+#[test]
+#[ignore = "requires SDA_OBJECT_BALANCE_INPUT and SDA_OBJECT_BALANCE_SAMPLES; private audio is not committed"]
+fn av3a_private_object_programme_balance_changes_real_stereo_output() {
+    let (off, off_gain) = render_kind(false, false, true);
+    let (on, on_gain) = render_kind(true, false, true);
+    assert!(
+        (off_gain - on_gain).abs() < 0.02,
+        "switch changed the reference measurement"
+    );
+    assert!(on_gain <= 0., "programme balance must not boost: {on_gain}");
+    let expect_cut = std::env::var("SDA_OBJECT_EXPECT_ATTENUATION").is_ok_and(|s| s == "1");
+    if expect_cut {
+        assert!(
+            on_gain < -0.5,
+            "expected real-file attenuation, got {on_gain}"
+        );
+    }
+    let energy = |p: &[f32]| p.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+    let mut windows = vec![];
+    for (start, end) in [(12usize, 14usize), (76, 90), (150, 180), (180, 200)] {
+        if end * 48000 * 2 > off.len() {
+            continue;
+        }
+        let range = start * 48000 * 2..end * 48000 * 2;
+        let delta = 10. * (energy(&on[range.clone()]) / energy(&off[range])).log10();
+        assert!(
+            delta <= 0.02,
+            "balance boosted real output at {start}: {delta}"
+        );
+        windows.push(serde_json::json!({"start":start,"end":end,"onMinusOffDb":delta}));
+    }
+    println!("real stereo windows: {windows:?}, final target {on_gain}");
+    if expect_cut {
+        assert!(
+            windows
+                .iter()
+                .any(|v| v["onMinusOffDb"].as_f64().unwrap() < -0.05),
+            "gain status alone does not prove audible output attenuation"
+        );
+    }
+    let input = std::env::var("SDA_OBJECT_BALANCE_INPUT").unwrap();
+    let report = serde_json::json!({"input":input,"samples":off.len()/2,"targetDb":on_gain,"windows":windows,"offGainDb":off_gain});
+    println!("{report}");
+    if let Ok(folder) = std::env::var("SDA_OBJECT_BALANCE_REPORT_DIR") {
+        let root = std::path::Path::new(&folder);
+        std::fs::create_dir_all(root).unwrap();
+        let tag = std::path::Path::new(&input)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy();
+        std::fs::write(
+            root.join(format!("{tag}-balance.json")),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
 }

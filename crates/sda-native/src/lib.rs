@@ -410,7 +410,7 @@ impl MobileEngine {
         let frames = samples.len() / 2;
         if frames > 0 {
             let start = self.decoded_sample_pos();
-            let frame = FrameData { compatibility_bed: None,
+            let frame = FrameData { reference_loudness: None, compatibility_bed: None,
                 codec: "mp3-stereo-bed", sample_rate: 48_000, sample_pos: start,
                 channels: vec![samples.iter().step_by(2).copied().collect(), samples.iter().skip(1).step_by(2).copied().collect()],
                 labels: vec!["FrontLeft".into(), "FrontRight".into()],
@@ -1073,7 +1073,7 @@ mod tests {
             telemetry: Arc::new(RuntimeTelemetry::default()),
         });
         let queue_frame = |engine: &mut MobileEngine, at, count| {
-            let frame = FrameData { compatibility_bed: None,
+            let frame = FrameData { reference_loudness: None, compatibility_bed: None,
                 codec: "eac3", sample_rate: 48000, sample_pos: at,
                 channels: vec![vec![0.0; count]], labels: vec!["Obj_42".into()],
                 raw_bed_labels: vec![], events: vec![], object_channels: vec![],
@@ -1151,13 +1151,13 @@ mod tests {
         engine.start(Arc::new(MobileTestOutput)).unwrap();
         engine.set_volume_balance(true).unwrap();
         engine.set_measured_loudness(r#"{"integratedLufs":-10,"blocks":100,"truePeakDbtp":-2}"#).unwrap();
-        let mut frame = FrameData { compatibility_bed: None,
+        let mut frame = FrameData { reference_loudness: None, compatibility_bed: None,
             codec: "mp3", sample_rate: 48000, sample_pos: 0,
             channels: vec![vec![0.0; 1024]; 2], labels: vec!["L".into(), "R".into()],
             raw_bed_labels: vec![], events: vec![], object_channels: vec![],
             program_loudness: None, ramp_duration: 128,
         };
-        let stereo_frame = FrameData { compatibility_bed: None, channels: frame.channels.clone(), labels: frame.labels.clone(),
+        let stereo_frame = FrameData { reference_loudness: None, compatibility_bed: None, channels: frame.channels.clone(), labels: frame.labels.clone(),
             raw_bed_labels: vec![], events: vec![], object_channels: vec![], codec: "mp3",
             sample_rate: 48000, sample_pos: 0, program_loudness: None, ramp_duration: 128 };
         let pending = engine.balance.measure(stereo_frame, None);
@@ -1647,7 +1647,7 @@ mod tests {
         engine.start(Arc::new(MobileTestOutput)).unwrap();
         let event=ObjectEvent{diffuse:0.,id:42,sample_pos:0,has_pos:true,pos:[0.7,-0.7,0.3],gain_db:0.,size:[0.;3],anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:128};
         engine.object_events.lock().unwrap().push_back(event.clone());
-        let frame=FrameData{compatibility_bed:Some(sda_core::CompatibilityBed{channels:vec![vec![0.001;32768];2],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.0001;32768]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events:vec![event],object_channels:vec![sda_core::ObjectChannelDecl{id:42,channel:0}],program_loudness:None,ramp_duration:128};
+        let frame=FrameData{reference_loudness: None, compatibility_bed:Some(sda_core::CompatibilityBed{channels:vec![vec![0.001;32768];2],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.0001;32768]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events:vec![event],object_channels:vec![sda_core::ObjectChannelDecl{id:42,channel:0}],program_loudness:None,ramp_duration:128};
         engine.pending.lock().unwrap().push_back(engine.balance.measure(frame,None));
         *engine.newest_sample_pos.lock().unwrap()=32768;
         engine.drain_pending_into_pipeline().unwrap();

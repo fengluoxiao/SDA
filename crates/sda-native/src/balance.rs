@@ -1,20 +1,13 @@
 //! Windows packages/player/src/bs1770.ts and player.ts playback policy.
-//! Measure the stereo master / verified speaker beds / MPEG-H reference, never objects
-//! or the KU100 output. Gain uses the shared renderer's sample-clock envelope.
+//! Measure the stereo master / verified speaker beds / MPEG-H reference, never raw objects
+//! or the HRTF output. Gain uses the shared renderer's sample-clock envelope.
 use sda_core::FrameData;
 use sda_native_renderer::Command;
-use serde::{Deserialize, Serialize};
 
 pub const MIN_BLOCKS: usize = 57;
 /// Shared stereo / Audio Vivid decoded preroll; silence must not hold playback forever.
 pub const AV3A_STARTUP_MAX_SECONDS: u64 = 7;
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Measurement {
-    pub integrated_lufs: Option<f64>,
-    pub blocks: usize,
-    pub true_peak_dbtp: Option<f64>,
-}
+pub use sda_core::loudness::{LoudnessMeter, ReferenceLoudness as Measurement};
 pub fn master_gain(lufs: f64, peak: Option<f64>) -> f64 {
     if !lufs.is_finite() {
         return 0.0;
@@ -39,179 +32,7 @@ pub(crate) fn av3a_bed(frame: &FrameData) -> bool {
 }
 /// Gate only verified masters, never a stereo core of an object programme.
 pub(crate) fn startup_program(frame: &FrameData) -> bool {
-    av3a_bed(frame) || (frame.codec != "mpegh" && (stereo_master(frame) || crate::alac_pcm::is_upmixed(frame)))
-}
-#[derive(Clone)]
-struct Biquad {
-    c: [f64; 5],
-    x: [f64; 2],
-    y: [f64; 2],
-}
-impl Biquad {
-    fn new(c: [f64; 5]) -> Self {
-        Self {
-            c,
-            x: [0.0; 2],
-            y: [0.0; 2],
-        }
-    }
-    fn process(&mut self, input: f32) -> f32 {
-        let [b0, b1, b2, a1, a2] = self.c;
-        let x = input as f64;
-        let y = b0 * x + b1 * self.x[0] + b2 * self.x[1] - a1 * self.y[0] - a2 * self.y[1];
-        self.x = [x, self.x[0]];
-        self.y = [y, self.y[0]];
-        y as f32 // Windows writes each stage through Float32Array.
-    }
-}
-fn filters(rate: u32) -> [Biquad; 2] {
-    let k = (std::f64::consts::PI * 1681.974450955533 / rate as f64).tan();
-    let q = 0.7071752369554196;
-    let vh = 10_f64.powf(3.999843853973347 / 20.0);
-    let vb = vh.powf(0.4996667741545416);
-    let a0 = 1.0 + k / q + k * k;
-    let shelf = Biquad::new([
-        (vh + vb * k / q + k * k) / a0,
-        2.0 * (k * k - vh) / a0,
-        (vh - vb * k / q + k * k) / a0,
-        2.0 * (k * k - 1.0) / a0,
-        (1.0 - k / q + k * k) / a0,
-    ]);
-    let k = (std::f64::consts::PI * 38.13547087602444 / rate as f64).tan();
-    let q = 0.5003270373238773;
-    let a0 = 1.0 + k / q + k * k;
-    [
-        shelf,
-        Biquad::new([
-            1.0,
-            -2.0,
-            1.0,
-            2.0 * (k * k - 1.0) / a0,
-            (1.0 - k / q + k * k) / a0,
-        ]),
-    ]
-}
-pub struct LoudnessMeter {
-    filters: Vec<[Biquad; 2]>,
-    weights: Vec<f64>,
-    block: Vec<Vec<f32>>,
-    fill: usize,
-    hop: usize,
-    energy: Vec<f64>,
-    history: Vec<Vec<f32>>,
-    write: usize,
-    phases: Vec<Vec<(usize, f64)>>,
-    peak: f64,
-}
-impl LoudnessMeter {
-    pub fn new(rate: u32) -> Self { Self::with_weights(rate, vec![1.0, 1.0]) }
-    /// CICP19: exclude LFE, weight horizontal surround channels by 1.41.
-    pub fn speakers_7_1_4() -> Self {
-        Self::with_weights(48000, vec![1.0,1.0,1.0,0.0,1.41,1.41,1.41,1.41,1.0,1.0,1.0,1.0])
-    }
-    fn with_weights(rate: u32, weights: Vec<f64>) -> Self {
-        let factor = if rate < 96000 {
-            4
-        } else if rate < 192000 {
-            2
-        } else {
-            1
-        };
-        let delay = 49_usize.div_ceil(factor);
-        let mut phases = vec![vec![]; factor];
-        for tap in 0..49 {
-            let offset = tap as f64 - 24.0;
-            let t = offset * std::f64::consts::PI / factor as f64;
-            let c = (if offset == 0.0 { 1.0 } else { t.sin() / t })
-                * 0.5
-                * (1.0 - (2.0 * std::f64::consts::PI * tap as f64 / 48.0).cos());
-            if c.abs() > 1e-6 {
-                phases[tap % factor].push((tap / factor, c));
-            }
-        }
-        Self {
-            filters: (0..weights.len()).map(|_| filters(rate)).collect(),
-            block: (0..weights.len()).map(|_| vec![0.0; (rate as f64 * 0.4).round() as usize]).collect(),
-            fill: 0,
-            hop: (rate as f64 * 0.1).round() as usize,
-            energy: vec![],
-            history: (0..weights.len()).map(|_| vec![0.0; delay]).collect(),
-            weights,
-            write: 0,
-            phases,
-            peak: 0.0,
-        }
-    }
-    pub fn push(&mut self, channels: &[Vec<f32>]) {
-        for i in 0..channels[0].len() {
-            for ch in 0..self.weights.len() {
-                let x = channels[ch][i];
-                self.history[ch][self.write] = x;
-                for phase in &self.phases {
-                    let y: f64 = phase
-                        .iter()
-                        .map(|(offset, c)| {
-                            self.history[ch][(self.write + self.history[ch].len() - offset)
-                                % self.history[ch].len()] as f64
-                                * c
-                        })
-                        .sum();
-                    self.peak = self.peak.max(y.abs());
-                }
-                let y = self.filters[ch][0].process(x);
-                self.block[ch][self.fill] = self.filters[ch][1].process(y);
-            }
-            self.write = (self.write + 1) % self.history[0].len();
-            self.fill += 1;
-            if self.fill == self.block[0].len() {
-                let n = self.fill;
-                self.energy.push(
-                    self.block
-                        .iter()
-                        .zip(&self.weights)
-                        .map(|(ch, weight)| weight * ch.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n as f64)
-                        .sum(),
-                );
-                for block in &mut self.block {
-                    block.copy_within(self.hop..n, 0);
-                }
-                self.fill = n - self.hop;
-            }
-        }
-    }
-    pub fn integrated(&self) -> Measurement {
-        let absolute: Vec<_> = self
-            .energy
-            .iter()
-            .copied()
-            .filter(|e| *e > 0.0 && 10.0 * e.log10() > -69.309)
-            .collect();
-        let peak = if self.peak > 0.0 {
-            Some(20.0 * self.peak.log10())
-        } else {
-            None
-        };
-        if absolute.is_empty() {
-            return Measurement {
-                true_peak_dbtp: peak,
-                ..Default::default()
-            };
-        }
-        let mean = absolute.iter().sum::<f64>() / absolute.len() as f64;
-        let gate = -0.691 + 10.0 * mean.log10() - 10.0;
-        let relative: Vec<_> = absolute
-            .iter()
-            .copied()
-            .filter(|e| -0.691 + 10.0 * e.log10() > gate)
-            .collect();
-        Measurement {
-            integrated_lufs: Some(
-                -0.691 + 10.0 * (relative.iter().sum::<f64>() / relative.len() as f64).log10(),
-            ),
-            blocks: absolute.len(),
-            true_peak_dbtp: peak,
-        }
-    }
+    frame.reference_loudness.is_some() || av3a_bed(frame) || (frame.codec != "mpegh" && (stereo_master(frame) || crate::alac_pcm::is_upmixed(frame)))
 }
 pub struct PendingFrame {
     pub frame: FrameData,
@@ -223,6 +44,7 @@ pub struct VolumeBalance {
     pub eligible: bool,
     non_stereo_seen: bool,
     meter: Option<LoudnessMeter>,
+    decoded_reference: Option<Measurement>,
     post_counter: usize,
     cached: Option<Measurement>,
     settled: bool,
@@ -243,6 +65,7 @@ impl VolumeBalance {
         };
     }
     pub fn set_cached(&mut self, cached: Measurement) {
+        if self.decoded_reference.is_some() {return;}
         self.cached = if cached.blocks >= MIN_BLOCKS
             && cached.integrated_lufs.is_some_and(|v| v.is_finite())
         {
@@ -260,8 +83,12 @@ impl VolumeBalance {
         } else {
             None
         };
-        let mut measurement = None;
-        if let Some(channels) = channels {
+        let mut measurement = frame.reference_loudness.clone();
+        if measurement.is_some() {
+            if self.decoded_reference.is_none() {self.cached=None;self.settled=false;self.meter=None;self.post_counter=0;}
+            self.decoded_reference = measurement.clone();
+        }
+        if let Some(channels) = channels.filter(|_| measurement.is_none()) {
             self.meter
                 .get_or_insert_with(|| if av3a_bed(&frame) { LoudnessMeter::speakers_7_1_4() } else { LoudnessMeter::new(frame.sample_rate) })
                 .push(channels);
@@ -273,13 +100,13 @@ impl VolumeBalance {
         PendingFrame { frame, measurement }
     }
     pub fn startup_measurement_ready(&self) -> bool {
-        self.cached.is_some() || self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
+        self.cached.is_some() || self.decoded_reference.as_ref().is_some_and(|m|m.blocks>=MIN_BLOCKS) || self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
     }
     /// Use the normal measurement/target before any PCM is made audible. This
     /// consumes the existing decode preroll, never a second pass or cache.
     pub fn prime_av3a_startup(&mut self, origin: u64, ended: bool) -> Option<Command> {
         if !self.enabled || self.settled { return None; }
-        let m = self.cached.clone().or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
+        let m = self.cached.clone().or_else(|| self.decoded_reference.clone()).or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
         if !ended && m.blocks < MIN_BLOCKS { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
         self.gain_db = master_gain(lufs, m.true_peak_dbtp);
@@ -290,11 +117,11 @@ impl VolumeBalance {
     pub fn route(&mut self, frame: &PendingFrame) -> Vec<Command> {
         let f = &frame.frame;
         let stereo = f.codec != "mpegh" && (stereo_master(f) || crate::alac_pcm::is_upmixed(f));
-        let av3a = av3a_bed(f);
-        if f.codec != "mpegh" && !av3a && !stereo {
+        let referenced = av3a_bed(f) || f.reference_loudness.is_some();
+        if f.codec != "mpegh" && !referenced && !stereo {
             self.non_stereo_seen = true;
         }
-        let eligible = !self.non_stereo_seen && (f.codec == "mpegh" || av3a || stereo);
+        let eligible = !self.non_stereo_seen && (f.codec == "mpegh" || referenced || stereo);
         let mut commands = vec![];
         if eligible != self.eligible {
             self.eligible = eligible;
@@ -309,7 +136,7 @@ impl VolumeBalance {
             if !self.settled {
                 self.gain_db = master_gain(
                     cached.integrated_lufs.unwrap(),
-                    if stereo || av3a { cached.true_peak_dbtp } else { None },
+                    if stereo || referenced { cached.true_peak_dbtp } else { None },
                 );
                 self.settled = true;
                 commands.push(Command::SetProgramGain {
@@ -326,7 +153,7 @@ impl VolumeBalance {
                 if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                     self.settled = true;
                     self.balanced_blocks = m.blocks;
-                    let gain = master_gain(lufs, if stereo || av3a { m.true_peak_dbtp } else { None });
+                    let gain = master_gain(lufs, if stereo || referenced { m.true_peak_dbtp } else { None });
                     let previous = self.gain_db;
                     self.gain_db = gain;
                     if early && (gain - previous).abs() >= 0.05 {
@@ -362,7 +189,9 @@ impl VolumeBalance {
         self.completed = true;
     }
     pub fn complete_measurement(&self) -> Option<Measurement> {
-        let m = self.meter.as_ref()?.integrated();
+        // Object references are measured during this playback, not persisted as a stereo/bed cache.
+        if self.decoded_reference.is_some() {return None;}
+        let m = self.decoded_reference.clone().or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
         (self.completed && self.eligible && m.blocks >= MIN_BLOCKS && m.integrated_lufs.is_some())
             .then_some(m)
     }
@@ -374,6 +203,22 @@ mod tests {
         let mut f = frame("av3a", at);
         f.labels = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s|s.to_string()).collect();
         f.raw_bed_labels = f.labels.clone(); f.channels = vec![vec![0.0;1024];12]; f
+    }
+    #[test]
+    fn object_reference_is_eligible_without_treating_objects_as_speakers() {
+        for codec in ["av3a","eac3","future-object-format"] {
+            let mut b=VolumeBalance::default();b.enabled=true;
+            let mut f=frame(codec,0);f.labels=vec!["Obj_42".into()];f.channels=vec![vec![0.;1024]];f.object_channels=vec![sda_core::ObjectChannelDecl{id:42,channel:0}];
+            f.reference_loudness=Some(Measurement{integrated_lufs:Some(-10.),blocks:100,true_peak_dbtp:Some(-2.)});
+            assert!(startup_program(&f));let pending=b.measure(f,None);
+            assert!(b.startup_measurement_ready());assert!(b.prime_av3a_startup(0,false).is_some());
+            let commands=b.route(&pending);assert!(b.eligible);assert_eq!(b.gain_db,-8.);
+            assert!(commands.iter().any(|c|matches!(c,Command::SetProgramEnabled{enabled:true})));
+            assert!(b.meter.is_none(),"shared decoded reference must not be measured a second time");
+            b.set_cached(Measurement{integrated_lufs:Some(-2.),blocks:100,true_peak_dbtp:Some(-2.)});b.route(&pending);assert_eq!(b.gain_db,-8.);
+            b.finish();assert!(b.complete_measurement().is_none());
+            b.reset();assert!(!b.startup_measurement_ready());assert!(b.decoded_reference.is_none());
+        }
     }
     #[test]
     fn av3a_balance_reuses_the_existing_stereo_policy_and_schedule() {
@@ -394,7 +239,6 @@ mod tests {
         let mut b=VolumeBalance::default();let pending=b.measure(av3a_frame(0),None);
         let commands=b.route(&pending);
         assert!(b.eligible);assert!(commands.iter().any(|c|matches!(c,Command::SetProgramEnabled{enabled:false})));
-        assert_eq!(b.meter.as_ref().unwrap().weights,[1.0,1.0,1.0,0.0,1.41,1.41,1.41,1.41,1.0,1.0,1.0,1.0]);
     }
 
 
@@ -451,7 +295,7 @@ mod tests {
         assert_eq!(multichannel.integrated().true_peak_dbtp,stereo.integrated().true_peak_dbtp);
     }
     fn frame(codec: &'static str, at: u64) -> FrameData {
-        FrameData { compatibility_bed: None,
+        FrameData { reference_loudness: None, compatibility_bed: None,
             codec,
             sample_rate: 48000,
             sample_pos: at,

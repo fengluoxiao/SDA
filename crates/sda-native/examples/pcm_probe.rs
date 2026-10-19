@@ -132,7 +132,7 @@ fn desktop_feeder(args: &[String], limit: u64) {
                 depth_factor: e["depthFactor"].as_f64(), ramp_duration: e["rampDuration"].as_u64().unwrap_or(128) as u32,
             }).collect();
             replay_frames.push_back(sda_core::FrameData {
-                codec: "eac3", sample_rate: 48000, sample_pos: value["start"].as_u64().unwrap(),
+                reference_loudness: None, codec: "eac3", sample_rate: 48000, sample_pos: value["start"].as_u64().unwrap(),
                 channels: serde_json::from_value(value["channels"].clone()).unwrap(),
                 labels: serde_json::from_value(value["labels"].clone()).unwrap(),
                 raw_bed_labels: Vec::new(), events,

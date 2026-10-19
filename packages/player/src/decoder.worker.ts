@@ -38,6 +38,7 @@ let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
+let decodedReferenceLoudness: DecodedFrameData["referenceLoudness"];
 const lastObjectTargets = new Map<number, ObjectEvent>();
 let frameBatcher = new FrameBatcher(postFrame);
 let outputSampleRate: number | undefined;
@@ -71,12 +72,13 @@ function measureMpeghReference(channels:Float32Array[],sampleRate:number):void {
 }
 
 function postFrame(frame: DecodedFrameData): void {
-  if(frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
+  if (frame.referenceLoudness) {decodedReferenceLoudness=frame.referenceLoudness;frame.loudness=frame.referenceLoudness;}
+  if(!frame.referenceLoudness && frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
   // channel-layout weights to 118 objects is both incorrect and very costly.
-  if (frame.codec !== "mpegh" && (isStereoMasterFrame(frame) || isAv3aBedFrame(frame)) && frame.channels[0]?.length) {
+  if (!frame.referenceLoudness && frame.codec !== "mpegh" && (isStereoMasterFrame(frame) || isAv3aBedFrame(frame)) && frame.channels[0]?.length) {
     loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length, isAv3aBedFrame(frame) ? AV3A_714_WEIGHTS : undefined);
     const at=perf.endpoint?performance.now():null;
     loudnessMeter.push(frame.channels);
@@ -182,6 +184,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
+      decodedReferenceLoudness = undefined;
       // Keep the existing immediate decoder for raw and legacy MP4 streams.
       // ALAC replaces it in onTrack before MP4Box starts delivering packets,
       // because only the discovered track carries its required codec cookie.
@@ -205,7 +208,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
         frameBatcher.push(tail);
       }
       frameBatcher.flush();
-      if (loudnessMeter) post({ type: "loudness-complete", loudness: loudnessMeter.integrated() });
+      if (decodedReferenceLoudness || loudnessMeter) post({ type: "loudness-complete", loudness: decodedReferenceLoudness ?? loudnessMeter!.integrated() });
       post({ type: "flushed" });
       break;
     }
@@ -255,6 +258,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
                 decoderConfigurationError = null;
                 loudnessMeter = null;
                 loudnessPostCounter = 0;
+      decodedReferenceLoudness = undefined;
               } catch (error) {
                 decoder?.free();
                 decoder = null;

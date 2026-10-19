@@ -162,7 +162,7 @@ jobs:
           node scripts/prepare-ac4.mjs
           export MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec"
           set -o pipefail
-          cargo test --manifest-path packages/core/Cargo.toml --no-default-features --locked --lib av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-core-tests.log
+          cargo test --manifest-path packages/core/Cargo.toml --no-default-features --locked --lib -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-core-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-mobile-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked balance::tests -- --test-threads=1 2>&1 | tee ios-artifacts/volume-balance-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1 2>&1 | tee ios-artifacts/headphone-orientation-tests.log

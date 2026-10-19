@@ -309,7 +309,7 @@ fn scene_frame(
     } else {
         vec!["LFE".into()]
     };
-    Ok(FrameData { compatibility_bed: None,
+    Ok(FrameData { reference_loudness: None, compatibility_bed: None,
         codec: "ac4",
         sample_rate: timeline.sample_rate(),
         sample_pos,

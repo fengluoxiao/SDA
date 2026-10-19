@@ -47,7 +47,7 @@ fn frame(
     channels: Vec<Vec<f32>>,
     labels: Vec<String>,
 ) -> FrameData {
-    FrameData { compatibility_bed: None,
+    FrameData { reference_loudness: None, compatibility_bed: None,
         codec: "dts",
         sample_rate,
         sample_pos,

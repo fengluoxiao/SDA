@@ -78,3 +78,36 @@ await send({type:"flush",epoch:1});assert(messages.some(m=>m.type==="loudness-co
 console.log("Audio Vivid worker: actual open/push/flush path, existing loudness reporting and no extra SRC passed.");
 
 await import("./test-av3a-startup.mjs");
+
+// The reference is supplied by the shared decoder, independent of object count.
+const reference={integratedLufs:-10,blocks:100,truePeakDbtp:-2};
+const oldPush=Decoder.prototype.push;
+Decoder.prototype.push=function(){oldPush.call(this);const f=this.queue.at(-1);f.codec="av3a";f.labels=f.labels.map((_,i)=>`Obj_${i}`);f.objectChannels=f.labels.map((_,i)=>({id:i,channel:i}));f.referenceLoudness={...reference};};
+messages.length=0;
+await send({type:"open",epoch:2,codec:"av3a",outputSampleRate:48000});
+await send({type:"push",epoch:2,kind:"raw",sequence:0,chunk:new Uint8Array(16).buffer});
+await send({type:"flush",epoch:2});
+const objectFrame=messages.find(m=>m.type==="frame").frame;
+assert.deepEqual(objectFrame.loudness,reference);
+assert.deepEqual(messages.find(m=>m.type==="loudness-complete").loudness,reference);
+const handle=player.slice(player.indexOf("    const stereoMaster = isStereoMasterFrame(frame);",player.indexOf("  private handleFrame")),player.indexOf("    if (frame.programLoudness)",player.indexOf("  private handleFrame")));
+const eligibility=transformSync(`export function run(frame:any){const isStereoMasterFrame=()=>false,isAlacStereoFrame=()=>false;${handle}}`,{loader:"ts",format:"cjs"}).code;
+const e={exports:{}};new Function("module","exports","isAv3aBedFrame",eligibility)(e,e.exports,isAv3aBedFrame);
+for(const codec of ["av3a","eac3","future-object-format"]){
+ const state={nonStereoProgrammeSeen:false,stereoBalanceEligible:false,recordDecode(){},setVolumeBalance(){this.notified=true;}};
+ e.exports.run.call(state,{...objectFrame,codec});assert(state.stereoBalanceEligible && state.notified);
+}
+console.log("Shared object reference: worker and player carry the decoded measurement, activate programme balance, and retain it at EOF.");
+
+// A compatible stereo listening frame still uses the decoder's full-programme
+// reference. Re-estimating that listening downmix would replace the reference.
+Decoder.prototype.push=function(){oldPush.call(this);const f=this.queue.at(-1);f.codec="eac3";f.channels=f.channels.slice(0,2);f.labels=["L","R"];f.objectChannels=[];f.referenceLoudness={...reference};};
+const oldMeterPush=LoudnessMeter.prototype.push;
+LoudnessMeter.prototype.push=function(){throw Error("decoded programme reference was measured twice");};
+try {
+ messages.length=0;await send({type:"open",epoch:3,codec:"auto",outputSampleRate:48000});
+ await send({type:"push",epoch:3,kind:"raw",sequence:0,chunk:new Uint8Array(16).buffer});
+ await send({type:"flush",epoch:3});
+ assert.deepEqual(messages.find(m=>m.type==="frame").frame.loudness,reference);
+} finally {LoudnessMeter.prototype.push=oldMeterPush;}
+console.log("Decoded reference retains priority over a stereo compatibility listening frame.");

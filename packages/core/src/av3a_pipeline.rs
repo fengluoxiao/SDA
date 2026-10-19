@@ -92,6 +92,7 @@ pub struct Av3aPipeline {
     raw_beds: Vec<String>,
     declarations: Vec<ObjectChannelDecl>,
     objects: Option<ObjectScene>,
+    reference: Option<crate::av3a_reference::SceneMeter>,
     events: VecDeque<ObjectEvent>,
     transport_channels: usize,
     source_rate: u32,
@@ -111,6 +112,7 @@ impl Av3aPipeline {
             raw_beds: Vec::new(),
             declarations: Vec::new(),
             objects: None,
+            reference: None,
             events: VecDeque::new(),
             transport_channels: 0,
             source_rate: OUTPUT_RATE,
@@ -259,7 +261,8 @@ impl Av3aPipeline {
             channel.drain(..skip);
             channel.truncate(count);
         }
-        out.push_back(FrameData {
+        let mut decoded = FrameData {
+            reference_loudness: None,
             compatibility_bed: None,
             codec: "av3a",
             sample_rate: OUTPUT_RATE,
@@ -280,7 +283,15 @@ impl Av3aPipeline {
             object_channels: self.declarations.clone(),
             program_loudness: None,
             ramp_duration: 0,
-        });
+        };
+        if self.objects.is_some() {
+            decoded.reference_loudness = Some(
+                self.reference
+                    .get_or_insert_with(crate::av3a_reference::SceneMeter::new)
+                    .measure(&decoded),
+            );
+        }
+        out.push_back(decoded);
         self.output_samples += count as u64;
     }
 }

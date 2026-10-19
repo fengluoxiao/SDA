@@ -131,7 +131,7 @@ mod tests {
     }
 
     fn frame(at: u64, labels: &[&str], mapping: &[(u32, u32)]) -> FrameData {
-        FrameData { compatibility_bed: None, codec: "eac3", sample_rate: 48000, sample_pos: at,
+        FrameData { reference_loudness: None, compatibility_bed: None, codec: "eac3", sample_rate: 48000, sample_pos: at,
             channels: labels.iter().enumerate().map(|(i,_)| vec![i as f32 + 1.0; 16]).collect(),
             labels: labels.iter().map(|s| s.to_string()).collect(), raw_bed_labels: vec![],
             events: vec![], object_channels: mapping.iter().map(|&(id,channel)| ObjectChannelDecl {id,channel}).collect(),

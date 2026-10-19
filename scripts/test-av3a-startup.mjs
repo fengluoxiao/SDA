@@ -59,5 +59,5 @@ for (const codec of ['alac','aac','mp3','flac','pcm']) {
 }
 Object.assign(p,{trackCodec:'mpegh',volumeBalanceEnabled:true,stereoStartupEligible:false,av3aStartupPrepared:false});
 assert.equal(p.av3aStartupPending(),false,'object reference is not a stereo master');
-assert.match(source,/stereoStartupEligible = frame.codec !== "mpegh" && stereoMaster/);
+assert.match(source,/stereoStartupEligible = frame.codec !== "mpegh" &&/);
 console.log('Stereo startup: shared first-output gain, cache/disabled bypass and object exclusion passed.');

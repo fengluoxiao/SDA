@@ -166,7 +166,7 @@ impl VbapSolver {
         }
     }
 
-    fn pan(&self, position: Vec3, spread: f64) -> Vec<f64> {
+    pub(crate) fn pan(&self, position: Vec3, spread: f64) -> Vec<f64> {
         let mut gains = vec![0.0; self.dirs.len()];
         let p = unit(position);
         if !self.pairs.is_empty() {

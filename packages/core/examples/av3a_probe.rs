@@ -50,6 +50,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut source_rate = 48000u32;
     let mut transport_channels = 0;
     let mut profile = String::new();
+    let mut loudness = None;
     let mut drain =
         |decoder: &mut sda_core::StreamingDecoder| -> Result<(), Box<dyn std::error::Error>> {
             let errors = decoder.drain_errors();
@@ -57,6 +58,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("{errors:?}").into());
             }
             while let Some(f) = decoder.next_frame() {
+                loudness = f.reference_loudness.clone();
                 if f.sample_pos != samples || f.sample_rate != 48000 || f.channels.is_empty() {
                     return Err("invalid output clock".into());
                 }
@@ -139,7 +141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let rms: Vec<_> = sum2.iter().map(|v| (v / samples as f64).sqrt()).collect();
     println!(
         "{}",
-        serde_json::json!({"profile":profile,"frames":frames,"samples":samples,"sampleRate":48000,"sourceRate":source_rate,"transportChannels":transport_channels,"channels":sum2.len(),"labels":labels,"rawBedLabels":beds,"objectChannels":declarations,"eventCount":events,"seconds":samples as f64/48000.,"peak":peak,"rms":rms,"fnv1a":format!("{checksum:016x}"),"elapsedSeconds":started.elapsed().as_secs_f64()})
+        serde_json::json!({"referenceLoudness":loudness,"profile":profile,"frames":frames,"samples":samples,"sampleRate":48000,"sourceRate":source_rate,"transportChannels":transport_channels,"channels":sum2.len(),"labels":labels,"rawBedLabels":beds,"objectChannels":declarations,"eventCount":events,"seconds":samples as f64/48000.,"peak":peak,"rms":rms,"fnv1a":format!("{checksum:016x}"),"elapsedSeconds":started.elapsed().as_secs_f64()})
     );
     Ok(())
 }

@@ -31,7 +31,7 @@ fn feed_program(engine: &mut MobileEngine, start: usize, count: usize, silent: b
                 .collect()
         })
         .collect();
-    let frame = FrameData { compatibility_bed: None,
+    let frame = FrameData { reference_loudness: None, compatibility_bed: None,
         codec: "av3a",
         sample_rate: 48000,
         sample_pos: start as u64,
