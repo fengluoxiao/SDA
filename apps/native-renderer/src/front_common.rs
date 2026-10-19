@@ -1,17 +1,23 @@
 //! Re-render the common component of a stationary front object pair at center.
-//! This is Mid/Side routing, NOT voice extraction, EQ, or a global mono downmix.
+//! Mid/Side routing with optional common-direct presence; not voice extraction.
+//! The opt-in presence control leaves original side and reflection sends unchanged.
 //! PCM envelopes are applied by the regular mixers before this partition pass.
-use crate::{Source, SourceKind, bus_renderer, directional, hrtf, near_field, vbap};
+use crate::{Source, SourceKind, bus_renderer, directional, dsp, hrtf, near_field, vbap};
 use std::collections::HashMap;
 
 pub(crate) struct FrontCommon {
     pub center: Option<Box<directional::ContinuousSource>>,
     pub enabled: bool,
     mix: f32,
-    pair: Option<(String, String)>,
+    pair: Option<(Vec<String>, Vec<String>)>,
+    /// Group co-located front sources for the accepted shared presentation.
+    pub grouped: bool,
     reference: Option<(directional::Route, directional::Route, directional::Route)>,
     pub gain: f32,
     meter: Option<ReferenceMeter>,
+    presence: Option<dsp::Biquad>,
+    presence_db: f32,
+    presence_rate: u32,
 }
 impl Default for FrontCommon {
     fn default() -> Self {
@@ -19,15 +25,19 @@ impl Default for FrontCommon {
             center: None,
             // Correlation is not metadata: equal samples in two objects may
             // contain backing vocals or ambience as well as a centered lead.
-            // Re-centering them invents a source and changes the authored mix
-            // even in actual-direction mode. Keep this diagnostic experiment
-            // opt-in; normal playback must convolve each object independently.
+            // Re-centering changes the authored common component's direction.
+            // Engine enables the listener-approved grouped policy only for the
+            // shared HRTF family with spatial enhancement enabled.
             enabled: false,
             mix: 0.0,
             pair: None,
+            grouped: false,
             reference: None,
             gain: 1.0,
             meter: None,
+            presence: None,
+            presence_db: 0.0,
+            presence_rate: 0,
         }
     }
 }
@@ -98,20 +108,57 @@ fn retained_front(source: &Source) -> bool {
             })
 }
 
-fn unique_pair(sources: &HashMap<String, Source>) -> Option<(String, String)> {
-    let unique = |x| {
-        let mut ids = sources
+fn unique_pair(
+    sources: &HashMap<String, Source>,
+    grouped: bool,
+) -> Option<(Vec<String>, Vec<String>)> {
+    let group = |x| {
+        let mut ids: Vec<_> = sources
             .iter()
             .filter(|(_, s)| front_corner(s, x))
-            .map(|(id, _)| id);
-        let first = ids.next()?;
-        if ids.next().is_some() {
-            None
-        } else {
-            Some(first.clone())
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        if ids.is_empty() || (!grouped && ids.len() != 1) {
+            return None;
         }
+        let route = sources[&ids[0]].continuous.as_ref()?.effective_route()?;
+        // Group only identical complete render routes. Arbitrarily close or
+        // diffuse/moving sources must not silently become a stereo pair.
+        if ids.iter().any(|id| {
+            sources[id]
+                .continuous
+                .as_ref()
+                .and_then(|c| c.effective_route())
+                != Some(route)
+        }) {
+            return None;
+        }
+        Some(ids)
     };
-    Some((unique(-1.0)?, unique(1.0)?))
+    Some((group(-1.0)?, group(1.0)?))
+}
+
+fn group_input(
+    sources: &HashMap<String, Source>,
+    ids: &[String],
+) -> Option<(
+    directional::Route,
+    [f32; crate::convolution::DEFAULT_PARTITION],
+)> {
+    let first = sources.get(ids.first()?)?.continuous.as_ref()?;
+    let route = first.effective_route()?;
+    let mut input = [0.; crate::convolution::DEFAULT_PARTITION];
+    for id in ids {
+        let source = sources.get(id)?.continuous.as_ref()?;
+        if source.effective_route()? != route {
+            return None;
+        }
+        for (out, frame) in input.iter_mut().zip(&source.frames) {
+            *out += frame.input;
+        }
+    }
+    Some((route, input))
 }
 
 /// Broadband reference normalization, derived from the actual HRTF kernels.
@@ -216,10 +263,51 @@ impl ReferenceMeter {
 impl FrontCommon {
     pub fn reset(&mut self) {
         let enabled = self.enabled;
+        let grouped = self.grouped;
+        let mut presence = self.presence;
+        if let Some(filter) = &mut presence {
+            filter.reset();
+        }
+        let presence_db = self.presence_db;
+        let presence_rate = self.presence_rate;
         *self = Self {
             enabled,
+            grouped,
+            presence,
+            presence_db,
+            presence_rate,
             ..Default::default()
         };
+    }
+
+    /// Common-direct presentation tone, applied before the central direct HRTF.
+    /// It is never applied to the whole output, side difference, or rear layer.
+    pub(crate) fn set_presence(&mut self, rate: u32, db: f32) -> Result<(), String> {
+        if !db.is_finite() || !(0.0..=3.0).contains(&db) {
+            return Err("front-common presence must be finite and between 0 and +3 dB".into());
+        }
+        let filter = dsp::Biquad::peaking(rate, 3000., 0.9, db)?;
+        if self.presence_db == db && self.presence_rate == rate {
+            return Ok(());
+        }
+        self.presence = (db != 0.).then_some(filter);
+        self.presence_db = db;
+        self.presence_rate = rate;
+        Ok(())
+    }
+    pub(crate) fn presence_db(&self) -> f32 {
+        self.presence_db
+    }
+    fn drain_presence(&mut self) {
+        if let Some(filter) = &mut self.presence {
+            if let Some(center) = &mut self.center {
+                for frame in &mut center.frames {
+                    frame.input = filter.process(0.);
+                }
+            } else {
+                filter.reset();
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -235,14 +323,19 @@ impl FrontCommon {
         allowed: bool,
     ) {
         let selected = if self.enabled && allowed {
-            self.pair
-                .as_ref()
-                .filter(|(l, r)| {
-                    sources.get(l).is_some_and(retained_front)
-                        && sources.get(r).is_some_and(retained_front)
-                })
-                .cloned()
-                .or_else(|| unique_pair(sources))
+            if self.grouped {
+                unique_pair(sources, true)
+            } else {
+                self.pair
+                    .as_ref()
+                    .filter(|(l, r)| {
+                        l.iter()
+                            .chain(r)
+                            .all(|id| sources.get(id).is_some_and(retained_front))
+                    })
+                    .cloned()
+                    .or_else(|| unique_pair(sources, false))
+            }
         } else {
             None
         };
@@ -252,30 +345,24 @@ impl FrontCommon {
         if self.mix == 0.0 {
             self.pair = selected.clone();
         }
-        let Some((left_id, right_id)) = self.pair.as_ref() else {
+        let Some((left_ids, right_ids)) = self.pair.as_ref() else {
+            self.drain_presence();
             return;
         };
-        let Some(left) = sources.get(left_id) else {
-            self.mix = 0.0;
+        let Some((lroute, linput)) = group_input(sources, left_ids) else {
+            self.mix = 0.;
             self.pair = None;
+            self.reference = None;
+            self.meter = None;
+            self.drain_presence();
             return;
         };
-        let Some(right) = sources.get(right_id) else {
-            self.mix = 0.0;
+        let Some((rroute, rinput)) = group_input(sources, right_ids) else {
+            self.mix = 0.;
             self.pair = None;
-            return;
-        };
-        let Some(l) = left.continuous.as_ref() else {
-            self.mix = 0.0;
-            self.pair = None;
-            return;
-        };
-        let Some(r) = right.continuous.as_ref() else {
-            self.mix = 0.0;
-            self.pair = None;
-            return;
-        };
-        let (Some(lroute), Some(rroute)) = (l.effective_route(), r.effective_route()) else {
+            self.reference = None;
+            self.meter = None;
+            self.drain_presence();
             return;
         };
         let center_direction = directional::Direction {
@@ -325,15 +412,15 @@ impl FrontCommon {
             self.center = Some(Box::new(center));
         }
         let inputs = std::array::from_fn::<_, { crate::convolution::DEFAULT_PARTITION }, _>(|i| {
-            (l.frames[i].input, r.frames[i].input)
+            (linput[i], rinput[i])
         });
         let target_gain = self
             .meter
             .as_mut()
             .and_then(|m| m.observe(&inputs))
             .unwrap_or(self.gain);
-        let left_id = left_id.clone();
-        let right_id = right_id.clone();
+        let left_ids = left_ids.clone();
+        let right_ids = right_ids.clone();
         let center = self.center.as_mut().unwrap();
         center.schedule(
             center_route.0,
@@ -353,23 +440,27 @@ impl FrontCommon {
             // Long-term input-weighted HRTF energy replaces clip-specific gain.
             self.gain += (target_gain - self.gain) / 48000.0;
             let mid = (l + r) * 0.5 * self.mix;
-            sources
-                .get_mut(&left_id)
-                .unwrap()
-                .continuous
+            // Remove the common excitation once per physical front group.
+            // Splitting one co-located object into several objects must not
+            // change the group's transfer or multiply its center contribution.
+            for ids in [&left_ids, &right_ids] {
+                let contribution = mid / ids.len() as f32;
+                for id in ids {
+                    sources
+                        .get_mut(id)
+                        .unwrap()
+                        .continuous
+                        .as_mut()
+                        .unwrap()
+                        .frames[i]
+                        .input -= contribution;
+                }
+            }
+            let direct_mid = mid * self.gain;
+            center.frames[i].input = self
+                .presence
                 .as_mut()
-                .unwrap()
-                .frames[i]
-                .input -= mid;
-            sources
-                .get_mut(&right_id)
-                .unwrap()
-                .continuous
-                .as_mut()
-                .unwrap()
-                .frames[i]
-                .input -= mid;
-            center.frames[i].input = mid * self.gain;
+                .map_or(direct_mid, |filter| filter.process(direct_mid));
             center.frames[i].near = near_targets;
             // Replace rather than add another reverberant excitation. These
             // canonical front points all have unit proximity-room weighting.
@@ -416,7 +507,7 @@ mod tests {
         let mut s = FrontCommon {
             enabled: false,
             mix: 1.0,
-            pair: Some(("foo".into(), "bar".into())),
+            pair: Some((vec!["foo".into()], vec!["bar".into()])),
             gain: 3.0,
             ..Default::default()
         };
@@ -644,6 +735,194 @@ mod tests {
         assert!(e.front_common.pair.is_none());
         assert_eq!(e.block_offset, 0);
         assert_eq!(e.sample_pos, 48000);
+    }
+
+    fn grouped_engine(kind: &str, side: bool, split: bool, extras: usize) -> crate::Engine {
+        let mut e = engine(true, kind, side, extras);
+        e.front_common.grouped = true;
+        if split {
+            for (i, position) in [[-1., 1., 0.], [1., 1., 0.]].into_iter().enumerate() {
+                let original = e.sources.get_mut(&format!("arbitrary-name-{i}")).unwrap();
+                original.gain = 0.5;
+                original.target_gain = 0.5;
+                let id = format!("unrelated-split-name-{i}");
+                let mut source = Source {
+                    kind: SourceKind::Object,
+                    position,
+                    gain: 0.5,
+                    target_gain: 0.5,
+                    availability: 1.,
+                    availability_target: 1.,
+                    ..Default::default()
+                };
+                let samples: Vec<_> = (0..12288)
+                    .map(|n| {
+                        let v = (n as f32 * 0.173).sin() * 0.01;
+                        if side && i == 1 { -v } else { v }
+                    })
+                    .collect();
+                source.samples.write(0, 0, &samples);
+                e.sources.insert(id.clone(), source);
+                e.route_source_now(&id, 0).unwrap();
+            }
+        }
+        e
+    }
+    #[test]
+    fn grouped_front_is_invariant_to_co_located_object_splitting_in_both_mixers() {
+        for extras in [0, 8] {
+            let mut single = grouped_engine("eac3", false, false, extras);
+            let mut split = grouped_engine("eac3", false, true, extras);
+            let a = rendered(&mut single, 1536);
+            let b = rendered(&mut split, 1536);
+            assert!(single.front_common.center.is_some());
+            assert!(split.front_common.center.is_some());
+            let delta = a
+                .iter()
+                .zip(&b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(
+                delta < 1e-7,
+                "split changed front transfer: extras={extras}, delta={delta}"
+            );
+            assert_eq!(split.peak_guard.diagnostic_gain(), 1.);
+        }
+    }
+    #[test]
+    fn grouped_front_preserves_pure_difference_and_callback_timing() {
+        for extras in [0, 8] {
+            let mut original = grouped_engine("eac3", true, true, extras);
+            original.front_common.enabled = false;
+            let a = rendered(&mut original, 1536);
+            let mut actual = grouped_engine("eac3", true, true, extras);
+            let b = rendered(&mut actual, 1536);
+            // Independent engines use separately seeded source maps; a four-
+            // source sum may round differently without changing its transfer.
+            let delta = a
+                .iter()
+                .zip(&b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(
+                delta < 1e-7,
+                "pure difference changed: extras={extras}, delta={delta}"
+            );
+            assert!(actual.front_common.center.is_some());
+        }
+        let a = rendered(&mut grouped_engine("eac3", false, true, 0), 1536);
+        let b = rendered(&mut grouped_engine("eac3", false, true, 0), 173);
+        assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-7));
+    }
+    #[test]
+    fn grouped_front_is_opt_in_and_keeps_reset_preference() {
+        assert!(!FrontCommon::default().grouped);
+        let mut e = grouped_engine("eac3", false, true, 0);
+        let fixed = rendered(&mut e, 1536);
+        let mut original = grouped_engine("eac3", false, true, 0);
+        original.front_common.enabled = false;
+        let baseline = rendered(&mut original, 1536);
+        assert!(
+            fixed
+                .iter()
+                .zip(baseline)
+                .any(|(a, b)| (a - b).abs() > 1e-5)
+        );
+        e.reset_session(48000);
+        assert!(e.front_common.grouped && e.front_common.enabled);
+        assert!(e.front_common.center.is_none());
+    }
+
+    #[test]
+    fn common_presence_is_exact_bypass_at_zero_and_has_bounded_frequency_response() {
+        let mut s = FrontCommon::default();
+        s.set_presence(48000, 0.).unwrap();
+        assert!(s.presence.is_none());
+        for invalid in [-1., 3.1, f32::NAN, f32::INFINITY] {
+            assert!(s.set_presence(48000, invalid).is_err());
+        }
+        let response = |rate: u32, frequency: f32, db: f32| {
+            let mut s = FrontCommon::default();
+            s.set_presence(rate, db).unwrap();
+            let mut input = 0f64;
+            let mut output = 0f64;
+            for i in 0..rate / 2 {
+                let x = (i as f32 * std::f32::consts::TAU * frequency / rate as f32).sin();
+                let y = s.presence.as_mut().unwrap().process(x);
+                if i >= rate / 4 {
+                    input += f64::from(x).powi(2);
+                    output += f64::from(y).powi(2);
+                }
+            }
+            10. * (output / input).log10()
+        };
+        for rate in [32000, 48000, 96000] {
+            for db in [1.5, 3.] {
+                assert!((response(rate, 3000., db) - f64::from(db)).abs() < 0.01);
+                assert!(response(rate, 100., db).abs() < 0.05);
+                assert!(response(rate, 10000., db).abs() < 0.5);
+            }
+        }
+    }
+    #[test]
+    fn common_presence_leaves_pure_difference_unchanged_in_both_mixers() {
+        for extras in [0, 8] {
+            let mut a = grouped_engine("eac3", true, true, extras);
+            let mut b = grouped_engine("eac3", true, true, extras);
+            b.front_common.set_presence(48000, 3.).unwrap();
+            let a = rendered(&mut a, 1536);
+            let b = rendered(&mut b, 1536);
+            let error = a
+                .iter()
+                .zip(&b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(error < 1e-7, "presence changed pure difference: {error}");
+        }
+    }
+    #[test]
+    fn repeating_presence_setting_does_not_restart_filter_history() {
+        let mut s = FrontCommon::default();
+        s.set_presence(48000, 3.).unwrap();
+        s.presence.as_mut().unwrap().process(0.7);
+        let mut expected = s.presence.unwrap();
+        let output = expected.process(0.2);
+        s.set_presence(48000, 3.).unwrap();
+        assert_eq!(s.presence.as_mut().unwrap().process(0.2), output);
+    }
+    #[test]
+    fn common_presence_reset_keeps_tone_configuration_but_discards_filter_history() {
+        let mut s = FrontCommon::default();
+        s.set_presence(48000, 3.).unwrap();
+        s.presence.as_mut().unwrap().process(1.);
+        s.reset();
+        assert_eq!(s.presence_db(), 3.);
+        assert_eq!(s.presence.as_mut().unwrap().process(0.), 0.);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+        let set = hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        s.center = Some(Box::new(directional::ContinuousSource::new(&set).unwrap()));
+        s.presence.as_mut().unwrap().process(1.);
+        s.drain_presence();
+        assert!(
+            s.center
+                .as_ref()
+                .unwrap()
+                .frames
+                .iter()
+                .any(|f| f.input != 0.)
+        );
+        for _ in 0..100 {
+            s.drain_presence();
+        }
+        assert!(
+            s.center
+                .as_ref()
+                .unwrap()
+                .frames
+                .iter()
+                .all(|f| f.input.abs() < 1e-20)
+        );
     }
 
     #[test]

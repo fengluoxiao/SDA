@@ -1,4 +1,6 @@
 # HRTFHQ common base and fusion audit — 2026-10-19
+Follow-up: the B gain base is retained. The user subsequently selected the strong common-front clarity addition; see [accepted front clarity](hrtfhq-accepted-front-clarity-2026-10-19.md) for the current shared enhancement default and lifecycle checks.
+
 
 最终确认：修正同曲增益后，用户明确全部12首选B，包含The Very First Night。B已作为共享渲染器默认配方。此前“待复核”内容保留为过程记录，现已由此次确认取代。打包、提交及推送随后被用户暂缓，本轮只合入代码并修移动端问题。
 

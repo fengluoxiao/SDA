@@ -62,6 +62,8 @@ mod shared_clarity_integration_tests;
 mod selected_base_tests;
 #[cfg(test)]
 mod spatial_mode_transition_tests;
+#[cfg(test)]
+mod front_presentation_tests;
 mod front_ear;
 pub mod convolution;
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
@@ -1405,6 +1407,16 @@ impl Engine {
         let was_shared = self.active_hrtf_set.as_ref()
             .is_some_and(hrtf::NativeHrtfSet::uses_shared_measured_response);
         if shared != was_shared { self.set_spatial_enhancement(shared)?; }
+        self.configure_shared_front_presentation(shared)?;
+        Ok(())
+    }
+
+    fn configure_shared_front_presentation(&mut self, shared: bool) -> Result<(), String> {
+        self.front_common.enabled = shared && self.spatial_preamp.target_db() == 2.0;
+        if shared {
+            self.front_common.grouped = true;
+            self.front_common.set_presence(self.output_sample_rate, 3.0)?;
+        }
         Ok(())
     }
 
@@ -1786,6 +1798,9 @@ impl Engine {
         // The accepted B includes the shelf; no separate rear +3 dB is added.
         self.spatial_layer.rear_db = 0.0;
         self.spatial_layer.main_restore_db = 0.0;
+        let shared = self.active_hrtf_set.as_ref()
+            .is_some_and(hrtf::NativeHrtfSet::uses_shared_measured_response);
+        self.configure_shared_front_presentation(shared)?;
         Ok(())
     }
 
@@ -3201,7 +3216,7 @@ impl Engine {
                         &mut self.sources, set, self.bus_renderer.as_mut().unwrap(),
                         self.layout, &self.vbap, head_pose, self.near_field,
                         self.directional_hrtf
-                            && Self::is_dolby_object_codec(self.program_codec.as_deref())
+                            && (self.front_common.grouped || Self::is_dolby_object_codec(self.program_codec.as_deref()))
                             && !self.cinema.monitor.hardware.enabled
                             && self.speaker_mutes.is_empty() && self.focused_speakers.is_empty()
                             && self.speaker_levels.iter().all(|v| (*v - 1.0).abs() < 1e-6),

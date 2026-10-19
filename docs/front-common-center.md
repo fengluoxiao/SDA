@@ -1,4 +1,6 @@
 # Dolby front-common center HRTF rendering
+Historical KU100 policy below. The 2026-10-19 shared HRTFHQ enhancement uses the separately accepted grouped strong-clarity policy described in [accepted front clarity](hrtfhq-accepted-front-clarity-2026-10-19.md). Its family/default rules supersede the older diagnostic-only and Dolby-only defaults.
+
 
 User listening decision (2026-10-02): the full-KU100 comparison that moves only
 shared front-left/right content to center was substantially clearer and approved.

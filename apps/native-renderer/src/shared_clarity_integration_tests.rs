@@ -161,10 +161,16 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         }
     }
     e.replace_hrtf(set, 0.).unwrap();
-    let integrated_base = audition.as_ref().is_none_or(|c| c["useIntegratedBase"].as_bool() == Some(true));
+    let integrated_base = audition
+        .as_ref()
+        .is_none_or(|c| c["useIntegratedBase"].as_bool() == Some(true));
     if integrated_base {
-        assert!(e.active_hrtf_set.as_ref().unwrap().shared_clarity_active()
-            || audition.as_ref().is_some_and(|c| c["withoutClarity"].as_bool() == Some(true)));
+        assert!(
+            e.active_hrtf_set.as_ref().unwrap().shared_clarity_active()
+                || audition
+                    .as_ref()
+                    .is_some_and(|c| c["withoutClarity"].as_bool() == Some(true))
+        );
         assert_eq!(e.spatial_layer.geometry, spatial_layer::Geometry::Front45);
         assert_eq!(e.spatial_preamp.target_db(), 2.);
         assert_eq!(e.spatial_layer.db, 4.);
@@ -172,7 +178,9 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         e.set_master_preamp_db(-12.).unwrap();
         e.set_output_volume(0.5, true);
         if let Some(c) = &audition {
-            if let Some(db) = c["auxDb"].as_f64() { e.set_spatial_layer_gain_db(db as f32).unwrap(); }
+            if let Some(db) = c["auxDb"].as_f64() {
+                e.set_spatial_layer_gain_db(db as f32).unwrap();
+            }
             if let Some(db) = c["rearDb"].as_f64() {
                 assert!(db.is_finite() && (0.0..=3.0).contains(&db));
                 e.spatial_layer.rear_db = db as f32;
@@ -180,8 +188,9 @@ fn replay_scene(audition: Option<serde_json::Value>) {
             // Freeze earlier A/C/D/E audition definitions as production defaults evolve.
             let db = c["highShelfDb"].as_f64().unwrap_or(0.);
             assert!(db.is_finite() && (0.0..=1.5).contains(&db));
-            e.output_clarity = [dsp::Biquad::highshelf(48000, 4000.,
-                std::f32::consts::FRAC_1_SQRT_2, db as f32).unwrap(); 2];
+            e.output_clarity =
+                [dsp::Biquad::highshelf(48000, 4000., std::f32::consts::FRAC_1_SQRT_2, db as f32)
+                    .unwrap(); 2];
         }
     } else if let Some(c) = &audition {
         // Keep archived audition definitions independent of new production defaults.
@@ -189,22 +198,54 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         e.set_spatial_enhancement(false).unwrap();
         e.spatial_layer.geometry = if c["renderer"].as_str() == Some("historical-aux") {
             spatial_layer::Geometry::Front45
-        } else { spatial_layer::Geometry::ProtectedSides };
-        e.output_clarity = [dsp::Biquad::highshelf(48000, 4000.,
-            std::f32::consts::FRAC_1_SQRT_2, if enhancement { 1.5 } else { 0. }).unwrap(); 2];
-        e.set_spatial_layer_gain_db(c["auxDb"].as_f64().unwrap_or(if enhancement {1.5} else {0.}) as f32).unwrap();
-        e.spatial_layer.rear_db = c["rearDb"].as_f64().unwrap_or(if enhancement {3.} else {0.}) as f32;
-        assert!(e.spatial_layer.rear_db.is_finite() && (0.0..=3.0).contains(&e.spatial_layer.rear_db));
+        } else {
+            spatial_layer::Geometry::ProtectedSides
+        };
+        e.output_clarity = [dsp::Biquad::highshelf(
+            48000,
+            4000.,
+            std::f32::consts::FRAC_1_SQRT_2,
+            if enhancement { 1.5 } else { 0. },
+        )
+        .unwrap(); 2];
+        e.set_spatial_layer_gain_db(c["auxDb"].as_f64().unwrap_or(if enhancement {
+            1.5
+        } else {
+            0.
+        }) as f32)
+            .unwrap();
+        e.spatial_layer.rear_db = c["rearDb"]
+            .as_f64()
+            .unwrap_or(if enhancement { 3. } else { 0. }) as f32;
+        assert!(
+            e.spatial_layer.rear_db.is_finite() && (0.0..=3.0).contains(&e.spatial_layer.rear_db)
+        );
         e.spatial_layer.main_restore_db = c["mainRestoreDb"].as_f64().unwrap_or(0.) as f32;
-        assert!(e.spatial_layer.main_restore_db.is_finite() && (0.0..=6.0).contains(&e.spatial_layer.main_restore_db));
-        e.set_master_preamp_db(c["masterDb"].as_f64().unwrap_or(0.) as f32 - 12.).unwrap();
+        assert!(
+            e.spatial_layer.main_restore_db.is_finite()
+                && (0.0..=6.0).contains(&e.spatial_layer.main_restore_db)
+        );
+        e.set_master_preamp_db(c["masterDb"].as_f64().unwrap_or(0.) as f32 - 12.)
+            .unwrap();
         e.set_output_volume(0.5, true);
         let trim = c["postGuardDb"].as_f64().unwrap_or(0.) as f32;
         assert!(trim.is_finite() && (-6.0..=0.0).contains(&trim));
         e.final_output_trim.set(trim, 48000, true).unwrap();
         e.set_spatial_balance(c["foregroundAttenuation"].as_bool().unwrap_or(false));
     }
-    assert!(!e.front_common.enabled);
+    if let Some(c) = &audition {
+        // Archived comparisons remain frozen as the default evolves.
+        let enabled = c["frontCommon"].as_bool().unwrap_or(false);
+        e.front_common.enabled = enabled;
+        e.front_common.grouped = c["groupedFrontCommon"].as_bool().unwrap_or(false);
+        assert!(!e.front_common.grouped || enabled);
+        let db = c["frontCommonPresenceDb"].as_f64().unwrap_or(0.) as f32;
+        assert!(enabled || db == 0.);
+        e.front_common.set_presence(48000, db).unwrap();
+    } else {
+        assert!(e.front_common.enabled && e.front_common.grouped);
+        assert_eq!(e.front_common.presence_db(), 3.);
+    }
     e.set_program_codec(codec.clone());
     e.set_direct_objects(true).unwrap();
     e.set_directional_hrtf(true);
@@ -321,5 +362,5 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     }
     output.flush().unwrap();
     assert_eq!(guard, 1.);
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"auditionConfig":audition})).unwrap()).unwrap();
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }
