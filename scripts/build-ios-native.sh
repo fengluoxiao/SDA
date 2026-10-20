@@ -8,8 +8,10 @@ if [[ "$TARGET_ROOT" != /* ]]; then TARGET_ROOT="$ROOT/$TARGET_ROOT"; fi
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 export MACINDECODE_AC4_SPEC_DIR="$ROOT/tmp/MacinDecode-AC4-Core/spec"
 node scripts/prepare-ac4.mjs
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-for TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
+TARGETS=(aarch64-apple-ios)
+if [[ "${SDA_IOS_INCLUDE_SIMULATOR:-1}" != 0 ]]; then TARGETS+=(aarch64-apple-ios-sim); fi
+rustup target add "${TARGETS[@]}"
+for TARGET in "${TARGETS[@]}"; do
  SDK=iphoneos
  if [[ "$TARGET" == *-sim ]]; then SDK=iphonesimulator; fi
  export SDKROOT="$(xcrun --sdk "$SDK" --show-sdk-path)"
@@ -23,7 +25,8 @@ unset SDKROOT CC AR
 OUT="$ROOT/apps/mobile/modules/sda-core/ios/SdaNative.xcframework"
 # This path is fixed inside the checkout, never a caller-supplied directory.
 if [[ -d "$OUT" ]]; then mv "$OUT" "$OUT.previous.$(date +%s)"; fi
-xcodebuild -create-xcframework \
- -library "$TARGET_ROOT/aarch64-apple-ios/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
- -library "$TARGET_ROOT/aarch64-apple-ios-sim/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
- -output "$OUT"
+FRAMEWORK_ARGS=(-create-xcframework)
+for TARGET in "${TARGETS[@]}"; do
+ FRAMEWORK_ARGS+=(-library "$TARGET_ROOT/$TARGET/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers")
+done
+xcodebuild "${FRAMEWORK_ARGS[@]}" -output "$OUT"

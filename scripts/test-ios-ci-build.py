@@ -39,8 +39,8 @@ class ArchivePaths(unittest.TestCase):
             bash = str(Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git/bin/bash.exe')
         if not bash or not Path(bash).exists():
             self.skipTest('bash is unavailable')
-        for mode in ['default', 'relative', 'absolute']:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix='sda-ios-cache-') as temporary:
+        for mode, include_simulator in [('default', True), ('relative', True), ('absolute', True), ('absolute', False)]:
+            with self.subTest(mode=mode, simulator=include_simulator), tempfile.TemporaryDirectory(prefix='sda-ios-cache-') as temporary:
                 root = Path(temporary).resolve()
                 scripts = root / 'scripts'
                 scripts.mkdir()
@@ -73,7 +73,7 @@ while (( $# )); do
  fi
  shift
 done
-[[ "$count" == 2 ]]
+[[ "$count" == "${SDA_EXPECT_LIBS:-2}" ]]
 ''')
                 setup = 'set -euo pipefail\nexport PATH="$PWD/mock-bin:$PATH"\n'
                 if mode == 'relative':
@@ -82,10 +82,11 @@ done
                     setup += 'export CARGO_TARGET_DIR="$PWD/absolute cache/cargo"\n'
                 else:
                     setup += 'unset CARGO_TARGET_DIR\n'
+                setup += f'export SDA_IOS_INCLUDE_SIMULATOR={int(include_simulator)}\nexport SDA_EXPECT_LIBS={2 if include_simulator else 1}\n'
                 setup += 'bash scripts/build-ios-native.sh\n'
                 result = subprocess.run([bash, '-c', setup], cwd=root, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual((root / 'targets.txt').read_text().splitlines(), ['aarch64-apple-ios', 'aarch64-apple-ios-sim'])
+                self.assertEqual((root / 'targets.txt').read_text().splitlines(), ['aarch64-apple-ios', 'aarch64-apple-ios-sim'] if include_simulator else ['aarch64-apple-ios'])
 
 if __name__ == '__main__':
     unittest.main()
