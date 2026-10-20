@@ -110,7 +110,7 @@ const imports={
   react,
   'react-native-safe-area-context':{useSafeAreaInsets:()=>safeInsets},
   'react-native':{Platform:{OS:'android'},View:'View'},
-  './app-theme':{useAppTheme:()=>({id:'sakiko'})},
+  './app-theme':{useAppTheme:()=>({id:'sakiko',accent:'#EE5577'})},
   './android-material-theme':{androidMaterialTheme:()=>({bg:'#fff'})},
   './IOSSystemTabs':{hasSystemIOSTabs:false,IOSSystemTabs:'IOSSystemTabs'},
   './AndroidChrome':{hasAndroidChrome:true,AndroidChrome:'AndroidChrome',AndroidPageHeader:'AndroidPageHeader'},
@@ -167,7 +167,7 @@ const chromeModule={exports:{}};
 const oldExpo=globalThis.expo;
 globalThis.expo={modules:{SdaAndroidChrome:{}}};
 new Function('require','module','exports',transformSync(adapter,{loader:'tsx',format:'cjs'}).code)(name=>{
- const values={'react-native-safe-area-context':{useSafeAreaInsets:()=>safeInsets},react,'react-native':{Platform:{OS:'android'}},expo:{requireNativeView:()=> 'NativeChrome'},'./app-theme':{useAppTheme:()=>({id:'sakiko'})},'./android-material-theme':{androidMaterialTheme:()=>({primary:'#7799CC'})},'./android-chrome-model':mod.exports};
+ const values={'react-native-safe-area-context':{useSafeAreaInsets:()=>safeInsets},react,'react-native':{Platform:{OS:'android'}},expo:{requireNativeView:()=> 'NativeChrome'},'./app-theme':{useAppTheme:()=>({id:'sakiko',accent:'#EE5577'})},'./android-material-theme':{androidMaterialTheme:()=>({primary:'#7799CC'})},'./android-chrome-model':mod.exports};
  assert(name in values,name);return values[name];
 },chromeModule,chromeModule.exports);
 globalThis.expo=oldExpo;
@@ -175,6 +175,7 @@ for(const dark of [false,true])for(const selected of [0,1,2]) {
  const calls=[];
  const rail=chromeModule.exports.AndroidSideTabs({selected,dark,accent:'#EE5577',onChange:index=>calls.push(index)});
  assert.deepEqual(rail.props.style,{width:48,height:140});
+ assert.equal(rail.props.preserveAccentColor,!dark && selected!==0);
  assert.equal(rail.props.presentation,'rail');assert.equal(rail.props.dark,dark);assert.equal(rail.props.accentColorValue,'#EE5577');
  for(const index of [0,1,2,-1,3,1.5,NaN])rail.props.onSelect({nativeEvent:{index}});
  assert.deepEqual(calls,[0,1,2]);
@@ -241,10 +242,21 @@ for(const selected of [0,1,2])for(const selectedUri of ['', 'file:///song']) {
  const player={selectedUri,playing:false,paused:false,busy:false,metadata:{},fileName:'Song'};
  const state=androidChromeState(player,selected);
  const bar=chromeModule.exports.AndroidChrome({player,selected,dark:false,backgroundColor:'transparent',onSelect(){}});
- assert.equal(bar.props.style.maxWidth,state.showMini?undefined:320);
+ assert.equal(bar.props.style.maxWidth,state.showMini?undefined:264);
  assert.equal(bar.props.style.alignSelf,state.showMini?undefined:'center');
  assert.equal(bar.props.style.height,state.height);
+ assert.equal(bar.props.tabBarWidth,264,'native tabs keep their compact width even while the Mini Player host spans the page');
  const mini=chromeModule.exports.AndroidChrome({player,selected,dark:false,backgroundColor:'transparent',onSelect(){},presentation:'mini'});
  assert.equal(mini.props.style.maxWidth,undefined,'standalone landscape mini-player retains its full content width');
 }
-console.log('Android bottom tabs: compact whenever Mini Player is absent, full width with Mini Player, independent of page selection.');
+console.log('Android bottom tabs: compact capsule on every page, independent of Mini Player host width and page selection.');
+
+
+for (const dark of [false,true]) for (const selected of [0,1,2]) {
+ const player={selectedUri:'',playing:false,paused:false,busy:false,metadata:{},fileName:''};
+ const bar=chromeModule.exports.AndroidChrome({player,selected,dark,backgroundColor:selected===0?'#111113':'#ffffff',onSelect(){}});
+ const preserve=!dark && selected!==0;
+ assert.equal(bar.props.preserveAccentColor,preserve);
+ assert.equal(bar.props.accentColorValue,preserve?'#EE5577':'#7799CC','white light pages keep the original theme accent; other appearances retain their palette');
+}
+console.log('Android white-background selection: raw theme accent and foreground-preservation flag pass for all pages/appearances.');

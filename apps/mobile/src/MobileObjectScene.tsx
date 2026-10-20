@@ -1,3 +1,4 @@
+import { normalizeNativeShaderLogs } from "./nativeShaderLogs";
 import { resetNativeSceneDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
 import { AppState, Platform, PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
@@ -156,6 +157,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={Platform.OS === "ios" && !renderActive ? "never" : "always"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
       const renderFrame = state.gl.render.bind(state.gl);
       const context = state.gl.getContext() as any;
+      normalizeNativeShaderLogs(context);
       const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;
       let frames = 0;
       let smokeReported = false;

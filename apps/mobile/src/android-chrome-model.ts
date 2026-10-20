@@ -1,3 +1,5 @@
+export const ANDROID_BOTTOM_TAB_WIDTH = 264;
+
 export const ANDROID_CHROME_TABS = ["播放", "资料库", "空间"] as const;
 
 export function androidChromeState(player: {

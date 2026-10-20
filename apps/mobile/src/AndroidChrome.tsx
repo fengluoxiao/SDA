@@ -5,10 +5,10 @@ import React from "react";
 import { Platform, type NativeSyntheticEvent, type StyleProp, type ViewStyle } from "react-native";
 import { requireNativeView } from "expo";
 import type { PlayerProps } from "./RemotePlayer";
-import { androidChromeState, androidHeaderLayout, isAndroidTabIndex } from "./android-chrome-model";
+import { ANDROID_BOTTOM_TAB_WIDTH, androidChromeState, androidHeaderLayout, isAndroidTabIndex } from "./android-chrome-model";
 
 interface ChromeProps {
-  selected?: number; dark: boolean; title?: string; artist?: string; coverUri?: string;
+  preserveAccentColor?: boolean; tabBarWidth?: number; selected?: number; dark: boolean; title?: string; artist?: string; coverUri?: string;
   accentColorValue?: string; hasTrack?: boolean; playing?: boolean; busy?: boolean; backgroundColorValue?: string;
   presentation?: "bottom" | "rail" | "mini" | "header" | "toggle" | "button";
   topInset?: number; checked?: boolean; blurred?: boolean; headerAction?: boolean; backButton?: boolean;
@@ -26,17 +26,20 @@ export const hasAndroidChrome = NativeChrome !== null;
 export function AndroidChrome({ player, selected, onSelect, dark, backgroundColor, presentation = "bottom" }: {
   player: PlayerProps; selected: number; onSelect(index: number): void; dark: boolean; backgroundColor: string; presentation?: "bottom" | "mini";
 }) {
-  const { id } = useAppTheme();
-  const { primary: accent } = androidMaterialTheme(id, dark);
+  const { id, accent: themeAccent } = useAppTheme();
+  // Library/space pages use white surfaces in light mode. Keep their native
+  // tab foreground at the selected character's actual color, as on iOS.
+  const preserveAccentColor = !dark && selected !== 0;
+  const accent = preserveAccentColor ? themeAccent : androidMaterialTheme(id, dark).primary;
   if (!NativeChrome) return null;
   const state = androidChromeState(player, selected);
   const compact = presentation === "bottom" && !state.showMini;
-  return <NativeChrome presentation={presentation} accentColorValue={accent} selected={selected} dark={dark}
+  return <NativeChrome preserveAccentColor={preserveAccentColor} tabBarWidth={ANDROID_BOTTOM_TAB_WIDTH} presentation={presentation} accentColorValue={accent} selected={selected} dark={dark}
     title={player.metadata.title || player.fileName || "等待选择歌曲"}
     artist={player.metadata.artist || player.metadata.albumArtist || "未知艺人"}
     coverUri={player.metadata.coverUri || ""} hasTrack={state.hasTrack}
     playing={state.playing} busy={player.busy}
-    backgroundColorValue={backgroundColor} style={{ width: "100%", height: presentation === "mini" ? 48 : state.height, ...(compact ? { maxWidth: 320, alignSelf: "center" as const } : {}) }}
+    backgroundColorValue={backgroundColor} style={{ width: "100%", height: presentation === "mini" ? 48 : state.height, ...(compact ? { maxWidth: ANDROID_BOTTOM_TAB_WIDTH, alignSelf: "center" as const } : {}) }}
     onSelect={event => { if (isAndroidTabIndex(event.nativeEvent.index)) onSelect(event.nativeEvent.index); }} onExpand={() => onSelect(0)}
     onPlayback={() => player.playing ? player.togglePause() : player.play()} />;
 }
@@ -46,7 +49,7 @@ export function AndroidChrome({ player, selected, onSelect, dark, backgroundColo
 export function AndroidSideTabs({ selected, onChange, accent, dark }: {
   selected: number; onChange(index: number): void; accent: string; dark: boolean;
 }) {
-  return NativeChrome ? <NativeChrome presentation="rail" selected={selected} dark={dark}
+  return NativeChrome ? <NativeChrome preserveAccentColor={!dark && selected !== 0} presentation="rail" selected={selected} dark={dark}
     accentColorValue={accent} title="" artist="" coverUri="" hasTrack={false} playing={false} busy={false}
     backgroundColorValue="transparent" style={{ width: 48, height: 140 }}
     onSelect={event => { if (isAndroidTabIndex(event.nativeEvent.index)) onChange(event.nativeEvent.index); }}

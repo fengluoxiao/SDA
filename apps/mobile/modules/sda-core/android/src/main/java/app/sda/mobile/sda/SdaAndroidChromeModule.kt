@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.drawscope.translate
@@ -87,8 +88,10 @@ class SdaAndroidChromeModule : Module() {
             Unit
         }
         View(SdaAndroidChromeView::class) {
-            Events("onSelect", "onExpand", "onPlayback", "onToggle")
+            Events("onSelect", "onExpand", "onPlayback", "onToggle", "onSpatialSelect")
             Prop("presentation") { view: SdaAndroidChromeView, value: String -> view.presentation = if (value in listOf("bottom", "rail", "mini", "header", "toggle", "button")) value else "bottom" }
+            Prop("preserveAccentColor") { view: SdaAndroidChromeView, value: Boolean -> view.preserveAccentColor = value }
+            Prop("tabBarWidth") { view: SdaAndroidChromeView, value: Float -> view.tabBarWidth = if (value.isFinite()) value.coerceIn(160f, 480f) else 264f }
             Prop("topInset") { view: SdaAndroidChromeView, value: Float -> view.topInset = value.coerceAtLeast(0f) }
             Prop("checked") { view: SdaAndroidChromeView, value: Boolean -> view.checked = value }
             Prop("blurred") { view: SdaAndroidChromeView, value: Boolean -> view.blurred = value }
@@ -120,6 +123,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val onSelect by EventDispatcher()
     private val onExpand by EventDispatcher()
     private val onPlayback by EventDispatcher()
+    private val onSpatialSelect by EventDispatcher()
     var topInset by mutableFloatStateOf(0f)
     var checked by mutableStateOf(false)
     var blurred by mutableStateOf(false)
@@ -141,9 +145,14 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var spatialTracking by mutableStateOf(false)
     var headYawDegrees by mutableFloatStateOf(0f)
     var backButton by mutableStateOf(false)
+    var preserveAccentColor by mutableStateOf(false)
+    var tabBarWidth by mutableFloatStateOf(264f)
     var surfaceColor by mutableStateOf(Color(0xFFF2F2F7))
     private val backgroundNode = if (Build.VERSION.SDK_INT >= 29) RenderNode("SDA glass background") else null
     private var backgroundRevision by mutableIntStateOf(0)
+    private val menuBackgroundNode = if (Build.VERSION.SDK_INT >= 29) RenderNode("SDA context menu background") else null
+    private var menuBackgroundRevision by mutableIntStateOf(0)
+    private var spatialMenuOpen by mutableStateOf(false)
     private var interactionGeneration by mutableIntStateOf(0)
     private var capturing = false
     private var observedTree: ViewTreeObserver? = null
@@ -151,8 +160,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val location = IntArray(2)
     private val rootLocation = IntArray(2)
     private val captureListener = ViewTreeObserver.OnPreDrawListener {
-        if (!capturing && isShown && hasWindowFocus() && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
+        if (!capturing && isShown && (hasWindowFocus() || spatialMenuOpen) && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
             recordBackground()
+            if (spatialMenuOpen) recordMenuBackground()
         }
         true
     }
@@ -174,15 +184,42 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     override fun onDetachedFromWindow() {
         observedTree?.takeIf { it.isAlive }?.removeOnPreDrawListener(captureListener)
         observedTree = null
+        spatialMenuOpen = false
+        menuBackgroundNode?.discardDisplayList()
         backgroundNode?.discardDisplayList()
         super.onDetachedFromWindow()
     }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
+        // A focusable menu owns another window. Preserve its composition while
+        // that window receives back/outside events.
+        if (spatialMenuOpen) return
         backgroundNode?.discardDisplayList()
         interactionGeneration++
         if (hasWindowFocus) postInvalidateOnAnimation()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility != VISIBLE) spatialMenuOpen = false
+    }
+
+    private fun recordMenuBackground() {
+        val node = menuBackgroundNode ?: return
+        val root = rootView
+        if (root.width <= 0 || root.height <= 0) return
+        root.getLocationInWindow(rootLocation)
+        node.setPosition(0, 0, root.width, root.height)
+        val canvas = node.beginRecording(root.width, root.height)
+        capturing = true
+        try {
+            drawBackgroundBranch(root, canvas)
+        } finally {
+            capturing = false
+            node.endRecording()
+        }
+        menuBackgroundRevision++
     }
 
     override fun draw(canvas: Canvas) {
@@ -320,13 +357,44 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             return
         }
         if (settingsButton) {
+            LaunchedEffect(busy, spatialButton) {
+                if (busy || !spatialButton) spatialMenuOpen = false
+            }
             val headAngle by animateFloatAsState(if (spatialButton && spatialEnabled && spatialTracking) headYawDegrees else 0f, tween(100), label = "spatialHeadYaw")
             val backdrop = backgroundAt(0f)
-            LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = backdrop,
-                surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
-                enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = 44.dp, contentPadding = 0.dp,
-                modifier = Modifier.fillMaxWidth().drawWithContent { backgroundRevision; drawContent() }) {
-                Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
+            Box(Modifier.fillMaxSize()) {
+                LiquidButton(onClick = {
+                    if (spatialButton) {
+                        recordMenuBackground()
+                        spatialMenuOpen = true
+                    } else onExpand(emptyMap<String, Any>())
+                }, backdrop = backdrop,
+                    surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
+                    enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = 44.dp, contentPadding = 0.dp,
+                    modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = if (spatialMenuOpen && spatialButton) 0f else 1f }.drawWithContent { backgroundRevision; drawContent() }) {
+                    Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
+                }
+                if (spatialMenuOpen && spatialButton && !busy) {
+                    var menuOffset by remember { mutableStateOf(IntOffset.Zero) }
+                    val menuBackdrop = rememberCanvasBackdrop {
+                        menuBackgroundRevision
+                        val node = menuBackgroundNode
+                        if (node != null && node.hasDisplayList() && drawContext.canvas.nativeCanvas.isHardwareAccelerated) {
+                            translate(left = (rootLocation[0] - menuOffset.x).toFloat(), top = (rootLocation[1] - menuOffset.y).toFloat()) {
+                                drawContext.canvas.nativeCanvas.drawRenderNode(node)
+                            }
+                        }
+                    }
+                    SdaSpatialContextMenu(
+                        enabled = spatialEnabled, dark = glassDark ?: dark, accent = accent,
+                        backdrop = menuBackdrop, hasBackdrop = Build.VERSION.SDK_INT >= 31,
+                        onPosition = { menuOffset = it },
+                        onDismiss = { spatialMenuOpen = false },
+                        onSelect = { enabled ->
+                            if (!busy) onSpatialSelect(mapOf("enabled" to enabled))
+                        }
+                    )
+                }
             }
             return
         }
@@ -334,7 +402,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             val selection = remember { { selected } }
             LiquidSideTabs(selectedTabIndex = selection, onTabSelected = { index ->
                 if (index != selected) onSelect(mapOf("index" to index))
-            }, backdrop = backgroundAt(0f), tabsCount = 3, dark = dark, accentColor = accent,
+            }, backdrop = backgroundAt(0f), tabsCount = 3, dark = dark, accentColor = accent, preserveAccentColor = preserveAccentColor,
                 modifier = Modifier.fillMaxSize().drawWithContent { backgroundRevision; drawContent() }) {
                 val labels = listOf("播放", "资料库", "空间")
                 val icons = listOf(Icons.Default.PlayCircle, Icons.Default.LibraryMusic, Icons.Default.ViewInAr)
@@ -349,7 +417,8 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
         }
         val miniOnly = presentation == "mini"
         val miniBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (miniOnly) 0.dp else 8.dp).toPx() })
-        val tabsBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (showMini) 62.dp else 8.dp).toPx() })
+        val tabsLeft = ((width - with(androidx.compose.ui.platform.LocalDensity.current) { tabBarWidth.dp.toPx() }) / 2f).coerceAtLeast(0f)
+        val tabsBackdrop = backgroundAt(with(androidx.compose.ui.platform.LocalDensity.current) { (if (showMini) 62.dp else 8.dp).toPx() }, left = tabsLeft)
         Column(Modifier.fillMaxSize().padding(top = if (miniOnly) 0.dp else 8.dp, bottom = if (miniOnly) 0.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (showMini) {
                 LiquidButton(onClick = { onExpand(emptyMap<String, Any>()) }, backdrop = miniBackdrop, label = "展开正在播放", height = 48.dp, contentPadding = 10.dp,
@@ -371,18 +440,25 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                 }
             }
             if (miniOnly) return@Column
+            // UIKit tab labels use a fixed logical size. Convert this dp
+            // baseline through the device's font scaling instead of multiplying
+            // an sp size again; body text keeps the user's system scaling.
+            val tabLabelSize = with(androidx.compose.ui.platform.LocalDensity.current) { 10.dp.toSp() }
+            val tabLabelLineHeight = with(androidx.compose.ui.platform.LocalDensity.current) { 12.dp.toSp() }
             val selection = remember { { selected } }
             LiquidBottomTabs(selectedTabIndex = selection, onTabSelected = { index ->
                 if (index != selected) onSelect(mapOf("index" to index))
-            }, backdrop = tabsBackdrop, tabsCount = 3, dark = dark, accentColor = accent, height = 56.dp,
-                modifier = Modifier.fillMaxWidth().height(56.dp).drawWithContent { backgroundRevision; drawContent() }) {
+            }, backdrop = tabsBackdrop, tabsCount = 3, dark = dark, accentColor = accent, height = 56.dp, preserveAccentColor = preserveAccentColor,
+                modifier = Modifier.align(Alignment.CenterHorizontally).widthIn(max = tabBarWidth.dp).fillMaxWidth().height(56.dp).drawWithContent { backgroundRevision; drawContent() }) {
                     val labels = listOf("播放", "资料库", "空间")
                     val icons = listOf(Icons.Default.PlayCircle, Icons.Default.LibraryMusic, Icons.Default.ViewInAr)
                     val currentSelected = selected
                     labels.forEachIndexed { index, label ->
                         LiquidBottomTab(onClick = { if (currentSelected != index) onSelect(mapOf("index" to index)) }, modifier = Modifier.semantics { this.selected = currentSelected == index }) {
                             Icon(icons[index], null, Modifier.size(23.dp), tint = if (selected == index) accent else ink)
-                            Text(label, fontSize = 10.sp, fontWeight = if (selected == index) FontWeight.SemiBold else FontWeight.Medium, color = if (selected == index) accent else ink, maxLines = 1)
+                            Text(label, fontSize = tabLabelSize, lineHeight = tabLabelLineHeight, fontWeight = FontWeight.Medium,
+                                style = androidx.compose.ui.text.TextStyle(platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false)),
+                                color = if (selected == index) accent else ink, maxLines = 1)
                         }
                     }
             }

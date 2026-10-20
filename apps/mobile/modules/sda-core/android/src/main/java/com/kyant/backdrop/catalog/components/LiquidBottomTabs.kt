@@ -68,6 +68,7 @@ fun LiquidBottomTabs(
     dark: Boolean = isSystemInDarkTheme(),
     accentColor: Color = if (dark) Color(0xFF7799CC) else Color(0xFF7799CC),
     height: Dp = 64.dp,
+    preserveAccentColor: Boolean = false,
     content: @Composable RowScope.() -> Unit
 ) {
     val isLightTheme = !dark
@@ -218,7 +219,10 @@ fun LiquidBottomTabs(
                             val progress = dampedDragAnimation.pressProgress
                             Highlight.Default.copy(alpha = progress)
                         },
-                        onDrawSurface = { drawRect(containerColor) }
+                        onDrawSurface = {
+                            drawRect(containerColor)
+                            if (preserveAccentColor) drawLiquidTabSelection(isLightTheme, dampedDragAnimation.pressProgress)
+                        }
                     )
                     .then(interactiveHighlight.modifier)
                     .height(height - 8.dp)
@@ -274,13 +278,7 @@ fun LiquidBottomTabs(
                         scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
                     },
                     onDrawSurface = {
-                        val progress = dampedDragAnimation.pressProgress
-                        drawRect(
-                            if (isLightTheme) Color.Black.copy(0.1f)
-                            else Color.White.copy(0.1f),
-                            alpha = 1f - progress
-                        )
-                        drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                        if (!preserveAccentColor) drawLiquidTabSelection(isLightTheme, dampedDragAnimation.pressProgress)
                     }
                 )
                 .height(height - 8.dp)

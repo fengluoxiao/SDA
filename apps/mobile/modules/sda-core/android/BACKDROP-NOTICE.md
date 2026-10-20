@@ -20,3 +20,25 @@ pass use vertical coordinates; native icons remain upright. Cancellation restore
 the committed selection. LiquidToggle is copied from tag 1.0.6 with explicit
 theme/accent, enabled state, fresh callbacks and accessibility switch actions.
 The source license continues to apply to all adapted files.
+
+
+## Community LiquidMenu demo
+
+SdaSpatialContextMenu.kt adapts Aarav90-cpu's LiquidMenu.kt / LiquidMorphDemo
+snippet posted in AndroidLiquidGlass issue 70 (2025-12-20):
+https://github.com/Kyant0/AndroidLiquidGlass/issues/70
+
+The exact retrieved snippet is archived with the local preview delivery as
+LiquidMenu.upstream.kt. This is a community demo, not an official Backdrop
+component. The original spring constants, continuous-corner morph, 12dp blur,
+24dp/32dp chromatic lens, 20% white fill, 40% white border are retained; SDA adapts the menu geometry to the supplied iOS reference. Per the user's follow-up,
+blue option fills are removed and option labels/checkmarks are black in light
+mode and white in dark mode. Options are left aligned with a reserved checkmark
+slot, so selected and unselected labels share the same starting position. SDA supplies the live background, a 44dp trigger, two real audio
+choices, checked semantics, a focusable overlay and dismissal/lifecycle handling.
+The older com.kyant.capsule continuous shape API is adapted to the installed
+com.kyant.shapes RoundedRectangle(Continuous) API.
+
+The approved iOS menu reference is used for compact SDA layout: 224dp width,
+two 44dp option rows with 8dp vertical insets (104dp expanded height), 17sp
+regular labels and 16dp horizontal insets. Demo spring/lens/morph remain.

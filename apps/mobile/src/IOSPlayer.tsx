@@ -225,11 +225,7 @@ function ThemedPlayer(p: PlayerProps) {
           onDisable={() => p.setBinauralEnabled?.(false)}
           onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
           accessibilityLabel={headIndicator.label}
-          onPress={() => Alert.alert("空间音频", undefined, [
-            { text: "关闭", onPress: () => p.setBinauralEnabled?.(false) },
-            { text: "固定", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(false); } },
-            { text: "取消", style: "cancel" },
-          ])} /> : <Pressable accessibilityRole="button"
+          onSpatialSelect={enabled => { p.setBinauralEnabled?.(enabled); if (enabled) p.setHeadTracking(false); }} /> : <Pressable accessibilityRole="button"
           accessibilityLabel={headIndicator.label}
           disabled={p.busy || p.systemSpatial360RAActive}
           onPress={() => Alert.alert("空间音频", undefined, [
