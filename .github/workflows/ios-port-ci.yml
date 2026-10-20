@@ -33,6 +33,18 @@ jobs:
         sdk: ['26', '27']
     env:
       CI: '1'
+      # All three manifests share dependencies; keep host/device/simulator target
+      # fingerprints in one cached tree instead of compiling per manifest.
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/ios-build/cargo
+      # Audio regressions need optimized DSP loops, while retaining test checks.
+      # These overrides apply only to `cargo test`, never packaged --release libs.
+      CARGO_PROFILE_TEST_OPT_LEVEL: '1'
+      CARGO_PROFILE_TEST_DEBUG: 'line-tables-only'
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: 'true'
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: '16'
+      CARGO_PROFILE_TEST_LTO: 'off'
       EXPO_NO_TELEMETRY: '1'
       RCT_NEW_ARCH_ENABLED: '1'
       # Keep React and Expo modules on one linkage path. Precompiled Worklets
@@ -52,9 +64,11 @@ jobs:
           python3 scripts/select-ios-sdk.py '${{ matrix.sdk }}'
           sw_vers | tee ios-artifacts/host.txt
       - name: Record Xcode and runtimes
+        id: xcode
         if: steps.sdk.outputs.available == 'true'
         run: |
           xcodebuild -version | tee ios-artifacts/xcode.txt
+          echo "fingerprint=$(shasum -a 256 ios-artifacts/xcode.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           xcodebuild -showsdks | tee ios-artifacts/sdks.txt
           xcrun simctl list runtimes | tee ios-artifacts/runtimes.txt
       - name: Type-check Apple playback host before full React Native build
@@ -87,14 +101,16 @@ jobs:
           set -o pipefail
           xcrun swiftc -swift-version 5 scripts/ios-alac-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift -o ios-artifacts/alac-probe
           ios-artifacts/alac-probe 2>&1 | tee ios-artifacts/alac-probe.log
-      - uses: actions/setup-node@v4
-        if: steps.sdk.outputs.available == 'true'
-        with:
-          node-version: '24'
       - uses: pnpm/action-setup@v4
         if: steps.sdk.outputs.available == 'true'
         with:
           version: '9.15.9'
+      - uses: actions/setup-node@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@master
         if: steps.sdk.outputs.available == 'true'
         with:
@@ -102,8 +118,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.sdk.outputs.available == 'true'
         with:
-          workspaces: crates/sda-native
-          key: ios-${{ matrix.sdk }}
+          workspaces: crates/sda-native -> ../../ios-build/cargo
+          key: ios-shared-test-opt1-${{ matrix.sdk }}-${{ steps.xcode.outputs.fingerprint }}
           cache-on-failure: true
       - name: Install JS dependencies and stage verified assets
         if: steps.sdk.outputs.available == 'true'
@@ -150,6 +166,7 @@ jobs:
           node scripts/test-ios-shared-resolver.mjs
           node scripts/test-ios-diagnostics.mjs
           node scripts/test-ios-reader-recovery.mjs
+          python3 scripts/test-ios-ci-build.py
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
         run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts
@@ -230,6 +247,14 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+      - name: Restore CocoaPods download cache
+        if: steps.sdk.outputs.available == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/modules/**/*.podspec') }}
+          restore-keys: |
+            ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-
       - name: Generate Xcode project and install CocoaPods
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -239,11 +264,20 @@ jobs:
           node ../../scripts/verify-mobile-branding.cjs --ios-assets ios/SDA/Images.xcassets/AppIcon.appiconset --receipt ../../ios-artifacts/app-branding.json
           cd ios
           pod install 2>&1 | tee ../../../ios-artifacts/pods.log
+      - name: Restore Xcode compilation cache
+        if: steps.sdk.outputs.available == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ios-build/CompilationCache.noindex
+          key: ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-${{ github.run_id }}
+          restore-keys: |
+            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-
+            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-
       - name: Build simulator app
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee ios-artifacts/simulator-build.log
+          xcodebuild -showBuildTimingSummary -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-build/simulator COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES COMPILATION_CACHE_CAS_PATH="$PWD/ios-build/CompilationCache.noindex" COMPILATION_CACHE_LIMIT_SIZE=2G CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee ios-artifacts/simulator-build.log
       - name: Boot simulator and smoke test
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -252,7 +286,7 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
+          xcodebuild -showBuildTimingSummary -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES COMPILATION_CACHE_CAS_PATH="$PWD/ios-build/CompilationCache.noindex" COMPILATION_CACHE_LIMIT_SIZE=2G CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
           python3 scripts/strip-ios-ci-resources.py ios-build/package/Payload/SDA.app | tee ios-artifacts/production-resource-audit.json
@@ -263,6 +297,9 @@ jobs:
           cd ../..
           ditto -c -k --keepParent ios-build/simulator/Build/Products/Release-iphonesimulator/SDA.app ios-artifacts/SDA-simulator-arm64.zip
           printf 'Unsigned IPA: requires valid Apple signing/provisioning before device installation. Minimum deployment target iOS 16.4. SDK 27 validation is unavailable unless that SDK is installed.\n' > ios-artifacts/README.txt
+      - name: Summarize compiler and test timings
+        if: always() && steps.sdk.outputs.available == 'true'
+        run: python3 scripts/summarize-ios-build-timings.py ios-artifacts
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -2,6 +2,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/crates/sda-native/target}"
+# Relative Cargo target paths are resolved from this checkout root.
+if [[ "$TARGET_ROOT" != /* ]]; then TARGET_ROOT="$ROOT/$TARGET_ROOT"; fi
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 export MACINDECODE_AC4_SPEC_DIR="$ROOT/tmp/MacinDecode-AC4-Core/spec"
 node scripts/prepare-ac4.mjs
@@ -21,6 +24,6 @@ OUT="$ROOT/apps/mobile/modules/sda-core/ios/SdaNative.xcframework"
 # This path is fixed inside the checkout, never a caller-supplied directory.
 if [[ -d "$OUT" ]]; then mv "$OUT" "$OUT.previous.$(date +%s)"; fi
 xcodebuild -create-xcframework \
- -library "$ROOT/crates/sda-native/target/aarch64-apple-ios/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
- -library "$ROOT/crates/sda-native/target/aarch64-apple-ios-sim/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
+ -library "$TARGET_ROOT/aarch64-apple-ios/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
+ -library "$TARGET_ROOT/aarch64-apple-ios-sim/release/libsda_native.a" -headers "$ROOT/apps/mobile/modules/sda-core/ios/Headers" \
  -output "$OUT"
