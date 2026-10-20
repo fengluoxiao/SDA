@@ -26,7 +26,8 @@ jobs:
   ios:
     name: iOS SDK ${{ matrix.sdk }}
     runs-on: macos-26
-    timeout-minutes: 90
+    # Cold SDK/compiler caches must be allowed to finish and save their outputs.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
