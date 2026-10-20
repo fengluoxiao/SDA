@@ -688,3 +688,43 @@ mod adaptive_lift_tests {
         }
     }
 }
+
+
+#[cfg(test)]
+mod requested_direction_tests {
+    use super::*;
+    #[test]
+    fn rear_overhead_diagonals_and_upper_rear_lift_only_with_measured_room() {
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        for position in [[0., -1., 0.], [0., 0., 1.], [-1., -1., 0.], [1., -1., 0.],
+                         [-1., -1., 1.], [1., -1., 1.], [1., 0., 1.]] {
+            for room in [None, Some(12.)] {
+                let mut control = AuxiliaryBalance::new(48000);
+                control.set_enabled(true, true, 0);
+                control.set_output_headroom(room);
+                let mut front = Source { kind: SourceKind::Object, position: [0., 1., 0.], ..Default::default() };
+                let mut auxiliary = Source { kind: SourceKind::Object, position, ..Default::default() };
+                for i in 0..48000 * 3 {
+                    let j = i % DEFAULT_PARTITION;
+                    let mut reference = Reference::default();
+                    let f = (i as f32 * 0.13).sin() * 0.1;
+                    let a = (i as f32 * 0.17).sin() * 0.01;
+                    let gain = control.gains[j];
+                    let out_front = process_source(&mut front, f, i as u64, gain, &mut reference, 48000, &solver);
+                    let out_aux = process_source(&mut auxiliary, a, i as u64, gain, &mut reference, 48000, &solver);
+                    assert_eq!(out_front, f, "front changed while lifting {position:?}");
+                    assert!((out_aux - a * gain).abs() < 1e-7, "direction omitted: {position:?}");
+                    control.mark_applied(j);
+                    control.observe(reference, 1.);
+                    if j + 1 == DEFAULT_PARTITION { control.finish_block(); }
+                }
+                let lift = 20. * f64::from(control.gains[0]).log10();
+                if room.is_some() {
+                    assert!(lift > 0.4 && lift <= 0.751, "{position:?}: {lift} dB");
+                } else {
+                    assert_eq!(lift, 0., "missing headroom must not invent enhancement");
+                }
+            }
+        }
+    }
+}

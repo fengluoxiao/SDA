@@ -98,6 +98,8 @@ pub(super) struct FinalMixAttenuator {
     enabled: bool,
     requested_attenuation_db: f64,
     reference_gain: f64,
+    output_makeup_db: f64,
+    output_makeup_gain: f64,
     available_headroom_db: Option<f64>,
     filters: [[Filter; 2]; 2],
     offset: usize,
@@ -159,6 +161,8 @@ impl FinalMixAttenuator {
             enabled: true,
             requested_attenuation_db: 0.,
             reference_gain: 1.,
+            output_makeup_db: 0.,
+            output_makeup_gain: 1.,
             available_headroom_db: None,
             filters: [[shelf, high]; 2],
             offset: 0,
@@ -203,6 +207,8 @@ impl FinalMixAttenuator {
         self.maximum_attenuation_db = 0.;
         self.requested_attenuation_db = 0.;
         self.reference_gain = 1.;
+        self.output_makeup_db = 0.;
+        self.output_makeup_gain = 1.;
         self.available_headroom_db = None;
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool) {
@@ -269,19 +275,23 @@ impl FinalMixAttenuator {
         let short = -0.691 + 10. * (short / sn as f64).max(1e-30).log10() + reference_db;
         let momentary = -0.691 + 10. * (momentary / mn as f64).max(1e-30).log10() + reference_db;
         let p = self.policy;
+        // A requested final makeup belongs after the nominal loudness target.
+        // Let the detector see it too, retaining at least 1 LU of margin to
+        // the app's -18 LUFS acceptance ceiling. Zero makeup keeps the old policy.
+        let target_lufs = self.detector_target_lufs();
         // Preserve musical dynamics: long-term control follows the accumulated
         // gated programme rather than continually normalising every 3 seconds.
         let integrated = self.integrated_lufs.map_or(short, |v| v + reference_db);
         let mut target = 0f64
-            .min(p.target_lufs - integrated)
-            .min(p.target_lufs + p.momentary_margin_db - momentary);
+            .min(target_lufs - integrated)
+            .min(target_lufs + p.momentary_margin_db - momentary);
         self.available_headroom_db = if self.history_count >= 40
             && self.reference_gain > 0.
             && short >= p.silence_lufs
             && short.is_finite()
             && momentary.is_finite()
         {
-            Some((p.target_lufs - short).min(p.target_lufs + p.momentary_margin_db - momentary))
+            Some((target_lufs - short).min(target_lufs + p.momentary_margin_db - momentary))
         } else {
             None
         };
@@ -319,7 +329,22 @@ impl FinalMixAttenuator {
     pub fn process(&mut self, frame: [f64; 2]) -> [f64; 2] {
         self.process_scaled(frame, 1.)
     }
+    pub fn detector_target_lufs(&self) -> f64 {
+        if self.output_makeup_db > 0. {
+            (self.policy.target_lufs + self.output_makeup_db).min(-19.0)
+        } else { self.policy.target_lufs }
+    }
     pub fn process_scaled(&mut self, frame: [f64; 2], reference_gain: f64) -> [f64; 2] {
+        self.process_scaled_with_makeup(frame, reference_gain, 1.)
+    }
+    pub fn process_scaled_with_makeup(&mut self, frame: [f64; 2], reference_gain: f64, makeup_gain: f64) -> [f64; 2] {
+        const MAX_MAKEUP_GAIN: f64 = 1.1885022274370185; // +1.5 dB
+        let makeup_gain = if makeup_gain.is_finite() { makeup_gain.clamp(1., MAX_MAKEUP_GAIN) } else { 1. };
+        if makeup_gain != self.output_makeup_gain {
+            self.output_makeup_gain = makeup_gain;
+            self.output_makeup_db = 20. * makeup_gain.log10();
+        }
+        let reference_gain = reference_gain * makeup_gain;
         self.reference_gain = if reference_gain.is_finite() {
             reference_gain.max(0.)
         } else {
