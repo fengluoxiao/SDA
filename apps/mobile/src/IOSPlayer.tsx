@@ -378,7 +378,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={s.settingsActions}>{icon("arrow.counterclockwise", "重新播放", () => { setSettings(false); p.play(); }, p.busy || !p.selectedUri, 46, "⟲")}{icon("stop.fill", "停止播放", () => { setSettings(false); p.stop(); }, p.busy || !p.playing, 46, "□")}</View>
           {heading("播放")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
-            {toggle("音量平衡", "双声道 / 360RA / Audio Vivid 响度平衡，只衰减不增益", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
+            {toggle("音量平衡", "平衡节目的整体音量，只衰减不增益，保持各声部相对比例", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
             {divider()}
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>
