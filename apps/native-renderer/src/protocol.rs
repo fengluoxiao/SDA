@@ -733,7 +733,16 @@ fn handle_command(
                         Ordering::Release,
                     );
                 } else {
-                    state.render_epoch = state.render_epoch.wrapping_add(1);
+                    // Pause freezes consumption; queued audio and the DSP
+                    // envelopes already describe the same future samples.
+                    // An epoch flush here skipped that reserve and resumed at
+                    // the render head with a different loudness/limiter state.
+                    // Re-enable an existing reserve even when it is already
+                    // full (the render worker will not render another block).
+                    telemetry.callback_output_enabled.store(
+                        !paused && state.output_active && fifo.available_read() > 0,
+                        Ordering::Release,
+                    );
                 }
             }
             write_event(&Event::Ack {
@@ -2238,5 +2247,91 @@ impl Engine {
         }
         self.near_field = settings;
         Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod pause_resume_tests {
+    use super::*;
+    fn wait_for(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !ready() {
+            assert!(Instant::now() < deadline, "render worker acknowledgement timed out");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    struct StopWorker(Arc<RuntimeTelemetry>);
+    impl Drop for StopWorker {
+        fn drop(&mut self) { self.0.shutdown_requested.store(true, Ordering::Release); }
+    }
+    #[test]
+    fn pause_resume_retains_exact_queued_audio_and_presentation_clock() {
+        let fifo = Arc::new(stereo_fifo::StereoFifo::new(4096));
+        let commands = Arc::new(render_command::RenderCommandQueue::new(32));
+        let telemetry = Arc::new(RuntimeTelemetry::default());
+        let _stop = StopWorker(telemetry.clone());
+        let expected: Vec<f32> = (0..2048).flat_map(|i| {
+            let x = (i as f32 * 0.13).sin() * 0.02;
+            [x, -x * 0.7]
+        }).collect();
+        assert_eq!(fifo.push(&expected), 2048);
+        telemetry.callback_output_enabled.store(true, Ordering::Release);
+        telemetry.callback_consumed_sample_pos.store(12000, Ordering::Release);
+        let mut engine = Engine::new(48000, 2);
+        engine.output_active = true;
+        // Represents rendered reserve ahead of the audible cursor.
+        engine.sample_pos = 14048;
+        spawn_render_worker(engine, commands.clone(), fifo.clone(), telemetry.clone());
+        assert!(commands.push(render_command::RenderCommand::Command(Command::Pause { paused:true })).is_ok());
+        wait_for(|| telemetry.paused.load(Ordering::Acquire) && !telemetry.callback_output_enabled.load(Ordering::Acquire));
+        assert_eq!(telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),12000,
+            "pause must not jump the audible cursor to the render head");
+        assert!(!fifo.apply_flush_from_consumer(), "pause must not discard rendered programme audio");
+        assert_eq!(fifo.available_read(),2048);
+        let mut callback = callback_output::CallbackOutput::new(48000,1024);
+        let mut silence = vec![[1.;2];480];
+        assert_eq!(callback.fill(&fifo,false,480,|i,v|silence[i]=v),0);
+        assert!(silence.iter().all(|v|*v==[0.;2]));
+        assert_eq!(fifo.available_read(),2048);
+        assert!(commands.push(render_command::RenderCommand::Command(Command::Pause { paused:false })).is_ok());
+        wait_for(|| !telemetry.paused.load(Ordering::Acquire) && telemetry.callback_output_enabled.load(Ordering::Acquire));
+        assert!(!fifo.apply_flush_from_consumer());
+        let mut actual = vec![0.;expected.len()];
+        let count=callback.fill(&fifo,true,2048,|i,v|actual[i*2..i*2+2].copy_from_slice(&v));
+        assert_eq!(count,2048);
+        assert_eq!(actual,expected,"resume must retain full pre-pause gain and queued samples");
+        record_callback(&telemetry,Instant::now(),2048,count,true);
+        assert_eq!(telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),14048);
+    }
+    #[test]
+    fn pause_preserves_loudness_envelopes_and_only_reset_creates_a_new_epoch() {
+        let fifo=stereo_fifo::StereoFifo::new(4096);
+        let telemetry=RuntimeTelemetry::default();
+        let mut e=Engine::new(48000,2);
+        e.set_spatial_enhancement(true).unwrap();
+        e.program_enabled=true;
+        e.set_program_target(0.25,true);
+        for i in 0..48000 {
+            let x=(i as f32*0.13).sin()*0.9;
+            e.process_final_output([x,-x*0.7]);
+        }
+        e.output_active=true;e.paused=false;
+        let clock=e.sample_pos;
+        let epoch=e.render_epoch;
+        let gain=e.output_dynamics.gain_db();
+        let program=e.program_gain;
+        let peak=e.peak_guard.diagnostic_gain();
+        for paused in [true,true,false,false,true,false] {
+            handle_command(&mut e,Command::Pause{paused},&fifo,&telemetry);
+            assert_eq!(e.sample_pos,clock);
+            assert_eq!(e.render_epoch,epoch);
+            assert_eq!(e.output_dynamics.gain_db(),gain);
+            assert_eq!(e.program_gain,program);
+            assert_eq!(e.peak_guard.diagnostic_gain(),peak);
+        }
+        assert!(!telemetry.callback_output_enabled.load(Ordering::Acquire),"empty reserve must await normal prebuffer");
+        handle_command(&mut e,Command::Reset{origin:20000},&fifo,&telemetry);
+        assert_ne!(e.render_epoch,epoch,"seek/reset must still flush stale audio");
     }
 }
