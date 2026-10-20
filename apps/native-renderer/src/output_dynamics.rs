@@ -206,14 +206,20 @@ impl FinalMixAttenuator {
         self.available_headroom_db = None;
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool) {
+        if self.enabled != enabled {
+            // Plain bypass / another spatial state is not a reference for the
+            // newly enabled output. Reset detectors without stepping audio gain.
+            let gain = self.gain;
+            let maximum = self.maximum_attenuation_db;
+            self.reset();
+            self.enabled = enabled;
+            self.gain = gain;
+            self.gain_db = 20. * gain.max(1e-30).log10();
+            self.maximum_attenuation_db = maximum;
+        }
         if !enabled && immediate {
-            self.enabled = false;
             self.gain_db = 0.;
             self.gain = 1.;
-            self.step = 1.;
-        } else if self.enabled != enabled {
-            self.enabled = enabled;
-            self.gain_db = 20. * self.gain.max(1e-30).log10();
             self.step = 1.;
         }
     }
@@ -322,10 +328,12 @@ impl FinalMixAttenuator {
         let frame = frame.map(|v| if v.is_finite() { v } else { 0. });
         let out = frame.map(|v| v * self.reference_gain * self.gain.min(1.));
         self.gain *= self.step;
-        for (ear, x) in frame.into_iter().enumerate() {
-            let y = self.filters[ear][0].run(x);
-            let y = self.filters[ear][1].run(y);
-            self.energy += y * y
+        if self.enabled {
+            for (ear, x) in frame.into_iter().enumerate() {
+                let y = self.filters[ear][0].run(x);
+                let y = self.filters[ear][1].run(y);
+                self.energy += y * y;
+            }
         }
         self.offset += 1;
         if self.offset == self.hop {
@@ -447,5 +455,43 @@ mod integrated_tests {
         }
         assert_eq!(a.requested_reduction_db(), 0.);
         assert!(a.available_headroom_db().unwrap() > 10.);
+    }
+}
+
+#[cfg(test)]
+mod mode_transition_tests {
+    use super::*;
+    #[test]
+    fn bypass_history_cannot_duck_a_new_quiet_spatial_output() {
+        let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        n.set_enabled(false, true);
+        for i in 0..48000 * 8 {
+            let x = (i as f64 * 0.13).sin() * 0.8;
+            assert_eq!(n.process([x, -x]), [x, -x]);
+        }
+        n.set_enabled(true, false);
+        assert_eq!(n.history_count, 0);
+        assert_eq!(n.integrated_lufs, None);
+        assert_eq!(n.available_headroom_db(), None);
+        for i in 0..48000 {
+            let x = (i as f64 * 0.13).sin() * 0.001;
+            assert_eq!(n.process([x, -x]), [x, -x]);
+        }
+        assert_eq!(n.maximum_attenuation_db, 0.);
+    }
+    #[test]
+    fn cold_activation_is_identical_and_mode_changes_keep_gain_continuous() {
+        let mut a = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        let mut b = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        b.set_enabled(false, true);
+        b.set_enabled(true, false);
+        for i in 0..48000 * 4 {
+            let x = (i as f64 * 0.13).sin() * 0.3;
+            assert_eq!(a.process([x, -x * 0.7]), b.process([x, -x * 0.7]));
+        }
+        let gain = a.gain;
+        a.set_enabled(false, false);
+        assert!((a.process([0.1, -0.07])[0] - 0.1 * gain).abs() < 1e-12);
+        assert_eq!(a.available_headroom_db(), None);
     }
 }
