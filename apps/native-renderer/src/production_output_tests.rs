@@ -158,7 +158,7 @@ fn atmos_makeup_requires_both_volume_balance_and_spatial_programme_metadata() {
                     e.program_enabled = volume;
                     e.set_program_target(0.5, true);
                     declare_makeup_source(&mut e, object, label);
-                    let eligible = volume && spatial && ["eac3", "ac4", "truehd", "mlpa"].contains(&codec)
+                    let eligible = volume && ["eac3", "ac4", "truehd", "mlpa"].contains(&codec)
                         && (object || label == "Tfl");
                     assert_eq!(e.atmos_output_makeup.target_db(), if eligible { 1.5 } else { 0.0 },
                         "{codec} volume={volume} spatial={spatial} object={object} label={label}");
@@ -183,7 +183,7 @@ fn atmos_makeup_is_a_final_linked_gain_and_leaves_other_codecs_bit_identical() {
                 e.set_program_target(0.5, true);
             }
             declare_makeup_source(&mut new, true, "");
-            let expected = if spatial && ["eac3", "ac4", "truehd", "mlpa"].contains(&codec) { 10f32.powf(1.5 / 20.) } else { 1.0 };
+            let expected = if ["eac3", "ac4", "truehd", "mlpa"].contains(&codec) { 10f32.powf(1.5 / 20.) } else { 1.0 };
             for i in 0..24000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
                 let a = old.process_final_output([x, -0.4 * x]);
@@ -225,7 +225,8 @@ fn atmos_makeup_ramps_on_live_toggle_and_cannot_leak_into_the_next_programme() {
     e.set_spatial_enhancement(false).unwrap();
     assert_eq!(e.atmos_output_makeup.gain(), before);
     for _ in 0..960 { e.advance_output_envelopes(); }
-    assert_eq!(e.atmos_output_makeup.gain(), 1.0, "spatial-off comparison must retain its old level");
+    assert!((e.atmos_output_makeup.gain()-10f32.powf(1.5/20.)).abs()<1e-6,
+        "Atmos programme compensation belongs to volume balance in both spatial states");
     e.paused = true;
     e.set_spatial_enhancement(true).unwrap();
     assert_eq!(e.atmos_output_makeup.target_db(), 1.5);
@@ -292,6 +293,34 @@ fn spatial_toggle_keeps_the_same_loudness_reference_and_envelope() {
             assert_eq!(reference.process_final_output([x,-x*0.7]),
                 switched.process_final_output([x,-x*0.7]),
                 "same final mix changed level merely because spatial control toggled");
+        }
+    }
+}
+
+#[test]
+fn atmos_volume_compensation_is_identical_across_spatial_switch_states() {
+    let mut reference=Engine::new(48000,2);
+    let mut switched=Engine::new(48000,2);
+    for e in [&mut reference,&mut switched] {
+        e.set_spatial_enhancement(true).unwrap();
+        e.set_program_codec("eac3".into());
+        e.program_enabled=true;
+        e.set_program_target(0.5,true);
+        declare_makeup_source(e,true,"");
+        e.output_active=true;e.paused=false;
+    }
+    for enabled in [true,false,true,false] {
+        let gain=switched.atmos_output_makeup.gain();
+        switched.set_spatial_enhancement(enabled).unwrap();
+        assert_eq!(switched.atmos_output_makeup.gain(),gain);
+        assert_eq!(switched.atmos_output_makeup.target_db(),1.5);
+        for i in 0..12000 {
+            reference.advance_output_envelopes();
+            switched.advance_output_envelopes();
+            let x=(i as f32*0.13).sin()*0.02;
+            assert_eq!(reference.process_final_output([x,-x*0.7]),
+                switched.process_final_output([x,-x*0.7]),
+                "spatial toggle changed the common Dolby programme compensation");
         }
     }
 }

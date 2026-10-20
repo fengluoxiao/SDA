@@ -1442,7 +1442,7 @@ impl Engine {
                     | "TopSideLeft" | "TopSideRight" | "TopMiddleLeft" | "TopMiddleRight"
                     | "TopSurroundLeft" | "TopSurroundRight" | "TopRearLeft" | "TopRearRight"
                     | "TopCenter"))));
-        let db = if self.program_enabled && self.spatial_enhancement_enabled && self.atmos_programme_seen { 1.5 } else { 0.0 };
+        let db = if self.program_enabled && self.atmos_programme_seen { 1.5 } else { 0.0 };
         if self.atmos_output_makeup.target_db() != db {
             self.atmos_output_makeup.set(db, self.output_sample_rate, immediate)
                 .expect("valid Atmos output makeup");
