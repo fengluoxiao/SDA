@@ -26,7 +26,7 @@ fn take_due<T>(events: &mut std::collections::BTreeMap<u64, T>, at: u64) -> Opti
 }
 
 #[derive(Clone, Copy)]
-pub struct Context {
+pub struct Context<'a> {
     pub layout: vbap::LayoutId,
     pub head: Option<[f32; 4]>,
     pub extent: source_extent::Settings,
@@ -38,6 +38,7 @@ pub struct Context {
     pub offset: usize,
     pub bass_crossover_hz: Option<f32>,
     pub(crate) spatial_layer: crate::spatial_layer::Settings,
+    pub(crate) auxiliary_gains: &'a [f32; convolution::DEFAULT_PARTITION],
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -45,6 +46,7 @@ pub struct Frame {
     pub reflections: [f32; vbap::MAX_BUS_COUNT],
     pub diffuse: [f32; vbap::MAX_BUS_COUNT],
     pub bass: f32,
+    pub(crate) auxiliary_reference: crate::auxiliary_balance::Reference,
 }
 pub struct Buffer {
     pub frames: Vec<Frame>,
@@ -114,7 +116,7 @@ pub fn mix(
     sources: &mut [&mut Source],
     buffers: &mut Vec<Buffer>,
     controls: &[Controls],
-    ctx: Context,
+    ctx: Context<'_>,
     solver: &vbap::VbapSolver,
     activity: &[ObjectActivitySnapshot],
 ) -> usize {
@@ -161,7 +163,7 @@ fn mix_source(
     source: &mut Source,
     buffer: &mut Buffer,
     controls: &[Controls],
-    ctx: Context,
+    ctx: Context<'_>,
     vbap: &vbap::VbapSolver,
 ) {
     let perf_id = if crate::performance::enabled() {
@@ -332,6 +334,9 @@ fn mix_source(
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
         sample *= ctx.spatial_layer.source_gain(source, at);
+        sample = crate::auxiliary_balance::process_source(source, sample, at,
+            ctx.auxiliary_gains[block_index], &mut buffer.frames[block_index].auxiliary_reference,
+            ctx.sample_rate, vbap);
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source

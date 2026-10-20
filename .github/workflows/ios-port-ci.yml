@@ -167,6 +167,7 @@ jobs:
           cargo test --manifest-path packages/core/Cargo.toml --no-default-features --locked --lib -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-core-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-mobile-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked balance::tests -- --test-threads=1 2>&1 | tee ios-artifacts/volume-balance-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_and_volume_balance_switches_remain_independent -- --test-threads=1 2>&1 | tee ios-artifacts/spatial-volume-switch-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1 2>&1 | tee ios-artifacts/headphone-orientation-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios:: -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
       - name: Verify independent object routes and quiet height contributions
@@ -184,11 +185,11 @@ jobs:
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib realtime::tests
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked front_common::tests -- --test-threads=1 2>&1 | tee ios-artifacts/object-route-tests.log
           SDA_ACCEPTED_FRONT_RECEIPT="$GITHUB_WORKSPACE/ios-artifacts/front-presentation.json" cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib front_presentation_tests -- --test-threads=1 2>&1 | tee ios-artifacts/front-presentation-tests.log
-      - name: Verify generic final output dynamics and true peaks
+      - name: Verify foreground-priority spatial balance and true peaks
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib output_dynamics::tests 2>&1 | tee ios-artifacts/output-dynamics-tests.log
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib auxiliary_balance -- --test-threads=1 2>&1 | tee ios-artifacts/auxiliary-balance-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib true_peak_guard::tests 2>&1 | tee ios-artifacts/true-peak-tests.log
           cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib production_output_tests -- --test-threads=1 2>&1 | tee ios-artifacts/production-output-tests.log
       - name: Verify integrated depth, elevation and harmony regressions

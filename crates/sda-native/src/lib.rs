@@ -139,6 +139,11 @@ pub struct PlaybackStatus {
     pub program_gain_db: f64,
     pub rendered_program_gain_db: f64,
     pub renderer_program_enabled: bool,
+    pub spatial_enhancement_enabled: bool,
+    pub auxiliary_balance_enabled: bool,
+    /// [applied group dB, maximum group reduction dB, weighted front/aux reference dB].
+    /// Renderer clock diagnostics, not the FIFO consumer's exact audible instant.
+    pub auxiliary_balance_levels: [f64; 4],
     pub preparing_audio: bool,
 }
 
@@ -623,6 +628,9 @@ impl MobileEngine {
             program_gain_db: self.balance.gain_db,
             rendered_program_gain_db: self.pipeline.as_ref().map_or(0.0, |p| p.telemetry.applied_program_gain_db()),
             renderer_program_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.program_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            spatial_enhancement_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_enhancement_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            auxiliary_balance_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.auxiliary_balance_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            auxiliary_balance_levels: self.pipeline.as_ref().map_or([0.0;4], |p| p.telemetry.auxiliary_balance_levels()),
             room_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.room_enabled.load(std::sync::atomic::Ordering::Acquire)),
             spatial_cues_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_cues_enabled.load(std::sync::atomic::Ordering::Acquire)),
         }
@@ -675,7 +683,7 @@ impl MobileEngine {
         serde_json::to_string(&self.balance.complete_measurement()).unwrap_or_else(|_|"null".into())
     }
 
-    /// User-selected total-output preamp; independent of objects and volume balance.
+    /// Selected spatial recipe and source-group control; independent of programme volume balance.
     pub fn set_spatial_enhancement(&self, enabled: bool) -> EngineResult<()> {
         let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
         pipeline.commands.push(render_command::RenderCommand::Command(
@@ -1186,6 +1194,30 @@ mod tests {
     }
 
     #[test]
+    fn mobile_spatial_and_volume_balance_switches_remain_independent() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/mobile/android/app/src/main/assets/hrtf-dense/hrtf-set.json")).unwrap();
+        engine.start(Arc::new(MobileTestOutput)).unwrap();
+        engine.set_volume_balance(true).unwrap();
+        engine.set_measured_loudness(r#"{"integratedLufs":-10,"blocks":100,"truePeakDbtp":-2}"#).unwrap();
+        let frame=FrameData {reference_loudness:None,compatibility_bed:None,
+            codec:"mp3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.001;1024];2],
+            labels:vec!["L".into(),"R".into()],raw_bed_labels:vec![],events:vec![],object_channels:vec![],
+            program_loudness:None,ramp_duration:128};
+        let pending=engine.balance.measure(frame,None);
+        engine.pending.lock().unwrap().push_back(pending);engine.drain_pending_into_pipeline().unwrap();
+        for (volume,spatial) in [(false,false),(false,true),(true,true),(true,false),(false,true)] {
+            engine.set_volume_balance(volume).unwrap();engine.set_spatial_enhancement(spatial).unwrap();
+            let status=wait_mobile_status(&engine,|status|status.volume_balance_enabled==volume
+                && status.renderer_program_enabled==volume && status.spatial_enhancement_enabled==spatial);
+            assert!(status.auxiliary_balance_levels.iter().all(|v|v.is_finite()));
+            assert_eq!(status.program_gain_db,-8.0);
+        }
+        engine.stop();
+    }
+
+    #[test]
     fn mobile_near_field_acknowledges_applied_state_and_rejects_invalid_scale() {
         let mut engine = MobileEngine::new(EngineConfig::default(), None).unwrap();
         engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),
@@ -1294,7 +1326,14 @@ mod tests {
         let bytes = std::fs::read(song).unwrap();
         let chunk = 24 * 1024;
         let mut fed = 0;
+        let feed_deadline=Instant::now()+Duration::from_secs(120);
         while fed < bytes.len() {
+            // Match the real host's decoded-vs-consumed horizon, rather than
+            // waiting only on PCM already rendered into the output FIFO.
+            while engine.decoded_sample_pos().saturating_sub(engine.playback_status().consumed_sample_pos)>96000 {
+                assert!(Instant::now()<feed_deadline,"bounded dump feeder stalled");
+                std::thread::sleep(Duration::from_millis(1));
+            }
             let end = (fed + chunk).min(bytes.len());
             engine.feed(&bytes[fed..end]).unwrap();
             fed = end;
@@ -1348,7 +1387,14 @@ mod tests {
         let bytes = std::fs::read(song).unwrap();
         let chunk = 24 * 1024;
         let mut fed = 0;
+        let feed_deadline=Instant::now()+Duration::from_secs(120);
         while fed < bytes.len() {
+            // Match the real host's decoded-vs-consumed horizon, rather than
+            // waiting only on PCM already rendered into the output FIFO.
+            while engine.decoded_sample_pos().saturating_sub(engine.playback_status().consumed_sample_pos)>96000 {
+                assert!(Instant::now()<feed_deadline,"bounded dump feeder stalled");
+                std::thread::sleep(Duration::from_millis(1));
+            }
             let end = (fed + chunk).min(bytes.len());
             engine.feed(&bytes[fed..end]).unwrap();
             fed = end;

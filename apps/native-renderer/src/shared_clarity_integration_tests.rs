@@ -248,6 +248,22 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     }
     let unity = std::env::var("SDA_APPROVED_SCENE_UNITY_OUTPUT").as_deref() == Ok("1");
     if unity { e.set_master_preamp_db(0.).unwrap(); e.set_output_volume(1., true); }
+    let programme_db=std::env::var("SDA_APPROVED_SCENE_PROGRAMME_GAIN_DB").ok()
+        .map(|v|v.parse::<f32>().unwrap());
+    if let Some(db)=programme_db {
+        assert!(db.is_finite() && (-60.0..=0.0).contains(&db));
+        e.program_enabled=true;e.program_metadata_gain=10f32.powf(db/20.);
+        e.set_program_target(e.program_metadata_gain,true);
+    }
+    if std::env::var("SDA_APPROVED_SCENE_SPATIAL_STATE").as_deref()==Ok("off") {
+        e.set_spatial_enhancement(false).unwrap();
+    }
+    if std::env::var("SDA_APPROVED_SCENE_AUXILIARY_CONTROL").as_deref()==Ok("off") {
+        e.auxiliary_balance=auxiliary_balance::AuxiliaryBalance::with_policy(48000,
+            auxiliary_balance::Policy {maximum_cut_db:0.,..Default::default()});
+    }
+    let mut gain_trace=(std::env::var("SDA_APPROVED_SCENE_GAIN_TRACE").as_deref()==Ok("1"))
+        .then(||std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{tag}-gains.jsonl"))).unwrap()));
     e.set_program_codec(codec.clone());
     e.set_direct_objects(true).unwrap();
     e.set_directional_hrtf(true);
@@ -359,10 +375,15 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         for value in pcm {
             output.write_all(&value.to_le_bytes()).unwrap();
         }
+        if let Some(trace)=&mut gain_trace {
+            writeln!(trace,"{}",serde_json::json!({"sample":e.sample_pos,
+                "programmeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),
+                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"groupLevels":e.auxiliary_balance.levels()})).unwrap();
+        }
         guard = guard.min(e.peak_guard.diagnostic_gain());
         count += 1;
     }
     output.flush().unwrap();
     if !unity { assert_eq!(guard, 1., "diagnostic headroom must keep peak protection inactive"); }
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":e.spatial_enhancement_enabled&&e.binaural_enabled,"outputDynamicsMix":e.output_dynamics_mix,"dynamicsTargetLufs":-20,"maximumDynamicsAttenuationDb":e.output_dynamics.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":false,"auxiliaryBalanceMode":"foreground-priority-v1","programmeGainDb":programme_db,"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }

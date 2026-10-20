@@ -1,3 +1,5 @@
+//! Historical comparison implementation, compiled only in tests. Production
+//! spatial balance uses source-domain auxiliary_balance, with no final LUFS target.
 //! Causal, format-independent final-mix attenuation, before user/program gains.
 //! Uses the audition's 3s/400ms detector and 80ms/3s smoothing policy. The
 //! gain ramp follows completed 10ms measurements without buffering the audio,

@@ -81,7 +81,11 @@ pub mod focus;
 mod front_common;
 mod spatial_balance;
 mod master_preamp;
+#[cfg(test)] // Historical comparison only; no final-mix loudness normalization.
 mod output_dynamics;
+mod auxiliary_balance;
+#[cfg(test)]
+mod auxiliary_balance_tests;
 mod true_peak_guard;
 #[cfg(test)]
 mod production_output_tests;
@@ -775,6 +779,9 @@ pub struct Source {
     object_id: Option<u32>,
     activity_until: u64,
     gain_events: BTreeMap<u64, GainEvent>,
+    auxiliary_route: auxiliary_balance::Route,
+    auxiliary_route_at: u64,
+    auxiliary_weight: f32,
     spatial_layer_gain: f32,
     spatial_layer_target: f32,
     spatial_layer_bed_weight: f32,
@@ -841,6 +848,9 @@ impl Default for Source {
             object_id: None,
             activity_until: 0,
             gain_events: BTreeMap::new(),
+            auxiliary_route: Default::default(),
+            auxiliary_route_at: u64::MAX,
+            auxiliary_weight: 0.0,
             spatial_layer_gain: 1.0,
             spatial_layer_target: 1.0,
             spatial_layer_bed_weight: 0.0,
@@ -921,6 +931,9 @@ pub struct RuntimeTelemetry {
     program_gain_db_bits: AtomicU64,
     listener_yaw_degrees_bits: AtomicU64,
     pub program_enabled: AtomicBool,
+    pub spatial_enhancement_enabled: AtomicBool,
+    pub auxiliary_balance_enabled: AtomicBool,
+    auxiliary_balance_levels: [AtomicU64; 4],
     pub object_convolver_count: AtomicU64,
     pub continuous_object_count: AtomicU64,
     /// Renderer-applied pause state exposed to mobile status polling.
@@ -949,6 +962,9 @@ impl RuntimeTelemetry {
     pub fn applied_program_gain_db(&self) -> f64 {
         f64::from_bits(self.program_gain_db_bits.load(Ordering::Acquire))
     }
+    pub fn auxiliary_balance_levels(&self) -> [f64; 4] {
+        std::array::from_fn(|i| f64::from_bits(self.auxiliary_balance_levels[i].load(Ordering::Acquire)))
+    }
     pub fn listener_yaw_degrees(&self) -> f64 {
         f64::from_bits(self.listener_yaw_degrees_bits.load(Ordering::Acquire))
     }
@@ -973,6 +989,11 @@ impl RuntimeTelemetry {
         });
         self.listener_yaw_degrees_bits.store(yaw.to_bits(),Ordering::Release);
         self.program_enabled.store(engine.program_enabled, Ordering::Release);
+        self.spatial_enhancement_enabled.store(engine.spatial_enhancement_enabled, Ordering::Release);
+        self.auxiliary_balance_enabled.store(engine.auxiliary_balance.enabled(), Ordering::Release);
+        for (field,value) in self.auxiliary_balance_levels.iter().zip(engine.auxiliary_balance.levels()) {
+            field.store(value.to_bits(), Ordering::Release);
+        }
         self.program_gain_db_bits.store((20.0 * f64::from(engine.program_gain).max(1e-12).log10()).to_bits(), Ordering::Release);
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);
@@ -1125,8 +1146,8 @@ pub struct Engine {
     program_gain_ramp_remaining: u32,
     program_events: BTreeMap<u64, ProgramGainEvent>,
     spatial_enhancement_enabled: bool,
-    output_dynamics_mix: f32,
-    output_dynamics: output_dynamics::FinalMixAttenuator,
+    auxiliary_balance: auxiliary_balance::AuxiliaryBalance,
+    auxiliary_reference: Box<[auxiliary_balance::Reference]>,
     peak_guard: true_peak_guard::TruePeakGuard,
     binaural_eq: StereoEq,
     output_clarity: [dsp::Biquad; 2],
@@ -1267,8 +1288,8 @@ impl Engine {
             program_gain_ramp_remaining: 0,
             program_events: BTreeMap::new(),
             spatial_enhancement_enabled: false,
-            output_dynamics_mix: 0.0,
-            output_dynamics: output_dynamics::FinalMixAttenuator::new(sample_rate, Default::default()).expect("valid output sample rate"),
+            auxiliary_balance: auxiliary_balance::AuxiliaryBalance::new(sample_rate),
+            auxiliary_reference: vec![auxiliary_balance::Reference::default(); convolution::DEFAULT_PARTITION].into_boxed_slice(),
             peak_guard: true_peak_guard::TruePeakGuard::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
@@ -1302,7 +1323,7 @@ impl Engine {
         if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
         self.binaural_enabled = enabled;
         if !self.output_active || self.paused {
-            self.output_dynamics_mix = if enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
+            self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled, true, self.block_offset);
         }
         if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
     }
@@ -1801,9 +1822,8 @@ impl Engine {
         self.output_clarity = [clarity; 2];
         self.spatial_enhancement_enabled = enabled;
         if !self.output_active || self.paused {
-            self.output_dynamics_mix = if enabled && self.binaural_enabled { 1.0 } else { 0.0 };
+            self.auxiliary_balance.set_enabled(enabled && self.binaural_enabled, true, self.block_offset);
         }
-        self.set_master_preamp_db(0.0)?;
         self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 },
             self.output_sample_rate, !self.output_active)?;
         self.set_spatial_layer_gain_db(if enabled { 4.0 } else { 0.0 })?;
@@ -1868,22 +1888,12 @@ impl Engine {
         }
     }
 
-    // A common final-mix node for every codec, object format and playback mode.
-    // Detector precedes manual/program volume so it cannot cancel their cuts.
+    // Programme normalization is applied once. Source-group control has already
+    // acted before HRTF/room/EQ; only shared true-peak protection remains here.
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
-        let attenuated = self.output_dynamics.process(mix.map(f64::from));
-        let target = if self.binaural_enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
-        if !self.output_active || self.paused { self.output_dynamics_mix = target; }
-        else { self.output_dynamics_mix += (target - self.output_dynamics_mix)
-            .clamp(-1.0 / (self.output_sample_rate as f32 * 0.05), 1.0 / (self.output_sample_rate as f32 * 0.05)); }
-        let blended = std::array::from_fn::<_, 2, _>(|ear| {
-            let original = f64::from(mix[ear]);
-            original + (attenuated[ear] - original) * f64::from(self.output_dynamics_mix)
-        });
         let gain = self.output_gain * self.comparison_gain * self.program_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
-        self.peak_guard.process((blended[0] * f64::from(gain)) as f32,
-            (blended[1] * f64::from(gain)) as f32)
+        self.peak_guard.process(mix[0] * gain, mix[1] * gain)
             .map(|v| v * self.final_output_trim.gain())
     }
 
@@ -2032,8 +2042,8 @@ impl Engine {
         self.program_gain_step = 0.0;
         self.program_gain_ramp_remaining = 0;
         self.program_events.clear();
-        self.output_dynamics.reset();
-        self.output_dynamics_mix = if self.binaural_enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
+        self.auxiliary_balance.reset();
+        self.auxiliary_reference.fill(Default::default());
         self.peak_guard.reset();
         self.headphone.reset();
         for filter in &mut self.output_clarity { filter.reset(); }
@@ -2362,6 +2372,7 @@ impl Engine {
             offset: self.block_offset,
             bass_crossover_hz,
             spatial_layer: self.spatial_layer,
+            auxiliary_gains: &self.auxiliary_balance.gains,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2400,6 +2411,7 @@ impl Engine {
             self.route_update_count += buffer.route_updates;
             for frame in self.block_offset..self.block_offset + frames {
                 bus.add_accumulated(frame, &buffer.frames[frame]);
+                self.auxiliary_reference[frame].add(&buffer.frames[frame].auxiliary_reference);
                 self.cinema_bass_delay[frame] += buffer.frames[frame].bass;
             }
         }
@@ -2462,6 +2474,12 @@ impl Engine {
             }
         }
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
+        auxiliary_balance::refresh_beds(&mut self.sources, &self.vbap);
+        let auxiliary_enabled = self.binaural_enabled && self.spatial_enhancement_enabled
+            && !self.cinema.monitor.hardware.enabled && self.focused_speakers.is_empty()
+            && self.speaker_mutes.is_empty()
+            && self.speaker_levels.iter().all(|level| (*level - 1.0).abs() < 1e-4);
+        self.auxiliary_balance.set_enabled(auxiliary_enabled, false, self.block_offset);
         let stereo = self.sources.len() == 2
             && self
                 .sources
@@ -2689,6 +2707,7 @@ impl Engine {
                 if let Some(label) = source.bed_events.remove(&at) {
                     let route = bed_route_with_head(&label, &vbap, head_pose);
                     source.bed_label = Some(label);
+                    source.auxiliary_route_at = u64::MAX;
                     Self::set_source_route(source, route, 0);
                 }
                 if source.remove_at.is_some_and(|remove_at| at >= remove_at) {
@@ -2885,6 +2904,9 @@ impl Engine {
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
                 sample *= self.spatial_layer.source_gain(source, at);
+                sample = auxiliary_balance::process_source(source, sample, at,
+                    self.auxiliary_balance.gains[block_index], &mut self.auxiliary_reference[block_index],
+                    self.output_sample_rate, &vbap);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
@@ -3221,6 +3243,10 @@ impl Engine {
             let equalized = if self.binaural_mix == 0.0 { plain } else if self.binaural_mix == 1.0 { equalized } else {
                 std::array::from_fn(|ear| equalized[ear] * self.binaural_mix + plain[ear] * (1.0 - self.binaural_mix))
             };
+            self.auxiliary_balance.mark_applied(block_index);
+            self.auxiliary_balance.observe(self.auxiliary_reference[block_index],
+                self.program_gain * self.spatial_preamp.gain());
+            self.auxiliary_reference[block_index] = Default::default();
             let guarded = self.process_final_output(equalized);
             if channels >= 2 {
                 frame[0] = guarded[0];
@@ -3230,6 +3256,7 @@ impl Engine {
             }
             self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
+                self.auxiliary_balance.finish_block();
                 sample_micros = stage_started.elapsed().as_micros() as u64;
                 if let Some(set) = &mut self.active_hrtf_set {
                     self.spatial_balance.prepare(

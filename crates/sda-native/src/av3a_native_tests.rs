@@ -102,6 +102,22 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
                 ack.send(()).unwrap();
             }
         };
+        // Synthetic injection bypasses the app feeder. Respect the same bounded
+        // decode-ahead horizon, including while a live toggle waits for service.
+        // FIFO-only throttling misses work queued before the renderer catches up.
+        let feed_deadline=Instant::now()+Duration::from_secs(120);
+        let pace=|next_sample:u64| {
+            loop {
+                service();
+                let engine=host.engine.lock().unwrap();
+                let started=engine.startup.lock().unwrap().started;
+                let consumed=engine.playback_status().consumed_sample_pos;
+                drop(engine);
+                if !started || next_sample<=consumed+2*48000 {break;}
+                assert!(Instant::now()<feed_deadline,"bounded AV3A feeder stalled");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
         let gain = {
             let mut reference_meter = balance::LoudnessMeter::speakers_7_1_4();
             if let Some(path) = private.clone().or_else(|| {
@@ -111,6 +127,8 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
             }) {
                 let bytes = std::fs::read(path).unwrap();
                 for chunk in bytes.chunks(2415 * 8) {
+                    let next_sample=host.engine.lock().unwrap().decoded_sample_pos();
+                    pace(next_sample);
                     service();
                     let status = host.engine.lock().unwrap().feed(chunk).unwrap();
                     assert!(status.errors.is_empty(), "{:?}", status.errors);
@@ -118,6 +136,7 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
                 host.engine.lock().unwrap().finish().unwrap();
             } else {
                 for start in (0..frames).step_by(4096) {
+                    pace(start as u64);
                     service();
                     let count = 4096.min(frames - start);
                     let channels = (0..12)

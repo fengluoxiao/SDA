@@ -314,7 +314,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </View>
           {label("声音增强", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("主层与低频维持原电平，高度与后方辅助层总提升最多 +1.5 dB。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive} onValueChange={p.setSpatialEnhancement} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("按位置平滑调整辅助声部，保留前方基准电平；可单独开启或配合音量平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive} onValueChange={p.setSpatialEnhancement} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360RA／Audio Vivid", true, s.groupTitle)}

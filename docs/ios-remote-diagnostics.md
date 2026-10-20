@@ -39,3 +39,6 @@ track, adds keepalive audio, or changes the decoder/render session.
 CI smoke methods are compiled only for the simulator. The device IPA packaging
 step removes `ci-stereo-tones.m4a` and `ci-360ra.mhas`; installed physical-device
 apps cannot enter the simulator smoke path through environment variables.
+
+
+空间平衡诊断：`spatialEnhancementEnabled` 是渲染器实际空间开关，`auxiliaryBalanceEnabled` 是当前允许辅助层控制的状态（硬件/solo 等旁路可禁用）。`auxiliaryBalanceLevels` 依次为辅助组实际包络 dB、历史最大辅助组衰减 dB、前方加权参考 dB、辅助组加权参考 dB。它不是 LUFS，不代表前方被施加同一衰减；每个源还按场景方向连续分配组权重。数值属于渲染器时钟，可能领先 FIFO 消费时钟；不应当作耳机当前瞬间的精确电平。所有格式复用同一诊断字段，仍不返回音频、对象内容、曲名或路径。

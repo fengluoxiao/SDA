@@ -38,7 +38,13 @@ fn accepted_front_policy_follows_enhancement_reload_and_transport_reset() {
             "presenceDb":e.front_common.presence_db(),"presenceHz":3000,"presenceQ":0.9,
             "spatialPreampDb":e.spatial_preamp.target_db(),"auxiliaryExtraMaxDb":e.spatial_layer.db,
             "rearExtraDb":e.spatial_layer.rear_db,"outputShelfHz":4000,
-            "outputShelfMaxDb":output_shelf_db(&e),"outputDynamics":{"enabled":e.spatial_enhancement_enabled&&e.binaural_enabled,"followsSpatialEnhancement":true,"targetLufs":e.output_dynamics.policy().target_lufs,"momentaryMarginDb":e.output_dynamics.policy().momentary_margin_db,"attackMs":e.output_dynamics.policy().attack_seconds*1000.,"releaseMs":e.output_dynamics.policy().release_seconds*1000.,"latencyFrames":e.output_dynamics.latency_frames(),"truePeakCeilingDb":true_peak_guard::CEILING_DB,"truePeakDetectorTaps":true_peak_guard::DETECTOR_TAPS,"peakGuardLatencyFrames":e.peak_guard.latency_frames()}});
+            "outputShelfMaxDb":output_shelf_db(&e),"auxiliaryBalance":{"mode":"foreground-priority-v1","enabled":e.spatial_enhancement_enabled&&e.binaural_enabled,
+                "maximumCutDb":e.auxiliary_balance.policy.maximum_cut_db,"allowedDominanceDb":e.auxiliary_balance.policy.allowed_dominance_db,
+                "attackMs":e.auxiliary_balance.policy.attack_ms,"releaseMs":e.auxiliary_balance.policy.release_ms,
+                "programmeGainAccounted":true,"foregroundProtected":true,"latencyFrames":0},
+            "outputDynamics":{"enabled":false,"targetLufs":null,"mode":"peak-protection-only",
+                "truePeakCeilingDb":true_peak_guard::CEILING_DB,"truePeakDetectorTaps":true_peak_guard::DETECTOR_TAPS,
+                "peakGuardLatencyFrames":e.peak_guard.latency_frames()}});
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
     e.reset_session(48000);
