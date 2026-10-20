@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-fn selected_base_matches_archived_geometry_and_net_levels() {
+fn adaptive_base_has_no_static_positive_fallback_at_any_direction() {
     for rate in [44100,48000,96000] {
         let mut e=Engine::new(rate,2);
         e.set_spatial_enhancement(true).unwrap();
@@ -11,10 +11,7 @@ fn selected_base_matches_archived_geometry_and_net_levels() {
         for degrees in (-180..=180).step_by(5) {
             let a=(degrees as f64).to_radians();
             let position=[a.sin() as f32,a.cos() as f32,0.];
-            let front=(a.cos() as f32).clamp(-1.,1.);
-            let t=((std::f32::consts::FRAC_1_SQRT_2-front)/std::f32::consts::FRAC_1_SQRT_2).clamp(0.,1.);
-            let w=t*t*(3.-2.*t);
-            let expected=10f32.powf((2.+4.*w)/20.);
+            let expected=1f32;
             let mut source=Source{kind:SourceKind::Object,position,gain:0.42,target_gain:0.42,..Default::default()};
             let mut previous=1.;
             for at in 0..rate/10 {
@@ -29,13 +26,14 @@ fn selected_base_matches_archived_geometry_and_net_levels() {
 }
 
 #[test]
-fn selected_base_beds_recompute_weights_across_policy_and_layout_changes() {
+fn optional_manual_layer_recomputes_weights_across_policy_and_layout_changes() {
     for layout in [vbap::LayoutId::Dolby7_1_4,vbap::LayoutId::Sony360Ra13] {
         let mut e=Engine::new(48000,2);e.set_layout(layout).unwrap();
         for label in ["FrontLeft","FrontRight","SurroundLeft","SurroundRight","LFE"] {
             e.sources.insert(label.into(),Source{kind:SourceKind::Bed,bed_label:Some(label.into()),..Default::default()});
         }
         e.set_spatial_enhancement(true).unwrap();
+        e.set_spatial_layer_gain_db(1.).unwrap();
         e.spatial_layer.refresh_beds(&mut e.sources,&e.vbap);
         for label in ["FrontLeft","FrontRight","LFE"] {assert!(e.sources[label].spatial_layer_bed_weight<1e-6);}
         assert!((e.sources["SurroundLeft"].spatial_layer_bed_weight-e.sources["SurroundRight"].spatial_layer_bed_weight).abs()<1e-6);
@@ -54,10 +52,10 @@ fn selected_base_repeated_toggles_do_not_accumulate_gain_or_transport_changes() 
     let mut e=Engine::new(48000,2);e.sample_pos=123456;e.output_active=true;
     for _ in 0..4 {
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.sample_pos,123456);assert_eq!(e.spatial_preamp.target_db(),2.);
-        assert_eq!(e.spatial_layer.db,4.);assert_eq!(e.spatial_layer.rear_db,0.);
+        assert_eq!(e.sample_pos,123456);assert_eq!(e.spatial_preamp.target_db(),spatial_layer::MAIN_GAIN_DB);
+        assert_eq!(e.spatial_layer.db,spatial_layer::EXTRA_AUXILIARY_GAIN_DB);assert_eq!(e.spatial_layer.rear_db,0.);
         e.reset_session(123456);
-        assert_eq!(e.spatial_preamp.gain(),10f32.powf(2./20.));
+        assert_eq!(e.spatial_preamp.gain(),1.);
         e.set_spatial_enhancement(false).unwrap();e.reset_session(123456);
         assert_eq!(e.spatial_preamp.gain(),1.);assert_eq!(e.spatial_layer.db,0.);
     }

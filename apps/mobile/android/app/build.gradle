@@ -91,7 +91,8 @@ android {
     namespace 'app.sda.mobile'
     defaultConfig {
         applicationId 'app.sda.mobile'
-        minSdkVersion rootProject.ext.minSdkVersion
+        // Both shared native ABIs link libaaudio (Android API 26+).
+        minSdkVersion Math.max(26, rootProject.ext.minSdkVersion as int)
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "0.1.0"

@@ -743,7 +743,8 @@ pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, by
             let m = host.meter.integrated();
             host.target_gain = m.integrated_lufs.map_or(1.0,|lufs| 10_f64.powf(crate::balance::master_gain(lufs,m.true_peak_dbtp)/20.0) as f32);
         }
-        Ok(json!({"queuedFrames":host.pcm.len()/2,"channels":host.channels,"sampleRate":48000}))
+        Ok(json!({"queuedFrames":host.pcm.len()/2,"channels":host.channels,"sampleRate":48000,
+            "balanceMeasurementReady":host.fixed_measurement.is_some() || host.meter.integrated().blocks >= crate::balance::MIN_BLOCKS}))
     })
 }
 // Analysis uses a separate decoder and keeps no PCM/object backlog. Never audible.

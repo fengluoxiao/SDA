@@ -3,6 +3,9 @@
 use crate::{Source,SourceKind,vbap};
 use std::collections::HashMap;
 const MAX_DB:f32=6.0;
+// Application presentation defaults, not mastering/calibration requirements.
+pub(crate) const MAIN_GAIN_DB:f32=0.0;
+pub(crate) const EXTRA_AUXILIARY_GAIN_DB:f32=0.0; // no static lift; measured control supplies any enhancement
 fn smooth(v:f32)->f32 {let t=v.clamp(0.0,1.0);t*t*(3.0-2.0*t)}
 /// World coordinates: no PCM/loudness, object IDs or head pose enters this rule.
 /// Explicit enhancement geometries; neither policy depends on PCM, IDs or head pose.
@@ -16,7 +19,7 @@ pub(crate) enum Geometry {
 }
 #[cfg(test)]
 fn weight(position:[f32;3])->f32 { weight_for(position, Geometry::ProtectedSides) }
-fn weight_for(position:[f32;3], geometry:Geometry)->f32 {
+pub(crate) fn weight_for(position:[f32;3], geometry:Geometry)->f32 {
     if !position.iter().all(|v|v.is_finite()) {return 0.0;}
     let [x,y,z]=position.map(f64::from);let h=(x*x+y*y).sqrt();let r=(h*h+z*z).sqrt();
     if r<1e-6 {return 0.0;}
@@ -339,8 +342,8 @@ mod tests {
         let mut e=crate::Engine::new(48000,2);
         assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),0.0);
         e.set_spatial_enhancement(true).unwrap();
-        assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),4.0);
-        assert_eq!(e.spatial_preamp.target_db(),2.0);
+        assert_eq!(e.master_preamp_db(),0.0);assert_eq!(e.spatial_layer_gain_db(),EXTRA_AUXILIARY_GAIN_DB);
+        assert_eq!(e.spatial_preamp.target_db(),MAIN_GAIN_DB);
         assert_eq!(e.spatial_layer.geometry,Geometry::Front45);
         assert_eq!(e.spatial_layer.main_restore_db,0.0);
         assert_eq!(e.spatial_layer.rear_db,0.0);

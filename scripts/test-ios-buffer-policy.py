@@ -30,7 +30,19 @@ check(48000, 48000, 0, true, true, false, false)
 check(48000, 49000, 0, true, true, false, false)
 check(24000, 0, 0, false, false, true, false)
 check(24000, 0, 0, false, true, true, false)
-print("System audio buffer policy: 15 checks passed")
+// Loading is not ready while compressed data is parsed but no PCM exists.
+precondition(SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:false,enqueued:0,queued:0,inputFinished:false))
+precondition(SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:false,enqueued:0,queued:11999,inputFinished:false))
+// Paused preparation can finish entirely in the decoder queue; no audio clock runs.
+precondition(!SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:false,enqueued:0,queued:12000,inputFinished:false))
+precondition(SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:true,enqueued:0,queued:48000,inputFinished:false))
+precondition(!SystemAudioBufferPolicy.needsStartupPreparation(started:true,waitingForBalance:true,enqueued:0,queued:0,inputFinished:false))
+// A ready short EOF and an empty EOF do not wait for an unreachable threshold.
+precondition(!SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:false,enqueued:0,queued:512,inputFinished:true))
+precondition(!SystemAudioBufferPolicy.needsStartupPreparation(started:false,waitingForBalance:true,enqueued:0,queued:0,inputFinished:true))
+// Very large counters cannot overflow the readiness calculation.
+precondition(SystemAudioBufferPolicy.hasStartupPCM(enqueued:UInt64.max,queued:UInt64.max,inputFinished:false))
+print("System audio buffer policy: 23 checks passed")
 ''', encoding="utf-8")
     binary = root / "buffer-policy-test"
     subprocess.run(["xcrun", "swiftc", "-swift-version", "5", str(source), str(main), "-o", str(binary)], check=True)

@@ -180,7 +180,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
-    <Section title="声音增强" footer={<Text>按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿。不识别人声。仅对 SDA 共享渲染生效，系统空间音频路径不应用。</Text>}>
+    <Section title="声音增强" footer={<Text>根据前后层级和可用余量平滑增强空间细节，并控制整体响度。测量不足时不额外增强，不识别人声。仅对 SDA 共享渲染生效，系统空间音频路径不应用。</Text>}>
       <Toggle label="空间平衡" isOn={p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(p.busy || p.systemSpatial360RAActive)]} />
     </Section>
     <Section title="360RA／Audio Vivid" footer={<Text>360RA / Audio Vivid：12 声道交给系统，旁路 SDA 共享渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。</Text>}>

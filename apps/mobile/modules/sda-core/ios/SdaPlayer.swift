@@ -100,10 +100,15 @@ final class SdaPlayer {
    // Status is queried by the feeder every ~20 ms. Do not serialize the
    // entire object graph here; explicit objects + the native 1 s tick drain
    // consumed events even when JS is suspended in the background.
-   case "status": return outputRouteStatus(system.status())
+   case "status":
+    try system.pump()
+    return outputRouteStatus(system.status())
    case "objects": return try system.objects(decodeReply)
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
-   case "pause": system.setPaused(args["paused"] as? Bool ?? false); return true
+   case "pause":
+    system.setPaused(args["paused"] as? Bool ?? false)
+    if !system.paused { try system.pump() }
+    return true
    case "volume": system.renderer.volume = (args["volume"] as? NSNumber)?.floatValue ?? 1; return true
    case "finish": try system.feed(nil,finish:true,decodeReply:decodeReply); return ["errors":[]]
    case "loudness": return try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
@@ -540,7 +545,12 @@ final class SdaPlayer {
     let keepFeeding = try autoreleasepool { () throws -> Bool in
     let shouldWait: Bool? = try locked {
      guard generation == token, hasPlayback else { return nil }
-     if isPaused { lastProgress = Date(); return true }
+     if isPaused {
+      lastProgress = Date()
+      // Finish the existing bounded startup preroll while paused. Keep the
+      // synchronizer stopped; resume can then submit already decoded PCM.
+      if systemSpatial?.needsStartupWork != true { return true }
+     }
      try recoverOutputIfNeeded("decode")
      let status = try command("status") as! [String:Any]
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0

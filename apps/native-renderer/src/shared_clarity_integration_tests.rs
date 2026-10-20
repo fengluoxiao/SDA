@@ -172,8 +172,8 @@ fn replay_scene(audition: Option<serde_json::Value>) {
                     .is_some_and(|c| c["withoutClarity"].as_bool() == Some(true))
         );
         assert_eq!(e.spatial_layer.geometry, spatial_layer::Geometry::Front45);
-        assert_eq!(e.spatial_preamp.target_db(), 2.);
-        assert_eq!(e.spatial_layer.db, 4.);
+        assert_eq!(e.spatial_preamp.target_db(), spatial_layer::MAIN_GAIN_DB);
+        assert_eq!(e.spatial_layer.db, spatial_layer::EXTRA_AUXILIARY_GAIN_DB);
         assert_eq!(e.spatial_layer.rear_db, 0.);
         e.set_master_preamp_db(-12.).unwrap();
         e.set_output_volume(0.5, true);
@@ -245,6 +245,9 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     } else {
         assert!(e.front_common.enabled && e.front_common.grouped);
         assert_eq!(e.front_common.presence_db(), 3.);
+    }
+    if let Ok(extra) = std::env::var("SDA_APPROVED_SCENE_EXTRA_LAYER_DB") {
+        e.set_spatial_layer_gain_db(extra.parse::<f32>().unwrap()).unwrap();
     }
     let unity = std::env::var("SDA_APPROVED_SCENE_UNITY_OUTPUT").as_deref() == Ok("1");
     if unity { e.set_master_preamp_db(0.).unwrap(); e.set_output_volume(1., true); }
@@ -389,12 +392,12 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         if let Some(trace)=&mut gain_trace {
             writeln!(trace,"{}",serde_json::json!({"sample":e.sample_pos,
                 "programmeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),
-                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"groupLevels":e.auxiliary_balance.levels()})).unwrap();
+                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"groupLevels":e.auxiliary_balance.levels(),"outputReductionDb":e.output_dynamics.gain_db(),"headroomRequestDb":e.auxiliary_balance.headroom_db()})).unwrap();
         }
         guard = guard.min(e.peak_guard.diagnostic_gain());
         count += 1;
     }
     output.flush().unwrap();
     if !unity { assert_eq!(guard, 1., "diagnostic headroom must keep peak protection inactive"); }
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":false,"auxiliaryBalanceMode":"foreground-priority-v1","programmeGainDb":programme_db,"programmeTimeline":programme_timeline.is_some(),"renderedProgrammeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":e.output_dynamics.enabled(),"maximumOutputAttenuationDb":e.output_dynamics.maximum_attenuation_db,"outputDetectorTargetLufs":e.output_dynamics.policy().target_lufs,"extraLayerDb":e.spatial_layer.db,"auxiliaryBalanceMode":"foreground-priority-v2","programmeGainDb":programme_db,"programmeTimeline":programme_timeline.is_some(),"renderedProgrammeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }

@@ -16,7 +16,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
             quiet.set_program_target(0.5, true);
             let ratio = 0.25 * 10f32.powf(-6. / 20.) * 0.5;
             for i in 0..96000 {
-                let x = (i as f32 * 0.13).sin() * 0.3;
+                let x = (i as f32 * 0.13).sin() * 0.003;
                 let a = full.process_final_output([x, -0.4 * x]);
                 let b = quiet.process_final_output([x, -0.4 * x]);
                 for ear in 0..2 {
@@ -30,7 +30,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
     }
 }
 #[test]
-fn final_output_has_no_spatially_triggered_second_programme_normalizer() {
+fn quiet_output_keeps_programme_gain_without_unneeded_attenuation() {
     for volume_balance in [false, true] {
         let mut off = Engine::new(48000, 2);
         let mut on = Engine::new(48000, 2);
@@ -41,7 +41,7 @@ fn final_output_has_no_spatially_triggered_second_programme_normalizer() {
             e.set_program_target(0.25, true);
         }
         for i in 0..144000 {
-            let x = (i as f32 * 0.13).sin() * 0.3;
+            let x = (i as f32 * 0.13).sin() * 0.003;
             assert_eq!(
                 off.process_final_output([x, -x]),
                 on.process_final_output([x, -x])
@@ -105,5 +105,34 @@ fn transport_reset_discards_auxiliary_meter_envelopes_and_peak_history() {
             old.process_final_output([x, -x]),
             fresh.process_final_output([x, -x])
         );
+    }
+}
+
+#[test]
+fn loud_processed_output_uses_the_shared_guard_for_both_volume_states() {
+    for codec in ["eac3", "mpegh", "av3a", "ac4", "future-object-format"] {
+        for volume in [false, true] {
+            let mut e = Engine::new(48000, 2);
+            e.set_spatial_enhancement(true).unwrap();
+            e.set_program_codec(codec.into());
+            e.program_enabled = volume;
+            e.set_program_target(if volume { 0.25 } else { 1. }, true);
+            for i in 0..48000 * 6 {
+                let x = (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin() * 0.7;
+                let y = e.process_final_output([x, -x * 0.7]);
+                assert!((y[1] + y[0] * 0.7).abs() < 2e-7);
+            }
+            assert!(e.output_dynamics.enabled());
+            assert!(
+                e.output_dynamics.maximum_attenuation_db > 2.,
+                "guard bypassed for {codec}/{volume}"
+            );
+            e.set_spatial_enhancement(false).unwrap();
+            for _ in 0..48000 {
+                e.process_final_output([0.001, -0.0007]);
+            }
+            assert!(!e.output_dynamics.enabled());
+            assert!(e.output_dynamics.gain_db().abs() < 1e-6);
+        }
     }
 }

@@ -41,7 +41,7 @@ p.ended=true;p.startupAcceptedEnd=97000;p.startPlaybackIfReady();assert.equal(p.
 assert.match(source,/this\.ended = true;\s*this\.pumpPcm\(\)/);
 const rust=readFileSync('crates/sda-native/src/balance.rs','utf8');assert.match(rust,/AV3A_STARTUP_MAX_SECONDS: u64 = 7/);
 const ios=readFileSync('apps/mobile/modules/sda-core/ios/SystemSpatial360.swift','utf8');
-assert.match(ios,/queued < 7\*48000/);assert.match(ios,/requiresBalancePreanalysis: Bool \{ sourceCodec != "av3a" \}/);
+assert.match(ios,/queued < 7\*48000/);assert.match(ios,/requiresBalancePreanalysis: Bool \{ sourceCodec != "av3a" && !decodedInputStarted \}/);
 const android=readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt','utf8');assert.match(android,/!preparingBalance && \(decoded - consumed/);
 console.log('Audio Vivid startup: unchanged target, initial gain before PCM/start, bounded silent preroll, short EOF, and decoder pacing passed.');
 

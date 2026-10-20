@@ -21,6 +21,7 @@ impl Reference {
 pub(crate) struct Route {
     basis: [f64; 4],
     front: f64,
+    protection: f32,
     auxiliary: f32,
     lfe: bool,
 }
@@ -36,15 +37,16 @@ impl Route {
             return Self {
                 basis: [1., 0., 0., 0.],
                 front: 1.,
+                protection: 1.,
                 ..Self::default()
             };
         }
         let [x, y, z] = [x / radius, y / radius, z / radius];
-        let rear = smooth(-y / std::f64::consts::FRAC_1_SQRT_2);
-        // Protect every source in the forward hemisphere, including steep
-        // front-height/bottom positions. Exact overhead is ambiguous without
-        // content roles, so only the rear part of a height layer is controlled.
-        let height = smooth((z.abs() - 0.35) / 0.5) * smooth(-y / 0.25);
+        let auxiliary =
+            crate::spatial_layer::weight_for(position, crate::spatial_layer::Geometry::Front45);
+        // A steady forward-hemisphere source keeps its authored baseline,
+        // including steep height/near-side positions. Membership itself slews.
+        let protection = if y > 1e-8 { 1. } else { 0. };
         Self {
             basis: [
                 std::f64::consts::FRAC_1_SQRT_2,
@@ -53,7 +55,8 @@ impl Route {
                 z * std::f64::consts::FRAC_1_SQRT_2,
             ],
             front: smooth(y / 0.5),
-            auxiliary: (1. - (1. - rear) * (1. - height)) as f32,
+            auxiliary,
+            protection,
             lfe: false,
         }
     }
@@ -78,6 +81,7 @@ impl Route {
             ));
             total += power;
             out.front += r.front * power;
+            out.protection += r.protection * power as f32;
             out.auxiliary += r.auxiliary * power as f32;
             for axis in 0..4 {
                 out.basis[axis] += r.basis[axis] * power;
@@ -87,6 +91,7 @@ impl Route {
             return Self::position([0., 0., 0.]);
         }
         out.front /= total;
+        out.protection /= total as f32;
         out.auxiliary /= total as f32;
         for axis in 0..4 {
             out.basis[axis] /= total;
@@ -99,7 +104,11 @@ pub(crate) fn refresh_beds(
     solver: &vbap::VbapSolver,
 ) {
     for source in sources.values_mut().filter(|s| s.kind == SourceKind::Bed) {
+        let initial = source.auxiliary_route_at == u64::MAX;
         source.auxiliary_route = Route::bed(source, solver);
+        if initial {
+            source.auxiliary_protection = source.auxiliary_route.protection;
+        }
         source.auxiliary_route_at = 0;
     }
 }
@@ -114,11 +123,15 @@ pub(crate) fn process_source(
 ) -> f32 {
     if source.auxiliary_route_at == u64::MAX || (source.kind == SourceKind::Object && at % 128 == 0)
     {
+        let initial = source.auxiliary_route_at == u64::MAX;
         source.auxiliary_route = if source.kind == SourceKind::Object {
             Route::position(source.position)
         } else {
             Route::bed(source, solver)
         };
+        if initial {
+            source.auxiliary_protection = source.auxiliary_route.protection;
+        }
         source.auxiliary_route_at = at;
     }
     let route = source.auxiliary_route;
@@ -143,7 +156,23 @@ pub(crate) fn process_source(
         reference.groups[0][axis] += x * route.basis[axis] * route.front;
         reference.groups[1][axis] += x * route.basis[axis] * f64::from(source.auxiliary_weight);
     }
-    sample * (1. + (control.clamp(0., 1.) - 1.) * source.auxiliary_weight)
+    source.auxiliary_protection += (route.protection - source.auxiliary_protection).clamp(
+        -1. / (rate.max(1) as f32 * 0.03),
+        1. / (rate.max(1) as f32 * 0.03),
+    );
+    if (route.protection - source.auxiliary_protection).abs() < 1e-6 {
+        source.auxiliary_protection = route.protection;
+    }
+    let control = if control.is_finite() {
+        control.max(0.)
+    } else {
+        1.
+    };
+    let gain = 1. + (control - 1.) * source.auxiliary_weight;
+    // In the foreground, remove enhancement only; do not reduce the authored
+    // baseline to solve a side/height/rear excess. Membership slews with motion.
+    let floor = source.auxiliary_protection / source.spatial_layer_gain.max(1.);
+    sample * gain.max(floor)
 }
 
 #[derive(Clone, Copy)]
@@ -159,7 +188,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             maximum_cut_db: 6.,
-            allowed_dominance_db: 3.,
+            allowed_dominance_db: 1.5,
             knee_db: 3.,
             attack_ms: 80.,
             release_ms: 1200.,
@@ -174,10 +203,13 @@ pub(crate) struct AuxiliaryBalance {
     filters: [[KWeight; 4]; 2],
     energy: [f64; 2],
     energy_alpha: f64,
+    reference_gain: f64,
+    observed: u64,
     pub gains: [f32; DEFAULT_PARTITION],
     enabled: bool,
     gain_db: f64,
     goal_db: f64,
+    headroom: Option<f64>,
     pub maximum_attenuation_db: f64,
     last_applied_gain: f32,
 }
@@ -192,10 +224,13 @@ impl AuxiliaryBalance {
             filters: [[KWeight::new(rate); 4]; 2],
             energy: [0.; 2],
             energy_alpha: 1. - (-1. / (f64::from(rate) * 0.2)).exp(),
+            reference_gain: 1.,
+            observed: 0,
             gains: [1.; DEFAULT_PARTITION],
             enabled: false,
             gain_db: 0.,
             goal_db: 0.,
+            headroom: None,
             maximum_attenuation_db: 0.,
             last_applied_gain: 1.,
         }
@@ -203,9 +238,12 @@ impl AuxiliaryBalance {
     pub fn reset(&mut self) {
         self.filters = [[KWeight::new(self.rate); 4]; 2];
         self.energy = [0.; 2];
+        self.reference_gain = 1.;
+        self.observed = 0;
         self.gains.fill(1.);
         self.gain_db = 0.;
         self.goal_db = 0.;
+        self.headroom = None;
         self.maximum_attenuation_db = 0.;
         self.last_applied_gain = 1.;
     }
@@ -228,11 +266,12 @@ impl AuxiliaryBalance {
         self.enabled
     }
     pub fn levels(&self) -> [f64; 4] {
+        let reference_db = 20. * self.reference_gain.max(1e-30).log10();
         [
             20. * f64::from(self.last_applied_gain).max(1e-12).log10(),
             self.maximum_attenuation_db,
-            10. * self.energy[0].max(1e-30).log10(),
-            10. * self.energy[1].max(1e-30).log10(),
+            10. * self.energy[0].max(1e-30).log10() + reference_db,
+            10. * self.energy[1].max(1e-30).log10() + reference_db,
         ]
     }
     pub fn mark_applied(&mut self, index: usize) {
@@ -242,7 +281,11 @@ impl AuxiliaryBalance {
             .max(-20. * f64::from(self.last_applied_gain).max(1e-12).log10());
     }
     pub fn observe(&mut self, reference: Reference, programme_gain: f32) {
-        let scale = f64::from(programme_gain).max(0.).powi(2);
+        self.reference_gain = if programme_gain.is_finite() {
+            f64::from(programme_gain).max(0.)
+        } else {
+            0.
+        };
         for group in 0..2 {
             let mut power = 0.;
             for axis in 0..4 {
@@ -250,42 +293,79 @@ impl AuxiliaryBalance {
                 let y = self.filters[group][axis].process(if x.is_finite() { x } else { 0. });
                 power += y * y;
             }
-            self.energy[group] += (power * scale - self.energy[group]) * self.energy_alpha;
+            self.energy[group] += (power - self.energy[group]) * self.energy_alpha;
         }
-        let front = 10. * self.energy[0].max(1e-30).log10();
-        let auxiliary = 10. * self.energy[1].max(1e-30).log10();
-        self.goal_db =
-            if front < self.policy.reference_gate_db || auxiliary < self.policy.reference_gate_db {
+        self.observed = self.observed.saturating_add(1);
+        let db = 20. * self.reference_gain.max(1e-30).log10();
+        let front = 10. * self.energy[0].max(1e-30).log10() + db;
+        let auxiliary = 10. * self.energy[1].max(1e-30).log10() + db;
+        self.goal_db = if self.reference_gain <= 0.
+            || front < self.policy.reference_gate_db
+            || auxiliary < self.policy.reference_gate_db
+        {
+            0.
+        } else {
+            let excess = auxiliary - front - self.policy.allowed_dominance_db;
+            let knee = self.policy.knee_db;
+            let reduction = if excess <= -knee / 2. {
                 0.
+            } else if excess >= knee / 2. {
+                0.5 * excess
             } else {
-                let excess = auxiliary - front - self.policy.allowed_dominance_db;
-                let knee = self.policy.knee_db;
-                let reduction = if excess <= -knee / 2. {
-                    0.
-                } else if excess >= knee / 2. {
-                    0.5 * excess
-                } else {
-                    (excess + knee / 2.).powi(2) / (4. * knee)
-                };
-                -reduction.clamp(0., self.policy.maximum_cut_db)
+                (excess + knee / 2.).powi(2) / (4. * knee)
             };
+            if reduction > 0. {
+                -reduction.min(self.policy.maximum_cut_db)
+            } else if self.observed >= u64::from(self.rate) * 2 / 5 {
+                // Positive gain is a fraction of a measured deficit, never a
+                // stored +2/+6 recipe. Keep 3 dB foreground separation.
+                ((front - auxiliary - 3.) * 0.5).max(0.)
+            } else {
+                0.
+            }
+        };
+    }
+    pub fn set_output_headroom(&mut self, available_db: Option<f64>) {
+        self.headroom = available_db.filter(|v| v.is_finite());
+    }
+    #[cfg(test)]
+    pub fn headroom_db(&self) -> Option<f64> {
+        self.headroom
     }
     fn fill_from(&mut self, offset: usize) {
-        let target = if self.enabled { self.goal_db } else { 0. };
+        let target = if !self.enabled || self.policy.maximum_cut_db == 0. {
+            0.
+        } else if self.goal_db <= 0. {
+            self.goal_db
+        } else {
+            // Incremental headroom feedback uses already rendered output; the
+            // growth rate is slow relative to the detector. Missing confidence
+            // withdraws enhancement instead of falling back to a positive gain.
+            self.headroom.map_or(0., |h| {
+                self.goal_db.min((self.gain_db.max(0.) + h - 1.).max(0.))
+            })
+        };
         for i in offset..DEFAULT_PARTITION {
             self.gains[i] = 10f64.powf(self.gain_db / 20.) as f32;
             if !self.enabled {
-                self.gain_db = (self.gain_db
-                    + self.policy.maximum_cut_db.max(1.) / (f64::from(self.rate) * 0.05))
-                    .min(0.);
+                let step = self.policy.maximum_cut_db.max(self.gain_db.abs()).max(1.)
+                    / (f64::from(self.rate) * 0.05);
+                self.gain_db += (-self.gain_db).clamp(-step, step);
             } else {
                 let ms = if target < self.gain_db {
                     self.policy.attack_ms
                 } else {
                     self.policy.release_ms
                 };
-                self.gain_db =
+                let next =
                     target + (self.gain_db - target) * (-1000. / (f64::from(self.rate) * ms)).exp();
+                // Gain above authored unity grows at most 0.25 dB per second.
+                // Recovery from attenuation keeps the established release.
+                self.gain_db = if next > 0. && next > self.gain_db {
+                    next.min(self.gain_db.max(0.) + 0.25 / f64::from(self.rate))
+                } else {
+                    next
+                };
                 if (self.gain_db - target).abs() < 1e-8 {
                     self.gain_db = target;
                 }
@@ -358,19 +438,71 @@ impl KWeight {
 mod tests {
     use super::*;
     #[test]
-    fn world_groups_protect_front_and_lfe_without_semantic_labels() {
-        for p in [[0., 1., 0.], [-1., 1., 0.], [1., 1., 0.], [0., 1., 1.]] {
+    fn dynamic_groups_cover_the_same_side_and_height_lift() {
+        for p in [[0., 1., 0.], [-1., 1., 0.], [1., 1., 0.]] {
             assert_eq!(Route::position(p).auxiliary, 0.);
         }
-        assert_eq!(Route::position([0., -1., 0.]).auxiliary, 1.);
-        assert_eq!(Route::position([0., 0., 1.]).auxiliary, 0.);
-        for azimuth in -90..=90 {for elevation in -90..=90 {
-            let a=(azimuth as f64).to_radians();let e=(elevation as f64).to_radians();
-            let p=[(a.sin()*e.cos()) as f32,(a.cos()*e.cos()) as f32,e.sin() as f32];
-            assert_eq!(Route::position(p).auxiliary,0.,"front-height {azimuth}/{elevation}");
-        }}
+        for p in [
+            [1., 0., 0.],
+            [-1., 0., 0.],
+            [0., -1., 0.],
+            [0., 0., 1.],
+            [0., 0., -1.],
+        ] {
+            assert_eq!(
+                Route::position(p).auxiliary,
+                1.,
+                "uncontrolled boosted source {p:?}"
+            );
+        }
+        for azimuth in -180..=180 {
+            for elevation in -90..=90 {
+                let a = (azimuth as f64).to_radians();
+                let e = (elevation as f64).to_radians();
+                let p = [
+                    (a.sin() * e.cos()) as f32,
+                    (a.cos() * e.cos()) as f32,
+                    e.sin() as f32,
+                ];
+                assert_eq!(
+                    Route::position(p).auxiliary,
+                    crate::spatial_layer::weight_for(p, crate::spatial_layer::Geometry::Front45)
+                );
+            }
+        }
         assert_eq!(Route::position([0., 0., 0.]).auxiliary, 0.);
         assert_eq!(Route::position([f32::NAN, 0., 0.]).auxiliary, 0.);
+    }
+    #[test]
+    fn foreground_height_control_cannot_remove_the_unenhanced_baseline() {
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        for p in [
+            [0., 1., 3.],
+            [-2., 1., 3.],
+            [2., 1., -3.],
+            [-10., 1., 3.],
+            [10., 1., -3.],
+        ] {
+            let mut source = Source {
+                kind: SourceKind::Object,
+                position: p,
+                spatial_layer_gain: 10f32.powf(1. / 20.),
+                ..Default::default()
+            };
+            for i in 0..4800 {
+                let mut reference = Reference::default();
+                let out = process_source(
+                    &mut source,
+                    10f32.powf(1. / 20.),
+                    i,
+                    0.25,
+                    &mut reference,
+                    48000,
+                    &solver,
+                );
+                assert!(out >= 1. - 2e-6, "front baseline reduced at {p:?}: {out}");
+            }
+        }
     }
     fn run(front: f64, back: f64, programme: f32) -> AuxiliaryBalance {
         let mut b = AuxiliaryBalance::new(48000);
@@ -389,9 +521,11 @@ mod tests {
     }
     #[test]
     fn only_auxiliary_dominance_can_request_bounded_reduction() {
-        for (f, a) in [(0.03, 0.), (0., 0.3), (0.03, 0.03), (0.3, 0.03)] {
+        for (f, a) in [(0.03, 0.), (0., 0.3), (0.3, 0.03)] {
             assert_eq!(run(f, a, 1.).maximum_attenuation_db, 0.);
         }
+        // Different test frequencies have slightly different K weighting.
+        assert!(run(0.03, 0.03, 1.).maximum_attenuation_db < 0.1);
         let b = run(0.03, 0.3, 1.);
         assert!(b.maximum_attenuation_db > 3. && b.maximum_attenuation_db <= 6.000001);
     }
@@ -481,6 +615,76 @@ mod source_tests {
             if (i + 1) % DEFAULT_PARTITION == 0 {
                 b.finish_block();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod adaptive_lift_tests {
+    use super::*;
+    fn block(b: &mut AuxiliaryBalance, front: f64, aux: f64, block: u64) {
+        for j in 0..DEFAULT_PARTITION {
+            let i = block * DEFAULT_PARTITION as u64 + j as u64;
+            let mut r = Reference::default();
+            r.groups[0][0] = (i as f64 * 0.13).sin() * front;
+            r.groups[1][0] = (i as f64 * 0.17).sin() * aux;
+            b.mark_applied(j);
+            b.observe(r, 1.);
+        }
+        b.finish_block();
+    }
+    #[test]
+    fn missing_measurement_and_silence_never_fall_back_to_positive_gain() {
+        let mut b = AuxiliaryBalance::new(48000);
+        b.set_enabled(true, true, 0);
+        for i in 0..400 {
+            block(&mut b, 0.1, 0.01, i);
+            assert!(b.gains.iter().all(|g| *g == 1.));
+        }
+        b.set_output_headroom(Some(30.));
+        b.reset();
+        for i in 0..100 {
+            block(&mut b, 0., 0., i);
+            assert!(b.gains.iter().all(|g| *g == 1.));
+        }
+        assert_eq!(b.headroom_db(), None);
+    }
+    #[test]
+    fn enhancement_depends_on_measurement_and_withdraws_without_headroom() {
+        let mut b = AuxiliaryBalance::new(48000);
+        b.set_enabled(true, true, 0);
+        b.set_output_headroom(Some(10.));
+        let mut previous = 0f64;
+        for i in 0..400 {
+            block(&mut b, 0.1, 0.01, i);
+            let db = 20. * f64::from(b.gains[DEFAULT_PARTITION - 1]).log10();
+            assert!(db - previous <= 0.25 * DEFAULT_PARTITION as f64 / 48000. + 1e-5);
+            previous = db;
+        }
+        assert!(
+            previous > 1. && previous < 2.2,
+            "unexpected enhancement {previous}"
+        );
+        b.set_output_headroom(None);
+        for i in 400..500 {
+            block(&mut b, 0.1, 0.01, i);
+        }
+        assert!(b.gains.iter().all(|g| (*g - 1.).abs() < 1e-6));
+    }
+    #[test]
+    fn diagnostic_bypass_disables_measured_enhancement_too() {
+        let mut b = AuxiliaryBalance::with_policy(
+            48000,
+            Policy {
+                maximum_cut_db: 0.,
+                ..Default::default()
+            },
+        );
+        b.set_enabled(true, true, 0);
+        b.set_output_headroom(Some(30.));
+        for i in 0..100 {
+            block(&mut b, 0.1, 0.01, i);
+            assert!(b.gains.iter().all(|g| *g == 1.));
         }
     }
 }

@@ -1,6 +1,9 @@
-//! Historical comparison implementation, compiled only in tests. Production
-//! spatial balance uses source-domain auxiliary_balance, with no final LUFS target.
-//! Causal, format-independent final-mix attenuation, before user/program gains.
+//! Linked, format-independent final-output attenuation. Applied after programme,
+//! manual and spatial gains, before the existing true-peak guard. Source-group
+//! control, not this common gain, is responsible for foreground/auxiliary balance.
+//! -20 LUFS detector target provides engineering margin for the app's requested
+//! <= -18 LUFS integrated output ceiling; whole-track output is verified separately.
+//! This is an application policy, not a Dolby loudness-reference renderer.
 //! Uses the audition's 3s/400ms detector and 80ms/3s smoothing policy. The
 //! gain ramp follows completed 10ms measurements without buffering the audio,
 //! preserving the renderer's presentation clock and EOF behavior.
@@ -44,16 +47,67 @@ impl Default for Policy {
         }
     }
 }
+// Fixed-size 0.1 dB energy histogram: controller approximation to the
+// BS.1770 absolute (-70 LUFS) and relative (-10 LU) gates. Exact energy sums
+// are retained per bin; only a relative-gate boundary inside a bin is approximate.
+// Final compliance measurements use an independent complete-output meter.
+struct IntegratedReference {
+    energy: Box<[f64]>,
+    count: Box<[u64]>,
+}
+impl IntegratedReference {
+    fn new() -> Self {
+        Self {
+            energy: vec![0.; 1024].into_boxed_slice(),
+            count: vec![0; 1024].into_boxed_slice(),
+        }
+    }
+    fn clear(&mut self) {
+        self.energy.fill(0.);
+        self.count.fill(0);
+    }
+    fn push(&mut self, power: f64) {
+        let level = -0.691 + 10. * power.max(1e-30).log10();
+        if !power.is_finite() || level <= -70. {
+            return;
+        }
+        let i = (((level + 70.) * 10.).floor() as usize).min(self.energy.len() - 1);
+        self.energy[i] += power;
+        self.count[i] += 1;
+    }
+    fn loudness(&self) -> Option<f64> {
+        let n: u64 = self.count.iter().sum();
+        if n == 0 {
+            return None;
+        }
+        let threshold = self.energy.iter().sum::<f64>() / n as f64 * 0.1;
+        let (mut energy, mut count) = (0., 0u64);
+        for (&e, &n) in self.energy.iter().zip(self.count.iter()) {
+            if n > 0 && e / n as f64 > threshold {
+                energy += e;
+                count += n;
+            }
+        }
+        (count > 0).then(|| -0.691 + 10. * (energy / count as f64).max(1e-30).log10())
+    }
+}
 pub(super) struct FinalMixAttenuator {
     rate: f64,
     hop: usize,
     policy: Policy,
+    enabled: bool,
+    requested_attenuation_db: f64,
+    reference_gain: f64,
+    available_headroom_db: Option<f64>,
     filters: [[Filter; 2]; 2],
     offset: usize,
     energy: f64,
     history: [(f64, usize); 300],
     history_write: usize,
     history_count: usize,
+    hops_seen: u64,
+    integrated: IntegratedReference,
+    integrated_lufs: Option<f64>,
     gain_db: f64,
     gain: f64,
     step: f64,
@@ -102,12 +156,19 @@ impl FinalMixAttenuator {
             rate: sr,
             hop: (sr * 0.01).round().max(1.) as usize,
             policy,
+            enabled: true,
+            requested_attenuation_db: 0.,
+            reference_gain: 1.,
+            available_headroom_db: None,
             filters: [[shelf, high]; 2],
             offset: 0,
             energy: 0.,
             history: [(0., 0); 300],
             history_write: 0,
             history_count: 0,
+            hops_seen: 0,
+            integrated: IntegratedReference::new(),
+            integrated_lufs: None,
             gain_db: 0.,
             gain: 1.,
             step: 1.,
@@ -133,10 +194,50 @@ impl FinalMixAttenuator {
         self.history.fill((0., 0));
         self.history_write = 0;
         self.history_count = 0;
+        self.hops_seen = 0;
+        self.integrated.clear();
+        self.integrated_lufs = None;
         self.gain_db = 0.;
         self.gain = 1.;
         self.step = 1.;
         self.maximum_attenuation_db = 0.;
+        self.requested_attenuation_db = 0.;
+        self.reference_gain = 1.;
+        self.available_headroom_db = None;
+    }
+    pub fn set_enabled(&mut self, enabled: bool, immediate: bool) {
+        if !enabled && immediate {
+            self.enabled = false;
+            self.gain_db = 0.;
+            self.gain = 1.;
+            self.step = 1.;
+        } else if self.enabled != enabled {
+            self.enabled = enabled;
+            self.gain_db = 20. * self.gain.max(1e-30).log10();
+            self.step = 1.;
+        }
+    }
+    pub fn requested_reduction_db(&self) -> f64 {
+        if self.enabled {
+            self.requested_attenuation_db
+        } else {
+            0.
+        }
+    }
+    pub fn available_headroom_db(&self) -> Option<f64> {
+        if self.enabled {
+            self.available_headroom_db
+        } else {
+            None
+        }
+    }
+    #[cfg(test)]
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+    #[cfg(test)]
+    pub fn gain_db(&self) -> f64 {
+        20. * self.gain.max(1e-30).log10()
     }
     fn update(&mut self) {
         self.history[self.history_write] = (self.energy, self.hop);
@@ -153,30 +254,73 @@ impl FinalMixAttenuator {
                 mn += n
             }
         }
-        let short = -0.691 + 10. * (short / sn as f64).max(1e-30).log10();
-        let momentary = -0.691 + 10. * (momentary / mn as f64).max(1e-30).log10();
-        let p = self.policy;
-        let mut target = 0f64
-            .min(p.target_lufs - short)
-            .min(p.target_lufs + p.momentary_margin_db - momentary);
-        if short < p.silence_lufs {
-            target = self.gain_db
+        self.hops_seen = self.hops_seen.saturating_add(1);
+        if self.history_count >= 40 && self.hops_seen % 10 == 0 {
+            self.integrated.push(momentary / mn as f64);
+            self.integrated_lufs = self.integrated.loudness();
         }
-        let tau = if target < self.gain_db {
-            p.attack_seconds
+        let reference_db = 20. * self.reference_gain.max(1e-30).log10();
+        let short = -0.691 + 10. * (short / sn as f64).max(1e-30).log10() + reference_db;
+        let momentary = -0.691 + 10. * (momentary / mn as f64).max(1e-30).log10() + reference_db;
+        let p = self.policy;
+        // Preserve musical dynamics: long-term control follows the accumulated
+        // gated programme rather than continually normalising every 3 seconds.
+        let integrated = self.integrated_lufs.map_or(short, |v| v + reference_db);
+        let mut target = 0f64
+            .min(p.target_lufs - integrated)
+            .min(p.target_lufs + p.momentary_margin_db - momentary);
+        self.available_headroom_db = if self.history_count >= 40
+            && self.reference_gain > 0.
+            && short >= p.silence_lufs
+            && short.is_finite()
+            && momentary.is_finite()
+        {
+            Some((p.target_lufs - short).min(p.target_lufs + p.momentary_margin_db - momentary))
+        } else {
+            None
+        };
+        self.requested_attenuation_db = if short < p.silence_lufs { 0. } else { -target };
+        if short < p.silence_lufs {
+            target = self.gain_db;
+        }
+        if !self.enabled {
+            target = 0.;
+        }
+        let tau = if !self.enabled {
+            0.05
+        } else if target < self.gain_db {
+            if self.hops_seen < 40 {
+                p.attack_seconds.min(0.005)
+            } else {
+                p.attack_seconds
+            }
         } else {
             p.release_seconds
         };
         let next = target + (-(self.hop as f64) / self.rate / tau).exp() * (self.gain_db - target);
+        let next = if !self.enabled && next.abs() < 1e-7 {
+            0.
+        } else {
+            next
+        };
         self.gain = 10f64.powf(self.gain_db / 20.);
         self.step = 10f64.powf((next - self.gain_db) / (self.hop as f64 * 20.));
         self.gain_db = next;
         self.maximum_attenuation_db = self.maximum_attenuation_db.max(-next);
         self.energy = 0.;
     }
+    #[cfg(test)]
     pub fn process(&mut self, frame: [f64; 2]) -> [f64; 2] {
+        self.process_scaled(frame, 1.)
+    }
+    pub fn process_scaled(&mut self, frame: [f64; 2], reference_gain: f64) -> [f64; 2] {
+        self.reference_gain = if reference_gain.is_finite() {
+            reference_gain.max(0.)
+        } else {
+            0.
+        };
         let frame = frame.map(|v| if v.is_finite() { v } else { 0. });
-        let out = frame.map(|v| v * self.gain.min(1.));
+        let out = frame.map(|v| v * self.reference_gain * self.gain.min(1.));
         self.gain *= self.step;
         for (ear, x) in frame.into_iter().enumerate() {
             let y = self.filters[ear][0].run(x);
@@ -256,5 +400,52 @@ mod tests {
         }
         a.reset();
         assert_eq!(a.process([f64::NAN, f64::INFINITY]), [0., 0.]);
+    }
+}
+
+#[cfg(test)]
+mod integrated_tests {
+    use super::*;
+    fn power(lufs: f64) -> f64 {
+        10f64.powf((lufs + 0.691) / 10.)
+    }
+    #[test]
+    fn histogram_gates_silence_and_does_not_flatten_programme_sections() {
+        let mut m = IntegratedReference::new();
+        for _ in 0..100 {
+            m.push(power(-90.));
+        }
+        assert_eq!(m.loudness(), None);
+        for _ in 0..100 {
+            m.push(power(-25.));
+        }
+        for _ in 0..100 {
+            m.push(power(-15.));
+        }
+        let expected = -0.691 + 10. * ((power(-25.) + power(-15.)) / 2.).log10();
+        assert!((m.loudness().unwrap() - expected).abs() < 1e-10);
+        // The integrated result retains both sections; it is not the latest block.
+        assert!(m.loudness().unwrap() < -17. && m.loudness().unwrap() > -18.);
+        for _ in 0..100 {
+            m.push(power(-60.));
+        }
+        assert!((m.loudness().unwrap() - expected).abs() < 1e-10);
+        m.clear();
+        assert_eq!(m.loudness(), None);
+    }
+    #[test]
+    fn current_programme_gain_rescales_the_reference_without_old_gain_history() {
+        let mut a = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        for i in 0..48000 {
+            let x = (i as f64 * 0.13).sin() * 0.3;
+            a.process_scaled([x, -x], 1.);
+        }
+        assert!(a.requested_reduction_db() > 0.);
+        for i in 0..480 {
+            let x = (i as f64 * 0.13).sin() * 0.3;
+            a.process_scaled([x, -x], 0.01);
+        }
+        assert_eq!(a.requested_reduction_db(), 0.);
+        assert!(a.available_headroom_db().unwrap() > 10.);
     }
 }

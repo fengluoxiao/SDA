@@ -21,6 +21,7 @@ final class SystemSpatial360 {
  var closed = false
  var balanceEnabled = false
  var inputFinished = false
+ var decodedInputStarted = false
  var measurementReady = false
  var firstSubmissionBalanced = false
  var pendingSamples: [(sample: CMSampleBuffer, end: UInt64)] = []
@@ -82,7 +83,8 @@ final class SystemSpatial360 {
  func feed(_ data: Data?, finish: Bool, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
   let value = try decodeInput(data, finish:finish, decodeReply:decodeReply)
   queued = ((value as? [String:Any])?["queuedFrames"] as? NSNumber)?.uint64Value ?? 0
-  if sourceCodec == "av3a", (value as? [String:Any])?["balanceMeasurementReady"] as? Bool == true { measurementReady = true }
+  if (value as? [String:Any])?["balanceMeasurementReady"] as? Bool == true { measurementReady = true }
+  if data?.isEmpty == false || finish { decodedInputStarted = true }
   if finish { inputFinished = true }
   try pump()
  }
@@ -93,7 +95,7 @@ final class SystemSpatial360 {
  }
  var loudnessPrefix: String { alacUpmix == nil ? "sda.loudness.system714.v1." : "sda.loudness.alac.stereo.v1." }
  func pump() throws {
-  if paused { return }
+  if paused || closed { return }
   if renderer.status == .failed {
    guard let error = renderer.error as NSError?, error.domain == AVFoundationErrorDomain,
      error.code == -11847 /* AVErrorOperationInterrupted; not exposed by the iOS SDK enum */, interruptionRecoveries < 3 else {
@@ -105,10 +107,11 @@ final class SystemSpatial360 {
   // Freeze the presentation clock at the end of submitted PCM on underrun.
   // Otherwise newly decoded buffers would carry timestamps already in the past.
   if started && !paused && !buffering && consumed >= enqueued {
-   synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000)); buffering = true; underruns += 1
+   synchronizer.setRate(0,time:CMTime(value:Int64(enqueued),timescale:48000))
+   if !inputFinished || queued > 0 { buffering = true; underruns += 1 }
   }
   // Never submit unbalanced startup PCM while the full-track analysis is pending.
-  if preparingAudio { return }
+  if waitingForBalance { return }
   while !paused && queued > 0 && renderer.isReadyForMoreMediaData {
    // Bound system queue as well as decoder queue, including when renderer stays ready.
    if enqueued > consumed + 48000 { break }
@@ -172,11 +175,19 @@ final class SystemSpatial360 {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
  // Audio Vivid estimates only the PCM passing through playback; no replay pass.
- var requiresBalancePreanalysis: Bool { sourceCodec != "av3a" }
- var preparingAudio: Bool {
+ // Never rewind a playback input which has already supplied a paused preroll.
+ // In that case retain the same decoder and finish its bounded live measurement.
+ var requiresBalancePreanalysis: Bool { sourceCodec != "av3a" && !decodedInputStarted }
+ var waitingForBalance: Bool {
   !started && balanceEnabled && !measurementReady &&
    (requiresBalancePreanalysis || (!inputFinished && queued < 7*48000))
  }
+ var needsStartupWork: Bool {
+  SystemAudioBufferPolicy.needsStartupPreparation(started:started,
+   waitingForBalance:waitingForBalance, enqueued:enqueued, queued:queued,
+   inputFinished:inputFinished)
+ }
+ var preparingAudio: Bool { needsStartupWork }
  // MPEG-H bridge is process-global: analyze and play sequentially, not with
  // concurrent owners. Called under SdaPlayer.lock before any PCM is submitted.
  func restartAfterMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
@@ -185,7 +196,7 @@ final class SystemSpatial360 {
   closed = true // Keep close/deinit safe if recreation fails.
   var error: UnsafeMutablePointer<CChar>?
   guard let next = (sourceCodec == "av3a" ? sda_ios_av3a_speakers_create(&error) : (alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error))) else { _ = try decodeReply(error); throw SdaError.message("系统音频播放源重建失败") }
-  decoder = next; closed = false
+  decoder = next; closed = false; decodedInputStarted = false
   sda_ios_speakers_balance(decoder,balanceEnabled)
   try setMeasurement(value,decodeReply:decodeReply)
  }
@@ -198,6 +209,7 @@ final class SystemSpatial360 {
   return ["decodedSamplePos":decoded,"consumedSamplePos":clock,"positionMs":Double(clock)/48,
    "fifoFrames":decoded-clock,"outputChannels":channels,"outputLayout":channels == 2 ? "2.0" : "7.1.4", "sourceCodec":sourceCodec, "alacUpmixActive":alacUpmix == true,"systemSpatial360RAActive":true,
    "systemOutputUnderruns":underruns,"systemOutputBuffering":buffering,"systemOutputQueuedFrames":enqueued-clock,
+   "systemOutputStarted":started,"systemDecoderQueuedFrames":queued,"systemWaitingForBalance":waitingForBalance,
    "volumeBalanceEnabled":balanceEnabled,"volumeBalanceEligible":true,
    "preparingAudio":preparingAudio,"balanceMeasurementReady":measurementReady,"paused":paused,"sampleRate":48000,"hrtfBypassed":true,"roomBypassed":true,
    "channelOrder":Array(["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].prefix(channels))]

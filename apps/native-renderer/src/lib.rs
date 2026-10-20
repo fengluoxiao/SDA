@@ -81,7 +81,6 @@ pub mod focus;
 mod front_common;
 mod spatial_balance;
 mod master_preamp;
-#[cfg(test)] // Historical comparison only; no final-mix loudness normalization.
 mod output_dynamics;
 mod auxiliary_balance;
 #[cfg(test)]
@@ -780,6 +779,7 @@ pub struct Source {
     activity_until: u64,
     gain_events: BTreeMap<u64, GainEvent>,
     auxiliary_route: auxiliary_balance::Route,
+    auxiliary_protection: f32,
     auxiliary_route_at: u64,
     auxiliary_weight: f32,
     spatial_layer_gain: f32,
@@ -849,6 +849,7 @@ impl Default for Source {
             activity_until: 0,
             gain_events: BTreeMap::new(),
             auxiliary_route: Default::default(),
+            auxiliary_protection: 0.0,
             auxiliary_route_at: u64::MAX,
             auxiliary_weight: 0.0,
             spatial_layer_gain: 1.0,
@@ -1148,6 +1149,7 @@ pub struct Engine {
     spatial_enhancement_enabled: bool,
     auxiliary_balance: auxiliary_balance::AuxiliaryBalance,
     auxiliary_reference: Box<[auxiliary_balance::Reference]>,
+    output_dynamics: output_dynamics::FinalMixAttenuator,
     peak_guard: true_peak_guard::TruePeakGuard,
     binaural_eq: StereoEq,
     output_clarity: [dsp::Biquad; 2],
@@ -1290,6 +1292,7 @@ impl Engine {
             spatial_enhancement_enabled: false,
             auxiliary_balance: auxiliary_balance::AuxiliaryBalance::new(sample_rate),
             auxiliary_reference: vec![auxiliary_balance::Reference::default(); convolution::DEFAULT_PARTITION].into_boxed_slice(),
+            output_dynamics: output_dynamics::FinalMixAttenuator::new(sample_rate, output_dynamics::Policy::default()).expect("valid spatial output policy"),
             peak_guard: true_peak_guard::TruePeakGuard::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
@@ -1324,6 +1327,7 @@ impl Engine {
         self.binaural_enabled = enabled;
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled, true, self.block_offset);
+            self.output_dynamics.set_enabled(enabled && self.spatial_enhancement_enabled && !self.cinema.monitor.hardware.enabled, true);
         }
         if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
     }
@@ -1446,7 +1450,7 @@ impl Engine {
     }
 
     fn configure_shared_front_presentation(&mut self, shared: bool) -> Result<(), String> {
-        self.front_common.enabled = shared && self.spatial_preamp.target_db() == 2.0;
+        self.front_common.enabled = shared && self.spatial_enhancement_enabled;
         if shared {
             self.front_common.grouped = true;
             self.front_common.set_presence(self.output_sample_rate, 3.0)?;
@@ -1824,9 +1828,10 @@ impl Engine {
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.binaural_enabled, true, self.block_offset);
         }
-        self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 },
+        self.spatial_preamp.set(if enabled { spatial_layer::MAIN_GAIN_DB } else { 0.0 },
             self.output_sample_rate, !self.output_active)?;
-        self.set_spatial_layer_gain_db(if enabled { 4.0 } else { 0.0 })?;
+        self.set_spatial_layer_gain_db(if enabled { spatial_layer::EXTRA_AUXILIARY_GAIN_DB } else { 0.0 })?;
+        self.output_dynamics.set_enabled(enabled && self.binaural_enabled && !self.cinema.monitor.hardware.enabled, !self.output_active || self.paused);
         self.spatial_layer.geometry = if enabled {
             spatial_layer::Geometry::Front45
         } else {
@@ -1888,12 +1893,19 @@ impl Engine {
         }
     }
 
-    // Programme normalization is applied once. Source-group control has already
-    // acted before HRTF/room/EQ; only shared true-peak protection remains here.
+    // Programme normalization is applied once. Source-group balance fixes the
+    // foreground/auxiliary ratio; the linked final-output guard handles excess
+    // processed-output loudness, then true-peak protection handles intersample peaks.
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
-        let gain = self.output_gain * self.comparison_gain * self.program_gain
+        let gain = self.comparison_gain * self.program_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
-        self.peak_guard.process(mix[0] * gain, mix[1] * gain)
+        let enabled = self.spatial_enhancement_enabled && self.binaural_enabled
+            && !self.cinema.monitor.hardware.enabled;
+        self.output_dynamics.set_enabled(enabled, false);
+        let controlled = self.output_dynamics.process_scaled(mix.map(f64::from), f64::from(gain));
+        // The slider remains a final attenuation, so turning it down cannot
+        // invite more auxiliary lift or cancel the user's intended volume.
+        self.peak_guard.process(controlled[0] as f32 * self.output_gain, controlled[1] as f32 * self.output_gain)
             .map(|v| v * self.final_output_trim.gain())
     }
 
@@ -2044,6 +2056,7 @@ impl Engine {
         self.program_events.clear();
         self.auxiliary_balance.reset();
         self.auxiliary_reference.fill(Default::default());
+        self.output_dynamics.reset();
         self.peak_guard.reset();
         self.headphone.reset();
         for filter in &mut self.output_clarity { filter.reset(); }
@@ -3256,6 +3269,7 @@ impl Engine {
             }
             self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
+                self.auxiliary_balance.set_output_headroom(self.output_dynamics.available_headroom_db());
                 self.auxiliary_balance.finish_block();
                 sample_micros = stage_started.elapsed().as_micros() as u64;
                 if let Some(set) = &mut self.active_hrtf_set {
@@ -3752,7 +3766,7 @@ mod tests {
         let mut engine = calibrated_engine();
         engine.set_spatial_enhancement(true).unwrap();
         assert_eq!(engine.spatial_layer.rear_db,0.0);
-        assert_eq!(engine.spatial_preamp.target_db(),2.0);
+        assert_eq!(engine.spatial_preamp.target_db(),spatial_layer::MAIN_GAIN_DB);
         engine.set_binaural_enabled(false);
         engine.binaural_eq = StereoEq::new(48_000, [-12.0; 3], true).unwrap();
         engine.paused = false;
@@ -4698,8 +4712,8 @@ mod tests {
             e.set_program_codec(codec.into());
             e.set_direct_objects(true).unwrap();
             e.set_directional_hrtf(true);
-            assert_eq!(e.spatial_preamp.target_db(), 2.0);
-            assert_eq!(e.spatial_layer_gain_db(), 4.0);
+            assert_eq!(e.spatial_preamp.target_db(), spatial_layer::MAIN_GAIN_DB);
+            assert_eq!(e.spatial_layer_gain_db(), spatial_layer::EXTRA_AUXILIARY_GAIN_DB);
             assert_eq!(e.master_preamp_db(), 0.0);
             e.output_active = true; e.paused = false;
             let n = 8192;

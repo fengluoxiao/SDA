@@ -14,6 +14,10 @@ const physicalMobileModules = fs.existsSync(mobileModules) ? fs.realpathSync.nat
 const rnPackage = require.resolve('react-native/package.json', { paths: [projectRoot] });
 const reactPackage = require.resolve('react/package.json', { paths: [path.dirname(rnPackage)] });
 const threeEntry = require.resolve('three', { paths: [projectRoot] });
+// Flat dependency stores can link individual mobile packages outside both
+// node_modules roots. Watch the store that contains the resolved Three package.
+const physicalThree = fs.realpathSync.native(threeEntry);
+const threeModules = path.resolve(path.dirname(physicalThree), '../..');
 const reactRoot = fs.realpathSync.native(path.dirname(reactPackage));
 const config = getDefaultConfig(projectRoot);
 config.resolver.disableHierarchicalLookup = true;
@@ -25,7 +29,7 @@ config.resolver.blockList = [
   /[\\/](?:target|\.git|\.gradle|\.cxx)[\\/]/,
 ];
 
-config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot, physicalModules, physicalMobileModules])];
+config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot, physicalModules, physicalMobileModules, threeModules])];
 config.resolver.nodeModulesPaths = [
   mobileModules,
   physicalMobileModules,
