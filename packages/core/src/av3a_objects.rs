@@ -208,7 +208,7 @@ fn compile(scene: SceneSpec, channels: usize) -> Result<Vec<Route>, String> {
         }
     }
     routes.extend(objects.into_values());
-    if routes.is_empty() || routes.len() > 64 {
+    if routes.is_empty() || routes.len() > crate::MAX_DECODED_SOURCE_CHANNELS {
         return Err("unsupported AV3A logical scene size".into());
     }
     Ok(routes)
@@ -485,6 +485,27 @@ impl ObjectScene {
 mod tests {
     use super::*;
     use avs3a::metadata::{DynamicLevel1Metadata, DynamicObjectPosition};
+    #[test]
+    fn logical_output_expands_to_128_without_changing_encoded_transport_shape() {
+        for count in [24usize, 64, 128, 129] {
+            let spec = SceneSpec {
+                objects: (0..count).map(|i|ObjectSpec {index:i as u8,packs:vec![i as u8],gain:1.0,head_locked:false}).collect(),
+                packs: (0..count).map(|i|PackSpec {index:i as u8,kind:3,format:None,start:None,channels:vec![(0,Some(0))]}).collect(),
+                gains: [(0,1.0)].into_iter().collect(),
+            };
+            let mut scene = ObjectScene::new(1);
+            if count > crate::MAX_DECODED_SOURCE_CHANNELS { assert!(scene.install(spec).is_err()); continue; }
+            scene.install(spec).unwrap();
+            scene.update_objects(&[object(0,[0.0,1.0,0.0],1.0)]).unwrap();
+            let output=scene.route(vec![vec![0.125,0.25,0.5,0.75]],0,1024).unwrap();
+            assert_eq!(output.channels.len(),count);assert_eq!(output.events.len(),count);
+            let ids=output.declarations.iter().map(|d|d.id).collect::<BTreeSet<_>>();assert_eq!(ids.len(),count);
+            for (i,channel) in output.channels.iter().enumerate() {
+                assert_eq!(channel,&[0.125,0.25,0.5,0.75]);assert_eq!(output.declarations[i].channel,i as u32);
+            }
+        }
+    }
+
     fn scene() -> ObjectScene {
         let mut s = ObjectScene::new(3);
         let gains = (0..8)

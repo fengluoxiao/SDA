@@ -85,12 +85,13 @@ impl MpeghDecoder {
         // All pointers remain owned by this exclusive bridge instance, and are copied
         // before the next decode call. Bounds mirror bridge.c / MpeghDecoder.ts.
         let info = |key| unsafe { sda_info(key) };
+        if info(12) != 0 { return Err(format!("MPEG-H source capture exceeds its 128-lane/metadata bounds ({})", info(12))); }
         let n = info(3);
         if n == 0 { return Ok(None); }
         if !(1..=4096).contains(&n) { return Err("MPEG-H invalid captured sample count".into()); }
         let n = n as usize;
         let (objects, beds, hoa, rate) = (info(5), info(6), info(7), info(2));
-        if rate <= 0 || objects < 0 || beds < 0 || objects + beds > 64 { return Err("MPEG-H invalid source format".into()); }
+        if rate <= 0 || objects < 0 || beds < 0 || objects + beds > sda_core::MAX_DECODED_SOURCE_CHANNELS as i32 { return Err("MPEG-H invalid source format".into()); }
         let mut labels = Vec::<String>::new();
         let mut events = Vec::new();
         let mut declarations = Vec::new();
@@ -130,10 +131,10 @@ impl MpeghDecoder {
     }
     fn capture_events(objects: i32, at: u64) -> Result<Vec<ObjectEvent>, String> {
         if objects == 0 { return Ok(vec![]); }
-        if !(1..=64).contains(&objects) { return Err("MPEG-H invalid object count".into()); }
+        if !(1..=sda_core::MAX_DECODED_SOURCE_CHANNELS as i32).contains(&objects) { return Err("MPEG-H invalid object count".into()); }
         let mut events = Vec::new();
         let rows = unsafe { sda_info(9) };
-        if !(1..=1024).contains(&rows) { return Err("MPEG-H object PCM has no matching metadata".into()); }
+        if !(1..=(sda_core::MAX_DECODED_SOURCE_CHANNELS * 16) as i32).contains(&rows) { return Err("MPEG-H object PCM has no matching metadata".into()); }
         let metadata = unsafe { slice::from_raw_parts(sda_metadata(), rows as usize*12) };
         for row in metadata.chunks_exact(12) {
             if row.iter().any(|v| !v.is_finite()) || row[0] < 0.0 || row[0] >= objects as f32 || row[1] < 0.0 {

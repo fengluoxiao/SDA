@@ -11,6 +11,23 @@ if(!existsSync(join(upstream,'README.md'))){run('git',['clone','https://github.c
 if(execFileSync('git',['-C',upstream,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==pin)throw Error('Unexpected libmpegh revision');
 mkdirSync(build,{recursive:true});
 const dec=join(build,'decoder');cpSync(join(upstream,'decoder'),dec,{recursive:true});
+// Keep source/OAM/DRC storage consistent with the shared 128-source route.
+// Codec profile/level checks and rendered-speaker layouts retain their limits.
+for(const [file, patches] of [
+ ['ia_core_coder_cnst.h', [['MAX_NUM_CHANNELS','128'],['MAX_NUM_ELEMENTS','128']]],
+ ['ia_core_coder_config.h', [['MAX_ELEMENTS_USAC','(128)'],['MAX_CHANNEL_COUNT','(128)'],['MAX_NUM_OAM_OBJS','(128)']]],
+ ['impeghd_oam_dec_defines.h', [['MAX_NUM_OAM_OBJS','(128)']]],
+ ['impeghd_ele_interaction_intrfc.h', [['MAE_MAX_NUM_OBJECTS','(128)']]],
+ ['impd_drc_common.h', [['MAX_CHANNEL_COUNT','(128)']]],
+]) {
+ const path=join(dec,file);let text=readFileSync(path,'utf8');
+ for(const [name,value] of patches) {
+  const pattern=new RegExp('(^[ \t]*#define[ \t]+'+name+'[ \t]+)[^\r\n]+','gm');
+  if(!pattern.test(text))throw Error('MPEG-H source capacity anchor changed: '+name);
+  text=text.replace(pattern, '$1'+value);
+ }
+ writeFileSync(path,text);
+}
 const types=join(dec,'impeghd_type_def.h');
 // Use the host libc types on wasm32 and native 64-bit targets. Decoder maths is unchanged.
 writeFileSync(types,readFileSync(types,'utf8')

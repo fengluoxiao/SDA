@@ -88,6 +88,9 @@ impl ProgramLoudnessMetadata {
     }
 }
 
+/// Application-wide limit on decoded bed/LFE/object source lanes, not device channels.
+pub const MAX_DECODED_SOURCE_CHANNELS: usize = 128;
+
 /// Decoded frame handed to JavaScript.
 pub struct FrameData {
     /// BS.1770 measurement of a neutral decoded programme reference, before HRTF/user processing.
@@ -124,6 +127,12 @@ impl CompatibilityBed {
     pub fn from_frame(frame: FrameData) -> Self { Self { channels: frame.channels, labels: frame.labels } }
 }
 impl FrameData {
+    pub fn validate_source_count(&self) -> Result<(), String> {
+        if self.channels.len() > MAX_DECODED_SOURCE_CHANNELS {
+            return Err(format!("decoded source count {} exceeds {MAX_DECODED_SOURCE_CHANNELS}", self.channels.len()));
+        }
+        Ok(())
+    }
     pub fn select_compatibility_bed(&mut self) -> bool {
         let Some(bed) = self.compatibility_bed.take() else { return false; };
         self.channels = bed.channels;
@@ -315,7 +324,9 @@ impl StreamingDecoder {
 
     /// Pop the next decoded frame, or `None` when more input is needed.
     pub fn next_frame(&mut self) -> Option<FrameData> {
-        self.queue.pop_front().map(|mut frame| {
+        loop {
+            let mut frame = self.queue.pop_front()?;
+            if let Err(error) = frame.validate_source_count() { self.errors.push(error); continue; }
             for event in &frame.events {
                 let mut target = event.clone();
                 if !event.has_pos {
@@ -340,8 +351,8 @@ impl StreamingDecoder {
                 }
                 self.restore_object_mapping = false;
             }
-            frame
-        })
+            return Some(frame);
+        }
     }
 
     pub fn set_object_rendering(&mut self, enabled: bool) {

@@ -52,7 +52,9 @@ export class MpeghDecoder {
   }
   private takeFrame():void {
     const m=runtime, info=(k:number)=>m._sda_info(k);
+    if(info(12)!==0)throw codecFailure("mpegh.failure_13", "MPEG-H source capture exceeds its 128-lane/metadata bounds");
     let n=info(3);if(!n)return;
+    if(!Number.isInteger(n)||n<0||n>4096)throw codecFailure("mpegh.failure_13", "MPEG-H invalid source sample count");
     const objects=info(5),beds=info(6),hoa=info(7),rate=info(2);
     if(this.referenceOnly || !this.objectRendering){
       const count=info(11),samples=info(10)/(count*3);
@@ -66,6 +68,7 @@ export class MpeghDecoder {
     }
 
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
+    if(!Number.isInteger(objects) || !Number.isInteger(beds) || objects<0 || beds<0 || beds+objects>128)throw codecFailure("mpegh.failure_13", "MPEG-H source capture exceeds its 128-lane/metadata bounds");
     if(objects){
       if(hoa)throw codecFailure("mpegh.failure_11",'MPEG-H mixed objects/HOA is not supported yet');
       const sourceBeds=Array.from({length:beds},(_,c)=>CICP_LABELS[m._sda_bed(c)]);

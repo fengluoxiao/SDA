@@ -8,6 +8,9 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
     render_scene_codec(enabled,toggle,objects,"av3a",true)
 }
 fn render_scene_codec(enabled: bool, toggle: bool, objects: bool, codec: &'static str, spatial:bool) -> (Vec<f32>,f64) {
+    render_source_scene(enabled,toggle,objects,codec,spatial,None)
+}
+fn render_source_scene(enabled: bool, toggle: bool, objects: bool, codec: &'static str, spatial:bool, lanes:Option<(usize,usize)>) -> (Vec<f32>,f64) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let active: Value = serde_json::from_slice(
         &std::fs::read(root.join("apps/mobile/ios-experiments/active.json")).unwrap(),
@@ -40,7 +43,7 @@ fn render_scene_codec(enabled: bool, toggle: bool, objects: bool, codec: &'stati
         .unwrap()
         .set_volume_balance(enabled)
         .unwrap();
-    let private = objects
+    let private = (objects && lanes.is_none())
         .then(|| std::env::var("SDA_OBJECT_BALANCE_INPUT").ok())
         .flatten();
     let frames = if private.is_some() {
@@ -48,7 +51,7 @@ fn render_scene_codec(enabled: bool, toggle: bool, objects: bool, codec: &'stati
             .unwrap()
             .parse::<usize>()
             .unwrap()
-    } else {
+    } else if lanes.is_some() { 48000 } else {
         48000 * if toggle { 20 } else { 15 }
     };
     // A real decoded excerpt can be supplied for diagnostic regression.
@@ -225,6 +228,16 @@ fn render_scene_codec(enabled: bool, toggle: bool, objects: bool, codec: &'stati
                             }
                         }
                         frame.raw_bed_labels = vec!["LFE".into()];
+                    }
+                    if let Some((total,hot))=lanes {
+                        frame.channels=(0..total).map(|lane|(start..start+count).map(|i|if lane==hot {0.05*(i as f32*std::f32::consts::TAU*997.0/48000.0).sin()}else{0.0}).collect()).collect();
+                        frame.labels=(0..total).map(|i|format!("Obj_{}",1000+i)).collect();
+                        frame.object_channels=(0..total).map(|i|sda_core::ObjectChannelDecl{id:1000+i as u32,channel:i as u32}).collect();
+                        frame.raw_bed_labels.clear();frame.events.clear();
+                        if start==0 { for lane in 0..total {frame.events.push(sda_core::ObjectEvent {
+                            id:1000+lane as u32,sample_pos:0,has_pos:true,pos:[0.0,1.0,0.0],gain_db:0.0,size:[0.0;3],diffuse:0.0,
+                            anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:1,
+                        });} }
                     }
                     if objects || codec!="av3a" {
                         frame.reference_loudness=Some(scene_meter.measure(&frame));
@@ -452,4 +465,21 @@ fn ac4_decoder_volume_spatial_four_state_matrix() {
   assert_eq!(status.renderer_program_enabled,volume);assert_eq!(status.spatial_enhancement_enabled,spatial);
   eprintln!("AC4 actual decoder matrix volume={volume} spatial={spatial} frames={count}");
  }}
+}
+
+#[test]
+fn all_object_codecs_128th_lane_reaches_actual_stereo_fifo() {
+    for codec in ["ac4","eac3","mpegh","av3a"] {
+        for spatial in [false,true] {
+            let (first,_)=render_source_scene(false,false,true,codec,spatial,Some((128,0)));
+            let (last,_)=render_source_scene(false,false,true,codec,spatial,Some((128,127)));
+            assert_eq!(first.len(),48000*2);assert_eq!(last.len(),first.len());
+            assert!(last.iter().all(|v|v.is_finite()));
+            let energy=|pcm:&[f32]|pcm.iter().map(|v|f64::from(*v).powi(2)).sum::<f64>();
+            let baseline=energy(&first);let terminal=energy(&last);
+            assert!(baseline>0.01&&terminal>0.01,"{codec}: terminal source was silent");
+            let delta=10.0*(terminal/baseline).log10();
+            assert!(delta.abs()<0.01,"{codec}: source 127 was changed/lost: {delta} dB");
+        }
+    }
 }

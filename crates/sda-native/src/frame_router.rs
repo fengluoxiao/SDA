@@ -20,6 +20,7 @@ fn same_target(a: &ObjectEvent, b: &ObjectEvent) -> bool {
 
 impl FrameRouter {
     pub fn route(&mut self,frame:FrameData)->EngineResult<Vec<RenderCommand>> {
+        frame.validate_source_count()?;
         let frames=self.presentations.push(frame)?;self.route_ready(frames)
     }
     pub fn finish(&mut self)->EngineResult<Vec<RenderCommand>> {
@@ -128,6 +129,25 @@ mod tests {
         narrowed = e;
         narrowed.diffuse = 0.0;
         assert_ne!(events[0], native_object_event(&narrowed).unwrap());
+    }
+
+    #[test]
+    fn all_object_codecs_keep_128_source_lanes_and_reject_129() {
+        for codec in ["ac4","eac3","mpegh","av3a"] {
+            let labels=(0..128).map(|i|format!("Obj_{}",1000+i)).collect::<Vec<_>>();
+            let refs=labels.iter().map(String::as_str).collect::<Vec<_>>();
+            let mapping=(0..128).map(|i|(1000+i,i)).collect::<Vec<_>>();
+            let mut f=frame(0,&refs,&mapping);f.codec=codec;
+            let mut router=FrameRouter::default();let commands=router.route(f).unwrap();
+            let RenderCommand::PcmFrame {entries,..}=commands.last().unwrap() else {panic!()};
+            assert_eq!(entries.len(),128);
+            for (lane,(id,pcm)) in entries.iter().enumerate() {
+                assert_eq!(id,&format!("obj:{}",1000+lane));assert_eq!(pcm,&vec![lane as f32+1.0;16]);
+            }
+            let mut too_many=frame(16,&refs,&mapping);too_many.codec=codec;
+            too_many.channels.push(vec![999.0;16]);too_many.labels.push("Obj_9999".into());
+            assert!(router.route(too_many).err().expect("129 source lanes must be rejected").to_string().contains("128"));
+        }
     }
 
     fn frame(at: u64, labels: &[&str], mapping: &[(u32, u32)]) -> FrameData {

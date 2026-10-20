@@ -861,7 +861,7 @@ pub unsafe extern "C" fn sda_ios_sources_feed(p: *mut std::ffi::c_void, bytes: *
         if finish { host.decoder.flush()?; host.finished = true; }
         else { host.decoder.push(if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes, len) } })?; }
         while let Some(frame) = host.decoder.next_frame() {
-            if frame.sample_rate != 48000 || frame.channels.is_empty() || frame.channels.len() > 64 {
+            if frame.sample_rate != 48000 || frame.channels.is_empty() || frame.channels.len() > sda_core::MAX_DECODED_SOURCE_CHANNELS {
                 return Err("invalid source format".into());
             }
             let n = frame.channels[0].len();

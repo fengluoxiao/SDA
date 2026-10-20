@@ -30,8 +30,11 @@ and HRTF configuration. It does not require Dolby Access.
 IMS investigation and the requested mutually exclusive rendering paths are
 tracked in [ac4-ims.md](ac4-ims.md). IMS spatial playback is not yet implemented.
 
-SDA vendors the small scene adapter with an opt-in opaque one-byte presentation
-tail policy; the bitstream and DSP crates remain pinned Git dependencies.
+SDA vendors the scene adapter with an opt-in opaque one-byte presentation
+tail policy and the DSP crate at the same upstream revision. The DSP fork raises
+the reconstructed-source storage bound from 20 to 128; see
+`vendor/macindecode-ac4-decode/SDA-PATCHES.md`. The bitstream crate remains a
+pinned Git dependency.
 See `vendor/macindecode-ac4-scene/SDA-PATCH.md`. The complete original metadata
 payload is retained, strict syntax must succeed before the tail, and audio
 substream/CRC validation stays strict. This is a playback compatibility policy,
@@ -93,3 +96,7 @@ object-rendering parity still require rebuilt native apps and device tests.
 ## Programme volume balance
 
 Full A-JOC scenes publish the shared decoder-owned `reference_loudness` capability through `scene_reference::SceneMeter`, also used by Audio Vivid object scenes. Measurement occurs during ordinary decoding, independently of HRTF, head pose, spatial enhancement and manual volume. The existing attenuation-only programme controller handles its startup, live switch and source-clock gain events. Source PCM and metadata are unchanged. This is a fixed project 7.1.4 reference policy, not a vendor loudness/DRC implementation or a claim of reference-renderer conformance. Unsupported AC-4 presentations remain unsupported; no core transport channels are relabelled as speakers or invented objects.
+
+## Source capacity
+
+The application source limit is 128 decoded bed/LFE/object lanes in total. AC-4 Full A-JOC, E-AC-3 JOC, MPEG-H/360RA and Audio Vivid use the same native frame routing bound. This is not a hardware-output count or a change to encoded syntax/profile limits. See `object-source-capacity-2026-10-20.md` for buffer, mapping and boundary validation.

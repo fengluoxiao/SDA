@@ -283,7 +283,7 @@ impl MobileEngine {
         let gated = self.hrtf_directions > 0;
         renderer.set_output_active(!gated);
         *self.startup.lock().expect("startup lock") = StartupGate { started: !gated, ..Default::default() };
-        let commands = Arc::new(render_command::RenderCommandQueue::new(256));
+        let commands = Arc::new(render_command::RenderCommandQueue::new(4 * sda_core::MAX_DECODED_SOURCE_CHANNELS + 16));
         let fifo = Arc::new(stereo_fifo::StereoFifo::new(
             sda_native_renderer::STEREO_FIFO_CAPACITY_FRAMES,
         ));

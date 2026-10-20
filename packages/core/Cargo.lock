@@ -167,7 +167,6 @@ source = "git+https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git?rev=a239653
 [[package]]
 name = "macindecode-ac4-decode"
 version = "0.1.0"
-source = "git+https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git?rev=a23965312a53d3cfb1a63cbae692a788efe46123#a23965312a53d3cfb1a63cbae692a788efe46123"
 dependencies = [
  "libm",
  "macindecode-ac4-bitstream",

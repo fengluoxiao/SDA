@@ -290,7 +290,7 @@ fn scene_frame(
     if length == 0
         || timeline.sample_rate() == 0
         || channels.is_empty()
-        || channels.len() > 128
+        || channels.len() > crate::MAX_DECODED_SOURCE_CHANNELS
         || channels.iter().any(|channel| {
             channel.len() != length || channel.iter().any(|sample| !sample.is_finite())
         })

@@ -1,0 +1,47 @@
+[package]
+name = "macindecode-ac4-decode"
+description = "no_std AC-4 audio reconstruction: ASF, A-SPX, A-JOC, QMF and the Full engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core"
+documentation = "https://docs.rs/macindecode-ac4-decode"
+readme = "README.md"
+keywords = ["ac-4", "audio", "decoder", "dsp", "no-std"]
+categories = ["multimedia::audio", "no-std"]
+include = ["src/**", "build.rs", "build_support/**", "README.md", "LICENSE"]
+
+[features]
+default = []
+# 从用户本地的官方 ETSI PDF 生成并消费静态表。表值不随仓库或 crate 分发；
+# 运行 `scripts/fetch_specs.py` 与 `scripts/generate_spec_tables.py` 后启用。
+spec-tables = []
+# 音频解码路径：Huffman 码本、QMF 原型窗，以及依赖它们的 ASF/A-SPX/A-JOC 处理。
+#
+# 默认关闭的原因不是这些代码可选，而是它们需要规范随附的 C 表——那些文件受
+# 版权保护，不随仓库或 crate 包分发。仓库构建先运行 `scripts/fetch_specs.py`；
+# 注册表构建通过 `MACINDECODE_AC4_SPEC_DIR` 指向已准备好的表目录。
+#
+# 关闭时 `macindecode-ac4-bitstream` 仍可完整解析容器、TOC、OAMD 与 metadata。
+audio-decode = ["spec-tables"]
+# 仅供内部 macOS `sample` 归因：阻止 QMF 合成三个阶段互相内联，以保留独立符号。
+# 不应与正式 timing/allocation 数据混用。
+qmf-split-profile = ["audio-decode"]
+# 仅供内部 macOS `sample` 归因：阻止 A-JOC 重建阶段互相内联，以保留独立符号。
+# 不应与正式 timing/allocation 数据混用。
+ajoc-reconstruction-split-profile = ["audio-decode"]
+
+[dependencies]
+macindecode-ac4-bitstream = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123" }
+
+[build-dependencies]
+libm = { version = "=0.2.16", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
