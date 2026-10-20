@@ -386,7 +386,7 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
             {divider()}
-            {toggle("空间平衡", "按空间位置调整辅助层（最多 +1.5 dB），并做轻微高频补偿，仅对 SDA 共享渲染生效", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
+            {toggle("空间平衡", "按位置平滑调整辅助声部，保留前方基准电平；可单独开启或配合音量平衡", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>
           {heading("360RA／Audio Vivid")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "360RA / Audio Vivid：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
