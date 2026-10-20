@@ -1,7 +1,7 @@
 //! Linked, format-independent final-output attenuation. Applied after programme,
 //! manual and spatial gains, before the existing true-peak guard. Source-group
 //! control, not this common gain, is responsible for foreground/auxiliary balance.
-//! -20 LUFS detector target provides engineering margin for the app's requested
+//! -19.2 LUFS detector target provides engineering margin for the app's requested
 //! <= -18 LUFS integrated output ceiling; whole-track output is verified separately.
 //! This is an application policy, not a Dolby loudness-reference renderer.
 //! Uses the audition's 3s/400ms detector and 80ms/3s smoothing policy. The
@@ -39,7 +39,7 @@ pub(super) struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            target_lufs: -20.,
+            target_lufs: -19.2,
             momentary_margin_db: 4.,
             attack_seconds: 0.08,
             release_seconds: 3.,
@@ -98,8 +98,6 @@ pub(super) struct FinalMixAttenuator {
     enabled: bool,
     requested_attenuation_db: f64,
     reference_gain: f64,
-    output_makeup_db: f64,
-    output_makeup_gain: f64,
     available_headroom_db: Option<f64>,
     filters: [[Filter; 2]; 2],
     offset: usize,
@@ -161,8 +159,6 @@ impl FinalMixAttenuator {
             enabled: true,
             requested_attenuation_db: 0.,
             reference_gain: 1.,
-            output_makeup_db: 0.,
-            output_makeup_gain: 1.,
             available_headroom_db: None,
             filters: [[shelf, high]; 2],
             offset: 0,
@@ -207,8 +203,6 @@ impl FinalMixAttenuator {
         self.maximum_attenuation_db = 0.;
         self.requested_attenuation_db = 0.;
         self.reference_gain = 1.;
-        self.output_makeup_db = 0.;
-        self.output_makeup_gain = 1.;
         self.available_headroom_db = None;
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool) {
@@ -275,9 +269,8 @@ impl FinalMixAttenuator {
         let short = -0.691 + 10. * (short / sn as f64).max(1e-30).log10() + reference_db;
         let momentary = -0.691 + 10. * (momentary / mn as f64).max(1e-30).log10() + reference_db;
         let p = self.policy;
-        // A requested final makeup belongs after the nominal loudness target.
-        // Let the detector see it too, retaining at least 1 LU of margin to
-        // the app's -18 LUFS acceptance ceiling. Zero makeup keeps the old policy.
+        // Both spatial switch states share this output reference. Programme
+        // makeup is included in the measured signal, never in a separate target.
         let target_lufs = self.detector_target_lufs();
         // Preserve musical dynamics: long-term control follows the accumulated
         // gated programme rather than continually normalising every 3 seconds.
@@ -335,9 +328,7 @@ impl FinalMixAttenuator {
         self.process_scaled(frame, 1.)
     }
     pub fn detector_target_lufs(&self) -> f64 {
-        if self.output_makeup_db > 0. {
-            (self.policy.target_lufs + self.output_makeup_db).min(-19.0)
-        } else { self.policy.target_lufs }
+        self.policy.target_lufs
     }
     pub fn process_scaled(&mut self, frame: [f64; 2], reference_gain: f64) -> [f64; 2] {
         self.process_scaled_with_makeup(frame, reference_gain, 1.)
@@ -345,10 +336,6 @@ impl FinalMixAttenuator {
     pub fn process_scaled_with_makeup(&mut self, frame: [f64; 2], reference_gain: f64, makeup_gain: f64) -> [f64; 2] {
         const MAX_MAKEUP_GAIN: f64 = 1.1885022274370185; // +1.5 dB
         let makeup_gain = if makeup_gain.is_finite() { makeup_gain.clamp(1., MAX_MAKEUP_GAIN) } else { 1. };
-        if makeup_gain != self.output_makeup_gain {
-            self.output_makeup_gain = makeup_gain;
-            self.output_makeup_db = 20. * makeup_gain.log10();
-        }
         let reference_gain = reference_gain * makeup_gain;
         self.reference_gain = if reference_gain.is_finite() {
             reference_gain.max(0.)

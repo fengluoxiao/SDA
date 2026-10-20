@@ -131,8 +131,7 @@ fn loud_processed_output_uses_the_shared_guard_for_both_volume_states() {
             for _ in 0..48000 {
                 e.process_final_output([0.001, -0.0007]);
             }
-            assert!(!e.output_dynamics.enabled());
-            assert!(e.output_dynamics.gain_db().abs() < 1e-6);
+            assert!(e.output_dynamics.enabled(), "spatial-off must share the same final protection");
         }
     }
 }
@@ -261,9 +260,38 @@ fn atmos_makeup_remains_inside_the_existing_loudness_and_peak_guards() {
             // At 1 kHz the BS.1770 K weighting is approximately +0.7 dB.
             let lufs = -0.691 + 10. * (sum / 48000.).log10() + 0.7;
             assert!(lufs <= -18.0, "guard must include makeup: {lufs} LUFS");
-            assert!(lufs > -19.1, "final makeup must not be cancelled by the nominal -20 target: {lufs}");
-            assert!((e.output_dynamics.detector_target_lufs() + 19.0).abs() < 1e-6);
+            assert!(lufs > -19.5, "protected output unexpectedly below the common reference: {lufs}");
+            assert!((e.output_dynamics.detector_target_lufs() + 19.2).abs() < 1e-6);
             assert!(e.output_dynamics.maximum_attenuation_db > 1.5);
+        }
+    }
+}
+
+#[test]
+fn spatial_toggle_keeps_the_same_loudness_reference_and_envelope() {
+    let mut reference = Engine::new(48000,2);
+    let mut switched = Engine::new(48000,2);
+    for e in [&mut reference,&mut switched] {
+        e.set_spatial_enhancement(true).unwrap();
+        e.output_active=true;e.paused=false;
+    }
+    for i in 0..48000 * 4 {
+        let x=(i as f32 * 0.13).sin()*0.5;
+        let a=reference.process_final_output([x,-x*0.7]);
+        let b=switched.process_final_output([x,-x*0.7]);
+        assert_eq!(a,b);
+    }
+    assert!(reference.output_dynamics.gain_db() < -5.);
+    for enabled in [false,true,false] {
+        let before=switched.output_dynamics.gain_db();
+        switched.set_spatial_enhancement(enabled).unwrap();
+        assert_eq!(switched.output_dynamics.gain_db(),before,"spatial toggle restarted final control");
+        assert!(switched.output_dynamics.enabled());
+        for i in 0..48000 {
+            let x=(i as f32 * 0.13).sin()*0.5;
+            assert_eq!(reference.process_final_output([x,-x*0.7]),
+                switched.process_final_output([x,-x*0.7]),
+                "same final mix changed level merely because spatial control toggled");
         }
     }
 }

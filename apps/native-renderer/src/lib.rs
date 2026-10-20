@@ -1331,7 +1331,7 @@ impl Engine {
         self.binaural_enabled = enabled;
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled, true, self.block_offset);
-            self.output_dynamics.set_enabled(enabled && self.spatial_enhancement_enabled && !self.cinema.monitor.hardware.enabled, true);
+            self.output_dynamics.set_enabled(enabled && !self.cinema.monitor.hardware.enabled, true);
         }
         if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
     }
@@ -1859,7 +1859,7 @@ impl Engine {
         self.spatial_preamp.set(if enabled { spatial_layer::MAIN_GAIN_DB } else { 0.0 },
             self.output_sample_rate, !self.output_active)?;
         self.set_spatial_layer_gain_db(if enabled { spatial_layer::EXTRA_AUXILIARY_GAIN_DB } else { 0.0 })?;
-        self.output_dynamics.set_enabled(enabled && self.binaural_enabled && !self.cinema.monitor.hardware.enabled, !self.output_active || self.paused);
+        self.output_dynamics.set_enabled(self.binaural_enabled && !self.cinema.monitor.hardware.enabled, !self.output_active || self.paused);
         self.spatial_layer.geometry = if enabled {
             spatial_layer::Geometry::Front45
         } else {
@@ -1930,8 +1930,7 @@ impl Engine {
         // outside programme measurement and include it in the final guard policy.
         let gain = self.comparison_gain * self.program_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
-        let enabled = self.spatial_enhancement_enabled && self.binaural_enabled
-            && !self.cinema.monitor.hardware.enabled;
+        let enabled = self.binaural_enabled && !self.cinema.monitor.hardware.enabled;
         self.output_dynamics.set_enabled(enabled, false);
         let controlled = self.output_dynamics.process_scaled_with_makeup(mix.map(f64::from),
             f64::from(gain), f64::from(self.atmos_output_makeup.gain()));
