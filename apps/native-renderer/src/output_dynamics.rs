@@ -291,7 +291,12 @@ impl FinalMixAttenuator {
             && short.is_finite()
             && momentary.is_finite()
         {
-            Some((target_lufs - short).min(target_lufs + p.momentary_margin_db - momentary))
+            // The audio already carries the linked attenuation envelope.
+            // Testing the pre-attenuation mix here double-counts its excess
+            // and prevents quiet auxiliary content from using real headroom.
+            let applied_db = 20. * self.gain.min(1.).max(1e-30).log10();
+            Some((target_lufs - short - applied_db)
+                .min(target_lufs + p.momentary_margin_db - momentary - applied_db))
         } else {
             None
         };
@@ -518,5 +523,21 @@ mod mode_transition_tests {
         a.set_enabled(false, false);
         assert!((a.process([0.1, -0.07])[0] - 0.1 * gain).abs() < 1e-12);
         assert_eq!(a.available_headroom_db(), None);
+    }
+}
+
+#[cfg(test)]
+mod controlled_headroom_tests {
+    use super::*;
+    #[test]
+    fn measured_headroom_includes_the_already_applied_output_attenuation() {
+        let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        for i in 0..48000 * 5 {
+            let x = (i as f64 * std::f64::consts::TAU * 1000. / 48000.).sin() * 0.7;
+            n.process([x, -x * 0.7]);
+        }
+        assert!(n.gain_db() < -10.);
+        let room = n.available_headroom_db().unwrap();
+        assert!(room.abs() < 1., "controlled output near target must not report raw input excess: {room}");
     }
 }

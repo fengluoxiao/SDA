@@ -342,7 +342,19 @@ impl AuxiliaryBalance {
             // growth rate is slow relative to the detector. Missing confidence
             // withdraws enhancement instead of falling back to a positive gain.
             self.headroom.map_or(0., |h| {
-                self.goal_db.min((self.gain_db.max(0.) + h - 1.).max(0.))
+                // h is a whole-mix dB budget, not an auxiliary-source gain.
+                // Bound the incremental source lift using its current share
+                // of the summed amplitudes. This is more conservative than
+                // assuming uncorrelated powers and keeps a 0.2 dB mix reserve.
+                let front = self.energy[0].max(0.).sqrt();
+                let auxiliary = self.energy[1].max(0.).sqrt()
+                    * 10f64.powf(self.gain_db / 20.);
+                let share = auxiliary / (front + auxiliary).max(1e-30);
+                if share <= 1e-12 { return 0.; }
+                let mix_ratio = 10f64.powf((h - 0.2) / 20.);
+                let source_ratio = (1. + (mix_ratio - 1.) / share).max(1e-12);
+                let source_budget = 20. * source_ratio.log10();
+                self.goal_db.min((self.gain_db.max(0.) + source_budget).max(0.))
             })
         };
         for i in offset..DEFAULT_PARTITION {
@@ -726,5 +738,27 @@ mod requested_direction_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mix_budget_tests {
+    use super::*;
+    #[test]
+    fn subdecibel_mix_room_can_lift_a_measured_weak_auxiliary_group() {
+        let mut b = AuxiliaryBalance::new(48000);
+        b.set_enabled(true, true, 0);
+        b.set_output_headroom(Some(0.8));
+        for i in 0..48000 * 4 {
+            let mut r = Reference::default();
+            r.groups[0][0] = (i as f64 * 0.13).sin() * 0.1;
+            r.groups[1][0] = (i as f64 * 0.17).sin() * 0.01;
+            b.observe(r, 1.);
+            b.mark_applied(i % DEFAULT_PARTITION);
+            if (i + 1) % DEFAULT_PARTITION == 0 { b.finish_block(); }
+        }
+        let lift = 20. * f64::from(b.gains[0]).log10();
+        assert!(lift > 0.7 && lift <= 1.001, "valid sub-dB mix budget was discarded: {lift}");
+        assert_eq!(b.maximum_attenuation_db, 0.);
     }
 }
