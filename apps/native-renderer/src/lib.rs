@@ -81,6 +81,10 @@ pub mod focus;
 mod front_common;
 mod spatial_balance;
 mod master_preamp;
+mod output_dynamics;
+mod true_peak_guard;
+#[cfg(test)]
+mod production_output_tests;
 mod spatial_layer;
 pub mod hardware;
 #[allow(dead_code)]
@@ -1120,7 +1124,10 @@ pub struct Engine {
     program_gain_step: f32,
     program_gain_ramp_remaining: u32,
     program_events: BTreeMap<u64, ProgramGainEvent>,
-    peak_guard: dsp::StereoPeakGuard,
+    spatial_enhancement_enabled: bool,
+    output_dynamics_mix: f32,
+    output_dynamics: output_dynamics::FinalMixAttenuator,
+    peak_guard: true_peak_guard::TruePeakGuard,
     binaural_eq: StereoEq,
     output_clarity: [dsp::Biquad; 2],
     headphone: headphone::HeadphoneCompensation,
@@ -1259,7 +1266,10 @@ impl Engine {
             program_gain_step: 0.0,
             program_gain_ramp_remaining: 0,
             program_events: BTreeMap::new(),
-            peak_guard: dsp::StereoPeakGuard::new(sample_rate),
+            spatial_enhancement_enabled: false,
+            output_dynamics_mix: 0.0,
+            output_dynamics: output_dynamics::FinalMixAttenuator::new(sample_rate, Default::default()).expect("valid output sample rate"),
+            peak_guard: true_peak_guard::TruePeakGuard::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
             output_clarity: [dsp::Biquad::highshelf(sample_rate, 4000.0,
@@ -1291,6 +1301,9 @@ impl Engine {
     pub fn set_binaural_enabled(&mut self, enabled: bool) {
         if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
         self.binaural_enabled = enabled;
+        if !self.output_active || self.paused {
+            self.output_dynamics_mix = if enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
+        }
         if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
     }
 
@@ -1786,6 +1799,10 @@ impl Engine {
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
+        self.spatial_enhancement_enabled = enabled;
+        if !self.output_active || self.paused {
+            self.output_dynamics_mix = if enabled && self.binaural_enabled { 1.0 } else { 0.0 };
+        }
         self.set_master_preamp_db(0.0)?;
         self.spatial_preamp.set(if enabled { 2.0 } else { 0.0 },
             self.output_sample_rate, !self.output_active)?;
@@ -1849,6 +1866,25 @@ impl Engine {
         if self.program_gain_ramp_remaining == 0 {
             self.program_gain = self.program_target_gain;
         }
+    }
+
+    // A common final-mix node for every codec, object format and playback mode.
+    // Detector precedes manual/program volume so it cannot cancel their cuts.
+    fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
+        let attenuated = self.output_dynamics.process(mix.map(f64::from));
+        let target = if self.binaural_enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
+        if !self.output_active || self.paused { self.output_dynamics_mix = target; }
+        else { self.output_dynamics_mix += (target - self.output_dynamics_mix)
+            .clamp(-1.0 / (self.output_sample_rate as f32 * 0.05), 1.0 / (self.output_sample_rate as f32 * 0.05)); }
+        let blended = std::array::from_fn::<_, 2, _>(|ear| {
+            let original = f64::from(mix[ear]);
+            original + (attenuated[ear] - original) * f64::from(self.output_dynamics_mix)
+        });
+        let gain = self.output_gain * self.comparison_gain * self.program_gain
+            * self.cinema.monitor.master_gain() * self.master_preamp.gain();
+        self.peak_guard.process((blended[0] * f64::from(gain)) as f32,
+            (blended[1] * f64::from(gain)) as f32)
+            .map(|v| v * self.final_output_trim.gain())
     }
 
     fn advance_output_envelopes(&mut self) {
@@ -1996,6 +2032,8 @@ impl Engine {
         self.program_gain_step = 0.0;
         self.program_gain_ramp_remaining = 0;
         self.program_events.clear();
+        self.output_dynamics.reset();
+        self.output_dynamics_mix = if self.binaural_enabled && self.spatial_enhancement_enabled { 1.0 } else { 0.0 };
         self.peak_guard.reset();
         self.headphone.reset();
         for filter in &mut self.output_clarity { filter.reset(); }
@@ -3183,17 +3221,7 @@ impl Engine {
             let equalized = if self.binaural_mix == 0.0 { plain } else if self.binaural_mix == 1.0 { equalized } else {
                 std::array::from_fn(|ear| equalized[ear] * self.binaural_mix + plain[ear] * (1.0 - self.binaural_mix))
             };
-            let pre_guard = [
-                equalized[0] * self.output_gain * self.comparison_gain,
-                equalized[1] * self.output_gain * self.comparison_gain,
-            ];
-            // One linked master gain after the complete mix, before protection.
-            let master = self.master_preamp.gain();
-            let guarded = self.peak_guard.process(
-                pre_guard[0] * self.program_gain * self.cinema.monitor.master_gain() * master,
-                pre_guard[1] * self.program_gain * self.cinema.monitor.master_gain() * master,
-            );
-            let guarded = guarded.map(|v| v * self.final_output_trim.gain());
+            let guarded = self.process_final_output(equalized);
             if channels >= 2 {
                 frame[0] = guarded[0];
                 frame[1] = guarded[1];
@@ -5683,7 +5711,9 @@ mod tests {
     fn overhead_bed_output_matches_measured_direction_impulse() {
         let count = 12288;
         let impulse_at = 2048;
-        let latency = 2 * convolution::DEFAULT_PARTITION + 240;
+        let latency = 2 * convolution::DEFAULT_PARTITION
+            + output_dynamics::FinalMixAttenuator::new(48000, Default::default()).unwrap().latency_frames()
+            + true_peak_guard::TruePeakGuard::new(48000).latency_frames();
         for (layout, label, azimuth) in [
             (vbap::LayoutId::Dolby7_1_4, "TopFrontRight", -45.0),
             (vbap::LayoutId::Dolby7_1_4, "TopRearRight", -135.0),

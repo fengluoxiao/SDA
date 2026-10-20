@@ -246,6 +246,8 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         assert!(e.front_common.enabled && e.front_common.grouped);
         assert_eq!(e.front_common.presence_db(), 3.);
     }
+    let unity = std::env::var("SDA_APPROVED_SCENE_UNITY_OUTPUT").as_deref() == Ok("1");
+    if unity { e.set_master_preamp_db(0.).unwrap(); e.set_output_volume(1., true); }
     e.set_program_codec(codec.clone());
     e.set_direct_objects(true).unwrap();
     e.set_directional_hrtf(true);
@@ -361,6 +363,6 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         count += 1;
     }
     output.flush().unwrap();
-    assert_eq!(guard, 1.);
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
+    if !unity { assert_eq!(guard, 1., "diagnostic headroom must keep peak protection inactive"); }
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":e.spatial_enhancement_enabled&&e.binaural_enabled,"outputDynamicsMix":e.output_dynamics_mix,"dynamicsTargetLufs":-20,"maximumDynamicsAttenuationDb":e.output_dynamics.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }

@@ -244,6 +244,8 @@ impl MonoCompressor {
     }
 }
 
+/// Historical sample-only guard retained for archived diagnostic references.
+/// Production final output uses `true_peak_guard::TruePeakGuard`.
 /// Linked 5 ms sample-peak guard. Both ears share one envelope so limiting
 /// cannot move a binaural image. Its short recovery avoids one sparse-object
 /// transient audibly suppressing the following object-update interval.
