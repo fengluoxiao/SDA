@@ -63,7 +63,7 @@ jobs:
           set -o pipefail
           xcrun swiftc -frontend -parse apps/mobile/modules/sda-core/ios/SdaModule.swift apps/mobile/modules/sda-core/ios/SdaGlassModule.swift
           xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" apps/mobile/modules/sda-core/ios/GlassControls.swift
-          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift apps/mobile/modules/sda-core/ios/PlaybackLifecycle.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/SystemAudioBufferPolicy.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.0-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift apps/mobile/modules/sda-core/ios/PlaybackLifecycle.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/SystemAudioBufferPolicy.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift 2>&1 | tee ios-artifacts/swift-typecheck.log
       - name: Verify artwork color is available with metadata
         if: steps.sdk.outputs.available == 'true'
         run: |
@@ -76,15 +76,16 @@ jobs:
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcrun swiftc -swift-version 5 scripts/ios-reader-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/reader-probe
-          ios-artifacts/reader-probe crates/sda-native/tests/fixtures/ios-stereo-tones.m4a crates/sda-native/tests/fixtures/ios-stereo-tones.eac3 2>&1 | tee ios-artifacts/reader-probe.log
-          xcrun swiftc -swift-version 5 scripts/ios-av3a-route-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/av3a-route-probe
+          xcrun swiftc -swift-version 5 scripts/ios-reader-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift -o ios-artifacts/reader-probe
+          python3 scripts/make-ios-cursor-fixtures.py crates/sda-native/tests/fixtures/ios-stereo-tones.m4a ios-build/cursor-fixtures
+          ios-artifacts/reader-probe crates/sda-native/tests/fixtures/ios-stereo-tones.m4a crates/sda-native/tests/fixtures/ios-stereo-tones.eac3 ios-build/cursor-fixtures 2>&1 | tee ios-artifacts/reader-probe.log
+          xcrun swiftc -swift-version 5 scripts/ios-av3a-route-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift -o ios-artifacts/av3a-route-probe
           ios-artifacts/av3a-route-probe packages/core/tests/fixtures/av3a-7-1-4-three-frames.av3a 2>&1 | tee ios-artifacts/av3a-route-probe.log
       - name: Verify stereo ALAC decoding and recovery
         if: steps.sdk.outputs.available == 'true'
         run: |
           set -o pipefail
-          xcrun swiftc -swift-version 5 scripts/ios-alac-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift -o ios-artifacts/alac-probe
+          xcrun swiftc -swift-version 5 scripts/ios-alac-probe.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift -o ios-artifacts/alac-probe
           ios-artifacts/alac-probe 2>&1 | tee ios-artifacts/alac-probe.log
       - uses: actions/setup-node@v4
         if: steps.sdk.outputs.available == 'true'
@@ -148,6 +149,7 @@ jobs:
           node scripts/test-ios-tracking-session.mjs
           node scripts/test-ios-shared-resolver.mjs
           node scripts/test-ios-diagnostics.mjs
+          node scripts/test-ios-reader-recovery.mjs
       - name: Verify MHAS stack budget with Apple device compiler
         if: steps.sdk.outputs.available == 'true'
         run: python3 scripts/check-mpegh-ios-stack.py ios-artifacts
@@ -251,6 +253,7 @@ jobs:
           xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
+          python3 scripts/strip-ios-ci-resources.py ios-build/package/Payload/SDA.app | tee ios-artifacts/production-resource-audit.json
           ditto -c -k --keepParent ios-build/SDA.xcarchive/dSYMs ios-artifacts/SDA-device-dSYMs.zip
           xcrun dwarfdump --uuid ios-build/SDA.xcarchive/Products/Applications/SDA.app/SDA > ios-artifacts/device-uuid.txt
           cd ios-build/package

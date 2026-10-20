@@ -29,3 +29,13 @@ Background audio may keep the app executing; iOS suspension stops the server
 from responding. No silent audio, PiP, location or background assertion is added
 to keep this server alive. Real foreground, background-playback and locked-screen
 HTTP tests remain necessary. Source-contract CI is not a socket integration test.
+
+The snapshot also includes allowlisted `errorDetails` categories/domain codes and
+`input` reader counters. Raw exception descriptions, media titles, URLs and paths
+remain local. Successful EC-3 cursor recovery records `compressedReaderRecovered`,
+the verified-prefix byte count and indexed-reader position; it never starts a test
+track, adds keepalive audio, or changes the decoder/render session.
+
+CI smoke methods are compiled only for the simulator. The device IPA packaging
+step removes `ci-stereo-tones.m4a` and `ci-360ra.mhas`; installed physical-device
+apps cannot enter the simulator smoke path through environment variables.

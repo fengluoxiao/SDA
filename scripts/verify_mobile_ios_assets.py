@@ -2,12 +2,18 @@
 import hashlib
 import json
 import math
+import plistlib
 import struct
 from pathlib import Path
 
 
 def verify_mobile_ios_assets(app):
     bundle = Path(app) / 'SdaCoreAssets.bundle'
+    info_path=Path(app)/'Info.plist'
+    if info_path.exists() and plistlib.loads(info_path.read_bytes()).get('CFBundleSupportedPlatforms') == ['iPhoneOS']:
+        if any((bundle/name).exists() for name in ['ci-stereo-tones.m4a','ci-360ra.mhas']):
+            raise RuntimeError('Simulator test audio must not ship in a physical-device IPA')
+
     presets = json.loads((bundle / 'rendering-presets.json').read_text(encoding='utf-8'))
     direct_trial = len(presets) == 1 and presets[0].get('iosDirectReflectionTrial') is True
     marker = bundle / 'ios-experiment.json'

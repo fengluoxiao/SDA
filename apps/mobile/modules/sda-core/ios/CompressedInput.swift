@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import AudioToolbox
 import CoreMedia
+import CryptoKit
 
 /// Atmos stays compressed for SDA Rust. Only stereo ALAC is decoded to 48 kHz PCM.
 final class CompressedInput {
@@ -9,6 +10,16 @@ final class CompressedInput {
  private(set) var isAv3a = false
  private(set) var av3aSpeakerBed = false
  private var file: FileHandle?
+ private var indexed: IndexedCompressedInput?
+ private var submittedHash = SHA256()
+ private var submittedCompressedBytes: UInt64 = 0
+ private var firstCompressedPTS: CMTime?
+ private(set) var indexedRecoveryCount = 0
+ private var indexedRecoveryMillis: Double = 0
+ private var indexedRecoveryAttempted = false
+ private var indexedRecoveryFailure: String?
+ private var lastReaderErrorCode: Int?
+ private var selectedTrackID: CMPersistentTrackID?
  private var reader: AVAssetReader?
  private var trackOutput: AVAssetReaderTrackOutput?
  private var nextTime = CMTime.zero
@@ -72,17 +83,20 @@ final class CompressedInput {
  #endif
  // Resume the compressed reader only; the Rust decoder and playback clock stay intact.
  func reopenAfterInterruption(forceSequential: Bool = false) throws {
+  if indexed != nil { return }
   if forceSequential { sequentialRecovery = true }
   guard resumeTimeValid else { throw SdaError.message("音轨缺少恢复时间戳，不能安全重读") }
   reader?.cancelReading()
    let asset = AVURLAsset(url: url)
    guard !asset.hasProtectedContent else { throw SdaError.message("不支持 DRM 加密音轨") }
    guard let track = asset.tracks(withMediaType: .audio).first(where: { track in
-    track.formatDescriptions.contains { description in
+    if let selectedTrackID, track.trackID != selectedTrackID { return false }
+    return track.formatDescriptions.contains { description in
      let format = description as! CMFormatDescription
      return [kAudioFormatEnhancedAC3, kAudioFormatAppleLossless].contains(CMFormatDescriptionGetMediaSubType(format))
     }
    }) else { throw SdaError.message("文件中没有未加密的 ALAC 或 E-AC-3/Atmos 音轨") }
+   selectedTrackID=track.trackID
    guard let description = track.formatDescriptions.first else { throw SdaError.message("音轨格式缺失") }
    let sourceFormat = description as! CMAudioFormatDescription
    isAlac = CMFormatDescriptionGetMediaSubType(sourceFormat) == kAudioFormatAppleLossless
@@ -119,12 +133,45 @@ final class CompressedInput {
  static func requiresSequentialRecovery(_ error: NSError) -> Bool {
   error.domain == AVFoundationErrorDomain && error.code == -11880
  }
+ var diagnosticState: [String:Any] {
+  var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis]
+  if let id=selectedTrackID { value["trackId"]=id }
+  if let code=lastReaderErrorCode { value["lastReaderErrorCode"]=code }
+  if let reason=indexedRecoveryFailure { value["indexedRecoveryFailure"]=reason }
+  if let indexed { value["indexedSamples"]=indexed.sampleCount;value["indexedSamplePosition"]=indexed.samplePosition;value["verifiedPrefixBytes"]=indexed.verifiedPrefixBytes;value["recoveryStartSample"]=indexed.recoveryStartSample }
+  return value
+ }
+ func recoverInvalidSampleCursor() throws -> Bool {
+  let recoveryStarted=Date()
+  guard !isAlac, indexed == nil, !indexedRecoveryAttempted, submittedCompressedBytes > 0, let firstCompressedPTS, firstCompressedPTS.isNumeric, let selectedTrackID, selectedTrackID > 0 else { return false }
+  indexedRecoveryAttempted=true
+  guard let replacement=try IndexedCompressedInput.open(url,trackID:selectedTrackID) else { indexedRecoveryFailure="unsupported-container";return false }
+  var expected=submittedHash
+  try replacement.verifyContinuation(firstPTS:firstCompressedPTS,lastEnd:resumeTimeValid && nextTime.isNumeric ? nextTime : nil,submittedBytes:submittedCompressedBytes,digest:Data(expected.finalize()))
+  reader?.cancelReading();reader=nil;trackOutput=nil;indexed=replacement;indexedRecoveryCount += 1
+  indexedRecoveryMillis=Date().timeIntervalSince(recoveryStarted)*1000
+  return true
+ }
  func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
+  if let indexed {
+   let data=try indexed.next(chunkBytes:chunkBytes)
+   if let data { submittedHash.update(data:data);submittedCompressedBytes += UInt64(data.count) }
+   return data
+  }
   if let f = file { let d = try f.read(upToCount: chunkBytes); return d?.isEmpty == false ? d : nil }
   guard let output = trackOutput, let r = reader else { return nil }
   while true {
   guard let sample = output.copyNextSampleBuffer() else {
    if r.status == .failed {
+    if let error=r.error as NSError? {
+     lastReaderErrorCode=error.code
+     if Self.requiresSequentialRecovery(error), !isAlac {
+      var recovered=false
+      do { recovered=try recoverInvalidSampleCursor() }
+      catch { indexedRecoveryFailure="prefix-or-index-unverified" }
+      if recovered { return try next(chunkBytes:chunkBytes) }
+     }
+    }
     if let error = r.error as NSError?, error.domain == AVFoundationErrorDomain,
        Self.isRecoverableReaderError(error), resumeTimeValid, retries < 3 {
      retries += 1
@@ -174,6 +221,10 @@ final class CompressedInput {
   resumedRange = false
   resumeTimeValid = pts.isNumeric && duration.isNumeric && CMTimeCompare(duration,.zero) > 0
   if resumeTimeValid { nextTime = CMTimeAdd(pts,duration) }
+  if !isAlac {
+   if firstCompressedPTS == nil { firstCompressedPTS=pts }
+   submittedHash.update(data:data);submittedCompressedBytes += UInt64(data.count)
+  }
   retries = 0
   return data
   }

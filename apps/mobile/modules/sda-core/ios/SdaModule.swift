@@ -8,6 +8,7 @@ public final class SdaModule: Module {
  public func definition() -> ModuleDefinition {
   let player = self.player
   Name("SdaEngine")
+  #if targetEnvironment(simulator)
   Function("sceneSmokeEnabled") { ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" }
   Function("reportSceneSmoke") { (text: String) in
    guard ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" else { return }
@@ -15,15 +16,21 @@ public final class SdaModule: Module {
    let directory = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
    try data.write(to:directory.appendingPathComponent("sda-ci-scene.json"),options:.atomic)
   }
+  #else
+  Function("sceneSmokeEnabled") { false }
+  Function("reportSceneSmoke") { (_: String) in }
+  #endif
   OnCreate {
    player.configureDiagnostics(false)
    player.installSystemControls()
    player.locked { player.startHeadTracking() }
+   #if targetEnvironment(simulator)
    if let mode = ProcessInfo.processInfo.environment["SDA_IOS_BACKGROUND_SMOKE"] {
     DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCIBackgroundSmoke(mode) }
    } else if ProcessInfo.processInfo.environment["SDA_IOS_SMOKE"] == "1" {
     DispatchQueue.global(qos:.userInitiated).async { [weak player] in player?.runCISmoke() }
    }
+   #endif
   }
   OnDestroy { player.locked { player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }

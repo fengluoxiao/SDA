@@ -46,6 +46,8 @@ final class SdaPlayer {
  var isPaused = false
  var done = false
  var failure: String?
+ var failureDiagnostic: [String:Any] = [:]
+ var compressedInputDiagnostic: [String:Any] = [:]
  var hrtfState = "空间渲染 · 等待播放加载"
  var layout = "7.1.4"
  var imports: [String: (URL, URL)] = [:]
@@ -448,7 +450,7 @@ final class SdaPlayer {
  }
  func play(_ uri: String, _ name: String, _ yaw: Double, _ hash: String) throws -> String {
   try locked {
-   stopNative(keepMotion:!inBackground && prefs.bool(forKey:"sda.headTracking")); failure = nil
+   stopNative(keepMotion:!inBackground && prefs.bool(forKey:"sda.headTracking")); failure = nil; failureDiagnostic=[:]; compressedInputDiagnostic=[:]
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    _ = settings() // Apply shared-renderer migration before selecting an output route.
    let ext = (name as NSString).pathExtension.lowercased()
@@ -571,9 +573,12 @@ final class SdaPlayer {
     if systemMode && locked({systemSpatial?.preparingAudio == true}) {
      if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return false }; lastProgress = Date()
     }
+    let previousRecoveries=input.indexedRecoveryCount
     let data = mp3 ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
     try locked {
      guard generation == token, hasPlayback else { return }
+     compressedInputDiagnostic=input.diagnosticState
+     if input.indexedRecoveryCount > previousRecoveries { lastProgress=Date(); recordPlaybackEvent("compressedReaderRecovered",detail:"verified-indexed-mp4") }
      var eof = false
      if mp3 { let result = try command("pullMp3") as! [String:Any]; eof = result["eof"] as? Bool == true }
      else if let data, let system = systemSpatial { try system.feed(data,finish:false,decodeReply:decodeReply) }
@@ -595,7 +600,7 @@ final class SdaPlayer {
     }
     if !keepFeeding { return }
    }
-  } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
+  } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  // Called only by the serialized native feeder under the player lock, before
  // stopping the old consumer. No React timer/import/bridge round trip at EOF.
@@ -634,6 +639,7 @@ final class SdaPlayer {
  }
 
  /// Only enabled by the explicit simulator CI environment; never on ordinary launch.
+ #if targetEnvironment(simulator)
  func runCISmoke() {
   var report: [String: Any] = ["ok": false]
   let savedBalance = prefs.bool(forKey:"sda.balance")
@@ -688,6 +694,11 @@ final class SdaPlayer {
    }
    if report["ok"] as? Bool != true { throw SdaError.message("模拟器音频冒烟测试超时") }
    report["compressedReaderRecovery"] = try smokeReaderRecovery()
+   let privateError=NSError(domain:AVFoundationErrorDomain,code:-11880,userInfo:[NSLocalizedDescriptionKey:"/private/test-user/song-secret.m4a",NSUnderlyingErrorKey:NSError(domain:NSOSStatusErrorDomain,code:-12551)])
+   let safe=Self.safePlaybackFailure(privateError);let safeJSON=try json(safe)
+   guard safe["category"] as? String == "invalid-sample-cursor", !safeJSON.contains("song-secret"), !safeJSON.contains("/private/") else { throw SdaError.message("远程诊断暴露私有路径或缺少错误分类") }
+   report["diagnosticErrorPrivacyVerified"]=true
+
    report["native360RA"] = try smokeNative360()
    prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
@@ -718,7 +729,14 @@ final class SdaPlayer {
   try resumed.reopenAfterInterruption()
   while let packet = try resumed.next() { actual.append(packet) }
   guard actual == expected, !actual.isEmpty else { throw SdaError.message("压缩音轨恢复丢包或重复") }
-  return ["ok":true,"bytes":actual.count,"byteIdentical":true]
+  let indexed=try CompressedInput(url:url,name:"ci-stereo-tones.m4a")
+  var recovered=Data()
+  for _ in 0..<3 { if let packet=try indexed.next() { recovered.append(packet) } }
+  guard try indexed.recoverInvalidSampleCursor() else { throw SdaError.message("索引恢复不可用") }
+  while let packet=try indexed.next() { recovered.append(packet) }
+  guard recovered == expected else { throw SdaError.message("索引恢复丢包或重复") }
+  return ["ok":true,"bytes":actual.count,"byteIdentical":true,"indexedByteIdentical":true]
+
  }
 
  // Use the real default KU100 route and sda.ios.decode dispatch queue.
@@ -917,4 +935,5 @@ final class SdaPlayer {
   }
   throw SdaError.message("360RA 系统空间音频冒烟测试超时")
  }
+ #endif
 }

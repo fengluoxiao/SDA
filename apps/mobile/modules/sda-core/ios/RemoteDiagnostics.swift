@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import AVFoundation
 
 // Opt-in read-only server; never uploads or accepts playback commands.
 final class RemoteDiagnostics {
@@ -88,8 +89,28 @@ extension SdaPlayer {
      "tracking":self.headTrackingDetail,"motion":self.diagnosticMotion,
      "backgroundTrackingEnabled":self.prefs.bool(forKey:"sda.headTracking"),
      "error":self.failure == nil ? "" : "playback-error",
+     "errorDetails":self.failureDiagnostic,"input":self.compressedInputDiagnostic,
      "events":self.playbackEvents.suffix(16).map { ["time":$0["time"] ?? 0,"event":$0["event"] ?? "","generation":$0["generation"] ?? 0] }]
    }
   }
+ }
+}
+
+// Expose stable categories and numeric codes, never error descriptions or URLs.
+extension SdaPlayer {
+ static func safePlaybackFailure(_ error: Error) -> [String:Any] {
+  var errors=[NSError]();var current:NSError?=error as NSError
+  for _ in 0..<4 { guard let value=current else { break };errors.append(value);current=value.userInfo[NSUnderlyingErrorKey] as? NSError }
+  let text=String(describing:error);var category="playback-feed"
+  if errors.contains(where: { $0.domain == AVFoundationErrorDomain && $0.code == -11880 }) { category="invalid-sample-cursor" }
+  else if errors.contains(where: { $0.domain == AVFoundationErrorDomain && $0.code == -11847 }) { category="asset-reader-interrupted" }
+  else if text.contains("停止消耗数据") { category="audio-output-no-progress" }
+  else if text.contains("PCM frame acknowledgement timed out") { category="native-pcm-ack-timeout" }
+  else if text.contains("command queue full") { category="native-command-queue-full" }
+  else if text.contains("object metadata timeline full") { category="native-object-timeline-full" }
+  else if text.contains("MP4 压缩包索引无效") { category="container-continuation-unverified" }
+  let allowed=[AVFoundationErrorDomain,NSOSStatusErrorDomain,NSCocoaErrorDomain,NSPOSIXErrorDomain]
+  let codes=errors.map { value in ["domain":allowed.contains(value.domain) ? value.domain : "app","code":value.code] as [String:Any] }
+  return ["category":category,"errors":codes,"time":Date().timeIntervalSince1970]
  }
 }

@@ -21,3 +21,9 @@ assert.doesNotMatch(settings, /Alert.prompt|访问令牌|接收地址|values.lan
 assert.match(read('apps/mobile/modules/sda-core/ios/SdaModule.swift'), /player.configureDiagnostics\(false\)/);
 assert.ok(!JSON.parse(read('apps/mobile/app.json')).expo.ios.infoPlist.NSAppTransportSecurity);
 console.log('Native read-only diagnostics server source contracts passed; iPhone HTTP reachability requires device testing.');
+
+for (const key of ['errorDetails','input','category','errors']) assert.ok(source.includes(`"${key}"`), key);
+assert.ok(source.includes('safePlaybackFailure'));
+assert.ok(source.includes('invalid-sample-cursor'));
+assert.ok(source.includes('allowed.contains(value.domain)'));
+assert.ok(!source.includes('"error":self.failure ??'));
