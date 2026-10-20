@@ -5,6 +5,9 @@ fn render(enabled: bool, toggle: bool) -> (Vec<f32>, f64) {
     render_kind(enabled, toggle, false)
 }
 fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
+    render_scene_codec(enabled,toggle,objects,"av3a",true)
+}
+fn render_scene_codec(enabled: bool, toggle: bool, objects: bool, codec: &'static str, spatial:bool) -> (Vec<f32>,f64) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let active: Value = serde_json::from_slice(
         &std::fs::read(root.join("apps/mobile/ios-experiments/active.json")).unwrap(),
@@ -28,6 +31,7 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
     }
     let _close = Close(h);
     let host = unsafe { &*h.cast::<Host>() };
+    host.engine.lock().unwrap().set_spatial_enhancement(spatial).unwrap();
     // Keep the gain-ratio probe below the linked guard with the accepted B lift.
     // Listener volume is shared by both runs and is not part of the loudness meter.
     host.engine.lock().unwrap().set_volume(0.5).unwrap();
@@ -120,6 +124,7 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
         };
         let gain = {
             let mut reference_meter = balance::LoudnessMeter::speakers_7_1_4();
+            let mut scene_meter=sda_core::scene_reference::SceneMeter::new();
             if let Some(path) = private.clone().or_else(|| {
                 (!toggle)
                     .then(|| std::env::var("SDA_AV3A_BALANCE_BITSTREAM").ok())
@@ -146,7 +151,7 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
                                     pcm.as_ref().map_or_else(
                                         || {
                                             if ch == 3 {
-                                                0.0
+                                                if codec=="ac4" {0.08*(i as f32*std::f32::consts::TAU*80./48000.).sin()} else {0.0}
                                             } else {
                                                 0.12 * (i as f32 * (0.04 + ch as f32 * 0.007)).sin()
                                             }
@@ -160,7 +165,7 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
                     let mut frame = sda_core::FrameData {
                         reference_loudness: None,
                         compatibility_bed: None,
-                        codec: "av3a".into(),
+                        codec,
                         sample_rate: 48000,
                         sample_pos: start as u64,
                         channels,
@@ -220,6 +225,9 @@ fn render_kind(enabled: bool, toggle: bool, objects: bool) -> (Vec<f32>, f64) {
                             }
                         }
                         frame.raw_bed_labels = vec!["LFE".into()];
+                    }
+                    if objects || codec!="av3a" {
+                        frame.reference_loudness=Some(scene_meter.measure(&frame));
                     }
                     let mut engine = host.engine.lock().unwrap();
                     let pending = engine.balance.measure(frame, None);
@@ -399,4 +407,49 @@ fn av3a_private_object_programme_balance_changes_real_stereo_output() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn shared_object_codecs_four_state_matrix() {
+    let energy=|pcm:&[f32]| pcm[12*48000*2..14*48000*2].iter()
+        .map(|v|f64::from(*v).powi(2)).sum::<f64>();
+    for (codec,objects) in [("av3a",false),("av3a",true),("ac4",true)] {
+        for spatial in [false,true] {
+            let (off,off_gain)=render_scene_codec(false,false,objects,codec,spatial);
+            let (on,gain)=render_scene_codec(true,false,objects,codec,spatial);
+            assert!(gain < -3.,"hot scene must actually request programme attenuation");
+            assert!((off_gain-gain).abs()<0.1);
+            let actual=10.*(energy(&on)/energy(&off)).log10();
+            eprintln!("four-state matrix codec={codec} objects={objects} spatial={spatial} target={gain:.3} output={actual:.3}");
+            assert!((actual-gain).abs()<0.15,"{codec}: programme attenuation doubled/cancelled: {actual} vs {gain}");
+        }
+    }
+}
+
+#[test]
+fn ac4_decoder_volume_spatial_four_state_matrix() {
+ let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+ let active:Value=serde_json::from_slice(&std::fs::read(root.join("apps/mobile/ios-experiments/active.json")).unwrap()).unwrap();
+ let asset=root.join(active["assetFamily"].as_str().unwrap()).join("hrtf-dense/hrtf-set.json");
+ let path=CString::new(asset.to_str().unwrap()).unwrap();
+ let config=CString::new(r#"{"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","directObjectHrtf":true,"directionalHrtf":true,"hrtfWetWeight":0.0}"#).unwrap();
+ let bytes=include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"),"/../../packages/core/tests/fixtures/ac4-minimal-full.ac4"));
+ for volume in [false,true] {for spatial in [false,true] {
+  let mut error=std::ptr::null_mut();let h=unsafe{sda_ios_create(config.as_ptr(),path.as_ptr(),&mut error)};assert!(!h.is_null());
+  struct Close(*mut std::ffi::c_void);impl Drop for Close {fn drop(&mut self){unsafe{sda_ios_close(self.0);}}}
+  let _close=Close(h);let host=unsafe{&*h.cast::<Host>()};
+  let expected={let mut e=host.engine.lock().unwrap();e.set_volume_balance(volume).unwrap();e.set_spatial_enhancement(spatial).unwrap();
+   for chunk in bytes.chunks(17) {let result=e.feed(chunk).unwrap();assert!(result.errors.is_empty(),"{:?}",result.errors);}
+   e.finish().unwrap();e.decoded_sample_pos()};
+  assert!(expected>0);let mut count=0;let deadline=Instant::now()+Duration::from_secs(20);
+  while count<expected {
+   let (mut l,mut r)=([0.;512],[0.;512]);let n=pull(&host.output,&mut l,&mut r);
+   assert!(l.iter().chain(&r).all(|v|v.is_finite()));count+=n as u64;
+   assert!(Instant::now()<deadline,"AC4 decoder matrix stalled");if n==0 {std::thread::sleep(Duration::from_millis(1));}
+  }
+  let status=host.engine.lock().unwrap().playback_status();
+  assert_eq!(status.volume_balance_enabled,volume);assert!(status.volume_balance_eligible);
+  assert_eq!(status.renderer_program_enabled,volume);assert_eq!(status.spatial_enhancement_enabled,spatial);
+  eprintln!("AC4 actual decoder matrix volume={volume} spatial={spatial} frames={count}");
+ }}
 }

@@ -80,3 +80,6 @@ co-located anti-phase objects, authored gain applied once, LFE weighting, ramp
 chunk continuity, reference eligibility across current/future codecs, cache
 isolation, JS open/push/flush propagation and unchanged legacy balance vectors.
 Private music/PCM is not committed or included in release samples.
+
+
+2026-10-20: the AV3A scene meter is now the public shared `scene_reference::SceneMeter`; AC-4 Full A-JOC publishes the same reference capability. Sparse declarations and gain-only events retain their spatial state. The decoder reference and programme controller remain format-independent, and the new spatial balance no longer adds a final-mix LUFS normalizer.

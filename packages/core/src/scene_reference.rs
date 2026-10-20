@@ -1,4 +1,4 @@
-//! Measurement-only fixed 7.1.4 VBAP reference for decoded AV3A scenes.
+//! Measurement-only fixed 7.1.4 VBAP reference for decoded object scenes.
 //! It is independent of HRTF/head pose/user enhancements and is never audible.
 //! Objects are summed in speaker channels before K-weighting (correlation matters).
 use crate::{
@@ -57,13 +57,23 @@ impl Row {
         self.remaining -= ramp;
     }
 }
-pub(crate) struct SceneMeter {
+pub struct SceneMeter {
     solver: VbapSolver,
     rows: BTreeMap<u32, Row>,
+    declarations: BTreeMap<usize, u32>,
+    labels: Vec<String>,
+    states: BTreeMap<u32, ObjectEvent>,
     meter: LoudnessMeter,
+    sample_rate: u32,
 }
 impl SceneMeter {
     pub fn new() -> Self {
+        Self::with_sample_rate(48000)
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn with_sample_rate(sample_rate: u32) -> Self {
         let angles: [(f64, f64); 12] = [
             (30., 0.),
             (-30., 0.),
@@ -89,10 +99,26 @@ impl SceneMeter {
             solver: VbapSolver::from_parts(&dirs, &[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], &azimuths)
                 .expect("fixed reference layout"),
             rows: BTreeMap::new(),
-            meter: LoudnessMeter::speakers_7_1_4(),
+            declarations: BTreeMap::new(),
+            labels: vec![],
+            states: BTreeMap::new(),
+            meter: LoudnessMeter::speakers_7_1_4_at_rate(sample_rate),
+            sample_rate,
         }
     }
-    fn event(&mut self, e: &ObjectEvent) {
+    fn event(&mut self, event: &ObjectEvent) {
+        let mut state = event.clone();
+        if !event.has_pos {
+            let Some(previous) = self.states.get(&event.id) else {
+                return;
+            };
+            state = previous.clone();
+            state.gain_db = event.gain_db;
+            state.sample_pos = event.sample_pos;
+            state.ramp_duration = event.ramp_duration;
+        }
+        self.states.insert(event.id, state.clone());
+        let e = &state;
         let pos = if e.pos.iter().all(|v| v.abs() < 1e-12) {
             [0., 1., 0.]
         } else {
@@ -114,12 +140,8 @@ impl SceneMeter {
     }
     fn mix(&mut self, f: &FrameData, out: &mut [Vec<f32>], start: usize, end: usize) {
         for (channel, samples) in f.channels.iter().enumerate() {
-            if let Some(object) = f
-                .object_channels
-                .iter()
-                .find(|o| o.channel as usize == channel)
-            {
-                if let Some(row) = self.rows.get_mut(&object.id) {
+            if let Some(id) = self.declarations.get(&channel) {
+                if let Some(row) = self.rows.get_mut(id) {
                     row.mix(samples, out, start, end);
                 }
             } else if let Some(speaker) = LABELS.iter().position(|s| *s == f.labels[channel]) {
@@ -130,12 +152,35 @@ impl SceneMeter {
         }
     }
     pub fn measure(&mut self, f: &FrameData) -> ReferenceLoudness {
-        debug_assert_eq!(f.sample_rate, 48000);
+        debug_assert_eq!(f.sample_rate, self.sample_rate);
         let n = f.channels[0].len();
         let mut out = vec![vec![0.; n]; 12];
         let mut offset = 0;
+        if self.labels != f.labels {
+            self.declarations.retain(|channel, _| {
+                self.labels.get(*channel) == f.labels.get(*channel) && *channel < f.labels.len()
+            });
+            self.labels = f.labels.clone();
+        }
+        for declaration in &f.object_channels {
+            let channel = declaration.channel as usize;
+            self.declarations
+                .retain(|old, id| *id != declaration.id || *old == channel);
+            self.declarations.insert(channel, declaration.id);
+        }
+        for (channel, label) in f.labels.iter().enumerate() {
+            if let Some(id) = label
+                .strip_prefix("Obj_")
+                .and_then(|id| id.parse::<u32>().ok())
+            {
+                self.declarations.entry(channel).or_insert(id);
+            }
+        }
+        let active = &self.declarations;
         self.rows
-            .retain(|id, _| f.object_channels.iter().any(|o| o.id == *id));
+            .retain(|id, _| active.values().any(|current| current == id));
+        self.states
+            .retain(|id, _| active.values().any(|current| current == id));
         for e in &f.events {
             let at = e.sample_pos.saturating_sub(f.sample_pos).min(n as u64) as usize;
             self.mix(f, &mut out, offset, at);
@@ -259,5 +304,122 @@ mod tests {
         }
         let f = frame(0, 0.2, None, 0.);
         assert_eq!(SceneMeter::new().measure(&f).blocks, 0);
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+    #[test]
+    fn scene_reference_is_codec_independent_and_preserves_source_pcm() {
+        let mut measurements = Vec::new();
+        for codec in ["av3a", "ac4", "future-object-format"] {
+            let mut meter = SceneMeter::new();
+            let mut result = ReferenceLoudness::default();
+            for block in 0..310 {
+                let at = block * 1024;
+                let input: Vec<f32> = (0..1024)
+                    .map(|i| 0.3 * (std::f32::consts::TAU * 997. * (at + i) as f32 / 48000.).sin())
+                    .collect();
+                let frame = FrameData {
+                    reference_loudness: None,
+                    compatibility_bed: None,
+                    codec,
+                    sample_rate: 48000,
+                    sample_pos: at as u64,
+                    channels: vec![input.clone()],
+                    labels: vec!["Obj_42".into()],
+                    raw_bed_labels: vec![],
+                    object_channels: vec![crate::ObjectChannelDecl { id: 42, channel: 0 }],
+                    events: if block == 0 {
+                        vec![ObjectEvent {
+                            id: 42,
+                            sample_pos: 0,
+                            has_pos: true,
+                            pos: [0., 1., 0.],
+                            gain_db: 0.,
+                            size: [0.; 3],
+                            diffuse: 0.,
+                            anchor: "room".into(),
+                            distance_m: None,
+                            distance_infinite: false,
+                            screen_factor: None,
+                            depth_factor: None,
+                            ramp_duration: 1,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    program_loudness: None,
+                    ramp_duration: 0,
+                };
+                result = meter.measure(&frame);
+                assert_eq!(frame.channels[0], input);
+            }
+            assert!(result.blocks >= 57);
+            assert!(result.integrated_lufs.unwrap() > -18.);
+            measurements.push((result.integrated_lufs, result.true_peak_dbtp));
+        }
+        assert!(measurements.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+}
+
+#[cfg(test)]
+mod sparse_tests {
+    use super::*;
+    #[test]
+    fn sparse_declarations_and_gain_only_updates_preserve_scene_reference() {
+        let mut sparse = SceneMeter::new();
+        let mut complete = SceneMeter::new();
+        for block in 0..150u64 {
+            let at = block * 1024;
+            let event = ObjectEvent {
+                id: 42,
+                sample_pos: at,
+                has_pos: true,
+                pos: [1., -1., 0.],
+                gain_db: if block >= 50 { -6. } else { 0. },
+                size: [0.; 3],
+                anchor: "room".into(),
+                diffuse: 0.,
+                distance_m: None,
+                distance_infinite: false,
+                screen_factor: None,
+                depth_factor: None,
+                ramp_duration: 128,
+            };
+            let pcm: Vec<_> = (0..1024)
+                .map(|i| 0.2 * (std::f32::consts::TAU * 997. * (at + i) as f32 / 48000.).sin())
+                .collect();
+            let mut frame = FrameData {
+                reference_loudness: None,
+                compatibility_bed: None,
+                codec: "ac4",
+                sample_rate: 48000,
+                sample_pos: at,
+                channels: vec![pcm],
+                labels: vec!["logical-source".into()],
+                raw_bed_labels: vec![],
+                events: if block == 0 || block == 50 {
+                    vec![event]
+                } else {
+                    vec![]
+                },
+                object_channels: vec![crate::ObjectChannelDecl { id: 42, channel: 0 }],
+                program_loudness: None,
+                ramp_duration: 0,
+            };
+            let a = complete.measure(&frame);
+            if block > 0 {
+                frame.object_channels.clear();
+            }
+            if block == 50 {
+                frame.events[0].has_pos = false;
+                frame.events[0].pos = [f64::NAN; 3];
+            }
+            let b = sparse.measure(&frame);
+            assert_eq!(a.integrated_lufs, b.integrated_lufs);
+            assert_eq!(a.true_peak_dbtp, b.true_peak_dbtp);
+        }
     }
 }

@@ -75,9 +75,10 @@ impl LoudnessMeter {
         Self::with_weights(rate, vec![1.0, 1.0])
     }
     /// CICP19: exclude LFE, weight horizontal surround channels by 1.41.
-    pub fn speakers_7_1_4() -> Self {
+    pub fn speakers_7_1_4() -> Self {Self::speakers_7_1_4_at_rate(48000)}
+    pub(crate) fn speakers_7_1_4_at_rate(sample_rate:u32) -> Self {
         Self::with_weights(
-            48000,
+            sample_rate,
             vec![
                 1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41, 1.0, 1.0, 1.0, 1.0,
             ],

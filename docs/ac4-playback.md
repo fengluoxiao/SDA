@@ -88,3 +88,8 @@ These checks cover transport payload preservation, short/extended frame
 sizes, bounded writes, failure cleanup, raw-reader wiring and existing
 MPEG-H/queue/ALAC behavior. Android/iOS device playback and Full A-JOC
 object-rendering parity still require rebuilt native apps and device tests.
+
+
+## Programme volume balance
+
+Full A-JOC scenes publish the shared decoder-owned `reference_loudness` capability through `scene_reference::SceneMeter`, also used by Audio Vivid object scenes. Measurement occurs during ordinary decoding, independently of HRTF, head pose, spatial enhancement and manual volume. The existing attenuation-only programme controller handles its startup, live switch and source-clock gain events. Source PCM and metadata are unchanged. This is a fixed project 7.1.4 reference policy, not a vendor loudness/DRC implementation or a claim of reference-renderer conformance. Unsupported AC-4 presentations remain unsupported; no core transport channels are relabelled as speakers or invented objects.

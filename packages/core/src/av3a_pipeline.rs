@@ -92,7 +92,7 @@ pub struct Av3aPipeline {
     raw_beds: Vec<String>,
     declarations: Vec<ObjectChannelDecl>,
     objects: Option<ObjectScene>,
-    reference: Option<crate::av3a_reference::SceneMeter>,
+    reference: Option<crate::scene_reference::SceneMeter>,
     events: VecDeque<ObjectEvent>,
     transport_channels: usize,
     source_rate: u32,
@@ -287,7 +287,7 @@ impl Av3aPipeline {
         if self.objects.is_some() {
             decoded.reference_loudness = Some(
                 self.reference
-                    .get_or_insert_with(crate::av3a_reference::SceneMeter::new)
+                    .get_or_insert_with(crate::scene_reference::SceneMeter::new)
                     .measure(&decoded),
             );
         }

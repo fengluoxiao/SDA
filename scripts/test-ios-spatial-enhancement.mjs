@@ -21,7 +21,7 @@ assert.ok(player.includes('prefs.set(true,forKey:"sda.spatialEnhancement")'));
 console.log('iOS spatial enhancement checks passed: shared-profile default, persisted override, native recipe and system-route bypass.');
 
 const recipe=read("apps/native-renderer/src/lib.rs").split("pub fn set_spatial_enhancement")[1].split("fn set_output_volume")[0];
-assert.ok(recipe.includes("self.set_master_preamp_db(0.0)"));
+assert.ok(!recipe.includes("self.set_master_preamp_db("), "spatial toggles must preserve the independent manual master gain");
 assert.ok(recipe.includes("if enabled { 4.0 } else { 0.0 }"));
 assert.ok(recipe.includes("self.spatial_layer.main_restore_db = 0.0"));
 assert.ok(read("apps/native-renderer/src/spatial_cues.rs").includes("taper_residual_tail(&mut p, 20.0)"));

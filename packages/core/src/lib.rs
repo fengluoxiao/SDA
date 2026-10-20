@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 #[cfg(feature = "wasm")]
 use js_sys::Float32Array;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 
@@ -20,7 +20,7 @@ pub mod alac_pipeline;
 pub mod ac4_pipeline;
 pub mod av3a_pipeline;
 pub mod loudness;
-mod av3a_reference;
+pub mod scene_reference;
 mod av3a_objects;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
@@ -33,7 +33,7 @@ pub fn set_diagnostics(enabled:bool){diagnostics::enable(enabled);}
 pub fn drain_diagnostics()->String{diagnostics::drain()}
 
 /// One dynamic-object spatial event (port of `bridge_api::REvent`).
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectEvent {
     pub id: u32,
@@ -60,7 +60,7 @@ pub struct ObjectEvent {
 }
 
 /// Sparse object-id ↔ PCM-channel declaration (emitted only when it changes).
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ObjectChannelDecl {
     pub id: u32,
     pub channel: u32,

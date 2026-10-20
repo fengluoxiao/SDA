@@ -121,7 +121,7 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     use std::io::{BufRead, Read, Write};
     let dir = PathBuf::from(std::env::var("SDA_APPROVED_SCENE_DIR").unwrap());
     let codec = std::env::var("SDA_APPROVED_SCENE_CODEC").unwrap_or_else(|_| "eac3".into());
-    assert!(matches!(codec.as_str(), "eac3" | "mpegh" | "adm" | "av3a"));
+    assert!(!codec.is_empty() && codec.len()<=32 && codec.bytes().all(|v|v.is_ascii_alphanumeric() || v==b'-'));
     let seconds: u64 = std::env::var("SDA_APPROVED_SCENE_SECONDS")
         .unwrap()
         .parse()
@@ -255,6 +255,17 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         e.program_enabled=true;e.program_metadata_gain=10f32.powf(db/20.);
         e.set_program_target(e.program_metadata_gain,true);
     }
+    let programme_timeline=std::env::var("SDA_APPROVED_SCENE_PROGRAMME_TIMELINE").ok();
+    if let Some(path)=&programme_timeline {
+        e.program_enabled=true;
+        let events:Vec<serde_json::Value>=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for event in events {
+            let at=event["sample"].as_u64().unwrap();let gain=event["gain"].as_f64().unwrap() as f32;
+            assert!(gain.is_finite() && (0.0..=1.0).contains(&gain));
+            if at==0 {e.program_metadata_gain=gain;e.set_program_target(gain,true);}
+            else {e.program_events.insert(at,ProgramGainEvent{gain});}
+        }
+    }
     if std::env::var("SDA_APPROVED_SCENE_SPATIAL_STATE").as_deref()==Ok("off") {
         e.set_spatial_enhancement(false).unwrap();
     }
@@ -385,5 +396,5 @@ fn replay_scene(audition: Option<serde_json::Value>) {
     }
     output.flush().unwrap();
     if !unity { assert_eq!(guard, 1., "diagnostic headroom must keep peak protection inactive"); }
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":false,"auxiliaryBalanceMode":"foreground-priority-v1","programmeGainDb":programme_db,"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":false,"auxiliaryBalanceMode":"foreground-priority-v1","programmeGainDb":programme_db,"programmeTimeline":programme_timeline.is_some(),"renderedProgrammeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }

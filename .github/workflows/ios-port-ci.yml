@@ -168,6 +168,7 @@ jobs:
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked av3a_ -- --test-threads=1 2>&1 | tee ios-artifacts/av3a-mobile-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked balance::tests -- --test-threads=1 2>&1 | tee ios-artifacts/volume-balance-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked mobile_spatial_and_volume_balance_switches_remain_independent -- --test-threads=1 2>&1 | tee ios-artifacts/spatial-volume-switch-tests.log
+          cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked four_state_matrix -- --test-threads=1 2>&1 | tee ios-artifacts/all-format-switch-matrix-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked headphone_orientation:: -- --test-threads=1 2>&1 | tee ios-artifacts/headphone-orientation-tests.log
           cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --features ios-host --locked ios:: -- --test-threads=1 2>&1 | tee ios-artifacts/rust-tests.log
       - name: Verify independent object routes and quiet height contributions

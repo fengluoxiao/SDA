@@ -1,0 +1,1 @@
+Synthetic six-frame Full A-JOC decoder fixture, generated from the existing MIT-licensed MacinDecode scene-session minimal test topology and 24-byte Full payload. It is not a music recording and is not an audible balance-quality reference. Used only by cfg(test); not packaged as application audio.
