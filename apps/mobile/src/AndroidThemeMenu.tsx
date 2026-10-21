@@ -6,7 +6,7 @@ import { androidMaterialTheme } from "./android-material-theme";
 import { AndroidSymbol } from "./AndroidSymbol";
 
 interface AnchorProps {
-  presentation: "theme-anchor"; dark: boolean; themeMenuItems: string; themeMenuSelected: string; themeMenuRequest: number;
+  presentation: "theme-anchor"; dark: boolean; accentColorValue: string; themeMenuItems: string; themeMenuSelected: string; themeMenuRequest: number;
   pointerEvents: "none"; accessible: false; style: StyleProp<ViewStyle>;
   onThemeSelect(event: NativeSyntheticEvent<{ id: string }>): void; onThemeDismiss(): void;
 }
@@ -30,7 +30,7 @@ export function AndroidThemeMenu({ dark, onFallbackOpen }: { dark: boolean; onFa
       <Text numberOfLines={1} style={[s.name, { color: c.ink }]}>{current.name}</Text>
       <AndroidSymbol name="chevron.up.chevron.down" size={20} color={c.muted} />
     </Pressable>
-    {NativeAnchor && <NativeAnchor presentation="theme-anchor" dark={dark} themeMenuItems={items} themeMenuSelected={theme.id} themeMenuRequest={request}
+    {NativeAnchor && <NativeAnchor presentation="theme-anchor" dark={dark} accentColorValue={c.primary} themeMenuItems={items} themeMenuSelected={theme.id} themeMenuRequest={request}
       pointerEvents="none" accessible={false} style={s.anchor}
       onThemeSelect={event => { setExpanded(false); const id = event.nativeEvent?.id; if (validTheme(id)) theme.setTheme(id); }}
       onThemeDismiss={() => setExpanded(false)} />}

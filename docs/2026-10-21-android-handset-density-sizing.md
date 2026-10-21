@@ -30,3 +30,9 @@ This is distinct from the earlier Compose Material3 DropdownMenu implementation.
 References: https://developer.android.com/reference/android/widget/PopupMenu and https://developer.android.com/reference/android/view/Menu#setGroupCheckable(int,boolean,boolean)
 
 Remove the compact header action's extra 8 dp trailing margin. The two 48 dp touch lanes are adjacent, giving 48 dp between their centers and approximately 12 dp between the 36 dp circles, while preserving non-overlapping touch targets.
+
+## Popup focus and current-theme propagation
+
+A focused popup does not hide the activity window. Chrome now preserves its render node/composition when input focus is lost, and visible backdrop sampling no longer depends on input focus. Returning focus still refreshes interaction state. This fixes the disappearing settings-header blur for focusable popup windows generally.
+
+The framework popup receives the current application primary control color. Its colorAccent/colorControlActivated/colorControlNormal overlays are generated at build time from android-material-schemes.json for all themes and both light/dark modes, avoiding a second manual palette. Platform popup geometry/background are retained. The resolved activated color is checked against the bridge's current primary color.

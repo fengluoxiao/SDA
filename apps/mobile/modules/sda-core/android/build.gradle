@@ -65,3 +65,37 @@ def syncBackdropLicense = tasks.register('syncBackdropLicense', Sync) {
 }
 android.sourceSets.main.assets.srcDir("$buildDir/generated/backdropLicenses")
 tasks.named('preBuild').configure { dependsOn(syncBackdropLicense) }
+
+// The framework PopupMenu keeps the platform layout but shares control tints
+// with the JS Material palette. Generate overlays instead of duplicating colors.
+def popupPalette = file('../../../src/android-material-schemes.json')
+def popupThemeResources = layout.buildDirectory.dir('generated/sdaPopupThemes/res')
+def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
+  inputs.file(popupPalette)
+  outputs.dir(popupThemeResources)
+  doLast {
+    def palettes = new groovy.json.JsonSlurper().parse(popupPalette)
+    def output = popupThemeResources.get().asFile
+    def names = []
+    def xml = new StringBuilder('<resources>\n')
+    palettes.each { id, modes ->
+      modes.each { mode, colors ->
+        def name = "SdaPopupTheme_${id}_${mode}"
+        names.add(name)
+        xml.append("  <style name=\"${name}\">\n")
+        xml.append("    <item name=\"android:colorAccent\">${colors.primary}</item>\n")
+        xml.append("    <item name=\"android:colorControlActivated\">${colors.primary}</item>\n")
+        xml.append("    <item name=\"android:colorControlNormal\">${colors.muted}</item>\n")
+        xml.append('  </style>\n')
+      }
+    }
+    xml.append('</resources>\n')
+    new File(output, 'values').mkdirs()
+    new File(output, 'values/sda_popup_themes.xml').setText(xml.toString(), 'UTF-8')
+    new File(output, 'raw').mkdirs()
+    def keep = names.collect { "@style/${it}" }.join(',')
+    new File(output, 'raw/sda_popup_theme_keep.xml').setText("<resources xmlns:tools=\"http://schemas.android.com/tools\" tools:keep=\"${keep}\"/>\n", 'UTF-8')
+  }
+}
+android.sourceSets.main.res.srcDir(popupThemeResources)
+tasks.named('preBuild').configure { dependsOn(generateSdaPopupThemes) }

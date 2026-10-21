@@ -41,6 +41,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -179,7 +180,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val location = IntArray(2)
     private val rootLocation = IntArray(2)
     private val captureListener = ViewTreeObserver.OnPreDrawListener {
-        if (!capturing && presentation != "theme-anchor" && isShown && (hasWindowFocus() || spatialMenuOpen) && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
+        if (!capturing && presentation != "theme-anchor" && isShown && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
             recordBackground()
             if (spatialMenuOpen) recordMenuBackground()
         }
@@ -213,9 +214,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
-        // A focusable menu owns another window. Preserve its composition while
-        // that window receives back/outside events.
-        if (spatialMenuOpen) return
+        // Popup windows take input focus without hiding this window. Focus loss
+        // must not erase the header's backdrop or recreate its composition.
+        if (!hasWindowFocus || spatialMenuOpen) return
         backgroundNode?.discardDisplayList()
         interactionGeneration++
         if (hasWindowFocus) postInvalidateOnAnimation()
@@ -244,6 +245,16 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
             themePopup?.dismiss()
             val popupContext = ContextThemeWrapper(context,
                 if (dark) android.R.style.Theme_Material else android.R.style.Theme_Material_Light)
+            // Generated from the same palette JSON as the React Native UI.
+            // Preserve the platform popup shape/background; theme its controls.
+            val mode = if (dark) "dark" else "light"
+            val overlay = resources.getIdentifier("SdaPopupTheme_${themeMenuSelected}_${mode}", "style", context.packageName)
+            if (overlay != 0) popupContext.theme.applyStyle(overlay, true)
+            val resolvedAccent = android.util.TypedValue()
+            if (!popupContext.theme.resolveAttribute(android.R.attr.colorControlActivated, resolvedAccent, true)
+                || resolvedAccent.data != accentColor.toArgb()) {
+                android.util.Log.w("SdaAndroidThemeMenu", "Popup accent does not match the current application palette")
+            }
             val popup = PopupMenu(popupContext, this, Gravity.END)
             val ids = mutableMapOf<Int, String>()
             val iconSize = (18 * resources.displayMetrics.density + .5f).toInt()
