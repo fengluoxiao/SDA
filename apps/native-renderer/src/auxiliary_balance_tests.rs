@@ -186,7 +186,7 @@ fn both_spatial_states_apply_programme_gain_exactly_once() {
         let error = off.pcm[last..]
             .iter()
             .zip(&on.pcm[last..])
-            .map(|(a, b)| (a * 0.25 - b).abs())
+            .map(|(a, b)| (a * 0.25 * 10f32.powf(2.5 / 20.) - b).abs())
             .fold(0f32, f32::max);
         assert!(
             error < 3e-7,

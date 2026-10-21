@@ -39,6 +39,7 @@ pub struct Context<'a> {
     pub bass_crossover_hz: Option<f32>,
     pub(crate) spatial_layer: crate::spatial_layer::Settings,
     pub(crate) auxiliary_gains: &'a [f32; convolution::DEFAULT_PARTITION],
+    pub(crate) temporal: crate::temporal_detail::Control<'a>,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -334,9 +335,9 @@ fn mix_source(
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
         sample *= ctx.spatial_layer.source_gain(source, at);
-        sample = crate::auxiliary_balance::process_source(source, sample, at,
+        sample = crate::auxiliary_balance::process_source_detail(source, sample, at,
             ctx.auxiliary_gains[block_index], &mut buffer.frames[block_index].auxiliary_reference,
-            ctx.sample_rate, vbap);
+            ctx.sample_rate, vbap,Some(ctx.temporal),block_index);
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source

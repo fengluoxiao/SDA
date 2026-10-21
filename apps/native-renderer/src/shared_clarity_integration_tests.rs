@@ -276,6 +276,9 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         e.auxiliary_balance=auxiliary_balance::AuxiliaryBalance::with_policy(48000,
             auxiliary_balance::Policy {maximum_cut_db:0.,..Default::default()});
     }
+    if std::env::var("SDA_APPROVED_SCENE_TEMPORAL_DETAIL").as_deref()==Ok("off") {
+        e.auxiliary_balance.set_temporal_for_diagnostics(false);
+    }
     let mut gain_trace=(std::env::var("SDA_APPROVED_SCENE_GAIN_TRACE").as_deref()==Ok("1"))
         .then(||std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{tag}-gains.jsonl"))).unwrap()));
     e.set_program_codec(codec.clone());
@@ -395,12 +398,12 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         if let Some(trace)=&mut gain_trace {
             writeln!(trace,"{}",serde_json::json!({"sample":e.sample_pos,
                 "programmeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),
-                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"groupLevels":e.auxiliary_balance.levels(),"outputReductionDb":e.output_dynamics.gain_db(),"headroomRequestDb":e.auxiliary_balance.headroom_db()})).unwrap();
+                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"temporalDetailEnabled":e.auxiliary_balance.temporal_enabled(),"temporalDetailLevels":e.auxiliary_balance.temporal_levels(),"groupLevels":e.auxiliary_balance.levels(),"outputReductionDb":e.output_dynamics.gain_db(),"headroomRequestDb":e.auxiliary_balance.headroom_db()})).unwrap();
         }
         guard = guard.min(e.peak_guard.diagnostic_gain());
         count += 1;
     }
     output.flush().unwrap();
     if !unity { assert_eq!(guard, 1., "diagnostic headroom must keep peak protection inactive"); }
-    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":e.output_dynamics.enabled(),"maximumOutputAttenuationDb":e.output_dynamics.maximum_attenuation_db,"outputDetectorTargetLufs":e.output_dynamics.detector_target_lufs(),"extraLayerDb":e.spatial_layer.db,"auxiliaryBalanceMode":"foreground-priority-v2","programmeGainDb":programme_db,"programmeTimeline":programme_timeline.is_some(),"renderedProgrammeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"programmeOutputMakeupDb":e.programme_output_makeup.target_db(),"atmosOutputMakeupDb":e.programme_output_makeup.target_db(),"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
+    std::fs::write(dir.join(format!("{tag}.json")),serde_json::to_vec_pretty(&serde_json::json!({"codec":codec,"layout":e.layout.as_str(),"frames":count,"samples":e.sample_pos,"sources":e.sources.len(),"outputDynamicsEnabled":e.output_dynamics.enabled(),"maximumOutputAttenuationDb":e.output_dynamics.maximum_attenuation_db,"outputDetectorTargetLufs":e.output_dynamics.detector_target_lufs(),"extraLayerDb":e.spatial_layer.db,"auxiliaryBalanceMode":"foreground-priority-v2","programmeGainDb":programme_db,"programmeTimeline":programme_timeline.is_some(),"renderedProgrammeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"programmeOutputMakeupDb":e.programme_output_makeup.target_db(),"atmosOutputMakeupDb":e.programme_output_makeup.target_db(),"maximumAuxiliaryAttenuationDb":e.auxiliary_balance.maximum_attenuation_db,"temporalDetailEnabled":e.auxiliary_balance.temporal_enabled(),"temporalDetailLevels":e.auxiliary_balance.temporal_levels(),"unityOutput":unity,"minimumGuard":guard,"sharedClarity":e.active_hrtf_set.as_ref().unwrap().shared_clarity_active(),"rearDb":e.spatial_layer.rear_db,"frontCommonEnabled":e.front_common.enabled,"frontCommonGrouped":e.front_common.grouped,"frontCommonGain":e.front_common.gain,"frontCommonPresenceDb":e.front_common.presence_db(),"frontCommonActive":e.front_common.center.is_some(),"auditionConfig":audition})).unwrap()).unwrap();
 }

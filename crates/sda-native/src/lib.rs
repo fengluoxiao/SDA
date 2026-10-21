@@ -141,6 +141,8 @@ pub struct PlaybackStatus {
     pub renderer_program_enabled: bool,
     pub spatial_enhancement_enabled: bool,
     pub auxiliary_balance_enabled: bool,
+    pub temporal_detail_enabled: bool,
+    pub temporal_detail_levels: [f64;4],
     /// [applied group dB, maximum group reduction dB, weighted front/aux reference dB].
     /// Renderer clock diagnostics, not the FIFO consumer's exact audible instant.
     pub auxiliary_balance_levels: [f64; 4],
@@ -631,6 +633,8 @@ impl MobileEngine {
             spatial_enhancement_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_enhancement_enabled.load(std::sync::atomic::Ordering::Acquire)),
             auxiliary_balance_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.auxiliary_balance_enabled.load(std::sync::atomic::Ordering::Acquire)),
             auxiliary_balance_levels: self.pipeline.as_ref().map_or([0.0;4], |p| p.telemetry.auxiliary_balance_levels()),
+            temporal_detail_enabled: self.pipeline.as_ref().is_some_and(|p|p.telemetry.temporal_detail_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            temporal_detail_levels: self.pipeline.as_ref().map_or([0.0;4],|p|p.telemetry.temporal_detail_levels()),
             room_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.room_enabled.load(std::sync::atomic::Ordering::Acquire)),
             spatial_cues_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.spatial_cues_enabled.load(std::sync::atomic::Ordering::Acquire)),
         }

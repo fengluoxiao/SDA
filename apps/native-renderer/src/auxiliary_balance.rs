@@ -7,9 +7,11 @@ use crate::{Source, SourceKind, convolution::DEFAULT_PARTITION, vbap};
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Reference {
     pub groups: [[f64; 4]; 2],
+    pub temporal: crate::temporal_detail::Observation,
 }
 impl Reference {
     pub fn add(&mut self, other: &Self) {
+        self.temporal.add(other.temporal);
         for group in 0..2 {
             for axis in 0..4 {
                 self.groups[group][axis] += other.groups[group][axis];
@@ -112,7 +114,11 @@ pub(crate) fn refresh_beds(
         source.auxiliary_route_at = 0;
     }
 }
-pub(crate) fn process_source(
+#[cfg(test)]
+pub(crate) fn process_source(source: &mut Source, sample: f32, at: u64, control: f32, reference: &mut Reference, rate: u32, solver: &vbap::VbapSolver) -> f32 {
+    process_source_detail(source,sample,at,control,reference,rate,solver,None,0)
+}
+pub(crate) fn process_source_detail(
     source: &mut Source,
     sample: f32,
     at: u64,
@@ -120,6 +126,8 @@ pub(crate) fn process_source(
     reference: &mut Reference,
     rate: u32,
     solver: &vbap::VbapSolver,
+    temporal: Option<crate::temporal_detail::Control<'_>>,
+    index: usize,
 ) -> f32 {
     if source.auxiliary_route_at == u64::MAX || (source.kind == SourceKind::Object && at % 128 == 0)
     {
@@ -172,7 +180,20 @@ pub(crate) fn process_source(
     // In the foreground, remove enhancement only; do not reduce the authored
     // baseline to solve a side/height/rear excess. Membership slews with motion.
     let floor = source.auxiliary_protection / source.spatial_layer_gain.max(1.);
-    sample * gain.max(floor)
+    let controlled=sample*gain.max(floor);
+    let Some(detail)=temporal else{return controlled;};
+    let eligible=route.protection==0. && source.auxiliary_weight>0.01;
+    let confidence=source.temporal_detail.process(sample,at,index,rate,detail.history,detail.enabled,eligible,source.diffuse);
+    let weight=confidence*(1.-source.auxiliary_protection).clamp(0.,1.);
+    let extra=if control>=1. { (detail.gains[index]-control).max(0.)*source.auxiliary_weight*weight }else{0.};
+    let output=if extra>0. {controlled+sample*extra}else{controlled};
+    let a=f64::from(source.auxiliary_weight);
+    reference.temporal.auxiliary_abs+=x.abs()*a;
+    reference.temporal.applied_abs+=if output.is_finite(){f64::from(output).abs()*a}else{0.};
+    reference.temporal.candidate_power+=x*x*a*a*f64::from(weight);
+    reference.temporal.evidence_power+=x*x*a*a*f64::from(confidence);
+    if extra>0.&&gain.max(floor)>0.{reference.temporal.maximum_extra_db=reference.temporal.maximum_extra_db.max(20.*f64::from((gain.max(floor)+extra)/gain.max(floor)).log10());}
+    output
 }
 
 #[derive(Clone, Copy)]
@@ -212,6 +233,8 @@ pub(crate) struct AuxiliaryBalance {
     headroom: Option<f64>,
     pub maximum_attenuation_db: f64,
     last_applied_gain: f32,
+    temporal: crate::temporal_detail::Budget,
+    temporal_detail_enabled: bool,
 }
 impl AuxiliaryBalance {
     pub fn new(rate: u32) -> Self {
@@ -233,6 +256,8 @@ impl AuxiliaryBalance {
             headroom: None,
             maximum_attenuation_db: 0.,
             last_applied_gain: 1.,
+            temporal: crate::temporal_detail::Budget::new(rate),
+            temporal_detail_enabled: true,
         }
     }
     pub fn reset(&mut self) {
@@ -246,12 +271,14 @@ impl AuxiliaryBalance {
         self.headroom = None;
         self.maximum_attenuation_db = 0.;
         self.last_applied_gain = 1.;
+        self.temporal.reset();
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool, offset: usize) {
         if immediate && !enabled {
             self.enabled = false;
             self.gain_db = 0.;
             self.gains.fill(1.);
+            self.temporal.disable_immediately();
             return;
         }
         if self.enabled == enabled {
@@ -259,6 +286,7 @@ impl AuxiliaryBalance {
         }
         self.enabled = enabled;
         let offset = offset.min(DEFAULT_PARTITION - 1);
+        self.temporal.retarget_at(offset,self.gains[offset]);
         self.gain_db = 20. * f64::from(self.gains[offset]).max(1e-12).log10();
         self.fill_from(offset);
     }
@@ -280,12 +308,21 @@ impl AuxiliaryBalance {
             .maximum_attenuation_db
             .max(-20. * f64::from(self.last_applied_gain).max(1e-12).log10());
     }
-    pub fn observe(&mut self, reference: Reference, programme_gain: f32) {
+    #[cfg(test)]
+    pub fn observe(&mut self, reference: Reference, programme_gain: f32) {self.observe_at(reference,programme_gain,self.observed);}
+    pub fn temporal_control(&self)->crate::temporal_detail::Control<'_>{crate::temporal_detail::Control{history:&self.temporal.history,gains:&self.temporal.gains,enabled:self.temporal_enabled()}}
+    pub fn temporal_enabled(&self)->bool{self.enabled&&self.temporal_detail_enabled&&self.policy.maximum_cut_db>0.}
+    #[cfg(test)]
+    pub fn set_temporal_for_diagnostics(&mut self,enabled:bool){self.temporal_detail_enabled=enabled;if !enabled{self.temporal.disable_immediately();}}
+    pub fn temporal_levels(&self)->[f64;4]{self.temporal.levels()}
+    pub fn observe_detail_output(&mut self,x:[f64;2]){self.temporal.observe_output(x);}
+    pub fn observe_at(&mut self, reference: Reference, programme_gain: f32, at:u64) {
         self.reference_gain = if programme_gain.is_finite() {
             f64::from(programme_gain).max(0.)
         } else {
             0.
         };
+        let mut front_power=0.;
         for group in 0..2 {
             let mut power = 0.;
             for axis in 0..4 {
@@ -293,8 +330,10 @@ impl AuxiliaryBalance {
                 let y = self.filters[group][axis].process(if x.is_finite() { x } else { 0. });
                 power += y * y;
             }
+            if group==0{front_power=power;}
             self.energy[group] += (power - self.energy[group]) * self.energy_alpha;
         }
+        self.temporal.observe(reference.temporal,front_power,at);
         self.observed = self.observed.saturating_add(1);
         let db = 20. * self.reference_gain.max(1e-30).log10();
         let front = 10. * self.energy[0].max(1e-30).log10() + db;
@@ -383,6 +422,7 @@ impl AuxiliaryBalance {
                 }
             }
         }
+        self.temporal.fill(&self.gains,self.energy[0].max(0.).sqrt(),self.energy[1].max(0.).sqrt(),self.reference_gain,self.headroom,self.temporal_enabled(),offset);
     }
     pub fn finish_block(&mut self) {
         self.fill_from(0);

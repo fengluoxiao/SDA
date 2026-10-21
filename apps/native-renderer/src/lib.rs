@@ -83,6 +83,9 @@ mod spatial_balance;
 mod master_preamp;
 mod output_dynamics;
 mod auxiliary_balance;
+mod temporal_detail;
+#[cfg(test)]
+mod temporal_detail_integration_tests;
 #[cfg(test)]
 mod auxiliary_balance_tests;
 mod true_peak_guard;
@@ -782,6 +785,7 @@ pub struct Source {
     auxiliary_protection: f32,
     auxiliary_route_at: u64,
     auxiliary_weight: f32,
+    temporal_detail: temporal_detail::SourceState,
     spatial_layer_gain: f32,
     spatial_layer_target: f32,
     spatial_layer_bed_weight: f32,
@@ -852,6 +856,7 @@ impl Default for Source {
             auxiliary_protection: 0.0,
             auxiliary_route_at: u64::MAX,
             auxiliary_weight: 0.0,
+            temporal_detail: Default::default(),
             spatial_layer_gain: 1.0,
             spatial_layer_target: 1.0,
             spatial_layer_bed_weight: 0.0,
@@ -934,6 +939,8 @@ pub struct RuntimeTelemetry {
     pub program_enabled: AtomicBool,
     pub spatial_enhancement_enabled: AtomicBool,
     pub auxiliary_balance_enabled: AtomicBool,
+    pub temporal_detail_enabled: AtomicBool,
+    temporal_detail_levels: [AtomicU64;4],
     auxiliary_balance_levels: [AtomicU64; 4],
     pub object_convolver_count: AtomicU64,
     pub continuous_object_count: AtomicU64,
@@ -966,6 +973,7 @@ impl RuntimeTelemetry {
     pub fn auxiliary_balance_levels(&self) -> [f64; 4] {
         std::array::from_fn(|i| f64::from_bits(self.auxiliary_balance_levels[i].load(Ordering::Acquire)))
     }
+    pub fn temporal_detail_levels(&self)->[f64;4]{std::array::from_fn(|i|f64::from_bits(self.temporal_detail_levels[i].load(Ordering::Acquire)))}
     pub fn listener_yaw_degrees(&self) -> f64 {
         f64::from_bits(self.listener_yaw_degrees_bits.load(Ordering::Acquire))
     }
@@ -995,6 +1003,8 @@ impl RuntimeTelemetry {
         for (field,value) in self.auxiliary_balance_levels.iter().zip(engine.auxiliary_balance.levels()) {
             field.store(value.to_bits(), Ordering::Release);
         }
+        self.temporal_detail_enabled.store(engine.auxiliary_balance.temporal_enabled(),Ordering::Release);
+        for(field,value)in self.temporal_detail_levels.iter().zip(engine.auxiliary_balance.temporal_levels()){field.store(value.to_bits(),Ordering::Release);}
         self.program_gain_db_bits.store((20.0 * f64::from(engine.program_gain).max(1e-12).log10()).to_bits(), Ordering::Release);
         self.hrtf_ready.store(engine.active_hrtf_set.is_some(), Ordering::Release);
         self.direct_object_hrtf.store(engine.direct_objects, Ordering::Release);
@@ -1936,6 +1946,7 @@ impl Engine {
         self.output_dynamics.set_enabled(enabled, false);
         let controlled = self.output_dynamics.process_scaled_with_makeup(mix.map(f64::from),
             f64::from(gain), f64::from(self.programme_output_makeup.gain()));
+        self.auxiliary_balance.observe_detail_output(controlled);
         // The slider remains a final attenuation, so turning it down cannot
         // invite more auxiliary lift or cancel the user's intended volume.
         self.peak_guard.process(controlled[0] as f32 * self.output_gain, controlled[1] as f32 * self.output_gain)
@@ -2422,6 +2433,7 @@ impl Engine {
             bass_crossover_hz,
             spatial_layer: self.spatial_layer,
             auxiliary_gains: &self.auxiliary_balance.gains,
+            temporal: self.auxiliary_balance.temporal_control(),
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2953,9 +2965,9 @@ impl Engine {
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
                 sample *= self.spatial_layer.source_gain(source, at);
-                sample = auxiliary_balance::process_source(source, sample, at,
+                sample = auxiliary_balance::process_source_detail(source, sample, at,
                     self.auxiliary_balance.gains[block_index], &mut self.auxiliary_reference[block_index],
-                    self.output_sample_rate, &vbap);
+                    self.output_sample_rate, &vbap,Some(self.auxiliary_balance.temporal_control()),block_index);
                 let original_sample = sample;
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
@@ -3293,8 +3305,8 @@ impl Engine {
                 std::array::from_fn(|ear| equalized[ear] * self.binaural_mix + plain[ear] * (1.0 - self.binaural_mix))
             };
             self.auxiliary_balance.mark_applied(block_index);
-            self.auxiliary_balance.observe(self.auxiliary_reference[block_index],
-                self.program_gain * self.spatial_preamp.gain());
+            self.auxiliary_balance.observe_at(self.auxiliary_reference[block_index],
+                self.program_gain * self.spatial_preamp.gain(),at);
             self.auxiliary_reference[block_index] = Default::default();
             let guarded = self.process_final_output(equalized);
             if channels >= 2 {
