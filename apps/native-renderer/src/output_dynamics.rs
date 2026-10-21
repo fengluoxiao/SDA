@@ -98,6 +98,7 @@ pub(super) struct FinalMixAttenuator {
     enabled: bool,
     requested_attenuation_db: f64,
     reference_gain: f64,
+    last_programme_gain: f64,
     available_headroom_db: Option<f64>,
     filters: [[Filter; 2]; 2],
     offset: usize,
@@ -159,6 +160,7 @@ impl FinalMixAttenuator {
             enabled: true,
             requested_attenuation_db: 0.,
             reference_gain: 1.,
+            last_programme_gain: 1.,
             available_headroom_db: None,
             filters: [[shelf, high]; 2],
             offset: 0,
@@ -203,6 +205,7 @@ impl FinalMixAttenuator {
         self.maximum_attenuation_db = 0.;
         self.requested_attenuation_db = 0.;
         self.reference_gain = 1.;
+        self.last_programme_gain = 1.;
         self.available_headroom_db = None;
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool) {
@@ -272,12 +275,12 @@ impl FinalMixAttenuator {
         // Both spatial switch states share this output reference. Programme
         // makeup is included in the measured signal, never in a separate target.
         let target_lufs = self.detector_target_lufs();
-        // Keep the programme reference, but only retain its attenuation while
-        // the current section still needs it. Gated history can exclude a quiet
-        // return entirely; letting it control that return would latch an old cut.
-        let integrated = self.integrated_lufs.map_or(short, |v| v + reference_db);
+        // Cumulative gated loudness is a programme measurement, not a live
+        // compressor reference. Its relative gate can jump after a long quiet
+        // intro while the CURRENT audio is unchanged, causing a late extra cut.
+        // Use only the bounded current-section windows for output protection.
         let mut target = 0f64
-            .min(target_lufs - integrated.min(short))
+            .min(target_lufs - short)
             .min(target_lufs + p.momentary_margin_db - momentary);
         self.available_headroom_db = if self.history_count >= 40
             && self.reference_gain > 0.
@@ -335,6 +338,36 @@ impl FinalMixAttenuator {
     }
     pub fn process_scaled(&mut self, frame: [f64; 2], reference_gain: f64) -> [f64; 2] {
         self.process_scaled_with_makeup(frame, reference_gain, 1.)
+    }
+    /// Hand programme attenuation over to the existing output protection.
+    /// A later normalization estimate must not stack a new cut on top of the
+    /// old output cut while that cut waits for its multi-second release.
+    /// Only programme gain is rebased; user preamp/slider changes stay separate.
+    pub fn process_programme_scaled(
+        &mut self,
+        frame: [f64; 2],
+        manual_gain: f64,
+        programme_gain: f64,
+        makeup_gain: f64,
+    ) -> [f64; 2] {
+        let programme = if programme_gain.is_finite() { programme_gain.max(0.) } else { 0. };
+        let previous = self.last_programme_gain;
+        self.last_programme_gain = programme;
+        if self.enabled && self.history_count >= 40 && previous > 1e-12
+            && programme > 1e-12 && programme < previous
+            && (self.gain < 1. || self.gain_db < 0.)
+        {
+            let ratio = previous / programme;
+            let credit_db = 20. * ratio.log10();
+            self.gain = (self.gain * ratio).min(1.);
+            self.gain_db = (self.gain_db + credit_db).min(0.);
+            // gain_db is the planned end-of-hop gain; preserve that clock and
+            // rebase both ends of the current sample ramp together.
+            let current_db = 20. * self.gain.max(1e-30).log10();
+            let remaining = self.hop.saturating_sub(self.offset).max(1) as f64;
+            self.step = 10f64.powf((self.gain_db - current_db) / (remaining * 20.));
+        }
+        self.process_scaled_with_makeup(frame, manual_gain * programme, makeup_gain)
     }
     pub fn process_scaled_with_makeup(&mut self, frame: [f64; 2], reference_gain: f64, makeup_gain: f64) -> [f64; 2] {
         const MAX_MAKEUP_GAIN: f64 = 1.333521432163324; // +2.5 dB
@@ -573,5 +606,92 @@ mod section_recovery_tests {
         assert!(n.gain_db() > -0.15, "silent audio must not freeze old attenuation");
         section(&mut n, 1, 0.01, 2.5);
         assert!(n.gain_db() > -0.15);
+    }
+}
+#[cfg(test)]
+mod programme_handoff_tests {
+    use super::*;
+    fn tone(at: usize) -> [f64; 2] {
+        let x = 0.4 * (at as f64 * std::f64::consts::TAU * 1000. / 48000.).sin();
+        [x, -0.7 * x]
+    }
+    fn settled() -> FinalMixAttenuator {
+        let mut d = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        for i in 0..48000 * 8 { d.process_programme_scaled(tone(i), 1., 1., 1.); }
+        assert!(d.gain_db() < -6.);
+        d
+    }
+    #[test]
+    fn later_programme_measurement_does_not_double_the_existing_output_cut() {
+        let mut d = settled();
+        let before = d.gain_db();
+        let mut worst = 0f64;
+        for i in 0..48000 * 4 {
+            let programme = 1. - 0.5 * (i as f64 / 2400.).min(1.);
+            d.process_programme_scaled(tone(i), 1., programme, 1.);
+            let combined = 20. * programme.log10() + d.gain_db();
+            worst = worst.min(combined - before);
+        }
+        assert!(worst > -0.15, "a later reference added a second audible cut: {worst} dB");
+    }
+    #[test]
+    fn scheduled_programme_steps_only_apply_attenuation_not_already_supplied() {
+        let mut d = settled();
+        let original = d.gain_db();
+        for i in 0..48000 * 5 {
+            let db = -0.75 * ((i / 12000).min(16) as f64);
+            let programme = 10f64.powf(db / 20.);
+            d.process_programme_scaled(tone(i), 1., programme, 1.);
+            let combined = db + d.gain_db();
+            let expected = original.min(db);
+            assert!((combined - expected).abs() < 0.2, "step={db}: combined={combined}, expected={expected}");
+            assert!(d.gain <= 1. && d.gain_db <= 0.);
+        }
+    }
+    #[test]
+    fn manual_gain_is_not_credited_as_a_programme_change() {
+        let mut d = settled();
+        let mut before = 0.;let mut after = 0.;
+        for i in 0..4800 { let y = d.process_programme_scaled(tone(i), 1., 1., 1.); before += y[0]*y[0]; }
+        for i in 0..4800 { let y = d.process_programme_scaled(tone(i), 0.5, 1., 1.); after += y[0]*y[0]; }
+        let change = 10. * (after/before).log10();
+        assert!(change < -5.8, "user gain was cancelled: {change}");
+    }
+    #[test]
+    fn reset_or_invalid_programme_cannot_restore_old_attenuation_credit() {
+        let mut d = settled();d.reset();
+        for value in [f64::NAN, 0., 0.5] {
+            for _ in 0..100 { let y = d.process_programme_scaled([0.001,-0.001],1.,value,1.);assert!(y.iter().all(|v|v.is_finite() && v.abs()<=0.001)); }
+        }
+        assert_eq!(d.gain,1.);
+    }
+}
+#[cfg(test)]
+mod live_reference_continuity_tests {
+    use super::*;
+    fn feed(d:&mut FinalMixAttenuator, seconds:usize, amplitude:f64, rate:usize) {
+        for i in 0..seconds*rate {
+            let x=amplitude*(i as f64*std::f64::consts::TAU*1000./rate as f64).sin();
+            d.process_programme_scaled([x,-0.7*x],1.,1.,1.);
+        }
+    }
+    #[test]
+    fn steady_current_audio_cannot_be_ducked_later_by_the_programme_relative_gate() {
+        for rate in [44100,48000,96000] {
+            let mut d=FinalMixAttenuator::new(rate,Policy::default()).unwrap();
+            feed(&mut d,60,0.02,rate as usize);
+            feed(&mut d,4,0.2,rate as usize);
+            let reference=d.gain_db();let mut worst=0f64;
+            for _ in 0..16 {feed(&mut d,1,0.2,rate as usize);worst=worst.min(d.gain_db()-reference);}
+            assert!(worst> -0.1,"{rate}: constant section was ducked another {worst} dB by old programme history");
+        }
+    }
+    #[test]
+    fn identical_current_sections_converge_to_the_same_gain_after_different_histories() {
+        let mut a=FinalMixAttenuator::new(48000,Policy::default()).unwrap();
+        let mut b=FinalMixAttenuator::new(48000,Policy::default()).unwrap();
+        feed(&mut a,60,0.02,48000);feed(&mut b,60,0.1,48000);
+        feed(&mut a,8,0.2,48000);feed(&mut b,8,0.2,48000);
+        assert!((a.gain_db()-b.gain_db()).abs()<0.1,"unrelated programme history still controls identical audio: {} vs {}",a.gain_db(),b.gain_db());
     }
 }

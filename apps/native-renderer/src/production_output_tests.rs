@@ -379,3 +379,44 @@ fn programme_balanced_output_recovers_after_loud_sections_for_all_selected_forma
         }
     }
 }
+#[test]
+fn programme_gain_handoff_keeps_protected_output_continuous_for_spatial_formats() {
+    for codec in ["eac3", "mpegh", "av3a", "ac4"] {
+        for spatial in [false, true] {
+            let mut e = Engine::new(48000, 2);
+            e.set_program_codec(codec.into());
+            e.program_enabled = true;
+            e.set_program_target(1., true);
+            e.set_spatial_enhancement(spatial).unwrap();
+            declare_makeup_source(&mut e, true, "");
+            e.set_master_preamp_db(0.).unwrap();
+            e.set_output_volume(1., true);
+            e.output_active = true;
+            e.paused = false;
+            let mut reference = 0.;
+            for i in 0..48000 * 8 {
+                e.advance_output_envelopes();
+                let x = 0.4 * (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin();
+                let y = e.process_final_output([x,-0.7*x]);
+                if i >= 48000 * 7 { reference += f64::from(y[0]).powi(2); }
+            }
+            reference /= 48000.;
+            assert!(e.output_dynamics.gain_db() < -6.);
+            e.set_program_target(0.5, false);
+            let mut worst = 0f64;
+            for window in 0..40 {
+                let mut power = 0.;
+                for j in 0..4800 {
+                    let i = window*4800+j;
+                    e.advance_output_envelopes();
+                    let x = 0.4 * (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin();
+                    let y = e.process_final_output([x,-0.7*x]);
+                    assert!(y.iter().all(|v|v.is_finite() && v.abs()<0.872));
+                    power += f64::from(y[0]).powi(2);
+                }
+                worst = worst.min(10.*(power/4800./reference).log10());
+            }
+            assert!(worst > -0.2,"{codec}, spatial={spatial}: normalization stacked another {worst} dB cut");
+        }
+    }
+}

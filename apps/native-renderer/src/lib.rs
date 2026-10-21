@@ -1940,12 +1940,12 @@ impl Engine {
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
         // Selected spatial formats share +2.5 dB when programme balance is on. Keep it
         // outside programme measurement and include it in the final guard policy.
-        let gain = self.comparison_gain * self.program_gain
+        let gain = self.comparison_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
         let enabled = self.binaural_enabled && !self.cinema.monitor.hardware.enabled;
         self.output_dynamics.set_enabled(enabled, false);
-        let controlled = self.output_dynamics.process_scaled_with_makeup(mix.map(f64::from),
-            f64::from(gain), f64::from(self.programme_output_makeup.gain()));
+        let controlled = self.output_dynamics.process_programme_scaled(mix.map(f64::from),
+            f64::from(gain), f64::from(self.program_gain), f64::from(self.programme_output_makeup.gain()));
         self.auxiliary_balance.observe_detail_output(controlled);
         // The slider remains a final attenuation, so turning it down cannot
         // invite more auxiliary lift or cancel the user's intended volume.

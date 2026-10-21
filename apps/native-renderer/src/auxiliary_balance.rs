@@ -160,10 +160,6 @@ pub(crate) fn process_source_detail(
     } else {
         0.
     };
-    for axis in 0..4 {
-        reference.groups[0][axis] += x * route.basis[axis] * route.front;
-        reference.groups[1][axis] += x * route.basis[axis] * f64::from(source.auxiliary_weight);
-    }
     source.auxiliary_protection += (route.protection - source.auxiliary_protection).clamp(
         -1. / (rate.max(1) as f32 * 0.03),
         1. / (rate.max(1) as f32 * 0.03),
@@ -171,23 +167,31 @@ pub(crate) fn process_source_detail(
     if (route.protection - source.auxiliary_protection).abs() < 1e-6 {
         source.auxiliary_protection = route.protection;
     }
+    // Foreground height/bottom sources are protected programme material. Do
+    // not count the same samples in the auxiliary reference as well: a loud
+    // forward layer would otherwise hide a weak rear/overhead deficit.
+    let auxiliary = source.auxiliary_weight * (1. - source.auxiliary_protection).clamp(0., 1.);
+    for axis in 0..4 {
+        reference.groups[0][axis] += x * route.basis[axis] * route.front;
+        reference.groups[1][axis] += x * route.basis[axis] * f64::from(auxiliary);
+    }
     let control = if control.is_finite() {
         control.max(0.)
     } else {
         1.
     };
-    let gain = 1. + (control - 1.) * source.auxiliary_weight;
+    let gain = 1. + (control - 1.) * auxiliary;
     // In the foreground, remove enhancement only; do not reduce the authored
     // baseline to solve a side/height/rear excess. Membership slews with motion.
     let floor = source.auxiliary_protection / source.spatial_layer_gain.max(1.);
     let controlled=sample*gain.max(floor);
     let Some(detail)=temporal else{return controlled;};
-    let eligible=route.protection==0. && source.auxiliary_weight>0.01;
+    let eligible=route.protection==0. && auxiliary>0.01;
     let confidence=source.temporal_detail.process(sample,at,index,rate,detail.history,detail.enabled,eligible,source.diffuse);
     let weight=confidence*(1.-source.auxiliary_protection).clamp(0.,1.);
-    let extra=if control>=1. { (detail.gains[index]-control).max(0.)*source.auxiliary_weight*weight }else{0.};
+    let extra=if control>=1. { (detail.gains[index]-control).max(0.)*auxiliary*weight }else{0.};
     let output=if extra>0. {controlled+sample*extra}else{controlled};
-    let a=f64::from(source.auxiliary_weight);
+    let a=f64::from(auxiliary);
     reference.temporal.auxiliary_abs+=x.abs()*a;
     reference.temporal.applied_abs+=if output.is_finite(){f64::from(output).abs()*a}else{0.};
     reference.temporal.candidate_power+=x*x*a*a*f64::from(weight);
@@ -800,5 +804,41 @@ mod mix_budget_tests {
         let lift = 20. * f64::from(b.gains[0]).log10();
         assert!(lift > 0.7 && lift <= 1.001, "valid sub-dB mix budget was discarded: {lift}");
         assert_eq!(b.maximum_attenuation_db, 0.);
+    }
+}
+#[cfg(test)]
+mod exclusive_reference_tests {
+    use super::*;
+    #[test]
+    fn protected_front_height_and_bottom_do_not_enter_the_auxiliary_reference() {
+        let solver=vbap::VbapSolver::with_layout(vbap::LayoutId::Sony360Ra13);
+        for position in [[-0.433,0.75,0.5],[0.433,0.75,0.5],[-0.433,0.75,-0.5],[0.433,0.75,-0.5]] {
+            for gain in [0.25,1.,2.] {
+                let mut s=Source{kind:SourceKind::Object,position,..Default::default()};
+                for at in 0..2048 {
+                    let mut r=Reference::default();
+                    assert_eq!(process_source(&mut s,0.3,at,gain,&mut r,48000,&solver),0.3);
+                    assert_eq!(r.groups[1],[0.;4]);
+                    assert!(r.groups[0].iter().any(|v|v.abs()>0.));
+                }
+            }
+        }
+    }
+    #[test]
+    fn loud_protected_height_cannot_hide_a_weak_rear_deficit() {
+        let solver=vbap::VbapSolver::with_layout(vbap::LayoutId::Sony360Ra13);
+        let mut front=Source{kind:SourceKind::Object,position:[0.,1.,0.],..Default::default()};
+        let mut height=Source{kind:SourceKind::Object,position:[0.,1.,1.],..Default::default()};
+        let mut rear=Source{kind:SourceKind::Object,position:[0.,-1.,1.],..Default::default()};
+        let mut b=AuxiliaryBalance::new(48000);b.set_enabled(true,true,0);b.set_output_headroom(Some(20.));
+        for i in 0..48000*5 {
+            let j=i%DEFAULT_PARTITION;let gain=b.gains[j];let mut r=Reference::default();
+            let f=(i as f32*0.13).sin()*0.1;let h=(i as f32*0.17).sin()*0.6;let a=(i as f32*0.19).sin()*0.01;
+            assert_eq!(process_source(&mut front,f,i as u64,gain,&mut r,48000,&solver),f);
+            assert_eq!(process_source(&mut height,h,i as u64,gain,&mut r,48000,&solver),h);
+            process_source(&mut rear,a,i as u64,gain,&mut r,48000,&solver);
+            b.mark_applied(j);b.observe(r,1.);if j+1==DEFAULT_PARTITION{b.finish_block();}
+        }
+        assert!(20.*f64::from(b.gains[0]).log10()>1.,"protected height still masks the rear reference");
     }
 }

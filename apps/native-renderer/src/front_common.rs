@@ -42,6 +42,8 @@ pub(crate) struct FrontCommon {
     pair: Option<(Vec<String>, Vec<String>)>,
     /// Group co-located front sources for the accepted shared presentation.
     pub grouped: bool,
+    #[cfg(test)]
+    pub(crate) preserve_group_motion: bool,
     reference: Option<(directional::Route, directional::Route, directional::Route)>,
     pub gain: f32,
     meter: Option<ReferenceMeter>,
@@ -63,6 +65,8 @@ impl Default for FrontCommon {
             mix: 0.0,
             pair: None,
             grouped: false,
+            #[cfg(test)]
+            preserve_group_motion: true,
             reference: None,
             gain: 1.0,
             meter: None,
@@ -296,6 +300,8 @@ impl FrontCommon {
     pub fn reset(&mut self) {
         let enabled = self.enabled;
         let grouped = self.grouped;
+        #[cfg(test)]
+        let preserve_group_motion = self.preserve_group_motion;
         let mut presence = self.presence;
         if let Some(filter) = &mut presence {
             filter.reset();
@@ -307,6 +313,8 @@ impl FrontCommon {
         *self = Self {
             enabled,
             grouped,
+            #[cfg(test)]
+            preserve_group_motion,
             presence,
             split,
             presence_db,
@@ -333,6 +341,8 @@ impl FrontCommon {
         self.presence_rate = rate;
         Ok(())
     }
+    #[cfg(test)]
+    pub(crate) fn diagnostic_mix(&self) -> f32 { self.mix }
     pub(crate) fn presence_db(&self) -> f32 {
         self.presence_db
     }
@@ -363,7 +373,22 @@ impl FrontCommon {
     ) {
         let selected = if self.enabled && allowed {
             if self.grouped {
-                unique_pair(sources, true)
+                #[cfg(test)]
+                let retain = self.preserve_group_motion;
+                #[cfg(not(test))]
+                let retain = true;
+                unique_pair(sources, true).or_else(|| {
+                    // Decoder metadata may move an established physical front
+                    // group slightly off a canonical corner. Keep its treatment
+                    // while it stays in the front plane and each group still
+                    // shares one complete route, just as for a single pair.
+                    self.pair.as_ref().filter(|(left, right)| {
+                        retain
+                            && left.iter().chain(right).all(|id| sources.get(id).is_some_and(retained_front))
+                            && group_input(sources, left).is_some()
+                            && group_input(sources, right).is_some()
+                    }).cloned()
+                })
             } else {
                 self.pair
                     .as_ref()
@@ -982,6 +1007,32 @@ mod tests {
         });
         assert!((m.observe(&tone).unwrap() - 1.5).abs() < 1e-6);
         assert!((m.observe(&zero).unwrap() - 1.5).abs() < 1e-6);
+    }
+    #[test]
+    fn grouped_front_treatment_survives_small_authored_motion_in_both_mixers() {
+        for extras in [0, 8] {
+            for split in [false, true] {
+                let mut e=grouped_engine("eac3",false,split,extras);
+                rendered(&mut e,173);
+                assert_eq!(e.front_common.mix,1.);
+                let ids:Vec<_>=e.sources.iter().filter(|(_,s)|s.position[0]<0. && s.position[1]>0.).map(|(id,_)|id.clone()).collect();
+                for id in ids {
+                    e.sources.get_mut(&id).unwrap().position=[-1.,0.9677419,0.];
+                    e.route_source_now(&id,0).unwrap();
+                }
+                for source in e.sources.values_mut(){source.samples.write(12288,12288,&vec![0.001;4096]);}
+                let mut out=vec![0.;4096];e.render_into(&mut out,2);
+                assert_eq!(e.front_common.mix,1.,"front clarity dropped on metadata motion: extras={extras}, split={split}");
+                assert!(out.iter().all(|x|x.is_finite()));
+                for id in e.sources.keys().cloned().collect::<Vec<_>>() {
+                    if e.sources[&id].position[0]<0. && e.sources[&id].position[1]>0. {
+                        e.sources.get_mut(&id).unwrap().position=[-1.,-1.,0.];e.route_source_now(&id,0).unwrap();
+                    }
+                }
+                e.render_into(&mut out,2);
+                assert_eq!(e.front_common.mix,0.,"a source that left the front plane was retained");
+            }
+        }
     }
     #[test]
     fn established_pair_survives_front_motion_and_bypass_preserves_clock() {
