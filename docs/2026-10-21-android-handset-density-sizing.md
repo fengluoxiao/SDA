@@ -36,3 +36,7 @@ Remove the compact header action's extra 8 dp trailing margin. The two 48 dp tou
 A focused popup does not hide the activity window. Chrome now preserves its render node/composition when input focus is lost, and visible backdrop sampling no longer depends on input focus. Returning focus still refreshes interaction state. This fixes the disappearing settings-header blur for focusable popup windows generally.
 
 The framework popup receives the current application primary control color. Its colorAccent/colorControlActivated/colorControlNormal overlays are generated at build time from android-material-schemes.json for all themes and both light/dark modes, avoiding a second manual palette. Platform popup geometry/background are retained. The resolved activated color is checked against the bridge's current primary color.
+
+The native anchor keeps a fill-size layout node and does not recreate its empty composition on popup focus transitions. A new trigger click always reaches the framework; a delayed JS expanded/accessibility update cannot suppress reopening. Native request tokens still prevent a palette-only rerender from reopening a dismissed menu.
+
+The application base theme declares android:textColor as black. Popup-only palette overlays explicitly supply textColor/textColorPrimary from the palette ink, and textColorSecondary from muted, so platform menu labels do not inherit black in dark mode. Both light and dark popup foreground colors are tested from installed screenshots.

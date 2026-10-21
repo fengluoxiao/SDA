@@ -86,6 +86,9 @@ def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
         xml.append("    <item name=\"android:colorAccent\">${colors.primary}</item>\n")
         xml.append("    <item name=\"android:colorControlActivated\">${colors.primary}</item>\n")
         xml.append("    <item name=\"android:colorControlNormal\">${colors.muted}</item>\n")
+        xml.append("    <item name=\"android:textColor\">${colors.ink}</item>\n")
+        xml.append("    <item name=\"android:textColorPrimary\">${colors.ink}</item>\n")
+        xml.append("    <item name=\"android:textColorSecondary\">${colors.muted}</item>\n")
         xml.append('  </style>\n')
       }
     }

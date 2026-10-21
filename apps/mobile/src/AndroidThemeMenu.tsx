@@ -24,7 +24,7 @@ export function AndroidThemeMenu({ dark, onFallbackOpen }: { dark: boolean; onFa
   const [request, setRequest] = useState(0);
   return <View>
     <Pressable accessibilityRole="button" accessibilityLabel={`主题色，${current.name}`} accessibilityState={{ expanded }}
-      onPress={() => { if (!NativeAnchor) onFallbackOpen(); else if (!expanded) { setExpanded(true); setRequest(value => value + 1); } }}
+      onPress={() => { if (!NativeAnchor) onFallbackOpen(); else { setExpanded(true); setRequest(value => value + 1); } }}
       android_ripple={{ color: dark ? "#ffffff18" : "#7799CC18" }} style={s.row}>
       <View style={[s.dot, { backgroundColor: current.color }]} />
       <Text numberOfLines={1} style={[s.name, { color: c.ink }]}>{current.name}</Text>

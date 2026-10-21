@@ -216,7 +216,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
         super.onWindowFocusChanged(hasWindowFocus)
         // Popup windows take input focus without hiding this window. Focus loss
         // must not erase the header's backdrop or recreate its composition.
-        if (!hasWindowFocus || spatialMenuOpen) return
+        if (!hasWindowFocus || spatialMenuOpen || presentation == "theme-anchor") return
         backgroundNode?.discardDisplayList()
         interactionGeneration++
         if (hasWindowFocus) postInvalidateOnAnimation()
@@ -376,7 +376,10 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
 
     @Composable
     private fun Chrome() {
-        if (presentation == "theme-anchor") return
+        if (presentation == "theme-anchor") {
+            Box(Modifier.fillMaxSize())
+            return
+        }
         val ink = if (dark) Color(0xFFF5F5F7) else Color(0xFF1C1C1E)
         val muted = if (dark) Color(0xFFA0A0A8) else Color(0xFF74747C)
         val accent = accentColor
