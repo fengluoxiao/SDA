@@ -304,7 +304,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("平衡节目的整体音量，只衰减不增益，保持各声部相对比例", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("节目参考只衰减，保持声部比例；指定空间格式另含 +1.5 dB 输出校准，仍受输出保护", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {label("播放模式", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>

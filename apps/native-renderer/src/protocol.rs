@@ -187,7 +187,7 @@ fn handle_command(
                 // The final object declarations reveal whether an ADM master
                 // needs the bounded shared-room capacity path.
                 state.refresh_directional_hrtf();
-                state.refresh_atmos_output_makeup(!state.output_active || state.paused);
+                state.refresh_programme_output_makeup(!state.output_active || state.paused);
                 write_event(&Event::Ack {
                     command: "addSource",
                     accepted: routed.is_ok(),

@@ -1133,8 +1133,8 @@ pub struct Engine {
     master_preamp: master_preamp::MasterPreamp,
     spatial_preamp: master_preamp::MasterPreamp,
     final_output_trim: master_preamp::MasterPreamp,
-    atmos_output_makeup: master_preamp::MasterPreamp,
-    atmos_programme_seen: bool,
+    programme_output_makeup: master_preamp::MasterPreamp,
+    dolby_spatial_programme_seen: bool,
     output_gain: f32,
     comparison_gain: f32,
     comparison_target: f32,
@@ -1278,8 +1278,8 @@ impl Engine {
             master_preamp: Default::default(),
             spatial_preamp: Default::default(),
             final_output_trim: Default::default(),
-            atmos_output_makeup: Default::default(),
-            atmos_programme_seen: false,
+            programme_output_makeup: Default::default(),
+            dolby_spatial_programme_seen: false,
             output_gain: 1.0,
             comparison_gain: 1.0,
             comparison_target: 1.0,
@@ -1424,17 +1424,19 @@ impl Engine {
     }
 
     fn set_program_codec(&mut self, codec: String) {
-        if self.program_codec.as_ref() != Some(&codec) { self.atmos_programme_seen = false; }
+        if self.program_codec.as_ref() != Some(&codec) { self.dolby_spatial_programme_seen = false; }
         self.program_codec = Some(codec);
         self.refresh_directional_hrtf();
-        self.refresh_atmos_output_makeup(!self.output_active || self.paused);
+        self.refresh_programme_output_makeup(!self.output_active || self.paused);
     }
 
-    // A Dolby container alone is insufficient: ordinary DD/DD+ and TrueHD
-    // beds must remain unchanged. Require decoded objects or height speakers.
-    fn refresh_atmos_output_makeup(&mut self, immediate: bool) {
-        let dolby = matches!(self.program_codec.as_deref(), Some("eac3" | "ac4" | "truehd" | "mlpa"));
-        self.atmos_programme_seen = dolby && (self.atmos_programme_seen || self.sources.values().any(|source| source.kind == SourceKind::Object
+    // SDA calibration selected by the project owner, independent of the spatial
+    // switch. Named immersive formats use it for both beds and objects. Dolby
+    // E-AC-3/TrueHD additionally require declared spatial programme metadata.
+    fn refresh_programme_output_makeup(&mut self, immediate: bool) {
+        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4"));
+        let dolby_codec = matches!(self.program_codec.as_deref(), Some("eac3" | "truehd" | "mlpa"));
+        self.dolby_spatial_programme_seen = dolby_codec && (self.dolby_spatial_programme_seen || self.sources.values().any(|source| source.kind == SourceKind::Object
                 || source.bed_label.as_deref().is_some_and(|label| matches!(label,
                     "Tfl" | "Tfr" | "Tfc" | "Tbl" | "Tbr" | "Tbc" | "Tsl" | "Tsr" | "Tc"
                     | "TopFrontLeft" | "TopFrontRight" | "TopFrontCenter"
@@ -1442,12 +1444,12 @@ impl Engine {
                     | "TopSideLeft" | "TopSideRight" | "TopMiddleLeft" | "TopMiddleRight"
                     | "TopSurroundLeft" | "TopSurroundRight" | "TopRearLeft" | "TopRearRight"
                     | "TopCenter"))));
-        let db = if self.program_enabled && self.atmos_programme_seen { 1.5 } else { 0.0 };
-        if self.atmos_output_makeup.target_db() != db {
-            self.atmos_output_makeup.set(db, self.output_sample_rate, immediate)
-                .expect("valid Atmos output makeup");
+        let db = if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 1.5 } else { 0.0 };
+        if self.programme_output_makeup.target_db() != db {
+            self.programme_output_makeup.set(db, self.output_sample_rate, immediate)
+                .expect("valid programme output makeup");
         } else if immediate {
-            self.atmos_output_makeup.settle();
+            self.programme_output_makeup.settle();
         }
     }
 
@@ -1852,7 +1854,7 @@ impl Engine {
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
         self.spatial_enhancement_enabled = enabled;
-        self.refresh_atmos_output_makeup(!self.output_active || self.paused);
+        self.refresh_programme_output_makeup(!self.output_active || self.paused);
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.binaural_enabled, true, self.block_offset);
         }
@@ -1891,7 +1893,7 @@ impl Engine {
     }
 
     fn set_program_target(&mut self, gain: f32, immediate: bool) {
-        self.refresh_atmos_output_makeup(immediate);
+        self.refresh_programme_output_makeup(immediate);
         let target = if self.program_enabled {
             gain.clamp(0.0, 1000.0)
         } else {
@@ -1926,14 +1928,14 @@ impl Engine {
     // foreground/auxiliary ratio; the linked final-output guard handles excess
     // processed-output loudness, then true-peak protection handles intersample peaks.
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
-        // Final +1.5 dB makeup is exclusive to volume-balanced Atmos. Keep it
+        // Selected spatial formats share +1.5 dB when programme balance is on. Keep it
         // outside programme measurement and include it in the final guard policy.
         let gain = self.comparison_gain * self.program_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
         let enabled = self.binaural_enabled && !self.cinema.monitor.hardware.enabled;
         self.output_dynamics.set_enabled(enabled, false);
         let controlled = self.output_dynamics.process_scaled_with_makeup(mix.map(f64::from),
-            f64::from(gain), f64::from(self.atmos_output_makeup.gain()));
+            f64::from(gain), f64::from(self.programme_output_makeup.gain()));
         // The slider remains a final attenuation, so turning it down cannot
         // invite more auxiliary lift or cancel the user's intended volume.
         self.peak_guard.process(controlled[0] as f32 * self.output_gain, controlled[1] as f32 * self.output_gain)
@@ -1944,7 +1946,7 @@ impl Engine {
         self.master_preamp.advance();
         self.spatial_preamp.advance();
         self.final_output_trim.advance();
-        self.atmos_output_makeup.advance();
+        self.programme_output_makeup.advance();
         self.comparison_gain += (self.comparison_target - self.comparison_gain) / 960.0;
         if self.output_gain_ramp_remaining > 0 {
             self.output_gain += self.output_gain_step;
@@ -2067,8 +2069,8 @@ impl Engine {
         self.pending_object_events.clear();
         self.sources.clear();
         self.program_codec = None;
-        self.atmos_output_makeup = Default::default();
-        self.atmos_programme_seen = false;
+        self.programme_output_makeup = Default::default();
+        self.dolby_spatial_programme_seen = false;
         self.refresh_directional_hrtf();
         self.pcm_coverage = pcm_coverage::PcmCoverage::default();
         self.clear_object_activity(origin);
