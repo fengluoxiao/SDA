@@ -61,7 +61,13 @@ class BackgroundAudioTest {
     private fun searchControl(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node == null) return null
         val label = "${node.text?.toString().orEmpty()} ${node.contentDescription?.toString().orEmpty()}"
-        if (node.isClickable && Regex("search|搜索|搜尋", RegexOption.IGNORE_CASE).containsMatchIn(label)) return node
+        if (Regex("search|搜索|搜尋", RegexOption.IGNORE_CASE).containsMatchIn(label)) {
+            var target: AccessibilityNodeInfo? = node
+            repeat(8) {
+                if (target?.isClickable == true) return target
+                target = target?.parent
+            }
+        }
         for (i in 0 until node.childCount) searchControl(node.getChild(i))?.let { return it }
         return null
     }
@@ -102,6 +108,8 @@ class BackgroundAudioTest {
             var baselineMissing: Long? = null
             var settingsOpened = false
             var searched = false
+            var searchOpen = false
+            var controlClicks = 0
             var firstProgrammeGain: Double? = null
             var firstConsumedMs: Long? = null
             input.inputStream().use { source ->
@@ -110,7 +118,7 @@ class BackgroundAudioTest {
                     val state = JSONObject(SdaEngine.nativeStatus(handle))
                     val decoded = state.optLong("decodedSamplePos")
                     val consumed = state.optLong("consumedSamplePos")
-                    if (decoded-consumed < 4*48_000) {
+                    if (state.optBoolean("preparingAudio",false) || decoded-consumed < 4*48_000) {
                         val n=source.read(buffer)
                         if(n>0) assertTrue(SdaEngine.nativeLastError(), SdaEngine.nativeFeed(handle,buffer.copyOf(n))>=0)
                     }
@@ -126,9 +134,18 @@ class BackgroundAudioTest {
                         if(!legacy) assertEquals("aaudio-callback",device?.optString("backend"))
                         if(settingsOpened) {
                             val root=instrumentation.uiAutomation.rootInActiveWindow
-                            if(root?.packageName?.toString()=="com.android.settings") {
-                                if(!searched) searched=searchControl(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)==true
-                                else scroll(root)
+                            if(searchOpen) {
+                                instrumentation.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                                // Simulate the user bringing Settings forward. An app
+                                // Context cannot legally relaunch activities after it
+                                // has moved to the background on recent Android.
+                                val command=instrumentation.uiAutomation.executeShellCommand("am start -a android.settings.SETTINGS -f 0x14000000")
+                                android.os.ParcelFileDescriptor.AutoCloseInputStream(command).use { it.readBytes() }
+                                searchOpen=false
+                            } else if(root?.packageName?.toString()?.startsWith("com.android.settings")==true) {
+                                val clicked=searchControl(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)==true
+                                searched=searched||clicked
+                                if(clicked){controlClicks++;searchOpen=true}else scroll(root)
                             }
                             val missing=state.optLong("callbackMissingFrames",-1)
                             if(missing>=0 && baselineMissing!=null && baselineMissing!!>=0) maximumMissingDelta=maxOf(maximumMissingDelta,missing-baselineMissing!!)
@@ -147,15 +164,16 @@ class BackgroundAudioTest {
                 }
             }
             val status=JSONObject(SdaEngine.nativeStatus(handle))
-            assertTrue("Device clock stopped",status.getLong("consumedSamplePos")>10*48_000)
-            if(!legacy) assertEquals("No source FIFO starvation under UI interaction",0L,maximumMissingDelta)
             val report=JSONObject().put("variant",variant).put("legacy",legacy)
-                .put("settingsOpened",settingsOpened).put("searchControlClicked",searched)
+                .put("settingsOpened",settingsOpened).put("searchControlClicked",searched).put("controlClicks",controlClicks)
                 .put("firstConsumedMs",firstConsumedMs).put("fixedProgrammeGainDb",firstProgrammeGain)
                 .put("deviceModel",android.os.Build.MODEL).put("deviceManufacturer",android.os.Build.MANUFACTURER)
                 .put("maximumMissingFramesDelta",maximumMissingDelta).put("states",rows)
             File(context.getExternalFilesDir(null),"background-stress-$variant.json").writeText(report.toString(2))
             Log.i("SdaBackgroundTest",report.toString())
+            assertTrue("Device clock stopped",status.getLong("consumedSamplePos")>10*48_000)
+            assertTrue("Settings controls were not exercised",controlClicks>=3)
+            if(!legacy) assertEquals("No source FIFO starvation under UI interaction",0L,maximumMissingDelta)
         } finally {
             if(handle!=0L) SdaEngine.nativeClose(handle)
             if(!legacy) PlaybackKeepAlive.end(context,lease)
