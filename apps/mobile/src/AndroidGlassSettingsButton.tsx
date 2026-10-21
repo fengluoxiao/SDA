@@ -16,5 +16,5 @@ export function AndroidGlassSettingsButton({ onPress, onSpatialSelect, back = fa
   const indicator = spatialHeadIndicator(spatialEnabled, trackingEnabled, headYaw, accent, "");
   return NativeButton ? <NativeButton compactButton={compact} settingsButton backButton={back} spatialButton={spatial} spatialEnabled={spatial && indicator.active} spatialTracking={spatial && indicator.tracking} headYawDegrees={indicator.poseDegrees} accentColorValue={accent} accessibilityLabel={accessibilityLabel} dark={dark} glassDark={dark} busy={disabled} onExpand={onPress} onSpatialSelect={event => {
     if (!disabled && typeof event.nativeEvent.enabled === "boolean") onSpatialSelect?.(event.nativeEvent.enabled);
-  }} style={{ width: compact ? 48 : 44, height: compact ? 48 : 44, ...(spatial ? { marginRight: sideDock ? 0 : 8 } : {}) }} /> : null;
+  }} style={{ width: compact ? 48 : 44, height: compact ? 48 : 44, ...(spatial ? { marginRight: sideDock || compact ? 0 : 8 } : {}) }} /> : null;
 }

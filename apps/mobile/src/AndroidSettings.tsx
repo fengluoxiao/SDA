@@ -9,6 +9,7 @@ import React from "react";
 import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import type { PlayerProps } from "./RemotePlayer";
 import { AndroidSymbol } from "./AndroidSymbol";
+import { AndroidThemeMenu } from "./AndroidThemeMenu";
 import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 import { isPresetSelected } from "./ios-ui-model";
 import renderingPresets from "../rendering-presets.json";
@@ -87,7 +88,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           [{ id: "left", label: "左边" }, { id: "right", label: "右边" }], navigation.sideTabPosition,
           value => { if (value === "left" || value === "right") navigation.setSideTabPosition(value); })}
       </>, "横屏时将导航栏放在侧边；默认在右边，竖屏仍使用底部导航栏。")}
-      {section("主题色", <>{CHARACTER_THEMES.map(t => <Pressable key={t.id} onPress={() => appTheme.setTheme(t.id)} accessibilityRole="button" accessibilityState={{ selected: appTheme.id === t.id }} style={s.row}><View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: t.color, marginRight: 12 }} />{text(t.name, false, s.title)}{text(appTheme.id === t.id ? "✓" : "", false)}</Pressable>)}</>)}
+      {section("主题色", <AndroidThemeMenu dark={dark} onFallbackOpen={() => setSelection({ title: "主题色", options: CHARACTER_THEMES.map(item => ({ id: item.id, label: item.name })), selected: appTheme.id, choose: id => { const theme = CHARACTER_THEMES.find(item => item.id === id); if (theme) appTheme.setTheme(theme.id); } })} />)}
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}
         <View style={s.row}><View style={s.copy}>{text("音频输出：" + (p.playing ? p.renderingStatus : "等待播放"), false, s.output)}{text("48 kHz · 浮点 PCM · 双声道", true, s.subtitle)}</View></View>{separator()}

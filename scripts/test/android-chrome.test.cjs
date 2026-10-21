@@ -229,6 +229,7 @@ for(const spatial of [false,true]) {
  assert.equal(compactButton.props.style.width,48);
  assert.equal(compactButton.props.style.height,48);
  assert.equal(compactButton.props.spatialButton,spatial);
+ if(spatial) assert.equal(compactButton.props.style.marginRight,0,'compact header actions share adjacent 48dp lanes');
 }
 console.log('Settings button: system light/dark icon contrast and matching glass appearance passed.');
 
