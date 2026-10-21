@@ -334,7 +334,7 @@ impl FinalMixAttenuator {
         self.process_scaled_with_makeup(frame, reference_gain, 1.)
     }
     pub fn process_scaled_with_makeup(&mut self, frame: [f64; 2], reference_gain: f64, makeup_gain: f64) -> [f64; 2] {
-        const MAX_MAKEUP_GAIN: f64 = 1.1885022274370185; // +1.5 dB
+        const MAX_MAKEUP_GAIN: f64 = 1.2589254117941673; // +2 dB
         let makeup_gain = if makeup_gain.is_finite() { makeup_gain.clamp(1., MAX_MAKEUP_GAIN) } else { 1. };
         let reference_gain = reference_gain * makeup_gain;
         self.reference_gain = if reference_gain.is_finite() {

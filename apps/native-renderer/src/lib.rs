@@ -1444,7 +1444,7 @@ impl Engine {
                     | "TopSideLeft" | "TopSideRight" | "TopMiddleLeft" | "TopMiddleRight"
                     | "TopSurroundLeft" | "TopSurroundRight" | "TopRearLeft" | "TopRearRight"
                     | "TopCenter"))));
-        let db = if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 1.5 } else { 0.0 };
+        let db = if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.0 } else { 0.0 };
         if self.programme_output_makeup.target_db() != db {
             self.programme_output_makeup.set(db, self.output_sample_rate, immediate)
                 .expect("valid programme output makeup");
@@ -1928,7 +1928,7 @@ impl Engine {
     // foreground/auxiliary ratio; the linked final-output guard handles excess
     // processed-output loudness, then true-peak protection handles intersample peaks.
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
-        // Selected spatial formats share +1.5 dB when programme balance is on. Keep it
+        // Selected spatial formats share +2 dB when programme balance is on. Keep it
         // outside programme measurement and include it in the final guard policy.
         let gain = self.comparison_gain * self.program_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
