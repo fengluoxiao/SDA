@@ -110,6 +110,10 @@ pub struct DecodeStatus {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackStatus {
+    pub output_device: Option<sda_native_renderer::OutputDeviceStatus>,
+    pub callback_missing_frames: u64,
+    pub render_blocks: u64,
+    pub render_max_micros: u64,
     pub renderer_revision: &'static str,
     pub spatial_balance_algorithm: &'static str,
     pub live_loudness_ducking: bool,
@@ -609,6 +613,10 @@ impl MobileEngine {
             None => (0, 0, true),
         };
         PlaybackStatus {
+            output_device: self.pipeline.as_ref().map(|p| p.telemetry.output_device_status()),
+            callback_missing_frames: self.pipeline.as_ref().map_or(0,|p| p.telemetry.callback_missing_frames()),
+            render_blocks: self.pipeline.as_ref().map_or(0,|p| p.telemetry.render_timing().0),
+            render_max_micros: self.pipeline.as_ref().map_or(0,|p| p.telemetry.render_timing().2),
             renderer_revision: sda_native_renderer::BUILD_REVISION,
             spatial_balance_algorithm: sda_native_renderer::SPATIAL_BALANCE_ALGORITHM,
             live_loudness_ducking: false,

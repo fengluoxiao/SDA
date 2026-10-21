@@ -317,7 +317,8 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
 function measuredLoudnessStorageKey(info: { codec: string; channels: number; sampleRate: number }, source: PlaybackSource): string {
   const identity = source.kind === "path" ? `${source.path}:${source.version ?? "unknown"}` : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
   // v6 replaces a sample-peak cache with the BS.1770-style true-peak estimate.
-  return `sda-measured-lufs-v6:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
+  const version = ["mpegh","mha1","mhm1","mhas"].includes(info.codec) ? "v7-mpegh-prelimit" : "v6";
+  return `sda-measured-lufs-${version}:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
 }
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */

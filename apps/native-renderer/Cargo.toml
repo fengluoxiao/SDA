@@ -10,6 +10,8 @@ pcm-diagnostic = []
 async-filter-preparation = []
 # Allows host parity tests to exercise the iOS dispatch path.
 caller-participating-dsp = []
+# Offline host verification of the Android CPU policy; never enabled in shipped builds.
+android-audio-policy-test = []
 
 [lib]
 name = "sda_native_renderer"

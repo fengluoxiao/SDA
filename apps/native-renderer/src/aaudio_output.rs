@@ -1,7 +1,8 @@
 //! Android stereo output using the NDK's typed AAudio bindings.
 
 use std::ffi::CString;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,10 @@ unsafe fn disable_system_spatialization(builder: *mut aaudio::AAudioStreamBuilde
     if handle.is_null() {
         android_log("spatialization_policy=unavailable library=libaaudio.so");
         return;
+    }
+    for (name,value) in [(c"AAudioStreamBuilder_setUsage",1),(c"AAudioStreamBuilder_setContentType",2)] {
+        let symbol=unsafe{dlsym(handle,name.as_ptr())};
+        if !symbol.is_null(){let set:unsafe extern "C" fn(*mut aaudio::AAudioStreamBuilder,i32)=unsafe{std::mem::transmute(symbol)};unsafe{set(builder,value)};}
     }
     let behavior = unsafe { dlsym(handle, c"AAudioStreamBuilder_setSpatializationBehavior".as_ptr()) };
     let spatialized = unsafe { dlsym(handle, c"AAudioStreamBuilder_setIsContentSpatialized".as_ptr()) };
@@ -81,12 +86,42 @@ impl Drop for Stream {
     }
 }
 
+#[derive(Default)]
+struct CallbackContext {
+    fifo: OnceLock<Arc<stereo_fifo::StereoFifo>>,
+    telemetry: OnceLock<Arc<RuntimeTelemetry>>,
+    error: AtomicI32,
+}
+struct PreparedStream {
+    // Drop/close the stream before freeing callback userdata and its Arcs.
+    stream: Stream,
+    callback: Box<CallbackContext>,
+    burst: usize,
+    callback_mode: bool,
+}
+unsafe extern "C" fn data_callback(_stream:*mut aaudio::AAudioStream,user:*mut std::ffi::c_void,audio:*mut std::ffi::c_void,frames:i32)->i32 {
+    if user.is_null()||audio.is_null()||frames<=0 {return aaudio::AAUDIO_CALLBACK_RESULT_STOP as i32;}
+    let context=unsafe{&*user.cast::<CallbackContext>()};
+    let out=unsafe{std::slice::from_raw_parts_mut(audio.cast::<f32>(),frames as usize*CHANNELS)};
+    if let (Some(fifo),Some(telemetry))=(context.fifo.get(),context.telemetry.get()) {
+        if telemetry.shutdown_requested.load(Ordering::Acquire) {out.fill(0.);return aaudio::AAUDIO_CALLBACK_RESULT_STOP as i32;}
+        crate::output_pull::pull(fifo,telemetry,out);
+    } else {out.fill(0.);}
+    aaudio::AAUDIO_CALLBACK_RESULT_CONTINUE as i32
+}
+unsafe extern "C" fn error_callback(_stream:*mut aaudio::AAudioStream,user:*mut std::ffi::c_void,error:i32) {
+    if let Some(context)=unsafe{user.cast::<CallbackContext>().as_ref()} {
+        context.error.store(error,Ordering::Release);
+        if let Some(t)=context.telemetry.get(){t.output_device_error.store(error,Ordering::Release);}
+    }
+}
+
 /// Prepared AAudio device for the renderer's interleaved f32 stereo at 48 kHz.
 /// The stream is negotiated on the caller thread so
 /// startup can fail synchronously instead of leaving the render worker alive
 /// with no device consumer.
 pub struct AAudioWriterSink {
-    stream: Mutex<Option<(Stream, usize)>>,
+    stream: Mutex<Option<PreparedStream>>,
 }
 
 impl AAudioWriterSink {
@@ -94,11 +129,16 @@ impl AAudioWriterSink {
     /// Keeping the output contract exact prevents an Android mixer conversion
     /// from silently changing the calibrated 48 kHz KU100 render.
     pub fn open() -> Result<Self, String> {
-        let stream = Self::open_stream()?;
+        let callback_mode = !cfg!(feature="pcm-diagnostic");
+        let stream = Self::open_stream(callback_mode).or_else(|first| {
+            if !callback_mode {return Err(first);}
+            android_log(&format!("callback output unavailable; trying blocking output: {first}"));
+            Self::open_stream(false).map_err(|second|format!("AAudio callback failed: {first}; blocking fallback failed: {second}"))
+        })?;
         Ok(Self { stream: Mutex::new(Some(stream)) })
     }
 
-    fn open_stream() -> Result<(Stream, usize), String> {
+    fn open_stream(callback_mode: bool) -> Result<PreparedStream, String> {
         unsafe {
             let mut builder = std::ptr::null_mut();
             let result = aaudio::AAudio_createStreamBuilder(&mut builder);
@@ -117,6 +157,13 @@ impl AAudioWriterSink {
             aaudio::AAudioStreamBuilder_setFormat(builder.0, aaudio::AAUDIO_FORMAT_PCM_FLOAT as i32);
             aaudio::AAudioStreamBuilder_setSampleRate(builder.0, SAMPLE_RATE);
             disable_system_spatialization(builder.0);
+            aaudio::AAudioStreamBuilder_setBufferCapacityInFrames(builder.0,4096);
+            let mut callback=Box::<CallbackContext>::default();
+            let userdata=(&mut *callback as *mut CallbackContext).cast();
+            if callback_mode {
+                aaudio::AAudioStreamBuilder_setDataCallback(builder.0,Some(data_callback),userdata);
+            }
+            aaudio::AAudioStreamBuilder_setErrorCallback(builder.0,Some(error_callback),userdata);
 
             let mut stream = std::ptr::null_mut();
             let result = aaudio::AAudioStreamBuilder_openStream(builder.0, &mut stream);
@@ -139,11 +186,18 @@ impl AAudioWriterSink {
                 "output_contract=ndk-f32-v1 format={format}(PCM_FLOAT) sample_bytes={} frame_bytes={} channels={channels} rate={rate} burst={burst}",
                 size_of::<f32>(), size_of::<f32>() * CHANNELS,
             ));
+            let capacity=aaudio::AAudioStream_getBufferCapacityInFrames(stream.0).max(1) as usize;
+            let mut policy=crate::android_output_policy::BufferPolicy::new(burst as usize,capacity,0);
+            let granted=aaudio::AAudioStream_setBufferSizeInFrames(stream.0,policy.initial() as i32);
+            if granted>0 {policy.accepted(granted as usize);}
+            android_log(&format!("output_mode={} buffer_frames={granted} capacity_frames={capacity} perf_mode={}",
+                if callback_mode {"high-priority-callback"}else{"blocking-fallback-or-diagnostic"},
+                aaudio::AAudioStream_getPerformanceMode(stream.0)));
             let result = aaudio::AAudioStream_requestStart(stream.0);
             if result != aaudio::AAUDIO_OK as i32 {
                 return Err(format!("requestStart failed: {result}"));
             }
-            Ok((stream, burst as usize))
+            Ok(PreparedStream{stream,callback,burst:burst as usize,callback_mode})
         }
     }
 }
@@ -158,15 +212,60 @@ impl AudioOutput for AAudioWriterSink {
         let prepared = self.stream.lock().ok().and_then(|mut stream| stream.take());
         let result = prepared
             .ok_or_else(|| "AAudio output stream was not prepared".to_string())
-            .and_then(|(stream, burst)| writer_loop(stream, burst, fifo, telemetry));
+            .and_then(|prepared| {
+                let _=prepared.callback.fifo.set(fifo.clone());
+                let _=prepared.callback.telemetry.set(telemetry.clone());
+                telemetry.output_device_burst_frames.store(prepared.burst as u64,Ordering::Release);
+                telemetry.output_device_mode.store(if prepared.callback_mode {2}else if cfg!(feature="pcm-diagnostic"){1}else{3},Ordering::Release);
+                telemetry.output_device_buffer_frames.store(unsafe{aaudio::AAudioStream_getBufferSizeInFrames(prepared.stream.0)}.max(0) as u64,Ordering::Relaxed);
+                telemetry.output_device_performance_mode.store(unsafe{aaudio::AAudioStream_getPerformanceMode(prepared.stream.0)},Ordering::Relaxed);
+                if !prepared.callback_mode {
+                    crate::realtime::android_priority(-16);
+                    // Diagnostic capture retains the existing blocking path;
+                    // no PCM allocation/capture is performed by live callbacks.
+                    writer_loop_with_context(prepared,fifo,telemetry)
+                } else { monitor_callback_stream(prepared,telemetry) }
+            });
         if let Err(error) = result {
             android_log(&error);
         }
     }
 }
 
+fn writer_loop_with_context(prepared:PreparedStream,fifo:Arc<stereo_fifo::StereoFifo>,telemetry:Arc<RuntimeTelemetry>)->Result<(),String>{
+    writer_loop(&prepared.stream,prepared.burst,fifo,telemetry)
+}
+fn monitor_callback_stream(prepared:PreparedStream,telemetry:Arc<RuntimeTelemetry>)->Result<(),String>{
+    let stream=prepared.stream.0;
+    let capacity=unsafe{aaudio::AAudioStream_getBufferCapacityInFrames(stream)}.max(1) as usize;
+    let current=unsafe{aaudio::AAudioStream_getBufferSizeInFrames(stream)}.max(1) as usize;
+    let mut policy=crate::android_output_policy::BufferPolicy::new(prepared.burst,capacity,current);
+    telemetry.output_device_buffer_frames.store(current as u64,Ordering::Relaxed);
+    telemetry.output_device_performance_mode.store(unsafe{aaudio::AAudioStream_getPerformanceMode(stream)},Ordering::Relaxed);
+    let mut last_report=Instant::now();
+    while !telemetry.shutdown_requested.load(Ordering::Acquire){
+        let error=prepared.callback.error.load(Ordering::Acquire);
+        if error<0 {telemetry.output_device_error.store(error,Ordering::Release);return Err(format!("AAudio callback stream failed: {error}"));}
+        let xruns=unsafe{aaudio::AAudioStream_getXRunCount(stream)};
+        if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xruns as u64,Ordering::Relaxed);}
+        if let Some(request)=policy.observe_xruns(xruns){
+            let accepted=unsafe{aaudio::AAudioStream_setBufferSizeInFrames(stream,request as i32)};
+            if accepted>0 {policy.accepted(accepted as usize);telemetry.output_device_buffer_frames.store(accepted as u64,Ordering::Relaxed);}
+        }
+        if last_report.elapsed()>=Duration::from_secs(5){
+            android_log(&format!("callback_progress audio_frames={} hardware_xruns={xruns} buffer_frames={} fifo_frames={}",
+                telemetry.callback_consumed_sample_pos.load(Ordering::Acquire),telemetry.output_device_buffer_frames.load(Ordering::Relaxed),
+                prepared.callback.fifo.get().map_or(0,|fifo|fifo.available_read())));
+            last_report=Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe{aaudio::AAudioStream_requestStop(stream);}
+    Ok(())
+}
+
 fn writer_loop(
-    stream: Stream,
+    stream: &Stream,
     frames_per_burst: usize,
     fifo: Arc<stereo_fifo::StereoFifo>,
     telemetry: Arc<RuntimeTelemetry>,
@@ -228,6 +327,7 @@ fn writer_loop(
         }
         if last_report.elapsed() >= Duration::from_secs(5) {
             let xruns = unsafe { aaudio::AAudioStream_getXRunCount(stream.0) };
+            if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xruns as u64,Ordering::Relaxed);}
             android_log(&format!(
                 "write_progress format=PCM_FLOAT frames={total_written} audio_frames={total_audio} partial_writes={partial_writes} xruns={xruns}",
             ));

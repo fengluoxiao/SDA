@@ -123,7 +123,7 @@ pub fn mix(
 ) -> usize {
     let pool = crate::direct_renderer::workers();
     let groups = crate::direct_renderer::worker_count_for_sources(sources.len())
-        .min(pool.map_or(1, |pool| pool.current_num_threads()))
+        .min(pool.map_or(1, |pool| pool.current_num_threads()+usize::from(crate::realtime::android_audio_policy())))
         .min(sources.len());
     let chunk = sources.len().div_ceil(groups);
     let used = sources.len().div_ceil(chunk);
@@ -136,14 +136,18 @@ pub fn mix(
             mix_source(source, buffer, controls, ctx, solver);
         }
     };
-    if cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) && groups > 1 {
+    if (cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) || crate::realtime::android_audio_policy()) && groups > 1 {
         let pool = pool.expect("parallel groups require a pool");
         let (local, remote) = sources.split_at_mut(chunk);
         let (local_buffer, remote_buffers) = buffers.split_first_mut().unwrap();
         crate::audio_executor::join_on(pool,
             || process((local, local_buffer)),
             || {
-                for pair in remote.chunks_mut(chunk).zip(remote_buffers.iter_mut()) { process(pair); }
+                if crate::realtime::android_audio_policy() {
+                    remote.par_chunks_mut(chunk).zip(remote_buffers.par_iter_mut()).for_each(process);
+                } else {
+                    for pair in remote.chunks_mut(chunk).zip(remote_buffers.iter_mut()) { process(pair); }
+                }
             });
     } else if let Some(pool) = pool.filter(|_| groups > 1) {
         pool.install(|| {

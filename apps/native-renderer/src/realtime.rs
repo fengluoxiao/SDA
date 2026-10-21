@@ -56,6 +56,8 @@ impl ProAudio {
 /// Explicit QoS on every iOS HRTF worker, not just the Swift decoder queue.
 /// Best effort; never opt into hard realtime scheduling or run DSP on the callback.
 pub(super) fn promote_current_thread() {
+    #[cfg(target_os = "android")]
+    { android_priority(-10); }
     #[cfg(target_os = "ios")]
     {
         unsafe extern "C" {
@@ -102,4 +104,15 @@ mod tests {
         assert_eq!(scale(false, false, false), 1);
         assert_eq!(scale(false, false, true), 2);
     }
+}
+
+#[cfg(target_os = "android")]
+pub(super) fn android_priority(requested: i32) {
+    unsafe extern "C" { fn setpriority(which: i32, who: u32, priority: i32) -> i32; fn getpriority(which: i32, who: u32) -> i32; }
+    let result=unsafe { setpriority(0,0,requested) };
+    let actual=unsafe { getpriority(0,0) };
+    eprintln!("SDA Android audio priority requested={requested} actual={actual} result={result}");
+}
+pub(super) const fn android_audio_policy()->bool {
+    cfg!(any(target_os="android",feature="android-audio-policy-test"))
 }

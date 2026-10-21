@@ -13,6 +13,7 @@ extern "C" {
     fn sda_pcm() -> *const f32;
     fn sda_metadata() -> *const f32;
     fn sda_rendered() -> *const u8;
+    fn sda_reference() -> *const f32;
     fn sda_bed(ch: i32) -> i32;
 }
 // bridge.c is a singleton (one Windows worker). Native ownership must be exclusive
@@ -62,7 +63,7 @@ impl MpeghDecoder {
             if let Some(mut frame) = self.take_frame()? {
                 // bridge output is overwritten by the next access unit. Capture
                 // the matching reference here, not after an entire input chunk.
-                let reference = if self.speaker_output { Vec::new() } else { self.reference_stereo()? };
+                let reference = if self.speaker_output { Vec::new() } else { self.normalization_reference()? };
                 if frame.labels.iter().any(|label| label.starts_with("Obj_")) && reference.len() == 2 {
                     frame.compatibility_bed = Some(sda_core::CompatibilityBed { channels: reference.clone(), labels: vec!["L".into(), "R".into()] });
                 }
@@ -120,7 +121,7 @@ impl MpeghDecoder {
             events = Self::capture_events(objects, self.sample_pos)?;
         } else {
             labels = vec!["L".into(), "R".into()];
-            channels = self.reference_stereo()?;
+            channels = self.normalization_reference()?;
         }
         let frames = channels[0].len();
         let frame = FrameData { reference_loudness: None, compatibility_bed: None, codec: "mpegh", sample_rate: rate as u32, sample_pos: self.sample_pos,
@@ -177,7 +178,22 @@ impl MpeghDecoder {
         self.sample_pos += (bytes/36) as u64;
         Ok(Some(frame))
     }
-    /// Same upstream PCM24 stereo reference used by Windows's loudness meter.
+    /// Unbounded float programme reference, before the decoder's output limiter.
+    /// The object render does not use that limiter; measuring its reduced PCM24
+    /// master underestimates the correction for dense/loud programmes.
+    fn normalization_reference(&self) -> Result<Vec<Vec<f32>>, String> {
+        let (n,ch)=unsafe{(sda_info(13),sda_info(14))};
+        // Legacy resampled routes have no compatible pre-limiter tap.
+        if n==0 {return self.reference_stereo();}
+        if ch!=2||!(1..=4096).contains(&n){return Err("MPEG-H invalid float programme reference".into());}
+        let pcm=unsafe{slice::from_raw_parts(sda_reference(),n as usize*2)};
+        let mut out=vec![Vec::with_capacity(n as usize),Vec::with_capacity(n as usize)];
+        for frame in pcm.chunks_exact(2){out[0].push(frame[0]);out[1].push(frame[1]);}
+        Ok(out)
+    }
+    /// Original upstream PCM24 output retained for external/system routes.
+    /// SDA's own plain and HRTF routes share the float master; the application
+    /// true-peak guard is their single final limiter.
     pub fn reference_stereo(&self) -> Result<Vec<Vec<f32>>, String> {
         let (count, bytes) = unsafe { (sda_info(11), sda_info(10)) };
         if count != 2 || bytes <= 0 || bytes % 6 != 0 || bytes > 4096*6 { return Err("MPEG-H unexpected stereo output".into()); }

@@ -62,9 +62,10 @@ export class MpeghDecoder {
       const reference=[new Float32Array(samples),new Float32Array(samples)];
       const bytes=m.HEAPU8;let p=m._sda_rendered();
       for(let i=0;i<samples;i++)for(let c=0;c<2;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;reference[c]![i]=(v<<8>>8)/8388608;}
-      if(this.emitSourcesWithReference || !this.referenceOnly) this.compatibleFrames.set(this.samplePos,reference);
-      this.referenceOnly?.(reference,rate);
-      if(this.referenceOnly && !this.emitSourcesWithReference){this.samplePos+=samples;return;}
+      const master=this.floatReference(reference);
+      if(this.emitSourcesWithReference || !this.referenceOnly) this.compatibleFrames.set(this.samplePos,master);
+      this.referenceOnly?.(master,rate);
+      if(this.referenceOnly && !this.emitSourcesWithReference){this.samplePos+=master[0]!.length;return;}
     }
 
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
@@ -100,9 +101,20 @@ export class MpeghDecoder {
       labels=['L','R'];channels=labels.map(()=>new Float32Array(n));
       const bytes=m.HEAPU8;let p=m._sda_rendered();
       for(let s=0;s<n;s++)for(let c=0;c<count;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;channels[c]![s]=(v<<8>>8)/8388608;}
+      channels=this.floatReference(channels);n=channels[0]!.length;
     }
     this.frames.push({codec:'mpegh',sampleRate:rate,samplePos:this.samplePos,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels,programLoudness:null,rampDuration:0});
     this.samplePos+=n;
+  }
+  private floatReference(fallback:Float32Array[]):Float32Array[]{
+    const m=runtime,frames=m._sda_info(13),count=m._sda_info(14);
+    if(typeof m._sda_reference!=="function")throw codecFailure("mpegh.failure_10","MPEG-H runtime is stale; rebuild the shared decoder");
+    if(!frames)return fallback;
+    if(count!==2||frames<0||frames>4096)throw codecFailure("mpegh.failure_10","MPEG-H invalid float programme reference");
+    const raw=m.HEAPF32 as Float32Array,p=m._sda_reference()>>>2;
+    const master=[new Float32Array(frames),new Float32Array(frames)];
+    for(let i=0;i<frames;i++){master[0]![i]=raw[p+i*2]!;master[1]![i]=raw[p+i*2+1]!;}
+    return master;
   }
   setObjectRendering(enabled:boolean):void{this.objectRendering=enabled;}
   nextFrame():DecodedFrameData|null{

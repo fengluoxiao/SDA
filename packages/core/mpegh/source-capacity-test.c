@@ -10,6 +10,8 @@ IA_ERRORCODE ia_mpegh_dec_execute(pVOID a,pVOID b,pVOID c){(void)a;(void)b;(void
 extern void sda_capture_pcm(int,int,int,int,int,int,float (*)[1024]);
 extern void sda_capture_object(int,int,float,float,float,float,float,float,float,float,int,int);
 extern int sda_info(int);
+extern void sda_capture_reference(int,int,float **);
+extern void *sda_reference(void);
 extern void *sda_pcm(void);
 extern void *sda_metadata(void);
 static float tagged[128][1024];
@@ -30,6 +32,11 @@ int main(void){
  sda_capture_pcm(1025,128,0,128,0,0,tagged);assert(sda_info(3)==0&&sda_info(12)==1);
  sda_capture_pcm(16,128,0,128,0,0,tagged);sda_capture_object(128,0,0,0,1,1,0,0,0,0,0,1);assert(sda_info(12)==3);
  sda_capture_pcm(16,128,0,128,0,0,tagged);assert(sda_info(12)==0&&sda_info(9)==0);
+ float ref_left[]={65536.0f,-98304.0f,32768.0f},ref_right[]={-131072.0f,16384.0f,0.0f};
+ float *reference[]={ref_left,ref_right};sda_capture_reference(3,2,reference);
+ assert(sda_info(13)==3&&sda_info(14)==2);
+ float *master=sda_reference();assert(master[0]==2.0f&&master[1]==-4.0f&&master[2]==-3.0f&&master[3]==0.5f);
+ sda_capture_reference(3,12,reference);assert(sda_info(13)==0&&sda_info(14)==0);
  puts("{\"sourceLimit\":128,\"testedLanes\":[24,64,128],\"pcmAndMetadataPreserved\":true,\"overflowRejected\":true,\"resetVerified\":true}");
  return 0;
 }

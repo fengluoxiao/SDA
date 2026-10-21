@@ -17,6 +17,7 @@ android {
   namespace "app.sda.mobile.sda"
   buildFeatures { compose true }
   defaultConfig {
+    minSdkVersion 26
     versionCode 1
     versionName '0.1.0'
     testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'

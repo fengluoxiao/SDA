@@ -164,7 +164,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     if (this.poller) clearInterval(this.poller);
     // Native audio feeds independently of JS. Background JS only handles
     // end/error while runnable; never poll objects or rebuild hidden UI.
-    this.poller = setInterval(() => this.pollStatus(), Platform.OS === "ios" ? (this.foreground ? 125 : 1000) : 80);
+    this.poller = setInterval(() => this.pollStatus(), this.foreground ? (Platform.OS === "ios" ? 125 : 80) : (Platform.OS === "ios" ? 1000 : 250));
   }
 
   componentDidMount() {
@@ -478,7 +478,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       if (!engine || !this.state.playing || this.state.busy || this.changingTrack) return;
       const feedError = engine.feedError();
       const feedDone = engine.feedDone();
-      if (Platform.OS === "ios" && !this.foreground) {
+      if (!this.foreground) {
         if (feedDone || feedError) this.setState({ playing: !feedDone, ended: feedDone, error: feedError ?? this.state.error }, () => {
           if (feedDone && !feedError) this.advancePlaylist();
         });

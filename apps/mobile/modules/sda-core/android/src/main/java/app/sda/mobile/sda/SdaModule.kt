@@ -17,6 +17,8 @@ class SdaModule : Module() {
     @Volatile private var alacStereoUpmix = false
     @Volatile private var activeSourceCodec = ""
     private var feedThread: Thread? = null
+    @Volatile private var backgroundSession = 0L
+    @Volatile private var destroyed = false
     @Volatile
     private var stopped = false
     @Volatile
@@ -356,9 +358,17 @@ class SdaModule : Module() {
                     handle = 0L
                 }
             }
+            if (backgroundSession != 0L) PlaybackKeepAlive.end(context, backgroundSession)
+            backgroundSession = 0L
+            val playbackSession = synchronized(nativeLock) {
+                check(!destroyed) { "Audio module was destroyed" }
+                PlaybackKeepAlive.begin(context, displayName).also { backgroundSession = it }
+            }
+            try {
             // Versioned full-content identity survives temporary MP4 -> MHAS
             // imports and cannot reuse a result for a changed source file.
-            val cacheKey = "sda-measured-lufs-v6:$contentHash:48000"
+            val referenceVersion = if (displayName.substringAfterLast('.', "").equals("mhas", true)) "v7-mpegh-prelimit" else "v6"
+            val cacheKey = "sda-measured-lufs-$referenceVersion:$contentHash:48000"
             val loudnessCache = context.getSharedPreferences("sda-loudness", 0)
             val isAv3a = displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
@@ -386,6 +396,8 @@ class SdaModule : Module() {
                 throw error
             }
             val ptr = try {
+                synchronized(nativeLock) {
+                check(!destroyed && PlaybackKeepAlive.owns(playbackSession)) { "Playback preparation was cancelled" }
                 ensureEngine(if (isMpegh) "360RA-13" else "7.1.4").also {
                     if (isMpegh) check(SdaEngine.nativeOpenMpegh(it) == 0) {
                         "360RA 打开失败: ${SdaEngine.nativeLastError()}"
@@ -410,6 +422,7 @@ class SdaModule : Module() {
                     check(SdaEngine.nativeSetHeadYaw(it, headYawDegrees.toFloat()) == 0) {
                         "Native head yaw command failed during startup"
                     }
+                }
                 }
             } catch (error: Throwable) {
                 input.close()
@@ -439,6 +452,8 @@ class SdaModule : Module() {
             activeInput = input
             val worker = Thread({
                 try {
+                    try { android.os.Process.setThreadPriority(-4) } catch (_: SecurityException) { }
+
                     input.use { stream ->
                         val buffer = ByteArray(24 * 1024)
                         var lastConsumed = 0L
@@ -446,10 +461,13 @@ class SdaModule : Module() {
                         // player.ts TARGET_AHEAD_SECONDS: same four-second decode
                         // reserve, paced against presented audio rather than FIFO size.
                         val maxLead = if (isAlac) 24_000L else 4 * 48_000L
-                        while (!stopped) {
+                        while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
                             val state = synchronized(nativeLock) {
                                 if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                 JSONObject(SdaEngine.nativeStatus(ptr))
+                            }
+                            check(state.optJSONObject("outputDevice")?.optInt("errorCode", 0)?.let { it >= 0 } != false) {
+                                "Android audio device disconnected"
                             }
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
@@ -491,7 +509,7 @@ class SdaModule : Module() {
                             }
                             check(result >= 0) { "nativeFeed failed: ${SdaEngine.nativeLastError()}" }
                         }
-                        if (!stopped) {
+                        if (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
                             var eofDeadline = System.nanoTime() + 15_000_000_000L
                             synchronized(nativeLock) {
                                 if (generation == workerGeneration && handle == ptr && !stopped) {
@@ -503,7 +521,7 @@ class SdaModule : Module() {
                                     if (!isAv3a && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
                                 }
                             }
-                            while (!stopped) {
+                            while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
                                 val state = synchronized(nativeLock) {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                     JSONObject(SdaEngine.nativeStatus(ptr))
@@ -541,12 +559,20 @@ class SdaModule : Module() {
                     }
                     feedDone = true
                 } finally {
+                    if (feedDone && feedError == null && !stopped) PlaybackKeepAlive.finish(context, playbackSession)
+                    else PlaybackKeepAlive.end(context, playbackSession)
+                    if (backgroundSession == playbackSession) backgroundSession = 0L
                     if (ownsSourceCopy) mp3Cache?.delete()
                 }
             }, "sda-content-feed")
             feedThread = worker
             worker.start()
             displayName
+            } catch (error: Throwable) {
+                PlaybackKeepAlive.end(context, playbackSession)
+                if (backgroundSession == playbackSession) backgroundSession = 0L
+                throw error
+            }
         }
 
         Function("pause") { ->
@@ -554,6 +580,7 @@ class SdaModule : Module() {
                 if (handle == 0L) return@synchronized false
                 check(SdaEngine.nativePause(handle, true) == 0) { "native pause failed" }
                 paused = true
+                PlaybackKeepAlive.setPlaying(backgroundSession, false)
                 true
             }
         }
@@ -563,11 +590,13 @@ class SdaModule : Module() {
                 if (handle == 0L) return@synchronized false
                 check(SdaEngine.nativePause(handle, false) == 0) { "native resume failed" }
                 paused = false
+                PlaybackKeepAlive.setPlaying(backgroundSession, true)
                 true
             }
         }
 
         Function("stop") { ->
+            synchronized(nativeLock) { PlaybackKeepAlive.end(backgroundSession); backgroundSession = 0L }
             stopFeedThread()
             synchronized(nativeLock) {
                 if (handle != 0L) {
@@ -576,6 +605,8 @@ class SdaModule : Module() {
                     handle = 0L
                 }
             }
+            appContext.reactContext?.let { PlaybackKeepAlive.end(it, backgroundSession) }
+            backgroundSession = 0L
             feedDone = true
             true
         }
@@ -585,7 +616,8 @@ class SdaModule : Module() {
                 if (handle == 0L) "{}" else JSONObject(SdaEngine.nativeStatus(handle))
                     .put("sourceCodec", activeSourceCodec)
                     .put("outputLayout", if (activeSourceCodec == "alac" && !alacStereoUpmix) "2.0" else activeLayout)
-                    .put("alacUpmixActive", activeSourceCodec == "alac" && alacStereoUpmix).put("outputChannels", 2).toString()
+                    .put("alacUpmixActive", activeSourceCodec == "alac" && alacStereoUpmix).put("outputChannels", 2)
+                    .put("backgroundPlayback", PlaybackKeepAlive.diagnostics()).toString()
             }
         }
 
@@ -629,6 +661,11 @@ class SdaModule : Module() {
         }
 
         OnDestroy {
+            synchronized(nativeLock) {
+                destroyed = true
+                PlaybackKeepAlive.end(backgroundSession)
+                backgroundSession = 0L
+            }
             mpeghImport.close()
             stopFeedThread()
             synchronized(nativeLock) {

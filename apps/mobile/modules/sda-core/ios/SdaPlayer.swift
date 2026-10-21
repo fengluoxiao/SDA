@@ -17,6 +17,7 @@ final class SdaPlayer {
  let lock = NSRecursiveLock()
  let feeder = DispatchQueue(label: "sda.ios.decode", qos: .userInitiated)
  var handle: UnsafeMutableRawPointer?
+ var nativeLoudnessPrefix = "sda.loudness."
  var alacActive = false
  var alacUpmixActive = false
  var systemSpatial: SystemSpatial360?
@@ -493,7 +494,8 @@ final class SdaPlayer {
     if !prefs.bool(forKey:"sda.headTracking") { _ = try command("yaw",["degrees":playbackYaw]) }
     startHeadTracking()
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
-    let loudnessKey = (systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness.")) + hash
+    nativeLoudnessPrefix = input.isAlac ? "sda.loudness.alac.stereo.v1." : (ext == "mhas" ? "sda.loudness.mpegh.prelimit.v1." : "sda.loudness.")
+    let loudnessKey = (systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix) + hash
     if !input.isAv3a, !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
     // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
     let analysisInput: CompressedInput?
@@ -608,7 +610,7 @@ final class SdaPlayer {
      if eof {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
-      if !input.isAv3a, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? (input.isAlac ? "sda.loudness.alac.stereo.v1." : "sda.loudness."))+hash) }
+      if !input.isAv3a, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
       let finalStatus = try command("status") as! [String:Any]
       if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
       finished = true

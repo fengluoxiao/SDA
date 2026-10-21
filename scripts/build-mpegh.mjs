@@ -7,7 +7,7 @@ mkdirSync(dest,{recursive:true});
 const {sources,includes:dec}=prepareMpegh(build);
 const upstream=join(root,'vendor/libmpegh');
 const run=(cmd,args)=>execFileSync(cmd,args,{cwd:root,stdio:'inherit',windowsHide:true});
-const exports=['sda_open','sda_close','sda_input','sda_capacity','sda_decode','sda_info','sda_pcm','sda_metadata','sda_rendered','sda_bed'].map(s=>'_'+s);
+const exports=['sda_open','sda_close','sda_input','sda_capacity','sda_decode','sda_info','sda_pcm','sda_metadata','sda_rendered','sda_reference','sda_bed'].map(s=>'_'+s);
 const args=[...sources,'-I'+dec,'-DLC_LEVEL_4','-O2','-sALLOW_MEMORY_GROWTH=1','-sINITIAL_MEMORY=67108864','-sMAXIMUM_MEMORY=536870912','-sMODULARIZE=1','-sEXPORT_ES6=1','-sENVIRONMENT=web,worker,node','-sFILESYSTEM=0','-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32','-sEXPORTED_FUNCTIONS='+JSON.stringify(exports),'-o',join(dest,'mpegh.js')];
 const emcc=process.env.EMCC??join(process.env.EMSDK??join(root,'tmp/emsdk'),'upstream/emscripten/emcc.py');
 const python=process.env.EMSDK_PYTHON??(process.env.EMSDK?'python':join(root,'tmp/emsdk/python/3.13.3_64bit/python.exe'));

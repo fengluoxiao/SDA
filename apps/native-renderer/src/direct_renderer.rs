@@ -26,7 +26,7 @@ const ORDINARY_OBJECT_WORKERS: usize = 4;
 const LARGE_SCENE_OBJECT_WORKERS: usize = 4;
 
 fn large_scene_worker_cap() -> usize {
-    if cfg!(target_os = "ios") { return 2; }
+    if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) { return 2; }
     #[cfg(test)]
     if let Ok(value) = std::env::var("SDA_TEST_OBJECT_WORKERS") {
         if let Ok(value) = value.parse::<usize>() {
@@ -64,6 +64,7 @@ fn worker_count_for_sources_with_available(source_count: usize, available: usize
     if cfg!(target_os = "ios") {
         return ios_worker_count(source_count, available);
     }
+    if crate::realtime::android_audio_policy() { return android_worker_count(source_count, available); }
     if source_count >= LARGE_SCENE_OBJECTS {
         // Dense ADM convolvers are independent, but their end-of-block join is
         // deadline-sensitive. Keep a core budget for audio callbacks and the
@@ -76,6 +77,10 @@ fn worker_count_for_sources_with_available(source_count: usize, available: usize
     }
 }
 
+pub(super) fn android_worker_count(source_count: usize, available: usize) -> usize {
+    if source_count<8 {1} else if source_count<32 {available.clamp(1,2)} else {available.clamp(1,3)}
+}
+
 fn ios_worker_count(source_count: usize, available: usize) -> usize {
     // Small scenes avoid a pool handoff; larger scenes leave CPU capacity for
     // the coordinator, audio callback and competing foreground app animation.
@@ -85,6 +90,14 @@ fn ios_worker_count(source_count: usize, available: usize) -> usize {
 #[cfg(test)]
 mod worker_policy_tests {
     use super::worker_count_for_sources_with_available;
+    #[test]
+    fn android_reserves_capacity_on_qualcomm_and_mediatek_core_counts() {
+        for cores in [1,2,4,6,8,10] {
+            assert_eq!(super::android_worker_count(7,cores),1);
+            assert_eq!(super::android_worker_count(16,cores),cores.min(2));
+            assert_eq!(super::android_worker_count(128,cores),cores.min(3));
+        }
+    }
     #[test]
     fn ios_small_scenes_inline_and_large_scenes_bound_parallelism() {
         assert_eq!(super::ios_worker_count(2, 6), 1);
@@ -96,10 +109,11 @@ mod worker_policy_tests {
 
     #[test]
     fn large_object_scenes_reserve_host_capacity_without_changing_ordinary_scenes() {
-        let expected = if cfg!(target_os = "ios") { 2 } else { 4 };
+        let expected = if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) { 2 } else { 4 };
         assert_eq!(worker_count_for_sources_with_available(16, 8), expected);
-        assert_eq!(worker_count_for_sources_with_available(109, 8), expected);
-        assert_eq!(worker_count_for_sources_with_available(109, 4), expected);
+        let dense=if crate::realtime::android_audio_policy(){3}else{expected};
+        assert_eq!(worker_count_for_sources_with_available(109, 8), dense);
+        assert_eq!(worker_count_for_sources_with_available(109, 4), dense);
     }
 }
 
@@ -193,7 +207,7 @@ pub(super) fn finish_sources<'a>(
         Ok(())
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if cfg!(target_os = "ios") {
+    if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) {
         crate::audio_executor::run(&mut sources, prepare)?;
     } else if let Some(pool) = workers().filter(|_| sources.len() >= 8 && worker_count > 1) {
         let chunk = sources.len().div_ceil(worker_count);
@@ -296,7 +310,7 @@ pub(super) fn finish_sources<'a>(
         source.finish_block();
     };
     let worker_count = worker_count_for_sources(sources.len());
-    if cfg!(target_os = "ios") {
+    if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) {
         crate::audio_executor::run(&mut sources, |source| -> Result<(), String> { finish(source); Ok(()) })?;
     } else if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
         // Independent histories stay with their sources; summation order in

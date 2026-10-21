@@ -197,7 +197,7 @@ impl BusRenderer {
         use rayon::prelude::*;
         let active = self.reflections_active;
         let count = self.buses.len() + usize::from(active) * self.reflections.len();
-        if cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) {
+        if (cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) || crate::realtime::android_audio_policy()) {
             crate::audio_executor::run(&mut self.buses, finish_bus)?;
             if active { crate::audio_executor::run(&mut self.reflections, finish_bus)?; }
         } else {

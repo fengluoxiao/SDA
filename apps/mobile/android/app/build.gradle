@@ -89,7 +89,9 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace 'app.sda.mobile'
+    testBuildType = project.findProperty('sdaTestBuildType') ?: "debug"
     defaultConfig {
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         applicationId 'app.sda.mobile'
         // Both shared native ABIs link libaaudio (Android API 26+).
         minSdkVersion Math.max(26, rootProject.ext.minSdkVersion as int)
@@ -219,6 +221,8 @@ tasks.withType(com.facebook.react.tasks.BundleHermesCTask).configureEach {
 }
 
 dependencies {
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'junit:junit:4.13.2'
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 

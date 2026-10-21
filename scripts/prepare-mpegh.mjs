@@ -48,6 +48,7 @@ writeFileSync(join(dec,'impeghd_mhas_parse.c'),mhas);
 
 let source=readFileSync(join(upstream,'decoder/ia_core_coder_decode_main.c'),'utf8').replaceAll('\r\n','\n');
 source=source.replace('#include <math.h>',`/* SDA capture hooks added 2026-09-14; original license retained. */
+void sda_capture_reference(int,int,float **);
 void sda_capture_pcm(int,int,int,int,int,int,float (*)[1024]);
 void sda_capture_bed(int,int);
 void sda_capture_object(int,int,float,float,float,float,float,float,float,float,int,int);
@@ -100,6 +101,13 @@ source=source.replace(objAnchor,`        { ia_oam_dec_state_struct *md=&pstr_dec
             }}
         }
 ${objAnchor}`);
+// Read-only programme measurement before the upstream output limiter. Preserve
+// its actual PCM24 output and compatibility-bed signal byte for byte.
+const referenceAnchor='  if (peak_lim_flag)\n  {\n    impegh_dec_peak_limiter';
+if(source.split(referenceAnchor).length!==2)throw Error('MPEG-H reference hook anchor changed');
+source=source.replace(referenceAnchor,`  if (!ptr_config->resample_output)
+    sda_capture_reference(frame_length,*ptr_num_out_chnl,ptr_audio_buff);
+${referenceAnchor}`);
 writeFileSync(join(build,'ia_core_coder_decode_main.c'),source);
 const cmake=readFileSync(join(upstream,'CMakeLists.txt'),'utf8');
 const sources=[...cmake.slice(cmake.indexOf('add_library'),cmake.indexOf(')',cmake.indexOf('add_library'))).matchAll(/decoder\/[\w]+\.c/g)].map(m=>m[0].endsWith('/ia_core_coder_decode_main.c')?join(build,'ia_core_coder_decode_main.c'):join(build,m[0]));

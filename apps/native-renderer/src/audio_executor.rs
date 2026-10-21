@@ -4,7 +4,21 @@ where F: Fn(&mut T) -> Result<(), E> + Sync {
     let Some(pool) = crate::direct_renderer::workers().filter(|_| items.len() >= 8) else {
         return items.iter_mut().try_for_each(process);
     };
+    if crate::realtime::android_audio_policy() { return run_balanced_on(pool,items,process); }
     run_on(pool, items, process)
+}
+
+fn run_balanced_on<T: Send,E: Send,F>(pool:&rayon::ThreadPool,items:&mut[T],process:F)->Result<(),E>
+where F:Fn(&mut T)->Result<(),E>+Sync {
+    use rayon::prelude::*;
+    let available=std::thread::available_parallelism().map_or(1,usize::from);
+    let helpers=crate::direct_renderer::android_worker_count(items.len(),available)
+        .saturating_sub(1).min(pool.current_num_threads());
+    if helpers==0 {return items.iter_mut().try_for_each(process);}
+    let split=items.len().div_ceil(helpers+1);
+    let (local,remote)=items.split_at_mut(split);
+    let (a,b)=join_on(pool,||local.iter_mut().try_for_each(&process),||if helpers==1 {remote.iter_mut().try_for_each(&process)}else{remote.par_iter_mut().try_for_each(&process)});
+    a?;b
 }
 
 fn run_on<T: Send, E: Send, F>(pool: &rayon::ThreadPool, items: &mut [T], process: F) -> Result<(), E>
@@ -80,5 +94,23 @@ mod tests {
         });
         assert_eq!(result,Err("local error"));
         assert!(values[8..].iter().all(|v|*v>=108));
+    }
+}
+
+#[cfg(test)]
+mod balanced_tests {
+    use super::*;
+    #[test]
+    fn coordinator_and_helpers_each_do_work_without_changing_values() {
+        for workers in [1,2] {
+            let pool=rayon::ThreadPoolBuilder::new().num_threads(workers).build().unwrap();
+            let caller=std::thread::current().id();let local=std::sync::atomic::AtomicUsize::new(0);
+            let mut x:Vec<_>=(0..128).collect();run_balanced_on(&pool,&mut x,|x|->Result<(),()>{
+                if std::thread::current().id()==caller {local.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                *x=*x*3+7;Ok(())
+            }).unwrap();
+            assert!(local.load(std::sync::atomic::Ordering::Relaxed)>=128usize.div_ceil(workers+1));
+            assert_eq!(x,(0..128).map(|x|x*3+7).collect::<Vec<_>>());
+        }
     }
 }

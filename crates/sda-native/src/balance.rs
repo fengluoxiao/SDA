@@ -30,9 +30,10 @@ pub(crate) fn av3a_bed(frame: &FrameData) -> bool {
         && frame.labels == ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"]
         && frame.events.is_empty() && frame.object_channels.is_empty()
 }
-/// Gate only verified masters, never a stereo core of an object programme.
+/// Verified programme masters, including the MPEG-H pre-limiter stereo tap.
+/// Never infer a master from a subset of an object programme.
 pub(crate) fn startup_program(frame: &FrameData) -> bool {
-    frame.reference_loudness.is_some() || av3a_bed(frame) || (frame.codec != "mpegh" && (stereo_master(frame) || crate::alac_pcm::is_upmixed(frame)))
+    frame.codec == "mpegh" || frame.reference_loudness.is_some() || av3a_bed(frame) || (frame.codec != "mpegh" && (stereo_master(frame) || crate::alac_pcm::is_upmixed(frame)))
 }
 pub struct PendingFrame {
     pub frame: FrameData,
@@ -52,6 +53,7 @@ pub struct VolumeBalance {
     pub gain_db: f64,
     completed: bool,
     early_alac_balance: bool,
+    mpegh_reference: bool,
 }
 impl VolumeBalance {
     /// Only the Apple-decoded ALAC route opts in. Other codec scheduling and
@@ -76,6 +78,7 @@ impl VolumeBalance {
         self.settled = false;
     }
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
+        self.mpegh_reference = frame.codec == "mpegh";
         let channels = if frame.codec == "mpegh" || crate::alac_pcm::is_upmixed(&frame) {
             reference.as_deref()
         } else if stereo_master(&frame) || av3a_bed(&frame) {
@@ -109,7 +112,7 @@ impl VolumeBalance {
         let m = self.cached.clone().or_else(|| self.decoded_reference.clone()).or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
         if !ended && m.blocks < MIN_BLOCKS { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
-        self.gain_db = master_gain(lufs, m.true_peak_dbtp);
+        self.gain_db = master_gain(lufs, if self.mpegh_reference { None } else { m.true_peak_dbtp });
         self.balanced_blocks = m.blocks;
         self.settled = true;
         Some(Command::SetProgramGain { gain: 10_f64.powf(self.gain_db / 20.0) as f32, at: Some(origin) })
@@ -149,7 +152,7 @@ impl VolumeBalance {
             // material. Do not count a silent intro toward this estimate.
             let early = self.early_alac_balance && f.codec == "alac" && !self.settled;
             let required_blocks = if early { 7 } else { MIN_BLOCKS };
-            if m.blocks >= required_blocks && (!self.settled || m.blocks >= self.balanced_blocks + 50) {
+            if m.blocks >= required_blocks && (!self.settled || (f.codec != "mpegh" && m.blocks >= self.balanced_blocks + 50)) {
                 if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                     self.settled = true;
                     self.balanced_blocks = m.blocks;
@@ -203,6 +206,24 @@ mod tests {
         let mut f = frame("av3a", at);
         f.labels = ["L","R","C","LFE","Lb","Rb","Ls","Rs","Tfl","Tfr","Tbl","Tbr"].iter().map(|s|s.to_string()).collect();
         f.raw_bed_labels = f.labels.clone(); f.channels = vec![vec![0.0;1024];12]; f
+    }
+    #[test]
+    fn mpegh_reference_is_primed_before_audio_and_does_not_ride_later_sections() {
+        let mut balance=VolumeBalance::default();balance.enabled=true;
+        let mut f=frame("mpegh",0);f.labels=vec!["Obj_0".into()];f.channels=vec![vec![0.;1024]];
+        f.object_channels=vec![sda_core::ObjectChannelDecl{id:0,channel:0}];
+        assert!(startup_program(&f));
+        let pending=balance.measure(f,None);
+        balance.set_cached(Measurement{integrated_lufs:Some(-2.),blocks:100,true_peak_dbtp:Some(25.)});
+        let Command::SetProgramGain{gain,at}=balance.prime_av3a_startup(0,false).unwrap() else {panic!()};
+        assert_eq!(at,Some(0));assert!((20.*f64::from(gain).log10()+16.).abs()<1e-5);
+        balance.cached=None;
+        for (n,lufs) in [(150,-1.),(200,-20.),(1000,-5.)] {
+            let later=PendingFrame{frame:frame("mpegh",n as u64*4800),measurement:Some(Measurement{integrated_lufs:Some(lufs),blocks:n,true_peak_dbtp:Some(30.)})};
+            assert!(!balance.route(&later).iter().any(|c|matches!(c,Command::SetProgramGain{..})),"steady playback must not acquire a new automatic envelope");
+            assert_eq!(balance.gain_db,-16.);
+        }
+        drop(pending);
     }
     #[test]
     fn object_reference_is_eligible_without_treating_objects_as_speakers() {

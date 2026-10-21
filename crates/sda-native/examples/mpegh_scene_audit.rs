@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut measurements=BufWriter::new(fs::File::create(output.join("reference-measurements.jsonl"))?);
     let mut decoder=MpeghDecoder::new()?;
     let mut balance=VolumeBalance::default();balance.enabled=true;
+    let mut staged=Vec::new();let mut started=false;
     let mut events=vec![];let(mut frames,mut samples,mut sources,mut reference_samples)=(0u64,0u64,0usize,0u64);
     for bytes in fs::read(&args[1])?.chunks(8192) {
         decoder.push(bytes)?;
@@ -24,15 +25,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             reference_samples+=reference[0].len() as u64;
             let pending=balance.measure(frame,Some(reference));
             if let Some(m)=&pending.measurement {writeln!(measurements,"{}",serde_json::json!({"sample":pending.frame.sample_pos,"measurement":m}))?;}
-            for command in balance.route(&pending) {
-                if let Command::SetProgramGain{gain,at}=command {events.push(serde_json::json!({"sample":at.unwrap_or(pending.frame.sample_pos),"gain":gain}));}
+            staged.push(pending);
+            if !started && (balance.startup_measurement_ready()||samples>=7*48000) {
+                if let Some(Command::SetProgramGain{gain,at})=balance.prime_av3a_startup(0,false) {events.push(serde_json::json!({"sample":at.unwrap_or(0),"gain":gain}));}
+                started=true;
             }
+            if started {for p in staged.drain(..) {for command in balance.route(&p) {
+                if let Command::SetProgramGain{gain,at}=command {events.push(serde_json::json!({"sample":at.unwrap_or(p.frame.sample_pos),"gain":gain}));}
+            }}}
             frames+=1;
         }
     }
-    decoder.flush()?;balance.finish();
+    decoder.flush()?;
+    if !started {
+        if let Some(Command::SetProgramGain{gain,at})=balance.prime_av3a_startup(0,true) {events.push(serde_json::json!({"sample":at.unwrap_or(0),"gain":gain}));}
+        for p in staged.drain(..) {for command in balance.route(&p) {if let Command::SetProgramGain{gain,at}=command{events.push(serde_json::json!({"sample":at.unwrap_or(p.frame.sample_pos),"gain":gain}));}}}
+    }
+    balance.finish();
     for writer in [&mut pcm,&mut meta,&mut reference_pcm,&mut measurements]{writer.flush()?;}
     fs::write(output.join("programme-timeline.json"),serde_json::to_vec_pretty(&events)?)?;
-    let report=serde_json::json!({"codec":"mpegh","sampleRate":48000,"frames":frames,"samples":samples,"sources":sources,"referenceSamples":reference_samples,"measurement":balance.complete_measurement(),"finalTargetDb":balance.gain_db,"programmeGainEvents":events.len(),"reference":"pinned native MPEG-H decoder and ordinary live VolumeBalance; no HRTF or output measurement"});
+    let report=serde_json::json!({"codec":"mpegh","sampleRate":48000,"frames":frames,"samples":samples,"sources":sources,"referenceSamples":reference_samples,"measurement":balance.complete_measurement(),"finalTargetDb":balance.gain_db,"programmeGainEvents":events.len(),"reference":"pinned native MPEG-H float master before peak limiting; real startup reference then fixed programme gain"});
     fs::write(output.join("programme-reference.json"),serde_json::to_vec_pretty(&report)?)?;println!("{report}");Ok(())
 }

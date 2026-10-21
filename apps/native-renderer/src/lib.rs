@@ -118,6 +118,8 @@ pub mod performance_simulation;
 pub mod protocol;
 pub mod remote_audio;
 pub mod realtime;
+mod android_output_policy;
+mod output_pull;
 pub mod remote_sync;
 pub mod render_command;
 pub mod live_spatial_cues;
@@ -930,6 +932,13 @@ impl ObjectActivitySnapshot {
 #[derive(Default)]
 pub struct RuntimeTelemetry {
     pub shutdown_requested: AtomicBool,
+    pub output_device_mode: AtomicU64,
+    pub output_device_xruns: AtomicU64,
+    pub output_device_xruns_supported: AtomicBool,
+    pub output_device_buffer_frames: AtomicU64,
+    pub output_device_burst_frames: AtomicU64,
+    pub output_device_error: std::sync::atomic::AtomicI32,
+    pub output_device_performance_mode: std::sync::atomic::AtomicI32,
     /// Applied renderer state, published for mobile UI/diagnostics (not requested settings).
     pub hrtf_ready: AtomicBool,
     pub direct_object_hrtf: AtomicBool,
@@ -970,7 +979,27 @@ pub struct RuntimeTelemetry {
     render_worst_bus_micros: AtomicU64,
 }
 
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct OutputDeviceStatus {
+    pub backend: &'static str,
+    pub hardware_xruns: Option<u64>,
+    pub buffer_frames: u64,
+    pub burst_frames: u64,
+    pub performance_mode: i32,
+    pub error_code: i32,
+}
 impl RuntimeTelemetry {
+    pub fn output_device_status(&self)->OutputDeviceStatus {
+        OutputDeviceStatus {
+            backend:match self.output_device_mode.load(Ordering::Acquire){1=>"aaudio-write-diagnostic",2=>"aaudio-callback",3=>"aaudio-write-fallback",_=>"external"},
+            hardware_xruns:self.output_device_xruns_supported.load(Ordering::Relaxed).then(||self.output_device_xruns.load(Ordering::Relaxed)),
+            buffer_frames:self.output_device_buffer_frames.load(Ordering::Relaxed),
+            burst_frames:self.output_device_burst_frames.load(Ordering::Relaxed),
+            performance_mode:self.output_device_performance_mode.load(Ordering::Relaxed),
+            error_code:self.output_device_error.load(Ordering::Relaxed),
+        }
+    }
     pub fn applied_program_gain_db(&self) -> f64 {
         f64::from_bits(self.program_gain_db_bits.load(Ordering::Acquire))
     }
