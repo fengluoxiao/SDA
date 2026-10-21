@@ -221,6 +221,15 @@ for(const scheme of ['light','dark',null]) {
 }
 const spatialButton=settingsAdapter.exports.AndroidGlassSettingsButton({onPress(){},spatial:true,disabled:true,accessibilityLabel:'空间音频 · 关闭'});
 assert.equal(spatialButton.props.spatialButton,true);assert.equal(spatialButton.props.busy,true);assert.equal(spatialButton.props.accessibilityLabel,'空间音频 · 关闭');
+// Smaller handset glass must preserve a full native touch lane and the same
+// menu/event boundary, independently of the phone's physical pixel density.
+for(const spatial of [false,true]) {
+ const compactButton=settingsAdapter.exports.AndroidGlassSettingsButton({compact:true,spatial,onPress(){}});
+ assert.equal(compactButton.props.compactButton,true);
+ assert.equal(compactButton.props.style.width,48);
+ assert.equal(compactButton.props.style.height,48);
+ assert.equal(compactButton.props.spatialButton,spatial);
+}
 console.log('Settings button: system light/dark icon contrast and matching glass appearance passed.');
 
 for(const top of [0,24,48]) {

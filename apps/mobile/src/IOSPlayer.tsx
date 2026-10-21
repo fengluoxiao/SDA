@@ -68,6 +68,7 @@ function ThemedPlayer(p: PlayerProps) {
   const sideNavigationActive = (Platform.OS === "ios" || (Platform.OS === "android" && hasAndroidChrome)) && navigationPreferences.landscapeSideTabs && landscapePlayer;
   const sideNavigationRight = sideNavigationActive && navigationPreferences.sideTabPosition === "right";
   const tabletDevice = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height);
+  const androidPhone = Platform.OS === "android" && !tabletDevice;
   const tabletPlayer = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height, navigationPreferences.tabletPortraitLayout);
   const phoneLandscapeBlur = !tabletDevice && landscapePlayer && navigationPreferences.tabletPortraitLayout;
   const tabletSideNavigation = tabletPlayer && sideNavigationActive;
@@ -223,7 +224,7 @@ function ThemedPlayer(p: PlayerProps) {
         {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onDisable={() => p.setBinauralEnabled?.(false)}
-          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
+          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
           accessibilityLabel={headIndicator.label}
           onSpatialSelect={enabled => { p.setBinauralEnabled?.(enabled); if (enabled) p.setHeadTracking(false); }} /> : <Pressable accessibilityRole="button"
           accessibilityLabel={headIndicator.label}
@@ -237,13 +238,13 @@ function ThemedPlayer(p: PlayerProps) {
           style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center", opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
           <View style={{ transform: [{ perspective: 400 }, { rotateY: `${headIndicator.poseDegrees}deg` }] }}><Symbol name={headIndicator.symbol} fallback="HT" size={24} color={headIndicator.color} /></View>
         </Pressable>}
-        {Platform.OS === "android" ? <AndroidGlassSettingsButton onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+        {Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
   </>;
   const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined}>
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
-        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, { color: index === 0 ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(index === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[index] ?? "正在播放", false, [s.pageTitle, { color: index === 0 ? pc.ink : c.ink }])}</View>
+        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, androidPhone && ap.eyebrow, { color: index === 0 ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(index === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[index] ?? "正在播放", false, [s.pageTitle, androidPhone && ap.pageTitle, { color: index === 0 ? pc.ink : c.ink }])}</View>
         {!sideNavigationActive && headerActions}
       </View>
       </View>}</SafeAreaInsetsContext.Consumer>;
@@ -302,7 +303,7 @@ function ThemedPlayer(p: PlayerProps) {
           </Pressable>
           <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, landscapePlayer && np.landscapeControls, sideNavigationRight && { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }, tabletLayout && { width: tabletLayout.controlsWidth, alignSelf: "center", paddingLeft: 0, paddingRight: 0, paddingTop: 0, gap: 0 }]}>
           <View style={[np.metadata, { transform: [{ translateY: tabletPlayer || landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
-            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, { color: pc.muted }]}>{artist}</Text></View>
+            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, androidPhone && ap.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, androidPhone && ap.artist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>
@@ -498,4 +499,13 @@ const np = StyleSheet.create({
   transport: { flexDirection: "row", alignItems: "center", justifyContent: "space-evenly" }, transportTouch: { width: 76, height: 68, alignItems: "center", justifyContent: "center" },
   volume: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 9 }, volumeTouch: { flex: 1, height: 44, justifyContent: "center" },
   footer: { flexDirection: "row", alignItems: "center", justifyContent: "space-around", marginTop: 8 }, notice: { color: "rgba(255,255,255,.58)", fontSize: 11, textAlign: "center", marginTop: 6 },
+});
+
+// Handset typography follows the logical dp viewport even when the phone opts
+// into tablet-style presentation. Keep the platform's accessibility scaling.
+const ap = StyleSheet.create({
+  eyebrow: { fontSize: 10 },
+  pageTitle: { fontSize: 20 },
+  title: { fontSize: 18, lineHeight: 24 },
+  artist: { fontSize: 15, lineHeight: 21 },
 });

@@ -110,6 +110,7 @@ class SdaAndroidChromeModule : Module() {
             Prop("spatialEnabled") { view: SdaAndroidChromeView, value: Boolean -> view.spatialEnabled = value }
             Prop("spatialTracking") { view: SdaAndroidChromeView, value: Boolean -> view.spatialTracking = value }
             Prop("headYawDegrees") { view: SdaAndroidChromeView, value: Float -> view.headYawDegrees = if (value.isFinite()) value.coerceIn(-45f,45f) else 0f }
+            Prop("compactButton") { view: SdaAndroidChromeView, value: Boolean -> view.compactButton = value }
             Prop("settingsButton") { view: SdaAndroidChromeView, value: Boolean -> view.settingsButton = value }
             Prop("backButton") { view: SdaAndroidChromeView, value: Boolean -> view.backButton = value }
             Prop("backgroundColorValue") { view: SdaAndroidChromeView, value: String -> view.surfaceColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFFF2F2F7)) }
@@ -139,6 +140,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var hasTrack by mutableStateOf(false)
     var playing by mutableStateOf(false)
     var busy by mutableStateOf(false)
+    var compactButton by mutableStateOf(false)
     var settingsButton by mutableStateOf(false)
     var spatialButton by mutableStateOf(false)
     var spatialEnabled by mutableStateOf(false)
@@ -361,8 +363,13 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                 if (busy || !spatialButton) spatialMenuOpen = false
             }
             val headAngle by animateFloatAsState(if (spatialButton && spatialEnabled && spatialTracking) headYawDegrees else 0f, tween(100), label = "spatialHeadYaw")
-            val backdrop = backgroundAt(0f)
-            Box(Modifier.fillMaxSize()) {
+            // Keep a 48dp handset hit lane while reducing only the glass
+            // circle. Compose expands this clickable into the available lane.
+            val actionSize = if (compactButton) 36.dp else 44.dp
+            val actionIconSize = if (compactButton) 20.dp else 22.dp
+            val actionInsetPx = with(androidx.compose.ui.platform.LocalDensity.current) { (((if (compactButton) 48.dp else 44.dp) - actionSize) / 2).toPx() }
+            val backdrop = backgroundAt(actionInsetPx, actionInsetPx)
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 LiquidButton(onClick = {
                     if (spatialButton) {
                         recordMenuBackground()
@@ -370,9 +377,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                     } else onExpand(emptyMap<String, Any>())
                 }, backdrop = backdrop,
                     surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
-                    enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = 44.dp, contentPadding = 0.dp,
-                    modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = if (spatialMenuOpen && spatialButton) 0f else 1f }.drawWithContent { backgroundRevision; drawContent() }) {
-                    Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(22.dp).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
+                    enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = actionSize, contentPadding = 0.dp,
+                    modifier = Modifier.width(actionSize).graphicsLayer { alpha = if (spatialMenuOpen && spatialButton) 0f else 1f }.drawWithContent { backgroundRevision; drawContent() }) {
+                    Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(actionIconSize).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
                 }
                 if (spatialMenuOpen && spatialButton && !busy) {
                     var menuOffset by remember { mutableStateOf(IntOffset.Zero) }
