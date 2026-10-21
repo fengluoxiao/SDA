@@ -66,7 +66,7 @@ def syncBackdropLicense = tasks.register('syncBackdropLicense', Sync) {
 android.sourceSets.main.assets.srcDir("$buildDir/generated/backdropLicenses")
 tasks.named('preBuild').configure { dependsOn(syncBackdropLicense) }
 
-// The framework PopupMenu keeps the platform layout but shares control tints
+// The framework PopupMenu keeps the platform layout but shares surface and control colors
 // with the JS Material palette. Generate overlays instead of duplicating colors.
 def popupPalette = file('../../../src/android-material-schemes.json')
 def popupThemeResources = layout.buildDirectory.dir('generated/sdaPopupThemes/res')
@@ -83,6 +83,10 @@ def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
         def name = "SdaPopupTheme_${id}_${mode}"
         names.add(name)
         xml.append("  <style name=\"${name}\">\n")
+        // Framework popup drawables resolve colorBackground (via colorPopupBackground)
+        // or colorBackgroundFloating. Set both public attributes; retain native geometry.
+        xml.append("    <item name=\"android:colorBackground\">${colors.panel}</item>\n")
+        xml.append("    <item name=\"android:colorBackgroundFloating\">${colors.panel}</item>\n")
         xml.append("    <item name=\"android:colorAccent\">${colors.primary}</item>\n")
         xml.append("    <item name=\"android:colorControlActivated\">${colors.primary}</item>\n")
         xml.append("    <item name=\"android:colorControlNormal\">${colors.muted}</item>\n")
