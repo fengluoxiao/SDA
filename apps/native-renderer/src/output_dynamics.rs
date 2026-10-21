@@ -337,7 +337,7 @@ impl FinalMixAttenuator {
         self.process_scaled_with_makeup(frame, reference_gain, 1.)
     }
     pub fn process_scaled_with_makeup(&mut self, frame: [f64; 2], reference_gain: f64, makeup_gain: f64) -> [f64; 2] {
-        const MAX_MAKEUP_GAIN: f64 = 1.2589254117941673; // +2 dB
+        const MAX_MAKEUP_GAIN: f64 = 1.333521432163324; // +2.5 dB
         let makeup_gain = if makeup_gain.is_finite() { makeup_gain.clamp(1., MAX_MAKEUP_GAIN) } else { 1. };
         let reference_gain = reference_gain * makeup_gain;
         self.reference_gain = if reference_gain.is_finite() {
@@ -548,7 +548,7 @@ mod section_recovery_tests {
     }
     #[test]
     fn loud_section_does_not_permanently_duck_a_returning_quiet_section() {
-        for makeup in [1.5, 2.0] {
+        for makeup in [1.5, 2.0, 2.5] {
             let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
             section(&mut n, 2, 0.01, makeup);
             let before = n.gain_db();
@@ -566,12 +566,12 @@ mod section_recovery_tests {
     #[test]
     fn digital_silence_releases_old_attenuation_before_audio_returns() {
         let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
-        section(&mut n, 4, 0.5, 2.0);
+        section(&mut n, 4, 0.5, 2.5);
         assert!(n.gain_db() < -5.);
-        section(&mut n, 20, 0., 2.0);
+        section(&mut n, 20, 0., 2.5);
         eprintln!("gain after silence={:.3} dB", n.gain_db());
         assert!(n.gain_db() > -0.15, "silent audio must not freeze old attenuation");
-        section(&mut n, 1, 0.01, 2.0);
+        section(&mut n, 1, 0.01, 2.5);
         assert!(n.gain_db() > -0.15);
     }
 }

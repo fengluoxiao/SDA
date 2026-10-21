@@ -5,6 +5,36 @@
 use crate::{Source, SourceKind, bus_renderer, directional, dsp, hrtf, near_field, vbap};
 use std::collections::HashMap;
 
+// Complementary, causal split: bass keeps its authored front routes; only the
+// upper common component is re-centered for the accepted clarity presentation.
+#[derive(Clone, Copy)]
+struct CommonBandSplit { a: f32, state: f32 }
+impl CommonBandSplit {
+    fn new(rate: u32) -> Self {
+        let g = (std::f32::consts::PI * 500. / rate.max(1) as f32).tan();
+        Self { a: g / (1. + g), state: 0. }
+    }
+    fn reset(&mut self) { self.state = 0.; }
+    fn high(&mut self, input: f32) -> f32 {
+        let v = (input - self.state) * self.a;
+        let low = v + self.state;
+        self.state = low + v;
+        if input == 0. && self.state.abs() < 1e-30 { self.state = 0.; }
+        input - low
+    }
+}
+
+fn reference_with_presence(center: (Vec<f32>, Vec<f32>), presence: Option<dsp::Biquad>, rate: u32) -> (Vec<f32>, Vec<f32>) {
+    let Some(presence) = presence else { return center; };
+    let apply = |ir: Vec<f32>| {
+        let mut filter = presence;
+        filter.reset();
+        ir.into_iter().chain(std::iter::repeat_n(0., (rate / 100).max(1) as usize))
+            .map(|x| filter.process(x)).collect()
+    };
+    (apply(center.0), apply(center.1))
+}
+
 pub(crate) struct FrontCommon {
     pub center: Option<Box<directional::ContinuousSource>>,
     pub enabled: bool,
@@ -15,6 +45,7 @@ pub(crate) struct FrontCommon {
     reference: Option<(directional::Route, directional::Route, directional::Route)>,
     pub gain: f32,
     meter: Option<ReferenceMeter>,
+    split: CommonBandSplit,
     presence: Option<dsp::Biquad>,
     presence_db: f32,
     presence_rate: u32,
@@ -35,6 +66,7 @@ impl Default for FrontCommon {
             reference: None,
             gain: 1.0,
             meter: None,
+            split: CommonBandSplit::new(48000),
             presence: None,
             presence_db: 0.0,
             presence_rate: 0,
@@ -268,12 +300,15 @@ impl FrontCommon {
         if let Some(filter) = &mut presence {
             filter.reset();
         }
+        let mut split = self.split;
+        split.reset();
         let presence_db = self.presence_db;
         let presence_rate = self.presence_rate;
         *self = Self {
             enabled,
             grouped,
             presence,
+            split,
             presence_db,
             presence_rate,
             ..Default::default()
@@ -290,6 +325,9 @@ impl FrontCommon {
         if self.presence_db == db && self.presence_rate == rate {
             return Ok(());
         }
+        if self.presence_rate != rate { self.split = CommonBandSplit::new(rate); }
+        self.reference = None;
+        self.meter = None;
         self.presence = (db != 0.).then_some(filter);
         self.presence_db = db;
         self.presence_rate = rate;
@@ -299,6 +337,7 @@ impl FrontCommon {
         self.presence_db
     }
     fn drain_presence(&mut self) {
+        self.split.reset();
         if let Some(filter) = &mut self.presence {
             if let Some(center) = &mut self.center {
                 for frame in &mut center.frames {
@@ -397,10 +436,13 @@ impl FrontCommon {
             let Ok((l, r, c)) = result else {
                 return;
             };
+            // Normalize the transfer that is actually rendered, including the
+            // presence filter, instead of compensating its extra energy globally.
+            let c = reference_with_presence(c, self.presence, self.presence_rate);
             let Some(gain) = reference_gain(&l, &r, &c) else {
                 return;
             };
-            self.gain = gain;
+            if self.mix == 0. { self.gain = gain; }
             self.meter = Some(ReferenceMeter::new(&l, &r, &c));
             self.reference = Some(key);
         }
@@ -412,7 +454,8 @@ impl FrontCommon {
             self.center = Some(Box::new(center));
         }
         let inputs = std::array::from_fn::<_, { crate::convolution::DEFAULT_PARTITION }, _>(|i| {
-            (linput[i], rinput[i])
+            let high = self.split.high((linput[i] + rinput[i]) * 0.5);
+            (high, high)
         });
         let target_gain = self
             .meter
@@ -962,5 +1005,47 @@ mod tests {
         assert_eq!(e.sample_pos, before + 4096);
         assert!(out.iter().all(|v| v.is_finite()));
         assert!(!e.paused);
+    }
+}
+
+#[cfg(test)]
+mod bass_preservation_tests {
+    use super::*;
+    #[test]
+    fn crossover_keeps_bass_authored_and_retains_the_clarity_band() {
+        for rate in [44100, 48000, 96000] {
+            for (hz, minimum, maximum) in [(60., 0., 0.13), (3000., 0.97, 1.01)] {
+                let mut split = CommonBandSplit::new(rate);
+                let mut input = 0f64; let mut output = 0f64;
+                for i in 0..rate {
+                    let x = (i as f32 * std::f32::consts::TAU * hz / rate as f32).sin();
+                    let high = split.high(x);
+                    let low = x - high;
+                    assert!((low + high - x).abs() < 1e-7);
+                    if i >= rate / 2 { input += f64::from(x).powi(2); output += f64::from(high).powi(2); }
+                }
+                let gain = (output/input).sqrt();
+                assert!(gain >= minimum && gain <= maximum, "rate={rate} hz={hz} gain={gain}");
+                split.reset(); assert_eq!(split.high(0.), 0.);
+            }
+        }
+    }
+    #[test]
+    fn presence_filter_is_included_in_the_common_energy_reference() {
+        let ir = (vec![1.0], vec![1.0]);
+        let p = dsp::Biquad::peaking(48000, 3000., 0.9, 3.).unwrap();
+        let center = reference_with_presence(ir.clone(), Some(p), 48000);
+        let mut meter = ReferenceMeter::new(&ir, &ir, &center);
+        let mut gain = None;
+        for block in 0..100 {
+            let input = std::array::from_fn(|i| {
+                let x = ((block * crate::convolution::DEFAULT_PARTITION + i) as f32 * std::f32::consts::TAU * 3000. / 48000.).sin();
+                (x,x)
+            });
+            gain = meter.observe(&input);
+        }
+        let expected = 2. / 10f32.powf(3./20.);
+        assert!((gain.unwrap()-expected).abs()<0.03, "presence energy was ignored: {:?}", gain);
+        assert_eq!(reference_with_presence(ir.clone(), None, 48000), ir);
     }
 }
