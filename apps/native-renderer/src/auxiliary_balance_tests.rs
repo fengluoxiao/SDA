@@ -42,6 +42,8 @@ fn render_scheduled(
     schedule: &[(usize, bool, bool)],
 ) -> Rendered {
     let mut e = Engine::new(48000, 2);
+    // Archived broadband-controller regressions remain explicit legacy tests.
+    e.auxiliary_balance = auxiliary_balance::AuxiliaryBalance::new(48000);
     e.set_layout(vbap::LayoutId::Sony360Ra13).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");

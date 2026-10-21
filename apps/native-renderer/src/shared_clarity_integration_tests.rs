@@ -399,7 +399,7 @@ fn replay_scene(audition: Option<serde_json::Value>) {
         if let Some(trace)=&mut gain_trace {
             writeln!(trace,"{}",serde_json::json!({"sample":e.sample_pos,
                 "programmeGainDb":20.*f64::from(e.program_gain).max(1e-12).log10(),"frontCommonMix":e.front_common.diagnostic_mix(),"frontCommonGainDb":20.*f64::from(e.front_common.gain).max(1e-12).log10(),
-                "auxiliaryEnabled":e.auxiliary_balance.enabled(),"temporalDetailEnabled":e.auxiliary_balance.temporal_enabled(),"temporalDetailLevels":e.auxiliary_balance.temporal_levels(),"groupLevels":e.auxiliary_balance.levels(),"outputReductionDb":e.output_dynamics.gain_db(),"peakGuardGainDb":20.*f64::from(e.peak_guard.diagnostic_gain()).max(1e-12).log10(),"headroomRequestDb":e.auxiliary_balance.headroom_db()})).unwrap();
+                "directionalStrength":e.auxiliary_balance.directional_strength(),"spatialAlgorithm":crate::SPATIAL_BALANCE_ALGORITHM,"auxiliaryEnabled":e.auxiliary_balance.enabled(),"temporalDetailEnabled":e.auxiliary_balance.temporal_enabled(),"temporalDetailLevels":e.auxiliary_balance.temporal_levels(),"groupLevels":e.auxiliary_balance.levels(),"outputReductionDb":e.output_dynamics.gain_db(),"peakGuardGainDb":20.*f64::from(e.peak_guard.diagnostic_gain()).max(1e-12).log10(),"headroomRequestDb":e.auxiliary_balance.headroom_db()})).unwrap();
         }
         guard = guard.min(e.peak_guard.diagnostic_gain());
         count += 1;

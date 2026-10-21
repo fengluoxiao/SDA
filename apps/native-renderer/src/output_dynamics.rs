@@ -96,6 +96,7 @@ pub(super) struct FinalMixAttenuator {
     hop: usize,
     policy: Policy,
     enabled: bool,
+    meter_only: bool,
     requested_attenuation_db: f64,
     reference_gain: f64,
     last_programme_gain: f64,
@@ -158,6 +159,7 @@ impl FinalMixAttenuator {
             hop: (sr * 0.01).round().max(1.) as usize,
             policy,
             enabled: true,
+            meter_only: false,
             requested_attenuation_db: 0.,
             reference_gain: 1.,
             last_programme_gain: 1.,
@@ -288,12 +290,11 @@ impl FinalMixAttenuator {
             && short.is_finite()
             && momentary.is_finite()
         {
-            // The audio already carries the linked attenuation envelope.
-            // Testing the pre-attenuation mix here double-counts its excess
-            // and prevents quiet auxiliary content from using real headroom.
-            let applied_db = 20. * self.gain.min(1.).max(1e-30).log10();
-            Some((target_lufs - short - applied_db)
-                .min(target_lufs + p.momentary_margin_db - momentary - applied_db))
+            // Enhancement may only spend room that exists before common
+            // protection. Borrowing its attenuation creates positive feedback:
+            // more source lift -> more common cut -> apparently more room.
+            Some((target_lufs - short)
+                .min(target_lufs + p.momentary_margin_db - momentary))
         } else {
             None
         };
@@ -303,7 +304,7 @@ impl FinalMixAttenuator {
             // does not process frames, so this does not reset pause/resume state.
             target = 0.;
         }
-        if !self.enabled {
+        if !self.enabled || self.meter_only {
             target = 0.;
         }
         let tau = if !self.enabled {
@@ -343,6 +344,16 @@ impl FinalMixAttenuator {
     /// A later normalization estimate must not stack a new cut on top of the
     /// old output cut while that cut waits for its multi-second release.
     /// Only programme gain is rebased; user preamp/slider changes stay separate.
+    /// Observe output room without riding programme loudness. Programme
+    /// normalization remains upstream; the independent true-peak guard remains
+    /// downstream. Both spatial switch states use this identical path.
+    pub fn process_programme_reference(&mut self, frame: [f64; 2], manual: f64, programme: f64, makeup: f64) -> [f64; 2] {
+        self.meter_only = true;
+        self.gain = 1.;
+        self.gain_db = 0.;
+        self.step = 1.;
+        self.process_programme_scaled(frame, manual, programme, makeup)
+    }
     pub fn process_programme_scaled(
         &mut self,
         frame: [f64; 2],
@@ -553,7 +564,7 @@ mod mode_transition_tests {
 mod controlled_headroom_tests {
     use super::*;
     #[test]
-    fn measured_headroom_includes_the_already_applied_output_attenuation() {
+    fn common_attenuation_cannot_be_borrowed_as_enhancement_headroom() {
         let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
         for i in 0..48000 * 5 {
             let x = (i as f64 * std::f64::consts::TAU * 1000. / 48000.).sin() * 0.7;
@@ -561,7 +572,8 @@ mod controlled_headroom_tests {
         }
         assert!(n.gain_db() < -10.);
         let room = n.available_headroom_db().unwrap();
-        assert!(room.abs() < 1., "controlled output near target must not report raw input excess: {room}");
+        assert!(room < -10., "common protection was recycled into enhancement room: {room}");
+        assert!((room - n.gain_db()).abs() < 0.1);
     }
 }
 
@@ -693,5 +705,25 @@ mod live_reference_continuity_tests {
         feed(&mut a,60,0.02,48000);feed(&mut b,60,0.1,48000);
         feed(&mut a,8,0.2,48000);feed(&mut b,8,0.2,48000);
         assert!((a.gain_db()-b.gain_db()).abs()<0.1,"unrelated programme history still controls identical audio: {} vs {}",a.gain_db(),b.gain_db());
+    }
+}
+
+#[cfg(test)]
+mod reference_only_tests {
+    use super::*;
+    #[test]
+    fn live_programme_cannot_be_ducked_by_a_loud_section_or_previous_history() {
+        for rate in [44100,48000,96000] {
+            let mut d=FinalMixAttenuator::new(rate,Policy::default()).unwrap();
+            for i in 0..rate*12 {
+                let x=(std::f64::consts::TAU*1000.*f64::from(i)/f64::from(rate)).sin()*if i<rate*4{0.02}else{0.5};
+                let y=d.process_programme_reference([x,-x*0.3],0.8,0.5,10f64.powf(2.5/20.));
+                let expected=x*0.8*0.5*10f64.powf(2.5/20.);
+                assert!((y[0]-expected).abs()<1e-14);
+                assert!((y[1]+expected*0.3).abs()<1e-14);
+                assert_eq!(d.gain_db(),0.);
+            }
+            assert!(d.available_headroom_db().unwrap()<0.,"meter must still reject new broadband lift");
+        }
     }
 }

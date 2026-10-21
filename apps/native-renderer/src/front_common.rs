@@ -144,6 +144,16 @@ fn retained_front(source: &Source) -> bool {
             })
 }
 
+fn balanced_pair(sources: &HashMap<String, Source>, left: &[String], right: &[String]) -> bool {
+    let Some(l) = left.first().and_then(|id| sources.get(id)) else { return false; };
+    let Some(r) = right.first().and_then(|id| sources.get(id)) else { return false; };
+    let [lx, ly, _] = l.position;
+    let [rx, ry, _] = r.position;
+    let denominator = lx.hypot(ly) * rx.hypot(ry);
+    lx < -0.05 && rx > 0.05 && denominator > 1e-8
+        && (-lx*rx + ly*ry) / denominator >= 5f32.to_radians().cos()
+}
+
 fn unique_pair(
     sources: &HashMap<String, Source>,
     grouped: bool,
@@ -233,9 +243,10 @@ struct ReferenceMeter {
     center_power: Vec<f64>,
     pair_sum: f64,
     center_sum: f64,
+    alpha: f64,
 }
 impl ReferenceMeter {
-    fn new(l: &(Vec<f32>, Vec<f32>), r: &(Vec<f32>, Vec<f32>), c: &(Vec<f32>, Vec<f32>)) -> Self {
+    fn new(l: &(Vec<f32>, Vec<f32>), r: &(Vec<f32>, Vec<f32>), c: &(Vec<f32>, Vec<f32>), rate: u32) -> Self {
         use rustfft::num_complex::Complex;
         let n = 4096
             .max(l.0.len())
@@ -271,6 +282,7 @@ impl ReferenceMeter {
             center_power,
             pair_sum: 0.0,
             center_sum: 0.0,
+            alpha: 1. - (-(crate::convolution::DEFAULT_PARTITION as f64) / f64::from(rate.max(1))).exp(),
         }
     }
     fn observe(
@@ -286,10 +298,15 @@ impl ReferenceMeter {
         }
         self.fft
             .process_with_scratch(&mut self.buffer, &mut self.scratch);
+        let (mut pair, mut center) = (0., 0.);
         for (i, z) in self.buffer.iter().enumerate() {
             let p = f64::from(z.norm_sqr());
-            self.pair_sum += p * self.pair_power[i];
-            self.center_sum += p * self.center_power[i];
+            pair += p * self.pair_power[i];
+            center += p * self.center_power[i];
+        }
+        if center > 1e-24 {
+            self.pair_sum += self.alpha * (pair - self.pair_sum);
+            self.center_sum += self.alpha * (center - self.center_sum);
         }
         let gain = (self.pair_sum / self.center_sum).sqrt() as f32;
         (gain.is_finite() && (0.25..=4.0).contains(&gain)).then_some(gain)
@@ -383,7 +400,7 @@ impl FrontCommon {
                     // while it stays in the front plane and each group still
                     // shares one complete route, just as for a single pair.
                     self.pair.as_ref().filter(|(left, right)| {
-                        retain
+                        retain && balanced_pair(sources, left, right)
                             && left.iter().chain(right).all(|id| sources.get(id).is_some_and(retained_front))
                             && group_input(sources, left).is_some()
                             && group_input(sources, right).is_some()
@@ -393,7 +410,7 @@ impl FrontCommon {
                 self.pair
                     .as_ref()
                     .filter(|(l, r)| {
-                        l.iter()
+                        balanced_pair(sources, l, r) && l.iter()
                             .chain(r)
                             .all(|id| sources.get(id).is_some_and(retained_front))
                     })
@@ -468,7 +485,7 @@ impl FrontCommon {
                 return;
             };
             if self.mix == 0. { self.gain = gain; }
-            self.meter = Some(ReferenceMeter::new(&l, &r, &c));
+            self.meter = Some(ReferenceMeter::new(&l, &r, &c, set.sample_rate));
             self.reference = Some(key);
         }
         if self.center.is_none() {
@@ -506,7 +523,7 @@ impl FrontCommon {
             self.mix += (target - self.mix).clamp(-1.0 / 512.0, 1.0 / 512.0);
             // One broadband group gain, slew-limited to avoid audible pumping.
             // Long-term input-weighted HRTF energy replaces clip-specific gain.
-            self.gain += (target_gain - self.gain) / 48000.0;
+            self.gain += (target_gain - self.gain) / set.sample_rate.max(1) as f32;
             let mid = (l + r) * 0.5 * self.mix;
             // Remove the common excitation once per physical front group.
             // Splitting one co-located object into several objects must not
@@ -998,7 +1015,7 @@ mod tests {
         let l = (vec![1.0], vec![1.0]);
         let r = (vec![0.5], vec![0.5]);
         let c = (vec![1.0], vec![1.0]);
-        let mut m = ReferenceMeter::new(&l, &r, &c);
+        let mut m = ReferenceMeter::new(&l, &r, &c, 48000);
         let zero = [(0.0, 0.0); crate::convolution::DEFAULT_PARTITION];
         assert!(m.observe(&zero).is_none());
         let tone = std::array::from_fn(|i| {
@@ -1007,6 +1024,18 @@ mod tests {
         });
         assert!((m.observe(&tone).unwrap() - 1.5).abs() < 1e-6);
         assert!((m.observe(&zero).unwrap() - 1.5).abs() < 1e-6);
+    }
+    #[test]
+    fn current_reference_converges_independently_of_previous_song_sections() {
+        let ir=(vec![1.,0.5],vec![0.8,-0.3]);
+        let center=(vec![1.],vec![0.9]);
+        let mut a=ReferenceMeter::new(&ir,&ir,&center,48000);
+        let mut b=ReferenceMeter::new(&ir,&ir,&center,48000);
+        let block=|phase:f32|std::array::from_fn(|i|{let x=(i as f32*phase).sin();(x,x)});
+        for _ in 0..1000 { a.observe(&block(0.1)); b.observe(&block(1.7)); }
+        let (mut x,mut y)=(0.,0.);
+        for _ in 0..4000 {x=a.observe(&block(0.5)).unwrap();y=b.observe(&block(0.5)).unwrap();}
+        assert!((x-y).abs()<1e-4,"old spectral history still changes current foreground gain: {x} vs {y}");
     }
     #[test]
     fn grouped_front_treatment_survives_small_authored_motion_in_both_mixers() {
@@ -1047,8 +1076,8 @@ mod tests {
         let mut out = vec![0.0; 2048 * 2];
         e.render_into(&mut out, 2);
         assert_eq!(
-            e.front_common.mix, 1.0,
-            "association must survive an authored front move"
+            e.front_common.mix, 0.0,
+            "same-side motion must restore authored source paths"
         );
         e.front_common.enabled = false;
         e.render_into(&mut out, 2);
@@ -1086,7 +1115,7 @@ mod bass_preservation_tests {
         let ir = (vec![1.0], vec![1.0]);
         let p = dsp::Biquad::peaking(48000, 3000., 0.9, 3.).unwrap();
         let center = reference_with_presence(ir.clone(), Some(p), 48000);
-        let mut meter = ReferenceMeter::new(&ir, &ir, &center);
+        let mut meter = ReferenceMeter::new(&ir, &ir, &center, 48000);
         let mut gain = None;
         for block in 0..100 {
             let input = std::array::from_fn(|i| {

@@ -64,6 +64,7 @@ pub(crate) struct Control<'a> {
     pub history: &'a History,
     pub gains: &'a [f32; DEFAULT_PARTITION],
     pub enabled: bool,
+    pub directional_strength: Option<&'a [f32; DEFAULT_PARTITION]>,
 }
 #[derive(Clone)]
 pub(crate) struct SourceState {
@@ -333,6 +334,9 @@ impl Budget {
             .max(x[1].abs())
             .max(self.peak * self.peak_release);
     }
+    pub fn peak_headroom_db(&self) -> f64 {
+        crate::true_peak_guard::CEILING_DB - 20. * self.peak.max(1e-12).log10() - 1.
+    }
     pub fn retarget_at(&mut self, index: usize, base: f32) {
         self.gain = if base > 0. {
             f64::from(self.gains[index.min(DEFAULT_PARTITION - 1)] / base)
@@ -362,8 +366,7 @@ impl Budget {
         enabled: bool,
         offset: usize,
     ) {
-        let peak_room =
-            crate::true_peak_guard::CEILING_DB - 20. * self.peak.max(1e-12).log10() - 1.;
+        let peak_room = self.peak_headroom_db();
         let available = room
             .filter(|v| v.is_finite())
             .map(|v| v.min(peak_room) - 0.2);
@@ -390,9 +393,12 @@ impl Budget {
                 1.
             };
             self.gains[i] = (base * self.gain) as f32;
-            let seconds = if target > self.gain { 0.12 } else { 0.05 };
-            self.gain = target
+            let seconds = if target > self.gain { 0.12 } else { 0.005 };
+            let next = target
                 + (self.gain - target) * (-1. / (f64::from(self.rate.max(1)) * seconds)).exp();
+            // A short quiet tail is evidence, not permission for a fast level
+            // jump. Share the conservative growth rate of the spatial stage.
+            self.gain = next.min(self.gain * 10f64.powf(0.25 / (20. * f64::from(self.rate.max(1)))));
         }
     }
 }

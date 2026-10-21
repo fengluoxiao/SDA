@@ -353,7 +353,15 @@ final class SdaPlayer {
   playbackEvents.append(["time":Date().timeIntervalSince1970,"event":event,"detail":detail,
    "generation":generation,"background":inBackground,"paused":isPaused,"done":done,
    "sessionInterrupted":sessionInterrupted,"engineRunning":audio?.isRunning ?? false,
-   "route":systemSpatial == nil ? "KU100" : "system714",
+   "route":systemSpatial == nil ? "SDA-HRTFHQ" : "system714",
+   "rendererRevision":status["rendererRevision"] ?? "unavailable",
+   "spatialBalanceAlgorithm":status["spatialBalanceAlgorithm"] ?? "system-renderer",
+   "liveLoudnessDucking":status["liveLoudnessDucking"] ?? false,
+   "volumeBalance":status["volumeBalanceEnabled"] ?? false,
+   "spatialBalance":status["spatialEnhancementEnabled"] ?? false,
+   "binaural":status["binauralEnabled"] ?? false,
+   "programmeGainDb":status["renderedProgramGainDb"] ?? 0,
+   "rendererConfiguration":status["rendererConfiguration"] ?? [String:Any](),
    "decoded":status["decodedSamplePos"] ?? 0,"consumed":status["consumedSamplePos"] ?? 0])
   if playbackEvents.count > 96 { playbackEvents.removeFirst(playbackEvents.count-96) }
   let url = FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("sda-playback-diagnostics.json")

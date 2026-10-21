@@ -175,6 +175,11 @@ pub(crate) fn process_source_detail(
         reference.groups[0][axis] += x * route.basis[axis] * route.front;
         reference.groups[1][axis] += x * route.basis[axis] * f64::from(auxiliary);
     }
+    if let Some(strength) = temporal.and_then(|detail| detail.directional_strength) {
+        // New presentation redistributes the existing auxiliary spectrum. No
+        // broadband group gain, cut, common-output feedback or cache is used.
+        return source.directional_detail.process(sample, auxiliary, strength[index], rate);
+    }
     let control = if control.is_finite() {
         control.max(0.)
     } else {
@@ -239,6 +244,9 @@ pub(crate) struct AuxiliaryBalance {
     last_applied_gain: f32,
     temporal: crate::temporal_detail::Budget,
     temporal_detail_enabled: bool,
+    directional: bool,
+    directional_strength: [f32; DEFAULT_PARTITION],
+    strength: f64,
 }
 impl AuxiliaryBalance {
     pub fn new(rate: u32) -> Self {
@@ -262,8 +270,21 @@ impl AuxiliaryBalance {
             last_applied_gain: 1.,
             temporal: crate::temporal_detail::Budget::new(rate),
             temporal_detail_enabled: true,
+            directional: false,
+            directional_strength: [0.; DEFAULT_PARTITION],
+            strength: 0.,
         }
     }
+    pub fn directional_detail(rate: u32) -> Self {
+        let mut controller = Self::new(rate);
+        controller.directional = true;
+        // Spectral redistribution does not raise the noise floor in bulk.
+        // Keep genuine quiet ambience eligible below the old lift gate.
+        controller.policy.reference_gate_db = -75.;
+        controller
+    }
+    #[cfg(test)]
+    pub fn directional_strength(&self) -> f32 { self.directional_strength[0] }
     pub fn reset(&mut self) {
         self.filters = [[KWeight::new(self.rate); 4]; 2];
         self.energy = [0.; 2];
@@ -276,6 +297,8 @@ impl AuxiliaryBalance {
         self.maximum_attenuation_db = 0.;
         self.last_applied_gain = 1.;
         self.temporal.reset();
+        self.directional_strength.fill(0.);
+        self.strength = 0.;
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool, offset: usize) {
         if immediate && !enabled {
@@ -283,6 +306,8 @@ impl AuxiliaryBalance {
             self.gain_db = 0.;
             self.gains.fill(1.);
             self.temporal.disable_immediately();
+            self.directional_strength.fill(0.);
+            self.strength = 0.;
             return;
         }
         if self.enabled == enabled {
@@ -314,8 +339,8 @@ impl AuxiliaryBalance {
     }
     #[cfg(test)]
     pub fn observe(&mut self, reference: Reference, programme_gain: f32) {self.observe_at(reference,programme_gain,self.observed);}
-    pub fn temporal_control(&self)->crate::temporal_detail::Control<'_>{crate::temporal_detail::Control{history:&self.temporal.history,gains:&self.temporal.gains,enabled:self.temporal_enabled()}}
-    pub fn temporal_enabled(&self)->bool{self.enabled&&self.temporal_detail_enabled&&self.policy.maximum_cut_db>0.}
+    pub fn temporal_control(&self)->crate::temporal_detail::Control<'_>{crate::temporal_detail::Control{history:&self.temporal.history,gains:&self.temporal.gains,enabled:self.temporal_enabled(),directional_strength:self.directional.then_some(&self.directional_strength)}}
+    pub fn temporal_enabled(&self)->bool{self.enabled&&!self.directional&&self.temporal_detail_enabled&&self.policy.maximum_cut_db>0.}
     #[cfg(test)]
     pub fn set_temporal_for_diagnostics(&mut self,enabled:bool){self.temporal_detail_enabled=enabled;if !enabled{self.temporal.disable_immediately();}}
     pub fn temporal_levels(&self)->[f64;4]{self.temporal.levels()}
@@ -369,13 +394,29 @@ impl AuxiliaryBalance {
         };
     }
     pub fn set_output_headroom(&mut self, available_db: Option<f64>) {
-        self.headroom = available_db.filter(|v| v.is_finite());
+        self.headroom = available_db.filter(|v| v.is_finite())
+            .map(|db| db.min(self.temporal.peak_headroom_db()));
     }
     #[cfg(test)]
     pub fn headroom_db(&self) -> Option<f64> {
         self.headroom
     }
     fn fill_from(&mut self, offset: usize) {
+        if self.directional {
+            let deficit = self.goal_db.max(0.);
+            let target = if self.enabled && self.policy.maximum_cut_db > 0. {
+                deficit / (deficit + 6.)
+            } else { 0. };
+            for i in offset..DEFAULT_PARTITION {
+                self.gains[i] = 1.;
+                self.directional_strength[i] = self.strength as f32;
+                let seconds = if target > self.strength { 0.15 } else { 0.05 };
+                self.strength = target + (self.strength-target)*(-1./(f64::from(self.rate.max(1))*seconds)).exp();
+            }
+            self.gain_db = 0.;
+            self.temporal.disable_immediately();
+            return;
+        }
         let target = if !self.enabled || self.policy.maximum_cut_db == 0. {
             0.
         } else if self.goal_db <= 0. {
@@ -400,6 +441,7 @@ impl AuxiliaryBalance {
                 self.goal_db.min((self.gain_db.max(0.) + source_budget).max(0.))
             })
         };
+        let initial_db = self.gain_db;
         for i in offset..DEFAULT_PARTITION {
             self.gains[i] = 10f64.powf(self.gain_db / 20.) as f32;
             if !self.enabled {
@@ -407,7 +449,12 @@ impl AuxiliaryBalance {
                     / (f64::from(self.rate) * 0.05);
                 self.gain_db += (-self.gain_db).clamp(-step, step);
             } else {
-                let ms = if target < self.gain_db {
+                let ms = if target < self.gain_db && self.gain_db > 0. {
+                    // Withdraw added enhancement before the slower common
+                    // protector reacts. Authored auxiliary cuts retain their
+                    // own attack/release policy below unity.
+                    5.
+                } else if target < self.gain_db {
                     self.policy.attack_ms
                 } else {
                     self.policy.release_ms
@@ -426,7 +473,14 @@ impl AuxiliaryBalance {
                 }
             }
         }
-        self.temporal.fill(&self.gains,self.energy[0].max(0.).sqrt(),self.energy[1].max(0.).sqrt(),self.reference_gain,self.headroom,self.temporal_enabled(),offset);
+        // Both enhancement stages share one budget. Reserve the mix growth
+        // already scheduled above before the temporal-detail stage can spend it.
+        let front = self.energy[0].max(0.).sqrt();
+        let auxiliary = self.energy[1].max(0.).sqrt() * 10f64.powf(initial_db / 20.);
+        let share = auxiliary / (front + auxiliary).max(1e-30);
+        let growth = 20. * (1. + share * (10f64.powf((self.gain_db-initial_db).max(0.)/20.) - 1.)).log10();
+        let remaining = self.headroom.map(|room| room-growth);
+        self.temporal.fill(&self.gains,front,self.energy[1].max(0.).sqrt(),self.reference_gain,remaining,self.temporal_enabled(),offset);
     }
     pub fn finish_block(&mut self) {
         self.fill_from(0);

@@ -66,6 +66,7 @@ mod spatial_mode_transition_tests;
 mod front_presentation_tests;
 mod front_ear;
 pub mod convolution;
+pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-spectral-redistribution-v1";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
@@ -84,6 +85,7 @@ mod master_preamp;
 mod output_dynamics;
 mod auxiliary_balance;
 mod temporal_detail;
+mod directional_detail;
 #[cfg(test)]
 mod temporal_detail_integration_tests;
 #[cfg(test)]
@@ -786,6 +788,7 @@ pub struct Source {
     auxiliary_route_at: u64,
     auxiliary_weight: f32,
     temporal_detail: temporal_detail::SourceState,
+    directional_detail: directional_detail::SourceState,
     spatial_layer_gain: f32,
     spatial_layer_target: f32,
     spatial_layer_bed_weight: f32,
@@ -857,6 +860,7 @@ impl Default for Source {
             auxiliary_route_at: u64::MAX,
             auxiliary_weight: 0.0,
             temporal_detail: Default::default(),
+            directional_detail: Default::default(),
             spatial_layer_gain: 1.0,
             spatial_layer_target: 1.0,
             spatial_layer_bed_weight: 0.0,
@@ -1304,7 +1308,7 @@ impl Engine {
             program_gain_ramp_remaining: 0,
             program_events: BTreeMap::new(),
             spatial_enhancement_enabled: false,
-            auxiliary_balance: auxiliary_balance::AuxiliaryBalance::new(sample_rate),
+            auxiliary_balance: auxiliary_balance::AuxiliaryBalance::directional_detail(sample_rate),
             auxiliary_reference: vec![auxiliary_balance::Reference::default(); convolution::DEFAULT_PARTITION].into_boxed_slice(),
             output_dynamics: output_dynamics::FinalMixAttenuator::new(sample_rate, output_dynamics::Policy::default()).expect("valid spatial output policy"),
             peak_guard: true_peak_guard::TruePeakGuard::new(sample_rate),
@@ -1856,9 +1860,8 @@ impl Engine {
         Ok(())
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
-    /// User-selected B layers: main +2 dB, full auxiliary +6 dB.
-    /// The common 4 kHz shelf is capped at +0.6 dB by the 2026-10-19 preference.
-    /// The linked +2 dB belongs to the spatial path so plain output stays unity.
+    /// Source-local directional contrast. The approved common 4 kHz shelf is
+    /// retained; layer-wide +2/+6 and common live loudness ducking are absent.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
@@ -1944,9 +1947,12 @@ impl Engine {
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();
         let enabled = self.binaural_enabled && !self.cinema.monitor.hardware.enabled;
         self.output_dynamics.set_enabled(enabled, false);
-        let controlled = self.output_dynamics.process_programme_scaled(mix.map(f64::from),
+        let controlled = self.output_dynamics.process_programme_reference(mix.map(f64::from),
             f64::from(gain), f64::from(self.program_gain), f64::from(self.programme_output_makeup.gain()));
-        self.auxiliary_balance.observe_detail_output(controlled);
+        // Budget against the unattenuated, programme-scaled mix. Common
+        // limiting and the listener slider must never finance extra detail.
+        let budget_gain = f64::from(gain * self.program_gain * self.programme_output_makeup.gain());
+        self.auxiliary_balance.observe_detail_output(mix.map(|v| f64::from(v) * budget_gain));
         // The slider remains a final attenuation, so turning it down cannot
         // invite more auxiliary lift or cancel the user's intended volume.
         self.peak_guard.process(controlled[0] as f32 * self.output_gain, controlled[1] as f32 * self.output_gain)
