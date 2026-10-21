@@ -23,6 +23,10 @@ The patch does not change the decoder, audio gains, rendering profile, iOS sizin
 
 ## Theme selector and header spacing
 
-Android theme selection now uses Expo UI's Jetpack Compose Material DropdownMenu, already bundled by this project. The settings page shows only the current color/name; a tap opens native menu items with their color chips and a check for the selected theme. Selecting closes the popup and persists the existing theme preference. An unavailable native UI module uses the existing selection dialog. Reference: https://developer.android.com/develop/ui/compose/components/menu
+Android theme selection uses the Android framework's android.widget.PopupMenu. The settings page shows only the current color/name; a tap opens the platform menu, anchored at the right disclosure indicator with END gravity. A platform exclusive-checkable group tracks the selected theme. Built-in light/dark framework themes control appearance, and public API29+ setForceShowIcon retains color swatches. API26–28 keep the framework's default icon visibility. Selecting closes the menu and persists the existing theme preference. Without the native module, the existing selection dialog remains available.
+
+This is distinct from the earlier Compose Material3 DropdownMenu implementation. The framework revision does not set a custom popup background and does not use hidden-API reflection. The invisible anchor does not capture backdrop frames; dismissal also follows native Back, outside-touch and view-detach behavior.
+
+References: https://developer.android.com/reference/android/widget/PopupMenu and https://developer.android.com/reference/android/view/Menu#setGroupCheckable(int,boolean,boolean)
 
 Remove the compact header action's extra 8 dp trailing margin. The two 48 dp touch lanes are adjacent, giving 48 dp between their centers and approximately 12 dp between the 36 dp circles, while preserving non-overlapping touch targets.

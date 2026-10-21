@@ -1,6 +1,11 @@
 package app.sda.mobile.sda
 
 import android.content.Context
+import android.graphics.drawable.GradientDrawable
+import android.view.ContextThemeWrapper
+import android.view.Gravity
+import android.widget.PopupMenu
+import org.json.JSONArray
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.RenderNode
@@ -88,8 +93,8 @@ class SdaAndroidChromeModule : Module() {
             Unit
         }
         View(SdaAndroidChromeView::class) {
-            Events("onSelect", "onExpand", "onPlayback", "onToggle", "onSpatialSelect")
-            Prop("presentation") { view: SdaAndroidChromeView, value: String -> view.presentation = if (value in listOf("bottom", "rail", "mini", "header", "toggle", "button")) value else "bottom" }
+            Events("onSelect", "onExpand", "onPlayback", "onToggle", "onSpatialSelect", "onThemeSelect", "onThemeDismiss")
+            Prop("presentation") { view: SdaAndroidChromeView, value: String -> view.presentation = if (value in listOf("bottom", "rail", "mini", "header", "toggle", "button", "theme-anchor")) value else "bottom" }
             Prop("preserveAccentColor") { view: SdaAndroidChromeView, value: Boolean -> view.preserveAccentColor = value }
             Prop("tabBarWidth") { view: SdaAndroidChromeView, value: Float -> view.tabBarWidth = if (value.isFinite()) value.coerceIn(160f, 480f) else 264f }
             Prop("topInset") { view: SdaAndroidChromeView, value: Float -> view.topInset = value.coerceAtLeast(0f) }
@@ -110,6 +115,10 @@ class SdaAndroidChromeModule : Module() {
             Prop("spatialEnabled") { view: SdaAndroidChromeView, value: Boolean -> view.spatialEnabled = value }
             Prop("spatialTracking") { view: SdaAndroidChromeView, value: Boolean -> view.spatialTracking = value }
             Prop("headYawDegrees") { view: SdaAndroidChromeView, value: Float -> view.headYawDegrees = if (value.isFinite()) value.coerceIn(-45f,45f) else 0f }
+            Prop("themeMenuItems") { view: SdaAndroidChromeView, value: String -> view.themeMenuItems = value }
+            Prop("themeMenuSelected") { view: SdaAndroidChromeView, value: String -> view.themeMenuSelected = value }
+            Prop("themeMenuRequest") { view: SdaAndroidChromeView, value: Int -> view.themeMenuRequest = value }
+            OnViewDidUpdateProps { view: SdaAndroidChromeView -> view.showThemeMenuIfRequested() }
             Prop("compactButton") { view: SdaAndroidChromeView, value: Boolean -> view.compactButton = value }
             Prop("settingsButton") { view: SdaAndroidChromeView, value: Boolean -> view.settingsButton = value }
             Prop("backButton") { view: SdaAndroidChromeView, value: Boolean -> view.backButton = value }
@@ -125,6 +134,14 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val onExpand by EventDispatcher()
     private val onPlayback by EventDispatcher()
     private val onSpatialSelect by EventDispatcher()
+    private val onThemeSelect by EventDispatcher()
+    private val onThemeDismiss by EventDispatcher()
+    var themeMenuItems = "[]"
+    var themeMenuSelected = ""
+    var themeMenuRequest = 0
+    private var presentedThemeRequest = 0
+    private var themePopup: PopupMenu? = null
+
     var topInset by mutableFloatStateOf(0f)
     var checked by mutableStateOf(false)
     var blurred by mutableStateOf(false)
@@ -162,7 +179,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     private val location = IntArray(2)
     private val rootLocation = IntArray(2)
     private val captureListener = ViewTreeObserver.OnPreDrawListener {
-        if (!capturing && isShown && (hasWindowFocus() || spatialMenuOpen) && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
+        if (!capturing && presentation != "theme-anchor" && isShown && (hasWindowFocus() || spatialMenuOpen) && windowVisibility == VISIBLE && width > 0 && height > 0 && getGlobalVisibleRect(visibleBounds)) {
             recordBackground()
             if (spatialMenuOpen) recordMenuBackground()
         }
@@ -184,6 +201,8 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     }
 
     override fun onDetachedFromWindow() {
+        themePopup?.dismiss()
+        themePopup = null
         observedTree?.takeIf { it.isAlive }?.removeOnPreDrawListener(captureListener)
         observedTree = null
         spatialMenuOpen = false
@@ -205,6 +224,65 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         if (visibility != VISIBLE) spatialMenuOpen = false
+    }
+
+    fun showThemeMenuIfRequested() {
+        if (presentation != "theme-anchor" || themeMenuRequest <= 0 || themeMenuRequest == presentedThemeRequest) return
+        val request = themeMenuRequest
+        presentedThemeRequest = request
+        post {
+            if (themeMenuRequest != request) return@post
+            if (!isAttachedToWindow || windowToken == null || width == 0 || height == 0) {
+                onThemeDismiss(emptyMap<String, Any>())
+                return@post
+            }
+            val entries = runCatching { JSONArray(themeMenuItems) }.getOrNull()
+            if (entries == null || entries.length() == 0) {
+                onThemeDismiss(emptyMap<String, Any>())
+                return@post
+            }
+            themePopup?.dismiss()
+            val popupContext = ContextThemeWrapper(context,
+                if (dark) android.R.style.Theme_Material else android.R.style.Theme_Material_Light)
+            val popup = PopupMenu(popupContext, this, Gravity.END)
+            val ids = mutableMapOf<Int, String>()
+            val iconSize = (18 * resources.displayMetrics.density + .5f).toInt()
+            for (index in 0 until minOf(entries.length(), 16)) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val id = entry.optString("id")
+                val label = entry.optString("label")
+                if (id.isBlank() || label.isBlank()) continue
+                ids[index + 1] = id
+                popup.menu.add(1, index + 1, index, label).apply {
+                    isCheckable = true
+                    isChecked = id == themeMenuSelected
+                    val color = runCatching { android.graphics.Color.parseColor(entry.optString("color")) }.getOrNull()
+                    if (color != null) icon = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL; setColor(color); setSize(iconSize, iconSize)
+                    }
+                }
+            }
+            if (ids.isEmpty()) {
+                onThemeDismiss(emptyMap<String, Any>())
+                return@post
+            }
+            popup.menu.setGroupCheckable(1, true, true)
+            if (Build.VERSION.SDK_INT >= 29) popup.setForceShowIcon(true)
+            popup.setOnMenuItemClickListener { item ->
+                ids[item.itemId]?.let { onThemeSelect(mapOf("id" to it)) }
+                true
+            }
+            popup.setOnDismissListener {
+                if (themePopup === popup) themePopup = null
+                onThemeDismiss(emptyMap<String, Any>())
+            }
+            themePopup = popup
+            runCatching { popup.show() }.onFailure {
+                themePopup = null
+                onThemeDismiss(emptyMap<String, Any>())
+                android.util.Log.w("SdaAndroidThemeMenu", "Framework popup could not be shown", it)
+            }
+        }
     }
 
     private fun recordMenuBackground() {
@@ -287,6 +365,7 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
 
     @Composable
     private fun Chrome() {
+        if (presentation == "theme-anchor") return
         val ink = if (dark) Color(0xFFF5F5F7) else Color(0xFF1C1C1E)
         val muted = if (dark) Color(0xFFA0A0A8) else Color(0xFF74747C)
         val accent = accentColor
