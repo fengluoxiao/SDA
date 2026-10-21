@@ -351,3 +351,31 @@ fn programme_makeup_survives_supported_format_switches_and_clears_for_ordinary_a
     assert_eq!(e.programme_output_makeup.gain(),1.0);
     assert!(e.spatial_enhancement_enabled);
 }
+
+#[test]
+fn programme_balanced_output_recovers_after_loud_sections_for_all_selected_formats() {
+    for codec in ["eac3", "mpegh", "av3a", "ac4"] {
+        for spatial in [false, true] {
+            let mut e = Engine::new(48000, 2);
+            e.set_program_codec(codec.into());
+            e.program_enabled = true;
+            e.set_program_target(0.5, true);
+            e.set_spatial_enhancement(spatial).unwrap();
+            declare_makeup_source(&mut e, true, "");
+            let mut quiet_energy = [0f64; 2];
+            for (phase, seconds, amplitude) in [(0, 2, 0.01), (1, 4, 0.5), (2, 20, 0.01)] {
+                for i in 0..seconds * 48000 {
+                    e.advance_output_envelopes();
+                    let x = (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin() * amplitude;
+                    let y = e.process_final_output([x, -0.7 * x]);
+                    assert!(y.iter().all(|v| v.is_finite() && v.abs() <= 0.871));
+                    if phase != 1 && i >= seconds * 48000 - 24000 {
+                        quiet_energy[phase / 2] += f64::from(y[0]).powi(2);
+                    }
+                }
+            }
+            let delta = 10. * (quiet_energy[1] / quiet_energy[0]).log10();
+            assert!(delta.abs() < 0.15, "{codec} spatial={spatial}: the same quiet section stayed {delta} dB quieter");
+        }
+    }
+}

@@ -272,11 +272,12 @@ impl FinalMixAttenuator {
         // Both spatial switch states share this output reference. Programme
         // makeup is included in the measured signal, never in a separate target.
         let target_lufs = self.detector_target_lufs();
-        // Preserve musical dynamics: long-term control follows the accumulated
-        // gated programme rather than continually normalising every 3 seconds.
+        // Keep the programme reference, but only retain its attenuation while
+        // the current section still needs it. Gated history can exclude a quiet
+        // return entirely; letting it control that return would latch an old cut.
         let integrated = self.integrated_lufs.map_or(short, |v| v + reference_db);
         let mut target = 0f64
-            .min(target_lufs - integrated)
+            .min(target_lufs - integrated.min(short))
             .min(target_lufs + p.momentary_margin_db - momentary);
         self.available_headroom_db = if self.history_count >= 40
             && self.reference_gain > 0.
@@ -295,7 +296,9 @@ impl FinalMixAttenuator {
         };
         self.requested_attenuation_db = if short < p.silence_lufs { 0. } else { -target };
         if short < p.silence_lufs {
-            target = self.gain_db;
+            // Rendered digital silence releases protection too. Paused transport
+            // does not process frames, so this does not reset pause/resume state.
+            target = 0.;
         }
         if !self.enabled {
             target = 0.;
@@ -526,5 +529,49 @@ mod controlled_headroom_tests {
         assert!(n.gain_db() < -10.);
         let room = n.available_headroom_db().unwrap();
         assert!(room.abs() < 1., "controlled output near target must not report raw input excess: {room}");
+    }
+}
+
+#[cfg(test)]
+mod section_recovery_tests {
+    use super::*;
+    fn section(n: &mut FinalMixAttenuator, seconds: u32, amplitude: f64, makeup_db: f64) -> f64 {
+        let rate = n.rate as u32;
+        let mut maximum_step = 0f64;
+        for i in 0..rate * seconds {
+            let previous = n.gain_db();
+            let x = (i as f64 * std::f64::consts::TAU * 1000. / n.rate).sin() * amplitude;
+            n.process_scaled_with_makeup([x, -0.7 * x], 0.5, 10f64.powf(makeup_db / 20.));
+            maximum_step = maximum_step.max((n.gain_db() - previous).abs());
+        }
+        maximum_step
+    }
+    #[test]
+    fn loud_section_does_not_permanently_duck_a_returning_quiet_section() {
+        for makeup in [1.5, 2.0] {
+            let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+            section(&mut n, 2, 0.01, makeup);
+            let before = n.gain_db();
+            section(&mut n, 4, 0.5, makeup);
+            let loud = n.gain_db();
+            let maximum_step = section(&mut n, 20, 0.01, makeup);
+            assert!(maximum_step < 0.001, "recovery must remain sample-smooth: {maximum_step}");
+            eprintln!("makeup={makeup} quiet-before={before:.3} loud={loud:.3} quiet-after={:.3}", n.gain_db());
+            assert!(loud < -5., "loud material must still be protected");
+            assert!((n.gain_db() - before).abs() < 0.15, "historical loud section kept later quiet audio attenuated: {} dB", n.gain_db());
+            assert_eq!(n.requested_reduction_db(), 0.);
+            assert!(n.available_headroom_db().unwrap() > 5.);
+        }
+    }
+    #[test]
+    fn digital_silence_releases_old_attenuation_before_audio_returns() {
+        let mut n = FinalMixAttenuator::new(48000, Policy::default()).unwrap();
+        section(&mut n, 4, 0.5, 2.0);
+        assert!(n.gain_db() < -5.);
+        section(&mut n, 20, 0., 2.0);
+        eprintln!("gain after silence={:.3} dB", n.gain_db());
+        assert!(n.gain_db() > -0.15, "silent audio must not freeze old attenuation");
+        section(&mut n, 1, 0.01, 2.0);
+        assert!(n.gain_db() > -0.15);
     }
 }
