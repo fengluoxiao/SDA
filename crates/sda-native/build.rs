@@ -1,5 +1,9 @@
 use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        // Reject missing native runtime symbols before APK installation.
+        println!("cargo:rustc-link-arg=-Wl,--no-undefined");
+    }
     // Keep the shared engine loadable on both 4 KiB and 16 KiB Android devices.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
         println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");

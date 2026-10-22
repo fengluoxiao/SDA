@@ -2,13 +2,15 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
-#include <chrono>
-#include <cstdio>
-#include <cstring>
+#include <time.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <new>
 struct SdaVkInfo {uint32_t vendor,device,api,driver,queue_family;char name[256];};
 namespace {
 constexpr uint64_t BUDGET=32ull*1024*1024;
+uint64_t monotonic_ns(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return uint64_t(t.tv_sec)*1000000000ull+uint64_t(t.tv_nsec);}
 struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;bool coherent=false;};
 #define DEVICE_FUNCTIONS(X) \
  X(vkDestroyDevice) X(vkDeviceWaitIdle) X(vkGetDeviceQueue) \
@@ -34,7 +36,7 @@ struct State {
  VkPipeline pipeline=VK_NULL_HANDLE;VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;VkDescriptorSet descriptor=VK_NULL_HANDLE;
  VkCommandPool command_pool=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;
  bool in_flight=false;Buffer input,output;uint32_t plane=0,parts=0;char error[256]{};
- bool fail(const char* what,int result=-1){std::snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
+ bool fail(const char* what,int result=-1){snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
  bool check(VkResult result,const char* what){return result==VK_SUCCESS || fail(what,result);}
  void release(Buffer& b){
   if(b.mapped)vkUnmapMemory(device,b.memory);
@@ -85,7 +87,7 @@ struct State {
   int best=-1;
   for(uint32_t d=0;d<count;++d){
    VkPhysicalDeviceProperties p{};vkGetPhysicalDeviceProperties(devices[d],&p);
-   if(p.deviceType==VK_PHYSICAL_DEVICE_TYPE_CPU || std::strstr(p.deviceName,"SwiftShader") || std::strstr(p.deviceName,"llvmpipe") || std::strstr(p.deviceName,"lavapipe"))continue;
+   if(p.deviceType==VK_PHYSICAL_DEVICE_TYPE_CPU || strstr(p.deviceName,"SwiftShader") || strstr(p.deviceName,"llvmpipe") || strstr(p.deviceName,"lavapipe"))continue;
    uint32_t n=0;vkGetPhysicalDeviceQueueFamilyProperties(devices[d],&n,nullptr);if(!n || n>64)continue;
    VkQueueFamilyProperties families[64]{};vkGetPhysicalDeviceQueueFamilyProperties(devices[d],&n,families);
    for(uint32_t f=0;f<n;++f)if(families[f].queueCount && (families[f].queueFlags&VK_QUEUE_COMPUTE_BIT)){
@@ -130,7 +132,7 @@ struct State {
   if(!check(vkAllocateCommandBuffers(device,&ca,&command),"allocate compute commands"))return false;
   VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   if(!check(vkCreateFence(device,&fc,nullptr,&fence),"create completion fence"))return false;
-  info.vendor=props.vendorID;info.device=props.deviceID;info.api=props.apiVersion;info.driver=props.driverVersion;std::snprintf(info.name,sizeof(info.name),"%s",props.deviceName);return true;
+  info.vendor=props.vendorID;info.device=props.deviceID;info.api=props.apiVersion;info.driver=props.driverVersion;snprintf(info.name,sizeof(info.name),"%s",props.deviceName);return true;
  }
 
  bool create_buffer(Buffer& b,VkDeviceSize bytes,uint64_t& used){
@@ -176,10 +178,10 @@ struct State {
  }
  int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout){
   if(!plane || inputs!=uint64_t(plane)*6*parts || outputs!=uint64_t(plane)*4){fail("audio packet shape mismatch");return -1;}
-  auto start=std::chrono::steady_clock::now();if(in_flight){fail("previous GPU work still pending");return -1;}
-  std::memcpy(input.mapped,src,inputs*sizeof(float));
+  auto start=monotonic_ns();if(in_flight){fail("previous GPU work still pending");return -1;}
+  memcpy(input.mapped,src,inputs*sizeof(float));
   if(!input.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=input.memory;range.size=VK_WHOLE_SIZE;if(!check(vkFlushMappedMemoryRanges(device,1,&range),"flush audio input"))return -1;}
-  auto elapsed=[&](){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());};
+  auto elapsed=[&](){return monotonic_ns()-start;};
   if(elapsed()>=timeout){fail("GPU upload exceeded audio deadline");return 1;}
   if(!check(vkResetFences(device,1,&fence),"reset completion fence"))return -1;
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
@@ -188,14 +190,14 @@ struct State {
   if(waited==VK_TIMEOUT){fail("GPU completion exceeded audio deadline",waited);return 1;}
   if(!check(waited,"wait for audio compute"))return -1;in_flight=false;
   if(!output.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=output.memory;range.size=VK_WHOLE_SIZE;if(!check(vkInvalidateMappedMemoryRanges(device,1,&range),"invalidate audio output"))return -1;}
-  std::memcpy(dst,output.mapped,outputs*sizeof(float));if(elapsed()>timeout){fail("GPU readback exceeded audio deadline");return 1;}return 0;
+  memcpy(dst,output.mapped,outputs*sizeof(float));if(elapsed()>timeout){fail("GPU readback exceeded audio deadline");return 1;}return 0;
  }
 };
-void copy_error(State* s,char* out,size_t capacity){if(out && capacity)std::snprintf(out,capacity,"%s",s?s->error:"Vulkan allocation failed");}
+void copy_error(State* s,char* out,size_t capacity){if(out && capacity)snprintf(out,capacity,"%s",s?s->error:"Vulkan allocation failed");}
 }
 extern "C" {
 void* sda_vk_open(const uint32_t* code,size_t bytes,SdaVkInfo* info,char* error,size_t capacity){
- State* s=new(std::nothrow) State();if(!s || !code || !bytes || bytes%4 || !s->open(code,bytes)){copy_error(s,error,capacity);delete s;return nullptr;}if(info)*info=s->info;return s;
+ void* storage=malloc(sizeof(State));State* s=storage?new(storage) State():nullptr;if(!s || !code || !bytes || bytes%4 || !s->open(code,bytes)){copy_error(s,error,capacity);if(s){s->~State();free(s);}return nullptr;}if(info)*info=s->info;return s;
 }
 int sda_vk_configure(void* handle,uint32_t plane,uint32_t parts,uint64_t cpu_bytes,char* error,size_t capacity){
  auto s=static_cast<State*>(handle);if(!s)return -1;bool ok=s->configure(plane,parts,cpu_bytes);if(!ok)copy_error(s,error,capacity);return ok?0:-1;
@@ -203,5 +205,5 @@ int sda_vk_configure(void* handle,uint32_t plane,uint32_t parts,uint64_t cpu_byt
 int sda_vk_run(void* handle,const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,char* error,size_t capacity){
  auto s=static_cast<State*>(handle);if(!s || !src || !dst)return -1;int result=s->run(src,inputs,dst,outputs,timeout);if(result)copy_error(s,error,capacity);return result;
 }
-void sda_vk_close(void* handle){delete static_cast<State*>(handle);}
+void sda_vk_close(void* handle){if(handle){auto s=static_cast<State*>(handle);s->~State();free(s);}}
 }

@@ -3,7 +3,7 @@ fn main() {
         cc::Build::new().cpp(true).file("src/vulkan_spectral.cpp")
             .flag("-std=c++17").flag("-fno-exceptions").flag("-fno-rtti")
             .flag("-Wno-missing-field-initializers")
-            .cpp_link_stdlib("c++_static").compile("sda_vulkan_audio");
+            .cpp_link_stdlib(None::<&str>).compile("sda_vulkan_audio");
         println!("cargo:rustc-link-lib=dl");
         println!("cargo:rerun-if-changed=src/vulkan_spectral.cpp");
         println!("cargo:rerun-if-changed=src/vulkan_spectral.spv");

@@ -11,3 +11,5 @@ GPU 只计算现有连续对象 HRTF 的 FP32 复数频域乘加。FFT/IFFT、�
 设备/编译/内存能力不足会回退。系统驱动保持进程映射，拒绝 Vulkan CPU/已知软件设备。不同厂商和旧 ROM 的效果取决于实际驱动，不以枚举成功代替真实音频采用。
 
 本轮按照用户要求不运行自动测试、不播放测试音频；用户后来明确授权安装到 USB 连接的小米 Note 3。安装与启动检查不代表已确认 GPU 实际执行或有性能收益。设备播放后的诊断以 audio.backendDetails、gpuAudioEnabled、audioBatchesExecuted、audioBatchesApplied 和失败原因区分真实状态。
+
+启动检查发现 C++ 标准库静态链接遗漏的异常展开符号后，桥接改用 POSIX 时钟和 C 内存分配，不依赖 C++ STL/ABI 运行库；Android facade 的最终链接启用 --no-undefined。安装检查需要重新确认修正包能够启动，仍不自动开始播放。
