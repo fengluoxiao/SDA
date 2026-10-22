@@ -15,6 +15,7 @@ pub(super) trait Backend {
 struct Metrics {
     available: AtomicBool,
     active: AtomicBool,
+    active_epoch: AtomicU64,
     applied: AtomicU64,
     audio_jobs: AtomicU64,
     attempts: AtomicU64,
@@ -28,6 +29,7 @@ impl Default for Metrics {
         Self {
             available: AtomicBool::new(false),
             active: AtomicBool::new(false),
+            active_epoch: AtomicU64::new(0),
             applied: AtomicU64::new(0),
             audio_jobs: AtomicU64::new(0),
             attempts: AtomicU64::new(0),
@@ -70,6 +72,8 @@ struct Client {
     tx: SyncSender<Command>,
     rx: Receiver<Response>,
     pending: bool,
+    epoch: u64,
+    pending_epoch: u64,
     shape: Option<Shape>,
     ready: Option<Batch>,
     active: bool,
@@ -89,6 +93,17 @@ pub(super) struct Service {
     metrics: std::sync::Arc<Metrics>,
 }
 static SERVICE: OnceLock<Service> = OnceLock::new();
+fn environment_epoch()->u64 {
+    #[cfg(all(target_os="ios",feature="coreml-audio"))] { return super::apple::epoch(); }
+    #[cfg(not(all(target_os="ios",feature="coreml-audio")))] { 0 }
+}
+#[cfg(all(target_os="ios",feature="coreml-audio"))]
+pub(crate) fn release_inactive_backend() {
+    if let Some(service)=SERVICE.get() {
+        service.metrics.active.store(false,Ordering::Release);
+        if let Ok(client)=service.client.try_lock() { let _=client.tx.try_send(Command::Deactivate); }
+    }
+}
 fn ns(d: Duration) -> u64 {
     d.as_nanos().min(u64::MAX as u128) as u64
 }
@@ -98,7 +113,7 @@ impl Service {
         let wm = metrics.clone();
         let (tx, input) = mpsc::sync_channel(1);
         let (output, rx) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new().name("sda-npu-audio".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name(if cfg!(target_os="ios"){"sda-apple-audio"}else{"sda-npu-audio"}.into()).spawn(move || {
             #[cfg(target_os = "android")]
             unsafe { unsafe extern "C" { fn setpriority(which: i32, who: u32, priority: i32) -> i32; } let _ = setpriority(0, 0, 10); }
             #[cfg(target_os = "ios")]
@@ -106,6 +121,7 @@ impl Service {
             let mut backend = match factory() { Ok(b) => b, Err(e) => { wm.detail("unavailable", &e); return; } };
             wm.available.store(true, Ordering::Release); wm.detail("awaiting-audio-shape", "");
             while let Ok(command) = input.recv() {
+                let command_epoch=environment_epoch();
                 let response = match command {
                     Command::Deactivate => { backend.deactivate(); continue; }
                     Command::Configure(shape) => {
@@ -131,6 +147,7 @@ impl Service {
                         Response::Executed { id, batch, elapsed_ns, result, qualifying }
                     }
                 };
+                if command_epoch != environment_epoch() { backend.deactivate(); wm.active.store(false,Ordering::Release); }
                 if output.send(response).is_err() { break; }
             }
         });
@@ -142,6 +159,8 @@ impl Service {
                 tx,
                 rx,
                 pending: false,
+                epoch: 0,
+                pending_epoch: 0,
                 shape: None,
                 ready: None,
                 active: false,
@@ -160,12 +179,22 @@ impl Service {
         }
     }
     fn begin(&self, shape: Shape) -> Option<Lease<'_>> {
+        self.begin_in_epoch(shape, environment_epoch())
+    }
+    fn begin_in_epoch(&self, shape: Shape, epoch: u64) -> Option<Lease<'_>> {
         if !self.metrics.available.load(Ordering::Acquire) {
             return None;
         }
         let mut client = self.client.try_lock().ok()?;
+        if client.epoch != epoch {
+            client.epoch=epoch;client.id=client.id.wrapping_add(1);
+            client.ready=None;client.shape=None;client.active=false;
+            client.qualified=0;client.warmup=0;client.failed.clear();
+            self.metrics.active.store(false,Ordering::Release);
+        }
         while let Ok(response) = client.rx.try_recv() {
-            client.accept(response, &self.metrics);
+            if client.pending_epoch == epoch { client.accept(response, &self.metrics); }
+            else { client.pending=false; } // Drop old owned buffers, never reuse their result.
         }
         client.frame = client.frame.wrapping_add(1);
         if client.failed.contains(&shape) || client.failed.len() >= 8 {
@@ -177,6 +206,7 @@ impl Service {
                     client.ready = None;
                     client.shape = Some(shape);
                     client.pending = true;
+                    client.pending_epoch = epoch;
                     client.active = false;
                     client.qualified = 0;
                     client.warmup = 0;
@@ -327,6 +357,7 @@ impl Lease<'_> {
         match self.client.tx.try_send(command) {
             Ok(()) => {
                 self.client.pending = true;
+                self.client.pending_epoch = self.client.epoch;
                 true
             }
             Err(
@@ -343,6 +374,7 @@ impl Lease<'_> {
     pub fn completed_in(&mut self, elapsed: Duration) {
         if self.applied {
             self.metrics.applied.fetch_add(1, Ordering::Relaxed);
+            self.metrics.active_epoch.store(self.client.epoch,Ordering::Release);
             self.metrics.active.store(true, Ordering::Release);
             if self.client.native_ns > 0 && ns(elapsed) >= self.client.native_ns {
                 self.client.reject(
@@ -376,7 +408,7 @@ impl Lease<'_> {
             Ok(response) => {
                 // recv_timeout can return a queued value after the deadline if
                 // this thread was descheduled. Check the actual clock as well.
-                let late = ns(started.elapsed()) > budget || matches!(&response,
+                let late = self.client.epoch != environment_epoch() || ns(started.elapsed()) > budget || matches!(&response,
                     Response::Executed { elapsed_ns, .. } if *elapsed_ns > budget);
                 if late {
                     self.client.pending = false;
@@ -417,7 +449,7 @@ pub(crate) fn start() {
         #[cfg(target_os = "android")]
         { Service::spawn(|| super::android::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
         #[cfg(target_os = "ios")]
-        { Service::spawn(|| super::coreml::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
+        { Service::spawn(|| super::apple::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
     });
 }
 #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
@@ -469,14 +501,21 @@ pub(crate) fn status() -> serde_json::Value {
     }
     #[cfg(target_os = "ios")]
     {
-        result["runtime"] = "apple-coreml-cpu-and-neural-engine".into();
-        result["coremlAudioEnabled"] = m.active.load(Ordering::Acquire).into();
+        let gpu=super::apple::foreground();
+        let active=m.active.load(Ordering::Acquire) && m.active_epoch.load(Ordering::Acquire)==environment_epoch();
+        result["runtime"] = "apple-foreground-metal-background-coreml".into();
+        result["requestedMode"] = if gpu {"foreground-gpu"}else{"background-cpu-and-neural-engine"}.into();
+        result["playbackEpoch"] = environment_epoch().into();
+        result["audioOffloadEnabled"] = active.into();
+        result["gpuAudioEnabled"] = (active&&gpu).into();
+        result["coremlAudioEnabled"] = (active&&!gpu).into();
+        result["gpuBatchesCompleted"] = super::apple::gpu_batches().into();
         result["npuAudioEnabled"] = false.into();
         result["neuralEngineExecutionVerified"] = false.into();
-        result["frameworkCpuFallbackAllowed"] = true.into();
-        result["gpuAllowed"] = false.into();
-        result["internalPrecision"] = "Core-ML-managed-fp32-output-qualified".into();
-        result["hardwarePlacement"] = "not-observable-per-prediction-through-public-API".into();
+        result["frameworkCpuFallbackAllowed"] = (!gpu).into();
+        result["gpuAllowed"] = gpu.into();
+        result["internalPrecision"] = "float32-output-qualified".into();
+        result["hardwarePlacement"] = if gpu {"explicit-Metal-GPU-command-queue"}else{"Core-ML-Neural-Engine-placement-not-observable"}.into();
     }
     result["operation"] = "hrtf-fp32-complex-spectral-mac".into();
     result["audioBatchesSubmitted"] = m.attempts.load(Ordering::Relaxed).into();
@@ -642,6 +681,23 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
         let l=lease(&s,new);assert_eq!(l.batch().shape,new);
         assert_eq!(s.metrics.applied.load(Ordering::Relaxed),0);
+    }
+
+    #[test]
+    fn pending_previous_session_is_discarded_and_requalified() {
+        let s=service(Duration::from_millis(5),false,false);
+        let shape=Shape::bounded(8,2,9).unwrap();
+        { let mut l=lease(&s,shape); reference(&mut l); }
+        assert!(s.begin_in_epoch(shape,1).is_none());
+        std::thread::sleep(Duration::from_millis(15));
+        for _ in 0..100 {
+            if let Some(l)=s.begin_in_epoch(shape,1) {
+                assert_eq!(l.client.epoch,1);assert_eq!(l.client.qualified,0);assert!(!l.client.active);
+                assert_eq!(s.metrics.applied.load(Ordering::Relaxed),0);return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("new playback epoch did not get an independent packet");
     }
 
 }

@@ -41,10 +41,23 @@ static bool run(NSString *path,size_t rows,size_t bins,size_t parts,int cpu) {
     // than weakening the production gate to make this optional request pass.
     return !cpu||production_precision;
 }
+static bool overlapping_contexts(NSString *path) {
+ NSData *bytes=[NSData dataWithContentsOfFile:path];char error[512]={};
+ NSURL *cache=[[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
+ NSURL *parent=[cache URLByAppendingPathComponent:@"sda-coreml-spectral-v2" isDirectory:YES];
+ auto count=[&](){return [NSFileManager.defaultManager contentsOfDirectoryAtURL:parent includingPropertiesForKeys:nil options:0 error:nil].count;};
+ NSUInteger initial=count();
+ void *a=sda_coreml_create((const uint8_t *)bytes.bytes,bytes.length,8,17,6,1,error,sizeof(error));
+ void *b=sda_coreml_create((const uint8_t *)bytes.bytes,bytes.length,8,17,6,1,error,sizeof(error));
+ if(!a||!b){sda_coreml_free(a);sda_coreml_free(b);return false;}
+ bool ok=count()==initial+2;sda_coreml_free(a);ok=ok&&count()==initial+1;sda_coreml_free(b);ok=ok&&count()==initial;
+ if(ok)puts("PASS independent Core ML model-cache lifetimes");return ok;
+}
 int main(int argc,char **argv){@autoreleasepool{
     if(argc!=2)return 2;NSString *root=[NSString stringWithUTF8String:argv[1]];
     for(size_t p=1;p<=4;p++)if(!run([root stringByAppendingPathComponent:[NSString stringWithFormat:@"spectral-%zu.mlmodel",p]],8,17,p,1))return 3;
     if(!run([root stringByAppendingPathComponent:@"spectral-live-shape.mlmodel"],32,1025,2,1))return 4;
+    if(!overlapping_contexts([root stringByAppendingPathComponent:@"spectral-1.mlmodel"]))return 6;
     int available=sda_coreml_neural_engine_available();printf("neuralEngineVisible=%d (availability does not prove execution)\n",available);
     if(available==1&&!run([root stringByAppendingPathComponent:@"spectral-2.mlmodel"],8,17,2,0))return 5;
     puts("PASS public Core ML graph, FP32 contract, buffers and cleanup");return 0;

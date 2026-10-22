@@ -48,8 +48,10 @@ void *sda_coreml_create(const uint8_t *bytes,size_t length,size_t rows,size_t bi
             NSURL *cache=[[fm URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
             if (!cache) {failure(error,cap,@"model-cache-unavailable");return nullptr;}
             // One private graph slot, containing no PCM/HRIR/input weights.
-            ctx->root=[cache URLByAppendingPathComponent:@"sda-coreml-spectral-v1" isDirectory:YES];
-            [fm removeItemAtURL:ctx->root error:nil];
+            NSURL *parent=[cache URLByAppendingPathComponent:@"sda-coreml-spectral-v2" isDirectory:YES];
+            static dispatch_once_t cleanup;
+            dispatch_once(&cleanup, ^{ [fm removeItemAtURL:parent error:nil]; });
+            ctx->root=[parent URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
             NSError *e=nil;
             if (![fm createDirectoryAtURL:ctx->root withIntermediateDirectories:YES attributes:nil error:&e]) {
                 failure(error,cap,e.localizedDescription);return nullptr;

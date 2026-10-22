@@ -36,6 +36,7 @@ assert.ok(hasTimer(ios,125)); assert.ok(ios.calls.includes('objects'));
 ios.listeners.change('inactive'); assert.ok(hasTimer(ios,1000));
 ios.app.componentWillUnmount(); assert.equal(ios.timers.size,0); assert.equal(ios.listeners.change,undefined);
 const android = makeApp('android'); android.listeners.change('background');
-assert.equal([...android.timers.values()][0].delay,80); android.app.pollStatus(); assert.ok(android.calls.includes('objects'));
+assert.equal([...android.timers.values()][0].delay,250); android.calls.length=0; android.app.pollStatus(); assert.deepEqual(android.calls,['error','done']);
+android.listeners.change('active'); assert.ok(android.calls.includes('objects'));
 android.app.componentWillUnmount();
 console.log('Playback polling checks passed: foreground/background cadence, no hidden UI work, end/error handling, resume, teardown, Android unchanged');

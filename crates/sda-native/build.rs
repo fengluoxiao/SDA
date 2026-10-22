@@ -8,9 +8,13 @@ fn main() {
         let bridge = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../apps/native-renderer/src/coreml_bridge.mm");
         println!("cargo:rerun-if-changed={}", bridge.display());
         println!("cargo:rerun-if-changed={}", bridge.with_extension("h").display());
-        cc::Build::new().cpp(true).file(&bridge).flag("-std=c++17").flag("-fobjc-arc")
+        let metal=bridge.with_file_name("metal_bridge.mm");
+        println!("cargo:rerun-if-changed={}",metal.display());
+        println!("cargo:rerun-if-changed={}",metal.with_extension("h").display());
+        cc::Build::new().cpp(true).file(&bridge).file(&metal).flag("-std=c++17").flag("-fobjc-arc")
             .flag("-Werror=unguarded-availability-new").compile("sda_coreml_bridge");
         println!("cargo:rustc-link-lib=framework=CoreML");
+        println!("cargo:rustc-link-lib=framework=Metal");
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");

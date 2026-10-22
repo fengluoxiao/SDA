@@ -11,6 +11,7 @@ char *sda_ios_command(void *engine, const char *op, const char *args);
 char *sda_ios_feed(void *engine, const uint8_t *bytes, size_t length);
 void sda_ios_render(void *engine, float *left, float *right, size_t frames);
 void sda_ios_close(void *engine);
+void sda_ios_acceleration_foreground(bool active);
 void sda_ios_string_free(char *string);
 // Apple-decoded 48 kHz interleaved Float32 ALAC stereo, bounded control calls.
 char *sda_ios_alac_feed(void *engine, const uint8_t *pcm, size_t length, bool upmix);

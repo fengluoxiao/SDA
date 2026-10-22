@@ -9,6 +9,10 @@ on:
       - 'apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift'
       - 'apps/mobile/modules/sda-core/ios/PlaybackEndDrain.swift'
       - 'apps/mobile/modules/sda-core/ios/SdaPlayer.swift'
+      - 'apps/mobile/modules/sda-core/ios/SdaModule.swift'
+      - 'apps/mobile/modules/sda-core/ios/DiagnosticSnapshotCache.swift'
+      - 'apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift'
+      - 'scripts/ios-diagnostic-cache-probe.swift'
       - 'scripts/ios-reader-probe.swift'
       - 'scripts/ios-playback-end-probe.swift'
       - 'scripts/make-ios-cursor-fixtures.py'
@@ -47,12 +51,18 @@ jobs:
           set -o pipefail
           xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift scripts/ios-alac-probe.swift -o reader-artifacts/alac-probe
           reader-artifacts/alac-probe 2>&1 | tee reader-artifacts/alac-report.txt
+      - name: Check diagnostics when playback is blocked
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/DiagnosticSnapshotCache.swift scripts/ios-diagnostic-cache-probe.swift -o reader-artifacts/diagnostic-probe
+          reader-artifacts/diagnostic-probe | tee reader-artifacts/diagnostic-report.txt
       - name: Typecheck iOS 16.4 playback host
         if: ${{ always() && !cancelled() }}
         run: |
           set -o pipefail
           root=apps/mobile/modules/sda-core/ios
-          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$root/SdaBridge.h" "$root/SdaPlayer.swift" "$root/HeadphoneTracking.swift" "$root/RemoteDiagnostics.swift" "$root/PlaybackLifecycle.swift" "$root/PlaybackEndDrain.swift" "$root/CompressedInput.swift" "$root/IndexedCompressedInput.swift" "$root/SystemSpatial360.swift" "$root/SystemAudioBufferPolicy.swift" "$root/Phase360Prototype.swift" 2>&1 | tee reader-artifacts/ios-typecheck.txt
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$root/SdaBridge.h" "$root/SdaPlayer.swift" "$root/HeadphoneTracking.swift" "$root/RemoteDiagnostics.swift" "$root/DiagnosticSnapshotCache.swift" "$root/PlaybackLifecycle.swift" "$root/PlaybackEndDrain.swift" "$root/CompressedInput.swift" "$root/IndexedCompressedInput.swift" "$root/SystemSpatial360.swift" "$root/SystemAudioBufferPolicy.swift" "$root/Phase360Prototype.swift" 2>&1 | tee reader-artifacts/ios-typecheck.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -270,8 +270,16 @@ pub unsafe extern "C" fn sda_ios_render(
     );
 }
 #[no_mangle]
+pub extern "C" fn sda_ios_acceleration_foreground(active: bool) {
+    #[cfg(all(feature="ios-host",target_os="ios"))]
+    sda_native_renderer::spectral_accelerator::set_apple_foreground(active);
+    #[cfg(not(all(feature="ios-host",target_os="ios")))] let _=active;
+}
+#[no_mangle]
 pub unsafe extern "C" fn sda_ios_close(p: *mut std::ffi::c_void) {
     if !p.is_null() {
+        #[cfg(all(feature="ios-host",target_os="ios"))]
+        sda_native_renderer::spectral_accelerator::reset_apple_session();
         let host = unsafe { Box::from_raw(p as *mut Host) };
         if let Ok(mut engine) = host.engine.lock() {
             engine.stop();
