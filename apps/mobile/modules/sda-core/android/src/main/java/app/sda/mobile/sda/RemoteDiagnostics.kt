@@ -55,7 +55,7 @@ class RemoteDiagnostics(private val context: Context, private val port: Int = 87
             "programGainDb", "renderedProgramGainDb", "rendererProgramEnabled", "spatialEnhancementEnabled", "auxiliaryBalanceEnabled",
             "auxiliaryBalanceLevels", "temporalDetailEnabled", "temporalDetailLevels", "listenerYawDegrees", "binauralEnabled",
             "objectRendering", "objectConvolverCount", "continuousObjectCount", "hrtfReady", "hrtfDirections")
-        private val deviceKeys = listOf("backend", "hardwareXruns", "bufferFrames", "burstFrames", "performanceMode", "errorCode")
+        private val deviceKeys = listOf("backend", "hardwareXruns", "bufferFrames", "burstFrames", "performanceMode", "errorCode", "recovering", "restarts")
     }
     /** Called on already-existing status reads; never asks the renderer for data.
      * Throttle before copying, so enabling diagnostics adds no native polling. */

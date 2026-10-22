@@ -13,6 +13,7 @@ use super::{AudioOutput, RuntimeTelemetry, render_command, stereo_fifo};
 
 const SAMPLE_RATE: i32 = 48_000;
 const CHANNELS: usize = 2;
+const DISCONNECTED: i32 = -899; // AAUDIO_ERROR_DISCONNECTED, all supported API levels.
 const WRITE_TIMEOUT_NS: i64 = 200_000_000;
 
 #[link(name = "log")]
@@ -91,6 +92,7 @@ struct CallbackContext {
     fifo: OnceLock<Arc<stereo_fifo::StereoFifo>>,
     telemetry: OnceLock<Arc<RuntimeTelemetry>>,
     error: AtomicI32,
+    ready: std::sync::atomic::AtomicBool,
 }
 struct PreparedStream {
     // Drop/close the stream before freeing callback userdata and its Arcs.
@@ -105,14 +107,19 @@ unsafe extern "C" fn data_callback(_stream:*mut aaudio::AAudioStream,user:*mut s
     let out=unsafe{std::slice::from_raw_parts_mut(audio.cast::<f32>(),frames as usize*CHANNELS)};
     if let (Some(fifo),Some(telemetry))=(context.fifo.get(),context.telemetry.get()) {
         if telemetry.shutdown_requested.load(Ordering::Acquire) {out.fill(0.);return aaudio::AAUDIO_CALLBACK_RESULT_STOP as i32;}
-        crate::output_pull::pull(fifo,telemetry,out);
+        if !context.ready.load(Ordering::Acquire) || telemetry.output_device_recovering.load(Ordering::Acquire) {out.fill(0.);}
+        else {crate::output_pull::pull(fifo,telemetry,out);}
     } else {out.fill(0.);}
     aaudio::AAUDIO_CALLBACK_RESULT_CONTINUE as i32
 }
 unsafe extern "C" fn error_callback(_stream:*mut aaudio::AAudioStream,user:*mut std::ffi::c_void,error:i32) {
     if let Some(context)=unsafe{user.cast::<CallbackContext>().as_ref()} {
+        if let Some(t)=context.telemetry.get(){
+            // Publish recovery before the failure; the host must retain its decoder.
+            t.output_device_recovering.store(error==DISCONNECTED,Ordering::Release);
+            if error!=DISCONNECTED {t.output_device_error.store(error,Ordering::Release);}
+        }
         context.error.store(error,Ordering::Release);
-        if let Some(t)=context.telemetry.get(){t.output_device_error.store(error,Ordering::Release);}
     }
 }
 
@@ -129,13 +136,17 @@ impl AAudioWriterSink {
     /// Keeping the output contract exact prevents an Android mixer conversion
     /// from silently changing the calibrated 48 kHz KU100 render.
     pub fn open() -> Result<Self, String> {
+        Ok(Self { stream: Mutex::new(Some(Self::prepare_stream()?)) })
+    }
+
+    fn prepare_stream() -> Result<PreparedStream, String> {
         let callback_mode = !cfg!(feature="pcm-diagnostic");
         let stream = Self::open_stream(callback_mode).or_else(|first| {
             if !callback_mode {return Err(first);}
             android_log(&format!("callback output unavailable; trying blocking output: {first}"));
             Self::open_stream(false).map_err(|second|format!("AAudio callback failed: {first}; blocking fallback failed: {second}"))
         })?;
-        Ok(Self { stream: Mutex::new(Some(stream)) })
+        Ok(stream)
     }
 
     fn open_stream(callback_mode: bool) -> Result<PreparedStream, String> {
@@ -209,33 +220,85 @@ impl AudioOutput for AAudioWriterSink {
         telemetry: Arc<RuntimeTelemetry>,
         _commands: Arc<render_command::RenderCommandQueue>,
     ) {
-        let prepared = self.stream.lock().ok().and_then(|mut stream| stream.take());
-        let result = prepared
-            .ok_or_else(|| "AAudio output stream was not prepared".to_string())
-            .and_then(|prepared| {
-                let _=prepared.callback.fifo.set(fifo.clone());
-                let _=prepared.callback.telemetry.set(telemetry.clone());
-                telemetry.output_device_burst_frames.store(prepared.burst as u64,Ordering::Release);
-                telemetry.output_device_mode.store(if prepared.callback_mode {2}else if cfg!(feature="pcm-diagnostic"){1}else{3},Ordering::Release);
-                telemetry.output_device_buffer_frames.store(unsafe{aaudio::AAudioStream_getBufferSizeInFrames(prepared.stream.0)}.max(0) as u64,Ordering::Relaxed);
-                telemetry.output_device_performance_mode.store(unsafe{aaudio::AAudioStream_getPerformanceMode(prepared.stream.0)},Ordering::Relaxed);
-                if !prepared.callback_mode {
-                    crate::realtime::android_priority(-16);
-                    // Diagnostic capture retains the existing blocking path;
-                    // no PCM allocation/capture is performed by live callbacks.
-                    writer_loop_with_context(prepared,fifo,telemetry)
-                } else { monitor_callback_stream(prepared,telemetry) }
-            });
-        if let Err(error) = result {
-            android_log(&error);
+        let Some(mut prepared) = self.stream.lock().ok().and_then(|mut stream| stream.take()) else {
+            telemetry.output_device_error.store(-1,Ordering::Release);
+            android_log("AAudio output stream was not prepared");
+            return;
+        };
+        let mut pending = PendingWrite::default();
+        let mut failures = 0;
+        let mut xrun_base = 0;
+        loop {
+            bind_stream(&prepared,&fifo,&telemetry);
+            let started=Instant::now();
+            let result=if prepared.callback_mode {
+                monitor_callback_stream(&prepared,&telemetry,xrun_base)
+            } else {
+                crate::realtime::android_priority(-16);
+                writer_loop(&prepared,&fifo,&telemetry,&mut pending,xrun_base)
+            };
+            match result {
+                Ok(()) => break,
+                Err(DISCONNECTED) => {
+                    telemetry.output_device_recovering.store(true,Ordering::Release);
+                    // Close only this device, on this worker, never in an AAudio callback.
+                    let callback_mode=prepared.callback_mode;
+                    drop(prepared);
+                    xrun_base=telemetry.output_device_xruns.load(Ordering::Relaxed);
+                    if started.elapsed()>=Duration::from_secs(1) {failures=0;}
+                    let mut replacement=None;
+                    while failures<3 && !telemetry.shutdown_requested.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if telemetry.paused.load(Ordering::Acquire) {continue;}
+                        failures+=1;
+                        match Self::open_stream(callback_mode) {
+                            Ok(stream)=>{replacement=Some(stream);break;}
+                            Err(error)=>android_log(&format!("output reconnect attempt={failures}: {error}")),
+                        }
+                    }
+                    let Some(stream)=replacement else {
+                        if !telemetry.shutdown_requested.load(Ordering::Acquire) {
+                            telemetry.output_device_error.store(DISCONNECTED,Ordering::Release);
+                            android_log("AAudio output reconnect exhausted");
+                        }
+                        telemetry.output_device_recovering.store(false,Ordering::Release);
+                        return;
+                    };
+                    prepared=stream;
+                    telemetry.output_device_restarts.fetch_add(1,Ordering::Relaxed);
+                    android_log("AAudio output reconnected; decoder, FIFO and presentation clock retained");
+                }
+                Err(error)=>{
+                    telemetry.output_device_error.store(error,Ordering::Release);
+                    telemetry.output_device_recovering.store(false,Ordering::Release);
+                    android_log(&format!("AAudio output failed: {error}"));
+                    break;
+                }
+            }
         }
     }
 }
 
-fn writer_loop_with_context(prepared:PreparedStream,fifo:Arc<stereo_fifo::StereoFifo>,telemetry:Arc<RuntimeTelemetry>)->Result<(),String>{
-    writer_loop(&prepared.stream,prepared.burst,fifo,telemetry)
+fn bind_stream(prepared:&PreparedStream,fifo:&Arc<stereo_fifo::StereoFifo>,telemetry:&Arc<RuntimeTelemetry>) {
+    telemetry.output_device_recovering.store(false,Ordering::Release);
+    let _=prepared.callback.fifo.set(fifo.clone());
+    let _=prepared.callback.telemetry.set(telemetry.clone());
+    telemetry.output_device_burst_frames.store(prepared.burst as u64,Ordering::Release);
+    telemetry.output_device_mode.store(if prepared.callback_mode {2}else if cfg!(feature="pcm-diagnostic"){1}else{3},Ordering::Release);
+    telemetry.output_device_buffer_frames.store(unsafe{aaudio::AAudioStream_getBufferSizeInFrames(prepared.stream.0)}.max(0) as u64,Ordering::Relaxed);
+    telemetry.output_device_performance_mode.store(unsafe{aaudio::AAudioStream_getPerformanceMode(prepared.stream.0)},Ordering::Relaxed);
+    telemetry.output_device_error.store(0,Ordering::Release);
+    // A newly started stream produces silence until both shared Arcs are bound.
+    // If it disconnected before binding, keep recovery set for the host.
+    if prepared.callback.error.load(Ordering::Acquire)==DISCONNECTED {
+        telemetry.output_device_recovering.store(true,Ordering::Release);
+    }
+    prepared.callback.ready.store(true,Ordering::Release);
 }
-fn monitor_callback_stream(prepared:PreparedStream,telemetry:Arc<RuntimeTelemetry>)->Result<(),String>{
+
+#[derive(Default)]
+struct PendingWrite { block:Vec<f32>, popped:usize, offset:usize }
+fn monitor_callback_stream(prepared:&PreparedStream,telemetry:&Arc<RuntimeTelemetry>,xrun_base:u64)->Result<(),i32>{
     let stream=prepared.stream.0;
     let capacity=unsafe{aaudio::AAudioStream_getBufferCapacityInFrames(stream)}.max(1) as usize;
     let current=unsafe{aaudio::AAudioStream_getBufferSizeInFrames(stream)}.max(1) as usize;
@@ -245,9 +308,9 @@ fn monitor_callback_stream(prepared:PreparedStream,telemetry:Arc<RuntimeTelemetr
     let mut last_report=Instant::now();
     while !telemetry.shutdown_requested.load(Ordering::Acquire){
         let error=prepared.callback.error.load(Ordering::Acquire);
-        if error<0 {telemetry.output_device_error.store(error,Ordering::Release);return Err(format!("AAudio callback stream failed: {error}"));}
+        if error<0 {return Err(error);}
         let xruns=unsafe{aaudio::AAudioStream_getXRunCount(stream)};
-        if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xruns as u64,Ordering::Relaxed);}
+        if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xrun_base+xruns as u64,Ordering::Relaxed);}
         if let Some(request)=policy.observe_xruns(xruns){
             let accepted=unsafe{aaudio::AAudioStream_setBufferSizeInFrames(stream,request as i32)};
             if accepted>0 {policy.accepted(accepted as usize);telemetry.output_device_buffer_frames.store(accepted as u64,Ordering::Relaxed);}
@@ -265,12 +328,14 @@ fn monitor_callback_stream(prepared:PreparedStream,telemetry:Arc<RuntimeTelemetr
 }
 
 fn writer_loop(
-    stream: &Stream,
-    frames_per_burst: usize,
-    fifo: Arc<stereo_fifo::StereoFifo>,
-    telemetry: Arc<RuntimeTelemetry>,
-) -> Result<(), String> {
-    let mut block = vec![0.0_f32; frames_per_burst * CHANNELS];
+    prepared: &PreparedStream,
+    fifo: &Arc<stereo_fifo::StereoFifo>,
+    telemetry: &Arc<RuntimeTelemetry>,
+    pending: &mut PendingWrite,
+    xrun_base: u64,
+) -> Result<(), i32> {
+    let stream=&prepared.stream;
+    let frames_per_burst=prepared.burst;
     let mut total_written = 0_u64;
     #[cfg(feature = "pcm-diagnostic")]
     let mut capture = PcmCapture::requested();
@@ -278,56 +343,51 @@ fn writer_loop(
     let mut partial_writes = 0_u64;
     let mut last_report = Instant::now();
     while !telemetry.shutdown_requested.load(Ordering::Acquire) {
-        fifo.apply_flush_from_consumer();
+        if fifo.apply_flush_from_consumer() {pending.block.clear();}
+        let error=prepared.callback.error.load(Ordering::Acquire);
+        if error<0 {return Err(error);}
         let enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
-        let popped = if enabled {
-            fifo.pop_into_f32(&mut block, CHANNELS)
-        } else {
-            block.fill(0.0);
-            0
-        };
-        let started = Instant::now();
-        #[cfg(feature = "pcm-diagnostic")]
-        if let Some(capture) = &mut capture {
-            capture.push(total_audio, &block[..popped * CHANNELS]);
+        // A partial write survives a device replacement, including a different burst size.
+        if pending.block.is_empty() {
+            pending.block.resize(frames_per_burst*CHANNELS,0.);
+            pending.popped=if enabled {fifo.pop_into_f32(&mut pending.block,CHANNELS)}else{0};
+            pending.offset=0;
+            #[cfg(feature = "pcm-diagnostic")]
+            if let Some(capture) = &mut capture {capture.push(total_audio,&pending.block[..pending.popped*CHANNELS]);}
         }
-        let mut offset = 0;
-        // AAudio returns frames, not samples or bytes. Retain unwritten
-        // samples across short writes; never fetch a new FIFO block early.
-        while offset < frames_per_burst {
-            if telemetry.shutdown_requested.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            if fifo.apply_flush_from_consumer() {
-                break;
-            }
-            let requested = frames_per_burst - offset;
+        let started = Instant::now();
+        while pending.offset < pending.block.len()/CHANNELS {
+            if telemetry.shutdown_requested.load(Ordering::Acquire) {return Ok(());}
+            if fifo.apply_flush_from_consumer() {break;}
+            let requested = pending.block.len()/CHANNELS - pending.offset;
             let written = unsafe {
                 aaudio::AAudioStream_write(
-                    stream.0, block[offset * CHANNELS..].as_ptr().cast(),
+                    stream.0, pending.block[pending.offset * CHANNELS..].as_ptr().cast(),
                     requested as i32, WRITE_TIMEOUT_NS,
                 )
             };
             if written < 0 || written as usize > requested {
-                return Err(format!("AAudioStream_write failed: {written}"));
+                if written==DISCONNECTED {telemetry.output_device_recovering.store(true,Ordering::Release);}
+                return Err(if written<0 {written}else{-1});
             }
             if written == 0 {
                 if started.elapsed() > Duration::from_secs(2) {
-                    return Err("AAudioStream_write made no progress for 2 seconds".into());
+                    return Err(-1);
                 }
                 continue;
             }
             let written = written as usize;
             partial_writes += u64::from(written < requested);
-            let consumed = popped.saturating_sub(offset).min(written);
+            let consumed = pending.popped.saturating_sub(pending.offset).min(written);
             record_callback(&telemetry, started, written, consumed, enabled);
             total_written += written as u64;
             total_audio += consumed as u64;
-            offset += written;
+            pending.offset += written;
         }
+        pending.block.clear();
         if last_report.elapsed() >= Duration::from_secs(5) {
             let xruns = unsafe { aaudio::AAudioStream_getXRunCount(stream.0) };
-            if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xruns as u64,Ordering::Relaxed);}
+            if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xrun_base+xruns as u64,Ordering::Relaxed);}
             android_log(&format!(
                 "write_progress format=PCM_FLOAT frames={total_written} audio_frames={total_audio} partial_writes={partial_writes} xruns={xruns}",
             ));

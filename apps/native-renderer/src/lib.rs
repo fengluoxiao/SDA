@@ -947,6 +947,8 @@ pub struct RuntimeTelemetry {
     pub output_device_buffer_frames: AtomicU64,
     pub output_device_burst_frames: AtomicU64,
     pub output_device_error: std::sync::atomic::AtomicI32,
+    pub output_device_recovering: AtomicBool,
+    pub output_device_restarts: AtomicU64,
     pub output_device_performance_mode: std::sync::atomic::AtomicI32,
     /// Applied renderer state, published for mobile UI/diagnostics (not requested settings).
     pub hrtf_ready: AtomicBool,
@@ -997,6 +999,8 @@ pub struct OutputDeviceStatus {
     pub burst_frames: u64,
     pub performance_mode: i32,
     pub error_code: i32,
+    pub recovering: bool,
+    pub restarts: u64,
 }
 impl RuntimeTelemetry {
     pub fn output_device_status(&self)->OutputDeviceStatus {
@@ -1007,6 +1011,8 @@ impl RuntimeTelemetry {
             burst_frames:self.output_device_burst_frames.load(Ordering::Relaxed),
             performance_mode:self.output_device_performance_mode.load(Ordering::Relaxed),
             error_code:self.output_device_error.load(Ordering::Relaxed),
+            recovering:self.output_device_recovering.load(Ordering::Acquire),
+            restarts:self.output_device_restarts.load(Ordering::Relaxed),
         }
     }
     pub fn applied_program_gain_db(&self) -> f64 {

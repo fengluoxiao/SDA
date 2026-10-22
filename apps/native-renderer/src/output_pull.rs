@@ -6,7 +6,8 @@ pub(crate) fn pull(fifo: &StereoFifo, telemetry: &RuntimeTelemetry, output: &mut
     let started = Instant::now();
     let requested = output.len() / 2;
     fifo.apply_flush_from_consumer();
-    let enabled = telemetry.callback_output_enabled.load(Ordering::Acquire);
+    let enabled = telemetry.callback_output_enabled.load(Ordering::Acquire)
+        && !telemetry.output_device_recovering.load(Ordering::Acquire);
     let popped = if enabled {
         fifo.pop_into_f32(output, 2)
     } else {
@@ -61,6 +62,31 @@ mod tests {
                 24000
             );
         }
+    }
+    #[test]
+    fn output_reconnection_keeps_queued_pcm_and_monotonic_position() {
+        let fifo = StereoFifo::new(32768);
+        let telemetry = RuntimeTelemetry::default();
+        telemetry.callback_output_enabled.store(true, Ordering::Release);
+        let pcm: Vec<_> = (0..960).flat_map(|i| [i as f32 / 960., -(i as f32) / 960.]).collect();
+        fifo.push(&pcm);
+        let mut first = [0.; 384];
+        assert_eq!(pull(&fifo, &telemetry, &mut first), 192);
+        assert_eq!(first, pcm[..384]);
+        telemetry.output_device_recovering.store(true, Ordering::Release);
+        let mut changed_burst = [1.; 480];
+        for _ in 0..100 {
+            assert_eq!(pull(&fifo, &telemetry, &mut changed_burst), 0);
+            assert!(changed_burst.iter().all(|v| *v == 0.));
+        }
+        assert_eq!(fifo.available_read(), 768);
+        assert_eq!(telemetry.callback_consumed_sample_pos.load(Ordering::Acquire), 192);
+        assert_eq!(telemetry.callback_missing_frames(), 0);
+        telemetry.output_device_recovering.store(false, Ordering::Release);
+        assert_eq!(pull(&fifo, &telemetry, &mut changed_burst), 240);
+        assert_eq!(changed_burst, pcm[384..864]);
+        assert_eq!(telemetry.callback_consumed_sample_pos.load(Ordering::Acquire), 432);
+        assert_eq!(fifo.available_read(), 528);
     }
     #[test]
     fn a_producer_stall_uses_reserve_before_reporting_real_missing_frames() {

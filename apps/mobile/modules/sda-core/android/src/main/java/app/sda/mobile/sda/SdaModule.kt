@@ -644,7 +644,7 @@ class SdaModule : Module() {
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
                             val fifoFrames = state.optInt("fifoFrames", 0)
-                            if (paused) {
+                            if (paused || state.optJSONObject("outputDevice")?.optBoolean("recovering", false) == true) {
                                 lastProgressNs = System.nanoTime()
                                 Thread.sleep(20)
                                 continue

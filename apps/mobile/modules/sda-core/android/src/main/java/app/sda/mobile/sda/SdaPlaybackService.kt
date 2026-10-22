@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -130,6 +132,11 @@ class SdaPlaybackService : Service() {
     private var artwork: Bitmap? = null
     private var destroyed = false
     private val poll = Runnable { readProgress() }
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY) command("pause")
+        }
+    }
     companion object {
         private const val CHANNEL = "sda_playback"
         private const val NOTIFICATION = 48001
@@ -148,6 +155,9 @@ class SdaPlaybackService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        val noisyFilter = IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisyReceiver, noisyFilter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(noisyReceiver, noisyFilter)
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "音乐播放", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "SDA 媒体播放控制"
@@ -320,6 +330,7 @@ class SdaPlaybackService : Service() {
     }
     override fun onDestroy() {
         destroyed = true
+        unregisterReceiver(noisyReceiver)
         handler.removeCallbacksAndMessages(null)
         commands.shutdownNow()
         session?.isActive = false; session?.release(); session = null
