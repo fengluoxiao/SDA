@@ -8,6 +8,7 @@ export interface MpeghMp4Host {
   appendMp4Import(token: string, bytes: string): Promise<void>;
   finishMp4Import(token: string): Promise<string>;
   discardMp4Import(token: string): Promise<void>;
+  adoptMp4Import?(token: string): Promise<void>;
 }
 const CHUNK = 256 * 1024;
 export interface ImportProgress { fraction: number; stage: string }
@@ -73,6 +74,7 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
     const playbackUri = await host.finishMp4Import(token);
     onProgress?.({ fraction: 1, stage: "音轨已就绪" });
     return { uri: playbackUri, name: `${name}.${av3a ? "av3a" : ac4 ? "ac4" : "mhas"}`, durationMs,
+      adopt: () => host.adoptMp4Import?.(token),
       release: () => host.discardMp4Import(token) };
   } catch (error) {
     await host.discardMp4Import(token);

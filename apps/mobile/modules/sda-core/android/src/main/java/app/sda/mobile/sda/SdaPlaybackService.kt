@@ -32,6 +32,7 @@ object PlaybackKeepAlive {
     data class Progress(val positionMs: Long, val preparing: Boolean = false)
     interface Controls {
         fun setPlaying(playing: Boolean): Boolean
+        fun setInterrupted(playing: Boolean): Boolean = setPlaying(playing)
         fun stop()
         fun skip(direction: Int)
         fun progress(): Progress?
@@ -79,6 +80,7 @@ object PlaybackKeepAlive {
         val initial = State(token, title.take(200), true, hash = hash, controls = controls)
         state = queue[hash]?.let { metadata(initial, it) } ?: initial
         failure = ""
+        PlaybackAudioFocus.begin(context, token)
         try {
             context.applicationContext.startForegroundService(Intent(context, SdaPlaybackService::class.java))
         } catch (error: RuntimeException) {
@@ -95,12 +97,14 @@ object PlaybackKeepAlive {
         true
     }
     fun finish(context: Context, token: Long) {
+        PlaybackAudioFocus.end(token)
         if (!setPlaying(token, false)) return
         Handler(Looper.getMainLooper()).postDelayed({ end(context, token) }, 5_000)
     }
     fun end(context: Context, token: Long): Boolean = synchronized(lock) {
         if (state?.token != token) return@synchronized false
         state = null
+        PlaybackAudioFocus.end(token)
         context.applicationContext.stopService(Intent(context, SdaPlaybackService::class.java))
         true
     }
@@ -108,7 +112,7 @@ object PlaybackKeepAlive {
         .put("active", state != null).put("serviceRunning", serviceRunning)
         .put("partialWakeLockHeld", wakeLockHeld).put("playing", state?.playing == true)
         .put("mediaSessionActive", mediaSessionActive).put("mediaStyleNotification", mediaSessionActive)
-        .put("startFailureCategory", failure)
+        .put("startFailureCategory", failure).put("audioFocus", PlaybackAudioFocus.diagnostics())
 }
 
 class SdaPlaybackService : Service() {
@@ -131,6 +135,12 @@ class SdaPlaybackService : Service() {
         private const val NOTIFICATION = 48001
         private const val ACTION = "app.sda.mobile.MEDIA_CONTROL"
         @Volatile private var instance: SdaPlaybackService? = null
+        internal fun focusChanged(token: Long, requestId: Long, playing: Boolean) {
+            instance?.let { service -> service.execute {
+                if (PlaybackKeepAlive.owns(token) && PlaybackAudioFocus.currentRequest(token, requestId))
+                    PlaybackKeepAlive.snapshot()?.controls?.setInterrupted(playing)
+            } }
+        }
         internal fun refresh() {
             instance?.let { service -> service.handler.post { service.applyState() } }
         }

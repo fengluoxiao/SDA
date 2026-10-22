@@ -36,6 +36,8 @@ interface SdaEngineModule extends MpeghMp4Host {
   configurePlaybackQueue?(json: string, mode: string): void;
   currentTrackHash?(): string;
   contentHash(uri: string): Promise<string>;
+  preparePlayback?(displayName: string): Promise<void>;
+  discardPickerCopy?(uri: string): Promise<boolean>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
   playUri(uri: string, displayName: string, headYawDegrees: number, contentHash: string): Promise<string>;
@@ -383,6 +385,7 @@ export default class App extends React.Component<Record<string, never>, State> {
             const queue = state.queue.filter(track => track.contentHash !== pendingId);
             return { queue, queueIndex: selected ? queue.findIndex(track => track.contentHash === selected) : -1 };
           });
+          if (Platform.OS === "android") await this.getEngine().discardPickerCopy?.(asset.uri);
           continue;
         }
         progress(.08, "读取歌曲信息");
@@ -390,8 +393,17 @@ export default class App extends React.Component<Record<string, never>, State> {
         if (metadata.coverUri) void primeArtworkColor(metadata.coverUri, metadata.artworkColor).catch(() => {});
         patch({ metadata });
         const track = { contentHash, uri: asset.uri, name: asset.name, metadata };
-        // Prepare while the foreground import transaction is alive, not after EOF in background.
-        if (Platform.OS === "ios") await this.prepareTrack(track, p => progress(.12 + p.fraction * .86, p.stage));
+        // Both platforms finish compressed-track preparation before displaying ready.
+        const prepared = await this.prepareTrack(track, p => progress(.12 + p.fraction * .86, p.stage));
+        if (Platform.OS === "android") {
+          progress(.985, "准备音频引擎");
+          await this.getEngine().preparePlayback?.(prepared?.name ?? track.name);
+          if (prepared) {
+            track.uri = prepared.uri;
+            track.metadata = { ...track.metadata, durationMs: prepared.durationMs || track.metadata.durationMs };
+            await prepared.adopt?.();
+          }
+        }
         progress(.99, "完成准备");
         await new Promise<void>(resolve => this.setState(state => {
           const queue = state.queue.map(item => item.contentHash === pendingId ? track : item);
@@ -415,10 +427,9 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
-  // Keep iOS extractions alive for native EOF handoff. Android retains its existing lifetime.
+  // Prepared compressed tracks are queue-owned. Android adopts the raw track instead of retaining a second picker copy.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
   private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
-    if (Platform.OS !== "ios") return prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress);
     if (!this.preparedTracks.has(track.contentHash)) {
       this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress));
     }
@@ -455,20 +466,16 @@ export default class App extends React.Component<Record<string, never>, State> {
       const imported = await this.prepareTrack(track);
       this.syncNativeQueue();
       // playUri owns stop/start atomically; do not stop audio before asynchronous preparation.
-      try {
-        await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
-        engine.setNowPlayingMetadata?.(track.contentHash, JSON.stringify({ ...track.metadata, durationMs: imported?.durationMs || track.metadata.durationMs }));
-        if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
-        const settings = JSON.parse(engine.renderingSettings());
-        this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+      await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
+      engine.setNowPlayingMetadata?.(track.contentHash, JSON.stringify({ ...track.metadata, durationMs: imported?.durationMs || track.metadata.durationMs }));
+      if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
+      const settings = JSON.parse(engine.renderingSettings());
+      this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
           roomId: settings.roomId || "", layout: settings.layout, systemSpatial360RAActive: settings.systemSpatial360RAActive === true });
-      } finally {
-        // playUri has opened its InputStream. Android keeps that descriptor valid
-        // after unlinking the temporary extraction, including while paused.
-        if (Platform.OS !== "ios") await imported?.release();
-      }
+      // Retain the queue-owned compressed track for repeat/next. Interruptions use resume, never reimport.
       engine.setVolume(this.state.volume);
-      this.setState({ playing: true, ended: false, paused: false, error: null });
+      const nativePaused = Platform.OS === "android" && JSON.parse(engine.status()).paused === true;
+      this.setState({ playing: true, ended: false, paused: nativePaused, error: null });
     } catch (error) {
       this.setState({ playing: false, error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -544,8 +551,9 @@ export default class App extends React.Component<Record<string, never>, State> {
     try {
       const engine = this.getEngine();
       const paused = !this.state.paused;
-      if (paused) engine.pause(); else engine.resume();
-      this.setState({ paused });
+      const applied = paused ? engine.pause() : engine.resume();
+      if (applied !== false) this.setState({ paused });
+      else this.pollStatus();
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }

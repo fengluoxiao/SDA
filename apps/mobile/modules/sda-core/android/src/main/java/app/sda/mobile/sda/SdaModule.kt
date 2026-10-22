@@ -13,6 +13,8 @@ class SdaModule : Module() {
     private val mpeghImport = MpeghImport()
     @Volatile private var handle: Long = 0L
     private var activeLayout = "7.1.4"
+    private var pipelineHandle = 0L
+    private var preparedHandle = 0L
     @Volatile private var activeIsMp3 = false
     @Volatile private var alacStereoUpmix = false
     @Volatile private var activeSourceCodec = ""
@@ -75,8 +77,11 @@ class SdaModule : Module() {
         finally { SdaEngine.nativeFreeSpatialCues(prepared) }
     }
 
-    private fun ensureEngine(layout: String = "7.1.4"): Long = synchronized(nativeLock) {
-        if (handle != 0L) return@synchronized handle
+    private fun ensureEngine(layout: String = "7.1.4", startPipeline: Boolean = true): Long = synchronized(nativeLock) {
+        if (handle != 0L) {
+            if (startPipeline) startPreparedEngine(handle, activeLayout)
+            return@synchronized handle
+        }
         val context = appContext?.reactContext ?: throw RuntimeException("no react context")
         VendorNpuRuntime.prepare(context)
         // Ask Android to provision the app-owned directory (also used by
@@ -132,6 +137,7 @@ class SdaModule : Module() {
             throw RuntimeException(hrtfLoadStatus)
         }
         handle = ptr
+        pipelineHandle = 0L
         activeLayout = layout
         try {
             val nearError = SdaEngine.nativeSetNearField(ptr, false, 1f)
@@ -144,6 +150,12 @@ class SdaModule : Module() {
         val flavor = if (settings.getString("hrtfSet") == "dense-raw") "原始测量" else "校准资产"
         val wet = if (settings.getDouble("hrtfWetWeight") == 0.0) "无附加 HRTF 混响" else "HRTF 混响 ${settings.getDouble("hrtfWetWeight") }"
         hrtfLoadStatus = "已加载 $responseName · $directionCount 方向 · $flavor · $wet"
+        if (startPipeline) startPreparedEngine(ptr, layout)
+        ptr
+    }
+
+    private fun startPreparedEngine(ptr: Long, layout: String) {
+        if (pipelineHandle == ptr) return
         val result = SdaEngine.nativeStart(ptr)
         if (result != 0) {
             val detail = SdaEngine.nativeLastError().ifBlank { "unknown native output error" }
@@ -151,18 +163,26 @@ class SdaModule : Module() {
             handle = 0L
             throw RuntimeException("nativeStart failed: $detail ($result)")
         }
+        pipelineHandle = ptr
         try {
             // nativeStart queues the requested layout on the render worker.
             // Cue application is acknowledged on that same queue, so a saved
             // 360RA-13 update cannot race the renderer's initial 7.1.4 layout.
             // No source PCM is submitted until ensureEngine returns.
             restoreSpatialCues(ptr, layout)
-            val error = SdaEngine.nativeSetSpatialEnhancement(ptr, settings.getBoolean("spatialEnhancementEnabled"))
+            val error = SdaEngine.nativeSetSpatialEnhancement(ptr, renderingSettings().getBoolean("spatialEnhancementEnabled"))
             check(error.isEmpty()) { error }
         } catch (error: Throwable) {
-            SdaEngine.nativeClose(ptr); handle = 0L; throw error
+            SdaEngine.nativeClose(ptr); handle = 0L; pipelineHandle = 0L; throw error
         }
-        ptr
+    }
+
+    // Imported tracks may have a loaded renderer but no output pipeline yet.
+    private fun discardIdleRenderer() {
+        if (handle != 0L && pipelineHandle != handle) {
+            SdaEngine.nativeClose(handle)
+            handle = 0L; preparedHandle = 0L; pipelineHandle = 0L
+        }
     }
 
     private fun stopFeedThread() {
@@ -183,9 +203,14 @@ class SdaModule : Module() {
         }
     }
 
-    private fun setPlaybackPaused(value: Boolean, token: Long = backgroundSession): Boolean = synchronized(nativeLock) {
+    private fun setPlaybackPaused(value: Boolean, token: Long = backgroundSession, fromFocus: Boolean = false): Boolean = synchronized(nativeLock) {
         if (handle == 0L || token == 0L || backgroundSession != token || !PlaybackKeepAlive.owns(token)) return@synchronized false
+        if (fromFocus) {
+            if (!PlaybackAudioFocus.shouldApply(token, !value)) return@synchronized false
+        } else if (value) PlaybackAudioFocus.userPause(token)
+        else if (!PlaybackAudioFocus.request(token)) return@synchronized false
         check(SdaEngine.nativePause(handle, value) == 0) { "native pause failed" }
+        if (fromFocus && !value) PlaybackAudioFocus.didResume(token)
         paused = value
         diagnostics?.event(if (value) "pause" else "resume", generation)
         PlaybackKeepAlive.setPlaying(token, !value)
@@ -219,7 +244,7 @@ class SdaModule : Module() {
         val lease = PlaybackKeepAlive.diagnostics()
         return JSONObject().put("appVersion", info.versionName ?: "").put("appBuild", info.versionCode.toString())
             .put("volumeBalancePreference", prefs.getBoolean("volumeBalanceEnabled", false)).put("systemSpatialPreference", false)
-            .put("playing", handle != 0L && !feedDone && !stopped).put("paused", paused).put("background", inBackground)
+            .put("playing", backgroundSession != 0L && handle != 0L && !feedDone && !stopped).put("paused", paused).put("background", inBackground)
             .put("generation", generation).put("route", "SDA-HRTFHQ").put("engineRunning", handle != 0L).put("tracking", "fixed-or-manual")
             .put("backgroundTrackingEnabled", false).put("motion", JSONObject())
             .put("error", if (failureCategory.isEmpty()) "" else "playback-error")
@@ -272,6 +297,22 @@ class SdaModule : Module() {
         Function("configurePlaybackQueue") { text: String, _: String -> PlaybackKeepAlive.configureQueue(text) }
         Function("setNowPlayingMetadata") { hash: String, text: String -> PlaybackKeepAlive.setMetadata(hash, text) }
 
+        AsyncFunction("preparePlayback") { displayName: String ->
+            synchronized(nativeLock) {
+                check(!destroyed) { "Audio module was destroyed" }
+                if (backgroundSession == 0L && handle == 0L) {
+                    preparedHandle = ensureEngine(if (displayName.endsWith(".mhas", true)) "360RA-13" else "7.1.4", startPipeline = false)
+                }
+            }
+        }
+        AsyncFunction("adoptMp4Import") { token: String ->
+            val context = appContext.reactContext ?: error("no react context")
+            mpeghImport.adopt(context, token)
+        }
+        AsyncFunction("discardPickerCopy") { uri: String ->
+            val context = appContext.reactContext ?: error("no react context")
+            MpeghImport.discardPickerCopy(context, Uri.parse(uri))
+        }
         AsyncFunction("contentHash") { uriString: String ->
             val context = appContext.reactContext ?: throw RuntimeException("no react context")
             MediaMetadata.contentHash(context, Uri.parse(uriString))
@@ -289,7 +330,7 @@ class SdaModule : Module() {
 
         Function("setVolumeBalance") { enabled: Boolean ->
             synchronized(nativeLock) {
-                if (handle != 0L) {
+                if (handle != 0L && pipelineHandle == handle) {
                     val error = SdaEngine.nativeSetVolumeBalance(handle, enabled)
                     check(error.isEmpty()) { error }
                 }
@@ -310,7 +351,7 @@ class SdaModule : Module() {
 
         Function("setSpatialEnhancement") { enabled: Boolean ->
             synchronized(nativeLock) {
-                if (handle != 0L) {
+                if (handle != 0L && pipelineHandle == handle) {
                     val error = SdaEngine.nativeSetSpatialEnhancement(handle, enabled)
                     check(error.isEmpty()) { error }
                 }
@@ -325,6 +366,7 @@ class SdaModule : Module() {
             val context = appContext.reactContext ?: error("no react context")
             val preferences = context.getSharedPreferences("sda-rendering", 0)
             val snapshot = synchronized(nativeLock) {
+                discardIdleRenderer()
                 if (handle == 0L) {
                     check(preferences.edit().putFloat("spatialCueDb", db.toFloat()).commit()) { "无法保存空间线索设置" }
                     null
@@ -361,6 +403,7 @@ class SdaModule : Module() {
             val wetWeight = profile.getDouble("hrtfWetWeight")
             require(wetWeight.isFinite() && wetWeight in 0.0..1.0) { "无效 HRTF 混响权重" }
             synchronized(nativeLock) {
+                discardIdleRenderer()
                 require(!profile.getBoolean("nearField") && profile.getString("roomId").isEmpty()) { "不支持的预设房间配置" }
                 if (handle != 0L) {
                     val directory = "hrtf-restored/hrtf-dense"
@@ -402,6 +445,7 @@ class SdaModule : Module() {
             require(id.isEmpty()) { "移动端已移除房间仿真" }
             val path = ""
             synchronized(nativeLock) {
+                discardIdleRenderer()
                 if (handle != 0L) {
                     val error = SdaEngine.nativeSetRoom(handle, path)
                     check(error.isEmpty()) { error }
@@ -421,6 +465,7 @@ class SdaModule : Module() {
 
         Function("setObjectRendering") { direct: Boolean, directional: Boolean ->
             synchronized(nativeLock) {
+                discardIdleRenderer()
                 if (handle != 0L) {
                     check(SdaEngine.nativeSetObjectRendering(handle, direct, directional) == 0) {
                         "对象渲染设置未被原生引擎接受"
@@ -443,12 +488,14 @@ class SdaModule : Module() {
         AsyncFunction("playUri") { uriString: String, displayName: String, headYawDegrees: Double, contentHash: String ->
             require(headYawDegrees.isFinite() && headYawDegrees in -180.0..180.0) { "Head yaw must be finite and between -180 and 180 degrees" }
             require(contentHash.matches(Regex("[0-9a-f]{64}"))) { "Invalid track content hash" }
+            val targetLayout = if (displayName.endsWith(".mhas", true)) "360RA-13" else "7.1.4"
+            val reusePrepared = synchronized(nativeLock) { handle != 0L && handle == preparedHandle && backgroundSession == 0L && activeLayout == targetLayout }
             stopFeedThread()
             failureCategory = ""; inputBytesSubmitted = 0L
             val context = appContext?.reactContext ?: throw RuntimeException("no react context")
             val uri = Uri.parse(uriString)
             synchronized(nativeLock) {
-                if (handle != 0L) {
+                if (handle != 0L && !reusePrepared) {
                     SdaEngine.nativeFinish(handle)
                     SdaEngine.nativeClose(handle)
                     handle = 0L
@@ -456,10 +503,12 @@ class SdaModule : Module() {
             }
             if (backgroundSession != 0L) PlaybackKeepAlive.end(context, backgroundSession)
             backgroundSession = 0L
+            preparedHandle = 0L
             var mediaToken = 0L
             val mediaProgress = java.util.concurrent.atomic.AtomicReference(PlaybackKeepAlive.Progress(0, true))
             val controls = object : PlaybackKeepAlive.Controls {
                 override fun setPlaying(playing: Boolean) = setPlaybackPaused(!playing, mediaToken)
+                override fun setInterrupted(playing: Boolean) = setPlaybackPaused(!playing, mediaToken, fromFocus = true)
                 override fun stop() { stopPlayback(mediaToken) }
                 override fun skip(direction: Int) {
                     if (PlaybackKeepAlive.owns(mediaToken)) sendEvent("onMediaCommand", mapOf(
@@ -567,6 +616,12 @@ class SdaModule : Module() {
                 else if (displayName.substringAfterLast('.', "").equals("ac4", ignoreCase = true)) "ac4"
                 else if (displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)) "av3a" else "eac3"
             activeInput = input
+            synchronized(nativeLock) {
+                check(!destroyed && handle == ptr && backgroundSession == playbackSession && PlaybackKeepAlive.owns(playbackSession)) { "Playback preparation was cancelled" }
+                paused = !PlaybackAudioFocus.request(playbackSession)
+                check(SdaEngine.nativePause(ptr, paused) == 0) { "native startup pause failed" }
+                PlaybackKeepAlive.setPlaying(playbackSession, !paused)
+            }
             val worker = Thread({
                 try {
                     try { android.os.Process.setThreadPriority(-4) } catch (_: SecurityException) { }
@@ -584,9 +639,6 @@ class SdaModule : Module() {
                                 if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                 JSONObject(SdaEngine.nativeStatus(ptr))
                             }
-                            check(state.optJSONObject("outputDevice")?.optInt("errorCode", 0)?.let { it >= 0 } != false) {
-                                "Android audio device disconnected"
-                            }
                             mediaProgress.set(PlaybackKeepAlive.Progress(state.optLong("positionMs"), state.optBoolean("preparingAudio")))
                             diagnostics?.observeNative(state, workerGeneration)
                             val decoded = state.getLong("decodedSamplePos")
@@ -596,6 +648,9 @@ class SdaModule : Module() {
                                 lastProgressNs = System.nanoTime()
                                 Thread.sleep(20)
                                 continue
+                            }
+                            check(state.optJSONObject("outputDevice")?.optInt("errorCode", 0)?.let { it >= 0 } != false) {
+                                "Android audio device disconnected"
                             }
                             val preparingBalance = state.optBoolean("preparingAudio", false)
                             if (consumed != lastConsumed || preparingBalance) {
@@ -750,7 +805,7 @@ class SdaModule : Module() {
 
         Function("setVolume") { volume: Float ->
             synchronized(nativeLock) {
-                if (handle != 0L) SdaEngine.nativeSetVolume(handle, volume)
+                if (handle != 0L && pipelineHandle == handle) SdaEngine.nativeSetVolume(handle, volume)
             }
         }
 
