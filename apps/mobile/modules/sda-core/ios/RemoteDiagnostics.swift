@@ -5,6 +5,7 @@ import AVFoundation
 // Opt-in read-only server; never uploads or accepts playback commands.
 final class RemoteDiagnostics {
  private let queue = DispatchQueue(label:"sda.diagnostics",qos:.utility)
+ private let snapshotCache=DiagnosticSnapshotCache()
  private var listener: NWListener?
  private var clients: [UUID:NWConnection] = [:]
  private var epoch = 0
@@ -15,6 +16,7 @@ final class RemoteDiagnostics {
  func configure(enabled:Bool,snapshot:@escaping () -> [String:Any]) {
   queue.async {
    self.epoch += 1; let epoch=self.epoch
+   self.snapshotCache.reset()
    self.listener?.cancel(); self.listener=nil
    for client in self.clients.values { client.cancel() }; self.clients.removeAll()
    guard enabled else { self.setStatus("已关闭"); return }
@@ -59,7 +61,7 @@ final class RemoteDiagnostics {
    if parts.count == 3 {
     if parts[0] != "GET" { code="405 Method Not Allowed" }
     else if parts[1] != "/diagnostics" && parts[1] != "/" { code="404 Not Found" }
-    else if let json=try? JSONSerialization.data(withJSONObject:snapshot()) { code="200 OK"; body=json }
+    else if let json=try? JSONSerialization.data(withJSONObject:self.snapshotCache.read(capture:snapshot)) { code="200 OK"; body=json }
     else { code="500 Internal Server Error" }
    }
    var response=Data("HTTP/1.1 \(code)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)

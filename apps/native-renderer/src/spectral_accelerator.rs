@@ -121,6 +121,13 @@ mod coreml_model;
 #[cfg(all(target_os = "ios", feature = "coreml-audio"))]
 #[path = "coreml_spectral.rs"]
 mod coreml;
+#[cfg(all(target_os = "ios", feature = "coreml-audio"))]
+#[path = "apple_spectral.rs"]
+mod apple;
+#[cfg(all(target_os = "ios", feature = "coreml-audio"))]
+pub fn set_apple_foreground(active: bool) { apple::transition(active); }
+#[cfg(all(target_os = "ios", feature = "coreml-audio"))]
+pub fn reset_apple_session() { apple::new_session(); coordinator::release_inactive_backend(); }
 #[cfg(target_os = "android")]
 #[path = "nnapi_spectral.rs"]
 mod nnapi;

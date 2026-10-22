@@ -132,6 +132,18 @@ final class SdaPlayer {
   }
   return result
  }
+ // One identity/clock/EOF observation. Separate bridge calls can straddle
+ // native queue advancement, including repeat-one where the hash is unchanged.
+ func playbackSnapshot(includeObjects: Bool) throws -> [String:Any] {
+  try locked {
+   var status=(hasPlayback ? try command("status") as? [String:Any] : nil) ?? [:]
+   status["paused"]=isPaused
+   let objects:Any=(includeObjects && hasPlayback && !done) ? try command("objects") : [String:Any]()
+   return ["generation":generation,"trackHash":trackHash,"hasPlayback":hasPlayback,
+    "feedDone":done,"feedError":(failure as Any?) ?? NSNull(),"durationMs":duration,
+    "status":status,"objects":objects,"hrtfStatus":hrtfState]
+  }
+ }
  // Read-only device output facts, not source-file metadata or an analysis cache.
  func outputRouteStatus(_ input: [String:Any]) -> [String:Any] {
   var status = input
@@ -386,6 +398,10 @@ final class SdaPlayer {
   startHeadTracking()
  }
  func installSystemControls() {
+  sda_ios_acceleration_foreground(UIApplication.shared.applicationState == .active)
+  observers.append(NotificationCenter.default.addObserver(forName:UIApplication.willResignActiveNotification,object:nil,queue:nil) { _ in
+   sda_ios_acceleration_foreground(false)
+  })
   observers.append(NotificationCenter.default.addObserver(forName:ProcessInfo.thermalStateDidChangeNotification,object:nil,queue:nil) { [weak self] _ in
    guard let self else { return }
    self.locked { self.recordPlaybackEvent("thermalStateChanged",detail:String(ProcessInfo.processInfo.thermalState.rawValue)) }
@@ -401,7 +417,9 @@ final class SdaPlayer {
   })
   for notification in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
    observers.append(NotificationCenter.default.addObserver(forName: notification, object:nil, queue:nil) { [weak self] _ in
-    guard let self else { return }; self.locked {
+    guard let self else { return }
+    sda_ios_acceleration_foreground(notification == UIApplication.didBecomeActiveNotification)
+    self.locked {
      self.inBackground = notification == UIApplication.didEnterBackgroundNotification
      if self.inBackground { self.backgroundTransitions += 1 }
      self.recordPlaybackEvent(self.inBackground ? "background" : "foreground")
@@ -468,6 +486,7 @@ final class SdaPlayer {
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    _ = settings() // Apply shared-renderer migration before selecting an output route.
    let ext = (name as NSString).pathExtension.lowercased()
+   title=name;trackHash=hash;duration=0;mediaInfo=[MPNowPlayingInfoPropertyAssetURL:url]
    let input = try CompressedInput(url:url,name:name)
    alacActive = input.isAlac
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
@@ -650,7 +669,7 @@ final class SdaPlayer {
   } catch {
    // play() changes generation even on failure; the outgoing feeder must not
    // swallow this error through its stale-generation catch guard.
-   stopNative(); done = true; failure = String(describing:error)
+   stopNative(); done = true; failure = String(describing:error);failureDiagnostic=Self.safePlaybackFailure(error)
    recordPlaybackEvent("nativeQueueError",detail:failure ?? "")
   }
   return true

@@ -30,11 +30,18 @@ interface PlaybackStatus {
   nearFieldEnabled: boolean;
   roomEnabled: boolean;
 }
+interface IOSPlaybackSnapshot {
+  generation: number; trackHash: string; hasPlayback: boolean;
+  feedDone: boolean; feedError: string | null; durationMs: number;
+  status: Partial<PlaybackStatus> & { preparingAudio?: boolean };
+  objects: Record<string, ObjectPoint>; hrtfStatus: string;
+}
 interface ObjectPoint extends MobileObjectPoint { samplePos: number; hasPos: boolean }
 interface SdaEngineModule extends MpeghMp4Host {
   addListener?(name: "onMediaCommand", callback: (event: { command: string; hash: string; paused?: boolean }) => void): NativeEventSubscription;
   configurePlaybackQueue?(json: string, mode: string): void;
   currentTrackHash?(): string;
+  playbackSnapshot?(includeObjects: boolean): string;
   contentHash(uri: string): Promise<string>;
   preparePlayback?(displayName: string): Promise<void>;
   discardPickerCopy?(uri: string): Promise<boolean>;
@@ -159,6 +166,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private engine?: SdaEngineModule;
   private artworkPreview = false;
   private changingTrack = false;
+  private lastIOSPlaybackGeneration = -1;
   private poller?: ReturnType<typeof setInterval>;
 
   private foreground = AppState.currentState !== "background" && AppState.currentState !== "inactive";
@@ -486,13 +494,17 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private pollStatus() {
     try {
-    if (Platform.OS === "ios" && this.foreground) {
+    if (Platform.OS === "ios" && this.foreground && !this.state.busy && !this.changingTrack) {
       const detail = this.engine?.headTrackingStatus?.();
       if (detail !== undefined && detail !== this.state.headTrackingStatus) this.setState({ headTrackingStatus: detail });
     }
 
       const engine = this.engine;
-      if (!engine || !this.state.playing || this.state.busy || this.changingTrack) return;
+      if (!engine || (!this.state.playing && !(Platform.OS === "ios" && this.state.ended)) || this.state.busy || this.changingTrack) return;
+      if (Platform.OS === "ios" && engine.playbackSnapshot) {
+        this.pollIOSPlayback(engine);
+        return;
+      }
       const feedError = engine.feedError();
       const feedDone = engine.feedDone();
       if (!this.foreground) {
@@ -526,8 +538,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         ended: feedDone,
         error: feedError ?? this.state.error,
         hrtfStatus: engine.hrtfStatus(),
-        renderingStatus: value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : value.binauralEnabled === false ? "直接下混 · HRTF 已关闭" : value.objectRendering === false ? "床声道兼容 · HRTF" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
-          : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`,
+        renderingStatus: this.playbackDescription(value, feedDone),
       }, () => {
         if (feedDone && !feedError) {
           this.advancePlaylist();
@@ -536,6 +547,45 @@ export default class App extends React.Component<Record<string, never>, State> {
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  private playbackDescription(value: Partial<PlaybackStatus>, feedDone: boolean): string {
+    return value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : value.binauralEnabled === false ? "直接下混 · HRTF 已关闭" : value.objectRendering === false ? "床声道兼容 · HRTF" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
+          : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`;
+  }
+
+  private pollIOSPlayback(engine: SdaEngineModule) {
+    const snapshot = JSON.parse(engine.playbackSnapshot!(this.foreground)) as IOSPlaybackSnapshot;
+    if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < this.lastIOSPlaybackGeneration) return;
+    const changed = snapshot.generation !== this.lastIOSPlaybackGeneration ||
+      snapshot.trackHash !== this.state.queue[this.state.queueIndex]?.contentHash;
+    this.lastIOSPlaybackGeneration = snapshot.generation;
+    if (!this.foreground && !changed && !snapshot.feedDone && !snapshot.feedError) return;
+    const foreground = this.foreground;
+    this.setState(previous => {
+      if (snapshot.generation < this.lastIOSPlaybackGeneration || this.changingTrack || previous.busy) return null;
+      const index = previous.queue.findIndex(track => track.contentHash === snapshot.trackHash);
+      if (index < 0) return null; // Never put another source's clock on the selected song.
+      const track = previous.queue[index]!;
+      const prepared = this.preparedTracks.get(track.contentHash);
+      const value = snapshot.status;
+      return {
+        queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
+        durationMs: snapshot.durationMs > 0 ? snapshot.durationMs : prepared?.durationMs || track.metadata.durationMs || 0,
+        positionMs: value.positionMs ?? 0,
+        decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
+        fifoFrames: value.fifoFrames ?? 0, preparingAudio: value.preparingAudio === true,
+        playing: snapshot.hasPlayback && !snapshot.feedDone, ended: snapshot.feedDone,
+        paused: value.paused ?? false, error: snapshot.feedError ?? null,
+        sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true,
+        outputChannels: value.outputChannels ?? 2, systemSpatial360RAActive: value.systemSpatial360RAActive === true,
+        layout: value.outputLayout ?? previous.layout,
+        headYaw: previous.headTrackingEnabled && Number.isFinite(value.listenerYawDegrees) ? value.listenerYawDegrees! : previous.headYaw,
+        objects: snapshot.feedDone || changed && !foreground ? [] : foreground
+          ? Object.values(snapshot.objects).filter(object => object.hasPos && object.pos.every(Number.isFinite)) : previous.objects,
+        hrtfStatus: snapshot.hrtfStatus, renderingStatus: this.playbackDescription(value, snapshot.feedDone),
+      };
+    });
   }
 
   private advancePlaylist() {
