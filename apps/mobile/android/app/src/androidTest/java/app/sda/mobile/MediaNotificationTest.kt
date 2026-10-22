@@ -69,7 +69,8 @@ class MediaNotificationTest {
             }
             assertEquals("SDA artist", controller.metadata!!.getString(MediaMetadata.METADATA_KEY_ARTIST))
             assertEquals(120_000L, controller.metadata!!.getLong(MediaMetadata.METADATA_KEY_DURATION))
-            assertEquals(12_345L, controller.playbackState!!.position)
+            assertTrue("System position extrapolates from the submitted timestamp",
+                controller.playbackState!!.position in 12_345L..13_845L)
             instrumentation.uiAutomation.executeShellCommand("cmd statusbar expand-settings").close()
             SystemClock.sleep(1_000)
             instrumentation.uiAutomation.takeScreenshot()?.let { image ->
