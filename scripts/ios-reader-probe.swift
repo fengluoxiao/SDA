@@ -55,7 +55,7 @@ enum SdaError: LocalizedError {
   let manifest=try JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("manifest.json"))) as! [String:Any]
   let sizes=manifest["sizes"] as! [Int]
   var checks:[[String:Any]]=[]
-  for name in ["cursor32.m4a","cursor64.m4a"] {
+  for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
    for start in [0,2] {
     guard let reader=try IndexedCompressedInput.open(root.appendingPathComponent(name)) else { throw SdaError.message("Synthetic EC3 index not found") }
     let submitted=9224; let firstByte=sizes.prefix(start).reduce(0,+); let endByte=sizes.prefix(start+submitted).reduce(0,+)
@@ -73,7 +73,7 @@ enum SdaError: LocalizedError {
   try clipped.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:CMTime(value:Int64(9224*1536-3072-766),timescale:48000),submittedBytes:UInt64(prefixCount),digest:Data(SHA256.hash(data:expected.prefix(prefixCount))))
   var clippedTail=Data();while let packet=try clipped.next(chunkBytes:24576) { clippedTail.append(packet) }
   guard clippedTail == expected.suffix(from:prefixCount) else { throw SdaError.message("Clamped timestamp dropped or repeated the tail") }
-  for name in ["cursor32.m4a","cursor64.m4a"] {
+  for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
    let input=try CompressedInput(url:root.appendingPathComponent(name),name:name)
    var bytes=Data();while let packet=try input.next() { bytes.append(packet) }
    let start=input.diagnosticState["recoveryStartSample"] as? Int ?? -1

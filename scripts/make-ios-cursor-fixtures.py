@@ -29,8 +29,9 @@ def generate(source,out):
  # Match the failing metadata shape, using only the existing generated tones.
  count=9270;sequence=[packets[i%len(packets)] for i in range(count)];lengths=[len(v) for v in sequence];declared=count*1536-766
  payload=b''.join(sequence);out.mkdir(parents=True,exist_ok=True);(out/'expected.eac3').write_bytes(payload)
- def make(offsets,use64):
-  table=box(b'stsd',stsd)+full(b'stts',u32(1)+u32(count)+u32(1536))+full(b'stsc',u32(2)+u32(1)+u32(15)+u32(1)+u32(618)+u32(15)+u32(1))
+ def make(offsets,use64,clipped_tail=False):
+  timing=u32(2)+u32(count-1)+u32(1536)+u32(1)+u32(770) if clipped_tail else u32(1)+u32(count)+u32(1536)
+  table=box(b'stsd',stsd)+full(b'stts',timing)+full(b'stsc',u32(2)+u32(1)+u32(15)+u32(1)+u32(618)+u32(15)+u32(1))
   table+=full(b'stsz',u32(0)+u32(count)+b''.join(u32(v) for v in lengths))
   table+=full(b'co64' if use64 else b'stco',u32(len(offsets))+b''.join(struct.pack('>Q' if use64 else '>I',v) for v in offsets))
   new_minf=b''.join(box(k,table if k==b'stbl' else v) for k,v in children(minf))
@@ -45,13 +46,13 @@ def generate(source,out):
    track_parts.append(box(k,v))
   new_track=b''.join(track_parts)+box(b'edts',edit)
   return box(b'moov',b''.join(box(k,patch_clock(v,declared)) for k,v in children(moov) if k==b'mvhd')+box(b'trak',new_track))
- for use64,name in [(False,'cursor32.m4a'),(True,'cursor64.m4a')]:
-  template=make([0]*618,use64);start=len(ftyp)+len(template)+8;positions=[];offset=start
+ for use64,name,clipped_tail in [(False,'cursor32.m4a',False),(True,'cursor64.m4a',False),(False,'cursor-clipped-tail.m4a',True)]:
+  template=make([0]*618,use64,clipped_tail);start=len(ftyp)+len(template)+8;positions=[];offset=start
   for i,v in enumerate(sequence):
    if i%15==0:positions.append(offset)
    offset+=len(v)
-  built=make(positions,use64);assert len(built)==len(template);data=ftyp+built+box(b'mdat',payload);(out/name).write_bytes(data)
-  if not use64:
+  built=make(positions,use64,clipped_tail);assert len(built)==len(template);data=ftyp+built+box(b'mdat',payload);(out/name).write_bytes(data)
+  if name=='cursor32.m4a':
    (out/'truncated.m4a').write_bytes(data[:-1])
    (out/'ambiguous.m4a').write_bytes(ftyp+built+box(b'mdat',bytes(len(payload))))
  (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
