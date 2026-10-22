@@ -437,6 +437,13 @@ impl ContinuousSource {
         self.finish_with_preparation(set, cfg!(all(target_os = "ios", feature = "async-filter-preparation")))
     }
     fn finish_with_preparation(&mut self, set: &crate::hrtf::NativeHrtfSet, asynchronous: bool) -> Result<(), String> {
+        self.prepare_finish(set, asynchronous)?;
+        self.convolver.begin_block(&self.input)?;
+        self.convolver.calculate_spectra();
+        self.finish_prepared();
+        Ok(())
+    }
+    fn prepare_finish(&mut self, set: &crate::hrtf::NativeHrtfSet, asynchronous: bool) -> Result<(), String> {
         // No old filter exists on first use. Preserve synchronous initialization
         // so the asynchronous update path cannot silently consume startup PCM.
         let asynchronous = asynchronous && self.route.is_some()
@@ -497,8 +504,10 @@ impl ContinuousSource {
         }
         self.left.fill(0.0);
         self.right.fill(0.0);
-        self.convolver
-            .process_block(&self.input, &mut self.left, &mut self.right)?;
+        Ok(())
+    }
+    fn finish_prepared(&mut self) {
+        self.convolver.finish_prepared_block(&self.input, &mut self.left, &mut self.right);
         let occlusion_targets = self.occlusion_targets;
         for (i, frame) in self.frames.iter_mut().enumerate() {
             let output = self.near.process([self.left[i], self.right[i]], frame.near);
@@ -508,7 +517,6 @@ impl ContinuousSource {
             frame.near = [1.0; 2];
         }
         self.occlusion_targets = [1.0; 2];
-        Ok(())
     }
     fn update_prepared_route(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
         if self.preparation_set != set.preparation_id() {
@@ -590,10 +598,55 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
+    #[cfg(target_os = "android")]
+    let block_started = std::time::Instant::now();
+    #[cfg(target_os = "android")]
+    if let Some(mut lease) = crate::spectral_accelerator::begin(
+        sources.len() * 2,
+        sources.iter().map(|s| s.convolver.spectral_shape()),
+    ) {
+        crate::audio_executor::run(&mut sources, |source| {
+            source.prepare_finish(set, false)?;
+            source.convolver.begin_block(&source.input)?;
+            Ok::<(), String>(())
+        })?;
+        if sources.iter().any(|s| {
+            let (parts, bins) = s.convolver.spectral_shape();
+            parts > lease.batch().shape.parts || bins != lease.batch().shape.bins
+        }) {
+            return crate::audio_executor::run(&mut sources, |source| {
+                source.convolver.calculate_spectra(); source.finish_prepared(); Ok::<(), String>(())
+            });
+        }
+        if sources.iter().all(|s| !s.convolver.block_is_prepared()) {
+            return crate::audio_executor::run(&mut sources, |source| { source.finish_prepared(); Ok::<(), String>(()) });
+        }
+        let started = std::time::Instant::now();
+        for (i, source) in sources.iter().enumerate() { source.convolver.pack_spectra(lease.batch_mut(), i * 2); }
+        lease.packed_in(started.elapsed());
+        if lease.is_qualifying() {
+            let cpu = std::time::Instant::now();
+            crate::audio_executor::run(&mut sources, |source| { source.convolver.calculate_spectra(); Ok::<(), String>(()) })?;
+            let cpu_time = cpu.elapsed();
+            let copy = std::time::Instant::now();
+            for (i, source) in sources.iter().enumerate() { source.convolver.export_spectra(lease.batch_mut(), i * 2); }
+            lease.submit_reference(cpu_time, copy.elapsed());
+        } else if lease.execute() {
+            for (i, source) in sources.iter_mut().enumerate() { source.convolver.import_spectra(lease.batch(), i * 2); }
+        } else {
+            crate::audio_executor::run(&mut sources, |source| { source.convolver.calculate_spectra(); Ok::<(), String>(()) })?;
+        }
+        let result = crate::audio_executor::run(&mut sources, |source| { source.finish_prepared(); Ok::<(), String>(()) });
+        lease.completed_in(block_started.elapsed());
+        return result;
+    }
     if cfg!(target_os = "ios") || crate::realtime::android_audio_policy() {
         // Android's continuous object path must share the caller-participating
         // executor used by mixing, buses and legacy direct convolution.
-        return crate::audio_executor::run(&mut sources, |source| source.finish(set));
+        let result = crate::audio_executor::run(&mut sources, |source| source.finish(set));
+        #[cfg(target_os = "android")]
+        crate::spectral_accelerator::observe_native_block(block_started.elapsed());
+        return result;
     }
     let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());
     if let Some(pool) =

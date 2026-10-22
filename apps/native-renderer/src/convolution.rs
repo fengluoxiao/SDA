@@ -112,6 +112,7 @@ pub struct StereoPartitionedConvolver {
     // allocate one per route update.
     filter_work: Vec<Complex32>,
     silent_blocks: usize,
+    block_prepared: bool,
     transition: Option<(PreparedStereoFilter, usize, usize)>,
     spare_filter: Option<PreparedStereoFilter>,
 }
@@ -166,6 +167,7 @@ impl StereoPartitionedConvolver {
             fft_scratch: vec![Complex32::new(0.0, 0.0); scratch_len],
             filter_work: vec![Complex32::new(0.0, 0.0); fft_len],
             silent_blocks: count + 1,
+            block_prepared: false,
             transition: None,
             spare_filter: None,
         })
@@ -287,6 +289,7 @@ impl StereoPartitionedConvolver {
         );
     }
     pub fn reset(&mut self) {
+        self.block_prepared = false;
         self.previous_input.fill(0.0);
         for spectrum in &mut self.history {
             spectrum.fill(Complex32::new(0.0, 0.0));
@@ -312,6 +315,16 @@ impl StereoPartitionedConvolver {
         {
             return Err("partitioned convolver block length mismatch".into());
         }
+        if !self.begin_block(input)? { return Ok(()); }
+        self.calculate_spectra();
+        self.finish_prepared_block(input, left, right);
+        Ok(())
+    }
+
+    /// Advance overlap/history once, before CPU or accelerator accumulation.
+    pub(crate) fn begin_block(&mut self, input: &[f32]) -> Result<bool, String> {
+        if input.len() != self.partition { return Err("partitioned convolver input length mismatch".into()); }
+        self.block_prepared = false;
         // Overlap-save keeps the preceding block in each history spectrum.
         // Drain that overlap and every filter partition before skipping silence.
         if input.iter().all(|sample| *sample == 0.0) {
@@ -319,7 +332,7 @@ impl StereoPartitionedConvolver {
                 if let Some((filter, _, _)) = self.transition.take() {
                     self.commit_filter(filter);
                 }
-                return Ok(());
+                return Ok(false);
             }
             self.silent_blocks += 1;
         } else {
@@ -333,6 +346,41 @@ impl StereoPartitionedConvolver {
             .process_with_scratch(&mut self.work, &mut self.fft_scratch);
         self.input_spectrum.copy_from_slice(&self.work);
         self.history[self.history_cursor].copy_from_slice(&self.input_spectrum);
+        self.block_prepared = true;
+        Ok(true)
+    }
+
+    pub(crate) fn block_is_prepared(&self) -> bool { self.block_prepared }
+
+    pub(crate) fn spectral_shape(&self) -> (usize, usize) {
+        (self.history.len(), self.fft_len / 2 + 1)
+    }
+
+    pub(crate) fn pack_spectra(&self, batch: &mut crate::spectral_accelerator::Batch, row: usize) {
+        if !self.block_prepared { return; }
+        for part in 0..self.history.len() {
+            let input = &self.history[(self.history_cursor + self.history.len() - part) % self.history.len()];
+            batch.pack(row, part, input, &self.filters_left[part], &self.filters_right[part]);
+            if let Some((filter, _, _)) = &self.transition {
+                batch.pack(row + 1, part, input, &filter.filters_left[part], &filter.filters_right[part]);
+            }
+        }
+    }
+
+    pub(crate) fn export_spectra(&self, batch: &mut crate::spectral_accelerator::Batch, row: usize) {
+        if !self.block_prepared { return; }
+        batch.store_reference(row, &self.output_left, &self.output_right);
+        if self.transition.is_some() { batch.store_reference(row + 1, &self.sum_left, &self.sum_right); }
+    }
+
+    pub(crate) fn import_spectra(&mut self, batch: &crate::spectral_accelerator::Batch, row: usize) {
+        if !self.block_prepared { return; }
+        batch.load_output(row, &mut self.output_left, &mut self.output_right);
+        if self.transition.is_some() { batch.load_output(row + 1, &mut self.sum_left, &mut self.sum_right); }
+    }
+
+    pub(crate) fn calculate_spectra(&mut self) {
+        if !self.block_prepared { return; }
         self.sum_left.fill(Complex32::new(0.0, 0.0));
         self.sum_right.fill(Complex32::new(0.0, 0.0));
         for filter_index in 0..self.history.len() {
@@ -351,14 +399,7 @@ impl StereoPartitionedConvolver {
         }
         self.output_left.copy_from_slice(&self.sum_left);
         self.output_right.copy_from_slice(&self.sum_right);
-        inverse_stereo(
-            &mut self.output_left,
-            &mut self.output_right,
-            &self.inverse,
-            &mut self.fft_scratch,
-        );
-        let scale = 1.0 / self.fft_len as f32;
-        if let Some((target, elapsed, duration)) = &mut self.transition {
+        if let Some((target, _, _)) = &self.transition {
             self.sum_left.fill(Complex32::new(0.0, 0.0));
             self.sum_right.fill(Complex32::new(0.0, 0.0));
             for part in 0..self.history.len() {
@@ -372,6 +413,19 @@ impl StereoPartitionedConvolver {
                     &target.filters_right[part],
                 );
             }
+        }
+    }
+
+    pub(crate) fn finish_prepared_block(&mut self, input: &[f32], left: &mut [f32], right: &mut [f32]) {
+        if !self.block_prepared { return; }
+        inverse_stereo(
+            &mut self.output_left,
+            &mut self.output_right,
+            &self.inverse,
+            &mut self.fft_scratch,
+        );
+        let scale = 1.0 / self.fft_len as f32;
+        if let Some((_, elapsed, duration)) = &mut self.transition {
             inverse_stereo(
                 &mut self.sum_left,
                 &mut self.sum_right,
@@ -402,7 +456,7 @@ impl StereoPartitionedConvolver {
         }
         self.previous_input.copy_from_slice(input);
         self.history_cursor = (self.history_cursor + 1) % self.history.len();
-        Ok(())
+        self.block_prepared = false;
     }
 }
 

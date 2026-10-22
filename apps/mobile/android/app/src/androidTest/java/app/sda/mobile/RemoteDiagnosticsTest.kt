@@ -89,7 +89,14 @@ class RemoteDiagnosticsTest {
         await("Asynchronous public accelerator inventory completes") {
             JSONObject(SdaEngine.nativeAccelerators()).optString("status") != "probing"
         }
-        assertFalse("Discovery must never claim NPU audio execution", JSONObject(SdaEngine.nativeAccelerators()).getBoolean("npuAudioEnabled"))
+        val acceleration = JSONObject(SdaEngine.nativeAccelerators())
+        assertFalse("No processed audio must not claim NPU execution", acceleration.getBoolean("npuAudioEnabled"))
+        val audio = acceleration.getJSONObject("audio")
+        assertEquals("hrtf-fp32-complex-spectral-mac", audio.getString("operation"))
+        assertEquals("nnapi-explicit-accelerator", audio.getString("runtime"))
+        assertFalse(audio.getBoolean("fp16Relaxation"))
+        assertFalse(audio.getBoolean("frameworkCpuFallbackAllowed"))
+        assertEquals(0L, audio.getLong("audioBatchesApplied"))
         val dir = File(context.cacheDir, "diagnostics-test-hrtf")
         fun extract(root: String, output: File) {
             output.mkdirs()

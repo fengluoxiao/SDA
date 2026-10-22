@@ -1,5 +1,6 @@
 //! Read-only accelerator inventory through public Android APIs. Discovery is
-//! deliberately distinct from audio backend enablement; no inference is run.
+//! distinct from audio backend enablement. The nested audio state reports real
+//! HRTF spectral work, independent of the device inventory.
 use std::sync::{atomic::{AtomicBool,Ordering},Mutex,OnceLock};
 use std::ffi::{c_char,c_void,CStr};
 static STARTED: AtomicBool=AtomicBool::new(false);
@@ -13,7 +14,16 @@ pub fn status()->String {
         });
         if started.is_err(){if let Ok(mut s)=state().lock(){*s="{\"status\":\"unavailable\",\"npuAudioEnabled\":false}".into();}}
     }
-    state().lock().map(|s|s.clone()).unwrap_or_else(|_|"{\"status\":\"unavailable\",\"npuAudioEnabled\":false}".into())
+    sda_native_renderer::spectral_accelerator::start();
+    let snapshot=state().lock().map(|s|s.clone()).unwrap_or_else(|_|"{}".into());
+    let mut result:serde_json::Value=serde_json::from_str(&snapshot).unwrap_or(serde_json::json!({}));
+    let audio=sda_native_renderer::spectral_accelerator::status();
+    let enabled=audio["npuAudioEnabled"].as_bool().unwrap_or(false);
+    result["npuAudioEnabled"]=enabled.into();
+    result["audioBackend"]=if enabled {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
+    result["audioOperationSupport"]=audio["state"].clone();
+    result["audio"]=audio;
+    result.to_string()
 }
 #[link(name="dl")]
 unsafe extern "C" {fn dlopen(name:*const c_char,flags:i32)->*mut c_void;fn dlsym(handle:*mut c_void,name:*const c_char)->*mut c_void;fn dlclose(handle:*mut c_void)->i32;}

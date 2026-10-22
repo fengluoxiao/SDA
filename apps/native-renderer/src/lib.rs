@@ -66,6 +66,7 @@ mod spatial_mode_transition_tests;
 mod front_presentation_tests;
 mod front_ear;
 pub mod convolution;
+pub mod spectral_accelerator;
 pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-spectral-redistribution-v1";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]
