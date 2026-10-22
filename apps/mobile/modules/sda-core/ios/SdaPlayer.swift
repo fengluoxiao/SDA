@@ -544,6 +544,7 @@ final class SdaPlayer {
  }
  func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?) {
   var finished = false
+  var endDrain = PlaybackEndDrain()
   var lastClock: UInt64 = 0
   var lastProgress = Date()
   var lastInfo = Date.distantPast
@@ -556,6 +557,7 @@ final class SdaPlayer {
     let shouldWait: Bool? = try locked {
      guard generation == token, hasPlayback else { return nil }
      if isPaused {
+      endDrain.reset()
       lastProgress = Date()
       // Finish the existing bounded startup preroll while paused. Keep the
       // synchronizer stopped; resume can then submit already decoded PCM.
@@ -573,13 +575,21 @@ final class SdaPlayer {
       // events, coalesce consumed events to the current object snapshot.
       _ = try command("objects"); updateNowPlaying(); lastInfo = Date()
      }
-     if finished { if consumed >= decoded && (status["fifoFrames"] as? Int ?? 0) == 0 {
-      if try advanceNativeQueue() { return nil }
-      done = true
-      // End the actual Apple consumer too; an engine pumping silence can
-      // leave system media activity visible even after its rate becomes zero.
-      _ = try setPaused(true)
-      recordPlaybackEvent("ended"); updateNowPlaying(); return nil }; return true }
+     if finished {
+      // The native clock counts samples handed to AVAudioEngine. Its device
+      // may still hold the final buffers (especially Bluetooth/AirPlay).
+      let session=AVAudioSession.sharedInstance()
+      let latency=systemMode ? 0 : max(source?.outputPresentationLatency ?? 0,session.outputLatency)+session.ioBufferDuration
+      if endDrain.ready(inputFinished:true,decoded:decoded,consumed:consumed,
+          fifoFrames:status["fifoFrames"] as? Int ?? 0,pendingBatches:status["pendingBatches"] as? Int ?? 0,
+          now:ProcessInfo.processInfo.systemUptime,outputLatency:latency) {
+       if try advanceNativeQueue() { return nil }
+       done = true
+       _ = try setPaused(true)
+       recordPlaybackEvent("ended"); updateNowPlaying(); return nil
+      }
+      return true
+     }
      if status["preparingAudio"] as? Bool == true { return false }
      // Bound ALAC lookahead so a live switch does not sit behind four seconds.
      // Before the first output frame, decoder coverage must exceed the iOS

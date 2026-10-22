@@ -36,9 +36,17 @@ enum SdaError: LocalizedError {
   let indexed = try CompressedInput(url:fixture,name:fixture.lastPathComponent)
   var indexedData=Data()
   for _ in 0..<3 { if let packet=try indexed.next() { indexedData.append(packet) } }
-  guard try indexed.recoverInvalidSampleCursor() else { throw SdaError.message("Indexed continuation unavailable") }
+  if indexed.diagnosticState["backend"] as? String != "indexed-mp4" {
+   guard try indexed.recoverInvalidSampleCursor() else { throw SdaError.message("Indexed continuation unavailable") }
+  }
   while let packet=try indexed.next() { indexedData.append(packet) }
   guard indexedData == expected else { throw SdaError.message("Indexed continuation dropped or duplicated packets") }
+  let early = try CompressedInput(url:fixture,name:fixture.lastPathComponent)
+  var earlyBytes=Data()
+  for _ in 0..<3 { if let packet=try early.next() { earlyBytes.append(packet) } }
+  if let packet=try early.nextAfterReaderCompletion() { earlyBytes.append(packet) }
+  while let packet=try early.next() { earlyBytes.append(packet) }
+  guard earlyBytes == expected else { throw SdaError.message("Early reader completion dropped the unread tail") }
   if CommandLine.arguments.count > 3 { try cursorFixtures(URL(fileURLWithPath:CommandLine.arguments[3])) }
   print("PASS: \(packets) compressed packets, \(actual.count) bytes exactly match raw E-AC-3; no Apple downmix")
  }
@@ -58,6 +66,25 @@ enum SdaError: LocalizedError {
     checks.append(["container":name,"firstSample":start,"verifiedPrefixBytes":prefix.count,"tailBytes":tail.count,"fullTailByteIdentical":true])
    }
   }
+  // A valid edit clips the last CMSampleBuffer duration; unique byte hashes
+  // still prove the exact continuation even when end-time equality fails.
+  guard let clipped=try IndexedCompressedInput.open(root.appendingPathComponent("cursor32.m4a")) else { throw SdaError.message("Missing clip fixture") }
+  let prefixCount=sizes.prefix(9224).reduce(0,+)
+  try clipped.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:CMTime(value:Int64(9224*1536-3072-766),timescale:48000),submittedBytes:UInt64(prefixCount),digest:Data(SHA256.hash(data:expected.prefix(prefixCount))))
+  var clippedTail=Data();while let packet=try clipped.next(chunkBytes:24576) { clippedTail.append(packet) }
+  guard clippedTail == expected.suffix(from:prefixCount) else { throw SdaError.message("Clamped timestamp dropped or repeated the tail") }
+  for name in ["cursor32.m4a","cursor64.m4a"] {
+   let input=try CompressedInput(url:root.appendingPathComponent(name),name:name)
+   var bytes=Data();while let packet=try input.next() { bytes.append(packet) }
+   let start=input.diagnosticState["recoveryStartSample"] as? Int ?? -1
+   guard input.diagnosticState["indexedPrepared"] as? Bool == true, start >= 0,
+    bytes == expected.suffix(from:sizes.prefix(start).reduce(0,+)) else { throw SdaError.message("Prepared indexed playback changed the full compressed stream") }
+   checks.append(["container":name,"preparedBeforeTail":true,"firstSample":start,"fullTrackBytes":bytes.count])
+  }
+  guard let ambiguous=try IndexedCompressedInput.open(root.appendingPathComponent("ambiguous.m4a")) else { throw SdaError.message("Missing ambiguity fixture") }
+  var ambiguityRejected=false
+  do { try ambiguous.verifyContinuation(firstPTS:CMTime(value:0,timescale:48000),lastEnd:nil,submittedBytes:UInt64(sizes[0]),digest:Data(SHA256.hash(data:Data(repeating:0,count:sizes[0])))) } catch { ambiguityRejected=true }
+  guard ambiguityRejected else { throw SdaError.message("Ambiguous byte prefix was accepted") }
   guard let bad=try IndexedCompressedInput.open(root.appendingPathComponent("cursor32.m4a")) else { throw SdaError.message("Missing negative fixture") }
   var rejected=false
   do { try bad.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:nil,submittedBytes:UInt64(sizes[0]),digest:Data(repeating:0,count:32)) } catch { rejected=true }
@@ -65,7 +92,7 @@ enum SdaError: LocalizedError {
   rejected=false
   do { _ = try IndexedCompressedInput.open(root.appendingPathComponent("truncated.m4a")) } catch { rejected=true }
   guard rejected else { throw SdaError.message("Truncated media was treated as EOF") }
-  let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"syntheticOnly":true]
+  let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"clampedTimestampTailVerified":true,"ambiguityRejected":true,"earlyCompletionTailVerified":true,"syntheticOnly":true]
   print(String(decoding:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]),as:UTF8.self))
  }
 

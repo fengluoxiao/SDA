@@ -51,6 +51,8 @@ def generate(source,out):
    if i%15==0:positions.append(offset)
    offset+=len(v)
   built=make(positions,use64);assert len(built)==len(template);data=ftyp+built+box(b'mdat',payload);(out/name).write_bytes(data)
-  if not use64:(out/'truncated.m4a').write_bytes(data[:-1])
+  if not use64:
+   (out/'truncated.m4a').write_bytes(data[:-1])
+   (out/'ambiguous.m4a').write_bytes(ftyp+built+box(b'mdat',bytes(len(payload))))
  (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
 if __name__=='__main__':generate(Path(sys.argv[1]),Path(sys.argv[2]))

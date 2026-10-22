@@ -1,0 +1,55 @@
+name: iOS compressed reader and playback tail check
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/joc-input-conditioning-20261016]
+    paths:
+      - '.github/workflows/ios-reader-check.yml'
+      - 'apps/mobile/modules/sda-core/ios/CompressedInput.swift'
+      - 'apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift'
+      - 'apps/mobile/modules/sda-core/ios/PlaybackEndDrain.swift'
+      - 'apps/mobile/modules/sda-core/ios/SdaPlayer.swift'
+      - 'scripts/ios-reader-probe.swift'
+      - 'scripts/ios-playback-end-probe.swift'
+      - 'scripts/make-ios-cursor-fixtures.py'
+permissions:
+  contents: read
+concurrency:
+  group: ios-reader-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  reader:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate original tone fixtures
+        run: |
+          mkdir -p reader-artifacts
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=523:sample_rate=48000:duration=3' -c:a eac3 -b:a 192k reader-artifacts/tone.m4a
+          ffmpeg -hide_banner -loglevel error -i reader-artifacts/tone.m4a -map 0:a:0 -c:a copy -f eac3 reader-artifacts/tone.eac3
+          python3 scripts/make-ios-cursor-fixtures.py reader-artifacts/tone.m4a reader-artifacts/fixtures
+      - name: Run actual AVFoundation and indexed readers
+        run: |
+          set -o pipefail
+          xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift scripts/ios-reader-probe.swift -o reader-artifacts/reader-probe
+          reader-artifacts/reader-probe reader-artifacts/tone.m4a reader-artifacts/tone.eac3 reader-artifacts/fixtures | tee reader-artifacts/reader-report.txt
+          xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/PlaybackEndDrain.swift scripts/ios-playback-end-probe.swift -o reader-artifacts/end-probe
+          reader-artifacts/end-probe | tee reader-artifacts/end-report.txt
+          xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift scripts/ios-alac-probe.swift -o reader-artifacts/alac-probe
+          reader-artifacts/alac-probe 2>&1 | tee reader-artifacts/alac-report.txt
+      - name: Typecheck iOS 16.4 playback host
+        run: |
+          set -o pipefail
+          root=apps/mobile/modules/sda-core/ios
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$root/SdaBridge.h" "$root/SdaPlayer.swift" "$root/HeadphoneTracking.swift" "$root/RemoteDiagnostics.swift" "$root/PlaybackLifecycle.swift" "$root/PlaybackEndDrain.swift" "$root/CompressedInput.swift" "$root/IndexedCompressedInput.swift" "$root/SystemSpatial360.swift" "$root/SystemAudioBufferPolicy.swift" "$root/Phase360Prototype.swift" 2>&1 | tee reader-artifacts/ios-typecheck.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-reader-check
+          path: |
+            reader-artifacts/*report.txt
+            reader-artifacts/ios-typecheck.txt
+          if-no-files-found: warn
+          retention-days: 14

@@ -17,6 +17,8 @@ final class CompressedInput {
  private(set) var indexedRecoveryCount = 0
  private var indexedRecoveryMillis: Double = 0
  private var indexedRecoveryAttempted = false
+ private var indexedPreparationAttempted = false
+ private var indexedPrepared = false
  private var indexedRecoveryFailure: String?
  private var lastReaderErrorCode: Int?
  private var selectedTrackID: CMPersistentTrackID?
@@ -134,23 +136,51 @@ final class CompressedInput {
   error.domain == AVFoundationErrorDomain && error.code == -11880
  }
  var diagnosticState: [String:Any] {
-  var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis]
+  var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis,"indexedPrepared":indexedPrepared]
   if let id=selectedTrackID { value["trackId"]=id }
   if let code=lastReaderErrorCode { value["lastReaderErrorCode"]=code }
   if let reason=indexedRecoveryFailure { value["indexedRecoveryFailure"]=reason }
   if let indexed { value["indexedSamples"]=indexed.sampleCount;value["indexedSamplePosition"]=indexed.samplePosition;value["verifiedPrefixBytes"]=indexed.verifiedPrefixBytes;value["recoveryStartSample"]=indexed.recoveryStartSample }
   return value
  }
- func recoverInvalidSampleCursor() throws -> Bool {
-  let recoveryStarted=Date()
-  guard !isAlac, indexed == nil, !indexedRecoveryAttempted, submittedCompressedBytes > 0, let firstCompressedPTS, firstCompressedPTS.isNumeric, let selectedTrackID, selectedTrackID > 0 else { return false }
-  indexedRecoveryAttempted=true
+ // Switch before reaching the fragile tail cursor. Prefix verification costs
+ // at most the initial 64 KiB plus one AVFoundation buffer; no PCM cache.
+ private func prepareIndexedContinuation() {
+  guard !isAlac, indexed == nil, !indexedPreparationAttempted, submittedCompressedBytes >= 65536 else { return }
+  indexedPreparationAttempted=true
+  do { indexedPrepared=try adoptVerifiedIndex(recovery:false) }
+  catch { indexedRecoveryFailure="initial-prefix-or-index-unverified" }
+ }
+ private func adoptVerifiedIndex(recovery: Bool) throws -> Bool {
+  guard !isAlac, indexed == nil, submittedCompressedBytes > 0,
+   let firstCompressedPTS, firstCompressedPTS.isNumeric, let selectedTrackID, selectedTrackID > 0 else { return false }
+  let started=Date()
   guard let replacement=try IndexedCompressedInput.open(url,trackID:selectedTrackID) else { indexedRecoveryFailure="unsupported-container";return false }
   var expected=submittedHash
   try replacement.verifyContinuation(firstPTS:firstCompressedPTS,lastEnd:resumeTimeValid && nextTime.isNumeric ? nextTime : nil,submittedBytes:submittedCompressedBytes,digest:Data(expected.finalize()))
-  reader?.cancelReading();reader=nil;trackOutput=nil;indexed=replacement;indexedRecoveryCount += 1
-  indexedRecoveryMillis=Date().timeIntervalSince(recoveryStarted)*1000
+  reader?.cancelReading();reader=nil;trackOutput=nil;indexed=replacement
+  if recovery { indexedRecoveryCount += 1 }
+  indexedRecoveryFailure=nil
+  indexedRecoveryMillis=Date().timeIntervalSince(started)*1000
   return true
+ }
+ func recoverInvalidSampleCursor() throws -> Bool {
+  guard indexed == nil, !indexedRecoveryAttempted else { return false }
+  indexedRecoveryAttempted=true
+  return try adoptVerifiedIndex(recovery:true)
+ }
+ // A completed AVAssetReader is not proof that its compressed cursor visited
+ // every physical sample. Continue any verified tail before finishing decode.
+ func nextAfterReaderCompletion(chunkBytes: Int = 24 * 1024) throws -> Data? {
+  if indexed != nil { return try next(chunkBytes:chunkBytes) }
+  if !isAlac && submittedCompressedBytes == 0 { throw SdaError.message("压缩音轨没有返回任何音频包") }
+  do {
+   if try adoptVerifiedIndex(recovery:true) { return try next(chunkBytes:chunkBytes) }
+  } catch {
+   indexedRecoveryFailure="end-prefix-or-index-unverified"
+   throw error
+  }
+  return nil
  }
  func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
   if let indexed {
@@ -181,7 +211,7 @@ final class CompressedInput {
     throw r.error ?? SdaError.message("音轨读取失败")
    }
    guard r.status == .completed else { throw r.error ?? SdaError.message("音轨读取意外停止") }
-   return nil
+   return try nextAfterReaderCompletion(chunkBytes:chunkBytes)
   }
   // AVAssetReader may emit empty marker samples or deferred compressed data.
   if CMSampleBufferGetNumSamples(sample) == 0 { continue }
@@ -226,6 +256,7 @@ final class CompressedInput {
    submittedHash.update(data:data);submittedCompressedBytes += UInt64(data.count)
   }
   retries = 0
+  prepareIndexedContinuation()
   return data
   }
  }

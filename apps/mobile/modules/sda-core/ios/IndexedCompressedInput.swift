@@ -2,7 +2,7 @@ import Foundation
 import CoreMedia
 import CryptoKit
 
-// A clear EC-3 continuation after AVFoundation loses its sample cursor.
+// A clear EC-3 continuation after verifying the initial AVFoundation packets.
 // Never reset the decoder or guess EOF: prove the submitted prefix before
 // returning any new bytes. Only metadata and one packet are retained.
 final class IndexedCompressedInput {
@@ -216,24 +216,27 @@ final class IndexedCompressedInput {
   }
  }
  func verifyContinuation(firstPTS:CMTime,lastEnd:CMTime?,submittedBytes:UInt64,digest:Data) throws {
-  let first=try mediaTicks(firstPTS); guard first >= 0 else { throw Self.invalid("恢复起点") }
-  // AVAssetReader may return codec preroll. The raw start and timestamp-mapped
-  // start are the only candidates; hashes/timestamps must resolve them uniquely.
-  let predicted=packet(at:first); let candidates=Array(Set([0,predicted])).sorted()
-  let expectedEnd=try lastEnd.map { try mediaTicks($0) }; var matches=[Int]()
+  let first=try mediaTicks(firstPTS)
+  // The bytes are authoritative. AVFoundation can clamp the duration of the
+  // final buffer to an edit boundary, or report a rounded presentation time.
+  // Timing may resolve two byte-identical prefixes, never reject a unique hash.
+  let predicted=packet(at:max(0,first)); let candidates=Array(Set([0,predicted])).sorted()
+  let expectedEnd=try lastEnd.map { try mediaTicks($0) }; var matches=[Int](); var timedMatches=[Int]()
   for start in candidates {
    guard let endpoint=endpoint(start:start,bytes:submittedBytes) else { continue }
-   if let expectedEnd, let actualEnd=endpoint.endTime {
-    let (difference,overflow)=actualEnd.subtractingReportingOverflow(expectedEnd)
-    if overflow || difference < -1 || difference > 1 { continue }
-   }
    try seek(start:start,bytes:0); var hash=SHA256(); var left=submittedBytes
    while left > 0 {
     guard let data=try next(chunkBytes:Int(min(left,65536))), !data.isEmpty else { throw Self.invalid("恢复前缀已截断") }
     hash.update(data:data);left -= UInt64(data.count)
    }
-   if Data(hash.finalize()) == digest { matches.append(start) }
+   guard Data(hash.finalize()) == digest else { continue }
+   matches.append(start)
+   if let expectedEnd, let actualEnd=endpoint.endTime {
+    let (difference,overflow)=actualEnd.subtractingReportingOverflow(expectedEnd)
+    if !overflow && difference >= -1 && difference <= 1 { timedMatches.append(start) }
+   }
   }
+  if matches.count > 1 && timedMatches.count == 1 { matches=timedMatches }
   guard matches.count == 1 else { throw Self.invalid("恢复前缀或时间戳无法唯一验证，未跳过音频") }
   try seek(start:matches[0],bytes:submittedBytes);verifiedPrefixBytes=submittedBytes;recoveryStartSample=matches[0]
  }
