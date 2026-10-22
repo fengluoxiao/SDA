@@ -11,7 +11,7 @@ import java.security.MessageDigest
 /** Android Expo bridge for raw and M4A/MP4-contained E-AC-3/JOC streams. */
 class SdaModule : Module() {
     private val mpeghImport = MpeghImport()
-    private var handle: Long = 0L
+    @Volatile private var handle: Long = 0L
     private var activeLayout = "7.1.4"
     @Volatile private var activeIsMp3 = false
     @Volatile private var alacStereoUpmix = false
@@ -34,6 +34,10 @@ class SdaModule : Module() {
     private var activeInput: InputStream? = null
     @Volatile
     private var generation = 0L
+    @Volatile private var diagnostics: RemoteDiagnostics? = null
+    @Volatile private var inBackground = false
+    @Volatile private var failureCategory = ""
+    @Volatile private var inputBytesSubmitted = 0L
     private val nativeLock = Object()
     private val lifecycleLock = Object()
 
@@ -179,6 +183,7 @@ class SdaModule : Module() {
         if (handle == 0L || token == 0L || backgroundSession != token || !PlaybackKeepAlive.owns(token)) return@synchronized false
         check(SdaEngine.nativePause(handle, value) == 0) { "native pause failed" }
         paused = value
+        diagnostics?.event(if (value) "pause" else "resume", generation)
         PlaybackKeepAlive.setPlaying(token, !value)
         sendEvent("onMediaCommand", mapOf("command" to "state", "hash" to backgroundHash, "paused" to value))
         true
@@ -199,13 +204,53 @@ class SdaModule : Module() {
             }
         }
         feedDone = true
+        diagnostics?.event("stop", generation)
         sendEvent("onMediaCommand", mapOf("command" to "stop", "hash" to backgroundHash))
         return true
+    }
+
+    private fun diagnosticMetadata(context: android.content.Context): JSONObject {
+        val prefs = context.getSharedPreferences("sda-rendering", 0)
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        val lease = PlaybackKeepAlive.diagnostics()
+        return JSONObject().put("appVersion", info.versionName ?: "").put("appBuild", info.versionCode.toString())
+            .put("volumeBalancePreference", prefs.getBoolean("volumeBalanceEnabled", false)).put("systemSpatialPreference", false)
+            .put("playing", handle != 0L && !feedDone && !stopped).put("paused", paused).put("background", inBackground)
+            .put("generation", generation).put("route", "SDA-HRTFHQ").put("engineRunning", handle != 0L).put("tracking", "fixed-or-manual")
+            .put("backgroundTrackingEnabled", false).put("motion", JSONObject())
+            .put("error", if (failureCategory.isEmpty()) "" else "playback-error")
+            .put("errorDetails", if (failureCategory.isEmpty()) JSONObject() else JSONObject().put("category", failureCategory))
+            .put("input", JSONObject().put("codec", activeSourceCodec).put("layout", activeLayout)
+                .put("bytesSubmitted", inputBytesSubmitted).put("feedThreadAlive", feedThread?.isAlive == true)
+                .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
+            .put("backgroundPlayback", lease)
+    }
+    private fun recordFailure(error: Throwable) {
+        val text = error.message.orEmpty()
+        failureCategory = when {
+            text.contains("disconnected", true) -> "audio-device-disconnected"
+            text.contains("progress", true) -> "audio-output-no-progress"
+            text.contains("drain", true) -> "audio-drain-timeout"
+            text.contains("queue full", true) -> "native-command-queue-full"
+            text.contains("nativeFeed", true) -> "native-feed-failed"
+            else -> "playback-feed"
+        }
+        diagnostics?.event("error", generation)
     }
 
     override fun definition() = ModuleDefinition {
         Name("SdaEngine")
         Events("onMediaCommand")
+        OnActivityEntersForeground { inBackground = false; diagnostics?.event("foreground", generation) }
+        OnActivityEntersBackground { inBackground = true; diagnostics?.event("background", generation) }
+        Function("configureDiagnostics") { enabled: Boolean ->
+            val context = appContext.reactContext ?: error("no react context")
+            val service = diagnostics ?: RemoteDiagnostics(context.applicationContext).also { diagnostics = it }
+            service.configure(enabled) { diagnosticMetadata(context.applicationContext) }
+        }
+        Function("diagnosticsStatus") { diagnostics?.status ?: "已关闭" }
+        Function("diagnosticsEnabled") { diagnostics?.isEnabled == true }
+        Function("diagnosticsAddresses") { diagnostics?.addresses()?.joinToString(" · ") ?: "" }
         Function("configurePlaybackQueue") { text: String, _: String -> PlaybackKeepAlive.configureQueue(text) }
         Function("setNowPlayingMetadata") { hash: String, text: String -> PlaybackKeepAlive.setMetadata(hash, text) }
 
@@ -381,6 +426,7 @@ class SdaModule : Module() {
             require(headYawDegrees.isFinite() && headYawDegrees in -180.0..180.0) { "Head yaw must be finite and between -180 and 180 degrees" }
             require(contentHash.matches(Regex("[0-9a-f]{64}"))) { "Invalid track content hash" }
             stopFeedThread()
+            failureCategory = ""; inputBytesSubmitted = 0L
             val context = appContext?.reactContext ?: throw RuntimeException("no react context")
             val uri = Uri.parse(uriString)
             synchronized(nativeLock) {
@@ -486,6 +532,7 @@ class SdaModule : Module() {
             }
             val workerGeneration = synchronized(lifecycleLock) {
                 generation += 1
+                diagnostics?.event("play", generation)
                 generation
             }
             feedError = null
@@ -518,6 +565,7 @@ class SdaModule : Module() {
                             check(state.optJSONObject("outputDevice")?.optInt("errorCode", 0)?.let { it >= 0 } != false) {
                                 "Android audio device disconnected"
                             }
+                            diagnostics?.observeNative(state, workerGeneration)
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
                             val fifoFrames = state.optInt("fifoFrames", 0)
@@ -556,6 +604,7 @@ class SdaModule : Module() {
                                     buffer.copyOf(count)
                                 )
                             }
+                            if (result >= 0) inputBytesSubmitted += count
                             check(result >= 0) { "nativeFeed failed: ${SdaEngine.nativeLastError()}" }
                         }
                         if (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
@@ -575,6 +624,7 @@ class SdaModule : Module() {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                     JSONObject(SdaEngine.nativeStatus(ptr))
                                 }
+                                diagnostics?.observeNative(state, workerGeneration)
                                 val decoded = state.getLong("decodedSamplePos")
                                 val consumed = state.getLong("consumedSamplePos")
                                 val remaining = if (decoded > consumed) decoded - consumed else 0L
@@ -592,6 +642,7 @@ class SdaModule : Module() {
                                     SdaEngine.nativeClose(ptr)
                                     handle = 0L
                                     feedDone = true
+                                    diagnostics?.event("ended", workerGeneration)
                                 }
                             }
                         }
@@ -599,6 +650,7 @@ class SdaModule : Module() {
                 } catch (error: InterruptedException) {
                     Thread.currentThread().interrupt()
                 } catch (error: Throwable) {
+                    recordFailure(error)
                     feedError = error.message ?: error.toString()
                     synchronized(nativeLock) {
                         if (generation == workerGeneration && handle == ptr) {
@@ -618,6 +670,7 @@ class SdaModule : Module() {
             worker.start()
             displayName
             } catch (error: Throwable) {
+                recordFailure(error)
                 PlaybackKeepAlive.end(context, playbackSession)
                 if (backgroundSession == playbackSession) backgroundSession = 0L
                 throw error
@@ -678,6 +731,7 @@ class SdaModule : Module() {
         }
 
         OnDestroy {
+            diagnostics?.configure(false) { JSONObject() }
             synchronized(nativeLock) {
                 destroyed = true
                 PlaybackKeepAlive.end(backgroundSession)

@@ -22,6 +22,28 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
   const insets = useSafeAreaInsets();
   const header = androidHeaderLayout(insets.top);
   const navigation = useNavigationPreferences();
+  const engine = (globalThis as any).expo?.modules?.SdaEngine;
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = React.useState(() => engine?.diagnosticsEnabled?.() === true);
+  const [diagnosticsStatus, setDiagnosticsStatus] = React.useState("已关闭");
+  const [diagnosticsAddresses, setDiagnosticsAddresses] = React.useState("");
+  React.useEffect(() => {
+    const refresh = () => {
+      setDiagnosticsEnabled(engine?.diagnosticsEnabled?.() === true);
+      setDiagnosticsStatus(engine?.diagnosticsStatus?.() ?? "原生模块未更新");
+      setDiagnosticsAddresses(engine?.diagnosticsAddresses?.() ?? "");
+    };
+    refresh();
+    const timer = setInterval(refresh, 1000);
+    return () => clearInterval(timer);
+  }, [engine]);
+  const configureDiagnostics = (enabled: boolean) => {
+    try {
+      if (!engine?.configureDiagnostics) throw new Error("请更新原生模块");
+      engine.configureDiagnostics(enabled);
+      setDiagnosticsEnabled(enabled);
+      setDiagnosticsStatus(engine.diagnosticsStatus?.() ?? "正在启动");
+    } catch (error) { Alert.alert("远程诊断", error instanceof Error ? error.message : String(error)); }
+  };
   const [scrolled, setScrolled] = React.useState(false);
   const [selection, setSelection] = React.useState<null | { title: string; options: { id: string; label: string }[]; selected: string; choose(id: string): void }>(null);
   const c = androidMaterialTheme(appTheme.id, dark);
@@ -96,6 +118,13 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           <View style={s.about}><AndroidSymbol name="info.circle" size={24} color={c.muted} /><Text style={{ color: c.ink, fontSize: 16 }}>关于 SDA</Text></View><AndroidSymbol name="chevron.right" size={24} color={c.muted} />
         </Pressable>
       </>)}
+      {section("远程诊断", <>
+        {toggle("远程诊断服务", diagnosticsEnabled, configureDiagnostics, !engine?.configureDiagnostics)}
+        <View style={s.row}><View style={s.copy}>
+          {text(diagnosticsStatus, true, s.subtitle)}
+          {diagnosticsEnabled && !!diagnosticsAddresses && text("本机地址：" + diagnosticsAddresses, true, s.subtitle)}
+        </View></View>
+      </>, "开启后，通过手机的 Tailscale 或局域网 IP 访问 8765 端口的 /diagnostics。仅提供播放状态、姿态与性能数据，不含音频、歌名或文件路径；每次启动默认关闭。")}
     </ScrollView>
     {hasAndroidChrome && <AndroidPageHeader title="设置" dark={dark} backgroundColor={c.bg} scrolled={scrolled} onAction={onClose} back style={{ position: "absolute", top: 0 }} />}
     <Modal transparent statusBarTranslucent navigationBarTranslucent visible={selection !== null} animationType="fade" onRequestClose={() => setSelection(null)}>
