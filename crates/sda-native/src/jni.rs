@@ -296,6 +296,14 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeFeed(
     }
 }
 
+/// Cached read-only inventory, probed once on an independent control thread.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeAccelerators(
+    env: JNIEnv, _class: JClass,
+) -> jni::sys::jstring {
+    env.new_string(crate::accelerator_inventory::status()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// Called by the media-control executor, outside the playback engine lock.
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeRefreshCpuBudget(

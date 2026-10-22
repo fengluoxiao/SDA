@@ -86,6 +86,10 @@ class RemoteDiagnosticsTest {
     }
     @Test fun packagedNativeBridgeReportsRenderStagesWithoutStartingAudio() {
         assertTrue("Control-plane CPU quota probe is exported", SdaEngine.nativeRefreshCpuBudget() >= 1)
+        await("Asynchronous public accelerator inventory completes") {
+            JSONObject(SdaEngine.nativeAccelerators()).optString("status") != "probing"
+        }
+        assertFalse("Discovery must never claim NPU audio execution", JSONObject(SdaEngine.nativeAccelerators()).getBoolean("npuAudioEnabled"))
         val dir = File(context.cacheDir, "diagnostics-test-hrtf")
         fun extract(root: String, output: File) {
             output.mkdirs()

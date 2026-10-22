@@ -227,6 +227,7 @@ class SdaModule : Module() {
                 .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
             .put("backgroundPlayback", lease)
             .put("graphics", JSONObject().put("sceneLoopRequested", sceneRenderingRequested))
+            .put("accelerators", JSONObject(SdaEngine.nativeAccelerators()))
     }
     private fun recordFailure(error: Throwable) {
         val text = error.message.orEmpty()

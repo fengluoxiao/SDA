@@ -26,6 +26,8 @@
 //! Source-id convention (matches the desktop sidecar): dynamic objects are
 //! `obj:{codec object id}`, bed channels are `bed:{channel index}`.
 
+#[cfg(target_os = "android")]
+mod accelerator_inventory;
 mod frame_router;
 mod presentation_queue;
 #[cfg(feature = "ios-host")]

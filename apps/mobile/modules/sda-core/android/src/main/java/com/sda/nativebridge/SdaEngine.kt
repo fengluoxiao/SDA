@@ -20,6 +20,7 @@ object SdaEngine {
     external fun nativePullMp3(ptr: Long, maxFrames: Int): Int
     external fun nativeLastError(): String
     external fun nativeFeed(ptr: Long, bytes: ByteArray): Int
+    external fun nativeAccelerators(): String
     external fun nativeRefreshCpuBudget(): Int
     external fun nativeStatus(ptr: Long): String
     external fun nativeObjects(ptr: Long): String

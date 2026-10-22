@@ -162,7 +162,7 @@ class RemoteDiagnostics(private val context: Context, private val port: Int = 87
         val result = JSONObject().put("schema", 1).put("platform", "Android").put("time", System.currentTimeMillis() / 1000.0)
             .put("playback", playback).put("android", android).put("thermalState", android.optInt("thermalStatus", -1))
         for (key in listOf("appVersion", "appBuild", "volumeBalancePreference", "systemSpatialPreference", "playing", "paused",
-            "background", "generation", "route", "engineRunning", "tracking", "motion", "backgroundTrackingEnabled", "error", "errorDetails", "input", "backgroundPlayback", "graphics")) {
+            "background", "generation", "route", "engineRunning", "tracking", "motion", "backgroundTrackingEnabled", "error", "errorDetails", "input", "backgroundPlayback", "graphics", "accelerators")) {
             if (meta.has(key)) result.put(key, meta.get(key))
         }
         val missing = playback.optLong("callbackMissingFrames")

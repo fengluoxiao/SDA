@@ -10,6 +10,7 @@ Android 沿用 iOS 的只读诊断接口：`GET /diagnostics`（`GET /` 也可�
 - `playback.callbackMissingFrames`：软件 FIFO 未能提供的帧数；与硬件 xrun 分开看。
 - `renderTotalMicros`、`renderMaxMicros`、`renderWorstStagesMicros`：累计渲染耗时、生命周期最大单块耗时和七阶段最大耗时。阶段顺序见 `renderStageOrder`。这些最大值不是每秒的局部最大值。
 - `android`：机型、SoC、系统声明 ABI、实际进程架构、CPU 累计时间、内存、电源/待机状态、热状态，以及选定的音频/JS/UI 线程状态和 nice 值。`rendererArchitecture` 表示实际 Rust 库架构，不能只根据系统机型字符串判断是真机还是模拟器。线程 CPU 时间以系统 tick 计，没有换算成秒。
+- `accelerators`：通过公开 NNAPI 设备接口异步枚举的驱动名称、类型、版本及 feature level，不按手机厂商或型号筛选。驱动可见不等于已经在加速音频；`npuAudioEnabled` 与 `audioOperationSupport` 必须分别表示实际状态。该接口不能穷举只在厂商 SDK 暴露的运行库，NNAPI 没有可见设备也不能据此断言芯片没有 NPU。
 - `graphics.sceneLoopRequested`：JS 请求的空间页绘制状态；隐藏或后台时应为 `false`，不代表实际 GPU 帧率。历史样本和场景开始/停止事件可用于检查后台绘制争用。
 - `history`：最近 60 个样本，默认约一分钟；包含软件丢帧/硬件 xrun 增量、缓冲量、进度、CPU 累计时间、前后台、暂停和热状态。发生切歌时计数基线重置。
 - `events`：最近 96 个播放、暂停、继续、停止、结束、错误及前后台事件。仅内存保存。
