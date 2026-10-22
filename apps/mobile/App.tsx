@@ -494,7 +494,7 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private pollStatus() {
     try {
-    if (Platform.OS === "ios" && this.foreground) {
+    if (Platform.OS === "ios" && this.foreground && !this.state.busy && !this.changingTrack) {
       const detail = this.engine?.headTrackingStatus?.();
       if (detail !== undefined && detail !== this.state.headTrackingStatus) this.setState({ headTrackingStatus: detail });
     }
