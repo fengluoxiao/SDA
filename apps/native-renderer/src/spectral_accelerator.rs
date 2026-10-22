@@ -186,6 +186,21 @@ mod tests {
         }
     }
     #[test]
+    fn reduced_mantissa_results_cannot_enable_audio_offload() {
+        let mut batch = Batch::new(Shape::bounded(2, 2, 17).unwrap());
+        for (i, v) in batch.reference.iter_mut().enumerate() {
+            *v = ((i * 7919 % 1021) as f32 - 510.) / 511.;
+        }
+        // Removing 13 mantissa bits approximates the precision loss of a
+        // reduced-precision compute path; a framework flag cannot waive it.
+        for (out, &value) in batch.output.iter_mut().zip(&batch.reference) {
+            *out = f32::from_bits(value.to_bits() & !0x1fff);
+        }
+        assert!(!batch.reference_matches());
+        batch.output.copy_from_slice(&batch.reference);
+        assert!(batch.reference_matches());
+    }
+    #[test]
     fn quiet_and_nonfinite_outputs_cannot_pass_precision_gate() {
         let mut b = Batch::new(Shape::bounded(2, 2, 9).unwrap());
         b.reference.fill(1e-12);
