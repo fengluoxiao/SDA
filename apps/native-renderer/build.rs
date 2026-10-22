@@ -1,4 +1,13 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        cc::Build::new().cpp(true).file("src/vulkan_spectral.cpp")
+            .flag("-std=c++17").flag("-fno-exceptions").flag("-fno-rtti")
+            .flag("-Wno-missing-field-initializers")
+            .cpp_link_stdlib("c++_static").compile("sda_vulkan_audio");
+        println!("cargo:rustc-link-lib=dl");
+        println!("cargo:rerun-if-changed=src/vulkan_spectral.cpp");
+        println!("cargo:rerun-if-changed=src/vulkan_spectral.spv");
+    }
     let revision = std::env::var("GITHUB_SHA").ok().or_else(|| std::process::Command::new("git").args(["rev-parse", "HEAD"])
         .output().ok().filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()))

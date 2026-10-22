@@ -31,6 +31,15 @@ internal object VendorNpuRuntime {
             var directory = ""
             var preparation = ""
             try {
+                if (app.assets.list("sda-npu").isNullOrEmpty()) {
+                    // System Vulkan needs no private runtime files. Clear only our old version directories.
+                    val base = File(app.codeCacheDir, "sda-audio-runtime")
+                    base.listFiles()?.filter { it.isDirectory && it.name.startsWith("runtime-") && it.canonicalFile.parentFile == base.canonicalFile }
+                        ?.forEach { it.deleteRecursively() }
+                    val result = SdaEngine.nativeConfigureAcceleration("", Build.VERSION.SDK_INT, "system-Vulkan; vendor-runtime-bundle-not-packaged")
+                    if (result.isNotEmpty()) Log.w("SdaGpu", result)
+                    return@Thread
+                }
                 check(Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a") { "vendor-runtimes-require-arm64; retaining-native-or-NNAPI" }
                 val manifestText = app.assets.open("sda-npu/manifest.json").bufferedReader().use { it.readText() }
                 val manifest = JSONObject(manifestText)

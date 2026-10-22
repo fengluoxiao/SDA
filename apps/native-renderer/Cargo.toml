@@ -41,6 +41,9 @@ cpal = { version = "0.15.3", features = ["asio"], optional = true }
 asio-sys = { version = "0.2.6", optional = true }
 windows = { version = "0.54.0", optional = true, features = ["Win32_Media_Audio", "Win32_Media_Audio_DirectSound", "Win32_UI_WindowsAndMessaging", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_Devices_Properties", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Variant"] }
 
+[build-dependencies]
+cc = "1"
+
 [profile.release]
 opt-level = 3
 lto = true

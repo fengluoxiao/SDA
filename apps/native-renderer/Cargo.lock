@@ -717,6 +717,7 @@ name = "sda-native-renderer"
 version = "0.1.0"
 dependencies = [
  "asio-sys",
+ "cc",
  "cpal",
  "ndk-sys",
  "rayon",

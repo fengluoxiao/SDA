@@ -98,7 +98,7 @@ impl Service {
         let wm = metrics.clone();
         let (tx, input) = mpsc::sync_channel(1);
         let (output, rx) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new().name("sda-npu-audio".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("sda-audio-compute".into()).spawn(move || {
             #[cfg(target_os = "android")]
             unsafe { unsafe extern "C" { fn setpriority(which: i32, who: u32, priority: i32) -> i32; } let _ = setpriority(0, 0, 10); }
             #[cfg(target_os = "ios")]
@@ -458,14 +458,17 @@ pub(crate) fn status() -> serde_json::Value {
     {
         result["runtime"] = result["backendDetails"]["runtime"].as_str().unwrap_or("android-audio-backend-selection").into();
         let active = m.active.load(Ordering::Acquire);
-        let dsp = result["backendDetails"]["acceleratorKind"].as_str() == Some("dsp");
+        let kind = result["backendDetails"]["acceleratorKind"].as_str();
+        let dsp = kind == Some("dsp");
+        let gpu = kind == Some("gpu");
         result["audioOffloadEnabled"] = active.into();
         result["dspAudioEnabled"] = (active && dsp).into();
         result["runtimeLibraryLifetime"] = "process-pinned-nodelete".into();
-        result["npuAudioEnabled"] = (active && !dsp).into();
+        result["gpuAudioEnabled"] = (active && gpu).into();
+        result["npuAudioEnabled"] = (active && !dsp && !gpu).into();
         result["fp16Relaxation"] = false.into();
         result["frameworkCpuFallbackAllowed"] = false.into();
-        result["driverInternalPlacement"] = "not-observable-through-public-api".into();
+        result["driverInternalPlacement"] = (if gpu {"explicit-Vulkan-physical-GPU-queue"}else{"not-observable-through-public-api"}).into();
     }
     #[cfg(target_os = "ios")]
     {

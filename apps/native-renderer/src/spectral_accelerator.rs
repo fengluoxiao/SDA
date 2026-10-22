@@ -124,6 +124,9 @@ mod coreml;
 #[cfg(target_os = "android")]
 #[path = "nnapi_spectral.rs"]
 mod nnapi;
+#[cfg(target_os = "android")]
+#[path = "vulkan_spectral.rs"]
+mod vulkan;
 #[cfg(any(target_os = "android", test))]
 mod litert_model;
 #[cfg(any(target_os = "android", test))]

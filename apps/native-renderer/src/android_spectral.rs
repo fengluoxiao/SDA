@@ -47,6 +47,14 @@ impl ComputeBackend for Backend {
         let c = CONFIG
             .get()
             .ok_or("Android runtime configuration missing")?;
+        // System GPU compute is the default; no packaged driver/compiler SDK.
+        match super::vulkan::Backend::open() {
+            Ok(mut b) => match b.configure(shape) {
+                Ok(name) => { self.active=Some(Box::new(b)); return Ok(name); }
+                Err(e) => self.notes.push(e),
+            },
+            Err(e) => self.notes.push(e),
+        }
         if !c.preparation.is_empty() {
             self.notes.push(c.preparation.clone());
         }

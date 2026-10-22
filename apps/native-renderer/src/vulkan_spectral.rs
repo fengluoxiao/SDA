@@ -1,0 +1,42 @@
+//! Vulkan 1.0 compute on the existing audio worker; no vendor runtime bundle.
+use super::{Batch,Shape,coordinator::Backend as ComputeBackend};
+use std::{ffi::{c_char,c_void,CStr},ptr::NonNull};
+#[repr(C)]
+struct DeviceInfo{vendor:u32,device:u32,api:u32,driver:u32,queue_family:u32,name:[c_char;256]}
+unsafe extern "C"{
+ fn sda_vk_open(code:*const u32,bytes:usize,info:*mut DeviceInfo,error:*mut c_char,capacity:usize)->*mut c_void;
+ fn sda_vk_configure(handle:*mut c_void,plane:u32,parts:u32,cpu_bytes:u64,error:*mut c_char,capacity:usize)->i32;
+ fn sda_vk_run(handle:*mut c_void,input:*const f32,inputs:usize,output:*mut f32,outputs:usize,timeout:u64,error:*mut c_char,capacity:usize)->i32;
+ fn sda_vk_close(handle:*mut c_void);
+}
+pub(super) struct Backend{handle:NonNull<c_void>,info:DeviceInfo,shape:Option<Shape>}
+fn reason(error:&[c_char;256])->String{unsafe{CStr::from_ptr(error.as_ptr())}.to_string_lossy().into_owned()}
+impl Backend{
+ pub fn open()->Result<Self,String>{
+  let bytes=include_bytes!("vulkan_spectral.spv");
+  let code:Vec<u32>=bytes.chunks_exact(4).map(|x|u32::from_le_bytes(x.try_into().unwrap())).collect();
+  if code.first()!=Some(&0x07230203) || bytes.len()%4!=0{return Err("invalid-build-time-Vulkan-shader".into());}
+  let mut info=DeviceInfo{vendor:0,device:0,api:0,driver:0,queue_family:0,name:[0;256]};let mut error=[0;256];
+  let handle=NonNull::new(unsafe{sda_vk_open(code.as_ptr(),bytes.len(),&mut info,error.as_mut_ptr(),error.len())})
+   .ok_or_else(||format!("system-vulkan-unavailable:{}",reason(&error)))?;
+  Ok(Self{handle,info,shape:None})
+ }
+ fn device_name(&self)->String{unsafe{CStr::from_ptr(self.info.name.as_ptr())}.to_string_lossy().into_owned()}
+}
+impl Drop for Backend{fn drop(&mut self){unsafe{sda_vk_close(self.handle.as_ptr())};}}
+impl ComputeBackend for Backend{
+ fn configure(&mut self,shape:Shape)->Result<String,String>{
+  self.shape=None;let mut error=[0;256];
+  let cpu_bytes=shape.plane().checked_mul(6*shape.parts+8).and_then(|n|n.checked_mul(4)).ok_or("Vulkan audio shape overflow")?;
+  let result=unsafe{sda_vk_configure(self.handle.as_ptr(),shape.plane().try_into().map_err(|_|"Vulkan plane overflow")?,shape.parts as u32,cpu_bytes as u64,error.as_mut_ptr(),error.len())};
+  if result!=0{return Err(format!("system-vulkan-shape-unavailable:{}",reason(&error)));}self.shape=Some(shape);Ok(self.device_name())
+ }
+ fn execute(&mut self,batch:&mut Batch,timeout_ns:u64)->Result<(),String>{
+  if self.shape!=Some(batch.shape){return Err("Vulkan packet shape mismatch".into());}let mut error=[0;256];
+  let result=unsafe{sda_vk_run(self.handle.as_ptr(),batch.input.as_ptr(),batch.input.len(),batch.output.as_mut_ptr(),batch.output.len(),timeout_ns,error.as_mut_ptr(),error.len())};
+  if result!=0{return Err(format!("system-vulkan-audio:{}",reason(&error)));}Ok(())
+ }
+ fn details(&self)->serde_json::Value{
+  serde_json::json!({"runtime":"android-system-vulkan-compute-1.0","acceleratorKind":"gpu","deviceName":self.device_name(),"vendorId":self.info.vendor,"deviceId":self.info.device,"apiVersion":self.info.api,"driverVersion":self.info.driver,"queueFamily":self.info.queue_family,"computeUnits":"hardware-GPU","precision":"FP32-NoContraction-ordered-partitions","frameworkCpuFallbackAllowed":false,"memory":"persistent-host-visible-storage-buffers","totalAudioBufferBudgetMiB":32,"shaderCompilation":"build-time-SPIR-V-no-phone-compiler-SDK","runtimeLibraryLifetime":"process-pinned-system-loader","modelCache":"none"})
+ }
+}

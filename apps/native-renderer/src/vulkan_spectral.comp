@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+layout(set=0,binding=0,std430) readonly buffer Input {float samples[];} src;
+layout(set=0,binding=1,std430) writeonly buffer Output {float samples[];} dst;
+layout(push_constant) uniform Shape {uint plane;uint parts;} shape;
+void main(){
+ uint i=gl_GlobalInvocationID.x,n=shape.plane;if(i>=n)return;
+ precise float lr=0.0,li=0.0,rr=0.0,ri=0.0;
+ for(uint part=0;part<shape.parts;++part){
+  uint b=part*6*n+i;float xr=src.samples[b],xi=src.samples[b+n];
+  precise float ar=xr*src.samples[b+2*n],bi=xi*src.samples[b+3*n];
+  precise float ai=xr*src.samples[b+3*n],br=xi*src.samples[b+2*n];
+  precise float cr=xr*src.samples[b+4*n],di=xi*src.samples[b+5*n];
+  precise float ci=xr*src.samples[b+5*n],dr=xi*src.samples[b+4*n];
+  precise float lre=ar-bi,lim=ai+br,rre=cr-di,rim=ci+dr;
+  lr=lr+lre;li=li+lim;rr=rr+rre;ri=ri+rim;
+ }
+ dst.samples[i]=lr;dst.samples[n+i]=li;dst.samples[2*n+i]=rr;dst.samples[3*n+i]=ri;
+}

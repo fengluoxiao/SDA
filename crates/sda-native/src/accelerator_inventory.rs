@@ -20,11 +20,13 @@ pub fn status()->String {
     let audio=sda_native_renderer::spectral_accelerator::status();
     let npu=audio["npuAudioEnabled"].as_bool().unwrap_or(false);
     let dsp=audio["dspAudioEnabled"].as_bool().unwrap_or(false);
-    let enabled=npu || dsp;
+    let gpu=audio["gpuAudioEnabled"].as_bool().unwrap_or(false);
+    let enabled=npu || dsp || gpu;
     result["npuAudioEnabled"]=npu.into();
     result["dspAudioEnabled"]=dsp.into();
+    result["gpuAudioEnabled"]=gpu.into();
     result["audioOffloadEnabled"]=enabled.into();
-    result["audioBackend"]=if dsp {"cpu-fft-and-legacy-DSP-spectral-mac"}else if npu {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
+    result["audioBackend"]=if gpu {"cpu-fft-and-Vulkan-GPU-spectral-mac"}else if dsp {"cpu-fft-and-legacy-DSP-spectral-mac"}else if npu {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
     result["audioOperationSupport"]=audio["state"].clone();
     if let Some(devices)=result["devices"].as_array_mut() {
         for device in devices {

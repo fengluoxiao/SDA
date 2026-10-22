@@ -1,0 +1,207 @@
+// Vulkan 1.0 system compute only. All work and cleanup stay on the compute worker.
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+#include <dlfcn.h>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <new>
+struct SdaVkInfo {uint32_t vendor,device,api,driver,queue_family;char name[256];};
+namespace {
+constexpr uint64_t BUDGET=32ull*1024*1024;
+struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;bool coherent=false;};
+#define DEVICE_FUNCTIONS(X) \
+ X(vkDestroyDevice) X(vkDeviceWaitIdle) X(vkGetDeviceQueue) \
+ X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) \
+ X(vkAllocateMemory) X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkUnmapMemory) \
+ X(vkFlushMappedMemoryRanges) X(vkInvalidateMappedMemoryRanges) \
+ X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
+ X(vkCreateShaderModule) X(vkDestroyShaderModule) X(vkCreateComputePipelines) X(vkDestroyPipeline) \
+ X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) \
+ X(vkCreateCommandPool) X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkResetCommandBuffer) \
+ X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkCmdPipelineBarrier) \
+ X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch) \
+ X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkQueueSubmit)
+struct State {
+ void* library=nullptr;VkInstance instance=VK_NULL_HANDLE;VkPhysicalDevice physical=VK_NULL_HANDLE;
+ VkDevice device=VK_NULL_HANDLE;VkQueue queue=VK_NULL_HANDLE;VkPhysicalDeviceProperties props{};
+ VkPhysicalDeviceMemoryProperties memory_props{};SdaVkInfo info{};
+ PFN_vkGetInstanceProcAddr get_instance=nullptr;PFN_vkDestroyInstance destroy_instance=nullptr;
+#define DECLARE(name) PFN_##name name=nullptr;
+ DEVICE_FUNCTIONS(DECLARE)
+#undef DECLARE
+ VkDescriptorSetLayout descriptor_layout=VK_NULL_HANDLE;VkPipelineLayout pipeline_layout=VK_NULL_HANDLE;
+ VkPipeline pipeline=VK_NULL_HANDLE;VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;VkDescriptorSet descriptor=VK_NULL_HANDLE;
+ VkCommandPool command_pool=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;
+ bool in_flight=false;Buffer input,output;uint32_t plane=0,parts=0;char error[256]{};
+ bool fail(const char* what,int result=-1){std::snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
+ bool check(VkResult result,const char* what){return result==VK_SUCCESS || fail(what,result);}
+ void release(Buffer& b){
+  if(b.mapped)vkUnmapMemory(device,b.memory);
+  if(b.buffer)vkDestroyBuffer(device,b.buffer,nullptr);
+  if(b.memory)vkFreeMemory(device,b.memory,nullptr);b={};
+ }
+ ~State(){
+  // Never free a timed-out submission's storage while the GPU is using it.
+  // The audio renderer has already returned to its retained CPU calculation.
+  if(device && !vkDestroyDevice)return; // A broken loader must not destroy an instance with a live device.
+  if(device){
+   if(vkDeviceWaitIdle)vkDeviceWaitIdle(device);
+   release(input);release(output);
+   if(fence)vkDestroyFence(device,fence,nullptr);
+   if(command_pool)vkDestroyCommandPool(device,command_pool,nullptr);
+   if(descriptor_pool)vkDestroyDescriptorPool(device,descriptor_pool,nullptr);
+   if(pipeline)vkDestroyPipeline(device,pipeline,nullptr);
+   if(pipeline_layout)vkDestroyPipelineLayout(device,pipeline_layout,nullptr);
+   if(descriptor_layout)vkDestroyDescriptorSetLayout(device,descriptor_layout,nullptr);
+   if(vkDestroyDevice)vkDestroyDevice(device,nullptr);
+  }
+  if(instance && destroy_instance)destroy_instance(instance,nullptr);
+  // NODELETE keeps the system loader's TLS callbacks mapped through thread exit.
+  if(library)dlclose(library);
+ }
+ bool open(const uint32_t* code,size_t bytes){
+  library=dlopen("libvulkan.so",RTLD_NOW|RTLD_LOCAL|RTLD_NODELETE);
+  if(!library)return fail("system Vulkan loader unavailable");
+  get_instance=reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library,"vkGetInstanceProcAddr"));
+  if(!get_instance)return fail("vkGetInstanceProcAddr unavailable");
+  auto create=reinterpret_cast<PFN_vkCreateInstance>(get_instance(VK_NULL_HANDLE,"vkCreateInstance"));
+  if(!create)return fail("vkCreateInstance unavailable");
+  VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};app.pApplicationName="SDA audio compute";app.apiVersion=VK_API_VERSION_1_0;
+  VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};ci.pApplicationInfo=&app;
+  if(!check(create(&ci,nullptr,&instance),"create Vulkan instance"))return false;
+  destroy_instance=reinterpret_cast<PFN_vkDestroyInstance>(get_instance(instance,"vkDestroyInstance"));
+  if(!destroy_instance)return fail("vkDestroyInstance unavailable");
+#define INSTANCE(name) auto name=reinterpret_cast<PFN_##name>(get_instance(instance,#name));if(!name)return fail(#name " unavailable");
+  INSTANCE(vkEnumeratePhysicalDevices)
+  INSTANCE(vkGetPhysicalDeviceProperties)
+  INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties)
+  INSTANCE(vkGetPhysicalDeviceMemoryProperties)
+  INSTANCE(vkCreateDevice)
+  uint32_t count=0;
+  if(!check(vkEnumeratePhysicalDevices(instance,&count,nullptr),"enumerate devices") || count==0 || count>32)return fail("no bounded GPU inventory");
+  VkPhysicalDevice devices[32]{};
+  if(!check(vkEnumeratePhysicalDevices(instance,&count,devices),"read GPU inventory"))return false;
+  int best=-1;
+  for(uint32_t d=0;d<count;++d){
+   VkPhysicalDeviceProperties p{};vkGetPhysicalDeviceProperties(devices[d],&p);
+   if(p.deviceType==VK_PHYSICAL_DEVICE_TYPE_CPU || std::strstr(p.deviceName,"SwiftShader") || std::strstr(p.deviceName,"llvmpipe") || std::strstr(p.deviceName,"lavapipe"))continue;
+   uint32_t n=0;vkGetPhysicalDeviceQueueFamilyProperties(devices[d],&n,nullptr);if(!n || n>64)continue;
+   VkQueueFamilyProperties families[64]{};vkGetPhysicalDeviceQueueFamilyProperties(devices[d],&n,families);
+   for(uint32_t f=0;f<n;++f)if(families[f].queueCount && (families[f].queueFlags&VK_QUEUE_COMPUTE_BIT)){
+    int score=(families[f].queueFlags&VK_QUEUE_GRAPHICS_BIT)?1:2;
+    if(score>best){best=score;physical=devices[d];props=p;info.queue_family=f;}
+   }
+  }
+  if(!physical)return fail("no hardware Vulkan compute queue");
+  if(props.limits.maxComputeWorkGroupInvocations<64 || props.limits.maxComputeWorkGroupSize[0]<64 || props.limits.maxPushConstantsSize<8)return fail("insufficient compute limits");
+  vkGetPhysicalDeviceMemoryProperties(physical,&memory_props);
+  float priority=0.5f;VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};q.queueFamilyIndex=info.queue_family;q.queueCount=1;q.pQueuePriorities=&priority;
+  VkDeviceCreateInfo dc{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};dc.queueCreateInfoCount=1;dc.pQueueCreateInfos=&q;
+  if(!check(vkCreateDevice(physical,&dc,nullptr,&device),"create compute device"))return false;
+  vkDestroyDevice=reinterpret_cast<PFN_vkDestroyDevice>(get_instance(instance,"vkDestroyDevice"));
+  auto get_device=reinterpret_cast<PFN_vkGetDeviceProcAddr>(get_instance(instance,"vkGetDeviceProcAddr"));
+  if(!get_device)return fail("vkGetDeviceProcAddr unavailable");
+#define LOAD(name) name=reinterpret_cast<PFN_##name>(get_device(device,#name));if(!name)return fail(#name " unavailable");
+  DEVICE_FUNCTIONS(LOAD)
+#undef LOAD
+#undef INSTANCE
+  vkGetDeviceQueue(device,info.queue_family,0,&queue);
+  VkDescriptorSetLayoutBinding bindings[2]{};
+  for(uint32_t i=0;i<2;++i){bindings[i].binding=i;bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;bindings[i].descriptorCount=1;bindings[i].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;}
+  VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};dl.bindingCount=2;dl.pBindings=bindings;
+  if(!check(vkCreateDescriptorSetLayout(device,&dl,nullptr,&descriptor_layout),"create descriptor layout"))return false;
+  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,8};
+  VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pl.setLayoutCount=1;pl.pSetLayouts=&descriptor_layout;pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
+  if(!check(vkCreatePipelineLayout(device,&pl,nullptr,&pipeline_layout),"create pipeline layout"))return false;
+  VkShaderModuleCreateInfo sh{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sh.codeSize=bytes;sh.pCode=code;VkShaderModule shader=VK_NULL_HANDLE;
+  if(!check(vkCreateShaderModule(device,&sh,nullptr,&shader),"create FP32 shader"))return false;
+  VkComputePipelineCreateInfo cp{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};cp.layout=pipeline_layout;
+  cp.stage.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;cp.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;cp.stage.module=shader;cp.stage.pName="main";
+  VkResult built=vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&cp,nullptr,&pipeline);vkDestroyShaderModule(device,shader,nullptr);
+  if(!check(built,"create compute pipeline"))return false;
+  VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,2};VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};dp.maxSets=1;dp.poolSizeCount=1;dp.pPoolSizes=&pool_size;
+  if(!check(vkCreateDescriptorPool(device,&dp,nullptr,&descriptor_pool),"create descriptor pool"))return false;
+  VkDescriptorSetAllocateInfo da{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};da.descriptorPool=descriptor_pool;da.descriptorSetCount=1;da.pSetLayouts=&descriptor_layout;
+  if(!check(vkAllocateDescriptorSets(device,&da,&descriptor),"allocate descriptors"))return false;
+  VkCommandPoolCreateInfo pc{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};pc.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;pc.queueFamilyIndex=info.queue_family;
+  if(!check(vkCreateCommandPool(device,&pc,nullptr,&command_pool),"create command pool"))return false;
+  VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};ca.commandPool=command_pool;ca.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;ca.commandBufferCount=1;
+  if(!check(vkAllocateCommandBuffers(device,&ca,&command),"allocate compute commands"))return false;
+  VkFenceCreateInfo fc{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  if(!check(vkCreateFence(device,&fc,nullptr,&fence),"create completion fence"))return false;
+  info.vendor=props.vendorID;info.device=props.deviceID;info.api=props.apiVersion;info.driver=props.driverVersion;std::snprintf(info.name,sizeof(info.name),"%s",props.deviceName);return true;
+ }
+
+ bool create_buffer(Buffer& b,VkDeviceSize bytes,uint64_t& used){
+  if(bytes>props.limits.maxStorageBufferRange)return fail("storage range exceeded");
+  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};bi.size=bytes;bi.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;bi.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+  if(!check(vkCreateBuffer(device,&bi,nullptr,&b.buffer),"create storage buffer"))return false;
+  VkMemoryRequirements req{};vkGetBufferMemoryRequirements(device,b.buffer,&req);
+  if(req.size>BUDGET || used>BUDGET-req.size)return fail("32 MiB total audio buffer budget exceeded");used+=req.size;
+  uint32_t type=UINT32_MAX;int best=-1;
+  for(uint32_t i=0;i<memory_props.memoryTypeCount;++i){auto f=memory_props.memoryTypes[i].propertyFlags;
+   if((req.memoryTypeBits&(1u<<i)) && (f&VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)){
+    int score=((f&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)?2:0)+((f&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)?1:0);
+    if(score>best){best=score;type=i;}
+   }
+  }
+  if(type==UINT32_MAX)return fail("no host-visible GPU memory");
+  VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};ma.allocationSize=req.size;ma.memoryTypeIndex=type;
+  if(!check(vkAllocateMemory(device,&ma,nullptr,&b.memory),"allocate audio storage") || !check(vkBindBufferMemory(device,b.buffer,b.memory,0),"bind audio storage"))return false;
+  b.coherent=(memory_props.memoryTypes[type].propertyFlags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)!=0;
+  return check(vkMapMemory(device,b.memory,0,VK_WHOLE_SIZE,0,&b.mapped),"map audio storage");
+ }
+ bool configure(uint32_t n,uint32_t p,uint64_t cpu_bytes){
+  if(!n || !p || p>4 || cpu_bytes>BUDGET)return fail("invalid bounded audio shape");
+  uint64_t groups=(uint64_t(n)+63)/64;if(groups>props.limits.maxComputeWorkGroupCount[0])return fail("compute dispatch limit exceeded");
+  if(in_flight && !check(vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"drain previous submission"))return false;
+  in_flight=false;plane=0;parts=0;
+  if(!check(vkResetCommandBuffer(command,0),"reset compute commands"))return false;
+  release(input);release(output);uint64_t used=cpu_bytes;
+  if(!create_buffer(input,uint64_t(n)*6*p*sizeof(float),used) || !create_buffer(output,uint64_t(n)*4*sizeof(float),used))return false;
+  VkDescriptorBufferInfo buffers[2]={{input.buffer,0,uint64_t(n)*6*p*sizeof(float)},{output.buffer,0,uint64_t(n)*4*sizeof(float)}};
+  VkWriteDescriptorSet writes[2]{};
+  for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i];}
+  vkUpdateDescriptorSets(device,2,writes,0,nullptr);
+  VkCommandBufferBeginInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  if(!check(vkBeginCommandBuffer(command,&cb),"begin compute commands"))return false;
+  VkBufferMemoryBarrier before{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};before.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;before.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;before.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;before.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;before.buffer=input.buffer;before.size=VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&before,0,nullptr);
+  vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline_layout,0,1,&descriptor,0,nullptr);
+  uint32_t shape[2]={n,p};vkCmdPushConstants(command,pipeline_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,8,shape);vkCmdDispatch(command,static_cast<uint32_t>(groups),1,1);
+  VkBufferMemoryBarrier after{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};after.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;after.dstAccessMask=VK_ACCESS_HOST_READ_BIT;after.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;after.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;after.buffer=output.buffer;after.size=VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&after,0,nullptr);
+  if(!check(vkEndCommandBuffer(command),"record compute commands"))return false;plane=n;parts=p;return true;
+ }
+ int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout){
+  if(!plane || inputs!=uint64_t(plane)*6*parts || outputs!=uint64_t(plane)*4){fail("audio packet shape mismatch");return -1;}
+  auto start=std::chrono::steady_clock::now();if(in_flight){fail("previous GPU work still pending");return -1;}
+  std::memcpy(input.mapped,src,inputs*sizeof(float));
+  if(!input.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=input.memory;range.size=VK_WHOLE_SIZE;if(!check(vkFlushMappedMemoryRanges(device,1,&range),"flush audio input"))return -1;}
+  auto elapsed=[&](){return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());};
+  if(elapsed()>=timeout){fail("GPU upload exceeded audio deadline");return 1;}
+  if(!check(vkResetFences(device,1,&fence),"reset completion fence"))return -1;
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
+  if(!check(vkQueueSubmit(queue,1,&submit,fence),"submit audio compute"))return -1;in_flight=true;
+  uint64_t spent=elapsed();VkResult waited=vkWaitForFences(device,1,&fence,VK_TRUE,spent>=timeout?0:timeout-spent);
+  if(waited==VK_TIMEOUT){fail("GPU completion exceeded audio deadline",waited);return 1;}
+  if(!check(waited,"wait for audio compute"))return -1;in_flight=false;
+  if(!output.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=output.memory;range.size=VK_WHOLE_SIZE;if(!check(vkInvalidateMappedMemoryRanges(device,1,&range),"invalidate audio output"))return -1;}
+  std::memcpy(dst,output.mapped,outputs*sizeof(float));if(elapsed()>timeout){fail("GPU readback exceeded audio deadline");return 1;}return 0;
+ }
+};
+void copy_error(State* s,char* out,size_t capacity){if(out && capacity)std::snprintf(out,capacity,"%s",s?s->error:"Vulkan allocation failed");}
+}
+extern "C" {
+void* sda_vk_open(const uint32_t* code,size_t bytes,SdaVkInfo* info,char* error,size_t capacity){
+ State* s=new(std::nothrow) State();if(!s || !code || !bytes || bytes%4 || !s->open(code,bytes)){copy_error(s,error,capacity);delete s;return nullptr;}if(info)*info=s->info;return s;
+}
+int sda_vk_configure(void* handle,uint32_t plane,uint32_t parts,uint64_t cpu_bytes,char* error,size_t capacity){
+ auto s=static_cast<State*>(handle);if(!s)return -1;bool ok=s->configure(plane,parts,cpu_bytes);if(!ok)copy_error(s,error,capacity);return ok?0:-1;
+}
+int sda_vk_run(void* handle,const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,char* error,size_t capacity){
+ auto s=static_cast<State*>(handle);if(!s || !src || !dst)return -1;int result=s->run(src,inputs,dst,outputs,timeout);if(result)copy_error(s,error,capacity);return result;
+}
+void sda_vk_close(void* handle){delete static_cast<State*>(handle);}
+}
