@@ -220,7 +220,12 @@ final class IndexedCompressedInput {
   // The bytes are authoritative. AVFoundation can clamp the duration of the
   // final buffer to an edit boundary, or report a rounded presentation time.
   // Timing may resolve two byte-identical prefixes, never reject a unique hash.
-  let predicted=packet(at:max(0,first)); let candidates=Array(Set([0,predicted])).sorted()
+  let predicted=packet(at:max(0,first))
+  // Apple may return only part of the decoder preroll, while stamping the
+  // first buffer at the edited presentation start. Check the intermediate
+  // packet starts too. Bound verification work for long intentional edits.
+  let firstCandidate=max(0,predicted-64)
+  let candidates=Array(Set([0]+Array(firstCandidate...predicted))).sorted()
   let expectedEnd=try lastEnd.map { try mediaTicks($0) }; var matches=[Int](); var timedMatches=[Int]()
   for start in candidates {
    guard let endpoint=endpoint(start:start,bytes:submittedBytes) else { continue }

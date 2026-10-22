@@ -86,6 +86,13 @@ enum SdaError: LocalizedError {
     checks.append(["container":name,"firstSample":start,"verifiedPrefixBytes":prefix.count,"tailBytes":tail.count,"fullTailByteIdentical":true])
    }
   }
+  checkpoint("partial-preroll-with-edited-timestamp")
+  guard let partial=try IndexedCompressedInput.open(root.appendingPathComponent("cursor32.m4a")) else { throw SdaError.message("Missing preroll fixture") }
+  let partialStart=sizes[0], partialEnd=sizes.prefix(9225).reduce(0,+)
+  let partialPrefix=expected.subdata(in:partialStart..<partialEnd)
+  try partial.verifyContinuation(firstPTS:CMTime(value:0,timescale:48000),lastEnd:CMTime(value:Int64(9224*1536),timescale:48000),submittedBytes:UInt64(partialPrefix.count),digest:Data(SHA256.hash(data:partialPrefix)))
+  var partialTail=Data();while let packet=try partial.next(chunkBytes:24576) { partialTail.append(packet) }
+  guard partial.recoveryStartSample == 1, partialTail == expected.suffix(from:partialEnd) else { throw SdaError.message("Partial preroll skipped or repeated compressed packets") }
   // A valid edit clips the last CMSampleBuffer duration; unique byte hashes
   // still prove the exact continuation even when end-time equality fails.
   checkpoint("clamped-timestamp")
@@ -115,7 +122,7 @@ enum SdaError: LocalizedError {
   rejected=false
   do { _ = try IndexedCompressedInput.open(root.appendingPathComponent("truncated.m4a")) } catch { rejected=true }
   guard rejected else { throw SdaError.message("Truncated media was treated as EOF") }
-  let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"clampedTimestampTailVerified":true,"ambiguityRejected":true,"earlyCompletionTailVerified":true,"syntheticOnly":true]
+  let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"partialPrerollVerified":true,"clampedTimestampTailVerified":true,"ambiguityRejected":true,"earlyCompletionTailVerified":true,"syntheticOnly":true]
   print(String(decoding:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]),as:UTF8.self))
  }
 
