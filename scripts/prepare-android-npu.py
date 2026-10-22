@@ -4,7 +4,7 @@
 Only selected QNN ZIP members are fetched with HTTP Range (the SDK is >2 GiB).
 No proprietary compiler tools, development headers or sample models are shipped.
 """
-import argparse, hashlib, io, json, os, tarfile, urllib.request, zipfile
+import argparse, hashlib, io, json, os, shutil, subprocess, sys, tarfile, tempfile, urllib.request, zipfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "2.3.0"
@@ -15,6 +15,33 @@ QNN_ROOT = "qairt/2.50.0.260828/"
 LOCK = ROOT / "scripts/android-npu-runtime-lock.json"
 def digest(b): return hashlib.sha256(b).hexdigest()
 def get(url, headers=None):
+    # Windows' system TLS handles these official vendor download hosts more
+    # reliably than the bundled Python OpenSSL transport. Keep the same HTTPS,
+    # response-size and exact Range validation with either transport.
+    curl = shutil.which("curl.exe") if sys.platform == "win32" else None
+    if curl:
+        with tempfile.TemporaryDirectory(prefix="sda-npu-download-") as temp:
+            body = Path(temp)/"body"; head = Path(temp)/"headers"
+            command = [curl, "--fail", "--location", "--silent", "--show-error",
+                "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "5",
+                "--connect-timeout", "20", "--max-time", "180", "--retry", "2",
+                "--max-filesize", str(256*1024*1024), "--dump-header", str(head), "--output", str(body)]
+            for name,value in (headers or {}).items(): command += ["--header", f"{name}: {value}"]
+            command.append(url)
+            result = subprocess.run(command, capture_output=True, timeout=600)
+            if result.returncode: raise RuntimeError(f"Download failed: {url}: {result.stderr.decode(errors='replace')[-1000:]}")
+            response_headers={};status=0
+            for line in head.read_text(encoding="iso-8859-1").splitlines():
+                if line.startswith("HTTP/"):
+                    status=int(line.split()[1]);response_headers={}
+                elif ":" in line:
+                    name,value=line.split(":",1);response_headers[name.lower()]=value.strip()
+            if headers and "Range" in headers and status!=206:
+                raise RuntimeError("Range request was ignored; refusing full SDK download")
+            if body.stat().st_size>256*1024*1024:raise RuntimeError("Download exceeded bounded response limit")
+            data=body.read_bytes();length=int(response_headers.get("content-length","0"))
+            if length and len(data)!=length:raise RuntimeError("Incomplete download response")
+            return data,response_headers,status
     last = None
     for _ in range(5):
         try:
@@ -79,6 +106,7 @@ def main():
         dst=out/name;dst.parent.mkdir(parents=True,exist_ok=True)
         if not dst.exists() or digest(dst.read_bytes())!=h:
             tmp=dst.with_suffix(dst.suffix+".part");tmp.write_bytes(data);tmp.replace(dst)
+        print(f"Staged {name} ({len(data)/1048576:.2f} MiB)",flush=True)
         entries[name]={"sha256":h,"size":len(data),"source":source}
     def cache_blob(name,url):
         path=args.cache/name

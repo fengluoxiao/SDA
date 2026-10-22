@@ -1,6 +1,6 @@
 # Android 厂商音频计算接入与骁龙 660 验证
 
-日期：2026-10-22。改动在独立工作区验证，正式应用尚未替换。最低 Android API 26 保持。
+日期：2026-10-22。旧 Hexagon 已完成前述真机验证；本次补齐现代运行库，只编译打包，不运行测试、不安装到手机。最低 Android API 26 保持。
 
 ## 已接入的代码
 
@@ -25,7 +25,7 @@ Google 官方 Hexagon 文档明确要求接受高通运行库许可，下载归�
 
 为保持现有构建可用，厂商资源打包默认不启用。确认许可并完成真机检查后，使用 `-PsdaVendorAudio=true` 启用；脚本要求 `SDA_ACCEPT_QUALCOMM_RUNTIME_LICENSE=1` 或明确的接受参数。设置该值须来自人的许可接受，不能由代理擅自设置。
 
-`prepare-android-npu.py --legacy-only` 对应旧 Hexagon 资源；当前锁文件已记录旧接口和三种 DSP skel 的分析哈希。现代运行库的完整哈希清单需在许可确认后完成，不能将未完整冻结的现代资源用于发布。脚本只按 HTTP Range 下载 QAIRT 选定 ZIP 成员，拒绝服务器忽略 Range 时下载整个 >2 GiB SDK；下载内容从不作为脚本执行。
+`prepare-android-npu.py --legacy-only` 对应旧 Hexagon 资源；当前锁文件已记录旧接口和三种 DSP skel 的分析哈希。现代运行库已在本次许可确认后冻结选定文件的完整哈希清单，发布构建拒绝校验值不匹配的资源。脚本只按 HTTP Range 下载 QAIRT 选定 ZIP 成员，拒绝服务器忽略 Range 时下载整个 >2 GiB SDK；下载内容从不作为脚本执行。
 
 接下来需要以应用 UID 加载旧 DSP 并执行真实音频块，验证数据精度、左右声道、总搬运延时及锁屏播放。若驱动无法访问或无法取得性能收益，应报告具体失败原因；兼容识别成功和 CPU 测试成功不能替代这一步。
 
@@ -47,3 +47,13 @@ Google 官方 Hexagon 文档明确要求接受高通运行库许可，下载归�
 - 自定义合并内核仅在独立诊断目录尝试，未接入生产代码。公共 unsigned-user-PD 请求被该 ROM 接受，但系统缺少 `fastrpc_shell_unsigned_3`，驱动在初始化中等待；不尝试绕过签名、权限或修改系统固件。这条原型没有进入生产加载路径。尚未执行任何自定义内核代码。
 
 现代 QAIRT 2.50 使用不同的 AI Stack License，不能把用户对旧 Hexagon PKLA 的接受当作接受这份新协议。完整现代资源打包另需明确确认 `SDA_ACCEPT_QAIRT_RUNTIME_LICENSE=1`；本轮只启用已批准的旧库资源。
+
+## 现代运行库完整打包（2026-10-22）
+
+用户已单独确认接受 Qualcomm AI Stack License，并授权现代运行库随 Android 包分发。协议全文保存于 `docs/licenses/qualcomm-ai-stack-runtime.txt`；旧 Hexagon 协议继续独立保留。构建仍要求显式提供 `SDA_ACCEPT_QAIRT_RUNTIME_LICENSE=1`，不会替其他构建者自动接受协议。
+
+本次补齐 LiteRT 2.3.0 的高通 QNN HTP 与 MediaTek NeuroPilot 运行库，按选定文件固定 SHA-256，包含完整第三方声明。同步合入官方 MediaTek AAR 的可选公共系统库声明；主机端厂商运行库及插件保持 NODELETE 生命周期，避免失败图退出后卸载 TLS 回调。Hexagon Skel 仅交给 DSP，不由 ARM 动态加载器打开。应用仍通过后台准备及原有实际音频精度、总耗时准入使用结果，未通过时继续 CPU。660 保留旧 Hexagon 路径，不加载不适用的现代运行库。
+
+私有运行库目录包含 APK 运行库清单及运行库家族的摘要，避免相同 SDK 版本的 legacy/full 包升级后复用残留资源。按公开的 SoC 厂商字段选择已知高通或联发科所需文件；无法识别时保留全部后端，不按手机型号拒绝能力。660 仅准备旧资源，天玑不复制高通大体积运行库。只保留当前一套运行库目录，不产生逐歌模型或 PCM 缓存。
+
+按用户要求，本次不运行自动测试、硬件探测或播放测试，也不安装到手机。构建成功与 APK 完整性检查不代表已在新版高通或天玑 NPU 上验证实际执行与性能收益；实机验证留待用户进行。

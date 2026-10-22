@@ -6,10 +6,10 @@
 | --- | --- | --- |
 | CPU / NEON | 当前完整浮点 HRTF、动态滤波器、原有精度与最终保护链 | 已用于播放；现有基准与 PCM 回归通过 |
 | 公共 NNAPI 设备接口 | 可枚举已注册的高通、联发科及其他厂商 CPU/GPU/专用加速器；没有按厂商过滤 | 已接入 HRTF FP32 复数频域乘加；明确选择单个 ACCELERATOR，整图运算支持检查与实际音频数值/耗时准入；尚无 NPU 真机执行证据 |
-| LiteRT NPU / CompiledModel | 官方提供高通 AI Engine Direct、MediaTek NeuroPilot 等集成路线；须满足对应 SoC、系统、运行库和模型约束 | 尚未接入当前音频渲染，不能声明已启用 |
+| LiteRT NPU / CompiledModel | 官方提供高通 AI Engine Direct、MediaTek NeuroPilot 等集成路线；须满足对应 SoC、系统、运行库和模型约束 | 已接入 FP32 音频频域图；本次补齐 QNN/NeuroPilot 运行库，未做现代 NPU 真机执行验证 |
 | 高通 Hexagon SDK / FastRPC | 骁龙 660 官方配置含 Hexagon 680 DSP/HVX；自定义 DSP 内核还依赖 ROM、DSP 运行环境及部署条件 | 未做目标手机的自定义浮点音频内核实测 |
 | 旧版 TensorFlow Lite Hexagon delegate | 官方历史支持列表含 660，但接口面向 8-bit 量化模型 | 不把它直接作为当前浮点 FFT/HRTF 的兼容实现 |
-| MediaTek Neuron Adapter | 官方文档提供第三方 Android 应用入口；部分 Neuron Runtime API 仅供 vendor 分区应用使用 | 尚未完成对应天玑设备运行库及音频运算验证 |
+| MediaTek Neuron Adapter | 官方文档提供第三方 Android 应用入口；部分 Neuron Runtime API 仅供 vendor 分区应用使用 | 已随 LiteRT 打包 v8/v9 Adapter；对应天玑设备的实际音频运算仍待用户验证 |
 
 公共设备类型遵守 NDK NeuralNetworksTypes.h：CPU=2，GPU=3，专用机器学习加速器=4。GPU 不计为 NPU；参考 CPU 驱动也不能计为专用加速。枚举在诊断线程之外异步执行一次，不在音频回调或渲染块热路径运行，不做没有音频作用的虚假加速调用。
 
@@ -28,7 +28,7 @@
 - 第一次在后台编译，播放继续走 CPU。先用 2 个实际音频块预热驱动并核对精度，再用 8 个实际块核对精度与性能；预热/核对期播放始终使用同块 CPU 结果。以实际音频块验证：RMS 误差 <= 参考信号的 -120 dB，单个频点误差 <= 参考峰值的 4e-6。打包、提交、执行、同步、取回的时间必须有性能收益，才能采用加速结果。
 - 校验期间仍用同块 CPU 频谱生成声音。启用后请求等待时间最多 1 ms 且不超过实测 CPU 计算预算；线程恢复调度后再检查实际时钟，晚于预算的结果一律丢弃；报错/超时即用已保留历史计算当前块，拒绝迟到结果。不会重走音量包络或改变歌曲增益。
 - 内存中只保留一个有界批次及一个编译形状；应用自有输入/输出/参考缓冲总量最多 32 MiB；每批最多 256 行（128 个对象各含当前/过渡两行）、4 个卷积分区及 4097 个独立频点，超出时走 CPU。不扫描整首、不保存 PCM 缓存、不为每首歌积累模型文件。驱动内部内存由系统管理。
-- 无品牌/型号白名单，同一公开接口覆盖提供此能力的高通、天玑及其他设备。**没有公开驱动、驱动只支持量化模型、精度不合格或传输后更慢时，不启用 NPU。此实现不包含 LiteRT/QNN/NeuroPilot 专属适配器，不能宣称所有具有 NPU 的手机都已覆盖。** 骁龙 660 的 Hexagon/HVX 也不能仅凭硬件名称推断已支持。
+- 无品牌/型号白名单，同一公开接口覆盖提供此能力的高通、天玑及其他设备。**没有公开驱动、驱动只支持量化模型、精度不合格或传输后更慢时，不启用 NPU。现已包含 LiteRT/QNN/NeuroPilot 适配器及选定运行库，但不能宣称所有具有 NPU 的手机都已覆盖。** 骁龙 660 的 Hexagon/HVX 也不能仅凭硬件名称推断已支持。
 
 诊断 `accelerators.audio` 报告状态/失败原因、明确设备名、图形状、支持的整图运算数、实际执行音频批次和实际用于 PCM 的批次。`npuAudioEnabled` 只在合格结果实际被采用后为 true。`audioBatchesExecuted>0` 但 `audioBatchesApplied=0` 说明实际运算曾委派但未获准用于播放，不可作为加速成功宣传。模拟器只能验证运行库缺失时的 CPU 回退；Qualcomm / MediaTek 的真实执行和端到端收益仍需相应真机诊断证据。
 

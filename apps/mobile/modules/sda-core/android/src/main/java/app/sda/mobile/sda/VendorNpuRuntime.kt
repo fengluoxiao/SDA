@@ -32,18 +32,34 @@ internal object VendorNpuRuntime {
             var preparation = ""
             try {
                 check(Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a") { "vendor-runtimes-require-arm64; retaining-native-or-NNAPI" }
-                val manifest = JSONObject(app.assets.open("sda-npu/manifest.json").bufferedReader().use { it.readText() })
+                val manifestText = app.assets.open("sda-npu/manifest.json").bufferedReader().use { it.readText() }
+                val manifest = JSONObject(manifestText)
                 check(manifest.getString("version") == "2.3.0") { "runtime-manifest-version-mismatch" }
-                val base = File(app.codeCacheDir, "sda-audio-runtime").apply { check(mkdirs() || isDirectory) }
-                val version = File(base, "runtime-2.3.0").apply { check(mkdirs() || isDirectory) }
                 val soc = listOf("/sys/devices/soc0/soc_id", "/sys/devices/system/soc/soc0/id").firstNotNullOfOrNull {
                     runCatching { File(it).readText().trim().toIntOrNull() }.getOrNull()
                 }
                 val oldDsp = soc in v60SocIds
+                val manufacturer = if (Build.VERSION.SDK_INT >= 31)
+                    Build.SOC_MANUFACTURER.trim().lowercase(java.util.Locale.ROOT) else ""
+                val family = when {
+                    oldDsp -> "legacy"
+                    manufacturer.contains("qualcomm") || manufacturer == "qti" -> "qualcomm"
+                    manufacturer.contains("mediatek") || manufacturer == "mtk" -> "mediatek"
+                    else -> "auto" // Unknown vendors retain every available backend.
+                }
+                val base = File(app.codeCacheDir, "sda-audio-runtime").apply { check(mkdirs() || isDirectory) }
+                // Same SDK version can contain different approved runtime sets.
+                // Include the device's runtime family so upgrades cannot reuse stale files.
+                val identity = MessageDigest.getInstance("SHA-256")
+                    .digest((manifestText + "\n" + family).toByteArray(Charsets.UTF_8))
+                    .take(8).joinToString("") { "%02x".format(it) }
+                val version = File(base, "runtime-2.3.0-$identity").apply { check(mkdirs() || isDirectory) }
                 val files = manifest.getJSONObject("files")
                 for (name in files.keys()) {
                     check(name.matches(Regex("(common|legacy)/lib[A-Za-z0-9_.]+\\.so"))) { "invalid-runtime-asset-name" }
                     if (name.startsWith("common/") && (Build.VERSION.SDK_INT < 31 || oldDsp)) continue
+                    if (family == "qualcomm" && (name.startsWith("common/libneuron") || name.contains("_MediaTek"))) continue
+                    if (family == "mediatek" && (name.startsWith("legacy/") || name.startsWith("common/libQnn") || name.contains("_Qualcomm"))) continue
                     val target = File(version, name)
                     check(target.canonicalPath.startsWith(version.canonicalPath + File.separator))
                     val entry = files.getJSONObject(name)
@@ -63,7 +79,8 @@ internal object VendorNpuRuntime {
                 val search = listOf(legacy, File(version, "common").absolutePath, current, "/vendor/lib/rfsa/adsp", "/vendor/dsp", "/dsp").filter { it.isNotBlank() }.joinToString(";")
                 Os.setenv("ADSP_LIBRARY_PATH", search, true)
                 directory = version.absolutePath
-                if (oldDsp) preparation = "legacy-Hexagon-v60-selected; modern-HTP-runtimes-skipped; socId=$soc"
+                preparation = "packaged-runtime-family=$family; manifest=$identity"
+                if (oldDsp) preparation += "; legacy-Hexagon-v60-selected; modern-HTP-runtimes-skipped; socId=$soc"
                 // Keep exactly one runtime version. No track-specific files live here.
                 base.listFiles()?.filter { it.isDirectory && it.name.startsWith("runtime-") && it != version && it.canonicalFile.parentFile == base.canonicalFile }?.forEach { it.deleteRecursively() }
             } catch (error: Exception) {

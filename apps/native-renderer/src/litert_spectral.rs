@@ -152,6 +152,7 @@ pub(super) struct Backend {
     api: Rc<Api>,
     directory: CString,
     _pinned: Vec<ProcessLibrary>,
+    pinned_libraries: Vec<String>,
 }
 impl Backend {
     pub fn open(directory: &std::path::Path) -> Result<Self, String> {
@@ -161,6 +162,26 @@ impl Backend {
         };
         let api = Api::open(&cpath("libLiteRt.so")?)?;
         let mut pinned = Vec::new();
+        let mut pinned_libraries = Vec::new();
+        // LiteRT opens vendor dependencies internally. Keep the packaged host
+        // libraries mapped before compilation too, including failed graphs:
+        // their TLS destructors may run after the LiteRT model is destroyed.
+        // DSP Skel ELFs execute on Hexagon and must never be dlopened on ARM.
+        let mut dependencies: Vec<String> = std::fs::read_dir(directory)
+            .map_err(|_| "litert-runtime-directory-unreadable")?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".so") && !name.contains("Skel")
+                && (name.starts_with("libQnn") || name.starts_with("libneuron")))
+            .collect();
+        dependencies.sort();
+        for name in dependencies {
+            if let Some(lib) = ProcessLibrary::open(&cpath(&name)?) {
+                pinned.push(lib);
+                pinned_libraries.push(name);
+            }
+        }
+        let mut plugins = 0;
         // Driver/plugin TLS callbacks must remain mapped through worker exit.
         for name in [
             "libLiteRtCompilerPlugin_Qualcomm.so",
@@ -170,9 +191,11 @@ impl Backend {
         ] {
             if let Some(lib) = ProcessLibrary::open(&cpath(name)?) {
                 pinned.push(lib);
+                pinned_libraries.push(name.to_string());
+                plugins += 1;
             }
         }
-        if pinned.is_empty() {
+        if plugins == 0 {
             return Err("litert-vendor-plugins-unavailable".into());
         }
         let directory = CString::new(directory.to_string_lossy().as_bytes())
@@ -182,6 +205,7 @@ impl Backend {
             api,
             directory,
             _pinned: pinned,
+            pinned_libraries,
         })
     }
 }
@@ -370,6 +394,6 @@ impl super::coordinator::Backend for Backend {
         Ok(())
     }
     fn details(&self) -> serde_json::Value {
-        serde_json::json!({"runtime":"litert-vendor-npu-2.3.0","acceleratorKind":"npu","requestedComputeUnits":"NPU-only","fullyAccelerated":self.model.is_some(),"nonCpuFullyAccelerated":self.model.is_some(),"frameworkCpuFallbackAllowed":false,"outputContract":"float32-with-unchanged-audio-qualification","internalPrecision":"vendor-managed-and-output-qualified","modelCache":"one-in-memory-shape-no-PCM-no-persistent-models"})
+        serde_json::json!({"runtime":"litert-vendor-npu-2.3.0","acceleratorKind":"npu","requestedComputeUnits":"NPU-only","fullyAccelerated":self.model.is_some(),"nonCpuFullyAccelerated":self.model.is_some(),"frameworkCpuFallbackAllowed":false,"outputContract":"float32-with-unchanged-audio-qualification","internalPrecision":"vendor-managed-and-output-qualified","modelCache":"one-in-memory-shape-no-PCM-no-persistent-models","runtimeLibraryLifetime":"process-pinned-nodelete","pinnedLibraries":self.pinned_libraries})
     }
 }
