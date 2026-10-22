@@ -8,7 +8,16 @@ enum SdaError: LocalizedError {
 }
 
 @main struct ReaderProbe {
+ static var phase="startup"
+ static var inspected:CompressedInput?
+ static func checkpoint(_ value:String) { phase=value;FileHandle.standardError.write(Data(("CHECK: " + value + "\n").utf8)) }
  static func main() throws {
+  do { try run() }
+  catch {
+   FileHandle.standardError.write(Data(("FAILED: \(phase), input=\(inspected?.diagnosticState ?? [:]), error=\(error)\n").utf8));throw error
+  }
+ }
+ static func run() throws {
   let fixture = URL(fileURLWithPath: CommandLine.arguments[1])
   let expected = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2]))
   precondition(CompressedInput.isRecoverableReaderError(NSError(domain:AVFoundationErrorDomain,code:-11880)))
@@ -17,23 +26,31 @@ enum SdaError: LocalizedError {
   precondition(!CompressedInput.isRecoverableReaderError(NSError(domain:NSOSStatusErrorDomain,code:-12551)))
    precondition(CompressedInput.requiresSequentialRecovery(NSError(domain:AVFoundationErrorDomain,code:-11880)))
    precondition(!CompressedInput.requiresSequentialRecovery(NSError(domain:AVFoundationErrorDomain,code:-11847)))
+  checkpoint("normal-full-read")
   let input = try CompressedInput(url: fixture, name: fixture.lastPathComponent)
+  inspected=input
   var actual = Data(); var packets = 0
   while let packet = try input.next() { actual.append(packet); packets += 1 }
   guard actual == expected else { throw SdaError.message("Compressed MP4 changed bytes: \(actual.count) vs \(expected.count)") }
+  checkpoint("ranged-resume")
   let resumed = try CompressedInput(url: fixture, name: fixture.lastPathComponent)
+  inspected=resumed
   var recovered = Data()
   for _ in 0..<3 { if let packet = try resumed.next() { recovered.append(packet) } }
   try resumed.reopenAfterInterruption()
   while let packet = try resumed.next() { recovered.append(packet) }
   guard recovered == expected else { throw SdaError.message("Resumed compressed cursor dropped or duplicated packets") }
+  checkpoint("sequential-resume")
    let sequential = try CompressedInput(url: fixture, name: fixture.lastPathComponent)
+  inspected=sequential
    var sequentialData = Data()
    for _ in 0..<3 { if let packet = try sequential.next() { sequentialData.append(packet) } }
    try sequential.reopenAfterInterruption(forceSequential:true)
    while let packet = try sequential.next() { sequentialData.append(packet) }
    guard sequentialData == expected else { throw SdaError.message("Sequential recovery dropped or duplicated compressed packets") }
+  checkpoint("explicit-indexed-resume")
   let indexed = try CompressedInput(url:fixture,name:fixture.lastPathComponent)
+  inspected=indexed
   var indexedData=Data()
   for _ in 0..<3 { if let packet=try indexed.next() { indexedData.append(packet) } }
   if indexed.diagnosticState["backend"] as? String != "indexed-mp4" {
@@ -41,7 +58,9 @@ enum SdaError: LocalizedError {
   }
   while let packet=try indexed.next() { indexedData.append(packet) }
   guard indexedData == expected else { throw SdaError.message("Indexed continuation dropped or duplicated packets") }
+  checkpoint("early-completion")
   let early = try CompressedInput(url:fixture,name:fixture.lastPathComponent)
+  inspected=early
   var earlyBytes=Data()
   for _ in 0..<3 { if let packet=try early.next() { earlyBytes.append(packet) } }
   if let packet=try early.nextAfterReaderCompletion() { earlyBytes.append(packet) }
@@ -57,6 +76,7 @@ enum SdaError: LocalizedError {
   var checks:[[String:Any]]=[]
   for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
    for start in [0,2] {
+    checkpoint("manual-index \(name) start=\(start)")
     guard let reader=try IndexedCompressedInput.open(root.appendingPathComponent(name)) else { throw SdaError.message("Synthetic EC3 index not found") }
     let submitted=9224; let firstByte=sizes.prefix(start).reduce(0,+); let endByte=sizes.prefix(start+submitted).reduce(0,+)
     let prefix=expected.subdata(in:firstByte..<endByte)
@@ -68,13 +88,16 @@ enum SdaError: LocalizedError {
   }
   // A valid edit clips the last CMSampleBuffer duration; unique byte hashes
   // still prove the exact continuation even when end-time equality fails.
+  checkpoint("clamped-timestamp")
   guard let clipped=try IndexedCompressedInput.open(root.appendingPathComponent("cursor32.m4a")) else { throw SdaError.message("Missing clip fixture") }
   let prefixCount=sizes.prefix(9224).reduce(0,+)
   try clipped.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:CMTime(value:Int64(9224*1536-3072-766),timescale:48000),submittedBytes:UInt64(prefixCount),digest:Data(SHA256.hash(data:expected.prefix(prefixCount))))
   var clippedTail=Data();while let packet=try clipped.next(chunkBytes:24576) { clippedTail.append(packet) }
   guard clippedTail == expected.suffix(from:prefixCount) else { throw SdaError.message("Clamped timestamp dropped or repeated the tail") }
   for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
+   checkpoint("automatic-index \(name)")
    let input=try CompressedInput(url:root.appendingPathComponent(name),name:name)
+   inspected=input
    var bytes=Data();while let packet=try input.next() { bytes.append(packet) }
    let start=input.diagnosticState["recoveryStartSample"] as? Int ?? -1
    guard input.diagnosticState["indexedPrepared"] as? Bool == true, start >= 0,

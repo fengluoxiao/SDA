@@ -34,12 +34,21 @@ jobs:
         run: |
           set -o pipefail
           xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift scripts/ios-reader-probe.swift -o reader-artifacts/reader-probe
-          reader-artifacts/reader-probe reader-artifacts/tone.m4a reader-artifacts/tone.eac3 reader-artifacts/fixtures | tee reader-artifacts/reader-report.txt
+          reader-artifacts/reader-probe reader-artifacts/tone.m4a reader-artifacts/tone.eac3 reader-artifacts/fixtures 2>&1 | tee reader-artifacts/reader-report.txt
+      - name: Check output drain timing
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -o pipefail
           xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/PlaybackEndDrain.swift scripts/ios-playback-end-probe.swift -o reader-artifacts/end-probe
           reader-artifacts/end-probe | tee reader-artifacts/end-report.txt
+      - name: Check ALAC decoding and resume
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -o pipefail
           xcrun swiftc -swift-version 5 apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/IndexedCompressedInput.swift scripts/ios-alac-probe.swift -o reader-artifacts/alac-probe
           reader-artifacts/alac-probe 2>&1 | tee reader-artifacts/alac-report.txt
       - name: Typecheck iOS 16.4 playback host
+        if: ${{ always() && !cancelled() }}
         run: |
           set -o pipefail
           root=apps/mobile/modules/sda-core/ios
