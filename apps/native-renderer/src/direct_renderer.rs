@@ -78,7 +78,7 @@ fn worker_count_for_sources_with_available(source_count: usize, available: usize
 }
 
 pub(super) fn android_worker_count(source_count: usize, available: usize) -> usize {
-    if source_count<8 {1} else if source_count<32 {available.clamp(1,2)} else {available.clamp(1,3)}
+    if source_count < 8 { 1 } else { available.clamp(1, 3) }
 }
 
 fn ios_worker_count(source_count: usize, available: usize) -> usize {
@@ -94,7 +94,7 @@ mod worker_policy_tests {
     fn android_reserves_capacity_on_qualcomm_and_mediatek_core_counts() {
         for cores in [1,2,4,6,8,10] {
             assert_eq!(super::android_worker_count(7,cores),1);
-            assert_eq!(super::android_worker_count(16,cores),cores.min(2));
+            assert_eq!(super::android_worker_count(16,cores),cores.min(3));
             assert_eq!(super::android_worker_count(128,cores),cores.min(3));
         }
     }
@@ -110,7 +110,8 @@ mod worker_policy_tests {
     #[test]
     fn large_object_scenes_reserve_host_capacity_without_changing_ordinary_scenes() {
         let expected = if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) { 2 } else { 4 };
-        assert_eq!(worker_count_for_sources_with_available(16, 8), expected);
+        let ordinary = if crate::realtime::android_audio_policy() { 3 } else { expected };
+        assert_eq!(worker_count_for_sources_with_available(16, 8), ordinary);
         let dense=if crate::realtime::android_audio_policy(){3}else{expected};
         assert_eq!(worker_count_for_sources_with_available(109, 8), dense);
         assert_eq!(worker_count_for_sources_with_available(109, 4), dense);

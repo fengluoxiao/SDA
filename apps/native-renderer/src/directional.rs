@@ -590,7 +590,9 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
-    if cfg!(target_os = "ios") {
+    if cfg!(target_os = "ios") || crate::realtime::android_audio_policy() {
+        // Android's continuous object path must share the caller-participating
+        // executor used by mixing, buses and legacy direct convolution.
         return crate::audio_executor::run(&mut sources, |source| source.finish(set));
     }
     let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());

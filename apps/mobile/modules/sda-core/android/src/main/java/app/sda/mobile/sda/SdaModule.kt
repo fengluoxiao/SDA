@@ -36,6 +36,7 @@ class SdaModule : Module() {
     private var generation = 0L
     @Volatile private var diagnostics: RemoteDiagnostics? = null
     @Volatile private var inBackground = false
+    @Volatile private var sceneRenderingRequested = false
     @Volatile private var failureCategory = ""
     @Volatile private var inputBytesSubmitted = 0L
     private val nativeLock = Object()
@@ -224,6 +225,7 @@ class SdaModule : Module() {
                 .put("bytesSubmitted", inputBytesSubmitted).put("feedThreadAlive", feedThread?.isAlive == true)
                 .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
             .put("backgroundPlayback", lease)
+            .put("graphics", JSONObject().put("sceneLoopRequested", sceneRenderingRequested))
     }
     private fun recordFailure(error: Throwable) {
         val text = error.message.orEmpty()
@@ -247,6 +249,12 @@ class SdaModule : Module() {
             val context = appContext.reactContext ?: error("no react context")
             val service = diagnostics ?: RemoteDiagnostics(context.applicationContext).also { diagnostics = it }
             service.configure(enabled) { diagnosticMetadata(context.applicationContext) }
+        }
+        Function("setSceneRenderingRequested") { requested: Boolean ->
+            if (sceneRenderingRequested != requested) {
+                sceneRenderingRequested = requested
+                diagnostics?.event(if (requested) "scene-render-start" else "scene-render-stop", generation)
+            }
         }
         Function("diagnosticsStatus") { diagnostics?.status ?: "已关闭" }
         Function("diagnosticsEnabled") { diagnostics?.isEnabled == true }

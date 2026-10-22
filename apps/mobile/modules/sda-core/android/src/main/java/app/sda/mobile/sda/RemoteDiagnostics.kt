@@ -162,7 +162,7 @@ class RemoteDiagnostics(private val context: Context, private val port: Int = 87
         val result = JSONObject().put("schema", 1).put("platform", "Android").put("time", System.currentTimeMillis() / 1000.0)
             .put("playback", playback).put("android", android).put("thermalState", android.optInt("thermalStatus", -1))
         for (key in listOf("appVersion", "appBuild", "volumeBalancePreference", "systemSpatialPreference", "playing", "paused",
-            "background", "generation", "route", "engineRunning", "tracking", "motion", "backgroundTrackingEnabled", "error", "errorDetails", "input", "backgroundPlayback")) {
+            "background", "generation", "route", "engineRunning", "tracking", "motion", "backgroundTrackingEnabled", "error", "errorDetails", "input", "backgroundPlayback", "graphics")) {
             if (meta.has(key)) result.put(key, meta.get(key))
         }
         val missing = playback.optLong("callbackMissingFrames")
@@ -182,6 +182,7 @@ class RemoteDiagnostics(private val context: Context, private val port: Int = 87
                 .put("sampleIntervalMs", if (lastSampleAt > 0) now - lastSampleAt else 0)
                 .put("processCpuMs", android.getLong("processCpuMs")).put("background", meta.optBoolean("background"))
                 .put("paused", meta.optBoolean("paused")).put("thermalStatus", android.optInt("thermalStatus", -1))
+                .put("sceneLoopRequested", meta.optJSONObject("graphics")?.optBoolean("sceneLoopRequested"))
             history.addLast(point); while (history.size > 60) history.removeFirst()
             result.put("history", JSONArray(history.toList())).put("events", JSONArray(events.toList()))
             result.put("nativeSnapshotAgeMs", point.get("snapshotAgeMs"))

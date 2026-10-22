@@ -80,9 +80,18 @@ pub fn route(
 struct Allpass {
     data: Vec<f32>,
     cursor: usize,
+    pristine: bool,
 }
 impl Allpass {
     fn process(&mut self, x: f32) -> f32 {
+        if self.pristine && x == 0. {
+            // No diffuse input has ever excited this delay. Advance its exact
+            // clock without touching a large all-zero delay line on every tick.
+            self.cursor += 1;
+            if self.cursor == self.data.len() { self.cursor = 0; }
+            return 0.;
+        }
+        self.pristine = false;
         let delayed = self.data[self.cursor];
         let y = delayed - 0.5 * x;
         self.data[self.cursor] = x + 0.5 * y;
@@ -103,6 +112,7 @@ impl Diffuser {
                 .map(|i| Allpass {
                     data: vec![0.0; 149 + i * 46],
                     cursor: 0,
+                    pristine: true,
                 })
                 .collect(),
         }
@@ -118,6 +128,16 @@ impl Diffuser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unexcited_diffuser_skip_preserves_the_first_signal_phase_and_all_tails() {
+        let mut a=Diffuser::new();let mut b=Diffuser::new();
+        for filter in &mut b.filters {filter.pristine=false;}
+        for i in 0..14000 {
+            let mut x=[0.;vbap::MAX_BUS_COUNT];
+            if (7000..8000).contains(&i) {for (bus,x) in x.iter_mut().enumerate(){*x=(i as f32*0.19+bus as f32).sin()*0.01;}}
+            assert_eq!(a.process_inputs(x).map(f32::to_bits),b.process_inputs(x).map(f32::to_bits));
+        }
+    }
     #[test]
     #[ignore = "offline performance measurement"]
     fn benchmark_extent_128_sources() {

@@ -9,7 +9,9 @@ pub(super) struct TruePeakGuard {
     lookahead: usize,
     history: [[f64; HISTORY * 2]; 2],
     history_write: usize,
-    coefficients: [[f64; HISTORY]; 4],
+    coefficient_phases: [[f64; 4]; HISTORY],
+    #[cfg(test)]
+    scalar_detector: bool,
     factor: usize,
     taps: usize,
     gain: f64,
@@ -57,13 +59,16 @@ impl TruePeakGuard {
                 coefficients[tap % factor][tap / factor] = sinc * window;
             }
         }
+        let coefficient_phases = std::array::from_fn(|tap| std::array::from_fn(|phase| coefficients[phase][tap]));
         Self {
             buffer: vec![[0.; 2]; lookahead],
             cursor: 0,
             lookahead: lookahead.saturating_sub(delay).max(1),
             history: [[0.; HISTORY * 2]; 2],
             history_write: 0,
-            coefficients,
+            coefficient_phases,
+            #[cfg(test)]
+            scalar_detector: false,
             factor,
             taps,
             gain: 1.,
@@ -100,14 +105,15 @@ impl TruePeakGuard {
         for ear in 0..2 {
             self.history[ear][self.history_write] = input[ear] as f64;
             self.history[ear][self.history_write + self.taps] = input[ear] as f64;
-            for phase in 0..self.factor {
-                let mut value = 0.;
-                for tap in 0..self.taps {
-                    let i = self.history_write + self.taps - tap;
-                    value += self.history[ear][i] * self.coefficients[phase][tap];
-                }
-                peak = peak.max(value.abs());
-            }
+            let history = &self.history[ear][self.history_write+1..self.history_write+self.taps+1];
+            let coefficients = &self.coefficient_phases[..self.taps];
+            #[cfg(test)]
+            let p = if self.scalar_detector {
+                crate::true_peak_detector::scalar(history, coefficients, self.factor)
+            } else { crate::true_peak_detector::peak(history, coefficients, self.factor) };
+            #[cfg(not(test))]
+            let p = crate::true_peak_detector::peak(history, coefficients, self.factor);
+            peak = peak.max(p);
         }
         self.history_write = (self.history_write + 1) % self.taps;
         let requested = if peak > self.ceiling {
@@ -148,6 +154,21 @@ impl TruePeakGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vector_detector_preserves_every_pcm_sample_and_limiter_envelope() {
+        for rate in [44100,48000,96000,192000,384000] {
+            let mut a=TruePeakGuard::new(rate);let mut b=TruePeakGuard::new(rate);b.scalar_detector=true;
+            let mut seed=23u64;
+            for i in 0..24000 {
+                seed=seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let x=if i%4000>3000 {0.} else {((seed>>32)as u32 as f32/u32::MAX as f32*2.-1.)*1.7};
+                let right=if i%997==0{f32::NAN}else{-x*0.37};
+                assert_eq!(a.process(x,right).map(f32::to_bits),b.process(x,right).map(f32::to_bits),"rate={rate} frame={i}");
+                assert_eq!(a.gain.to_bits(),b.gain.to_bits());
+                assert_eq!(a.target.to_bits(),b.target.to_bits());
+            }
+        }
+    }
     #[test]
     fn quiet_audio_is_exact_delayed_audio_and_reset_clears_every_delay() {
         for sr in [44100, 48000, 96000, 192000, 384000] {

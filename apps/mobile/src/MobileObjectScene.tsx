@@ -62,17 +62,16 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
 }
 
 export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
-  // Never keep the iOS GL animation loop running behind the lock screen.
+  // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
   React.useEffect(() => {
-    if (Platform.OS !== "ios") return;
     const subscription = AppState.addEventListener("change", state => setForeground(state === "active"));
     // The initial async native state may resolve between render and subscription.
     setForeground(AppState.currentState === "active");
     return () => subscription.remove();
   }, []);
-  const renderActive = active && (Platform.OS !== "ios" || foreground);
+  const renderActive = active && foreground;
   const view = useRef<View>(null);
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
@@ -81,6 +80,11 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   const [mounted, setMounted] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
   const [ready, setReady] = React.useState(false);
+  React.useEffect(() => {
+    const engine = (globalThis as any).expo?.modules?.SdaEngine;
+    engine?.setSceneRenderingRequested?.(renderActive && mounted);
+    return () => engine?.setSceneRenderingRequested?.(false);
+  }, [renderActive, mounted]);
   const [failure, setFailure] = React.useState<string | null>(null);
   const firstFrame = useRef(false);
   const alive = useRef(true);
@@ -154,7 +158,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   }} {...pan.panHandlers}>
     {/* Let the native GL view resize with its parent immediately on resume;
         cached viewport dimensions only gate the initial mount. */}
-    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={Platform.OS === "ios" && !renderActive ? "never" : "always"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
+    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={renderActive ? "always" : "never"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
       const renderFrame = state.gl.render.bind(state.gl);
       const context = state.gl.getContext() as any;
       normalizeNativeShaderLogs(context);

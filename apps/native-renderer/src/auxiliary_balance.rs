@@ -239,6 +239,7 @@ pub(crate) struct AuxiliaryBalance {
     enabled: bool,
     gain_db: f64,
     goal_db: f64,
+    goal_dirty: bool,
     headroom: Option<f64>,
     pub maximum_attenuation_db: f64,
     last_applied_gain: f32,
@@ -265,6 +266,7 @@ impl AuxiliaryBalance {
             enabled: false,
             gain_db: 0.,
             goal_db: 0.,
+            goal_dirty: false,
             headroom: None,
             maximum_attenuation_db: 0.,
             last_applied_gain: 1.,
@@ -293,6 +295,7 @@ impl AuxiliaryBalance {
         self.gains.fill(1.);
         self.gain_db = 0.;
         self.goal_db = 0.;
+        self.goal_dirty = false;
         self.headroom = None;
         self.maximum_attenuation_db = 0.;
         self.last_applied_gain = 1.;
@@ -333,9 +336,10 @@ impl AuxiliaryBalance {
     }
     pub fn mark_applied(&mut self, index: usize) {
         self.last_applied_gain = self.gains[index];
-        self.maximum_attenuation_db = self
-            .maximum_attenuation_db
-            .max(-20. * f64::from(self.last_applied_gain).max(1e-12).log10());
+        if self.last_applied_gain < 1. || !self.last_applied_gain.is_finite() {
+            self.maximum_attenuation_db = self.maximum_attenuation_db
+                .max(-20. * f64::from(self.last_applied_gain).max(1e-12).log10());
+        }
     }
     #[cfg(test)]
     pub fn observe(&mut self, reference: Reference, programme_gain: f32) {self.observe_at(reference,programme_gain,self.observed);}
@@ -364,6 +368,13 @@ impl AuxiliaryBalance {
         }
         self.temporal.observe(reference.temporal,front_power,at);
         self.observed = self.observed.saturating_add(1);
+        // Detector state still advances for every source sample. Its dB
+        // target is only consumed at fill_from (block/toggle boundaries).
+        self.goal_dirty = true;
+    }
+    fn refresh_goal(&mut self) {
+        if !self.goal_dirty { return; }
+        self.goal_dirty = false;
         let db = 20. * self.reference_gain.max(1e-30).log10();
         let front = 10. * self.energy[0].max(1e-30).log10() + db;
         let auxiliary = 10. * self.energy[1].max(1e-30).log10() + db;
@@ -402,16 +413,20 @@ impl AuxiliaryBalance {
         self.headroom
     }
     fn fill_from(&mut self, offset: usize) {
+        self.refresh_goal();
         if self.directional {
             let deficit = self.goal_db.max(0.);
             let target = if self.enabled && self.policy.maximum_cut_db > 0. {
                 deficit / (deficit + 6.)
             } else { 0. };
+            let rate = f64::from(self.rate.max(1));
+            let attack = (-1. / (rate * 0.15)).exp();
+            let release = (-1. / (rate * 0.05)).exp();
             for i in offset..DEFAULT_PARTITION {
                 self.gains[i] = 1.;
                 self.directional_strength[i] = self.strength as f32;
-                let seconds = if target > self.strength { 0.15 } else { 0.05 };
-                self.strength = target + (self.strength-target)*(-1./(f64::from(self.rate.max(1))*seconds)).exp();
+                let coefficient = if target > self.strength { attack } else { release };
+                self.strength = target + (self.strength-target)*coefficient;
             }
             self.gain_db = 0.;
             self.temporal.disable_immediately();
@@ -894,5 +909,39 @@ mod exclusive_reference_tests {
             b.mark_applied(j);b.observe(r,1.);if j+1==DEFAULT_PARTITION{b.finish_block();}
         }
         assert!(20.*f64::from(b.gains[0]).log10()>1.,"protected height still masks the rear reference");
+    }
+}
+#[cfg(test)]
+mod lazy_control_tests {
+    use super::*;
+    #[test]
+    fn lazy_targets_equal_eager_targets_at_blocks_and_mid_block_toggles() {
+        for rate in [44100,48000,96000] {
+            for directional in [false,true] {
+                let make=||if directional {AuxiliaryBalance::directional_detail(rate)} else {AuxiliaryBalance::new(rate)};
+                let (mut lazy,mut eager)=(make(),make());
+                lazy.set_output_headroom(Some(8.));eager.set_output_headroom(Some(8.));
+                let mut enabled=false;
+                for at in 0..rate as u64*2 {
+                    let index=at as usize%DEFAULT_PARTITION;
+                    if [0,765,901,2203,43001,48001].contains(&at) {
+                        enabled=!enabled;lazy.set_enabled(enabled,false,index);eager.set_enabled(enabled,false,index);
+                        assert_eq!(lazy.gains,eager.gains);assert_eq!(lazy.directional_strength,eager.directional_strength);
+                    }
+                    let front=(at as f64*0.071).sin()*0.02;
+                    let rear=(at as f64*0.031).sin()*if at%17000<10000{0.001}else{0.04};
+                    let mut r=Reference::default();r.groups[0]=[front,front*0.2,front*0.8,0.];r.groups[1]=[rear,rear*0.3,-rear*0.7,rear*0.4];
+                    let programme=if at<rate as u64{0.7}else{0.5};
+                    lazy.mark_applied(index);eager.mark_applied(index);
+                    lazy.observe_at(r,programme,at);eager.observe_at(r,programme,at);eager.refresh_goal();
+                    if index+1==DEFAULT_PARTITION {
+                        lazy.finish_block();eager.finish_block();
+                        assert_eq!(lazy.goal_db.to_bits(),eager.goal_db.to_bits());
+                        assert_eq!(lazy.gains,eager.gains);assert_eq!(lazy.directional_strength,eager.directional_strength);
+                        assert_eq!(lazy.levels(),eager.levels());
+                    }
+                }
+            }
+        }
     }
 }

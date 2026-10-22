@@ -90,6 +90,7 @@ mod directional_detail;
 mod temporal_detail_integration_tests;
 #[cfg(test)]
 mod auxiliary_balance_tests;
+mod true_peak_detector;
 mod true_peak_guard;
 #[cfg(test)]
 mod production_output_tests;
@@ -108,6 +109,8 @@ mod mix_parity_probe;
 mod ku100_song_probe;
 #[cfg(test)]
 mod ku100_motion_probe;
+#[cfg(test)]
+mod sd660_perf_tests;
 pub mod object_mixer;
 pub mod occlusion;
 pub mod output_monitor;
@@ -1687,6 +1690,9 @@ impl Engine {
             .distance_m
             .filter(|distance| distance.is_finite() && *distance >= 1e-4)
             .map_or(1.0, |distance| distance.recip().clamp(0.25, 2.8));
+        // No explicit distance (normal Atmos objects) has a settled unity
+        // envelope. Avoid expf for this exact no-op on every source/sample.
+        if source.distance_gain == target { return; }
         // Exponential approach per sample; at 48 kHz the 0.9985 coefficient
         // settles a full ±12 dB swing in roughly 100 ms without zipper noise.
         let coefficient = (1.0 - (-(samples as f32) / 1600.0).exp()).min(1.0);
