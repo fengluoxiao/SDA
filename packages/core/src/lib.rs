@@ -473,13 +473,19 @@ fn detect_codec(data: &[u8]) -> Option<&'static str> {
     }
     let scan = &data[..data.len().min(64 * 1024)];
     if avs3a::parse_header(scan).is_ok_and(|info| info.offset == 0) { return Some("av3a"); }
+    // A three-byte coincidence inside compressed audio is not a TrueHD
+    // signature. Require the complete major sync plus the extractor's frame
+    // length/parity/CRC checks. Keep genuine interleaved HD compatibility.
+    if scan.windows(4).any(|w| w[..3] == [0xf8,0x72,0x6f] && matches!(w[3],0xba|0xbb)) {
+        let mut extractor=truehd::process::extract::Extractor::default();
+        extractor.push_bytes(scan);
+        if extractor.any(|frame| frame.is_ok_and(|frame| frame.is_major_sync())) {
+            return Some("truehd");
+        }
+    }
     let mut first_eac3 = None;
     let mut first_dts = None;
     for w in scan.windows(4) {
-        // TrueHD major sync — strongest signal, wins immediately.
-        if w[0] == 0xF8 && w[1] == 0x72 && w[2] == 0x6F {
-            return Some("truehd");
-        }
         if first_eac3.is_none() && w[0] == 0x0B && w[1] == 0x77 {
             first_eac3 = Some("eac3");
         }
@@ -648,6 +654,44 @@ mod tests {
         decoder.push(&bytes[1000..]).unwrap();
         decoder.flush();
         assert!(decoder.next_frame().is_some(), "sniffed bytes must still decode");
+    }
+
+    #[test]
+    fn auto_detection_ignores_truehd_prefix_inside_eac3_payload() {
+        let bytes=joc_fixture();
+        let first_frame=((((usize::from(bytes[2]) & 7) << 8) | usize::from(bytes[3])) + 1) * 2;
+        // Complete valid EC3 frames separated by resynchronizable padding.
+        // The old detector picks TrueHD solely because these three bytes occur.
+        let mut collision=bytes[..first_frame].to_vec();
+        collision.extend_from_slice(&[0xf8,0x72,0x6f,0x99]);
+        collision.extend_from_slice(&bytes[first_frame..]);
+        assert_eq!(detect_codec(&collision),Some("eac3"));
+        let decode=|codec:&str,data:&[u8],chunk:usize| {
+            let mut decoder=StreamingDecoder::new(codec).unwrap();
+            for part in data.chunks(chunk) {decoder.push(part).unwrap();}
+            decoder.flush();assert_eq!(decoder.codec_name(),"eac3");
+            let mut frames=Vec::new();while let Some(frame)=decoder.next_frame(){frames.push(frame);}
+            assert!(decoder.drain_errors().is_empty());frames
+        };
+        let expected=decode("eac3",&bytes,1000);assert!(!expected.is_empty());
+        for chunk in [3,1000,24*1024,190464] {
+            let actual=decode("auto",&collision,chunk);
+            assert_eq!(actual.len(),expected.len(),"chunking must not lose the tail");
+            for (a,b) in actual.iter().zip(&expected) {
+                assert_eq!(a.sample_pos,b.sample_pos);assert_eq!(a.labels,b.labels);
+                assert_eq!(a.channels,b.channels,"autodetection changed decoded PCM");
+            }
+        }
+    }
+
+    #[test]
+    fn auto_detection_validates_truehd_major_sync_and_keeps_dual_stream_support() {
+        let truehd=truehd::process::EXAMPLE_DATA;
+        assert_eq!(detect_codec(truehd),Some("truehd"));
+        let mut mixed=vec![0;128];mixed[..6].copy_from_slice(&[0x0b,0x77,0,0,0,8<<3]);mixed.extend_from_slice(truehd);
+        assert_eq!(detect_codec(&mixed),Some("truehd"),"validated TrueHD still wins over a legacy AC3 compatibility prefix");
+        let mut false_header=vec![0;128];false_header[4..8].copy_from_slice(&[0xf8,0x72,0x6f,0xba]);
+        assert_eq!(detect_codec(&false_header),None,"four sync-like bytes without a valid frame are not proof of TrueHD");
     }
 
     #[test]

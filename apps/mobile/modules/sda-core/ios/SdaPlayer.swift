@@ -506,6 +506,7 @@ final class SdaPlayer {
     } else { try startNative() }
     playbackYaw = prefs.bool(forKey:"sda.headTracking") || inBackground ? 0 : yaw
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
+    if systemSpatial == nil, let codec=input.nativeCodec { _ = try command("codec",["codec":codec]) }
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     // Apply persisted balance after the new route/source is fully selected.
@@ -641,7 +642,10 @@ final class SdaPlayer {
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
       if !input.isAv3a, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
       let finalStatus = try command("status") as! [String:Any]
-      if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
+      guard let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 else {
+       throw SdaError.message("已读完音轨，但没有解码出任何音频")
+      }
+      duration = samples.doubleValue / 48
       finished = true
      }
     }
@@ -649,7 +653,7 @@ final class SdaPlayer {
     }
     if !keepFeeding { return }
    }
-  } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
+  } catch { locked { if generation == token { finishPreparation(); done = true; failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  // Called only by the serialized native feeder under the player lock, before
  // stopping the old consumer. No React timer/import/bridge round trip at EOF.

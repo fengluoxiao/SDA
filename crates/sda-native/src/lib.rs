@@ -213,6 +213,7 @@ pub struct MobileEngine {
     hrtf_directions: usize,
     announced_codec: Option<String>,
     decoder: StreamingDecoder,
+    compressed_input_bytes: u64,
     renderer: Option<Engine>,
     pipeline: Option<RenderPipeline>,
     startup: Mutex<StartupGate>,
@@ -256,6 +257,7 @@ impl MobileEngine {
         Ok(MobileEngine {
             renderer: Some(Engine::new(config.sample_rate, config.output_channels)),
             decoder: StreamingDecoder::new("auto")?,
+            compressed_input_bytes: 0,
             config,
             hrtf_directions: 0,
             announced_codec: None,
@@ -512,6 +514,7 @@ impl MobileEngine {
         self.mpegh_decoder = None;
         self.stereo_bed_mode = false;
         self.decoder = StreamingDecoder::new("auto").expect("known decoder type");
+        self.compressed_input_bytes = 0;
         self.pending.lock().expect("pending lock").clear();
         self.frame_router = frame_router::FrameRouter::default();
         self.balance.reset();
@@ -540,10 +543,26 @@ impl MobileEngine {
         Ok(())
     }
 
+    /// Keep a demuxer's declared codec instead of guessing from its payload.
+    pub fn select_compressed_codec(&mut self, codec: &str) -> EngineResult<()> {
+        if self.compressed_input_bytes != 0 || self.decoded_sample_pos() != 0
+            || self.mp3_decoder.is_some() || self.mpegh_decoder.is_some() || self.alac_decoder.is_some() {
+            return Err("compressed codec must be selected before feeding audio".into());
+        }
+        if !matches!(codec,"eac3"|"truehd"|"ac4"|"dts"|"av3a") {
+            return Err(format!("unsupported compressed codec: {codec}"));
+        }
+        let mut decoder=StreamingDecoder::new(codec)?;
+        decoder.set_object_rendering(self.config.object_rendering);
+        self.decoder=decoder;self.announced_codec=None;
+        Ok(())
+    }
+
     /// Feed demuxed bitstream bytes (any chunking; the decoder re-frames).
     /// Decoded frames are converted to `PcmFrame` render commands once the
     /// pipeline is started; before that they queue (visualizer-only use).
     pub fn feed(&mut self, data: &[u8]) -> EngineResult<DecodeStatus> {
+        self.compressed_input_bytes=self.compressed_input_bytes.saturating_add(data.len() as u64);
         if let Some(decoder) = &mut self.mpegh_decoder { decoder.push(data)?; }
         else { self.decoder.push(data)?; }
         let codec = self.codec_name().to_string();
@@ -596,6 +615,9 @@ impl MobileEngine {
     pub fn finish(&mut self) -> EngineResult<DecodeStatus> {
         if let Some(decoder) = &self.mpegh_decoder { decoder.flush()?; } else { self.decoder.flush(); }
         let status = self.feed(&[])?;
+        if self.compressed_input_bytes > 0 && self.decoded_sample_pos() == 0 {
+            return Err(format!("no decoded audio after {} compressed bytes (codec: {})",self.compressed_input_bytes,self.codec_name()));
+        }
         self.balance.finish();
         self.startup.lock().expect("startup lock").ended = true;
         self.drain_pending_into_pipeline()?;
@@ -676,6 +698,7 @@ impl MobileEngine {
     /// `feed()` starts the new time base. Object-event coalescing resets.
     pub fn seek(&mut self, _position_ms: u64) -> EngineResult<()> {
         self.decoder.reset();
+        self.compressed_input_bytes = 0;
         self.announced_codec = None;
         self.pending.lock().expect("pending lock").clear();
         *self.newest_sample_pos.lock().expect("clock lock") = 0;
@@ -1038,6 +1061,40 @@ pub mod jni;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_codec_hint_produces_pcm_and_cannot_switch_midstream() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        engine.select_compressed_codec("eac3").unwrap();
+        assert_eq!(engine.codec_name(),"eac3");
+        let status=engine.feed(&joc_fixture()).unwrap();
+        assert!(status.frames_pushed>0 && engine.decoded_sample_pos()>0);
+        let clock=engine.decoded_sample_pos();
+        assert!(engine.select_compressed_codec("truehd").is_err());
+        assert_eq!(engine.decoded_sample_pos(),clock);
+        engine.finish().unwrap();
+    }
+
+    #[test]
+    fn compressed_zero_output_is_not_successful_eof() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        // Exactly the diagnosed failure: EC3 data delivered to a TrueHD decoder.
+        engine.select_compressed_codec("truehd").unwrap();
+        engine.feed(&joc_fixture()).unwrap();assert_eq!(engine.decoded_sample_pos(),0);
+        assert!(engine.finish().unwrap_err().contains("no decoded audio"));
+        engine.reset_source_state();engine.select_compressed_codec("eac3").unwrap();
+        engine.feed(&joc_fixture()).unwrap();engine.finish().unwrap();
+        assert!(engine.decoded_sample_pos()>0);
+    }
+
+    #[test]
+    fn compressed_hint_cannot_discard_an_undecoded_prefix() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        engine.feed(&[0x12;32]).unwrap();
+        assert!(engine.select_compressed_codec("eac3").is_err());
+        assert!(engine.finish().unwrap_err().contains("no decoded audio"));
+    }
+
 
     #[test]
     fn mobile_live_hrtf_preset_keeps_pipeline_decoder_and_pause() {

@@ -106,6 +106,7 @@ extension SdaPlayer {
   let text=String(describing:error);var category="playback-feed"
   if errors.contains(where: { $0.domain == AVFoundationErrorDomain && $0.code == -11880 }) { category="invalid-sample-cursor" }
   else if errors.contains(where: { $0.domain == AVFoundationErrorDomain && $0.code == -11847 }) { category="asset-reader-interrupted" }
+  else if text.contains("no decoded audio") || text.contains("没有解码出任何音频") { category="no-decoded-audio" }
   else if text.contains("停止消耗数据") { category="audio-output-no-progress" }
   else if text.contains("PCM frame acknowledgement timed out") { category="native-pcm-ack-timeout" }
   else if text.contains("command queue full") { category="native-command-queue-full" }

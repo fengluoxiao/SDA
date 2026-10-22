@@ -6,6 +6,7 @@ import CryptoKit
 
 /// Atmos stays compressed for SDA Rust. Only stereo ALAC is decoded to 48 kHz PCM.
 final class CompressedInput {
+ private(set) var nativeCodec: String?
  private(set) var isAlac = false
  private(set) var isAv3a = false
  private(set) var av3aSpeakerBed = false
@@ -39,6 +40,8 @@ final class CompressedInput {
   try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
   isAv3a = ext == "av3a"
+  if ["eac3","ec3"].contains(ext) { nativeCodec="eac3" }
+  else if ["ac4","av3a"].contains(ext) { nativeCodec=ext }
   if ["eac3", "ec3", "ac4", "mhas", "mp3", "av3a"].contains(ext) {
    let input = try FileHandle(forReadingFrom: url)
    file = input
@@ -101,7 +104,10 @@ final class CompressedInput {
    selectedTrackID=track.trackID
    guard let description = track.formatDescriptions.first else { throw SdaError.message("音轨格式缺失") }
    let sourceFormat = description as! CMAudioFormatDescription
-   isAlac = CMFormatDescriptionGetMediaSubType(sourceFormat) == kAudioFormatAppleLossless
+   let formatID=CMFormatDescriptionGetMediaSubType(sourceFormat)
+   guard [kAudioFormatEnhancedAC3,kAudioFormatAppleLossless].contains(formatID) else { throw SdaError.message("不支持混合编码音轨") }
+   isAlac = formatID == kAudioFormatAppleLossless
+   nativeCodec = isAlac ? nil : "eac3"
    if isAlac {
     guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(sourceFormat), asbd.pointee.mChannelsPerFrame == 2 else {
      throw SdaError.message("当前 ALAC 路径仅支持立体声，不会下混多声道母版")
@@ -137,6 +143,7 @@ final class CompressedInput {
  }
  var diagnosticState: [String:Any] {
   var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis,"indexedPrepared":indexedPrepared]
+  if let nativeCodec { value["declaredCodec"]=nativeCodec }
   if let id=selectedTrackID { value["trackId"]=id }
   if let code=lastReaderErrorCode { value["lastReaderErrorCode"]=code }
   if let reason=indexedRecoveryFailure { value["indexedRecoveryFailure"]=reason }

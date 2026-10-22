@@ -196,6 +196,7 @@ pub unsafe extern "C" fn sda_ios_command(
                 boolean("direct")?,
                 boolean("directional")?,
             )?,
+            "codec" => e.select_compressed_codec(str_arg("codec")?)?,
             "mp3" => {
                 e.open_mp3(str_arg("path")?)?;
             }
@@ -297,6 +298,35 @@ mod tests {
         assert!(super::tracking_pose_changed(Some(zero), [0.0, 0.0, 0.1, 0.995]));
     }
     use super::*;
+    #[test]
+    fn compressed_codec_hint_crosses_ios_c_boundary() {
+        let host=Box::new(Host {
+            last_tracking_pose:Mutex::new(None),orientation:Mutex::new(Default::default()),
+            alac:Mutex::new(Default::default()),engine:Mutex::new(MobileEngine::new(EngineConfig::default(),None).unwrap()),
+            output:Arc::new(PullOutput::default()),
+        });
+        let pointer=Box::into_raw(host).cast::<std::ffi::c_void>();
+        struct Cleanup(*mut std::ffi::c_void);
+        impl Drop for Cleanup {fn drop(&mut self){unsafe{sda_ios_close(self.0)}}}
+        let _cleanup=Cleanup(pointer);
+        let read=|reply:*mut c_char| {
+            assert!(!reply.is_null());
+            let text=unsafe{CStr::from_ptr(reply)}.to_string_lossy().into_owned();
+            unsafe{sda_ios_string_free(reply)};
+            serde_json::from_str::<Value>(&text).unwrap()
+        };
+        let op=CString::new("codec").unwrap();let args=CString::new(r#"{"codec":"eac3"}"#).unwrap();
+        assert_eq!(read(unsafe{sda_ios_command(pointer,op.as_ptr(),args.as_ptr())})["ok"],true);
+        let bytes=std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"),"/../../harletty-bridge/harletty/tests/fixtures/joc_atmos_1s.eac3")).unwrap();
+        let fed=read(unsafe{sda_ios_feed(pointer,bytes.as_ptr(),bytes.len())});
+        assert_eq!(fed["ok"],true);assert_eq!(fed["value"]["codec"],"eac3");
+        assert!(fed["value"]["framesPushed"].as_u64().unwrap()>0);
+        assert!(fed["value"]["samplePos"].as_u64().unwrap()>0);
+        let status=CString::new("status").unwrap();let empty=CString::new("{}").unwrap();
+        let state=read(unsafe{sda_ios_command(pointer,status.as_ptr(),empty.as_ptr())});
+        assert_eq!(state["value"]["sourceCodec"],"eac3");
+        assert!(state["value"]["decodedSamplePos"].as_u64().unwrap()>0);
+    }
     #[test]
     fn callback_preserves_stereo_pause_flush_and_clock() {
         let out = PullOutput::default();

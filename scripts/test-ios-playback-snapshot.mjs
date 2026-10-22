@@ -41,6 +41,8 @@ next.set({generation:3,trackHash:'b',status:{positionMs:0,decodedSamplePos:0,pau
 const quiet=fixture();quiet.app.pollStatus();quiet.app.foreground=false;quiet.calls.length=0;quiet.writes.length=0;quiet.set({status:{positionMs:41000}});quiet.app.pollStatus();assert.deepEqual(quiet.calls,[['snapshot',false]]);assert.equal(quiet.writes.length,0);
 // An error belongs to its snapshot and is cleared when a newer track succeeds.
 const failure=fixture();failure.set({feedError:'cannot decode',status:{positionMs:45000}});failure.app.pollStatus();assert.equal(failure.app.state.error,'cannot decode');failure.set({generation:2,trackHash:'b',feedError:null,status:{positionMs:0}});failure.app.pollStatus();assert.equal(failure.app.state.error,null);
+const terminal=fixture();terminal.set({generation:2,trackHash:'b',feedDone:true,feedError:'no decoded audio',status:{positionMs:0,paused:true}});terminal.app.pollStatus();
+assert.equal(terminal.app.state.fileName,'B.m4a');assert.equal(terminal.app.state.playing,false);assert.equal(terminal.app.state.error,'no decoded audio');assert.equal(terminal.next(),0,'a decode failure must not silently advance the queue');
 // File preparation owns the native player lock; no synchronous tracker poll
 // may stall JavaScript while an asynchronous play request is still preparing.
 const preparing=fixture();preparing.app.state.busy=true;
