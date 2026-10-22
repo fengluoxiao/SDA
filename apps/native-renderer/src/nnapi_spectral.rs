@@ -8,22 +8,7 @@ use std::{
     rc::Rc,
 };
 type H = *mut c_void;
-#[link(name = "dl")]
-unsafe extern "C" {
-    fn dlopen(name: *const c_char, flags: i32) -> H;
-    fn dlsym(handle: H, name: *const c_char) -> H;
-    fn dlclose(handle: H) -> i32;
-}
-struct Library(H);
-impl Drop for Library {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                dlclose(self.0);
-            }
-        }
-    }
-}
+use crate::nnapi_runtime::ProcessLibrary as Library;
 #[repr(C)]
 struct Operand {
     kind: i32,
@@ -40,13 +25,12 @@ macro_rules! api {
         }
         impl Api {
             fn open()->Result<Rc<Self>,String> {
-                let library=Library(unsafe { dlopen(c"libneuralnetworks.so".as_ptr(),2) });
-                if library.0.is_null(){return Err("nnapi-runtime-unavailable".into());}
-                $(let symbol=unsafe { dlsym(library.0,concat!($name,"\0").as_ptr().cast()) };
+                let library=Library::open(c"libneuralnetworks.so").ok_or("nnapi-runtime-unavailable")?;
+                $(let symbol=library.symbol(CStr::from_bytes_with_nul(concat!($name,"\0").as_bytes()).expect("NNAPI symbol literal"));
                 if symbol.is_null(){return Err(concat!("public-api-unavailable:",$name).into());}
                 let $field=unsafe { std::mem::transmute::<H,unsafe extern "C" fn($($arg),*)->$ret>(symbol) };)+
-                let e=unsafe { dlsym(library.0,c"ANeuralNetworksExecution_setTimeout".as_ptr()) };
-                let c=unsafe { dlsym(library.0,c"ANeuralNetworksCompilation_setTimeout".as_ptr()) };
+                let e=library.symbol(c"ANeuralNetworksExecution_setTimeout");
+                let c=library.symbol(c"ANeuralNetworksCompilation_setTimeout");
                 let execution_timeout=if e.is_null(){None}else{Some(unsafe { std::mem::transmute::<H,unsafe extern "C" fn(H,u64)->i32>(e) })};
                 let compilation_timeout=if c.is_null(){None}else{Some(unsafe { std::mem::transmute::<H,unsafe extern "C" fn(H,u64)->i32>(c) })};
                 Ok(Rc::new(Self { _library:library, $($field,)+ execution_timeout, compilation_timeout }))

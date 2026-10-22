@@ -441,6 +441,7 @@ pub(crate) fn status() -> serde_json::Value {
         .map(|x| x.clone())
         .unwrap_or(serde_json::json!({}));
     result["runtime"] = "nnapi-explicit-accelerator".into();
+    result["runtimeLibraryLifetime"] = "process-pinned-nodelete".into();
     result["operation"] = "hrtf-fp32-complex-spectral-mac".into();
     result["npuAudioEnabled"] = m.active.load(Ordering::Acquire).into();
     result["audioBatchesSubmitted"] = m.attempts.load(Ordering::Relaxed).into();

@@ -32,20 +32,16 @@ pub fn status()->String {
     result["audio"]=audio;
     result.to_string()
 }
-#[link(name="dl")]
-unsafe extern "C" {fn dlopen(name:*const c_char,flags:i32)->*mut c_void;fn dlsym(handle:*mut c_void,name:*const c_char)->*mut c_void;fn dlclose(handle:*mut c_void)->i32;}
-struct Library(*mut c_void);
-impl Drop for Library{fn drop(&mut self){if !self.0.is_null(){unsafe{dlclose(self.0);}}}}
+use sda_native_renderer::nnapi_runtime::ProcessLibrary as Library;
 fn inventory()->serde_json::Value {
     let mut result=serde_json::json!({"status":"complete","source":"android-nnapi-public-device-enumeration","audioBackend":"cpu-native","npuAudioEnabled":false,"audioOperationSupport":"unverified","devices":[],"visibleAccelerators":0,"nativeArchitecture":std::env::consts::ARCH});
-    let lib=Library(unsafe{dlopen(c"libneuralnetworks.so".as_ptr(),2)});
-    if lib.0.is_null(){result["status"]="runtime-unavailable".into();return result;}
+    let Some(lib)=Library::open(c"libneuralnetworks.so") else {result["status"]="runtime-unavailable".into();return result;};
     type Count=unsafe extern "C" fn(*mut u32)->i32;
     type Get=unsafe extern "C" fn(u32,*mut *const c_void)->i32;
     type Name=unsafe extern "C" fn(*const c_void,*mut *const c_char)->i32;
     type Kind=unsafe extern "C" fn(*const c_void,*mut i32)->i32;
     type Level=unsafe extern "C" fn(*const c_void,*mut i64)->i32;
-    macro_rules! load {($name:expr,$ty:ty)=>{{let symbol=unsafe{dlsym(lib.0,$name.as_ptr())};if symbol.is_null(){result["status"]="device-api-unavailable".into();return result;}unsafe{std::mem::transmute::<*mut c_void,$ty>(symbol)}}};}
+    macro_rules! load {($name:expr,$ty:ty)=>{{let symbol=lib.symbol($name);if symbol.is_null(){result["status"]="device-api-unavailable".into();return result;}unsafe{std::mem::transmute::<*mut c_void,$ty>(symbol)}}};}
     let count=load!(c"ANeuralNetworks_getDeviceCount",Count);
     let get=load!(c"ANeuralNetworks_getDevice",Get);
     let name=load!(c"ANeuralNetworksDevice_getName",Name);

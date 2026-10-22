@@ -42,3 +42,11 @@
 - https://mediatek.gitlab.io/aiot/doc/aiot-dev-guide/master/sw/yocto/ml-guide/neuron-development.html（此分区限制说明来自 AIoT 平台指南，不能直接视为所有天玑手机的权限结论）
 - https://developer.android.com/ndk/guides/neuralnetworks
 - https://docs.qualcomm.com/bundle/publicresource/topics/80-70015-265/overview.html
+
+## NNAPI 库生命周期回归（2026-10-22）
+
+Mi Note 3 真机两次崩溃均位于 `sda-npu-audio` 退出时的 `pthread_key_clean_all`，调用目标已被卸载。该系统的 NNAPI 只公开一个 CPU 设备，后端发现无专用加速器后释放 `dlopen` 句柄；库依赖注册的 pthread TLS 清理回调仍会在线程退出时执行，导致 SIGSEGV。
+
+设备枚举和实际执行现在共用 `nnapi_runtime::ProcessLibrary`，使用 Android 公共 `RTLD_NODELETE` 固定运行库及依赖到进程结束。句柄正常释放，模型/执行对象仍正常释放，不为每首歌累计缓存。不能把运行库卸载早于它注册的线程清理回调。
+
+USB 独立进程回归在同一台设备上复现旧策略退出码 139；使用生产加载器的修复策略连续 12 轮加载、枚举、释放句柄和线程退出全部通过。测试不输出音频。此结果验证崩溃修复，不代表设备已获得 NPU 驱动或音频加速。

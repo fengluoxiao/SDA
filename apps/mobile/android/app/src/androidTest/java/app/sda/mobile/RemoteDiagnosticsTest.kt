@@ -87,13 +87,16 @@ class RemoteDiagnosticsTest {
     @Test fun packagedNativeBridgeReportsRenderStagesWithoutStartingAudio() {
         assertTrue("Control-plane CPU quota probe is exported", SdaEngine.nativeRefreshCpuBudget() >= 1)
         await("Asynchronous public accelerator inventory completes") {
-            JSONObject(SdaEngine.nativeAccelerators()).optString("status") != "probing"
+            val snapshot = JSONObject(SdaEngine.nativeAccelerators())
+            snapshot.optString("status") != "probing" &&
+                snapshot.getJSONObject("audio").optString("state") !in listOf("starting", "not-started")
         }
         val acceleration = JSONObject(SdaEngine.nativeAccelerators())
         assertFalse("No processed audio must not claim NPU execution", acceleration.getBoolean("npuAudioEnabled"))
         val audio = acceleration.getJSONObject("audio")
         assertEquals("hrtf-fp32-complex-spectral-mac", audio.getString("operation"))
         assertEquals("nnapi-explicit-accelerator", audio.getString("runtime"))
+        assertEquals("process-pinned-nodelete", audio.getString("runtimeLibraryLifetime"))
         assertFalse(audio.getBoolean("fp16Relaxation"))
         assertFalse(audio.getBoolean("frameworkCpuFallbackAllowed"))
         assertEquals(0L, audio.getLong("audioBatchesApplied"))
@@ -115,6 +118,8 @@ class RemoteDiagnosticsTest {
             assertEquals(7, status.getJSONArray("renderWorstStagesMicros").length())
             assertTrue(status.getString("rendererArchitecture") in listOf("aarch64", "x86_64"))
             assertEquals(48000, status.getJSONObject("rendererConfiguration").getInt("sampleRate"))
-        } finally { SdaEngine.nativeClose(handle) }
+            val packaged = context.assets.open("sda-build-info.json").use { JSONObject(it.readBytes().toString(Charsets.UTF_8)) }
+            assertEquals(packaged.getString("sourceCommit"), status.getString("rendererRevision"))
+        } finally { SdaEngine.nativeClose(handle); dir.deleteRecursively() }
     }
 }
