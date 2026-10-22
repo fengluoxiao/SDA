@@ -5,7 +5,7 @@ cd "$ROOT"
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/crates/sda-native/target}"
 # Relative Cargo target paths are resolved from this checkout root.
 if [[ "$TARGET_ROOT" != /* ]]; then TARGET_ROOT="$ROOT/$TARGET_ROOT"; fi
-export IPHONEOS_DEPLOYMENT_TARGET=16.0
+export IPHONEOS_DEPLOYMENT_TARGET=16.4
 export MACINDECODE_AC4_SPEC_DIR="$ROOT/tmp/MacinDecode-AC4-Core/spec"
 node scripts/prepare-ac4.mjs
 TARGETS=(aarch64-apple-ios)

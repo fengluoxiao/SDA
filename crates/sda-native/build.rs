@@ -4,6 +4,15 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
         println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");
     }
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") && env::var_os("CARGO_FEATURE_IOS_HOST").is_some() {
+        let bridge = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../apps/native-renderer/src/coreml_bridge.mm");
+        println!("cargo:rerun-if-changed={}", bridge.display());
+        println!("cargo:rerun-if-changed={}", bridge.with_extension("h").display());
+        cc::Build::new().cpp(true).file(&bridge).flag("-std=c++17").flag("-fobjc-arc")
+            .flag("-Werror=unguarded-availability-new").compile("sda_coreml_bridge");
+        println!("cargo:rustc-link-lib=framework=CoreML");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("mpegh");
     for path in ["scripts/prepare-mpegh.mjs", "packages/core/mpegh/bridge.c", "vendor/libmpegh/decoder", "vendor/libmpegh/CMakeLists.txt", "vendor/libmpegh/.git/HEAD"] {

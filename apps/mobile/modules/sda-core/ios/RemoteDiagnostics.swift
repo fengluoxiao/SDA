@@ -77,7 +77,7 @@ extension SdaPlayer {
    return self.locked {
     let status=(self.hasPlayback ? (try? self.command("status")) as? [String:Any] : nil) ?? [:]
     var playback:[String:Any]=[:]
-    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros","renderWorstStagesMicros","rendererRevision","spatialBalanceAlgorithm","liveLoudnessDucking","rendererConfiguration","fftBackend","volumeBalanceEnabled","volumeBalanceEligible","programGainDb","renderedProgramGainDb","rendererProgramEnabled","spatialEnhancementEnabled","auxiliaryBalanceEnabled","auxiliaryBalanceLevels","temporalDetailEnabled","temporalDetailLevels"] { playback[key]=status[key] }
+    for key in ["positionMs","fifoFrames","decodedSamplePos","consumedSamplePos","sourceCodec","outputChannels","outputLayout","underruns","callbackMissingFrames","renderBlocks","renderTotalMicros","renderMaxMicros","renderWorstStagesMicros","rendererRevision","spatialBalanceAlgorithm","liveLoudnessDucking","rendererConfiguration","fftBackend","accelerators","volumeBalanceEnabled","volumeBalanceEligible","programGainDb","renderedProgramGainDb","rendererProgramEnabled","spatialEnhancementEnabled","auxiliaryBalanceEnabled","auxiliaryBalanceLevels","temporalDetailEnabled","temporalDetailLevels"] { playback[key]=status[key] }
     return ["schema":1,"time":Date().timeIntervalSince1970,"playback":playback,
      "appVersion":Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") ?? "",
      "appBuild":Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") ?? "",

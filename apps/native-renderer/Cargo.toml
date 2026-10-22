@@ -1,4 +1,6 @@
 [features]
+# Host facade supplies the public Core ML Objective-C bridge on iOS.
+coreml-audio = []
 default = ["cpal-output"]
 # `cpal-output` builds the Windows/desktop audio output stack (cpal/WASAPI/ASIO/
 # DirectSound + MMCSS). Disable for host test runs on machines where the

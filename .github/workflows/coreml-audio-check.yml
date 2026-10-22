@@ -1,0 +1,53 @@
+name: Core ML audio backend check
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/joc-input-conditioning-20261016]
+    paths:
+      - '.github/workflows/coreml-audio-check.yml'
+      - 'apps/native-renderer/src/coreml_*'
+      - 'apps/native-renderer/src/spectral_accelerator/**'
+      - 'scripts/coreml-audio-model.rs'
+      - 'scripts/test-coreml-audio.mm'
+permissions:
+  contents: read
+concurrency:
+  group: coreml-audio-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  coreml:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/native-renderer
+          key: coreml-audio-check
+      - name: Generate production graphs and check schema
+        run: |
+          mkdir -p coreml-artifacts/models
+          rustc --edition=2024 --test scripts/coreml-audio-model.rs -o coreml-artifacts/model-tests
+          coreml-artifacts/model-tests | tee coreml-artifacts/model-tests.txt
+          rustc --edition=2024 scripts/coreml-audio-model.rs -o coreml-artifacts/export-model
+          coreml-artifacts/export-model coreml-artifacts/models
+      - name: Check actual Core ML predictions on Apple hardware
+        run: |
+          set -o pipefail
+          uname -m | tee coreml-artifacts/architecture.txt
+          xcrun clang++ -std=c++17 -fobjc-arc -ffp-contract=off -O2 -mmacosx-version-min=13.0 -Werror=unguarded-availability-new apps/native-renderer/src/coreml_bridge.mm scripts/test-coreml-audio.mm -framework Foundation -framework CoreML -o coreml-artifacts/coreml-audio
+          coreml-artifacts/coreml-audio coreml-artifacts/models 2>&1 | tee coreml-artifacts/predictions.txt
+      - name: Check iOS 16.4 Objective-C bridge and Rust integration
+        run: |
+          set -o pipefail
+          xcrun --sdk iphoneos clang++ -target arm64-apple-ios16.4 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -std=c++17 -fobjc-arc -Werror=unguarded-availability-new -c apps/native-renderer/src/coreml_bridge.mm -o coreml-artifacts/bridge-ios16_4.o
+          cargo check --manifest-path apps/native-renderer/Cargo.toml --target aarch64-apple-ios --locked --no-default-features --features coreml-audio 2>&1 | tee coreml-artifacts/ios-renderer-check.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coreml-audio-check
+          path: coreml-artifacts

@@ -13,7 +13,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # and supply their own AudioOutput (AAudio sink on Android, T2.2).
 default = ["desktop-output"]
 desktop-output = ["sda-native-renderer/cpal-output"]
-ios-host = []
+ios-host = ["sda-native-renderer/coreml-audio"]
 pcm-diagnostic = ["sda-native-renderer/pcm-diagnostic"]
 
 [dependencies]

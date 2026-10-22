@@ -598,15 +598,15 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
     let block_started = std::time::Instant::now();
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
     if let Some(mut lease) = crate::spectral_accelerator::begin(
         sources.len() * 2,
         sources.iter().map(|s| s.convolver.spectral_shape()),
     ) {
         crate::audio_executor::run(&mut sources, |source| {
-            source.prepare_finish(set, false)?;
+            source.prepare_finish(set, cfg!(all(target_os="ios",feature="async-filter-preparation")))?;
             source.convolver.begin_block(&source.input)?;
             Ok::<(), String>(())
         })?;
@@ -644,7 +644,7 @@ pub fn finish_sources<'a>(
         // Android's continuous object path must share the caller-participating
         // executor used by mixing, buses and legacy direct convolution.
         let result = crate::audio_executor::run(&mut sources, |source| source.finish(set));
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
         crate::spectral_accelerator::observe_native_block(block_started.elapsed());
         return result;
     }

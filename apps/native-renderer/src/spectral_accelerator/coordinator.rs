@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 pub(super) trait Backend {
     fn configure(&mut self, shape: Shape) -> Result<String, String>;
     fn execute(&mut self, batch: &mut Batch, timeout_ns: u64) -> Result<(), String>;
+    fn details(&self) -> serde_json::Value { serde_json::json!({}) }
 }
 struct Metrics {
     available: AtomicBool,
@@ -98,6 +99,8 @@ impl Service {
         let spawned = std::thread::Builder::new().name("sda-npu-audio".into()).spawn(move || {
             #[cfg(target_os = "android")]
             unsafe { unsafe extern "C" { fn setpriority(which: i32, who: u32, priority: i32) -> i32; } let _ = setpriority(0, 0, 10); }
+            #[cfg(target_os = "ios")]
+            unsafe { unsafe extern "C" { fn pthread_set_qos_class_self_np(class:u32,priority:i32)->i32; } let _=pthread_set_qos_class_self_np(0x11,0); }
             let mut backend = match factory() { Ok(b) => b, Err(e) => { wm.detail("unavailable", &e); return; } };
             wm.available.store(true, Ordering::Release); wm.detail("awaiting-audio-shape", "");
             while let Ok(command) = input.recv() {
@@ -109,7 +112,8 @@ impl Service {
                                 *d = serde_json::json!({"state":"qualifying-audio", "deviceName":device,
                                     "rows":shape.rows,"partitions":shape.parts,"bins":shape.bins,
                                     "supportedGraphOperations":super::Graph::new(shape.parts).operations.len(),
-                                    "explicitAcceleratorCount":1});
+                                    "explicitAcceleratorCount":if cfg!(target_os="android"){1}else{0},
+                                    "backendDetails":backend.details()});
                             }
                             Batch::new(shape)
                         });
@@ -400,13 +404,16 @@ impl Drop for Lease<'_> {
         }
     }
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) fn start() {
     SERVICE.get_or_init(|| {
-        Service::spawn(|| super::nnapi::Backend::open().map(|b| Box::new(b) as Box<dyn Backend>))
+        #[cfg(target_os = "android")]
+        { Service::spawn(|| super::nnapi::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
+        #[cfg(target_os = "ios")]
+        { Service::spawn(|| super::coreml::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
     });
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) fn begin(
     rows: usize,
     shapes: impl Iterator<Item = (usize, usize)>,
@@ -423,13 +430,13 @@ pub(crate) fn begin(
     let shape = Shape::bounded(rows, parts, bins?)?;
     SERVICE.get()?.begin(shape)
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) fn observe_native_block(duration: Duration) {
     if let Some(s) = SERVICE.get() {
         s.metrics.native_ns.store(ns(duration), Ordering::Relaxed);
     }
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) fn status() -> serde_json::Value {
     let Some(s) = SERVICE.get() else {
         return serde_json::json!({"state":"not-started","npuAudioEnabled":false});
@@ -440,19 +447,34 @@ pub(crate) fn status() -> serde_json::Value {
         .lock()
         .map(|x| x.clone())
         .unwrap_or(serde_json::json!({}));
-    result["runtime"] = "nnapi-explicit-accelerator".into();
-    result["runtimeLibraryLifetime"] = "process-pinned-nodelete".into();
+    #[cfg(target_os = "android")]
+    {
+        result["runtime"] = "nnapi-explicit-accelerator".into();
+        result["runtimeLibraryLifetime"] = "process-pinned-nodelete".into();
+        result["npuAudioEnabled"] = m.active.load(Ordering::Acquire).into();
+        result["fp16Relaxation"] = false.into();
+        result["frameworkCpuFallbackAllowed"] = false.into();
+        result["driverInternalPlacement"] = "not-observable-through-public-api".into();
+    }
+    #[cfg(target_os = "ios")]
+    {
+        result["runtime"] = "apple-coreml-cpu-and-neural-engine".into();
+        result["coremlAudioEnabled"] = m.active.load(Ordering::Acquire).into();
+        result["npuAudioEnabled"] = false.into();
+        result["neuralEngineExecutionVerified"] = false.into();
+        result["frameworkCpuFallbackAllowed"] = true.into();
+        result["gpuAllowed"] = false.into();
+        result["internalPrecision"] = "Core-ML-managed-fp32-output-qualified".into();
+        result["hardwarePlacement"] = "not-observable-per-prediction-through-public-API".into();
+    }
     result["operation"] = "hrtf-fp32-complex-spectral-mac".into();
-    result["npuAudioEnabled"] = m.active.load(Ordering::Acquire).into();
     result["audioBatchesSubmitted"] = m.attempts.load(Ordering::Relaxed).into();
     result["audioBatchesExecuted"] = m.audio_jobs.load(Ordering::Relaxed).into();
     result["audioBatchesApplied"] = m.applied.load(Ordering::Relaxed).into();
     result["fallbacks"] = m.fallbacks.load(Ordering::Relaxed).into();
     result["lastExecutionNs"] = m.last_ns.load(Ordering::Relaxed).into();
     result["lastNativeRenderBlockNs"] = m.native_ns.load(Ordering::Relaxed).into();
-    result["fp16Relaxation"] = false.into();
-    result["frameworkCpuFallbackAllowed"] = false.into();
-    result["driverInternalPlacement"] = "not-observable-through-public-api".into();
+
     result
 }
 
