@@ -103,11 +103,14 @@ def main():
     def save(name,data,source):
         h=digest(data)
         if not args.record_lock and (name not in locked or locked[name]["sha256"]!=h):raise RuntimeError(f"Runtime integrity mismatch: {name}")
-        dst=out/name;dst.parent.mkdir(parents=True,exist_ok=True)
+        # These are extracted assets, not directly mapped JNI libraries. A .so
+        # suffix forces uncompressed APK storage; .bin permits AAPT deflation.
+        asset=name+".bin"
+        dst=out/asset;dst.parent.mkdir(parents=True,exist_ok=True)
         if not dst.exists() or digest(dst.read_bytes())!=h:
             tmp=dst.with_suffix(dst.suffix+".part");tmp.write_bytes(data);tmp.replace(dst)
         print(f"Staged {name} ({len(data)/1048576:.2f} MiB)",flush=True)
-        entries[name]={"sha256":h,"size":len(data),"source":source}
+        entries[name]={"sha256":h,"size":len(data),"source":source,"asset":asset}
     def cache_blob(name,url):
         path=args.cache/name
         if not path.exists():
@@ -168,13 +171,15 @@ def main():
                     try:notices.append(f"===== NeuroPilot: {name} =====\n"+f.read().decode())
                     except UnicodeError:pass
             if found!=wanted:raise RuntimeError("NeuroPilot SDK layout mismatch")
-    manifest={"version":VERSION,"minimumSdk":26,"modernMinimumSdk":31,"abi":"arm64-v8a","files":entries}
+    manifest={"version":VERSION,"minimumSdk":26,"modernMinimumSdk":31,"abi":"arm64-v8a","assetFormat":"aapt-deflated-bin-v1","files":entries}
     (out/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
     (out/"THIRD_PARTY_NOTICES.txt").write_text("\n".join(notices),encoding="utf-8")
     # Only generated runtime files in this known output slot are cleaned.
+    active_assets={entry["asset"] for entry in entries.values()}
     for kind in ["common","legacy"]:
-        for file in (out/kind).glob("*.so"):
-            if kind+"/"+file.name not in entries:file.unlink()
+        for file in (out/kind).glob("lib*.so*"):
+            if file.is_file() and (file.name.endswith(".so") or file.name.endswith(".so.bin")):
+                if kind+"/"+file.name not in active_assets:file.unlink()
     if args.record_lock:LOCK.write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
     print(f"Staged {len(entries)} pinned Android NPU libraries ({sum(x['size'] for x in entries.values())/1048576:.1f} MiB)")
 if __name__=="__main__":main()

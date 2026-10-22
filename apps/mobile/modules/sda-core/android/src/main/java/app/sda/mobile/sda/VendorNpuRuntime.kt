@@ -64,11 +64,13 @@ internal object VendorNpuRuntime {
                     check(target.canonicalPath.startsWith(version.canonicalPath + File.separator))
                     val entry = files.getJSONObject(name)
                     val hash = entry.getString("sha256")
+                    val asset = entry.optString("asset", name)
+                    check(asset == name || asset == "$name.bin") { "invalid-runtime-asset-path" }
                     if (target.isFile && target.length() == entry.getLong("size") && digest(target) == hash) continue
                     check(target.parentFile!!.mkdirs() || target.parentFile!!.isDirectory)
                     val temporary = File(target.parentFile, target.name + ".part")
                     check(!temporary.exists() || temporary.delete())
-                    app.assets.open("sda-npu/$name").use { input -> temporary.outputStream().use { output -> input.copyTo(output, 64 * 1024) } }
+                    app.assets.open("sda-npu/$asset").use { input -> temporary.outputStream().use { output -> input.copyTo(output, 64 * 1024) } }
                     check(temporary.length() == entry.getLong("size") && digest(temporary) == hash) { "runtime-integrity-failed:$name" }
                     check(temporary.setReadOnly())
                     Os.rename(temporary.absolutePath, target.absolutePath)
