@@ -67,9 +67,9 @@ class MediaNotificationTest {
                 controller.metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) != null &&
                 controller.playbackState?.state == PlaybackState.STATE_PLAYING
             }
-            assertEquals("SDA artist", controller.metadata.getString(MediaMetadata.METADATA_KEY_ARTIST))
-            assertEquals(120_000L, controller.metadata.getLong(MediaMetadata.METADATA_KEY_DURATION))
-            assertEquals(12_345L, controller.playbackState.position)
+            assertEquals("SDA artist", controller.metadata!!.getString(MediaMetadata.METADATA_KEY_ARTIST))
+            assertEquals(120_000L, controller.metadata!!.getLong(MediaMetadata.METADATA_KEY_DURATION))
+            assertEquals(12_345L, controller.playbackState!!.position)
             instrumentation.uiAutomation.executeShellCommand("cmd statusbar expand-settings").close()
             SystemClock.sleep(1_000)
             instrumentation.uiAutomation.takeScreenshot()?.let { image ->
