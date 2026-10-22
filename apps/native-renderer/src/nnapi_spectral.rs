@@ -247,6 +247,7 @@ impl Backend {
     }
 }
 impl super::coordinator::Backend for Backend {
+    fn deactivate(&mut self) { self.compiled = None; }
     fn configure(&mut self, shape: Shape) -> Result<String, String> {
         // Drop the previous shape before compiling: one bounded model, no growth
         // as songs or object counts change. Compilation stays off render threads.

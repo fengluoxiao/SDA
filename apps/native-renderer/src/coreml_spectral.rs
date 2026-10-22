@@ -60,6 +60,7 @@ impl Backend {
     }
 }
 impl super::coordinator::Backend for Backend {
+    fn deactivate(&mut self) { self.model = None; self.shape = None; }
     fn configure(&mut self, shape: Shape) -> Result<String, String> {
         self.model = None;
         self.shape = None;

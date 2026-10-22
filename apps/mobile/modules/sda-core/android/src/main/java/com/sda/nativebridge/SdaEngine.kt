@@ -8,6 +8,7 @@ package com.sda.nativebridge
 object SdaEngine {
     init { System.loadLibrary("sda_native") }
 
+    external fun nativeConfigureAcceleration(directory: String, sdk: Int, preparation: String): String
     external fun nativeInit(configJson: String, hrtfPath: String): Long
     external fun nativeInitError(): String
     external fun nativeStart(ptr: Long): Int

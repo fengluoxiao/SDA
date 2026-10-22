@@ -124,8 +124,37 @@ mod coreml;
 #[cfg(target_os = "android")]
 #[path = "nnapi_spectral.rs"]
 mod nnapi;
+#[cfg(any(target_os = "android", test))]
+mod litert_model;
+#[cfg(any(target_os = "android", test))]
+mod hexagon_graph;
+#[cfg(target_os = "android")]
+#[path = "litert_spectral.rs"]
+mod litert;
+#[cfg(target_os = "android")]
+#[path = "hexagon_spectral.rs"]
+mod hexagon;
+#[cfg(target_os = "android")]
+#[path = "android_spectral.rs"]
+mod android;
+/// Called once after the Android host prepares optional public runtime assets.
+#[cfg(target_os = "android")]
+pub fn configure_android_runtime(directory: &str, sdk: u32, preparation: &str) -> Result<(), String> {
+    android::configure(directory, sdk, preparation)?;
+    start();
+    Ok(())
+}
+
 #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) use coordinator::{begin, observe_native_block};
+
+#[cfg(all(target_os = "android", feature = "pcm-diagnostic"))]
+mod diagnostic;
+/// Diagnostic executable only; invokes the real backend without starting audio output.
+#[cfg(all(target_os = "android", feature = "pcm-diagnostic"))]
+pub fn probe_legacy_runtime(directory: &str) -> Result<serde_json::Value, String> {
+    diagnostic::probe_legacy(directory)
+}
 
 pub fn start() {
     #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]

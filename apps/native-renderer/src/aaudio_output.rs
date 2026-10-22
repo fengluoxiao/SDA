@@ -345,7 +345,7 @@ struct PcmCapture { start: u64, end: u64, samples: Option<Vec<f32>> }
 impl PcmCapture {
     fn requested() -> Option<Self> {
         unsafe extern "C" { fn __system_property_get(name: *const std::ffi::c_char, value: *mut std::ffi::c_char) -> i32; }
-        let mut bytes = [0i8; 92];
+        let mut bytes = [0 as std::ffi::c_char; 92];
         let len = unsafe { __system_property_get(c"debug.sda.pcm_capture".as_ptr(), bytes.as_mut_ptr()) };
         if len <= 0 { return None; }
         let value = unsafe { std::ffi::CStr::from_ptr(bytes.as_ptr()) }.to_str().ok()?;

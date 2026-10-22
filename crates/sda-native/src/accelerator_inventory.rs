@@ -18,13 +18,17 @@ pub fn status()->String {
     let snapshot=state().lock().map(|s|s.clone()).unwrap_or_else(|_|"{}".into());
     let mut result:serde_json::Value=serde_json::from_str(&snapshot).unwrap_or(serde_json::json!({}));
     let audio=sda_native_renderer::spectral_accelerator::status();
-    let enabled=audio["npuAudioEnabled"].as_bool().unwrap_or(false);
-    result["npuAudioEnabled"]=enabled.into();
-    result["audioBackend"]=if enabled {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
+    let npu=audio["npuAudioEnabled"].as_bool().unwrap_or(false);
+    let dsp=audio["dspAudioEnabled"].as_bool().unwrap_or(false);
+    let enabled=npu || dsp;
+    result["npuAudioEnabled"]=npu.into();
+    result["dspAudioEnabled"]=dsp.into();
+    result["audioOffloadEnabled"]=enabled.into();
+    result["audioBackend"]=if dsp {"cpu-fft-and-legacy-DSP-spectral-mac"}else if npu {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
     result["audioOperationSupport"]=audio["state"].clone();
     if let Some(devices)=result["devices"].as_array_mut() {
         for device in devices {
-            let selected=enabled && device["name"]==audio["deviceName"];
+            let selected=npu && device["name"]==audio["deviceName"];
             device["audioValidated"]=selected.into();
             device["audioSelected"]=selected.into();
         }

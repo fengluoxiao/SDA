@@ -3,6 +3,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application>
+        <!-- Public optional FastRPC libraries; required for regular apps on Android 12+. -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <uses-native-library android:name="libsdsprpc.so" android:required="false" />
         <service android:name="app.sda.mobile.sda.SdaPlaybackService"
             android:exported="false" android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />

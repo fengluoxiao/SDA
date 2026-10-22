@@ -10,6 +10,7 @@ pub(super) trait Backend {
     fn configure(&mut self, shape: Shape) -> Result<String, String>;
     fn execute(&mut self, batch: &mut Batch, timeout_ns: u64) -> Result<(), String>;
     fn details(&self) -> serde_json::Value { serde_json::json!({}) }
+    fn deactivate(&mut self) {}
 }
 struct Metrics {
     available: AtomicBool,
@@ -46,6 +47,7 @@ impl Metrics {
 }
 enum Command {
     Configure(Shape),
+    Deactivate,
     Run {
         id: u64,
         batch: Batch,
@@ -105,6 +107,7 @@ impl Service {
             wm.available.store(true, Ordering::Release); wm.detail("awaiting-audio-shape", "");
             while let Ok(command) = input.recv() {
                 let response = match command {
+                    Command::Deactivate => { backend.deactivate(); continue; }
                     Command::Configure(shape) => {
                         wm.active.store(false, Ordering::Release); wm.detail("compiling", "");
                         let result = backend.configure(shape).map(|device| {
@@ -201,6 +204,8 @@ impl Service {
 }
 impl Client {
     fn reject(&mut self, metrics: &Metrics, reason: &str) {
+        // Release rejected driver models/QoS on their worker, never in rendering.
+        let _ = self.tx.try_send(Command::Deactivate);
         self.active = false;
         self.ready = None;
         if let Some(shape) = self.shape {
@@ -406,9 +411,11 @@ impl Drop for Lease<'_> {
 }
 #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
 pub(crate) fn start() {
+    #[cfg(target_os = "android")]
+    if !super::android::configured() { return; }
     SERVICE.get_or_init(|| {
         #[cfg(target_os = "android")]
-        { Service::spawn(|| super::nnapi::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
+        { Service::spawn(|| super::android::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
         #[cfg(target_os = "ios")]
         { Service::spawn(|| super::coreml::Backend::open().map(|b|Box::new(b)as Box<dyn Backend>)) }
     });
@@ -449,9 +456,13 @@ pub(crate) fn status() -> serde_json::Value {
         .unwrap_or(serde_json::json!({}));
     #[cfg(target_os = "android")]
     {
-        result["runtime"] = "nnapi-explicit-accelerator".into();
+        result["runtime"] = result["backendDetails"]["runtime"].as_str().unwrap_or("android-audio-backend-selection").into();
+        let active = m.active.load(Ordering::Acquire);
+        let dsp = result["backendDetails"]["acceleratorKind"].as_str() == Some("dsp");
+        result["audioOffloadEnabled"] = active.into();
+        result["dspAudioEnabled"] = (active && dsp).into();
         result["runtimeLibraryLifetime"] = "process-pinned-nodelete".into();
-        result["npuAudioEnabled"] = m.active.load(Ordering::Acquire).into();
+        result["npuAudioEnabled"] = (active && !dsp).into();
         result["fp16Relaxation"] = false.into();
         result["frameworkCpuFallbackAllowed"] = false.into();
         result["driverInternalPlacement"] = "not-observable-through-public-api".into();
@@ -588,6 +599,21 @@ mod tests {
         assert!(s.begin(shape).is_none());
         assert_eq!(s.metrics.applied.load(Ordering::Relaxed), 0);
         assert!(!s.metrics.active.load(Ordering::Acquire));
+    }
+    #[test]
+    fn rejected_graph_releases_driver_resources_off_the_render_thread() {
+        struct Releasing(std::sync::Arc<AtomicBool>);
+        impl Backend for Releasing {
+            fn configure(&mut self,_:Shape)->Result<String,String>{self.0.store(true,Ordering::Release);Ok("test-driver".into())}
+            fn execute(&mut self,b:&mut Batch,_:u64)->Result<(),String>{b.output.fill(1000.);Ok(())}
+            fn deactivate(&mut self){self.0.store(false,Ordering::Release);}
+        }
+        let live=std::sync::Arc::new(AtomicBool::new(false));let worker_live=live.clone();
+        let s=Service::spawn(move||Ok(Box::new(Releasing(worker_live))));
+        let shape=Shape::bounded(2,2,9).unwrap();
+        {let mut l=lease(&s,shape);assert!(live.load(Ordering::Acquire));reference(&mut l);}
+        for _ in 0..100 {let _=s.begin(shape);if !live.load(Ordering::Acquire){break;}std::thread::sleep(Duration::from_millis(1));}
+        assert!(!live.load(Ordering::Acquire));assert_eq!(s.metrics.applied.load(Ordering::Relaxed),0);
     }
     #[test]
     fn packing_and_dispatch_must_beat_cpu() {

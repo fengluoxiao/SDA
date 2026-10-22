@@ -86,6 +86,19 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetHrtfPreset(
     env.new_string(result.err().unwrap_or_default()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+/// App-private, integrity-checked runtime directory; preparation never blocks rendering.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeConfigureAcceleration(
+    mut env: JNIEnv, _class: JClass, directory: JString, sdk: jint, preparation: JString,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<(), String> {
+        let directory: String = env.get_string(&directory).map_err(|e|e.to_string())?.into();
+        let preparation: String = env.get_string(&preparation).map_err(|e|e.to_string())?.into();
+        sda_native_renderer::spectral_accelerator::configure_android_runtime(&directory, sdk.max(0) as u32, &preparation)
+    })();
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// `nativeInit(configJson: String, hrtfPath: String): Long` — engine handle,
 /// or 0 on failure. Empty `hrtfPath` skips HRTF (renders without
 /// spatialization rather than failing).

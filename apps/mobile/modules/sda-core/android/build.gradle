@@ -107,3 +107,20 @@ def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
 }
 android.sourceSets.main.res.srcDir(popupThemeResources)
 tasks.named('preBuild').configure { dependsOn(generateSdaPopupThemes) }
+
+// Public vendor runtimes are assets: DSP ELFs are not Android/arm64 JNI libraries.
+// Enable after accepting the SDK runtime terms; ordinary builds retain NNAPI/CPU.
+if ((findProperty('sdaVendorAudio') ?: 'false').toBoolean()) {
+  def npuAssets = "$buildDir/generated/sdaNpuAssets"
+  android.sourceSets.main.assets.srcDir(npuAssets)
+  def prepareNpuRuntimes = tasks.register('prepareSdaNpuRuntimes', Exec) {
+    inputs.file(file('../../../../../scripts/prepare-android-npu.py'))
+    inputs.file(file('../../../../../scripts/android-npu-runtime-lock.json'))
+    outputs.dir(npuAssets)
+    def arguments = [System.getenv('SDA_PYTHON') ?: 'python3', file('../../../../../scripts/prepare-android-npu.py').absolutePath, '--output', npuAssets]
+    if ((findProperty('sdaVendorAudioLegacyOnly') ?: 'false').toBoolean()) arguments.add('--legacy-only')
+    inputs.property('legacyOnly', (findProperty('sdaVendorAudioLegacyOnly') ?: 'false'))
+    commandLine(arguments)
+  }
+  tasks.named('preBuild').configure { dependsOn(prepareNpuRuntimes) }
+}

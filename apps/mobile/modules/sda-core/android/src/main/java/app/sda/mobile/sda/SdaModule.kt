@@ -78,6 +78,7 @@ class SdaModule : Module() {
     private fun ensureEngine(layout: String = "7.1.4"): Long = synchronized(nativeLock) {
         if (handle != 0L) return@synchronized handle
         val context = appContext?.reactContext ?: throw RuntimeException("no react context")
+        VendorNpuRuntime.prepare(context)
         // Ask Android to provision the app-owned directory (also used by
         // opt-in native PCM diagnostic builds), rather than creating it via adb.
         context.getExternalFilesDir(null)
@@ -249,6 +250,7 @@ class SdaModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
+        OnCreate { appContext.reactContext?.let { VendorNpuRuntime.prepare(it) } }
         Name("SdaEngine")
         Events("onMediaCommand")
         OnActivityEntersForeground { inBackground = false; refreshAudioSchedulingSoon(); diagnostics?.event("foreground", generation) }
