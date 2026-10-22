@@ -1,7 +1,13 @@
 //! CPU quota discovery is control-plane work, never repeated per DSP block.
 use std::sync::atomic::{AtomicUsize, Ordering};
 static AVAILABLE: AtomicUsize = AtomicUsize::new(0);
-fn discover() -> usize { std::thread::available_parallelism().map_or(1,usize::from).max(1) }
+fn discover() -> usize {
+    let n=std::thread::available_parallelism().map_or(1,usize::from).max(1);
+    #[cfg(target_os="android")]
+    {return crate::android_audio_cpu::dsp_capacity().map_or(n,|fast|n.min(fast));}
+    #[cfg(not(target_os="android"))]
+    {n}
+}
 fn cached_with(cache:&AtomicUsize, discover:impl FnOnce()->usize)->usize {
     let n=cache.load(Ordering::Relaxed);
     if n>0 {n} else {let n=discover().max(1);cache.store(n,Ordering::Relaxed);n}

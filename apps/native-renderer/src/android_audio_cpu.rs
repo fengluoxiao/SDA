@@ -88,7 +88,7 @@ mod platform {
                 continue;
             };
             let target = current.intersect(Mask::from_ids(&topology.fast));
-            if target.ids().len() >= 3 && target.0 != current.0 {
+            if target.ids().len() >= 2 && target.0 != current.0 {
                 let rc = unsafe { sched_setaffinity(tid, 128, (&target as *const Mask).cast()) };
                 eprintln!(
                     "SDA audio CPU refresh tid={tid} target={:?} result={rc}",
@@ -135,7 +135,7 @@ mod platform {
                 .collect();
             if let Some(scores) = scores {
                 return Topology {
-                    fast: super::select_fast(&scores, 3).unwrap_or_default(),
+                    fast: super::select_fast(&scores, 2).unwrap_or_default(),
                     source,
                 };
             }
@@ -144,6 +144,12 @@ mod platform {
             fast: vec![],
             source: "topology-not-public",
         }
+    }
+    pub fn dsp_capacity() -> Option<usize> {
+        let topology = TOPOLOGY.get_or_init(discover);
+        let current = Mask::current()?;
+        let n = current.intersect(Mask::from_ids(&topology.fast)).ids().len();
+        (n >= 2).then_some(n)
     }
     pub fn prepare() {
         TOPOLOGY.get_or_init(discover);
@@ -156,7 +162,7 @@ mod platform {
             let target = before.intersect(Mask::from_ids(&topology.fast));
             // Respect current cpuset restrictions and keep enough independent
             // CPUs for caller + helpers. A homogeneous CPU stays unrestricted.
-            if target.ids().len() >= 3 {
+            if target.ids().len() >= 2 {
                 result =
                     Some(unsafe { sched_setaffinity(0, 128, (&target as *const Mask).cast()) });
             }
@@ -178,10 +184,14 @@ mod platform {
     }
 }
 #[cfg(target_os = "android")]
-pub use platform::{enter, prepare, refresh};
+pub use platform::{dsp_capacity, enter, prepare, refresh};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn two_online_fast_cores_are_usable_when_other_cores_are_offline() {
+        assert_eq!(select_fast(&[(0,1843200),(1,1843200),(2,1843200),(3,1843200),(6,2208000),(7,2208000)],2),Some(vec![6,7]));
+    }
     #[test]
     fn little_cores_are_not_the_only_dsp_targets() {
         let scores: Vec<_> = (0..8)
