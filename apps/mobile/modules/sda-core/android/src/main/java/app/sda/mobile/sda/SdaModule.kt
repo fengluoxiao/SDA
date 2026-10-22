@@ -18,6 +18,7 @@ class SdaModule : Module() {
     @Volatile private var activeSourceCodec = ""
     private var feedThread: Thread? = null
     @Volatile private var backgroundSession = 0L
+    @Volatile private var backgroundHash = ""
     @Volatile private var destroyed = false
     @Volatile
     private var stopped = false
@@ -174,8 +175,39 @@ class SdaModule : Module() {
         }
     }
 
+    private fun setPlaybackPaused(value: Boolean, token: Long = backgroundSession): Boolean = synchronized(nativeLock) {
+        if (handle == 0L || token == 0L || backgroundSession != token || !PlaybackKeepAlive.owns(token)) return@synchronized false
+        check(SdaEngine.nativePause(handle, value) == 0) { "native pause failed" }
+        paused = value
+        PlaybackKeepAlive.setPlaying(token, !value)
+        sendEvent("onMediaCommand", mapOf("command" to "state", "hash" to backgroundHash, "paused" to value))
+        true
+    }
+
+    private fun stopPlayback(token: Long = backgroundSession): Boolean {
+        synchronized(nativeLock) {
+            if (token != 0L && backgroundSession != token) return false
+            PlaybackKeepAlive.end(token)
+            backgroundSession = 0L
+        }
+        stopFeedThread()
+        synchronized(nativeLock) {
+            if (handle != 0L) {
+                SdaEngine.nativeFinish(handle)
+                SdaEngine.nativeClose(handle)
+                handle = 0L
+            }
+        }
+        feedDone = true
+        sendEvent("onMediaCommand", mapOf("command" to "stop", "hash" to backgroundHash))
+        return true
+    }
+
     override fun definition() = ModuleDefinition {
         Name("SdaEngine")
+        Events("onMediaCommand")
+        Function("configurePlaybackQueue") { text: String, _: String -> PlaybackKeepAlive.configureQueue(text) }
+        Function("setNowPlayingMetadata") { hash: String, text: String -> PlaybackKeepAlive.setMetadata(hash, text) }
 
         AsyncFunction("contentHash") { uriString: String ->
             val context = appContext.reactContext ?: throw RuntimeException("no react context")
@@ -360,9 +392,26 @@ class SdaModule : Module() {
             }
             if (backgroundSession != 0L) PlaybackKeepAlive.end(context, backgroundSession)
             backgroundSession = 0L
+            var mediaToken = 0L
+            val controls = object : PlaybackKeepAlive.Controls {
+                override fun setPlaying(playing: Boolean) = setPlaybackPaused(!playing, mediaToken)
+                override fun stop() { stopPlayback(mediaToken) }
+                override fun skip(direction: Int) {
+                    if (PlaybackKeepAlive.owns(mediaToken)) sendEvent("onMediaCommand", mapOf(
+                        "command" to if (direction < 0) "previous" else "next", "hash" to contentHash))
+                }
+                override fun progress(): PlaybackKeepAlive.Progress? = synchronized(nativeLock) {
+                    if (backgroundSession != mediaToken || handle == 0L) return@synchronized null
+                    val status = JSONObject(SdaEngine.nativeStatus(handle))
+                    PlaybackKeepAlive.Progress(status.optLong("positionMs"), status.optBoolean("preparingAudio"))
+                }
+            }
             val playbackSession = synchronized(nativeLock) {
                 check(!destroyed) { "Audio module was destroyed" }
-                PlaybackKeepAlive.begin(context, displayName).also { backgroundSession = it }
+                backgroundHash = contentHash
+                PlaybackKeepAlive.begin(context, displayName, contentHash, controls).also {
+                    mediaToken = it; backgroundSession = it
+                }
             }
             try {
             // Versioned full-content identity survives temporary MP4 -> MHAS
@@ -575,41 +624,9 @@ class SdaModule : Module() {
             }
         }
 
-        Function("pause") { ->
-            synchronized(nativeLock) {
-                if (handle == 0L) return@synchronized false
-                check(SdaEngine.nativePause(handle, true) == 0) { "native pause failed" }
-                paused = true
-                PlaybackKeepAlive.setPlaying(backgroundSession, false)
-                true
-            }
-        }
-
-        Function("resume") { ->
-            synchronized(nativeLock) {
-                if (handle == 0L) return@synchronized false
-                check(SdaEngine.nativePause(handle, false) == 0) { "native resume failed" }
-                paused = false
-                PlaybackKeepAlive.setPlaying(backgroundSession, true)
-                true
-            }
-        }
-
-        Function("stop") { ->
-            synchronized(nativeLock) { PlaybackKeepAlive.end(backgroundSession); backgroundSession = 0L }
-            stopFeedThread()
-            synchronized(nativeLock) {
-                if (handle != 0L) {
-                    SdaEngine.nativeFinish(handle)
-                    SdaEngine.nativeClose(handle)
-                    handle = 0L
-                }
-            }
-            appContext.reactContext?.let { PlaybackKeepAlive.end(it, backgroundSession) }
-            backgroundSession = 0L
-            feedDone = true
-            true
-        }
+        Function("pause") { -> setPlaybackPaused(true) }
+        Function("resume") { -> setPlaybackPaused(false) }
+        Function("stop") { -> stopPlayback() }
 
         Function("status") { ->
             synchronized(nativeLock) {

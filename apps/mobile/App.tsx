@@ -32,6 +32,7 @@ interface PlaybackStatus {
 }
 interface ObjectPoint extends MobileObjectPoint { samplePos: number; hasPos: boolean }
 interface SdaEngineModule extends MpeghMp4Host {
+  addListener?(name: "onMediaCommand", callback: (event: { command: string; hash: string; paused?: boolean }) => void): NativeEventSubscription;
   configurePlaybackQueue?(json: string, mode: string): void;
   currentTrackHash?(): string;
   contentHash(uri: string): Promise<string>;
@@ -189,7 +190,17 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({ selectedUri: "ci://mini-player", fileName: "Mini-player", metadata: { title: "正在播放的歌曲", artist: "SDA UI smoke" } });
     }
     try {
-      const settings = JSON.parse(this.getEngine().renderingSettings());
+      const engine = this.getEngine();
+      if (Platform.OS === "android" && engine.addListener) {
+        this.lifecycleSubscriptions.push(engine.addListener("onMediaCommand", event => {
+          if (event.hash !== this.state.queue[this.state.queueIndex]?.contentHash) return;
+          if (event.command === "next") this.skipTrack(1);
+          else if (event.command === "previous") this.skipTrack(-1);
+          else if (event.command === "state") this.setState({ paused: event.paused === true });
+          else if (event.command === "stop") this.setState({ playing: false, paused: false, ended: false, positionMs: 0, objects: [] });
+        }));
+      }
+      const settings = JSON.parse(engine.renderingSettings());
       this.setState({ hrtfSet: settings.hrtfSet === "standard" ? "standard" : settings.hrtfSet === "dense-raw" ? "dense-raw" : "dense",
         binauralEnabled: settings.binauralEnabled !== false,
         headTrackingEnabled: settings.binauralEnabled !== false && settings.headTrackingEnabled === true,
@@ -414,7 +425,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return this.preparedTracks.get(track.contentHash) ?? null;
   };
   private syncNativeQueue = () => {
-    if (Platform.OS !== "ios") return;
     this.engine?.configurePlaybackQueue?.(JSON.stringify(this.state.queue.filter(track => !track.preparation).map(track => {
       const prepared = this.preparedTracks.get(track.contentHash);
       return { hash: track.contentHash, uri: prepared?.uri ?? track.uri, name: prepared?.name ?? track.name,
