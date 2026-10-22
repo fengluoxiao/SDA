@@ -296,6 +296,14 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeFeed(
     }
 }
 
+/// Called by the media-control executor, outside the playback engine lock.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeRefreshCpuBudget(
+    _env: JNIEnv, _class: JClass,
+) -> jint {
+    sda_native_renderer::cpu_budget::refresh() as jint
+}
+
 /// `nativeStatus(ptr: Long): String` — PlaybackStatus JSON for host-side
 /// feed pacing (fifo watermark).
 #[no_mangle]

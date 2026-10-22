@@ -85,6 +85,7 @@ class RemoteDiagnosticsTest {
         } finally { sockets.forEach { it.close() }; server.configure(false) { JSONObject() } }
     }
     @Test fun packagedNativeBridgeReportsRenderStagesWithoutStartingAudio() {
+        assertTrue("Control-plane CPU quota probe is exported", SdaEngine.nativeRefreshCpuBudget() >= 1)
         val dir = File(context.cacheDir, "diagnostics-test-hrtf")
         fun extract(root: String, output: File) {
             output.mkdirs()

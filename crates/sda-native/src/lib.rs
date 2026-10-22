@@ -301,6 +301,8 @@ impl MobileEngine {
         let fifo = Arc::new(stereo_fifo::StereoFifo::new(
             sda_native_renderer::STEREO_FIFO_CAPACITY_FRAMES,
         ));
+        #[cfg(target_os = "android")]
+        sda_native_renderer::cpu_budget::refresh();
         let telemetry = Arc::new(RuntimeTelemetry::default());
         sda_native_renderer::spawn_render_worker(
             renderer,

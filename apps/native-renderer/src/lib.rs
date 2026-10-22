@@ -120,6 +120,7 @@ pub mod performance;
 pub mod performance_simulation;
 pub mod protocol;
 pub mod remote_audio;
+pub mod cpu_budget;
 pub mod realtime;
 mod android_output_policy;
 mod output_pull;

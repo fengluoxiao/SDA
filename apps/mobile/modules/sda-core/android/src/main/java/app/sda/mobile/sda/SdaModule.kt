@@ -39,6 +39,7 @@ class SdaModule : Module() {
     @Volatile private var sceneRenderingRequested = false
     @Volatile private var failureCategory = ""
     @Volatile private var inputBytesSubmitted = 0L
+    @Volatile private var dspCpuBudget = 0
     private val nativeLock = Object()
     private val lifecycleLock = Object()
 
@@ -222,7 +223,7 @@ class SdaModule : Module() {
             .put("error", if (failureCategory.isEmpty()) "" else "playback-error")
             .put("errorDetails", if (failureCategory.isEmpty()) JSONObject() else JSONObject().put("category", failureCategory))
             .put("input", JSONObject().put("codec", activeSourceCodec).put("layout", activeLayout)
-                .put("bytesSubmitted", inputBytesSubmitted).put("feedThreadAlive", feedThread?.isAlive == true)
+                .put("bytesSubmitted", inputBytesSubmitted).put("dspCpuBudget", dspCpuBudget).put("feedThreadAlive", feedThread?.isAlive == true)
                 .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
             .put("backgroundPlayback", lease)
             .put("graphics", JSONObject().put("sceneLoopRequested", sceneRenderingRequested))
@@ -454,10 +455,15 @@ class SdaModule : Module() {
                     if (PlaybackKeepAlive.owns(mediaToken)) sendEvent("onMediaCommand", mapOf(
                         "command" to if (direction < 0) "previous" else "next", "hash" to contentHash))
                 }
-                override fun progress(): PlaybackKeepAlive.Progress? = synchronized(nativeLock) {
-                    if (backgroundSession != mediaToken || handle == 0L) return@synchronized null
-                    val status = JSONObject(SdaEngine.nativeStatus(handle))
-                    PlaybackKeepAlive.Progress(status.optLong("positionMs"), status.optBoolean("preparingAudio"))
+                override fun progress(): PlaybackKeepAlive.Progress? {
+                    // Quota/cpuset discovery can read system files. Refresh on
+                    // this existing 1 Hz control executor, before nativeLock.
+                    dspCpuBudget = SdaEngine.nativeRefreshCpuBudget()
+                    return synchronized(nativeLock) {
+                        if (backgroundSession != mediaToken || handle == 0L) return@synchronized null
+                        val status = JSONObject(SdaEngine.nativeStatus(handle))
+                        PlaybackKeepAlive.Progress(status.optLong("positionMs"), status.optBoolean("preparingAudio"))
+                    }
                 }
             }
             val playbackSession = synchronized(nativeLock) {

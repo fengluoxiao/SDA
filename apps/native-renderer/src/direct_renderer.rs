@@ -39,9 +39,9 @@ fn large_scene_worker_cap() -> usize {
 pub(super) fn workers() -> Option<&'static rayon::ThreadPool> {
     static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
     POOL.get_or_init(|| {
-        let count = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .clamp(1, large_scene_worker_cap());
+        let available = if crate::realtime::android_audio_policy() { crate::cpu_budget::available() }
+            else { std::thread::available_parallelism().map_or(1,usize::from) };
+        let count = available.clamp(1, large_scene_worker_cap());
         if count == 1 {
             return None;
         }
@@ -56,7 +56,8 @@ pub(super) fn workers() -> Option<&'static rayon::ThreadPool> {
 }
 
 pub(super) fn worker_count_for_sources(source_count: usize) -> usize {
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    let available = if crate::realtime::android_audio_policy() { crate::cpu_budget::available() }
+        else { std::thread::available_parallelism().map_or(1,usize::from) };
     worker_count_for_sources_with_available(source_count, available)
 }
 

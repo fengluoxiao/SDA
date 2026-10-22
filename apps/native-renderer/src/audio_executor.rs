@@ -11,7 +11,7 @@ where F: Fn(&mut T) -> Result<(), E> + Sync {
 fn run_balanced_on<T: Send,E: Send,F>(pool:&rayon::ThreadPool,items:&mut[T],process:F)->Result<(),E>
 where F:Fn(&mut T)->Result<(),E>+Sync {
     use rayon::prelude::*;
-    let available=std::thread::available_parallelism().map_or(1,usize::from);
+    let available=crate::cpu_budget::available();
     let helpers=crate::direct_renderer::android_worker_count(items.len(),available)
         .saturating_sub(1).min(pool.current_num_threads());
     if helpers==0 {return items.iter_mut().try_for_each(process);}
