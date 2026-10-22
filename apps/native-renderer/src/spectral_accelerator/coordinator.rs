@@ -71,6 +71,7 @@ struct Client {
     ready: Option<Batch>,
     active: bool,
     qualified: u32,
+    warmup: u32,
     frame: u64,
     id: u64,
     cpu_ns: u64,
@@ -116,9 +117,9 @@ impl Service {
                         Response::Configured(result)
                     }
                     Command::Run { id, mut batch, submitted, timeout_ns, qualifying } => {
+                        wm.attempts.fetch_add(1, Ordering::Relaxed);
                         let result = backend.execute(&mut batch, timeout_ns);
                         let elapsed_ns = ns(submitted.elapsed()); wm.last_ns.store(elapsed_ns, Ordering::Relaxed);
-                        wm.attempts.fetch_add(1, Ordering::Relaxed);
                         if result.is_ok() { wm.audio_jobs.fetch_add(1, Ordering::Relaxed); }
                         Response::Executed { id, batch, elapsed_ns, result, qualifying }
                     }
@@ -138,6 +139,7 @@ impl Service {
                 ready: None,
                 active: false,
                 qualified: 0,
+                warmup: 0,
                 frame: 0,
                 id: 0,
                 cpu_ns: 0,
@@ -170,6 +172,7 @@ impl Service {
                     client.pending = true;
                     client.active = false;
                     client.qualified = 0;
+                    client.warmup = 0;
                     self.metrics.active.store(false, Ordering::Release);
                 }
             }
@@ -213,8 +216,9 @@ impl Client {
         self.pending = false;
         match response {
             Response::Configured(Ok(batch)) => self.ready = Some(batch),
-            Response::Configured(Err(_)) => {
-                self.reject(metrics, "driver-does-not-support-fp32-audio-graph")
+            Response::Configured(Err(error)) => {
+                if let Ok(mut d) = metrics.detail.try_lock() { d["driverError"] = error.into(); }
+                self.reject(metrics, "driver-does-not-support-fp32-audio-graph");
             }
             Response::Executed {
                 id,
@@ -226,13 +230,25 @@ impl Client {
                 if id != self.id || self.shape.is_none_or(|s| self.failed.contains(&s)) {
                     return;
                 }
-                if result.is_err() || !batch.output.iter().all(|x| x.is_finite()) {
+                if let Err(error) = result {
+                    if let Ok(mut d) = metrics.detail.try_lock() { d["driverError"] = error.into(); }
                     self.reject(metrics, "driver-execution-failed");
+                    return;
+                }
+                if !batch.output.iter().all(|x| x.is_finite()) {
+                    self.reject(metrics, "nonfinite-driver-output");
                     return;
                 }
                 if qualifying {
                     if !batch.reference_matches() {
                         self.reject(metrics, "fp32-audio-parity-failed");
+                        return;
+                    }
+                    // Warm the driver with real audio while CPU output continues.
+                    // No warmup result is ever used as a playback result.
+                    if self.warmup < 2 {
+                        self.warmup += 1;
+                        self.ready = Some(batch);
                         return;
                     }
                     let full_cost = self
@@ -288,7 +304,7 @@ impl Lease<'_> {
     pub fn submit_reference(&mut self, cpu: Duration, copy: Duration) {
         self.client.cpu_ns = ns(cpu);
         self.client.copy_ns = ns(copy);
-        self.submit(true, 1_000_000);
+        self.submit(true, if self.client.warmup < 2 { 100_000_000 } else { 1_000_000 });
     }
     fn submit(&mut self, qualifying: bool, timeout_ns: u64) -> bool {
         self.client.id = self.client.id.wrapping_add(1);
@@ -334,19 +350,30 @@ impl Lease<'_> {
                 .saturating_sub(self.client.copy_ns);
         }
     }
-    pub fn execute(&mut self) -> bool {
+    pub fn execute(&mut self) -> bool { self.execute_with_limit(1_000_000) }
+    fn execute_with_limit(&mut self, limit_ns:u64) -> bool {
         let budget = (self.client.cpu_ns * 8 / 10)
             .saturating_sub(self.client.pack_ns + self.client.copy_ns)
-            .min(1_000_000);
+            .min(limit_ns);
         if budget == 0 {
             self.client.reject(self.metrics, "no-profitable-deadline");
             return false;
         }
+        let started = Instant::now();
         if !self.submit(false, budget) {
             return false;
         }
         match self.client.rx.recv_timeout(Duration::from_nanos(budget)) {
             Ok(response) => {
+                // recv_timeout can return a queued value after the deadline if
+                // this thread was descheduled. Check the actual clock as well.
+                let late = ns(started.elapsed()) > budget || matches!(&response,
+                    Response::Executed { elapsed_ns, .. } if *elapsed_ns > budget);
+                if late {
+                    self.client.pending = false;
+                    self.client.reject(self.metrics,"audio-deadline-missed");
+                    return false;
+                }
                 self.client.accept(response, self.metrics);
                 self.packet = self.client.ready.take();
                 if self.packet.is_some() && self.client.active {
@@ -483,10 +510,10 @@ mod tests {
         l.submit_reference(Duration::from_millis(50), Duration::from_nanos(1));
     }
     #[test]
-    fn qualification_applies_actual_batch_only_after_eight_matches() {
+    fn qualification_requires_two_warmups_and_eight_actual_audio_matches() {
         let s = service(Duration::ZERO, false, false);
         let shape = Shape::bounded(2, 2, 9).unwrap();
-        for _ in 0..8 {
+        for _ in 0..10 {
             let mut l = lease(&s, shape);
             assert!(l.is_qualifying());
             reference(&mut l);
@@ -495,7 +522,7 @@ mod tests {
         assert!(!l.is_qualifying());
         assert!(!s.metrics.active.load(Ordering::Acquire));
         l.batch_mut().input.fill(0.25);
-        assert!(l.execute());
+        assert!(l.execute_with_limit(100_000_000));
         assert!(l.batch().output.iter().any(|x| *x != 0.));
         l.completed_in(Duration::from_micros(100));
         assert_eq!(s.metrics.applied.load(Ordering::Relaxed), 1);
@@ -551,7 +578,7 @@ mod tests {
         let mut l=lease(&s,shape);let mut batch=l.packet.take().unwrap();
         batch.input.fill(0.125);batch.scalar_reference();batch.reference.copy_from_slice(&batch.output);
         l.client.cpu_ns=10_000_000;l.client.pack_ns=100;l.client.copy_ns=100;
-        l.client.native_ns=5_000_000;l.client.block_base_ns=6_000_000;
+        l.client.warmup=2;l.client.native_ns=5_000_000;l.client.block_base_ns=6_000_000;
         let id=l.client.id;
         l.client.accept(Response::Executed{id,batch,elapsed_ns:1000,result:Ok(()),qualifying:true},l.metrics);
         assert!(!l.client.active);assert!(l.client.failed.contains(&shape));

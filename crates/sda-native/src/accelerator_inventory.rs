@@ -22,6 +22,13 @@ pub fn status()->String {
     result["npuAudioEnabled"]=enabled.into();
     result["audioBackend"]=if enabled {"cpu-fft-and-npu-spectral-mac"}else{"cpu-native"}.into();
     result["audioOperationSupport"]=audio["state"].clone();
+    if let Some(devices)=result["devices"].as_array_mut() {
+        for device in devices {
+            let selected=enabled && device["name"]==audio["deviceName"];
+            device["audioValidated"]=selected.into();
+            device["audioSelected"]=selected.into();
+        }
+    }
     result["audio"]=audio;
     result.to_string()
 }
