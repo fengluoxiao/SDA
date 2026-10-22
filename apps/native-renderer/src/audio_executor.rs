@@ -10,14 +10,23 @@ where F: Fn(&mut T) -> Result<(), E> + Sync {
 
 fn run_balanced_on<T: Send,E: Send,F>(pool:&rayon::ThreadPool,items:&mut[T],process:F)->Result<(),E>
 where F:Fn(&mut T)->Result<(),E>+Sync {
-    use rayon::prelude::*;
     let available=crate::cpu_budget::available();
     let helpers=crate::direct_renderer::android_worker_count(items.len(),available)
         .saturating_sub(1).min(pool.current_num_threads());
-    if helpers==0 {return items.iter_mut().try_for_each(process);}
-    let split=items.len().div_ceil(helpers+1);
-    let (local,remote)=items.split_at_mut(split);
-    let (a,b)=join_on(pool,||local.iter_mut().try_for_each(&process),||if helpers==1 {remote.iter_mut().try_for_each(&process)}else{remote.par_iter_mut().try_for_each(&process)});
+    if helpers==0 || items.is_empty() {return items.iter_mut().try_for_each(process);}
+    let (head,tail)=items.split_first_mut().unwrap();
+    // Claim individual independent sources. A helper which finishes early can
+    // consume remaining work even when the caller runs on a slower CPU.
+    let queue=std::sync::Mutex::new(tail.iter_mut());
+    let drain=|| -> Result<(),E> {
+        loop {
+            let next=queue.lock().unwrap_or_else(|p|p.into_inner()).next();
+            match next {Some(item)=>process(item)?,None=>return Ok(())}
+        }
+    };
+    let (a,b)=join_on(pool,||{process(head)?;drain()},||{
+        if helpers==1 {drain()} else {let (a,b)=rayon::join(&drain,&drain);a?;b}
+    });
     a?;b
 }
 
@@ -109,8 +118,30 @@ mod balanced_tests {
                 if std::thread::current().id()==caller {local.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
                 *x=*x*3+7;Ok(())
             }).unwrap();
-            assert!(local.load(std::sync::atomic::Ordering::Relaxed)>=128usize.div_ceil(workers+1));
+            assert!(local.load(std::sync::atomic::Ordering::Relaxed)>0);
             assert_eq!(x,(0..128).map(|x|x*3+7).collect::<Vec<_>>());
         }
+    }
+}
+
+#[cfg(test)] mod stealing_tests {
+    use super::*;
+    #[test] fn delayed_caller_does_not_reserve_unprocessed_sources(){
+        let pool=rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let (release_tx,release_rx)=std::sync::mpsc::channel();let release=std::sync::Mutex::new(release_rx);
+        let (done_tx,done_rx)=std::sync::mpsc::channel();let completed=std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope|{
+            let task=scope.spawn(||{
+                let mut values:Vec<_>=(0..64).collect();
+                run_balanced_on(&pool,&mut values,|item|->Result<(),()>{
+                    if *item==0 {release.lock().unwrap().recv().unwrap();}
+                    else if completed.fetch_add(1,std::sync::atomic::Ordering::SeqCst)==62 {done_tx.send(()).unwrap();}
+                    *item+=100;Ok(())
+                }).unwrap();values
+            });
+            let others_finished=done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+            release_tx.send(()).unwrap();assert!(others_finished);
+            assert_eq!(task.join().unwrap(),(100..164).collect::<Vec<_>>());
+        });
     }
 }

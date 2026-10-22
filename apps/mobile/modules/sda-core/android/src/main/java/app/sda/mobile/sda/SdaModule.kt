@@ -40,6 +40,7 @@ class SdaModule : Module() {
     @Volatile private var failureCategory = ""
     @Volatile private var inputBytesSubmitted = 0L
     @Volatile private var dspCpuBudget = 0
+    @Volatile private var audioCpuPolicy = JSONObject()
     private val nativeLock = Object()
     private val lifecycleLock = Object()
 
@@ -223,11 +224,16 @@ class SdaModule : Module() {
             .put("error", if (failureCategory.isEmpty()) "" else "playback-error")
             .put("errorDetails", if (failureCategory.isEmpty()) JSONObject() else JSONObject().put("category", failureCategory))
             .put("input", JSONObject().put("codec", activeSourceCodec).put("layout", activeLayout)
-                .put("bytesSubmitted", inputBytesSubmitted).put("dspCpuBudget", dspCpuBudget).put("feedThreadAlive", feedThread?.isAlive == true)
+                .put("bytesSubmitted", inputBytesSubmitted).put("dspCpuBudget", dspCpuBudget).put("audioCpuPolicy", audioCpuPolicy).put("feedThreadAlive", feedThread?.isAlive == true)
                 .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
             .put("backgroundPlayback", lease)
             .put("graphics", JSONObject().put("sceneLoopRequested", sceneRenderingRequested))
             .put("accelerators", JSONObject(SdaEngine.nativeAccelerators()))
+    }
+    private fun refreshAudioSchedulingSoon() {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!destroyed && backgroundSession != 0L) dspCpuBudget = SdaEngine.nativeRefreshCpuBudget()
+        }, 100)
     }
     private fun recordFailure(error: Throwable) {
         val text = error.message.orEmpty()
@@ -245,8 +251,8 @@ class SdaModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("SdaEngine")
         Events("onMediaCommand")
-        OnActivityEntersForeground { inBackground = false; diagnostics?.event("foreground", generation) }
-        OnActivityEntersBackground { inBackground = true; diagnostics?.event("background", generation) }
+        OnActivityEntersForeground { inBackground = false; refreshAudioSchedulingSoon(); diagnostics?.event("foreground", generation) }
+        OnActivityEntersBackground { inBackground = true; refreshAudioSchedulingSoon(); diagnostics?.event("background", generation) }
         Function("configureDiagnostics") { enabled: Boolean ->
             val context = appContext.reactContext ?: error("no react context")
             val service = diagnostics ?: RemoteDiagnostics(context.applicationContext).also { diagnostics = it }
@@ -449,6 +455,7 @@ class SdaModule : Module() {
             if (backgroundSession != 0L) PlaybackKeepAlive.end(context, backgroundSession)
             backgroundSession = 0L
             var mediaToken = 0L
+            val mediaProgress = java.util.concurrent.atomic.AtomicReference(PlaybackKeepAlive.Progress(0, true))
             val controls = object : PlaybackKeepAlive.Controls {
                 override fun setPlaying(playing: Boolean) = setPlaybackPaused(!playing, mediaToken)
                 override fun stop() { stopPlayback(mediaToken) }
@@ -458,13 +465,10 @@ class SdaModule : Module() {
                 }
                 override fun progress(): PlaybackKeepAlive.Progress? {
                     // Quota/cpuset discovery can read system files. Refresh on
-                    // this existing 1 Hz control executor, before nativeLock.
+                    // this existing 1 Hz control executor, outside the decoder lock.
                     dspCpuBudget = SdaEngine.nativeRefreshCpuBudget()
-                    return synchronized(nativeLock) {
-                        if (backgroundSession != mediaToken || handle == 0L) return@synchronized null
-                        val status = JSONObject(SdaEngine.nativeStatus(handle))
-                        PlaybackKeepAlive.Progress(status.optLong("positionMs"), status.optBoolean("preparingAudio"))
-                    }
+                    if (backgroundSession != mediaToken || handle == 0L || !PlaybackKeepAlive.owns(mediaToken)) return null
+                    return mediaProgress.get()
                 }
             }
             val playbackSession = synchronized(nativeLock) {
@@ -564,9 +568,10 @@ class SdaModule : Module() {
             val worker = Thread({
                 try {
                     try { android.os.Process.setThreadPriority(-4) } catch (_: SecurityException) { }
+                    audioCpuPolicy = JSONObject(SdaEngine.nativePrepareDecoderThread())
 
                     input.use { stream ->
-                        val buffer = ByteArray(24 * 1024)
+                        val buffer = ByteArray(4 * 1024)
                         var lastConsumed = 0L
                         var lastProgressNs = System.nanoTime()
                         // player.ts TARGET_AHEAD_SECONDS: same four-second decode
@@ -580,6 +585,7 @@ class SdaModule : Module() {
                             check(state.optJSONObject("outputDevice")?.optInt("errorCode", 0)?.let { it >= 0 } != false) {
                                 "Android audio device disconnected"
                             }
+                            mediaProgress.set(PlaybackKeepAlive.Progress(state.optLong("positionMs"), state.optBoolean("preparingAudio")))
                             diagnostics?.observeNative(state, workerGeneration)
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
@@ -639,7 +645,8 @@ class SdaModule : Module() {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                     JSONObject(SdaEngine.nativeStatus(ptr))
                                 }
-                                diagnostics?.observeNative(state, workerGeneration)
+                                mediaProgress.set(PlaybackKeepAlive.Progress(state.optLong("positionMs"), state.optBoolean("preparingAudio")))
+                            diagnostics?.observeNative(state, workerGeneration)
                                 val decoded = state.getLong("decodedSamplePos")
                                 val consumed = state.getLong("consumedSamplePos")
                                 val remaining = if (decoded > consumed) decoded - consumed else 0L

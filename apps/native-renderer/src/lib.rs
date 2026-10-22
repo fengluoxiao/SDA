@@ -67,6 +67,8 @@ mod front_presentation_tests;
 mod front_ear;
 pub mod convolution;
 pub mod spectral_accelerator;
+#[cfg(any(target_os = "android", test))]
+pub mod android_audio_cpu;
 #[cfg(target_os = "android")]
 pub mod nnapi_runtime;
 pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-spectral-redistribution-v1";

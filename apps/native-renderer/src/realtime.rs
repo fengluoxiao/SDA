@@ -57,7 +57,7 @@ impl ProAudio {
 /// Best effort; never opt into hard realtime scheduling or run DSP on the callback.
 pub(super) fn promote_current_thread() {
     #[cfg(target_os = "android")]
-    { android_priority(-10); }
+    { android_priority(-10); crate::android_audio_cpu::enter("dsp"); }
     #[cfg(target_os = "ios")]
     {
         unsafe extern "C" {

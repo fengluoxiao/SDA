@@ -305,6 +305,8 @@ impl MobileEngine {
         ));
         #[cfg(target_os = "android")]
         sda_native_renderer::cpu_budget::refresh();
+        #[cfg(target_os = "android")]
+        sda_native_renderer::android_audio_cpu::prepare();
         sda_native_renderer::spectral_accelerator::start();
         let telemetry = Arc::new(RuntimeTelemetry::default());
         sda_native_renderer::spawn_render_worker(

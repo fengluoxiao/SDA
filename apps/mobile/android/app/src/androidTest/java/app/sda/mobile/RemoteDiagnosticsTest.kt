@@ -86,6 +86,10 @@ class RemoteDiagnosticsTest {
     }
     @Test fun packagedNativeBridgeReportsRenderStagesWithoutStartingAudio() {
         assertTrue("Control-plane CPU quota probe is exported", SdaEngine.nativeRefreshCpuBudget() >= 1)
+        val cpuPolicy = JSONObject(SdaEngine.nativePrepareDecoderThread())
+        assertEquals("decoder", cpuPolicy.getString("role"))
+        assertTrue(cpuPolicy.getJSONArray("currentCpus").length() > 0)
+        android.util.Log.i("SdaCpuPolicyTest", cpuPolicy.toString())
         await("Asynchronous public accelerator inventory completes") {
             val snapshot = JSONObject(SdaEngine.nativeAccelerators())
             snapshot.optString("status") != "probing" &&

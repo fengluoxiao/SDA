@@ -309,7 +309,18 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeAccelerators(
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeRefreshCpuBudget(
     _env: JNIEnv, _class: JClass,
 ) -> jint {
-    sda_native_renderer::cpu_budget::refresh() as jint
+    let budget=sda_native_renderer::cpu_budget::refresh();
+    sda_native_renderer::android_audio_cpu::refresh();
+    budget as jint
+}
+
+/// Decoder placement is configured once by the owning Java feed thread.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePrepareDecoderThread(
+    env: JNIEnv, _class: JClass,
+) -> jni::sys::jstring {
+    let policy=sda_native_renderer::android_audio_cpu::enter("decoder");
+    env.new_string(policy.to_string()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// `nativeStatus(ptr: Long): String` — PlaybackStatus JSON for host-side

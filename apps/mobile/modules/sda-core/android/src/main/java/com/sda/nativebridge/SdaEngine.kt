@@ -22,6 +22,7 @@ object SdaEngine {
     external fun nativeFeed(ptr: Long, bytes: ByteArray): Int
     external fun nativeAccelerators(): String
     external fun nativeRefreshCpuBudget(): Int
+    external fun nativePrepareDecoderThread(): String
     external fun nativeStatus(ptr: Long): String
     external fun nativeObjects(ptr: Long): String
     external fun nativeSetHeadYaw(ptr: Long, degrees: Float): Int
