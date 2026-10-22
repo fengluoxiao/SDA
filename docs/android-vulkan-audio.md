@@ -13,3 +13,7 @@ GPU 只计算现有连续对象 HRTF 的 FP32 复数频域乘加。FFT/IFFT、�
 本轮按照用户要求不运行自动测试、不播放测试音频；用户后来明确授权安装到 USB 连接的小米 Note 3。安装与启动检查不代表已确认 GPU 实际执行或有性能收益。设备播放后的诊断以 audio.backendDetails、gpuAudioEnabled、audioBatchesExecuted、audioBatchesApplied 和失败原因区分真实状态。
 
 启动检查发现 C++ 标准库静态链接遗漏的异常展开符号后，桥接改用 POSIX 时钟和 C 内存分配，不依赖 C++ STL/ABI 运行库；Android facade 的最终链接启用 --no-undefined。安装检查需要重新确认修正包能够启动，仍不自动开始播放。
+
+## 2026-10-23 首次实机检查
+
+小米 Note 3 / Adreno 512 能创建并执行 Vulkan 音频管线，初始实现完成两批真实音频、未采用 GPU 结果；第三批在上传阶段超过 1 ms，按保护条件回退 CPU。播放输出暂未出现缺帧。后续优先 HOST_CACHED 映射，保留非一致内存的显式 flush/invalidate，并增加阶段耗时与主机线程 CPU 时间。GPU 资格核对阶段播放 CPU 结果，使用有界 100 ms 测量窗口获取完整成本；原有精度、20% 性能余量和正式采用时的最多 1 ms 截止条件不变。当前结果不能据此宣称取得加速收益。

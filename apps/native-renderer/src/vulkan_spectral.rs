@@ -3,11 +3,15 @@ use super::{Batch,Shape,coordinator::Backend as ComputeBackend};
 use std::{ffi::{c_char,c_void,CStr},ptr::NonNull};
 #[repr(C)]
 struct DeviceInfo{vendor:u32,device:u32,api:u32,driver:u32,queue_family:u32,name:[c_char;256]}
+#[repr(C)]
+#[derive(Default)]
+struct Timings{upload:u64,dispatch_wait:u64,readback:u64,total:u64,host_cpu:u64,input_flags:u64,output_flags:u64,input_allocated:u64,output_allocated:u64}
 unsafe extern "C"{
  fn sda_vk_open(code:*const u32,bytes:usize,info:*mut DeviceInfo,error:*mut c_char,capacity:usize)->*mut c_void;
  fn sda_vk_configure(handle:*mut c_void,plane:u32,parts:u32,cpu_bytes:u64,error:*mut c_char,capacity:usize)->i32;
  fn sda_vk_run(handle:*mut c_void,input:*const f32,inputs:usize,output:*mut f32,outputs:usize,timeout:u64,error:*mut c_char,capacity:usize)->i32;
  fn sda_vk_close(handle:*mut c_void);
+ fn sda_vk_timings(handle:*mut c_void,timings:*mut Timings);
 }
 pub(super) struct Backend{handle:NonNull<c_void>,info:DeviceInfo,shape:Option<Shape>}
 fn reason(error:&[c_char;256])->String{unsafe{CStr::from_ptr(error.as_ptr())}.to_string_lossy().into_owned()}
@@ -37,6 +41,7 @@ impl ComputeBackend for Backend{
   if result!=0{return Err(format!("system-vulkan-audio:{}",reason(&error)));}Ok(())
  }
  fn details(&self)->serde_json::Value{
-  serde_json::json!({"runtime":"android-system-vulkan-compute-1.0","acceleratorKind":"gpu","deviceName":self.device_name(),"vendorId":self.info.vendor,"deviceId":self.info.device,"apiVersion":self.info.api,"driverVersion":self.info.driver,"queueFamily":self.info.queue_family,"computeUnits":"hardware-GPU","precision":"FP32-NoContraction-ordered-partitions","frameworkCpuFallbackAllowed":false,"memory":"persistent-host-visible-storage-buffers","totalAudioBufferBudgetMiB":32,"shaderCompilation":"build-time-SPIR-V-no-phone-compiler-SDK","runtimeLibraryLifetime":"process-pinned-system-loader","modelCache":"none"})
+  let mut t=Timings::default();unsafe{sda_vk_timings(self.handle.as_ptr(),&mut t)};
+  serde_json::json!({"runtime":"android-system-vulkan-compute-1.0","acceleratorKind":"gpu","deviceName":self.device_name(),"vendorId":self.info.vendor,"deviceId":self.info.device,"apiVersion":self.info.api,"driverVersion":self.info.driver,"queueFamily":self.info.queue_family,"computeUnits":"hardware-GPU","precision":"FP32-NoContraction-ordered-partitions","frameworkCpuFallbackAllowed":false,"memory":"persistent-host-visible-storage-buffers","totalAudioBufferBudgetMiB":32,"shaderCompilation":"build-time-SPIR-V-no-phone-compiler-SDK","runtimeLibraryLifetime":"process-pinned-system-loader","modelCache":"none","inputMemoryFlags":t.input_flags,"outputMemoryFlags":t.output_flags,"inputAllocationBytes":t.input_allocated,"outputAllocationBytes":t.output_allocated,"timingNs":{"upload":t.upload,"dispatchAndWait":t.dispatch_wait,"readback":t.readback,"total":t.total,"hostThreadCpu":t.host_cpu}})
  }
 }

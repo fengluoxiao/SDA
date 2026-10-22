@@ -22,6 +22,7 @@ struct Metrics {
     fallbacks: AtomicU64,
     last_ns: AtomicU64,
     native_ns: AtomicU64,
+    qualification_timeout_ns: AtomicU64,
     detail: Mutex<serde_json::Value>,
 }
 impl Default for Metrics {
@@ -36,6 +37,7 @@ impl Default for Metrics {
             fallbacks: AtomicU64::new(0),
             last_ns: AtomicU64::new(0),
             native_ns: AtomicU64::new(0),
+            qualification_timeout_ns: AtomicU64::new(1_000_000),
             detail: Mutex::new(serde_json::json!({"state":"starting"})),
         }
     }
@@ -127,12 +129,15 @@ impl Service {
                     Command::Configure(shape) => {
                         wm.active.store(false, Ordering::Release); wm.detail("compiling", "");
                         let result = backend.configure(shape).map(|device| {
+                            let details=backend.details();
+                            // Shadow qualification plays CPU output; active precision/profitability/deadline limits stay unchanged.
+                            wm.qualification_timeout_ns.store(if cfg!(target_os="android") && details["acceleratorKind"]=="gpu" {100_000_000}else{1_000_000},Ordering::Relaxed);
                             if let Ok(mut d) = wm.detail.lock() {
                                 *d = serde_json::json!({"state":"qualifying-audio", "deviceName":device,
                                     "rows":shape.rows,"partitions":shape.parts,"bins":shape.bins,
                                     "supportedGraphOperations":super::Graph::new(shape.parts).operations.len(),
                                     "explicitAcceleratorCount":if cfg!(target_os="android"){1}else{0},
-                                    "backendDetails":backend.details()});
+                                    "backendDetails":details});
                             }
                             Batch::new(shape)
                         });
@@ -144,6 +149,9 @@ impl Service {
                         let result = backend.execute(&mut batch, timeout_ns);
                         let elapsed_ns = ns(submitted.elapsed()); wm.last_ns.store(elapsed_ns, Ordering::Relaxed);
                         if result.is_ok() { wm.audio_jobs.fetch_add(1, Ordering::Relaxed); }
+                        if qualifying || result.is_err() {
+                            if let Ok(mut detail)=wm.detail.lock() { detail["backendDetails"]=backend.details(); }
+                        }
                         Response::Executed { id, batch, elapsed_ns, result, qualifying }
                     }
                 };
@@ -283,6 +291,11 @@ impl Client {
                         self.reject(metrics, "fp32-audio-parity-failed");
                         return;
                     }
+                    if let Ok(mut d)=metrics.detail.try_lock() {
+                        let matched=d["parityMatchedBatches"].as_u64().unwrap_or(0)+1;
+                        d["parityMatchedBatches"]=matched.into();
+                        d["lastQualification"]=serde_json::json!({"cpuMacNs":self.cpu_ns,"packingNs":self.pack_ns,"resultCopyNs":self.copy_ns,"executionNs":elapsed_ns,"cpuRenderBlockNs":self.native_ns});
+                    }
                     // Warm the driver with real audio while CPU output continues.
                     // No warmup result is ever used as a playback result.
                     if self.warmup < 2 {
@@ -343,7 +356,7 @@ impl Lease<'_> {
     pub fn submit_reference(&mut self, cpu: Duration, copy: Duration) {
         self.client.cpu_ns = ns(cpu);
         self.client.copy_ns = ns(copy);
-        self.submit(true, if self.client.warmup < 2 { 100_000_000 } else { 1_000_000 });
+        self.submit(true, if self.client.warmup < 2 { 100_000_000 } else { self.metrics.qualification_timeout_ns.load(Ordering::Relaxed) });
     }
     fn submit(&mut self, qualifying: bool, timeout_ns: u64) -> bool {
         self.client.id = self.client.id.wrapping_add(1);

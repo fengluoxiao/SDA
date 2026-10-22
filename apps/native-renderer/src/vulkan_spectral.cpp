@@ -11,7 +11,9 @@ struct SdaVkInfo {uint32_t vendor,device,api,driver,queue_family;char name[256];
 namespace {
 constexpr uint64_t BUDGET=32ull*1024*1024;
 uint64_t monotonic_ns(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return uint64_t(t.tv_sec)*1000000000ull+uint64_t(t.tv_nsec);}
-struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;bool coherent=false;};
+struct Buffer {VkBuffer buffer=VK_NULL_HANDLE;VkDeviceMemory memory=VK_NULL_HANDLE;void* mapped=nullptr;bool coherent=false;uint32_t flags=0;VkDeviceSize allocated=0;};
+struct Timings {uint64_t upload=0,dispatch_wait=0,readback=0,total=0,host_cpu=0,input_flags=0,output_flags=0,input_allocated=0,output_allocated=0;};
+uint64_t thread_cpu_ns(){timespec t{};if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)!=0)return 0;return uint64_t(t.tv_sec)*1000000000ull+uint64_t(t.tv_nsec);}
 #define DEVICE_FUNCTIONS(X) \
  X(vkDestroyDevice) X(vkDeviceWaitIdle) X(vkGetDeviceQueue) \
  X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) \
@@ -35,7 +37,7 @@ struct State {
  VkDescriptorSetLayout descriptor_layout=VK_NULL_HANDLE;VkPipelineLayout pipeline_layout=VK_NULL_HANDLE;
  VkPipeline pipeline=VK_NULL_HANDLE;VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;VkDescriptorSet descriptor=VK_NULL_HANDLE;
  VkCommandPool command_pool=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;
- bool in_flight=false;Buffer input,output;uint32_t plane=0,parts=0;char error[256]{};
+ bool in_flight=false;Timings timings{};Buffer input,output;uint32_t plane=0,parts=0;char error[256]{};
  bool fail(const char* what,int result=-1){snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
  bool check(VkResult result,const char* what){return result==VK_SUCCESS || fail(what,result);}
  void release(Buffer& b){
@@ -144,14 +146,16 @@ struct State {
   uint32_t type=UINT32_MAX;int best=-1;
   for(uint32_t i=0;i<memory_props.memoryTypeCount;++i){auto f=memory_props.memoryTypes[i].propertyFlags;
    if((req.memoryTypeBits&(1u<<i)) && (f&VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)){
-    int score=((f&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)?2:0)+((f&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)?1:0);
+    // CPU touches every input/output byte; prefer cached mappings over uncached coherence.
+    int score=((f&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)?4:0)+((f&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)?1:0);
     if(score>best){best=score;type=i;}
    }
   }
   if(type==UINT32_MAX)return fail("no host-visible GPU memory");
   VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};ma.allocationSize=req.size;ma.memoryTypeIndex=type;
   if(!check(vkAllocateMemory(device,&ma,nullptr,&b.memory),"allocate audio storage") || !check(vkBindBufferMemory(device,b.buffer,b.memory,0),"bind audio storage"))return false;
-  b.coherent=(memory_props.memoryTypes[type].propertyFlags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)!=0;
+  b.flags=memory_props.memoryTypes[type].propertyFlags;b.allocated=req.size;
+  b.coherent=(b.flags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)!=0;
   return check(vkMapMemory(device,b.memory,0,VK_WHOLE_SIZE,0,&b.mapped),"map audio storage");
  }
  bool configure(uint32_t n,uint32_t p,uint64_t cpu_bytes){
@@ -176,22 +180,32 @@ struct State {
   vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&after,0,nullptr);
   if(!check(vkEndCommandBuffer(command),"record compute commands"))return false;plane=n;parts=p;return true;
  }
+ int finish_run(int result,uint64_t wall_start,uint64_t cpu_start){
+  timings.total=monotonic_ns()-wall_start;uint64_t cpu_end=thread_cpu_ns();timings.host_cpu=cpu_start&&cpu_end>=cpu_start?cpu_end-cpu_start:0;return result;
+ }
  int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout){
   if(!plane || inputs!=uint64_t(plane)*6*parts || outputs!=uint64_t(plane)*4){fail("audio packet shape mismatch");return -1;}
-  auto start=monotonic_ns();if(in_flight){fail("previous GPU work still pending");return -1;}
+  auto start=monotonic_ns(),cpu_start=thread_cpu_ns();timings={};timings.input_flags=input.flags;timings.output_flags=output.flags;timings.input_allocated=input.allocated;timings.output_allocated=output.allocated;
+  auto done=[&](int result){return finish_run(result,start,cpu_start);};
+  if(in_flight){fail("previous GPU work still pending");return done(-1);}
   memcpy(input.mapped,src,inputs*sizeof(float));
-  if(!input.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=input.memory;range.size=VK_WHOLE_SIZE;if(!check(vkFlushMappedMemoryRanges(device,1,&range),"flush audio input"))return -1;}
-  auto elapsed=[&](){return monotonic_ns()-start;};
-  if(elapsed()>=timeout){fail("GPU upload exceeded audio deadline");return 1;}
-  if(!check(vkResetFences(device,1,&fence),"reset completion fence"))return -1;
+  if(!input.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=input.memory;range.size=VK_WHOLE_SIZE;if(!check(vkFlushMappedMemoryRanges(device,1,&range),"flush audio input"))return done(-1);}
+  timings.upload=monotonic_ns()-start;
+  if(timings.upload>=timeout){fail("GPU upload exceeded audio deadline");return done(1);}
+  uint64_t dispatch_start=monotonic_ns();
+  if(!check(vkResetFences(device,1,&fence),"reset completion fence"))return done(-1);
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&command;
-  if(!check(vkQueueSubmit(queue,1,&submit,fence),"submit audio compute"))return -1;in_flight=true;
-  uint64_t spent=elapsed();VkResult waited=vkWaitForFences(device,1,&fence,VK_TRUE,spent>=timeout?0:timeout-spent);
-  if(waited==VK_TIMEOUT){fail("GPU completion exceeded audio deadline",waited);return 1;}
-  if(!check(waited,"wait for audio compute"))return -1;in_flight=false;
-  if(!output.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=output.memory;range.size=VK_WHOLE_SIZE;if(!check(vkInvalidateMappedMemoryRanges(device,1,&range),"invalidate audio output"))return -1;}
-  memcpy(dst,output.mapped,outputs*sizeof(float));if(elapsed()>timeout){fail("GPU readback exceeded audio deadline");return 1;}return 0;
+  if(!check(vkQueueSubmit(queue,1,&submit,fence),"submit audio compute"))return done(-1);in_flight=true;
+  uint64_t spent=monotonic_ns()-start;VkResult waited=vkWaitForFences(device,1,&fence,VK_TRUE,spent>=timeout?0:timeout-spent);
+  timings.dispatch_wait=monotonic_ns()-dispatch_start;
+  if(waited==VK_TIMEOUT){fail("GPU completion exceeded audio deadline",waited);return done(1);}
+  if(!check(waited,"wait for audio compute"))return done(-1);in_flight=false;
+  uint64_t readback_start=monotonic_ns();
+  if(!output.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=output.memory;range.size=VK_WHOLE_SIZE;if(!check(vkInvalidateMappedMemoryRanges(device,1,&range),"invalidate audio output"))return done(-1);}
+  memcpy(dst,output.mapped,outputs*sizeof(float));timings.readback=monotonic_ns()-readback_start;
+  if(monotonic_ns()-start>timeout){fail("GPU readback exceeded audio deadline");return done(1);}return done(0);
  }
+
 };
 void copy_error(State* s,char* out,size_t capacity){if(out && capacity)snprintf(out,capacity,"%s",s?s->error:"Vulkan allocation failed");}
 }
@@ -205,5 +219,6 @@ int sda_vk_configure(void* handle,uint32_t plane,uint32_t parts,uint64_t cpu_byt
 int sda_vk_run(void* handle,const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,char* error,size_t capacity){
  auto s=static_cast<State*>(handle);if(!s || !src || !dst)return -1;int result=s->run(src,inputs,dst,outputs,timeout);if(result)copy_error(s,error,capacity);return result;
 }
+void sda_vk_timings(void* handle,Timings* out){if(handle && out)*out=static_cast<State*>(handle)->timings;}
 void sda_vk_close(void* handle){if(handle){auto s=static_cast<State*>(handle);s->~State();free(s);}}
 }
