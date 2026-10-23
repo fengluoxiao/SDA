@@ -9,10 +9,10 @@ import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
 import { hasNativePageHeader } from "./IOSNativePage";
 import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
 import { useIOSCutoutSide } from "./use-ios-cutout-side";
-import { SideNavigationDock } from "./SideNavigationDock";
-import { SystemClock } from "./SystemClock";
+import { SideNavigationDock, sideNavigationDockMetrics } from "./SideNavigationDock";
+import { SystemClock, SYSTEM_CLOCK_LINE_HEIGHT } from "./SystemClock";
 import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
-import { CircularMiniPlayer } from "./CircularMiniPlayer";
+import { CircularMiniPlayer, CIRCULAR_MINI_PLAYER_LAYOUT } from "./CircularMiniPlayer";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
 import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
@@ -75,6 +75,8 @@ function ThemedPlayer(p: PlayerProps) {
   const androidPhone = Platform.OS === "android" && !tabletDevice;
   const showSystemClock = landscapePlayer && !tabletDevice && (Platform.OS === "ios" || (Platform.OS === "android" && sideNavigationActive));
   const circularMiniPlayerActive = showSystemClock && sideNavigationActive && !!p.selectedUri;
+  const compactSideActions = circularMiniPlayerActive && height < (Platform.OS === "android" ? 400 : 360);
+  const sideActionMetrics = sideNavigationDockMetrics(compactSideActions);
   const tabletPlayer = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height, navigationPreferences.tabletPortraitLayout);
   const phoneLandscapeBlur = !tabletDevice && landscapePlayer && navigationPreferences.tabletPortraitLayout;
   const tabletSideNavigation = tabletPlayer && sideNavigationActive;
@@ -257,8 +259,14 @@ function ThemedPlayer(p: PlayerProps) {
   const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined}>
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
-        sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 }]}>
-        <View style={{ flex: 1 }}>{label("SDA", true, [s.eyebrow, androidPhone && ap.eyebrow, { color: index === 0 ? (Platform.OS === "android" ? pc.ink : pc.muted) : c.muted }])}{label(index === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[index] ?? "正在播放", false, [s.pageTitle, androidPhone && ap.pageTitle, { color: index === 0 ? pc.ink : c.ink }])}</View>
+        sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 },
+        circularMiniPlayerActive && { marginTop: sideActionMetrics.top, paddingTop: 0, paddingBottom: 0 }]}>
+        <View style={{ flex: 1, gap: circularMiniPlayerActive ? sideActionMetrics.gap : 0 }}>
+          {label("SDA", true, [s.eyebrow, androidPhone && ap.eyebrow, { color: index === 0 ? pc.ink : c.muted }, circularMiniPlayerActive && { lineHeight: SYSTEM_CLOCK_LINE_HEIGHT }])}
+          <View style={circularMiniPlayerActive ? { height: CIRCULAR_MINI_PLAYER_LAYOUT.height, paddingBottom: CIRCULAR_MINI_PLAYER_LAYOUT.height - CIRCULAR_MINI_PLAYER_LAYOUT.face, justifyContent: "center" } : undefined}>
+            {label(index === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[index] ?? "正在播放", false, [s.pageTitle, androidPhone && ap.pageTitle, { color: index === 0 ? pc.ink : c.ink }, circularMiniPlayerActive && { marginTop: 0, lineHeight: 28 }])}
+          </View>
+        </View>
         {!sideNavigationActive && headerActions}
       </View>
       </View>}</SafeAreaInsetsContext.Consumer>;
@@ -429,7 +437,7 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
-  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" compact={circularMiniPlayerActive && height < (Platform.OS === "android" ? 400 : 360)} tablet={tabletPlayer} cutoutSide={cutoutSide}>
+  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" compact={compactSideActions} tablet={tabletPlayer} cutoutSide={cutoutSide}>
     {headerActions}
   </SideNavigationDock>}
   {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom" tablet={tabletPlayer} cutoutSide={cutoutSide}>

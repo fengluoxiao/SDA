@@ -3,6 +3,8 @@ import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { IOSPlaybackSymbol } from "./IOSPlaybackSymbol";
 import { formatPlaybackTime } from "./ios-ui-model";
 
+export const CIRCULAR_MINI_PLAYER_LAYOUT = { face: 48, height: 54 } as const;
+
 // Two clipped native semicircles form a smooth arc without a canvas or another
 // rendering engine. Rotating the whole ring leaves the elapsed-time gap below.
 function ProgressArc({ degrees, color }: { degrees: number; color: string }) {
@@ -54,8 +56,8 @@ export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
 });
 
 const s = StyleSheet.create({
-  control: { width: 48, height: 54, alignItems: "center", justifyContent: "flex-start", flexShrink: 0 },
-  face: { width: 48, height: 48 },
+  control: { width: CIRCULAR_MINI_PLAYER_LAYOUT.face, height: CIRCULAR_MINI_PLAYER_LAYOUT.height, alignItems: "center", justifyContent: "flex-start", flexShrink: 0 },
+  face: { width: CIRCULAR_MINI_PLAYER_LAYOUT.face, height: CIRCULAR_MINI_PLAYER_LAYOUT.face },
   arc: { position: "absolute", width: 48, height: 48, transform: [{ rotate: "225deg" }] },
   half: { position: "absolute", top: 0, left: 0, width: 24, height: 48, overflow: "hidden" },
   stroke: { position: "absolute", top: 0, left: 0, width: 48, height: 48, borderRadius: 24, borderWidth: 2, borderColor: "transparent" },
