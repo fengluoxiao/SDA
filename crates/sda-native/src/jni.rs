@@ -331,7 +331,10 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeRefreshCpuBudge
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeUpdateAudioComputePressure(
     _env: JNIEnv, _class: JClass, status: jint, headroom: jni::sys::jfloat,
-) { sda_native_renderer::spectral_accelerator::cooperation::thermal(status,headroom); }
+ ) {
+    sda_native_renderer::spectral_accelerator::cooperation::thermal(status,headroom);
+    sda_native_renderer::spectral_accelerator::cooperation::frequency_ceiling(sda_native_renderer::android_audio_cpu::frequency_ceiling_ppm());
+}
 
 /// Decoder placement is configured once by the owning Java feed thread.
 #[no_mangle]

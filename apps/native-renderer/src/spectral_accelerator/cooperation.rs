@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static THERMAL: AtomicI32 = AtomicI32::new(0);
 static HEADROOM: AtomicU32 = AtomicU32::new(f32::NAN.to_bits());
+static FREQUENCY_CEILING:AtomicU32=AtomicU32::new(u32::MAX);
 static DUTY: AtomicU32 = AtomicU32::new(0);
 static PERIOD: AtomicU64 = AtomicU64::new(0);
 static RESERVE: AtomicU64 = AtomicU64::new(0);
@@ -23,6 +24,8 @@ pub fn new_render_session() {
     RECOVERY_TIME.store(0, Ordering::Relaxed);
     EPOCH.fetch_add(1, Ordering::AcqRel);
 }
+pub fn frequency_ceiling(value:Option<u32>){FREQUENCY_CEILING.store(value.unwrap_or(u32::MAX),Ordering::Relaxed);}
+fn capped_and_busy(ceiling:u32,usage:u64)->bool{ceiling<850_000&&usage>=200_000}
 pub fn thermal(status: i32, headroom: f32) {
     THERMAL.store(status.clamp(0, 6), Ordering::Relaxed);
     HEADROOM.store(
@@ -79,7 +82,7 @@ pub fn observe(frames: usize, rate: usize, fifo: usize, elapsed_ns: u64) {
     UTIL.store(ema, Ordering::Relaxed);
     let thermal = THERMAL.load(Ordering::Relaxed);
     let h = f32::from_bits(HEADROOM.load(Ordering::Relaxed));
-    let pressure = thermal >= 1 || (h.is_finite() && h >= 0.7) || ema >= 650_000;
+    let pressure = thermal >= 1 || (h.is_finite() && h >= 0.7) || ema >= 650_000 || capped_and_busy(FREQUENCY_CEILING.load(Ordering::Relaxed),ema);
     let recover = thermal == 0 && (!h.is_finite() || h < 0.5) && ema < 450_000;
     let (mut hot, mut cool) = (
         PRESSURE_TIME.load(Ordering::Relaxed),
@@ -126,7 +129,7 @@ pub fn cpu_saving(cpu: u64, packing: u64, copy: u64, worker: u64) -> bool {
 }
 pub fn status() -> serde_json::Value {
     let h = f32::from_bits(HEADROOM.load(Ordering::Relaxed));
-    serde_json::json!({"mode":"thermal-cpu-gpu-cooperation","thermalStatus":THERMAL.load(Ordering::Relaxed),"thermalHeadroom":if h.is_finite(){Some(h)}else{None},"requestedGpuSharePercent":share(),"renderUtilizationPpm":UTIL.load(Ordering::Relaxed),"renderPeriodNs":PERIOD.load(Ordering::Relaxed),"outputReserveNs":RESERVE.load(Ordering::Relaxed),"deadlineNs":deadline_ns(),"criterion":"FP32-parity-and-lower-total-host-CPU-within-audio-budget"})
+    serde_json::json!({"mode":"thermal-cpu-gpu-cooperation","cpuFrequencyCeilingPpm":match FREQUENCY_CEILING.load(Ordering::Relaxed){u32::MAX=>None,x=>Some(x)},"thermalStatus":THERMAL.load(Ordering::Relaxed),"thermalHeadroom":if h.is_finite(){Some(h)}else{None},"requestedGpuSharePercent":share(),"renderUtilizationPpm":UTIL.load(Ordering::Relaxed),"renderPeriodNs":PERIOD.load(Ordering::Relaxed),"outputReserveNs":RESERVE.load(Ordering::Relaxed),"deadlineNs":deadline_ns(),"criterion":"FP32-parity-and-lower-total-host-CPU-within-audio-budget"})
 }
 #[cfg(target_os = "android")]
 pub fn cpu_ns() -> u64 {
@@ -157,6 +160,8 @@ pub fn cpu_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_frequency_cap_requires_active_render_work(){assert!(capped_and_busy(700_000,250_000));assert!(!capped_and_busy(700_000,50_000));assert!(!capped_and_busy(1_000_000,250_000));assert!(!capped_and_busy(u32::MAX,250_000));}
     #[test]
     fn ramp_and_recovery_have_hysteresis() {
         let (mut hot, mut cool, mut duty) = (0, 0, 0);

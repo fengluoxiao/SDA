@@ -161,6 +161,16 @@ mod platform {
             source: "topology-not-public",
         }
     }
+    pub fn frequency_ceiling_ppm()->Option<u32> {
+        let topology=TOPOLOGY.get_or_init(discover);
+        let mut ratios:Vec<u32>=topology.fast.iter().filter_map(|cpu| {
+            let root=format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq");
+            let nominal=std::fs::read_to_string(format!("{root}/cpuinfo_max_freq")).ok()?.trim().parse::<u64>().ok()?;
+            let limit=std::fs::read_to_string(format!("{root}/scaling_max_freq")).ok()?.trim().parse::<u64>().ok()?;
+            (nominal>0&&limit>0).then_some((limit.saturating_mul(1_000_000)/nominal.max(1)).min(1_000_000)as u32)
+        }).collect();
+        if ratios.len()<2{return None;}ratios.sort_unstable();Some(ratios[ratios.len()/2])
+    }
     pub fn dsp_capacity() -> Option<usize> {
         let topology = TOPOLOGY.get_or_init(discover);
         let current = Mask::current()?;
@@ -198,7 +208,7 @@ mod platform {
     }
 }
 #[cfg(target_os = "android")]
-pub use platform::{dsp_capacity, enter, prepare, refresh};
+pub use platform::{dsp_capacity, enter, prepare, refresh, frequency_ceiling_ppm};
 #[cfg(test)]
 mod tests {
     use super::*;
