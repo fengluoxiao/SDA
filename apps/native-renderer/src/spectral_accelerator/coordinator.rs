@@ -577,6 +577,11 @@ pub(crate) fn status() -> serde_json::Value {
         result["cooperation"]=super::cooperation::status();
         result["runtime"] = result["backendDetails"]["runtime"].as_str().unwrap_or("android-audio-backend-selection").into();
         let active = m.active.load(Ordering::Acquire);
+        if active && cooperative_share()>0 && result["backendDetails"]["cooperativeResident"]==true {
+            result["state"]="cooperative-sharing".into();result["reason"]="cpu-pressure-sharing".into();
+        }else if cooperative_share()==0 && result["qualifiedForCpuRelief"]==true {
+            result["state"]="cooperative-ready".into();result["reason"]="waiting-for-cpu-pressure".into();
+        }
         let kind = result["backendDetails"]["acceleratorKind"].as_str();
         let dsp = kind == Some("dsp");
         let gpu = kind == Some("gpu");

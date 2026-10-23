@@ -283,7 +283,7 @@ pub(super) fn run(count: usize, constrain: bool) -> Result<serde_json::Value, St
             }
         }
         let after = super::status();
-        let result = serde_json::json!({"phase":phase,"frames":frames,"probeCpuCores":constraint.as_ref().map(|c|&c.cores),"probeConstrainedThreads":constraint.as_ref().map(|c|c.saved.len()),"gpuBlocksApplied":gpu_blocks,"appliedBefore":before["audioBatchesApplied"],"appliedAfter":after["audioBatchesApplied"],"status":after,"maximumPcmDifference":worst});
+        let result = serde_json::json!({"phase":phase,"frames":frames,"requestedProbeCpuCores":constraint.as_ref().map(|c|&c.cores),"probeConstrainedThreads":constraint.as_ref().map(|c|c.saved.len()),"gpuBlocksApplied":gpu_blocks,"appliedBefore":before["audioBatchesApplied"],"appliedAfter":after["audioBatchesApplied"],"status":after,"maximumPcmDifference":worst});
         println!("{result}");
         phases.push(result);
     }
@@ -294,7 +294,7 @@ pub(super) fn run(count: usize, constrain: bool) -> Result<serde_json::Value, St
         .iter()
         .filter(|p| p["phase"] == "simulated-recovery")
         .all(|p| p["gpuBlocksApplied"] == 0);
-    let result = serde_json::json!({"physicalGpu":true,"syntheticSources":count,"thermalInput":"simulated-within-probe-only","cpuPressureModel":if constrain{"all-probe-process-threads-restricted-to-efficiency-cores"}else{"simulated-policy-hint-with-real-unrestricted-cpu-costs"},"otherApplicationAffinityChanged":false,"osThermalSettingsChanged":false,"audioDeviceOpened":false,"usesProductionModuleImplementations":true,"gpuAdoptionVerified":adopted,"recoveryVerified":recovery,"maximumPcmDifference":worst,"phases":phases});
+    let result = serde_json::json!({"physicalGpu":true,"syntheticSources":count,"thermalInput":"simulated-within-probe-only","cpuPressureModel":if constrain{"efficiency-core-affinity-request; driver may rebind on reconfiguration"}else{"simulated-policy-hint-with-real-unrestricted-cpu-costs"},"otherApplicationAffinityChanged":false,"osThermalSettingsChanged":false,"audioDeviceOpened":false,"usesProductionModuleImplementations":true,"gpuAdoptionVerified":adopted,"recoveryVerified":recovery,"maximumPcmDifference":worst,"phases":phases});
     println!("{result}");
     if !adopted {
         return Err("GPU did not qualify for real CPU relief on this load".into());
