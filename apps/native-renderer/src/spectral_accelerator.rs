@@ -8,10 +8,26 @@ use rustfft::num_complex::Complex32;
 pub mod cooperation;
 mod model_graph;
 pub(crate) use model_graph::{Graph, Shape};
+/// A mapped packet owns a strong lifetime token. Its unique mutable slice is
+/// moved to the compute worker while the GPU uses it; the worker retires the
+/// underlying context only after all packet tokens have gone away.
+pub(crate) struct FloatStorage {inner:FloatBacking}
+enum FloatBacking {Owned(Vec<f32>),Mapped{pointer:std::ptr::NonNull<f32>,len:usize,_owner:std::sync::Arc<dyn Send+Sync>}}
+unsafe impl Send for FloatStorage {}
+impl FloatStorage {
+ fn owned(len:usize)->Self{Self{inner:FloatBacking::Owned(vec![0.;len])}}
+ unsafe fn mapped(pointer:std::ptr::NonNull<f32>,len:usize,owner:std::sync::Arc<dyn Send+Sync>)->Self{Self{inner:FloatBacking::Mapped{pointer,len,_owner:owner}}}
+ #[cfg(test)]fn clone(&self)->Vec<f32>{self.to_vec()}
+}
+impl std::ops::Deref for FloatStorage {type Target=[f32];fn deref(&self)->&[f32]{match &self.inner {FloatBacking::Owned(v)=>v,FloatBacking::Mapped{pointer,len,..}=>unsafe{std::slice::from_raw_parts(pointer.as_ptr(),*len)}}}}
+impl std::ops::DerefMut for FloatStorage {fn deref_mut(&mut self)->&mut[f32]{match &mut self.inner {FloatBacking::Owned(v)=>v,FloatBacking::Mapped{pointer,len,..}=>unsafe{std::slice::from_raw_parts_mut(pointer.as_ptr(),*len)}}}}
+#[cfg(test)]impl std::fmt::Debug for FloatStorage{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{std::fmt::Debug::fmt(&self.deref_for_debug(),f)}}
+#[cfg(test)]impl FloatStorage{fn deref_for_debug(&self)->&[f32]{self}}
+#[cfg(test)]impl PartialEq for FloatStorage{fn eq(&self,other:&Self)->bool{**self==**other}}
 pub(crate) struct Batch {
     pub shape: Shape,
-    pub input: Vec<f32>,
-    pub output: Vec<f32>,
+    pub input: FloatStorage,
+    pub output: FloatStorage,
     pub reference: Vec<f32>,
     pub resident: bool,
     pub filter_dirty: Vec<u8>,
@@ -22,17 +38,21 @@ pub(crate) struct Batch {
     pub cpu_work_ns: u64,
     pub worker_cpu_ns: u64,
     pub checked_parity: Option<bool>,
+    pub gpu_finite_verified:bool,
 }
 impl Batch {
     pub fn new(shape: Shape) -> Self {
         Self {
             shape,
-            input: vec![0.; shape.plane() * 6 * shape.parts],
-            output: vec![0.; shape.plane() * 4],
+            input: FloatStorage::owned(shape.plane() * 6 * shape.parts),
+            output: FloatStorage::owned(shape.plane() * 4),
             reference: vec![0.; shape.plane() * 4],
             resident:false, filter_dirty:vec![0;shape.rows],filter_keys:vec![None;shape.rows],packed_parts:vec![0;shape.rows],previous_parts:vec![0;shape.rows],reference_rows:vec![0;shape.rows],
-            cpu_work_ns:0,worker_cpu_ns:0,checked_parity:None,
+            cpu_work_ns:0,worker_cpu_ns:0,checked_parity:None,gpu_finite_verified:false,
         }
+    }
+    pub unsafe fn mapped(shape:Shape,input:std::ptr::NonNull<f32>,output:std::ptr::NonNull<f32>,owner:std::sync::Arc<dyn Send+Sync>)->Self {
+        Self{shape,input:unsafe{FloatStorage::mapped(input,shape.plane()*6*shape.parts,owner.clone())},output:unsafe{FloatStorage::mapped(output,shape.plane()*4,owner)},reference:vec![0.;shape.plane()*4],resident:true,filter_dirty:vec![0;shape.rows],filter_keys:vec![None;shape.rows],packed_parts:vec![0;shape.rows],previous_parts:vec![0;shape.rows],reference_rows:vec![0;shape.rows],cpu_work_ns:0,worker_cpu_ns:0,checked_parity:None,gpu_finite_verified:false}
     }
     pub fn resident(shape:Shape)->Self {let mut batch=Self::new(shape);batch.resident=true;batch}
     pub fn row(&mut self,row:usize,id:u64,revision:u64,target:bool){
@@ -41,7 +61,7 @@ impl Batch {
     }
     pub fn clear(&mut self) {
         if self.resident {self.filter_dirty.fill(0);self.packed_parts.fill(0);}else{self.input.fill(0.);self.output.fill(0.);self.reference.fill(0.);}
-        self.cpu_work_ns=0;self.worker_cpu_ns=0;self.checked_parity=None;
+        self.cpu_work_ns=0;self.worker_cpu_ns=0;self.checked_parity=None;self.gpu_finite_verified=false;
     }
     pub fn finish_packet(&mut self){
         if !self.resident{return;}let s=self.shape;
@@ -49,7 +69,7 @@ impl Batch {
             let missing=self.previous_parts[row]&!self.packed_parts[row];
             for part in 0..s.parts {if missing&(1<<part)!=0{let x=(part*s.rows+row)*s.bins*2;self.input[x..x+s.bins*2].fill(0.);}}
             if self.packed_parts[row]==0&&self.reference_rows[row]!=0 {
-                for field in 0..4{let base=field*s.plane()+row*s.bins;self.reference[base..base+s.bins].fill(0.);}
+                let base=row*s.bins*4;self.reference[base..base+s.bins*4].fill(0.);
                 self.reference_rows[row]=0;
             }
         }
@@ -69,6 +89,7 @@ impl Batch {
         if self.resident {
             self.packed_parts[row]|=1<<part;
             let x=(part*s.rows+row)*s.bins*2;
+            assert!(s.bins<=self.input.len()/2 && x<=self.input.len()-s.bins*2);
             // Complex32 is repr(C), two adjacent f32s, as in the existing SIMD path.
             unsafe { std::ptr::copy_nonoverlapping(input.as_ptr().cast::<f32>(),self.input.as_mut_ptr().add(x),s.bins*2); }
             if self.filter_dirty[row]!=0 {
@@ -96,6 +117,12 @@ impl Batch {
         let s = self.shape;
         if self.resident{self.reference_rows[row]=1;}
         assert!(row < s.rows);
+        if self.resident {
+            let base=row*s.bins*4;
+            assert!(left.len()>=s.bins && right.len()>=s.bins && s.bins<=self.reference.len()/4 && base<=self.reference.len()-s.bins*4);
+            unsafe {std::ptr::copy_nonoverlapping(left.as_ptr().cast::<f32>(),self.reference.as_mut_ptr().add(base),s.bins*2);std::ptr::copy_nonoverlapping(right.as_ptr().cast::<f32>(),self.reference.as_mut_ptr().add(base+s.bins*2),s.bins*2);}
+            return;
+        }
         for (ear, values) in [left, right].into_iter().enumerate() {
             for (bin, value) in values.iter().take(s.bins).enumerate() {
                 self.reference[(ear * 2) * s.plane() + row * s.bins + bin] = value.re;
@@ -106,9 +133,14 @@ impl Batch {
     pub fn load_output(&self, row: usize, left: &mut [Complex32], right: &mut [Complex32]) {
         let s = self.shape;
         assert!(row < s.rows);
-        // inverse_stereo reconstructs negative frequencies from these unique bins.
-        left.fill(Complex32::new(0., 0.));
-        right.fill(Complex32::new(0., 0.));
+        // inverse_stereo writes every negative left bin from the positive half
+        // and derives the complete right output; clearing the full FFTs is unnecessary.
+        if self.resident {
+            let base=row*s.bins*4;
+            assert!(left.len()>=s.bins && right.len()>=s.bins && s.bins<=self.output.len()/4 && base<=self.output.len()-s.bins*4);
+            unsafe {std::ptr::copy_nonoverlapping(self.output.as_ptr().add(base),left.as_mut_ptr().cast::<f32>(),s.bins*2);std::ptr::copy_nonoverlapping(self.output.as_ptr().add(base+s.bins*2),right.as_mut_ptr().cast::<f32>(),s.bins*2);}
+            return;
+        }
         for (ear, values) in [left, right].into_iter().enumerate() {
             for (bin, value) in values.iter_mut().take(s.bins).enumerate() {
                 *value = Complex32::new(
@@ -144,8 +176,9 @@ impl Batch {
             for row in 0..s.rows {for bin in 0..s.bins {let i=row*s.bins+bin;for part in 0..s.parts {
                 let x=(part*s.rows+row)*s.bins*2+bin*2;let h=2*n*s.parts+((row*s.parts+part)*s.bins+bin)*4;
                 let xr=self.input[x];let xi=self.input[x+1];
-                self.output[i]+=xr*self.input[h]-xi*self.input[h+1];self.output[n+i]+=xr*self.input[h+1]+xi*self.input[h];
-                self.output[2*n+i]+=xr*self.input[h+2]-xi*self.input[h+3];self.output[3*n+i]+=xr*self.input[h+3]+xi*self.input[h+2];
+                let out=row*s.bins*4+bin*2;
+                self.output[out]+=xr*self.input[h]-xi*self.input[h+1];self.output[out+1]+=xr*self.input[h+1]+xi*self.input[h];
+                self.output[out+s.bins*2]+=xr*self.input[h+2]-xi*self.input[h+3];self.output[out+s.bins*2+1]+=xr*self.input[h+3]+xi*self.input[h+2];
             }}}
             return;
         }
@@ -252,12 +285,23 @@ mod tests {
                         old.pack(row,part,&x,&l,&r);resident.pack(row,part,&x,&l,&r);
                     }
                 }
-                old.scalar_reference();resident.finish_packet();resident.scalar_reference();assert_eq!(old.output,resident.output);
+                old.scalar_reference();resident.finish_packet();resident.scalar_reference();
+                for row in 0..shape.rows{let mut a=vec![Complex32::new(0.,0.);shape.bins];let mut b=a.clone();let mut c=a.clone();let mut d=a.clone();old.load_output(row,&mut a,&mut b);resident.load_output(row,&mut c,&mut d);assert_eq!(a,c);assert_eq!(b,d);}
             }
             let spectrum=vec![Complex32::new(0.4,-0.3);shape.bins];resident.store_reference(0,&spectrum,&spectrum);
             resident.clear();resident.finish_packet();resident.scalar_reference();assert!(resident.output.iter().all(|v|*v==0.));assert!(resident.reference.iter().all(|v|*v==0.));
             resident.row(0,9999,1,false);assert_eq!(resident.filter_dirty[0],1);
         }
+    }
+    #[test]
+    fn mapped_packet_keeps_backing_alive_until_both_views_are_dropped(){
+        struct Owner{input:std::cell::UnsafeCell<Box<[f32]>>,output:std::cell::UnsafeCell<Box<[f32]>>,drops:std::sync::Arc<std::sync::atomic::AtomicUsize>}
+        unsafe impl Send for Owner{} unsafe impl Sync for Owner{}
+        impl Drop for Owner{fn drop(&mut self){self.drops.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}}
+        let shape=Shape::bounded(8,1,9).unwrap();let drops=std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner=std::sync::Arc::new(Owner{input:std::cell::UnsafeCell::new(vec![0.;shape.plane()*6].into_boxed_slice()),output:std::cell::UnsafeCell::new(vec![0.;shape.plane()*4].into_boxed_slice()),drops:drops.clone()});
+        let (input,output)=unsafe{(std::ptr::NonNull::new((*owner.input.get()).as_mut_ptr()).unwrap(),std::ptr::NonNull::new((*owner.output.get()).as_mut_ptr()).unwrap())};
+        let mut batch=unsafe{Batch::mapped(shape,input,output,owner.clone())};drop(owner);assert_eq!(drops.load(std::sync::atomic::Ordering::Relaxed),0);batch.input[0]=0.25;assert_eq!(batch.input[0],0.25);drop(batch);assert_eq!(drops.load(std::sync::atomic::Ordering::Relaxed),1);
     }
     #[test]
     fn batch_memory_is_bounded_for_dense_scenes() {
@@ -391,3 +435,8 @@ mod tests {
     }
 
 }
+
+#[cfg(all(target_os="android",feature="pcm-diagnostic"))]
+mod cooperative_probe;
+#[cfg(all(target_os="android",feature="pcm-diagnostic"))]
+pub fn probe_cooperative_audio(count:usize,constrain:bool)->Result<serde_json::Value,String>{cooperative_probe::run(count,constrain)}

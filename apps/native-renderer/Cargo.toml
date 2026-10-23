@@ -64,3 +64,7 @@ required-features = ["cpal-output"]
 [[example]]
 name = "vulkan_convolution_probe"
 required-features = ["vulkan-convolution-probe"]
+
+[[example]]
+name = "cooperative_spectral_probe"
+required-features = ["pcm-diagnostic"]

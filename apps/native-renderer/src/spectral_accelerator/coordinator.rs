@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 pub(super) trait Backend {
     fn configure(&mut self, shape: Shape) -> Result<String, String>;
-    fn packet(&self,shape:Shape)->Batch {Batch::new(shape)}
+    fn packet(&self,shape:Shape)->Result<Batch,String> {Ok(Batch::new(shape))}
     fn execute(&mut self, batch: &mut Batch, timeout_ns: u64) -> Result<(), String>;
     fn details(&self) -> serde_json::Value { serde_json::json!({}) }
     fn deactivate(&mut self) {}
@@ -95,6 +95,7 @@ struct Client {
     retry_after_frame:u64,
     worker_cpu_ema_ns:u64,
     cpu_cost_failures:u32,
+    deadline_failures:u32,
 }
 pub(super) struct Service {
     client: Mutex<Client>,
@@ -149,7 +150,7 @@ impl Service {
                     Command::Deactivate => { backend.deactivate(); continue; }
                     Command::Configure(shape) => {
                         wm.active.store(false, Ordering::Release); wm.detail("compiling", "");
-                        let result = backend.configure(shape).map(|device| {
+                        let result = backend.configure(shape).and_then(|device| {
                             let mut details=backend.details();
                             #[cfg(target_os="android")]
                             if details["cooperativeResident"]==true {details["driverCpuPolicy"]=crate::android_audio_cpu::enter("gpu-driver");}
@@ -212,7 +213,7 @@ impl Service {
                 native_ns: 0,
                 block_base_ns: 0,
                 failed: Vec::new(),
-                cooperative:false,cpu_work_ns:0,retry_after_frame:0,worker_cpu_ema_ns:0,cpu_cost_failures:0,
+                cooperative:false,cpu_work_ns:0,retry_after_frame:0,worker_cpu_ema_ns:0,cpu_cost_failures:0,deadline_failures:0,
             }),
             metrics,
         }
@@ -228,7 +229,7 @@ impl Service {
         if client.epoch != epoch {
             client.epoch=epoch;client.id=client.id.wrapping_add(1);
             client.ready=None;client.shape=None;client.active=false;
-            client.qualified=0;client.warmup=0;client.cpu_work_ns=0;client.worker_cpu_ema_ns=0;client.cpu_cost_failures=0;client.failed.clear();
+            client.qualified=0;client.warmup=0;client.cpu_work_ns=0;client.worker_cpu_ema_ns=0;client.cpu_cost_failures=0;client.deadline_failures=0;client.failed.clear();
             self.metrics.active.store(false,Ordering::Release);
         }
         while let Ok(response) = client.rx.try_recv() {
@@ -240,9 +241,10 @@ impl Service {
             return None;
         }
         if client.shape != Some(shape) {
+            if client.cooperative&&client.frame<client.retry_after_frame{return None;}
             if !client.pending {
+                client.ready = None;
                 if client.tx.try_send(Command::Configure(shape)).is_ok() {
-                    client.ready = None;
                     client.shape = Some(shape);
                     client.pending = true;
                     client.pending_epoch = epoch;
@@ -289,17 +291,18 @@ impl Client {
         let _ = self.tx.try_send(Command::Deactivate);
         self.active = false;
         self.ready = None;
-        if let Some(shape) = self.shape {
-            if !self.failed.contains(&shape) && self.failed.len() < 8 {
-                self.failed.push(shape);
-            }
+        let transient_deadline=self.cooperative&&reason=="audio-deadline-missed"&&self.deadline_failures<3;
+        if transient_deadline {
+            self.deadline_failures+=1;self.shape=None;self.qualified=0;self.warmup=0;self.retry_after_frame=self.frame+128;
+        }else if let Some(shape) = self.shape {
+            if !self.failed.contains(&shape) && self.failed.len() < 8 {self.failed.push(shape);}
         }
         metrics.active.store(false, Ordering::Release);
         metrics.fallbacks.fetch_add(1, Ordering::Relaxed);
         // Called only on qualification completion or a bounded active failure.
         // try_lock avoids a diagnostics reader ever holding the audio renderer.
         if let Ok(mut d) = metrics.detail.try_lock() {
-            d["state"] = "cpu-fallback".into(); d["reason"] = reason.into();
+            d["state"] = "cpu-fallback".into(); d["reason"] = reason.into();d["qualifiedForCpuRelief"]=false.into();
         }
     }
     fn accept(&mut self, response: Response, metrics: &Metrics) {
@@ -321,11 +324,12 @@ impl Client {
                     return;
                 }
                 if let Err(error) = result {
+                    let deadline=self.cooperative&&error.contains("deadline");
                     if let Ok(mut d) = metrics.detail.try_lock() { d["driverError"] = error.into(); }
-                    self.reject(metrics, "driver-execution-failed");
+                    self.reject(metrics,if deadline{"audio-deadline-missed"}else{"driver-execution-failed"});
                     return;
                 }
-                if !batch.output.iter().all(|x| x.is_finite()) {
+                if !batch.gpu_finite_verified && !batch.output.iter().all(|x| x.is_finite()) {
                     self.reject(metrics, "nonfinite-driver-output");
                     return;
                 }
@@ -455,6 +459,7 @@ impl Lease<'_> {
     }
     pub fn completed_in(&mut self, elapsed: Duration) {
         if self.applied {
+            self.client.deadline_failures=0;
             self.metrics.applied.fetch_add(1, Ordering::Relaxed);
             self.metrics.active_epoch.store(self.client.epoch,Ordering::Release);
             self.metrics.active.store(true, Ordering::Release);
@@ -790,14 +795,16 @@ mod tests {
 #[cfg(test)]
 mod cooperative_tests {
  use super::*;
+ static POLICY_TEST_LOCK:std::sync::Mutex<()>=std::sync::Mutex::new(());
  struct Resident;
  impl Backend for Resident {
   fn configure(&mut self,_:Shape)->Result<String,String>{Ok("synthetic-test-GPU".into())}
-  fn packet(&self,s:Shape)->Batch{Batch::resident(s)}
+  fn packet(&self,s:Shape)->Result<Batch,String>{Ok(Batch::resident(s))}
   fn execute(&mut self,b:&mut Batch,_:u64)->Result<(),String>{b.scalar_reference();b.worker_cpu_ns=10_000;Ok(())}
  }
  #[test]
  fn qualified_gpu_stays_idle_when_cool_and_shares_only_under_pressure(){
+  let _policy_lock=POLICY_TEST_LOCK.lock().unwrap();
   use super::super::cooperation as policy;
   policy::new_render_session();policy::thermal(0,f32::NAN);
   for _ in 0..100{policy::observe(1024,48000,16000,5_000_000);}
@@ -822,5 +829,27 @@ mod cooperative_tests {
   policy::thermal(0,f32::NAN);for _ in 0..1100{policy::observe(1024,48000,16000,5_000_000);}
   assert_eq!(policy::share(),0);assert!(service.begin_in_epoch(shape,0).is_none());
   policy::new_render_session();
+ }
+
+ struct DeadlineOnce(std::sync::Arc<AtomicBool>);
+ impl Backend for DeadlineOnce {
+  fn configure(&mut self,_:Shape)->Result<String,String>{Ok("test-deadline-GPU".into())}
+  fn packet(&self,s:Shape)->Result<Batch,String>{Ok(Batch::resident(s))}
+  fn execute(&mut self,b:&mut Batch,_:u64)->Result<(),String>{if b.cpu_work_ns==0&&self.0.swap(false,Ordering::Relaxed){return Err("synthetic audio deadline".into());}b.scalar_reference();b.worker_cpu_ns=10_000;Ok(())}
+ }
+ #[test]fn transient_cooperative_timeout_requalifies_without_using_the_failed_block(){
+  let _policy_lock=POLICY_TEST_LOCK.lock().unwrap();use super::super::cooperation as policy;
+  policy::new_render_session();policy::thermal(1,0.8);for _ in 0..100{policy::observe(1024,48000,16000,5_000_000);}
+  let fail=std::sync::Arc::new(AtomicBool::new(true));let service=Service::spawn(move||Ok(Box::new(DeadlineOnce(fail.clone()))));let shape=Shape::bounded(8,1,9).unwrap();
+  for _ in 0..5000{
+   if let Some(mut lease)=service.begin_in_epoch(shape,0){lease.batch_mut().input.fill(0.1);lease.packed_in(Duration::from_micros(1));
+    if lease.is_qualifying(){let b=lease.batch_mut();b.scalar_reference();b.reference.copy_from_slice(&b.output);b.cpu_work_ns=1_000_000;lease.submit_reference(Duration::from_millis(1),Duration::from_micros(1));}
+    else {let _=lease.execute();}
+    lease.completed_in(Duration::from_millis(2));
+   }
+   if service.metrics.applied.load(Ordering::Relaxed)>0{break;}std::thread::sleep(Duration::from_micros(100));
+  }
+  assert_eq!(service.metrics.fallbacks.load(Ordering::Relaxed),1);assert!(service.metrics.applied.load(Ordering::Relaxed)>0);assert!(!service.client.lock().unwrap().failed.contains(&shape));
+  policy::thermal(0,f32::NAN);policy::new_render_session();
  }
 }

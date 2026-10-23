@@ -4,6 +4,7 @@
 #define sda_vk_run probe_spectral_run
 #define sda_vk_timings probe_spectral_timings
 #define sda_vk_close probe_spectral_close
+#define sda_vk_mapped_packet probe_spectral_mapped_packet
 #define sda_vk_configure_resident probe_spectral_configure_resident
 #define sda_vk_run_resident probe_spectral_run_resident
 #include "../apps/native-renderer/src/vulkan_spectral.cpp"
@@ -12,6 +13,7 @@
 #undef sda_vk_run
 #undef sda_vk_timings
 #undef sda_vk_close
+#undef sda_vk_mapped_packet
 #undef sda_vk_configure_resident
 #undef sda_vk_run_resident
 struct Chain : State {

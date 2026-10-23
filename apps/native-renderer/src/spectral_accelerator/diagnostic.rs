@@ -37,11 +37,11 @@ pub(super) fn probe_legacy(directory: &str) -> Result<serde_json::Value, String>
                 }
             }
             let cpu = started.elapsed().as_micros() as u64;
-            let original = batch.input.clone();
+            let original = batch.input.to_vec();
             let started = Instant::now();
             backend.execute(&mut batch, 1_000_000)?;
             let dsp = started.elapsed().as_micros() as u64;
-            if batch.input != original {
+            if batch.input[..] != original[..] {
                 return Err("legacy-DSP-mutated-input".into());
             }
             if !batch.reference_matches() {
