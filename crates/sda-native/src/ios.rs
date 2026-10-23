@@ -21,12 +21,32 @@ impl AudioOutput for PullOutput {
         }
     }
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IosEngineConfig {
+    #[serde(flatten)]
+    engine: EngineConfig,
+    source_codec: Option<String>,
+}
 struct Host {
+    // Immutable contract for compressed readers. ALAC, MP3 and MPEG-H
+    // initialize through their dedicated source APIs instead.
+    compressed_codec: Option<String>,
     last_tracking_pose: Mutex<Option<[f32;4]>>,
     orientation: Mutex<crate::headphone_orientation::HeadOrientation>,
     alac: Mutex<crate::alac_pcm::AlacPcm>,
     engine: Mutex<MobileEngine>,
     output: Arc<PullOutput>,
+}
+impl Host {
+    fn check_codec(&self, actual: &str) -> EngineResult<()> {
+        if let Some(expected) = &self.compressed_codec {
+            if actual != expected {
+                return Err(format!("iOS source codec mismatch: declared {expected}, decoder {actual}"));
+            }
+        }
+        Ok(())
+    }
 }
 fn tracking_pose_changed(previous: Option<[f32;4]>, current: [f32;4]) -> bool {
     previous.is_none_or(|old| old != current && old != current.map(|v| -v))
@@ -66,12 +86,14 @@ pub unsafe extern "C" fn sda_ios_create(
 ) -> *mut std::ffi::c_void {
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> EngineResult<Host> {
-            let config: EngineConfig =
+            let source: IosEngineConfig =
                 serde_json::from_str(unsafe { text(config)? }).map_err(|e| e.to_string())?;
+            let config = source.engine;
             if config.sample_rate != 48000 || config.output_channels != 2 {
                 return Err("iOS requires 48 kHz stereo".into());
             }
             let mut engine = MobileEngine::new(config, None)?;
+            if let Some(codec) = &source.source_codec { engine.select_compressed_codec(codec)?; }
             engine.load_hrtf(unsafe { text(hrtf)? })?;
             let output = Arc::new(PullOutput::default());
             engine.start(output.clone())?;
@@ -84,6 +106,7 @@ pub unsafe extern "C" fn sda_ios_create(
                 std::thread::sleep(Duration::from_millis(1));
             }
             Ok(Host {
+                compressed_codec: source.source_codec,
                 last_tracking_pose: Mutex::new(None),
                 orientation: Mutex::new(Default::default()),
                 alac: Mutex::new(Default::default()),
@@ -150,6 +173,7 @@ pub unsafe extern "C" fn sda_ios_command(
                 return Ok(pose.map(|q| json!([q.x,q.y,q.z,q.w])).unwrap_or(Value::Null));
             }
             "status" => {
+                host.check_codec(e.codec_name())?;
                 let mut status = serde_json::to_value(e.playback_status()).map_err(|e| e.to_string())?;
                 status["sourceCodec"] = json!(e.codec_name());
                 status["rendererConfiguration"] = json!(e.config());
@@ -196,15 +220,24 @@ pub unsafe extern "C" fn sda_ios_command(
                 boolean("direct")?,
                 boolean("directional")?,
             )?,
+            "codec" => {
+                let codec = str_arg("codec")?;
+                host.check_codec(codec)?;
+                e.select_compressed_codec(codec)?;
+            },
             "mp3" => {
+                host.check_codec("mp3")?;
                 e.open_mp3(str_arg("path")?)?;
             }
             "pullMp3" => {
                 let (frames, eof) = e.pull_mp3(4096)?;
                 return Ok(json!({"frames":frames,"eof":eof}));
             }
-            "mpegh" => e.open_mpegh()?,
-            "finish" => return serde_json::to_value(e.finish()?).map_err(|e| e.to_string()),
+            "mpegh" => { host.check_codec("mpegh")?; e.open_mpegh()?; },
+            "finish" => {
+                host.check_codec(e.codec_name())?;
+                return serde_json::to_value(e.finish()?).map_err(|e| e.to_string());
+            },
             other => return Err(format!("unknown command {other}")),
         }
         Ok(Value::Null)
@@ -222,7 +255,10 @@ pub unsafe extern "C" fn sda_ios_feed(
         }
         let host = unsafe { (p as *mut Host).as_ref() }.ok_or("engine unavailable")?;
         let mut e = host.engine.lock().map_err(|_| "engine poisoned")?;
-        serde_json::to_value(e.feed(unsafe { std::slice::from_raw_parts(bytes, len) })?)
+        host.check_codec(e.codec_name())?;
+        let decoded = e.feed(unsafe { std::slice::from_raw_parts(bytes, len) })?;
+        host.check_codec(e.codec_name())?;
+        serde_json::to_value(decoded)
             .map_err(|e| e.to_string())
     })
 }
@@ -298,6 +334,36 @@ mod tests {
     }
     use super::*;
     #[test]
+    fn compressed_codec_hint_crosses_ios_c_boundary() {
+        let host=Box::new(Host {
+            compressed_codec: None,
+            last_tracking_pose:Mutex::new(None),orientation:Mutex::new(Default::default()),
+            alac:Mutex::new(Default::default()),engine:Mutex::new(MobileEngine::new(EngineConfig::default(),None).unwrap()),
+            output:Arc::new(PullOutput::default()),
+        });
+        let pointer=Box::into_raw(host).cast::<std::ffi::c_void>();
+        struct Cleanup(*mut std::ffi::c_void);
+        impl Drop for Cleanup {fn drop(&mut self){unsafe{sda_ios_close(self.0)}}}
+        let _cleanup=Cleanup(pointer);
+        let read=|reply:*mut c_char| {
+            assert!(!reply.is_null());
+            let text=unsafe{CStr::from_ptr(reply)}.to_string_lossy().into_owned();
+            unsafe{sda_ios_string_free(reply)};
+            serde_json::from_str::<Value>(&text).unwrap()
+        };
+        let op=CString::new("codec").unwrap();let args=CString::new(r#"{"codec":"eac3"}"#).unwrap();
+        assert_eq!(read(unsafe{sda_ios_command(pointer,op.as_ptr(),args.as_ptr())})["ok"],true);
+        let bytes=std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"),"/../../harletty-bridge/harletty/tests/fixtures/joc_atmos_1s.eac3")).unwrap();
+        let fed=read(unsafe{sda_ios_feed(pointer,bytes.as_ptr(),bytes.len())});
+        assert_eq!(fed["ok"],true);assert_eq!(fed["value"]["codec"],"eac3");
+        assert!(fed["value"]["framesPushed"].as_u64().unwrap()>0);
+        assert!(fed["value"]["samplePos"].as_u64().unwrap()>0);
+        let status=CString::new("status").unwrap();let empty=CString::new("{}").unwrap();
+        let state=read(unsafe{sda_ios_command(pointer,status.as_ptr(),empty.as_ptr())});
+        assert_eq!(state["value"]["sourceCodec"],"eac3");
+        assert!(state["value"]["decodedSamplePos"].as_u64().unwrap()>0);
+    }
+    #[test]
     fn callback_preserves_stereo_pause_flush_and_clock() {
         let out = PullOutput::default();
         let fifo = Arc::new(stereo_fifo::StereoFifo::new(2048));
@@ -347,7 +413,7 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let path = root.join("apps/web/public/hrtf-dense/hrtf-set.json");
         let path = CString::new(path.to_str().unwrap()).unwrap();
-        let config = CString::new(json!({"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","directObjectHrtf":true,"directionalHrtf":true}).to_string()).unwrap();
+        let config = CString::new(json!({"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","sourceCodec":"eac3","directObjectHrtf":true,"directionalHrtf":true}).to_string()).unwrap();
         let mut error = std::ptr::null_mut();
         let h = unsafe { sda_ios_create(config.as_ptr(), path.as_ptr(), &mut error) };
         if h.is_null() {
@@ -362,7 +428,26 @@ mod tests {
             }
         }
         let _close = Close(h);
+        assert_eq!(unsafe { command(h, "status", json!({})) }["sourceCodec"], "eac3", "container codec must be selected during engine creation, before callbacks/feed");
+        let op = CString::new("codec").unwrap();
+        let wrong = CString::new(r#"{"codec":"truehd"}"#).unwrap();
+        let reply = unsafe { sda_ios_command(h, op.as_ptr(), wrong.as_ptr()) };
+        let rejected: Value = serde_json::from_str(unsafe { CStr::from_ptr(reply) }.to_str().unwrap()).unwrap();
+        unsafe { sda_ios_string_free(reply) };
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("source codec mismatch"));
+        assert_eq!(unsafe { command(h, "status", json!({})) }["sourceCodec"], "eac3");
         let bytes = include_bytes!("../tests/fixtures/ios-stereo-tones.eac3");
+        // A future source reset must not silently reopen automatic detection.
+        let host = unsafe { &*(h as *const Host) };
+        host.engine.lock().unwrap().reset_source_state();
+        let reply = unsafe { sda_ios_feed(h, bytes.as_ptr(), 4) };
+        let blocked: Value = serde_json::from_str(unsafe { CStr::from_ptr(reply) }.to_str().unwrap()).unwrap();
+        unsafe { sda_ios_string_free(reply) };
+        assert_eq!(blocked["ok"], false);
+        assert!(blocked["error"].as_str().unwrap().contains("source codec mismatch"));
+        assert_eq!(host.engine.lock().unwrap().compressed_input_bytes, 0);
+        unsafe { command(h, "codec", json!({"codec":"eac3"})) };
         for bytes in bytes.chunks(4096) {
             let result = unsafe { value(sda_ios_feed(h, bytes.as_ptr(), bytes.len())) };
             assert_eq!(result["errors"], json!([]));
@@ -617,6 +702,7 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
         let host = unsafe { (p as *mut Host).as_ref() }.ok_or("engine unavailable")?;
         let pcm = unsafe { alac_samples(bytes,len)? };
         let mut e = host.engine.lock().map_err(|_| "engine poisoned")?;
+        host.check_codec("alac")?;
         let mut adapter = host.alac.lock().map_err(|_| "ALAC adapter poisoned")?;
         for pcm in pcm.chunks(8192) {
             let frame = adapter.live_frame(pcm,upmix,e.decoded_sample_pos())?;

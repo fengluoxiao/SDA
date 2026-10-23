@@ -23,7 +23,7 @@ enum SdaError: LocalizedError {
  }
  static func decode(_ url: URL, resume: Bool) throws -> [Float] {
   let input = try CompressedInput(url:url,name:url.lastPathComponent)
-  precondition(input.isAlac)
+  precondition(input.isAlac && input.nativeCodec == nil)
   var bytes = Data(); var blocks = 0
   while let packet = try input.next() {
    bytes.append(packet); blocks += 1

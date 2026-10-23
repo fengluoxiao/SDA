@@ -19,7 +19,7 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
   if (Platform.OS !== "android") return <IOSSystemTabs {...props} />;
   if (!hasAndroidChrome) return <><View style={{ flex: 1 }}>{props.children}</View>{props.selected !== 0 && props.accessory}{props.fallback}</>;
   const side = !!props.sideBar;
-  const mini = androidChromeState(player, props.selected).showMini;
+  const mini = !!props.accessory && androidChromeState(player, props.selected).showMini;
   const footerHeight = side ? (mini ? 64 : 0) : androidChromeState(player, props.selected).height;
   const leftRail = side && !props.sideBarInsetReserved && props.sideBarPosition === "left";
   const rightRail = side && !props.sideBarInsetReserved && !leftRail;

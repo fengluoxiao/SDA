@@ -18,6 +18,7 @@ function fixture() {
   currentTrackHash:()=>{calls.push(['legacyHash']);return snapshot.trackHash;},status:()=>{calls.push(['legacyStatus']);return JSON.stringify(snapshot.status);},objects:()=>{calls.push(['legacyObjects']);return JSON.stringify(snapshot.objects);},hrtfStatus:()=> 'ready',configurePlaybackQueue:()=>{},
  };
  app.engine=engine;app.foreground=true;app.state={...app.state,playing:true,queueIndex:0,fileName:'A.m4a',selectedUri:'file:///a',positionMs:40000,durationMs:180000,queue:[{contentHash:'a',name:'A.m4a',uri:'file:///a',metadata:{title:'A',durationMs:180000}},{contentHash:'b',name:'B.m4a',uri:'file:///b',metadata:{title:'B',durationMs:200000}}]};
+ app.realSelectTrack=app.selectTrack;
  app.selectTrack=()=>{next++;};
  return {app,engine,writes,calls,next:()=>next,set:value=>{snapshot={...snapshot,...value};}};
 }
@@ -41,9 +42,31 @@ next.set({generation:3,trackHash:'b',status:{positionMs:0,decodedSamplePos:0,pau
 const quiet=fixture();quiet.app.pollStatus();quiet.app.foreground=false;quiet.calls.length=0;quiet.writes.length=0;quiet.set({status:{positionMs:41000}});quiet.app.pollStatus();assert.deepEqual(quiet.calls,[['snapshot',false]]);assert.equal(quiet.writes.length,0);
 // An error belongs to its snapshot and is cleared when a newer track succeeds.
 const failure=fixture();failure.set({feedError:'cannot decode',status:{positionMs:45000}});failure.app.pollStatus();assert.equal(failure.app.state.error,'cannot decode');failure.set({generation:2,trackHash:'b',feedError:null,status:{positionMs:0}});failure.app.pollStatus();assert.equal(failure.app.state.error,null);
+const terminal=fixture();terminal.set({generation:2,trackHash:'b',feedDone:true,feedError:'no decoded audio',status:{positionMs:0,paused:true}});terminal.app.pollStatus();
+assert.equal(terminal.app.state.fileName,'B.m4a');assert.equal(terminal.app.state.playing,false);assert.equal(terminal.app.state.error,'no decoded audio');assert.equal(terminal.next(),0,'a decode failure must not silently advance the queue');
 // File preparation owns the native player lock; no synchronous tracker poll
 // may stall JavaScript while an asynchronous play request is still preparing.
 const preparing=fixture();preparing.app.state.busy=true;
 preparing.engine.headTrackingStatus=()=>{throw new Error('busy native player was synchronously queried');};
 preparing.app.pollStatus();assert.equal(preparing.app.state.error,null);assert.equal(preparing.calls.length,0);
-console.log('iOS playback snapshots: background EOF, final clock, atomic track transition, stale generation, repeat-one and hidden UI passed.');
+
+
+// A new song must never inherit the old codec while preparing, even when
+// initialization fails before there is a new native playback snapshot.
+for (const stage of ['prepare', 'native-open']) {
+ const change=fixture();change.app.state.sourceCodec='truehd';change.app.state.alacUpmixActive=true;change.app.state.systemSpatial360RAActive=true;change.app.state.outputChannels=12;
+ change.app.getEngine=()=>change.engine;change.app.poller=1;change.app.syncNativeQueue=()=>{};
+ let reject;
+ const pending=new Promise((_,fail)=>{reject=fail;});
+ change.app.prepareTrack=stage==='prepare'?()=>pending:async()=>null;
+ change.engine.playUri=()=>pending;
+ const operation=change.app.realSelectTrack(1);
+ assert.equal(change.app.state.fileName,'B.m4a');
+ assert.equal(change.app.state.sourceCodec,'','new source must clear the previous TrueHD label before awaiting work');
+ assert.equal(change.app.state.alacUpmixActive,false);assert.equal(change.app.state.systemSpatial360RAActive,false);assert.equal(change.app.state.outputChannels,2);
+ await Promise.resolve();reject(new Error('fixture load failure'));await operation;
+ assert.equal(change.app.state.sourceCodec,'','failed preparation must not display the previous decoder');
+ assert.equal(change.app.state.error,'fixture load failure');
+}
+
+console.log('iOS playback snapshots: atomic EOF, generations, repeat-one, loading and failed-load codec isolation passed.');

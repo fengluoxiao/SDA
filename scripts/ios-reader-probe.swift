@@ -29,6 +29,7 @@ enum SdaError: LocalizedError {
   checkpoint("normal-full-read")
   let input = try CompressedInput(url: fixture, name: fixture.lastPathComponent)
   inspected=input
+  precondition(input.nativeCodec == "eac3","MP4 must keep its declared codec")
   var actual = Data(); var packets = 0
   while let packet = try input.next() { actual.append(packet); packets += 1 }
   guard actual == expected else { throw SdaError.message("Compressed MP4 changed bytes: \(actual.count) vs \(expected.count)") }

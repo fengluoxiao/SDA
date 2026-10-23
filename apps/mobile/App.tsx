@@ -467,7 +467,8 @@ export default class App extends React.Component<Record<string, never>, State> {
     if (this.changingTrack || this.state.busy || !track || track.preparation) return;
     this.changingTrack = true;
     this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
-      durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [],
+      sourceCodec: "", alacUpmixActive: false, systemSpatial360RAActive: false, outputChannels: 2 });
     try {
       const engine = this.getEngine();
       if (!this.poller) this.restartStatusPolling();

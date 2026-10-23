@@ -246,15 +246,18 @@ final class SdaPlayer {
   layout = enabled ? "7.1.4" : "2.0"
   systemSpatial?.setAlacUpmix(enabled)
  }
- func startNative() throws {
+ func startNative(codec: String?) throws {
   let session = AVAudioSession.sharedInstance()
   try session.setCategory(.playback, mode: .default, options: [])
   try session.setPreferredSampleRate(48000)
   try session.setPreferredIOBufferDuration(0.01)
   let sessionReady = try activatePlaybackSession()
   let s = settings()
-  let config = try json(["sampleRate":48000,"outputChannels":2,"layout":layout,
-   "objectRendering":(s["direct"] as? Bool ?? true),"binauralEnabled":s["binauralEnabled"]!,"directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!])
+  var configuration: [String:Any] = ["sampleRate":48000,"outputChannels":2,"layout":layout,
+   "objectRendering":(s["direct"] as? Bool ?? true),"binauralEnabled":s["binauralEnabled"]!,"directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!]
+  // Bind the source before exposing the engine or starting an audio callback.
+  if let codec { configuration["sourceCodec"]=codec }
+  let config = try json(configuration)
   var error: UnsafeMutablePointer<CChar>?
   guard let h = sda_ios_create(config, try hrtfPath(s["hrtfSet"] as! String), &error) else {
    _ = try decodeReply(error); throw SdaError.message("引擎初始化失败")
@@ -503,9 +506,10 @@ final class SdaPlayer {
      systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:1, alacUpmix:input.isAlac ? alacUpmixActive : nil, sourceCodec:input.isAv3a ? "av3a" : "mpegh")
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "\(input.isAv3a ? "Audio Vivid" : "360RA") → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
-    } else { try startNative() }
+    } else { try startNative(codec:input.nativeCodec) }
     playbackYaw = prefs.bool(forKey:"sda.headTracking") || inBackground ? 0 : yaw
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
+    // Compressed input is already bound by startNative; it never enters auto detection.
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
     if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
     // Apply persisted balance after the new route/source is fully selected.
@@ -641,7 +645,10 @@ final class SdaPlayer {
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
       if !input.isAv3a, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
       let finalStatus = try command("status") as! [String:Any]
-      if let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 { duration = samples.doubleValue / 48 }
+      guard let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 else {
+       throw SdaError.message("已读完音轨，但没有解码出任何音频")
+      }
+      duration = samples.doubleValue / 48
       finished = true
      }
     }
@@ -649,7 +656,7 @@ final class SdaPlayer {
     }
     if !keepFeeding { return }
    }
-  } catch { locked { if generation == token { finishPreparation(); failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
+  } catch { locked { if generation == token { finishPreparation(); done = true; failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  // Called only by the serialized native feeder under the player lock, before
  // stopping the old consumer. No React timer/import/bridge round trip at EOF.
