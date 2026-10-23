@@ -14,9 +14,9 @@ const screens: typeof import("react-native-screens") | null = hasNativePageHeade
 
 // Each page owns its real UINavigationController/header from its first layout.
 // The outer stack moves the whole page without a separate header transition.
-export function IOSNativePage({ screenId, title, theme, accent, headerLeft, headerRight, backgroundColor = PlatformColor("systemGroupedBackground"), onHeaderHeightChange, children }: {
+export function IOSNativePage({ screenId, title, theme, accent, headerLeft, headerRight, headerRightWidth = 96, backgroundColor = PlatformColor("systemGroupedBackground"), onHeaderHeightChange, children }: {
   screenId: string; title: string; theme: "light" | "dark"; accent: string;
-  headerLeft?: React.ReactNode; headerRight?: React.ReactNode; backgroundColor?: ColorValue; onHeaderHeightChange?(height: number): void; children: React.ReactNode;
+  headerLeft?: React.ReactNode; headerRight?: React.ReactNode; headerRightWidth?: number; backgroundColor?: ColorValue; onHeaderHeightChange?(height: number): void; children: React.ReactNode;
 }) {
   if (!screens) return <>{children}</>;
   const { ScreenStack, ScreenStackItem, ScreenStackHeaderLeftView, ScreenStackHeaderRightView } = screens;
@@ -30,8 +30,8 @@ export function IOSNativePage({ screenId, title, theme, accent, headerLeft, head
         color: accent, backgroundColor: "transparent", experimental_userInterfaceStyle: theme,
         children: <>
           {!!headerLeft && <ScreenStackHeaderLeftView hidesSharedBackground style={{ width: 44, height: 44 }}>{headerLeft}</ScreenStackHeaderLeftView>}
-          {!!headerRight && <ScreenStackHeaderRightView hidesSharedBackground style={{ width: 96, height: 44 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", width: 96, height: 44 }}>{headerRight}</View>
+          {!!headerRight && <ScreenStackHeaderRightView hidesSharedBackground style={{ width: headerRightWidth, height: 44 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", width: headerRightWidth, height: 44 }}>{headerRight}</View>
           </ScreenStackHeaderRightView>}
         </>,
       }}

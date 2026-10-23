@@ -25,7 +25,8 @@ for(const menu of [true,false]) {
   const gearHost=mod.IOSSettingsButton({onPress(){}});const gear=gearHost.props.children.props.children;
   assert.equal(gear.props.systemName,'gearshape');assert.equal(gear.props.size,image.props.size);assert.equal(gear.props.size,22);
   assert.equal(gearHost.props.style.width,element.props.style.width);assert.equal(gearHost.props.style.height,element.props.style.height);
-  assert.equal(image.props.color,spatial?'accent':'neutral');
+  assert.equal(image.props.color,undefined,'use the compatible foregroundColor modifier, not Image color -> foregroundStyle');
+  assert.equal(image.props.modifiers.find(m=>m.name==='foregroundColor').args[0],spatial?'accent':'neutral');
   assert.equal(image.props.modifiers[0].name,'rotation3DEffect');assert.equal(image.props.modifiers[0].args[0].angle,spatial&&tracking?yaw:0);
   if(menu){const picker=control.props.children;assert.equal(picker.props.selection,!spatial?'off':tracking?'tracking':'fixed');picker.props.onSelectionChange('fixed');picker.props.onSelectionChange('tracking');picker.props.onSelectionChange('off');assert.deepEqual(changes,[false,true,'off']);}
  }

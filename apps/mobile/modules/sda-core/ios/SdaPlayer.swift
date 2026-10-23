@@ -282,7 +282,7 @@ final class SdaPlayer {
    else { isPaused = true; finishPreparation() }
    _ = try command("near", ["enabled":s["nearField"]!,"scale":s["metresPerUnit"]!])
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
-   _ = try command("volume", ["volume":prefs.object(forKey:"sda.volume") ?? 1.0])
+   _ = try command("volume", ["volume":1.0])
    _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
    if !sessionReady { _ = try command("pause", ["paused":true]) }
    let room = s["roomId"] as! String
@@ -503,7 +503,7 @@ final class SdaPlayer {
      guard try activatePlaybackSession() else {
       throw SdaError.message("系统音频正被占用，请结束通话或其他音频后再播放")
      }
-     systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:(prefs.object(forKey:"sda.volume") as? NSNumber)?.floatValue ?? 1, alacUpmix:input.isAlac ? alacUpmixActive : nil, sourceCodec:input.isAv3a ? "av3a" : "mpegh")
+     systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:1, alacUpmix:input.isAlac ? alacUpmixActive : nil, sourceCodec:input.isAv3a ? "av3a" : "mpegh")
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "\(input.isAv3a ? "Audio Vivid" : "360RA") → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative(codec:input.nativeCodec) }

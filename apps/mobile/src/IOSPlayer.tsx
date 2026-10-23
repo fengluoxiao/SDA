@@ -1,5 +1,6 @@
 import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
+import { sideNavigationAppearance } from "./side-navigation-appearance";
 import { PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
 import { phoneLandscapeBlurEdge } from "./phone-landscape-blur-model";
 import { isTabletPlayer, tabletPlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
@@ -9,6 +10,9 @@ import { hasNativePageHeader } from "./IOSNativePage";
 import { hasUIKitIOSTabs } from "./IOSUIKitTabs";
 import { useIOSCutoutSide } from "./use-ios-cutout-side";
 import { SideNavigationDock } from "./SideNavigationDock";
+import { SystemClock } from "./SystemClock";
+import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
+import { CircularMiniPlayer } from "./CircularMiniPlayer";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
 import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
@@ -69,6 +73,8 @@ function ThemedPlayer(p: PlayerProps) {
   const sideNavigationRight = sideNavigationActive && navigationPreferences.sideTabPosition === "right";
   const tabletDevice = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height);
   const androidPhone = Platform.OS === "android" && !tabletDevice;
+  const showSystemClock = landscapePlayer && !tabletDevice && (Platform.OS === "ios" || (Platform.OS === "android" && sideNavigationActive));
+  const circularMiniPlayerActive = showSystemClock && sideNavigationActive && !!p.selectedUri;
   const tabletPlayer = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height, navigationPreferences.tabletPortraitLayout);
   const phoneLandscapeBlur = !tabletDevice && landscapePlayer && navigationPreferences.tabletPortraitLayout;
   const tabletSideNavigation = tabletPlayer && sideNavigationActive;
@@ -175,8 +181,9 @@ function ThemedPlayer(p: PlayerProps) {
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
-  const togglePlayback = () => p.playing ? p.togglePause() : p.play();
-  const navigate = (index: number) => { setPage(index); if (index === 2) setSceneVisited(true); };
+  const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
+  const navigate = useCallback((index: number) => { setPage(index); if (index === 2) setSceneVisited(true); }, []);
+  const openPlayer = useCallback(() => navigate(0), [navigate]);
   useEffect(() => {
     if (p.playbackPageRequest) { setSettings(false); navigate(0); }
   }, [p.playbackPageRequest]);
@@ -212,16 +219,23 @@ function ThemedPlayer(p: PlayerProps) {
   const cover = (size: number) => p.metadata.coverUri
     ? <Image source={{ uri: p.metadata.coverUri }} resizeMode="cover" accessibilityLabel={(p.metadata.album || title) + " 封面"} style={{ width: size, height: size, borderRadius: size > 100 ? 18 : 8 }} />
     : <View accessibilityLabel="无专辑封面" style={[s.emptyCover, { width: size, height: size, borderRadius: size > 100 ? 18 : 8, backgroundColor: c.field }]}>{label("♫", true, { fontSize: size > 100 ? 56 : 23 })}</View>;
-  const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && <View style={[s.miniPlayer, environment ? s.nativeMiniPlayer : sideNavigationActive ? s.floatingMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
+  const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && !circularMiniPlayerActive && <View style={[s.miniPlayer, environment ? s.nativeMiniPlayer : sideNavigationActive ? s.floatingMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
     {!environment && sideNavigationActive && <IOSMiniPlayerBackdrop dark={!isLight} />}
     <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(environment === "inline" ? 24 : 32)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text>{environment !== "inline" && <Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text>}</View></Pressable>
     <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.miniPlayback, { opacity: p.busy ? .35 : 1 }]}>
       <IOSPlaybackSymbol playing={playing} color={c.accent} />
     </Pressable>
   </View>;
-  const headIndicator = spatialHeadIndicator(p.binauralEnabled !== false, p.headTrackingEnabled, p.headYaw, c.accent, immersiveHome ? pc.ink : c.ink);
+  const sideNavigationBackground = immersiveHome ? (!sideNavigationRight && !hasArtwork ? "#303034" : fadeColor) : c.bg;
+  const headActiveColor = Platform.OS === "ios"
+    ? sideNavigationAppearance(c.accent, !isLight, sideNavigationBackground).selectedIcon : c.accent;
+  const headIndicator = spatialHeadIndicator(p.binauralEnabled !== false, p.headTrackingEnabled, p.headYaw, headActiveColor, immersiveHome ? pc.ink : c.ink);
   const headerActions = <>
-        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
+        {showSystemClock && <SystemClock color={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive} />}
+        {circularMiniPlayerActive && <CircularMiniPlayer title={title} artist={artist} artworkUri={artworkUri} color={immersiveHome ? pc.ink : c.ink}
+          positionMs={Math.floor(p.positionMs / 1000) * 1000} durationMs={p.durationMs} playing={playing} disabled={p.busy || p.preparingAudio === true}
+          onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
+        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} activeIconColor={headActiveColor} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onDisable={() => p.setBinauralEnabled?.(false)}
           onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
@@ -280,13 +294,13 @@ function ThemedPlayer(p: PlayerProps) {
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
-    <StatusBar translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
+    <StatusBar hidden={Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} translucent={Platform.OS === "android"} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} backgroundColor={Platform.OS === "android" ? "transparent" : homeBackground} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
       <SafeAreaInsetsContext.Consumer>{outerInsets => <View testID="tablet-page-viewport" style={[{ flex: 1 }, tabletSideNavigation && tabletNavigationPageInsets(outerInsets?.left ?? 0, outerInsets?.right ?? 0)]} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       {/* UIKit pages own their headers/insets so selecting a tab never resizes
           the host underneath an in-flight native page transition. */}
       {!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader(page)}
-      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} onOpenSettings={() => setSettings(true)} pageHeaders={hasUIKitIOSTabs || hasAndroidChrome ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} sideBar={sideNavigationActive || undefined} sideBarInsetReserved={tabletSideNavigation} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} onOpenSettings={() => setSettings(true)} pageHeaders={hasUIKitIOSTabs || hasAndroidChrome ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} libraryHeaderActionsWidth={showSystemClock ? 152 : 96} sideBar={sideNavigationActive || undefined} sideBarInsetReserved={tabletSideNavigation} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri && !circularMiniPlayerActive ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
         <View style={[s.page, np.root, !hasSystemIOSTabs && page !== 0 && s.hidden]}
           onLayout={event => {
             if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
@@ -318,7 +332,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           <View style={[np.volume, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.volumeGap }, tabletLayout && { marginTop: tabletLayout.volumeGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("volume", event.nativeEvent.layout.height)}>
             <Symbol name="speaker.fill" fallback="◂" size={13} color={pc.muted} />
-            <View accessible accessibilityRole="adjustable" accessibilityLabel="音量滑块" accessibilityValue={{ min: 0, max: 100, now: Math.round(p.volume * 100) }} accessibilityActions={[{ name: "increment" }, { name: "decrement" }]} onAccessibilityAction={e => p.setVolume(Math.max(0, Math.min(1, p.volume + (e.nativeEvent.actionName === "increment" ? .05 : -.05))))} {...volumeGesture.panHandlers} onLayout={e => { volumeWidth.current = Math.max(1, e.nativeEvent.layout.width); }} style={np.volumeTouch}><View style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${Math.max(0, Math.min(1, p.volume)) * 100}%` }]} /></View></View>
+            {hasSystemVolumeSlider ? <SystemVolumeSlider activeColor={pc.muted} inactiveColor={pc.line} onChange={p.setVolume} /> : <View accessible accessibilityRole="adjustable" accessibilityLabel="音量滑块" accessibilityValue={{ min: 0, max: 100, now: Math.round(p.volume * 100) }} accessibilityActions={[{ name: "increment" }, { name: "decrement" }]} onAccessibilityAction={e => p.setVolume(Math.max(0, Math.min(1, p.volume + (e.nativeEvent.actionName === "increment" ? .05 : -.05))))} {...volumeGesture.panHandlers} onLayout={e => { volumeWidth.current = Math.max(1, e.nativeEvent.layout.width); }} style={np.volumeTouch}><View style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${Math.max(0, Math.min(1, p.volume)) * 100}%` }]} /></View></View>}
             <Symbol name="speaker.wave.2.fill" fallback="▸" size={18} color={pc.muted} />
           </View>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
@@ -331,7 +345,7 @@ function ThemedPlayer(p: PlayerProps) {
           : { marginLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0, cutoutSide).marginLeft, marginRight: -6 - (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) }), !hasSystemIOSTabs && page !== 1 && s.hidden]} contentContainerStyle={[s.otherContent, s.libraryContent, sideNavigationActive && !tabletSideNavigation && (sideNavigationRight ? (nativeLibraryHeaderActive ? { paddingLeft: 18 + (screenInsets?.left ?? 0), paddingRight: iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).paddingRight } : { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }) : { paddingLeft: iosLeftLibraryGutter(screenInsets?.left ?? 0, cutoutSide).paddingLeft, paddingRight: 18 + (nativeLibraryHeaderActive ? screenInsets?.right ?? 0 : 0) })]}
           scrollEnabled bounces={false} alwaysBounceVertical={false} showsVerticalScrollIndicator
           indicatorStyle={isLight ? "black" : "white"} persistentScrollbar={false}
-          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri ? 62 : 10, right: tabletSideNavigation ? 3 : sideNavigationRight ? (nativeLibraryHeaderActive ? iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight : SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) - iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
+          automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios" && hasSystemIOSTabs} scrollIndicatorInsets={{ top: 10, bottom: sideNavigationActive && !!p.selectedUri && !circularMiniPlayerActive ? 62 : 10, right: tabletSideNavigation ? 3 : sideNavigationRight ? (nativeLibraryHeaderActive ? iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight : SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) - iosRightLibraryGutter(screenInsets?.right ?? 0, cutoutSide).indicatorRight) : sideNavigationActive && nativeLibraryHeaderActive ? 3 + (screenInsets?.right ?? 0) : 3, left: 0 }}
           contentInsetAdjustmentBehavior="automatic">
           {!!p.error && !engineUnavailable && (nativeLibraryHeaderActive || hasAndroidChrome) && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
           {label("音乐留在你的设备上", true, s.lead)}
@@ -415,11 +429,11 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
-  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" tablet={tabletPlayer} cutoutSide={cutoutSide}>
+  {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" compact={circularMiniPlayerActive && height < (Platform.OS === "android" ? 400 : 360)} tablet={tabletPlayer} cutoutSide={cutoutSide}>
     {headerActions}
   </SideNavigationDock>}
   {sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom" tablet={tabletPlayer} cutoutSide={cutoutSide}>
-    {Platform.OS === "android" ? <AndroidSideTabs selected={page} onChange={navigate} accent={c.accent} dark={!isLight} /> : <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight} backgroundColor={immersiveHome ? (!sideNavigationRight && !hasArtwork ? "#303034" : fadeColor) : c.bg}
+    {Platform.OS === "android" ? <AndroidSideTabs selected={page} onChange={navigate} accent={c.accent} dark={!isLight} /> : <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight} backgroundColor={sideNavigationBackground}
         renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={isLight ? "light" : "dark"} size={20} />} />}
   </SideNavigationDock>}
   </View>

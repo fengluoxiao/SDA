@@ -1,4 +1,5 @@
 import { primeArtworkColor } from "./src/artwork-color";
+import { hasSystemVolumeSlider } from "./src/SystemVolumeSlider";
 import React from "react";
 import { Platform, Linking, AppState, type NativeEventSubscription } from "react-native";
 import renderingPresets from "./rendering-presets.json";
@@ -482,7 +483,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
           roomId: settings.roomId || "", layout: settings.layout, systemSpatial360RAActive: settings.systemSpatial360RAActive === true });
       // Retain the queue-owned compressed track for repeat/next. Interruptions use resume, never reimport.
-      engine.setVolume(this.state.volume);
+      engine.setVolume(hasSystemVolumeSlider ? 1 : this.state.volume);
       const nativePaused = Platform.OS === "android" && JSON.parse(engine.status()).paused === true;
       this.setState({ playing: true, ended: false, paused: nativePaused, error: null });
     } catch (error) {
@@ -659,7 +660,9 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private setVolume = (volume: number) => {
     try {
-      this.getEngine().setVolume(volume);
+      // Native system sliders already changed the device volume. Mirroring it
+      // into DSP gain would attenuate the same audio a second time.
+      if (!hasSystemVolumeSlider) this.getEngine().setVolume(volume);
       this.setState({ volume });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });

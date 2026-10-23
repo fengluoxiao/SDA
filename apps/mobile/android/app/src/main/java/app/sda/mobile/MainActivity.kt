@@ -3,6 +3,7 @@ package app.sda.mobile
 import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
+import android.media.AudioManager
 import android.graphics.Color
 import androidx.core.view.WindowCompat
 
@@ -19,9 +20,9 @@ class MainActivity : ReactActivity() {
     // coloring the background, status bar, and navigation bar.
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
-    // Keep the phone portrait layout; tablets can use the shared landscape player.
-    requestedOrientation = if (resources.configuration.smallestScreenWidthDp >= 600)
-      ActivityInfo.SCREEN_ORIENTATION_FULL_USER else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    // Respect the system rotation lock on phones and tablets.
+    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+    volumeControlStream = AudioManager.STREAM_MUSIC
     super.onCreate(null)
     WindowCompat.setDecorFitsSystemWindows(window, false)
     window.statusBarColor = Color.TRANSPARENT

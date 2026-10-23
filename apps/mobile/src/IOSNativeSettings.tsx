@@ -50,18 +50,18 @@ function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
   </Host>;
 }
 
-export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, onSelect, onDisable, spatialEnabled = true, sideDock = false, headYaw = 0, inactiveColor = "#ffffff" }: {
-  enabled: boolean; spatialEnabled?: boolean; onDisable?(): void; disabled: boolean; accent: string; onSelect(enabled: boolean): void; sideDock?: boolean; headYaw?: number; inactiveColor?: string;
+export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, activeIconColor = accent, onSelect, onDisable, spatialEnabled = true, sideDock = false, headYaw = 0, inactiveColor = "#ffffff" }: {
+  enabled: boolean; spatialEnabled?: boolean; onDisable?(): void; disabled: boolean; accent: string; activeIconColor?: string; onSelect(enabled: boolean): void; sideDock?: boolean; headYaw?: number; inactiveColor?: string;
 }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Menu, Picker, Text } = swiftUI;
-  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, tag, pickerStyle, rotation3DEffect, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const indicator = spatialHeadIndicator(spatialEnabled, enabled, headYaw, accent, inactiveColor);
+  const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, disabled, tint, foregroundColor, tag, pickerStyle, rotation3DEffect, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+  const indicator = spatialHeadIndicator(spatialEnabled, enabled, headYaw, activeIconColor, inactiveColor);
   const label = indicator.label;
-  const image = hasView("ImageView") ? <swiftUI.Image systemName={indicator.symbol} size={playerActionIconSize} color={indicator.color}
-    modifiers={[rotation3DEffect({ angle: indicator.poseDegrees, axis: { y: 1 }, perspective: .35 })]} /> : null;
+  const image = hasView("ImageView") ? <swiftUI.Image systemName={indicator.symbol} size={playerActionIconSize}
+    modifiers={[rotation3DEffect({ angle: indicator.poseDegrees, axis: { y: 1 }, perspective: .35 }), foregroundColor(indicator.color)]} /> : null;
   const modifiers = [labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
-    accessibilityLabel(label), disabled(isDisabled), tint(indicator.color)];
+    accessibilityLabel(label), disabled(isDisabled), tint(indicator.active ? accent : inactiveColor)];
   if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <swiftUI.Button label={image ? undefined : label} systemImage={image ? undefined : indicator.symbol} onPress={() => Alert.alert("空间音频", "", [
       ...(onDisable ? [{ text: "关闭", onPress: onDisable }] : []),

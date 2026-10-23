@@ -20,9 +20,10 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, libraryHeaderActions, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, libraryHeaderActions, libraryHeaderActionsWidth, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false }: {
   pageHeaders?: React.ReactNode[];
   libraryHeaderActions?: React.ReactNode;
+  libraryHeaderActionsWidth?: number;
   sideBarInsetReserved?: boolean; sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number; rightContentGap?: number; leftContentOffset?: number;
   selected: number; onChange(index: number): void; pages: React.ReactNode[];
   accessory: React.ReactNode; nativeAccessory?: (environment: "regular" | "inline") => React.ReactNode; accent: string; theme: "light" | "dark"; backgroundColor: string; pageBackgroundColors?: string[];
@@ -70,7 +71,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         </SafeAreaProvider>;
     return index === 1 && hasNativePageHeader ? <IOSNativePage screenId="sda-library-content" title="资料库" theme={theme} accent={accent}
       onHeaderHeightChange={height => setLibraryHeaderHeight(previous => Math.abs(previous - height) < 0.5 ? previous : height)}
-      headerRight={!sideBar ? libraryHeaderActions : undefined} backgroundColor={pageBackgroundColors?.[index] ?? backgroundColor}>{viewport}</IOSNativePage> : viewport;
+      headerRight={!sideBar ? libraryHeaderActions : undefined} headerRightWidth={libraryHeaderActionsWidth} backgroundColor={pageBackgroundColors?.[index] ?? backgroundColor}>{viewport}</IOSNativePage> : viewport;
   };
   // These properties configure UITabBarAppearance itself. Painting a background
   // behind the TabView cannot override its opaque native bar appearance.
