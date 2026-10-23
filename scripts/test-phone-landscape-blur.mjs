@@ -14,6 +14,11 @@ assert.match(source,/\.\.\.landscapeFade, tintColor: fadeColor/,'gradient and Ga
 assert(source.indexOf('<PhoneLandscapeBlur backgroundColor=')>=0);
 assert(source.indexOf('<PhoneLandscapeBlur backgroundColor=')<source.indexOf('key={artworkUri}'));
 assert(source.indexOf('<PhoneLandscapeBlur edge ')>source.indexOf('key={artworkUri}'));
+const movingCover=source.indexOf('<SharedMiniPlayerArtwork '), edgeLayer=source.indexOf('testID="player-artwork-edge-overlay"');
+assert(movingCover>source.indexOf('key={artworkUri}'),'moving cover overlays the settled artwork');
+assert(edgeLayer>movingCover,'the original fade must cover the moving image throughout the return');
+assert(source.indexOf('<PhoneLandscapeBlur edge ')>edgeLayer,'Gaussian treatment shares the same layer above both artwork views');
+assert(source.indexOf('<SafeAreaView edges=',edgeLayer)>edgeLayer,'page text and controls stay above the artwork and its fade');
 const edge=readFileSync('apps/mobile/src/PhoneLandscapeBlur.tsx','utf8');
 assert.match(edge,/community\/masked-view/);assert.match(edge,/p.edge \? -frame.left : 0/);
 assert.doesNotMatch(edge,/writeAsString|saveTo|captureRef/);

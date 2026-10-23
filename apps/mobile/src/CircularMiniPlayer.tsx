@@ -1,5 +1,5 @@
 import React, { memo, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { IOSPlaybackSymbol } from "./IOSPlaybackSymbol";
 import { formatPlaybackTime } from "./ios-ui-model";
 
@@ -25,6 +25,7 @@ type Props = {
   title: string; artist: string; artworkUri: string; color: string;
   positionMs: number; durationMs: number; playing: boolean; disabled: boolean;
   onTogglePlayback(): void; onOpenPlayer(): void;
+  elementRef?: React.Ref<View>; onLayout?(): void; interactive?: boolean; visibility?: number | Animated.AnimatedInterpolation<number>;
 };
 
 export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
@@ -33,14 +34,14 @@ export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
   const elapsed = Number.isFinite(p.positionMs) ? Math.max(0, p.positionMs) : 0;
   const progress = duration > 0 ? Math.min(1, elapsed / duration) : 0;
   const hasArtwork = !!p.artworkUri && p.artworkUri !== failedArtwork;
-  return <Pressable testID="circular-mini-player" accessibilityRole="button"
+  return <Pressable ref={p.elementRef} collapsable={false} onLayout={p.onLayout} pointerEvents={p.interactive === false ? "none" : "auto"} accessibilityElementsHidden={p.interactive === false} importantForAccessibility={p.interactive === false ? "no-hide-descendants" : "auto"} testID="circular-mini-player" accessibilityRole="button"
     accessibilityLabel={(p.playing ? "暂停" : "播放") + "：" + p.title + "，" + p.artist}
     accessibilityHint="轻点暂停或继续，长按打开正在播放"
     accessibilityState={{ disabled: p.disabled }}
     accessibilityValue={{ text: formatPlaybackTime(elapsed) + " / " + (duration > 0 ? formatPlaybackTime(duration) : "未知时长") }}
     disabled={p.disabled} onPress={p.onTogglePlayback} onLongPress={p.onOpenPlayer}
     delayLongPress={400} style={({ pressed }) => [s.control, { opacity: p.disabled ? .4 : pressed ? .7 : 1, transform: [{ scale: pressed ? .94 : 1 }] }]}>
-    <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={s.face}>
+    <Animated.View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[s.face, { opacity: p.visibility ?? 1 }]}>
       <View style={[StyleSheet.absoluteFill, { opacity: .24 }]}><ProgressArc degrees={270} color={p.color} /></View>
       <ProgressArc degrees={270 * progress} color={p.color} />
       <View style={s.artwork}>
@@ -51,7 +52,7 @@ export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
       </View>
       <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={.75} maxFontSizeMultiplier={1.2}
         style={[s.elapsed, { color: p.color }]}>{formatPlaybackTime(elapsed)}</Text>
-    </View>
+    </Animated.View>
   </Pressable>;
 });
 

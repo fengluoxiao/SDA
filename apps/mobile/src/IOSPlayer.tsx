@@ -13,13 +13,15 @@ import { SideNavigationDock, sideNavigationDockMetrics } from "./SideNavigationD
 import { SystemClock, SYSTEM_CLOCK_LINE_HEIGHT } from "./SystemClock";
 import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
 import { CircularMiniPlayer, CIRCULAR_MINI_PLAYER_LAYOUT } from "./CircularMiniPlayer";
+import { SharedMiniPlayerArtwork, SharedMiniPlayerTransition } from "./SharedMiniPlayerTransition";
+import { useSharedMiniPlayerTransition } from "./use-shared-mini-player-transition";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
 import { SideNavigationRail, SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
 import { androidMaterialTheme } from "./android-material-theme";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme } from "react-native";
+import { Alert, Animated, BackHandler, Image, Platform, PlatformColor, PanResponder, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, View, useColorScheme } from "react-native";
 import { SafeAreaProvider, SafeAreaView, SafeAreaInsetsContext, initialWindowMetrics } from "react-native-safe-area-context";
 import { followingPlaybackMode, PLAYBACK_MODE_LABELS } from "../../web/src/playbackOrder";
 import renderingPresets from "../rendering-presets.json";
@@ -165,6 +167,8 @@ function ThemedPlayer(p: PlayerProps) {
     return () => cancelAnimationFrame(pending);
   }, [measureTabletArtwork, page, layoutReady]);
   const tabletArtworkFrame = layoutReady && measuredTabletArtwork?.key === tabletArtworkKey ? measuredTabletArtwork.frame : null;
+  const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings && hasArtwork, page, rootRef: surfaceRef,
+    layoutKey: [width, height, cutoutSide, navigationPreferences.sideTabPosition, tabletPlayer].join(":"), mediaKey: p.selectedUri || "", artworkUri });
   const transportMargin = tabletLayout?.transportGap ?? landscapeSpacing?.transportGap ?? playerGap + transportInset;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setBlockMeasurements(previous => Math.abs((previous[layoutKey] || initialBlocks)[key] - value) < 0.5
@@ -232,11 +236,9 @@ function ThemedPlayer(p: PlayerProps) {
   const headActiveColor = Platform.OS === "ios"
     ? sideNavigationAppearance(c.accent, !isLight, sideNavigationBackground).selectedIcon : c.accent;
   const headIndicator = spatialHeadIndicator(p.binauralEnabled !== false, p.headTrackingEnabled, p.headYaw, headActiveColor, immersiveHome ? pc.ink : c.ink);
-  const headerActions = <>
-        {showSystemClock && <SystemClock color={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive} />}
-        {circularMiniPlayerActive && <CircularMiniPlayer title={title} artist={artist} artworkUri={artworkUri} color={immersiveHome ? pc.ink : c.ink}
-          positionMs={Math.floor(p.positionMs / 1000) * 1000} durationMs={p.durationMs} playing={playing} disabled={p.busy || p.preparingAudio === true}
-          onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
+  const collapsedMiniSpace = CIRCULAR_MINI_PLAYER_LAYOUT.height + sideActionMetrics.gap;
+  const sideActionsTravel = React.useMemo(() => sharedMini.travel.interpolate({ inputRange: [0, 1], outputRange: [-collapsedMiniSpace, 0] }), [sharedMini.travel, collapsedMiniSpace]);
+  const sideActions = <>
         {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} activeIconColor={headActiveColor} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onDisable={() => p.setBinauralEnabled?.(false)}
@@ -255,6 +257,13 @@ function ThemedPlayer(p: PlayerProps) {
           <View style={{ transform: [{ perspective: 400 }, { rotateY: `${headIndicator.poseDegrees}deg` }] }}><Symbol name={headIndicator.symbol} fallback="HT" size={24} color={headIndicator.color} /></View>
         </Pressable>}
         {Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
+  </>;
+  const headerActions = <>
+        {showSystemClock && <SystemClock color={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive} />}
+        {circularMiniPlayerActive && <CircularMiniPlayer elementRef={sharedMini.miniRef} onLayout={sharedMini.capture} visibility={sharedMini.miniOpacity} interactive={page !== 0} title={title} artist={artist} artworkUri={artworkUri} color={immersiveHome ? pc.ink : c.ink}
+          positionMs={Math.floor(p.positionMs / 1000) * 1000} durationMs={p.durationMs} playing={playing} disabled={p.busy || p.preparingAudio === true}
+          onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
+        {circularMiniPlayerActive ? <Animated.View testID="landscape-side-action-controls" pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, alignItems: "center", gap: sideActionMetrics.gap, transform: [{ translateY: sharedMini.active ? sideActionsTravel : page === 0 ? -collapsedMiniSpace : 0 }] }}>{sideActions}</Animated.View> : sideActions}
   </>;
   const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined}>
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
@@ -284,19 +293,23 @@ function ThemedPlayer(p: PlayerProps) {
     </SafeAreaView>}
   </IOSMetadataSheet>
   <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
-  <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={onSurfaceLayout}>
+  <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
     {tabletPlayer ? <>
       {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: .45 }]} />}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,.24)" }]} />
     </> : <>
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    {hasArtwork ? <Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize }} /> : <View style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /></View> : <View style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    </>}
+  </View>}
+  {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={artworkUri} playing={playing} onReady={sharedMini.onArtworkReady} />}
+  {/* Keep both the moving and settled artwork below the original edge treatment. */}
+  {immersiveHome && !tabletPlayer && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     {!phoneLandscapeBlur && <>
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
-    </>}
     </>}
   </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
@@ -329,8 +342,8 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>
-            <View accessibilityRole="progressbar" accessibilityLabel="播放进度（当前不支持拖动定位）" accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></View>
-            <View style={np.times}><Text style={[np.time, { color: pc.muted }]}>{time(p.positionMs)}</Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
+            <Animated.View ref={sharedMini.progressRef} collapsable={false} onLayout={sharedMini.capture} accessibilityRole="progressbar" accessibilityLabel="播放进度（当前不支持拖动定位）" accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line, opacity: sharedMini.mainOpacity }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></Animated.View>
+            <View style={np.times}><Animated.Text ref={sharedMini.timeRef} onLayout={sharedMini.capture} style={[np.time, { color: pc.muted, opacity: sharedMini.mainOpacity }]}>{time(p.positionMs)}</Animated.Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
           </View>
           <View style={[np.transport, { marginTop: transportMargin }]}>
             <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="previous" color={pc.ink} size={30} /></Pressable>
@@ -444,6 +457,8 @@ function ThemedPlayer(p: PlayerProps) {
     {Platform.OS === "android" ? <AndroidSideTabs selected={page} onChange={navigate} accent={c.accent} dark={!isLight} /> : <SideNavigationRail selected={page} onChange={navigate} accent={c.accent} dark={!isLight} backgroundColor={sideNavigationBackground}
         renderIcon={(index, color) => <Symbol name={["play.circle.fill", "music.note.list", "cube.transparent"][index]!} fallback={["▶", "≡", "◇"][index]!} color={color} theme={isLight ? "light" : "dark"} size={20} />} />}
   </SideNavigationDock>}
+  {circularMiniPlayerActive && sharedMini.frames && <SharedMiniPlayerTransition frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} motionId={sharedMini.motionId}
+    positionMs={Math.floor(p.positionMs / 1000) * 1000} durationMs={p.durationMs} home={page === 0} targetColor={c.ink} backgroundColor={page === 0 ? fadeColor : c.bg} />}
   </View>
   </IOSSettingsNavigation>
   </SafeAreaProvider>;
