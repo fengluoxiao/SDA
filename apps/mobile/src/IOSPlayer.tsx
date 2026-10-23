@@ -261,9 +261,9 @@ function ThemedPlayer(p: PlayerProps) {
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 },
         circularMiniPlayerActive && { marginTop: sideActionMetrics.top, paddingTop: 0, paddingBottom: 0 }]}>
-        <View style={{ flex: 1, gap: circularMiniPlayerActive ? sideActionMetrics.gap : 0 }}>
+        <View style={{ flex: 1, minHeight: circularMiniPlayerActive ? SYSTEM_CLOCK_LINE_HEIGHT + sideActionMetrics.gap + CIRCULAR_MINI_PLAYER_LAYOUT.height : undefined }}>
           {label("SDA", true, [s.eyebrow, androidPhone && ap.eyebrow, { color: index === 0 ? pc.ink : c.muted }, circularMiniPlayerActive && { lineHeight: SYSTEM_CLOCK_LINE_HEIGHT }])}
-          <View style={circularMiniPlayerActive ? { height: CIRCULAR_MINI_PLAYER_LAYOUT.height, paddingBottom: CIRCULAR_MINI_PLAYER_LAYOUT.height - CIRCULAR_MINI_PLAYER_LAYOUT.face, justifyContent: "center" } : undefined}>
+          <View>
             {label(index === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : IOS_TABS[index] ?? "正在播放", false, [s.pageTitle, androidPhone && ap.pageTitle, { color: index === 0 ? pc.ink : c.ink }, circularMiniPlayerActive && { marginTop: 0, lineHeight: 28 }])}
           </View>
         </View>
