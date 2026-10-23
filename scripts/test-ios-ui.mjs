@@ -312,7 +312,7 @@ for (const adapter of [loadNativeTabs('ios', true, 25), loadNativeTabs('ios', tr
   const library = pageViewport(fallbackHost.props.children[0][1]);
   assert.equal(library.props.children[1], 'legacy-card');
 }
-assert.match(ui, /nativeAccessory=\{p.selectedUri \? miniPlayer : undefined\}/);
+assert.match(ui, /nativeAccessory=\{p.selectedUri && !circularMiniPlayerActive \? miniPlayer : undefined\}/);
 assert.match(ui, /environment \? s.nativeMiniPlayer/);
 console.log('Mini-player checks passed: official accessory, both environments, hidden/empty, old-OS/missing-manager fallback, no double card');
 
@@ -361,14 +361,14 @@ console.log('ALAC routing checks passed: distinct preferences, no toggle restart
 // ALAC layout must describe the selected route, not default every MP4 to Atmos.
 const alacPlayer = readFileSync('apps/mobile/modules/sda-core/ios/SdaPlayer.swift','utf8');
 assert.match(alacPlayer,/layout = input\.isAlac \? \(alacUpmixActive \? "7\.1\.4" : "2\.0"\)/);
-assert.ok(alacPlayer.indexOf('layout = input.isAlac') < alacPlayer.indexOf('} else { try startNative() }'));
+assert.ok(alacPlayer.indexOf('layout = input.isAlac') < alacPlayer.indexOf('} else { try startNative('));
 assert.match(alacPlayer,/status\["outputLayout"\] = layout/);
 assert.match(readFileSync('apps/mobile/App.tsx','utf8'),/layout: value\.outputLayout \?\? this\.state\.layout/);
 assert.match(readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8'),/LAYOUTS\[layout\]\.map/);
 assert.doesNotMatch(readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8'),/"360° 球形声场" : "7\.1\.4"/);
 console.log('ALAC 2.0 layout checks passed: engine, status, scene and label');
 
-const liveUpmix = alacPlayer.slice(alacPlayer.indexOf(' func setAlacStereoUpmix('), alacPlayer.indexOf(' func startNative()'));
+const liveUpmix = alacPlayer.slice(alacPlayer.indexOf(' func setAlacStereoUpmix('), alacPlayer.indexOf(' func startNative('));
 assert.match(liveUpmix,/alacUpmixActive = enabled/);
 assert.match(liveUpmix,/systemSpatial\?\.setAlacUpmix\(enabled\)/);
 assert.doesNotMatch(liveUpmix,/stopNative|startNative|setPaused|reset_source|\.play\(/);
@@ -442,7 +442,8 @@ assert.deepEqual(generatedOrientation['UISupportedInterfaceOrientations~ipad'], 
 assert.match(ui, /landscapeContent: \{ flexDirection: "row"/);
 assert.match(ui, /landscapePlayer && np\.landscapeControls/);
 const androidActivity = readFileSync('apps/mobile/android/app/src/main/java/app/sda/mobile/MainActivity.kt', 'utf8');
-assert.match(androidActivity, /smallestScreenWidthDp >= 600[\s\S]*?SCREEN_ORIENTATION_FULL_USER else ActivityInfo\.SCREEN_ORIENTATION_PORTRAIT/);
+assert.match(androidActivity, /requestedOrientation = ActivityInfo\.SCREEN_ORIENTATION_FULL_USER/);
+assert.doesNotMatch(androidActivity, /SCREEN_ORIENTATION_PORTRAIT/);
 
 
 const metadataSheet = readFileSync("apps/mobile/src/IOSMetadataSheet.tsx", "utf8");
@@ -468,7 +469,7 @@ assert.doesNotMatch(ui, /artworkTransition|transitionArtwork/);
 assert.match(ui, /tintColor: fadeColor/);
 
 assert.match(ui, /p.busy \|\| p.preparingAudio \? "正在准备音频…"/);
-assert.match(ui, /s.pageTitle, \{ color: index === 0 \? pc.ink : c.ink \}/);
+assert.match(ui, /s.pageTitle, (?:androidPhone && ap\.pageTitle, )?\{ color: index === 0 \? pc.ink : c.ink \}/);
 assert.doesNotMatch(homePages, /正在准备音频/);
 assert.match(ui, /PlatformColor\("label"\), fontSize: 13, fontWeight: "600"/);
 

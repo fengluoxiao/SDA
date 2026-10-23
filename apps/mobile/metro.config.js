@@ -19,6 +19,8 @@ const threeEntry = require.resolve('three', { paths: [projectRoot] });
 const physicalThree = fs.realpathSync.native(threeEntry);
 const threeModules = path.resolve(path.dirname(physicalThree), '../..');
 const reactRoot = fs.realpathSync.native(path.dirname(reactPackage));
+// Expo injects HMR imports from the project root, bypassing nodeModulesPaths.
+const expoRoot = fs.realpathSync.native(path.dirname(require.resolve('expo/package.json', { paths: [projectRoot] })));
 const config = getDefaultConfig(projectRoot);
 config.resolver.disableHierarchicalLookup = true;
 // Native compilation creates large trees under the watched workspace. They are
@@ -29,7 +31,7 @@ config.resolver.blockList = [
   /[\\/](?:target|\.git|\.gradle|\.cxx)[\\/]/,
 ];
 
-config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot, physicalModules, physicalMobileModules, threeModules])];
+config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot, physicalModules, physicalMobileModules, threeModules, expoRoot])];
 config.resolver.nodeModulesPaths = [
   mobileModules,
   physicalMobileModules,
@@ -39,6 +41,7 @@ config.resolver.nodeModulesPaths = [
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),
   react: reactRoot,
+  expo: expoRoot,
   'react-native': path.dirname(rnPackage),
 };
 

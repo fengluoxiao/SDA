@@ -6,8 +6,8 @@ import { SIDE_NAVIGATION_WIDTH } from "./SideNavigationRail";
 import { rightSideDockInset, leftSideDockInset, type IOSCutoutSide } from "./ios-ui-model";
 export { rightSideDockInset } from "./ios-ui-model";
 
-export function SideNavigationDock({ side, placement, testID, children, cutoutSide = null, tablet = false }: {
-  side: "left" | "right"; placement: "top" | "bottom"; testID: string; children: React.ReactNode; cutoutSide?: IOSCutoutSide; tablet?: boolean;
+export function SideNavigationDock({ side, placement, testID, children, cutoutSide = null, tablet = false, compact = false }: {
+  side: "left" | "right"; placement: "top" | "bottom"; testID: string; children: React.ReactNode; cutoutSide?: IOSCutoutSide; tablet?: boolean; compact?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const left = side === "left";
@@ -17,9 +17,9 @@ export function SideNavigationDock({ side, placement, testID, children, cutoutSi
     style={[StyleSheet.absoluteFill, {
       alignItems: left ? "flex-start" : "flex-end", justifyContent: placement === "top" ? "flex-start" : "flex-end",
       paddingLeft: left ? (tablet ? insets.left + 20 : android ? insets.left + 8 : leftSideDockInset(insets.left, cutoutSide)) : 14, paddingRight: left ? 6 : (tablet ? insets.right + 20 : android ? insets.right + 8 : rightSideDockInset(insets.right, cutoutSide)),
-      paddingTop: placement === "top" ? 16 : 0, paddingBottom: placement === "bottom" ? 8 : 0,
+      paddingTop: placement === "top" ? (compact ? 8 : 16) : 0, paddingBottom: placement === "bottom" ? 8 : 0,
     }]}>
-    <View pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, marginHorizontal: 0, alignItems: "center", gap: 8 }}>
+    <View pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, marginHorizontal: 0, alignItems: "center", gap: compact ? 2 : 8 }}>
       {children}
     </View>
   </SafeAreaView>;

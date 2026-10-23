@@ -1,4 +1,5 @@
 import { hasAndroidChrome } from "./AndroidChrome";
+import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
 import { SafeAreaProvider, SafeAreaView as InsetSafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 import materialSchemes from "./android-material-schemes.json";
@@ -237,7 +238,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
 
           </View>
           <View style={[s.row, { gap: 12, marginTop: 8 }]}>
-            {hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={volumeTracking} /> : <>
+            {hasSystemVolumeSlider ? <SystemVolumeSlider activeColor={c.accent} inactiveColor={c.line} onChange={p.setVolume} onTracking={volumeTracking} /> : hasNativeIOSChrome ? <IOSVolumeSlider value={p.volume} onChange={p.setVolume} onTracking={volumeTracking} /> : <>
             <View accessibilityRole="image" accessibilityLabel="音量" style={{ width: 24, height: 24 }}>
               <View style={{ position: "absolute", left: 2, top: 9, width: 5, height: 7, borderRadius: 1, backgroundColor: c.muted }} />
               <View style={{ position: "absolute", left: 6, top: 5, width: 0, height: 0, borderTopWidth: 7, borderBottomWidth: 7, borderRightWidth: 8, borderTopColor: "transparent", borderBottomColor: "transparent", borderRightColor: c.muted }} />
