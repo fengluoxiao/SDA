@@ -1,0 +1,143 @@
+name: Shared HRTFHQ renderer parity
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/shared-hrtfhq-20261016]
+    paths:
+      - '.github/workflows/shared-hrtfhq-parity.yml'
+      - 'apps/native-renderer/**'
+      - 'assets/hrtf/**'
+      - 'apps/desktop/**'
+      - 'apps/web/src/App.tsx'
+      - 'apps/web/src/shared-hrtf-profile.ts'
+      - 'apps/mobile/ios-experiments/active.json'
+      - 'apps/mobile/modules/sda-core/**'
+      - 'scripts/*hrtfhq*'
+      - 'scripts/stage-shared-render-experiment.mjs'
+      - 'scripts/test-shared-render-experiment.mjs'
+      - 'scripts/test-desktop-shared-profile.mjs'
+permissions:
+  contents: read
+concurrency:
+  group: shared-hrtfhq-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify all four packaged resource families
+        run: node scripts/test-shared-render-experiment.mjs
+      - name: Verify desktop shared playback selection
+        run: node scripts/test-desktop-shared-profile.mjs
+      - name: Render shared deterministic fixtures
+        env:
+          SDA_SHARED_PROFILE_PCM_DIR: ${{ runner.temp }}/hrtfhq-pcm
+        run: cargo test --manifest-path apps/native-renderer/Cargo.toml --no-default-features --locked --lib shared_hrtfhq -- --nocapture --test-threads=1
+      - name: Type-check iOS playback host
+        if: runner.os == 'macOS'
+        run: |
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -import-objc-header apps/mobile/modules/sda-core/ios/SdaBridge.h apps/mobile/modules/sda-core/ios/SdaPlayer.swift apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift apps/mobile/modules/sda-core/ios/RemoteDiagnostics.swift apps/mobile/modules/sda-core/ios/PlaybackLifecycle.swift apps/mobile/modules/sda-core/ios/CompressedInput.swift apps/mobile/modules/sda-core/ios/SystemSpatial360.swift apps/mobile/modules/sda-core/ios/SystemAudioBufferPolicy.swift apps/mobile/modules/sda-core/ios/Phase360Prototype.swift
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-${{ matrix.os }}
+          path: ${{ runner.temp }}/hrtfhq-pcm
+          if-no-files-found: error
+          retention-days: 14
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Compile iOS renderer tests
+        run: |
+          export SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          export IPHONEOS_DEPLOYMENT_TARGET=16.4
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --target aarch64-apple-ios-sim --no-default-features --locked --lib --no-run --message-format=json > "$RUNNER_TEMP/ios-build.jsonl"
+      - name: Run renderer tests inside iOS simulator
+        run: python3 scripts/run-ios-hrtfhq-tests.py "$RUNNER_TEMP/ios-build.jsonl" "$RUNNER_TEMP/hrtfhq-pcm"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-ios-simulator
+          path: ${{ runner.temp }}/hrtfhq-pcm
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - name: Select installed Android NDK
+        shell: bash
+        run: |
+          NDK=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          test -n "$NDK"
+          echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang" >> "$GITHUB_ENV"
+      - name: Compile Android renderer tests
+        run: cargo test --manifest-path apps/native-renderer/Cargo.toml --target x86_64-linux-android --no-default-features --locked --lib --no-run --message-format=json > "$RUNNER_TEMP/android-build.jsonl"
+      - name: Enable emulator acceleration
+        run: sudo chmod 666 /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: python3 scripts/run-android-hrtfhq-tests.py "$RUNNER_TEMP/android-build.jsonl" "$RUNNER_TEMP/hrtfhq-pcm"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-android
+          path: ${{ runner.temp }}/hrtfhq-pcm
+          if-no-files-found: error
+          retention-days: 14
+  compare:
+    needs: [native, ios, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hrtfhq-*
+          path: parity
+      - name: Enforce four-platform waveform parity
+        run: python3 scripts/compare-shared-hrtfhq-pcm.py parity
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hrtfhq-parity-report
+          path: parity/parity-report.json
+          if-no-files-found: error
+          retention-days: 14

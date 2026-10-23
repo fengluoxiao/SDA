@@ -13,7 +13,7 @@ export {decoderDiagnosticBuild} from './diagnostic-build';
 // @ts-ignore
 import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 
-export type CodecName = "auto" | "truehd" | "eac3" | "ac4" | "dts" | "alac";
+export type CodecName = "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" | "alac";
 
 export type ObjectAnchor = "room" | "screen" | "speaker";
 export type { AdmZone } from "./adm-zone.js";
@@ -61,7 +61,7 @@ export interface ProgramLoudnessMetadata {
 export interface FrameLoudness {
   peakDbfs?: number;
   /** 4x/2x BS.1770-style true-peak estimate, in dBTP. */
-  truePeakDbtp?: number;
+  truePeakDbtp?: number | null;
   /** Gated integrated loudness in LUFS, or null while nothing passes the absolute gate. */
   integratedLufs: number | null;
   /** Completed 400 ms blocks above the absolute gate. */
@@ -82,6 +82,8 @@ export interface DecodedFrameData {
   rampDuration: number;
   /** Running BS.1770-4 measurement; present on a subset of frames. */
   loudness?: FrameLoudness;
+  /** Neutral speaker-reference measurement from the shared decoder (not raw object channels). */
+  referenceLoudness?: FrameLoudness;
 }
 
 let initPromise: Promise<unknown> | null = null;
@@ -145,6 +147,13 @@ export class SdaDecoder {
     this.inner.push(data);
   }
 
+  setObjectRendering(enabled: boolean): void {
+    const decoder = this.inner as unknown as { setObjectRendering?(enabled: boolean): void };
+    if (!decoder.setObjectRendering && enabled) return;
+    if (!decoder.setObjectRendering) throw new Error("Decoder WASM must be rebuilt for compatibility-bed output");
+    decoder.setObjectRendering(enabled);
+  }
+
   nextFrame(): DecodedFrameData | null {
     const frame = this.inner.nextFrame();
     if (!frame) return null;
@@ -165,6 +174,8 @@ export class SdaDecoder {
       programLoudness: JSON.parse(frame.programLoudnessJson) as ProgramLoudnessMetadata | null,
       rampDuration: frame.rampDuration,
     };
+    const reference = (frame as unknown as { referenceLoudnessJson?: string }).referenceLoudnessJson;
+    if (reference) data.referenceLoudness = JSON.parse(reference) ?? undefined;
     frame.free();
     return data;
   }

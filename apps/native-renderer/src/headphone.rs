@@ -17,6 +17,7 @@ pub(super) struct HeadphoneCompensation {
     ignored_right: Vec<f32>,
     preamp: f32,
     history_frames: usize,
+    identity: bool,
     pending: Option<Box<Self>>,
     queued: Option<Box<Self>>,
     transition_frame: usize,
@@ -53,6 +54,8 @@ impl HeadphoneCompensation {
             ignored_right: vec![0.0; convolution::DEFAULT_PARTITION],
             preamp,
             history_frames: left.len().max(right.len()),
+            identity: left[0] == 1. && right[0] == 1.
+                && left[1..].iter().chain(&right[1..]).all(|v| *v == 0.),
             pending: None,
             queued: None,
             transition_frame: 0,
@@ -104,6 +107,12 @@ impl HeadphoneCompensation {
     }
 
     pub(super) fn finish_block(&mut self) -> Result<(), String> {
+        if self.identity {
+            // The output block is still published at the same partition
+            // boundary. A bypass profile needs the delay, not four identity FFTs.
+            self.output_left.copy_from_slice(&self.input_left);
+            self.output_right.copy_from_slice(&self.input_right);
+        } else {
         self.output_left.fill(0.0);
         self.output_right.fill(0.0);
         self.ignored_left.fill(0.0);
@@ -118,6 +127,7 @@ impl HeadphoneCompensation {
             &mut self.ignored_right,
             &mut self.output_right,
         )?;
+        }
         if let Some(next) = &mut self.pending {
             next.finish_block()?;
             self.transition_frame += convolution::DEFAULT_PARTITION;
@@ -154,6 +164,24 @@ impl HeadphoneCompensation {
 mod tests {
     use super::*;
 
+    #[test]
+    fn identity_fast_path_keeps_delay_and_profile_transition_pcm() {
+        let mut a=HeadphoneCompensation::bypass().unwrap();let mut b=HeadphoneCompensation::bypass().unwrap();b.identity=false;
+        for block in 0..30 {
+            if block==8 {
+                let make=||HeadphoneCompensation::new(&[0.8,0.05,0.,-0.03],&[0.7,-0.04,0.02,0.],1.).unwrap();
+                a.transition_to(make(),48000);b.transition_to(make(),48000);
+            }
+            a.begin_block();b.begin_block();
+            for i in 0..convolution::DEFAULT_PARTITION {
+                let x=((block*convolution::DEFAULT_PARTITION+i)as f32*0.17).sin()*0.1;
+                let ya=a.output_at(i);let yb=b.output_at(i);
+                for ear in 0..2 {assert!((ya[ear]-yb[ear]).abs()<2e-7,"block={block} frame={i} ear={ear}");}
+                a.add(i,[x,-x*0.3]);b.add(i,[x,-x*0.3]);
+            }
+            a.finish_block().unwrap();b.finish_block().unwrap();
+        }
+    }
     #[test]
     fn switching_headphone_profiles_is_continuous_and_latest_selection_wins() {
         let mut compensation = HeadphoneCompensation::bypass().unwrap();

@@ -1,0 +1,152 @@
+{
+  "kind": "SDA listening preferences, not automatic production changes",
+  "date": "2026-10-19",
+  "sourceCommit": "a18728ddc16e2dadaf7123861b2264ab3e40454d",
+  "exportedAt": "2026-10-18T19:39:58.415Z",
+  "gainClarification": "历史代码是全局+2、辅助额外+6（辅助净+8）；另提供主层净+2、辅助净+6（全局+2/辅助额外+4）。这两种都与整首全局音量平衡不同。",
+  "selections": [
+    {
+      "track": "rain",
+      "title": "雨蝶",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        16,
+        24
+      ],
+      "mode": "common",
+      "archival": false
+    },
+    {
+      "track": "seiza",
+      "title": "若能化作星座",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        72,
+        84
+      ],
+      "mode": "matched",
+      "archival": false
+    },
+    {
+      "track": "how-love",
+      "title": "How Do I Make You Love Me?",
+      "profile": "aux6-hrtf",
+      "label": "历史实现：主层净+2 / 辅助合计+8 · HRTFHQ",
+      "status": "迁移试听",
+      "window": [
+        55,
+        63
+      ],
+      "mode": "matched",
+      "archival": false
+    },
+    {
+      "track": "ether",
+      "title": "Ether",
+      "profile": "archive-ether-I",
+      "label": "历史 I · 移动声源分离录音",
+      "status": "历史认可参考",
+      "window": [
+        216,
+        240
+      ],
+      "mode": "common",
+      "archival": true
+    },
+    {
+      "track": "very-first",
+      "title": "The Very First Night",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        0,
+        12
+      ],
+      "mode": "matched",
+      "archival": false
+    },
+    {
+      "track": "lose-dance",
+      "title": "Lose Yourself to Dance",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        115,
+        129
+      ],
+      "mode": "common",
+      "archival": false
+    },
+    {
+      "track": "hitoshizuku",
+      "title": "壱雫空",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        135,
+        152
+      ],
+      "mode": "common",
+      "archival": false
+    },
+    {
+      "track": "egaku",
+      "title": "エガクミライ",
+      "profile": "ku61",
+      "label": "旧 KU100 61 方向优化配置",
+      "status": "历史认可配置重放",
+      "window": [
+        2,
+        10
+      ],
+      "mode": "common",
+      "archival": false
+    },
+    {
+      "track": "doll",
+      "title": "doll",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        0,
+        12
+      ],
+      "mode": "common",
+      "archival": false
+    },
+    {
+      "track": "2step",
+      "title": "2step",
+      "profile": "current",
+      "label": "A · 已合入的 HRTFHQ 恢复版",
+      "status": "当前默认",
+      "window": [
+        10,
+        29
+      ],
+      "mode": "matched",
+      "archival": false
+    },
+    {
+      "track": "montero",
+      "title": "MONTERO · ADM素材",
+      "profile": "net6-hrtf",
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "window": [
+        50,
+        60
+      ],
+      "mode": "common",
+      "archival": false
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+package com.sda.nativebridge
+
+/**
+ * Shared JNI bridge for the SDA native engine. Any host app (Expo module,
+ * demo activity) binds its native methods here so the Rust export names stay
+ * independent of the calling package.
+ */
+object SdaEngine {
+    init { System.loadLibrary("sda_native") }
+
+    external fun nativeConfigureAcceleration(directory: String, sdk: Int, preparation: String): String
+    external fun nativeInit(configJson: String, hrtfPath: String): Long
+    external fun nativeInitError(): String
+    external fun nativeStart(ptr: Long): Int
+    external fun nativeHrtfLoaded(ptr: Long): Boolean
+    external fun nativeOpenMpegh(ptr: Long): Int
+    external fun nativeIsAlac(path: String): Boolean
+    external fun nativeOpenAlac(ptr: Long, path: String): Int
+    external fun nativePullAlac(ptr: Long, maxFrames: Int, upmix: Boolean): Int
+    external fun nativeOpenMp3(ptr: Long, path: String): Int
+    external fun nativePullMp3(ptr: Long, maxFrames: Int): Int
+    external fun nativeLastError(): String
+    external fun nativeFeed(ptr: Long, bytes: ByteArray): Int
+    external fun nativeAccelerators(): String
+    external fun nativeRefreshCpuBudget(): Int
+    external fun nativeUpdateAudioComputePressure(thermalStatus: Int, thermalHeadroom: Float)
+    external fun nativePrepareDecoderThread(): String
+    external fun nativeStatus(ptr: Long): String
+    external fun nativeObjects(ptr: Long): String
+    external fun nativeSetHeadYaw(ptr: Long, degrees: Float): Int
+    external fun nativeResetHeadPose(ptr: Long): Int
+    external fun nativeFinish(ptr: Long): Int
+    external fun nativePause(ptr: Long, paused: Boolean): Int
+    external fun nativeSetVolumeBalance(ptr: Long, enabled: Boolean): String
+    external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
+    external fun nativeCompleteLoudness(ptr: Long): String
+    external fun nativeSetVolume(ptr: Long, volume: Float): Int
+    external fun nativeSetHrtfPreset(ptr: Long, path: String, wet: Float, direct: Boolean, directional: Boolean): String
+    external fun nativeSetBinauralEnabled(ptr: Long, enabled: Boolean): Int
+    external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
+    external fun nativeSetRoom(ptr: Long, path: String): String
+    external fun nativeSetNearField(ptr: Long, enabled: Boolean, metresPerUnit: Float): String
+    external fun nativeSetSpatialEnhancement(ptr: Long, enabled: Boolean): String
+    external fun nativePrepareSpatialCues(path: String, layout: String, gain: Float): Long
+    external fun nativeApplySpatialCues(ptr: Long, prepared: Long): String
+    external fun nativeFreeSpatialCues(prepared: Long)
+    external fun nativeClose(ptr: Long)
+}

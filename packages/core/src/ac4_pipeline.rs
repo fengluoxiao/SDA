@@ -41,6 +41,7 @@ pub struct Ac4Pipeline {
     generation: Option<u32>,
     expected_sample: Option<u64>,
     failed: bool,
+    reference: Option<crate::scene_reference::SceneMeter>,
 }
 
 impl Ac4Pipeline {
@@ -57,6 +58,7 @@ impl Ac4Pipeline {
             generation: None,
             expected_sample: None,
             failed: false,
+            reference: None,
         }
     }
 
@@ -78,7 +80,7 @@ impl Ac4Pipeline {
                 self.lfe_gains.clear();
                 self.generation = Some(generation);
             }
-            let frame = scene_frame(
+            let mut frame = scene_frame(
                 &scene,
                 &mut self.ids,
                 &mut self.initialized,
@@ -91,6 +93,10 @@ impl Ac4Pipeline {
                 return Err("AC-4 scene timeline is discontinuous".into());
             }
             self.expected_sample = Some(frame.sample_pos + frame.channels[0].len() as u64);
+            if self.reference.as_ref().is_none_or(|reference|reference.sample_rate()!=frame.sample_rate) {
+                self.reference=Some(crate::scene_reference::SceneMeter::with_sample_rate(frame.sample_rate));
+            }
+            frame.reference_loudness=Some(self.reference.as_mut().expect("reference initialized").measure(&frame));
             out.push_back(frame);
         }
         Ok(())
@@ -175,6 +181,7 @@ fn event(
         _ => [0.0; 3],
     };
     ObjectEvent {
+        diffuse: 0.0,
         id,
         sample_pos,
         has_pos: position.is_some(),
@@ -283,7 +290,7 @@ fn scene_frame(
     if length == 0
         || timeline.sample_rate() == 0
         || channels.is_empty()
-        || channels.len() > 128
+        || channels.len() > crate::MAX_DECODED_SOURCE_CHANNELS
         || channels.iter().any(|channel| {
             channel.len() != length || channel.iter().any(|sample| !sample.is_finite())
         })
@@ -308,7 +315,7 @@ fn scene_frame(
     } else {
         vec!["LFE".into()]
     };
-    Ok(FrameData {
+    Ok(FrameData { reference_loudness: None, compatibility_bed: None,
         codec: "ac4",
         sample_rate: timeline.sample_rate(),
         sample_pos,
@@ -348,4 +355,21 @@ mod tests {
         assert_eq!([ramp.next(), ramp.next()], [0.0, 0.25]);
         assert_eq!([ramp.next(), ramp.next(), ramp.next()], [0.5, 0.75, 1.0]);
     }
+}
+
+#[cfg(test)]
+mod reference_tests {
+ use super::*;
+ #[test]
+ fn ac4_real_bitstream_publishes_shared_reference_and_reset_is_fresh() {
+  let bytes=include_bytes!("../tests/fixtures/ac4-minimal-full.ac4");
+  let mut p=Ac4Pipeline::new();let (mut frames,mut errors)=(VecDeque::new(),Vec::new());
+  for chunk in bytes.chunks(7) {p.push(chunk,&mut frames,&mut errors);}
+  p.flush(&mut frames,&mut errors);assert!(errors.is_empty(),"{errors:?}");assert_eq!(frames.len(),6);
+  for frame in &frames {assert_eq!(frame.codec,"ac4");assert!(frame.reference_loudness.is_some());
+   assert!(frame.channels.iter().flatten().all(|v|v.is_finite()));}
+  let first=frames.front().unwrap().channels.clone();p.reset();assert!(p.reference.is_none());
+  frames.clear();p.push(bytes,&mut frames,&mut errors);assert!(errors.is_empty());
+  assert_eq!(frames.front().unwrap().channels,first);
+ }
 }

@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-19",
+  "source": "explicit-user-chat",
+  "additionalSelection": {
+    "track": "wonderful-world",
+    "title": "素晴らしき世界 でも どこにもない場所",
+    "profile": "net6-hrtf",
+    "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+    "window": null,
+    "mode": null,
+    "archival": false,
+    "selectionSource": "explicit-user-chat-supplement",
+    "recipe": {
+      "label": "按这次描述：主层净+2 / 辅助净+6 · HRTFHQ",
+      "status": "本次新增待选配方",
+      "manifest": "C:\\Users\\legendshop\\Downloads\\SDA-ios-joc-package\\assets\\hrtf\\apple-hrtfhq-v1\\hrtf-dense\\hrtf-set.json",
+      "enhancement": false,
+      "rearDb": 0,
+      "masterDb": 2,
+      "auxDb": 4,
+      "renderer": "historical-aux",
+      "note": "全局+2，辅助额外+4，端点净增益为主层+2/辅助+6；中间方向平滑过渡。"
+    },
+    "productionDisposition": "preference-recorded"
+  },
+  "direction": [
+    "Do not restore the legacy Ether renderer or recording.",
+    "Optimize HRTFHQ; legacy KU100/Ether choices are reference targets.",
+    "Wonderful World also selects net6-hrtf."
+  ]
+}

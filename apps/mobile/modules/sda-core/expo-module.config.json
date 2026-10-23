@@ -1,0 +1,25 @@
+{
+  "platforms": [
+    "android",
+    "apple"
+  ],
+  "android": {
+    "modules": [
+      "app.sda.mobile.sda.SdaModule",
+      "app.sda.mobile.sda.SdaAndroidChromeModule",
+      "app.sda.mobile.sda.SdaAndroidSymbolModule",
+      "app.sda.mobile.sda.SdaSystemVolumeModule"
+    ]
+  },
+  "apple": {
+    "modules": [
+      "SdaModule",
+      "SdaGlassButtonModule",
+      "SdaGlassTabsModule",
+      "SdaMaterialSurfaceModule",
+      "SdaNativeSliderModule",
+      "SdaNativeStepperModule",
+      "SdaSystemVolumeModule"
+    ]
+  }
+}

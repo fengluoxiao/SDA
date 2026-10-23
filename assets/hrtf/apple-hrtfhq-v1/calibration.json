@@ -1,0 +1,14 @@
+{
+  "method": "One common stereo gain and one common delay from synthetic frontal response; never fitted to music, sources or ears",
+  "commonGain": 0.8035689911221481,
+  "commonDelaySamples": 162,
+  "captureRun": 38924265715,
+  "captureCommit": "d808534c105f51a89c9db68e85a646c2b0424d6e",
+  "auditionReferenceRun": 38914469033,
+  "referenceSource": "Current shared front impulse including fixed shelf; matching Apple impulse under the same shelf",
+  "referenceMasterDb": -12,
+  "referenceAtmosDb": 2,
+  "referenceCommonOutputScalar": 0.25411082690296116,
+  "referenceRendererDelaySamples": 2288,
+  "sameOriginal551ResponseBytes": true
+}

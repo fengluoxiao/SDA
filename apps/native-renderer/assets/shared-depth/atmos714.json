@@ -1,0 +1,88 @@
+{
+  "commonCalibration": 1.0006917288377972,
+  "commonShiftSamples": 0,
+  "layout": "7.1.4",
+  "residualGain": 0.5,
+  "sampleRate": 48000,
+  "source": "retained61 default35ms residual only",
+  "speakers": [
+    {
+      "azimuth": 30.0,
+      "elevation": 0.0,
+      "name": "FrontLeft",
+      "offsetFloats": 0,
+      "taps": 4608
+    },
+    {
+      "azimuth": -30.0,
+      "elevation": 0.0,
+      "name": "FrontRight",
+      "offsetFloats": 9216,
+      "taps": 4608
+    },
+    {
+      "azimuth": 0.0,
+      "elevation": 0.0,
+      "name": "Center",
+      "offsetFloats": 18432,
+      "taps": 4608
+    },
+    {
+      "azimuth": 100.0,
+      "elevation": 0.0,
+      "name": "SurroundLeft",
+      "offsetFloats": 27648,
+      "taps": 4608
+    },
+    {
+      "azimuth": -100.0,
+      "elevation": 0.0,
+      "name": "SurroundRight",
+      "offsetFloats": 36864,
+      "taps": 4608
+    },
+    {
+      "azimuth": 140.0,
+      "elevation": 0.0,
+      "name": "RearLeft",
+      "offsetFloats": 46080,
+      "taps": 4608
+    },
+    {
+      "azimuth": -140.0,
+      "elevation": 0.0,
+      "name": "RearRight",
+      "offsetFloats": 55296,
+      "taps": 4608
+    },
+    {
+      "azimuth": 45.0,
+      "elevation": 45.0,
+      "name": "TopFrontLeft",
+      "offsetFloats": 64512,
+      "taps": 4608
+    },
+    {
+      "azimuth": -45.0,
+      "elevation": 45.0,
+      "name": "TopFrontRight",
+      "offsetFloats": 73728,
+      "taps": 4608
+    },
+    {
+      "azimuth": 135.0,
+      "elevation": 45.0,
+      "name": "TopRearLeft",
+      "offsetFloats": 82944,
+      "taps": 4608
+    },
+    {
+      "azimuth": -135.0,
+      "elevation": 45.0,
+      "name": "TopRearRight",
+      "offsetFloats": 92160,
+      "taps": 4608
+    }
+  ],
+  "version": 1
+}

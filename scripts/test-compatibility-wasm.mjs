@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+const {SdaDecoder}=require('../packages/core/pkg-node/sda_core.cjs');
+const decoder=new SdaDecoder('eac3');
+decoder.push(readFileSync('harletty-bridge/harletty/tests/fixtures/joc_atmos_1s.eac3'));decoder.flush();
+const first=decoder.nextFrame();assert(first.labels.some(label=>label.startsWith('Obj_')));
+decoder.setObjectRendering(false);const bed=decoder.nextFrame();
+assert.deepEqual(bed.labels,['FrontLeft','Center','FrontRight','SurroundLeft','SurroundRight','LFE']);
+assert.equal(JSON.parse(bed.objectChannelsJson).length,0);assert.equal(JSON.parse(bed.eventsJson).length,0);
+assert.equal(bed.samplePos,first.samplePos+first.channel(0).length);
+decoder.setObjectRendering(true);const objects=decoder.nextFrame();
+assert(objects.labels.some(label=>label.startsWith('Obj_')));assert(JSON.parse(objects.objectChannelsJson).length>0);
+assert.equal(objects.samplePos,bed.samplePos+bed.channel(0).length);
+for(const frame of [first,bed,objects])frame.free();decoder.free();
+console.log('Actual built WASM: object PCM -> original 6-channel compatibility bed -> restored object declarations, with a continuous codec clock.');

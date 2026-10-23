@@ -9,19 +9,53 @@ use std::{fs::read, path::Path};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
+    #[serde(default)]
+    triangle_support_file: Option<String>,
     sample_rate: u32,
     calibration_version: Option<u32>,
     complete_subject: Option<bool>,
     subject_id: Option<String>,
     personal_sofa_version: Option<u32>,
     parametric_hrtf_version: Option<u32>,
+    measured_response_version: Option<u32>,
+    shared_depth_version: Option<u32>,
+    #[serde(default)]
+    shared_clarity_version: Option<u32>,
     processing: Processing,
     positions: Vec<Position>,
+}
+
+fn default_spatial_cue_gain() -> f32 { 1.0 }
+
+/// Optional asset policy; omitted retains the existing motion attenuation.
+/// This controls bundled residual excitation only, never source/direct gain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SpatialCueMotion {
+    #[default]
+    Attenuated,
+    Continuous,
 }
 
 #[derive(Debug, Deserialize)]
 struct Processing {
     calibrated: bool,
+    #[serde(default, rename = "historicalInterpolation")]
+    historical_interpolation: bool,
+    #[serde(default, rename = "historicalInterpolationMode")]
+    historical_interpolation_mode: Option<String>,
+    #[serde(default, rename = "mobileDirectOnly")]
+    mobile_direct_only: bool,
+    #[serde(default, rename = "spatialCues")]
+    spatial_cues: bool,
+    #[serde(default = "default_spatial_cue_gain", rename = "spatialCueGain")]
+    spatial_cue_gain: f32,
+    #[serde(default, rename = "spatialCueWindow")]
+    spatial_cue_window: crate::spatial_cues::CueWindow,
+    #[serde(default, rename = "spatialCueMotion")]
+    spatial_cue_motion: SpatialCueMotion,
+    #[serde(default, rename = "frontEarIsolation")]
+    front_ear_isolation: bool,
     #[serde(default, rename = "preserveMeasurements")]
     preserve_measurements: bool,
     #[serde(default, rename = "preserveSamples")]
@@ -38,6 +72,18 @@ pub struct Position {
 
 #[derive(Debug, Clone)]
 pub struct NativeHrtfSet {
+    preparation_id: u64,
+    historical_interpolation: bool,
+    mobile_direct_only: bool,
+    spatial_cues: bool,
+    spatial_cue_gain: f32,
+    spatial_cue_window: crate::spatial_cues::CueWindow,
+    spatial_cue_motion: SpatialCueMotion,
+    spatial_cues_active: bool,
+    shared_depth_enabled: bool,
+    shared_clarity_enabled: bool,
+    shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
+    front_ear_isolation: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     speaker_prepared: std::collections::HashMap<
@@ -47,8 +93,8 @@ pub struct NativeHrtfSet {
     pub sample_rate: u32,
     pub subject_id: Option<String>,
     pub complete_subject: bool,
-    positions: Vec<Position>,
-    cache: Vec<StereoIr>,
+    positions: std::sync::Arc<Vec<Position>>,
+    cache: std::sync::Arc<Vec<StereoIr>>,
     directional_grid: crate::directional::Grid,
     speaker_set: Option<Box<NativeHrtfSet>>,
     prepared: std::collections::HashMap<(i32, i32, u32), crate::convolution::PreparedStereoFilter>,
@@ -64,6 +110,47 @@ pub struct StereoIr {
 }
 
 impl NativeHrtfSet {
+    fn next_preparation_id() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub(crate) fn preparation_id(&self) -> u64 { self.preparation_id }
+    pub(crate) fn preparation_snapshot(&self) -> std::sync::Arc<Self> {
+        type Cache = std::collections::HashMap<u64, std::sync::Weak<NativeHrtfSet>>;
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+        let mut cache = CACHE.get_or_init(|| std::sync::Mutex::new(Cache::new())).lock().unwrap();
+        if let Some(snapshot) = cache.get(&self.preparation_id).and_then(std::sync::Weak::upgrade) { return snapshot; }
+        cache.retain(|_, value| value.strong_count() > 0);
+        // Directional preparation does not use the legacy prepared banks.
+        // Share immutable measurements and omit those large spectral copies.
+        let snapshot = std::sync::Arc::new(Self {
+            preparation_id: self.preparation_id,
+            historical_interpolation: self.historical_interpolation,
+            mobile_direct_only: self.mobile_direct_only,
+            spatial_cues: self.spatial_cues,
+            spatial_cue_gain: self.spatial_cue_gain,
+            spatial_cue_window: self.spatial_cue_window,
+            spatial_cue_motion: self.spatial_cue_motion,
+            spatial_cues_active: self.spatial_cues_active,
+            shared_depth_enabled: self.shared_depth_enabled,
+            shared_clarity_enabled: self.shared_clarity_enabled,
+            shared_depth: self.shared_depth.clone(),
+            front_ear_isolation: self.front_ear_isolation,
+            cinema: self.cinema.clone(),
+            room_profile: self.room_profile.clone(),
+            speaker_prepared: Default::default(),
+            sample_rate: self.sample_rate,
+            subject_id: self.subject_id.clone(),
+            complete_subject: self.complete_subject,
+            positions: self.positions.clone(),
+            cache: self.cache.clone(),
+            directional_grid: self.directional_grid.clone(),
+            speaker_set: None,
+            prepared: Default::default(),
+        });
+        cache.insert(self.preparation_id, std::sync::Arc::downgrade(&snapshot));
+        snapshot
+    }
     pub fn simulation_shape(&self) -> (usize, usize, usize) {
         (
             self.positions.len(),
@@ -136,15 +223,27 @@ impl NativeHrtfSet {
             });
         }
         Ok(Self {
+            preparation_id: Self::next_preparation_id(),
+            historical_interpolation: false,
+            mobile_direct_only: false,
+            spatial_cues: false,
+            spatial_cue_gain: 1.0,
+            spatial_cue_window: Default::default(),
+            spatial_cue_motion: Default::default(),
+            spatial_cues_active: false,
+            shared_depth_enabled: false,
+            shared_clarity_enabled: false,
+            shared_depth: None,
+            front_ear_isolation: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: Default::default(),
             sample_rate: 48000,
             subject_id: Some("performance-synthetic".into()),
             complete_subject: true,
-            positions,
+            positions: std::sync::Arc::new(positions),
             directional_grid: crate::directional::Grid::new(&cache),
-            cache,
+            cache: std::sync::Arc::new(cache),
             speaker_set: None,
             prepared: Default::default(),
         })
@@ -158,9 +257,62 @@ impl NativeHrtfSet {
     }
 
     pub fn load_calibrated(manifest_path: &Path) -> Result<Self, String> {
+        Self::load_calibrated_policy(manifest_path, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_without_shared_clarity(manifest_path: &Path) -> Result<Self, String> {
+        Self::load_calibrated_policy(manifest_path, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_clarity_active(&self) -> bool { self.shared_clarity_enabled }
+
+    fn load_calibrated_policy(manifest_path: &Path, apply_clarity: bool) -> Result<Self, String> {
         let manifest: Manifest =
             serde_json::from_slice(&read(manifest_path).map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())?;
+        if manifest.subject_id.as_deref() == Some("apple-public-hrtfhq")
+            && !matches!(manifest.measured_response_version, Some(1 | 2 | 3))
+        {
+            return Err("Measured response profile version missing or unsupported".into());
+        }
+        if let Some(version) = manifest.measured_response_version {
+            if !matches!(version,1 | 2 | 3)
+                || manifest.shared_depth_version != (version>=2).then_some(1)
+                || manifest.shared_clarity_version != (version==3).then_some(1)
+                || manifest.calibration_version.is_some()
+                || manifest.subject_id.as_deref() != Some("apple-public-hrtfhq")
+                || manifest.complete_subject != Some(true) || manifest.sample_rate != 48000
+                || !manifest.processing.calibrated || !manifest.processing.preserve_measurements
+                || manifest.processing.historical_interpolation || manifest.processing.mobile_direct_only
+                || manifest.processing.spatial_cues || manifest.processing.front_ear_isolation
+                || manifest.processing.historical_interpolation_mode.is_some()
+            {
+                return Err("Measured response profile must preserve its calibrated transfer without KU100 processing".into());
+            }
+        }
+        if manifest.shared_clarity_version.is_some() && manifest.measured_response_version != Some(3) {
+            return Err(format!("{}: incompatible response family", crate::shared_clarity::PROFILE_MARKER));
+        }
+        if !manifest.processing.spatial_cue_gain.is_finite()
+            || manifest.processing.spatial_cue_gain <= 0.0
+            || manifest.processing.spatial_cue_gain > 1.0 {
+            return Err("spatialCueGain must be finite and in (0, 1]".into());
+        }
+        if manifest.processing.historical_interpolation
+            && (!manifest.processing.calibrated
+                || !matches!(manifest.calibration_version, Some(4 | 5))
+                || manifest.processing.mobile_direct_only
+                || manifest.subject_id.as_deref().is_some_and(|s| s != "ku100"))
+        {
+            return Err("historical interpolation requires a calibrated v4/v5 non-mobile KU100 pack".into());
+        }
+        let waveform_interpolation = match manifest.processing.historical_interpolation_mode.as_deref() {
+            None | Some("spectral") => false,
+            Some("aligned-waveform" | "aligned-pairwise") if manifest.processing.historical_interpolation => true,
+            _ => return Err("Unsupported historicalInterpolationMode or missing historicalInterpolation".into()),
+        };
         let raw_ku100 = manifest.subject_id.as_deref() == Some("ku100")
             && manifest.calibration_version == Some(0)
             && !manifest.processing.calibrated
@@ -182,6 +334,7 @@ impl NativeHrtfSet {
         if !raw_ku100
             && !personal_sofa
             && !parametric
+            && !matches!(manifest.measured_response_version, Some(1 | 2 | 3))
             && (manifest.calibration_version.unwrap_or(0) < 4 || !manifest.processing.calibrated)
         {
             return Err("native object renderer requires calibrated HRTF v4".into());
@@ -198,7 +351,7 @@ impl NativeHrtfSet {
             .parent()
             .ok_or("manifest has no parent directory")?
             .to_path_buf();
-        let cache = manifest
+        let mut cache = manifest
             .positions
             .iter()
             .map(|position| {
@@ -210,10 +363,36 @@ impl NativeHrtfSet {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        if manifest.measured_response_version.is_some()
+            && cache.iter().any(|ir| ir.dry.len() != 1024 || ir.wet != ir.dry
+                || ir.dry.iter().any(|sample| !sample.is_finite()))
+        {
+            return Err("Invalid measured response samples".into());
+        }
+        if manifest.processing.mobile_direct_only
+            && (!raw_ku100
+                || !complete_subject
+                || cache.len() != 128
+                || cache
+                    .iter()
+                    .any(|ir| ir.dry.len() != 512 || ir.wet.iter().any(|x| *x != 0.0)))
+        {
+            return Err(
+                "mobile direct-only KU100 requires 128 original 256-tap HRIRs and zero wet data"
+                    .into(),
+            );
+        }
+        // Validate the original measurement layout first. The versioned
+        // presentation acts only on preparation copies, exactly once per load.
+        let shared_clarity_enabled = apply_clarity && manifest.shared_clarity_version == Some(1);
+        if shared_clarity_enabled {
+            crate::shared_clarity::apply_bank(&mut cache)?;
+        }
         // Dense grids omit some physical speaker anchors (e.g. +/-45 degrees
         // overhead). Keep the matching standard set as their fallback.
         let speaker_set = match root.file_name().and_then(|name| name.to_str()) {
             Some("hrtf-dense") => Some("hrtf"),
+            Some("hrtf-ku100-reference-dense") => Some("hrtf-ku100-reference"),
             Some("hrtf-dense-raw") => Some("hrtf-raw"),
             Some(name)
                 if name.ends_with("-dense")
@@ -225,9 +404,14 @@ impl NativeHrtfSet {
         }
         .map(|name| {
             let parent = root.parent().ok_or("HRTF asset root has no parent")?;
-            Self::load_calibrated(&parent.join(name).join("hrtf-set.json")).map(Box::new)
+            Self::load_calibrated_policy(&parent.join(name).join("hrtf-set.json"), apply_clarity).map(Box::new)
         })
         .transpose()?;
+        if let Some(companion) = &speaker_set {
+            if companion.shared_clarity_enabled != shared_clarity_enabled {
+                return Err(format!("{}: dense/fallback policy mismatch", crate::shared_clarity::PROFILE_MARKER));
+            }
+        }
         // KU100 is a complete dummy-head measurement set, not an individual
         // subject profile. Its measured pinna notches remain valid at both the
         // standard and dense resolutions, but a time-domain mix of adjacent
@@ -238,19 +422,43 @@ impl NativeHrtfSet {
         // 61-point fallback until that provenance is added to the asset.
         let ku100_notch_guard = manifest.subject_id.as_deref() == Some("ku100")
             || (is_dense_ku100 && manifest.subject_id.is_none());
+        let mut directional_grid=crate::directional::Grid::new_with_notch_guard(&cache,ku100_notch_guard)
+            .with_historical_interpolation(&cache,manifest.processing.historical_interpolation);
+        if manifest.measured_response_version.is_some()
+            || manifest.processing.historical_interpolation_mode.as_deref()==Some("aligned-pairwise") {
+            directional_grid=directional_grid.with_consistent_waveform_interpolation();
+        } else if waveform_interpolation {
+            directional_grid=directional_grid.with_aligned_waveform_interpolation();
+        }
+        if let Some(file)=&manifest.triangle_support_file {
+            let relative=std::path::Path::new(file);
+            if relative.is_absolute() || relative.components().any(|c| !matches!(c,std::path::Component::Normal(_))) {
+                return Err("Triangle support path must stay within asset directory".into());
+            }
+            directional_grid=directional_grid.with_triangle_support(&root.join(relative),&cache)?;
+        }
         Ok(Self {
+            preparation_id: Self::next_preparation_id(),
+            historical_interpolation: manifest.processing.historical_interpolation,
+            mobile_direct_only: manifest.processing.mobile_direct_only,
+            spatial_cues: manifest.processing.spatial_cues,
+            spatial_cue_gain: manifest.processing.spatial_cue_gain,
+            spatial_cue_window: manifest.processing.spatial_cue_window,
+            spatial_cue_motion: manifest.processing.spatial_cue_motion,
+            spatial_cues_active: false,
+            shared_depth_enabled: manifest.shared_depth_version==Some(1),
+            shared_clarity_enabled,
+            shared_depth: None,
+            front_ear_isolation: manifest.processing.front_ear_isolation,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
             speaker_prepared: std::collections::HashMap::new(),
             sample_rate: manifest.sample_rate,
             subject_id: manifest.subject_id,
             complete_subject,
-            positions: manifest.positions,
-            directional_grid: crate::directional::Grid::new_with_notch_guard(
-                &cache,
-                ku100_notch_guard,
-            ),
-            cache,
+            positions: std::sync::Arc::new(manifest.positions),
+            directional_grid,
+            cache: std::sync::Arc::new(cache),
             speaker_set,
             prepared: std::collections::HashMap::new(),
         })
@@ -291,6 +499,25 @@ impl NativeHrtfSet {
         if self.has_exact_measurement(azimuth, elevation) {
             return self.nearest(azimuth, elevation);
         }
+        if let Some(companion) = self.speaker_set.as_deref()
+            .filter(|set| set.has_exact_measurement(azimuth, elevation)) {
+            return companion.nearest(azimuth, elevation);
+        }
+        let measured_lower = self.uses_shared_measured_response() && elevation < 0.0
+            && self.positions.iter().any(|p| p.elevation <= elevation);
+        if (self.historical_interpolation && self.spatial_cues_active) || measured_lower {
+            // Neither bank contains this physical speaker direction. A horizontal
+            // companion must not flatten a lower speaker when the selected field
+            // already measures that hemisphere. Use that field's own interpolator;
+            // exact primary/companion anchors and other measured directions retain
+            // their existing priority. No KU100 response is added to HRTFHQ.
+            // Bundled cues add their own separate residual, so no legacy wet IR
+            // is replaced or synthesized by this dry-response interpolation.
+            let (mut left, right) = self.directional_grid.interpolate(&self.cache, azimuth, elevation);
+            left.extend_from_slice(&right);
+            let wet = vec![0.0; left.len()];
+            return Ok(StereoIr { azimuth, elevation, dry: left, wet });
+        }
         self.speaker_set
             .as_deref()
             .unwrap_or(self)
@@ -319,7 +546,7 @@ impl NativeHrtfSet {
             .map(|ir| ir.dry.len() / 2)
             .max()
             .unwrap_or(512)
-            + 4;
+            + crate::directional::INTERPOLATION_TAIL;
         let calibration = if self.cinema.enabled {
             self.cinema
                 .speakers
@@ -338,8 +565,8 @@ impl NativeHrtfSet {
             0
         };
         // 10 ms is ample for the 1.5 kHz background pole to reach its explicit
-        // 1e-20 zero threshold. Avoid an extra FFT partition for zero padding
-        // when a 512-tap HRIR also needs four fractional-delay padding samples.
+        // 1e-20 zero threshold. The base includes alignment and bandlimited
+        // fractional-delay support so shifted HRIR tails remain intact.
         base + 127 + calibration + self.output_max_delay() + 480
     }
     pub fn directional_dry_compact(
@@ -399,6 +626,13 @@ impl NativeHrtfSet {
                     *v *= scale;
                 }
             }
+        }
+        if self.front_ear_isolation {
+            let relative = crate::spatial::adm_to_spherical(crate::spatial::head_relative_adm(
+                direction.position, direction.head));
+            let extent = direction.width.max(direction.height).max(direction.depth).max(direction.diffuse);
+            crate::front_ear::apply(&mut pair.0, &mut pair.1,
+                relative.azimuth as f64, relative.elevation as f64, 1.0 - extent.clamp(0.0, 1.0));
         }
         // With no per-speaker processing all routes use the same dry pair.
         // Sum their scalar weights once instead of allocating/filtering a copy
@@ -485,9 +719,98 @@ impl NativeHrtfSet {
         settings: crate::cinema::Settings,
         profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
     ) {
+        self.preparation_id = Self::next_preparation_id();
+        self.spatial_cues_active = false;
+        self.shared_depth = None;
+        if self.mobile_direct_only {
+            self.cinema = crate::cinema::Settings::default();
+            self.room_profile = None;
+            self.speaker_prepared.clear();
+            return;
+        }
         self.cinema = settings;
         self.room_profile = profile;
         self.speaker_prepared.clear();
+    }
+
+    /// Fixed, explicitly opted-in short spatial cues are separate from user room
+    /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
+    pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
+        self.preparation_id = Self::next_preparation_id();
+        self.spatial_cues_active = false;
+        self.shared_depth = if self.shared_depth_enabled && self.uses_shared_measured_response()
+            && !self.cinema.enabled && !self.cinema.monitor.enabled && self.room_profile.is_none() {
+            crate::shared_depth::bank(layout)?
+        } else { None };
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        if !self.spatial_cues { return Ok(()); }
+        self.cinema = crate::cinema::Settings::default();
+        self.room_profile = None;
+        if !(self.mobile_direct_only && self.subject_id.as_deref() == Some("ku100"))
+            && !self.historical_interpolation {
+            return Err("bundled spatial cues require a direct KU100 or historical calibrated KU100 set".into());
+        }
+        if let Some(profile) = crate::spatial_cues::profile_with_window(layout, self.spatial_cue_window)? {
+            self.cinema = crate::spatial_cues::settings();
+            self.room_profile = Some(profile);
+            self.spatial_cues_active = true;
+        }
+        self.speaker_prepared.clear();
+        Ok(())
+    }
+
+    pub fn set_spatial_cue_gain(&mut self, gain: f32) -> Result<(), String> {
+        if !gain.is_finite() || gain <= 0.0 || gain > 1.0 { return Err("invalid spatial cue gain".into()); }
+        self.spatial_cue_gain = gain;
+        self.preparation_id = Self::next_preparation_id();
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        Ok(())
+    }
+
+    pub fn spatial_cues_active(&self) -> bool { self.spatial_cues_active || self.shared_depth.is_some() }
+
+    pub(crate) fn uses_shared_measured_response(&self) -> bool {
+        self.subject_id.as_deref() == Some("apple-public-hrtfhq")
+    }
+
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_without_shared_depth(&self) -> Self {
+        let mut set=self.clone();set.shared_depth_enabled=false;set.shared_depth=None;
+        set.preparation_id=Self::next_preparation_id();set.speaker_prepared.clear();set.prepared.clear();set
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_front_ear_isolation(mut self, enabled: bool) -> Self {
+        self.front_ear_isolation = enabled;
+        self.preparation_id = Self::next_preparation_id();
+        self.speaker_prepared.clear();
+        self.prepared.clear();
+        self
+    }
+
+    /// Measurement control only: same active profiles/routing/filter lengths,
+    /// but remove residual excitation from the prepared speaker responses.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_without_spatial_residual(&self) -> Self {
+        let mut set = self.clone();
+        set.spatial_cue_gain = 0.0;
+        set.preparation_id = Self::next_preparation_id();
+        set.speaker_prepared.clear();
+        set.prepared.clear();
+        set
+    }
+
+
+    pub(crate) fn attenuate_moving_spatial_cues(&self) -> bool {
+        self.spatial_cue_motion == SpatialCueMotion::Attenuated
+    }
+
+
+    pub(crate) fn effective_wet(&self, requested: f32) -> f32 {
+        if self.spatial_cues_active() { 0.04 } else { requested }
     }
 
     fn room_alignment_active(&self, layout: &str) -> bool {
@@ -524,6 +847,15 @@ impl NativeHrtfSet {
     }
 
     pub fn speaker_filter_len(&self) -> usize {
+        if self.mobile_direct_only && !self.spatial_cues_active {
+            return self
+                .cache
+                .iter()
+                .map(|ir| ir.dry.len() / 2)
+                .max()
+                .unwrap_or(256)
+                + crate::directional::INTERPOLATION_TAIL;
+        }
         let base = self
             .cache
             .iter()
@@ -537,7 +869,7 @@ impl NativeHrtfSet {
             );
         let monitor_delay = self.output_max_delay();
         if !self.cinema.enabled {
-            return base + monitor_delay;
+            return (base + monitor_delay).max(self.shared_depth.as_ref().map_or(0,|bank|bank.max_taps()));
         }
         let room = self.room_profile.as_ref().map_or(0, |p| {
             p.speakers
@@ -591,6 +923,19 @@ impl NativeHrtfSet {
         elevation: f64,
         wet: f32,
     ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        if self.mobile_direct_only && !self.spatial_cues_active {
+            // Bed channels share the delay-aligned direct grid used by objects.
+            // Do not fall back to a room-calibrated speaker or BRIR response.
+            let (mut left, mut right) =
+                self.directional_grid
+                    .interpolate(&self.cache, azimuth, elevation);
+            left.resize(self.speaker_filter_len(), 0.0);
+            right.resize(self.speaker_filter_len(), 0.0);
+            if self.front_ear_isolation {
+                crate::front_ear::apply(&mut left, &mut right, azimuth, elevation, 1.0);
+            }
+            return Ok((left, right));
+        }
         let profile = self
             .room_profile
             .as_ref()
@@ -611,13 +956,28 @@ impl NativeHrtfSet {
                     .and_then(|v| v.get("sourceModel"))
                     .and_then(|v| v.as_str())
                     == Some("ideal-omnidirectional");
-            if simulated_room
+            if self.spatial_cues_active
+                || simulated_room
                 || self
                     .subject_id
                     .as_deref()
                     .is_some_and(|id| id.starts_with("personal-"))
             {
-                let ir = if simulated_room {
+                let ir = if self.spatial_cues_active && self.historical_interpolation {
+                    // Preserve the approved calibrated speaker anchors, including
+                    // the standard-set fallback. Add only the cue residual below.
+                    self.speaker_ir(azimuth, elevation)?
+                } else if self.spatial_cues_active {
+                    // Bundled profiles contain a snapshot of their original
+                    // direct response. Keep only their residual: bed channels
+                    // must use the same current interpolator as direct objects,
+                    // including later notch-guard fixes.
+                    let (left, right) = self.directional_grid
+                        .interpolate(&self.cache, azimuth, elevation);
+                    let mut dry = left;
+                    dry.extend_from_slice(&right);
+                    StereoIr { azimuth, elevation, dry, wet: vec![] }
+                } else if simulated_room {
                     self.speaker_ir(azimuth, elevation)?
                 } else {
                     self.nearest(azimuth, elevation)?
@@ -641,7 +1001,7 @@ impl NativeHrtfSet {
                 let energy = |a: &[f32], b: &[f32]| {
                     a.iter().chain(b).map(|v| (*v as f64).powi(2)).sum::<f64>()
                 };
-                let residual_gain = if simulated_room {
+                let residual_gain = if simulated_room || self.spatial_cues_active {
                     let reference = energy(&speaker.direct_left, &speaker.direct_right);
                     if reference <= 1e-20 {
                         return Err("simulated room has no direct reference".into());
@@ -662,7 +1022,10 @@ impl NativeHrtfSet {
                     for (i, (r, d)) in room.iter().zip(original).enumerate() {
                         let target = i as isize + shift;
                         if target >= 0 && (target as usize) < length {
-                            out[target as usize] += (r - d) * residual_gain;
+                            // One common scalar affects the separate spatial residual only.
+                            // Direct HRIR, interaural ratio and arrival timing are unchanged.
+                            let cue_gain = if self.spatial_cues_active { self.spatial_cue_gain } else { 1.0 };
+                            out[target as usize] += (r - d) * residual_gain * cue_gain;
                         }
                     }
                 }
@@ -695,6 +1058,14 @@ impl NativeHrtfSet {
             self.output_filter(name, layout, self.cinema.calibrate(name, pair)?);
         left.resize(self.speaker_filter_len(), 0.0);
         right.resize(self.speaker_filter_len(), 0.0);
+        if self.front_ear_isolation {
+            // Apply after room/cue composition so the residual cannot restore
+            // the muted branch. Bed and reflection buses share this preparation.
+            crate::front_ear::apply(&mut left, &mut right, azimuth, elevation, 1.0);
+        }
+        if wet != 0.0 {
+            if let Some(bank)=&self.shared_depth { bank.add(name,layout,&mut left,&mut right)?; }
+        }
         Ok((left, right))
     }
 
@@ -843,6 +1214,14 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((
+                ir.azimuth,
+                ir.elevation,
+                ir.dry[..dry_len].to_vec(),
+                ir.dry[dry_len..].to_vec(),
+            ));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -889,6 +1268,9 @@ impl NativeHrtfSet {
             return Err("packed stereo HRTF length is invalid".into());
         }
         let dry_len = ir.dry.len() / 2;
+        if self.mobile_direct_only {
+            return Ok((ir.dry[..dry_len].to_vec(), ir.dry[dry_len..].to_vec()));
+        }
         let wet_len = ir.wet.len() / 2;
         if wet_len < dry_len {
             return Err("wet HRTF is shorter than dry HRTF".into());
@@ -961,6 +1343,202 @@ fn read_packed_f32(path: &Path) -> Result<Vec<f32>, String> {
 
 #[cfg(test)]
 mod raw_tests {
+    #[test]
+    fn missing_speaker_anchor_uses_selected_geometry_without_losing_exact_anchors() {
+        let make_ir=|azimuth,elevation,peak:usize| {
+            let mut dry=vec![0.0;128];dry[peak]=1.0;dry[64+peak+2]=0.7;
+            StereoIr {azimuth,elevation,dry,wet:vec![0.0;128]}
+        };
+        let make_set=|irs:Vec<StereoIr>| {
+            let mut set=NativeHrtfSet::synthetic(irs.len(),64,0).unwrap();
+            set.positions=std::sync::Arc::new(irs.iter().map(|ir|Position {
+                azimuth:ir.azimuth,elevation:ir.elevation,dry:String::new(),wet:String::new()}).collect());
+            set.directional_grid=crate::directional::Grid::new(&irs)
+                .with_historical_interpolation(&irs,true).with_aligned_waveform_interpolation();
+            set.cache=std::sync::Arc::new(irs);
+            set.historical_interpolation=true;set.spatial_cues_active=true;set
+        };
+        let mut selected=make_set(vec![make_ir(30.0,-30.0,12),make_ir(30.0,0.0,20),
+            make_ir(-30.0,-30.0,14),make_ir(-30.0,0.0,22)]);
+        let companion=make_set(vec![make_ir(30.0,0.0,25),make_ir(45.0,45.0,30)]);
+        let exact_primary=selected.cache[1].dry.clone();let exact_companion=companion.cache[1].dry.clone();
+        let old_horizontal=companion.cache[0].dry.clone();
+        selected.speaker_set=Some(Box::new(companion));
+        assert_eq!(selected.speaker_ir(30.0,0.0).unwrap().dry,exact_primary);
+        assert_eq!(selected.speaker_ir(45.0,45.0).unwrap().dry,exact_companion);
+        let lower=selected.speaker_ir(30.0,-20.0).unwrap();
+        assert_eq!(lower.elevation,-20.0,"a below-ear virtual speaker must not silently become horizontal");
+        let (left,right)=selected.directional_grid.interpolate(&selected.cache,30.0,-20.0);
+        assert_eq!(lower.dry,[left,right].concat());
+        assert_ne!(lower.dry,old_horizontal);
+        // User room/legacy wet semantics are outside this bundled-cue correction.
+        selected.spatial_cues_active=false;
+        assert_eq!(selected.speaker_ir(30.0,-20.0).unwrap().dry,old_horizontal);
+    }
+    #[test]
+    fn manifest_motion_policy_defaults_and_survives_layout_and_snapshot() {
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
+        let mut manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(source.join("hrtf-set.json")).unwrap()).unwrap();
+        for p in manifest["positions"].as_array_mut().unwrap() {
+            for key in ["dry","wet"] { p[key]=serde_json::json!(source.join(p[key].as_str().unwrap()).to_str().unwrap()); }
+        }
+        let root=std::env::temp_dir().join(format!("sda-cue-motion-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("hrtf-set.json");
+        manifest["processing"].as_object_mut().unwrap().remove("spatialCueMotion");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let baseline=NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert!(baseline.attenuate_moving_spatial_cues());
+        manifest["processing"]["spatialCueMotion"]=serde_json::json!("continuous");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let mut candidate=NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert!(!candidate.attenuate_moving_spatial_cues());
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13] {
+            candidate.configure_spatial_cues(layout).unwrap();
+            assert!(candidate.spatial_cues_active());
+            assert!(!candidate.clone().attenuate_moving_spatial_cues());
+            assert!(!candidate.preparation_snapshot().attenuate_moving_spatial_cues());
+            candidate.set_spatial_cue_gain(0.5).unwrap();
+            assert!(!candidate.attenuate_moving_spatial_cues());
+        }
+        for value in [serde_json::json!("automatic"),serde_json::json!(true),serde_json::Value::Null] {
+            manifest["processing"]["spatialCueMotion"]=value;
+            std::fs::write(&path,manifest.to_string()).unwrap();
+            assert!(NativeHrtfSet::load_calibrated(&path).is_err());
+        }
+        std::fs::remove_file(&path).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn manifest_cue_window_survives_snapshot_layout_and_gain_updates() {
+        use crate::spatial_cues::CueWindow;
+        let source=Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
+        let mut manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(source.join("hrtf-set.json")).unwrap()).unwrap();
+        for p in manifest["positions"].as_array_mut().unwrap() {
+            for key in ["dry","wet"] {p[key]=serde_json::json!(source.join(p[key].as_str().unwrap()).to_str().unwrap());}
+        }
+        let root=std::env::temp_dir().join(format!("sda-cue-window-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("hrtf-set.json");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let mut short=NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert_eq!(short.spatial_cue_window,CueWindow::Short35);
+        manifest["processing"]["spatialCueWindow"]=serde_json::json!("extended80");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let mut long=NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert_eq!(long.spatial_cue_window,CueWindow::Extended80);
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13,crate::vbap::LayoutId::Dolby7_1_4] {
+            short.configure_spatial_cues(layout).unwrap();long.configure_spatial_cues(layout).unwrap();
+            assert_eq!(long.mixed_speaker("Center",layout.as_str(),0.0,0.0,0.0).unwrap(),
+                short.mixed_speaker("Center",layout.as_str(),0.0,0.0,0.0).unwrap());
+            assert_ne!(long.mixed_speaker("Center",layout.as_str(),0.0,0.0,0.04).unwrap(),
+                short.mixed_speaker("Center",layout.as_str(),0.0,0.0,0.04).unwrap());
+            let snap=long.preparation_snapshot();assert_eq!(snap.spatial_cue_window,CueWindow::Extended80);
+            assert!(std::sync::Arc::ptr_eq(long.room_profile.as_ref().unwrap(),snap.room_profile.as_ref().unwrap()));
+            long.set_spatial_cue_gain(0.4).unwrap();short.set_spatial_cue_gain(0.4).unwrap();
+            assert_eq!(long.spatial_cue_window,CueWindow::Extended80);
+        }
+        manifest["processing"]["spatialCueWindow"]=serde_json::json!("unknown");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        assert!(NativeHrtfSet::load_calibrated(&path).is_err());
+        std::fs::remove_file(path).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn manifest_interpolation_mode_matches_waveform_and_survives_snapshot() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/ios-experiments/fullheight-combined/hrtf-dense");
+        let mut manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(source.join("hrtf-set.json")).unwrap()).unwrap();
+        // Only fixture transport changes; waveform and triangle assets unchanged.
+        for p in manifest["positions"].as_array_mut().unwrap() {
+            for key in ["dry", "wet"] {
+                p[key] = serde_json::json!(source.join(p[key].as_str().unwrap()).to_str().unwrap());
+            }
+        }
+        let root = std::env::temp_dir().join(format!("sda-interpolator-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::copy(source.join("triangle-grid.json"),root.join("triangle-grid.json")).unwrap();
+        let path = root.join("hrtf-set.json");
+        manifest["processing"]["historicalInterpolationMode"] = serde_json::json!("aligned-waveform");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let expected = crate::directional::Grid::new_with_notch_guard(&set.cache,true)
+            .with_historical_interpolation(&set.cache,true)
+            .with_aligned_waveform_interpolation()
+            .with_triangle_support(&root.join("triangle-grid.json"), &set.cache).unwrap();
+        let snapshot = set.preparation_snapshot();
+        for (az,el) in [(0.0,0.0),(17.0,11.0),(-17.0,11.0),(135.0,-45.0),(0.0,90.0)] {
+            let pair = set.directional_grid.interpolate(&set.cache,az,el);
+            assert_eq!(pair,expected.interpolate(&set.cache,az,el));
+            assert_eq!(pair,snapshot.directional_grid.interpolate(&snapshot.cache,az,el));
+            assert!(pair.0.iter().chain(&pair.1).all(|v|v.is_finite()));
+        }
+        manifest["processing"]["historicalInterpolationMode"]=serde_json::json!("aligned-pairwise");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let mut consistent=NativeHrtfSet::load_calibrated(&path).unwrap();
+        let expected=crate::directional::Grid::new_with_notch_guard(&consistent.cache,true)
+            .with_historical_interpolation(&consistent.cache,true)
+            .with_consistent_waveform_interpolation()
+            .with_triangle_support(&root.join("triangle-grid.json"),&consistent.cache).unwrap();
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13] {
+            consistent.configure_spatial_cues(layout).unwrap();
+            consistent.set_spatial_cue_gain(0.4).unwrap();
+            let snapshot=consistent.preparation_snapshot();
+            for (az,el) in [(0.0,0.0),(17.0,11.0),(-17.0,11.0),(-125.0,8.0),(135.0,-45.0),(0.0,90.0)] {
+                let pair=consistent.directional_grid.interpolate(&consistent.cache,az,el);
+                assert_eq!(pair,expected.interpolate(&consistent.cache,az,el));
+                assert_eq!(pair,snapshot.directional_grid.interpolate(&snapshot.cache,az,el));
+                assert!(pair.0.iter().chain(&pair.1).all(|v|v.is_finite()));
+            }
+        }
+        assert_ne!(consistent.directional_grid.interpolate(&consistent.cache,17.0,11.0),
+            set.directional_grid.interpolate(&set.cache,17.0,11.0));
+        manifest["processing"]["historicalInterpolation"]=serde_json::json!(false);
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        assert!(NativeHrtfSet::load_calibrated(&path).unwrap_err().contains("historicalInterpolationMode"));
+        manifest["processing"]["historicalInterpolation"]=serde_json::json!(true);
+        manifest["processing"]["historicalInterpolationMode"] = serde_json::json!("typo");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        assert!(NativeHrtfSet::load_calibrated(&path).unwrap_err().contains("historicalInterpolationMode"));
+        // Missing mode remains the released spectral default, not this candidate.
+        manifest["processing"].as_object_mut().unwrap().remove("historicalInterpolationMode");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let baseline = NativeHrtfSet::load_calibrated(&path).unwrap();
+        manifest["processing"]["historicalInterpolationMode"] = serde_json::json!("spectral");
+        std::fs::write(&path,manifest.to_string()).unwrap();
+        let explicit = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let a = baseline.directional_grid.interpolate(&baseline.cache,17.0,11.0);
+        assert_eq!(a,explicit.directional_grid.interpolate(&explicit.cache,17.0,11.0));
+        assert_ne!(a,set.directional_grid.interpolate(&set.cache,17.0,11.0));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(root.join("triangle-grid.json")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+    #[test]
+    fn preparation_snapshot_shares_measurements_and_preserves_directional_processing() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut settings = crate::cinema::Settings { enabled: true, direct_db: -1.5, ..Default::default() };
+        settings.speakers.insert("FrontLeft".into(), crate::cinema::SpeakerCalibration {
+            gain_db: -2.0, delay_ms: 0.2, low_db: 1.0, high_db: -1.0,
+        });
+        set.configure_cinema(settings, None);
+        let snapshot = set.preparation_snapshot();
+        assert!(std::sync::Arc::ptr_eq(&set.cache, &snapshot.cache));
+        assert!(std::sync::Arc::ptr_eq(&set.positions, &snapshot.positions));
+        assert!(std::sync::Arc::ptr_eq(&snapshot, &set.preparation_snapshot()));
+        assert!(snapshot.prepared.is_empty() && snapshot.speaker_prepared.is_empty());
+        for diffuse in [0.0, 0.35] {
+            let direction = crate::directional::Direction { position: [-0.6,0.8,0.2],
+                head:Some([0.0,0.0,0.1,0.9949874]),diffuse,horizontal_only:false,
+                width:12.0,height:3.0,depth:0.2 };
+            let gains = solver.pan(direction.position, 0.0);
+            for amount in [0.0, 0.2] {
+                let amounts = [amount; crate::vbap::MAX_BUS_COUNT];
+                assert_eq!(set.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap(),
+                    snapshot.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap());
+            }
+        }
+    }
     use super::*;
 
     #[test]
@@ -1057,7 +1635,7 @@ mod raw_tests {
         assert_eq!(full.0[128], 0.0, "old room direct must be removed");
         let mut b = a.clone();
         b.subject_id = Some("personal-other".into());
-        for ir in &mut b.cache {
+        for ir in std::sync::Arc::make_mut(&mut b.cache).iter_mut() {
             let n = ir.dry.len() / 2;
             let mut swapped = ir.dry[n..].to_vec();
             swapped.extend_from_slice(&ir.dry[..n]);
@@ -1491,5 +2069,213 @@ mod subject_dense_tests {
                 "{head} absent dense anchor must use standard HRTF"
             );
         }
+    }
+    #[test]
+    fn rear_measured_directions_and_azimuth_wrap_preserve_direct_responses() {
+        let set = NativeHrtfSet::load_calibrated(&Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json")).unwrap();
+        for ir in set.cache.iter().filter(|ir| ir.azimuth.abs() >= 120.0) {
+            let (l, r) = set.directional_grid.interpolate(&set.cache, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&l[..n], &ir.dry[..n]);
+            assert_eq!(&r[..n], &ir.dry[n..]);
+            assert!(l[n..].iter().chain(&r[n..]).all(|v| *v == 0.0));
+        }
+        for el in [0.0, 15.0, 17.5, 25.0, 45.0] {
+            for az in [120.0, 150.0, 179.999, 180.0, 180.001, 210.0, 240.0] {
+                let a = set.directional_grid.interpolate(&set.cache, az, el);
+                let b = set.directional_grid.interpolate(&set.cache, az - 360.0, el);
+                let error = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(error < 1e-6, "rear azimuth wrap changed filter: {az}, {el}, {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn mobile_direct_objects_and_bed_have_no_room_tail() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        assert_eq!(set.simulation_shape(), (128, 256, 1));
+        assert_eq!(set.speaker_filter_len(), 256 + crate::directional::INTERPOLATION_TAIL);
+        assert!(set.speaker_set.is_none());
+        for ir in set.cache.iter() {
+            let (l, r) = set.mixed_direction(ir.azimuth, ir.elevation, 1.0).unwrap();
+            assert_eq!(l, ir.dry[..256]);
+            assert_eq!(r, ir.dry[256..]);
+        }
+        let before = set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 0.0).unwrap();
+        let mut cinema = crate::cinema::Settings::default();
+        cinema.enabled = true;
+        cinema.direct_db = -12.0;
+        set.configure_cinema(cinema, None);
+        assert!(!set.cinema.enabled);
+        assert_eq!(
+            before,
+            set.mixed_speaker("Center", "7.1.4", 0.0, 0.0, 1.0).unwrap()
+        );
+        for (az, el) in [(0.0, 0.0), (30.0, 0.0), (-110.0, 0.0), (45.0, 45.0), (-30.0, 30.0)] {
+            let actual = set.mixed_speaker("channel", "7.1.4", az, el, 1.0).unwrap();
+            // Compare the complete interpolation, not a truncated copy: the
+            // fractional-delay tail is direct sound, not room reverberation.
+            let (l, r) = set.directional_grid.interpolate(&set.cache, az, el);
+            assert_eq!(actual, (l, r));
+            assert!(actual.0.iter().chain(&actual.1).all(|v| v.is_finite()));
+        }
+    }
+    #[test]
+    fn spatial_cue_gain_scales_only_residual_for_both_layouts() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
+            let mut full = NativeHrtfSet::load_calibrated(&path).unwrap();
+            full.spatial_cue_gain = 1.0;
+            let mut reduced = full.clone();
+            reduced.spatial_cue_gain = 0.5;
+            full.configure_spatial_cues(layout).unwrap();
+            reduced.configure_spatial_cues(layout).unwrap();
+            let profile = full.room_profile.as_ref().unwrap();
+            for speaker in &profile.speakers {
+                let render = |set: &NativeHrtfSet, wet| set.mixed_speaker(&speaker.name,
+                    &profile.layout, speaker.azimuth as f64, speaker.elevation as f64, wet).unwrap();
+                let dry = render(&full, 0.0);
+                assert_eq!(dry, render(&reduced, 0.0));
+                let a = render(&full, 0.04);
+                let b = render(&reduced, 0.04);
+                for ((d,a),b) in dry.0.iter().chain(&dry.1).zip(a.0.iter().chain(&a.1)).zip(b.0.iter().chain(&b.1)) {
+                    assert!((b - (d + (a-d)*0.5)).abs() < 1e-6);
+                }
+                assert!(b.0.iter().zip(&dry.0).any(|(b,d)| b != d));
+            }
+        }
+    }
+
+}
+
+#[cfg(test)]
+mod front_ear_integration_tests {
+    use super::*;
+    #[test]
+    fn policy_survives_snapshot_and_covers_bed_and_object_kernels() {
+        let mut set=NativeHrtfSet::synthetic(12,256,512).unwrap();
+        let solver=crate::vbap::VbapSolver::new();
+        let direction=crate::directional::Direction {position:[-1.,1.,0.], head:None,
+            diffuse:0.,horizontal_only:false,width:0.,height:0.,depth:0.};
+        let mut gains=[0.;crate::vbap::MAX_BUS_COUNT];gains[0]=1.;let amounts=[0.;crate::vbap::MAX_BUS_COUNT];
+        let dry=set.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap();
+        let bed=set.mixed_speaker("FrontLeft",solver.layout().as_str(),45.,0.,0.).unwrap();
+        set.front_ear_isolation=true;
+        let snapshot=set.preparation_snapshot();assert!(snapshot.front_ear_isolation);
+        let changed=snapshot.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap();
+        assert_eq!(changed.0,dry.0);assert!(changed.1.iter().all(|v|*v==0.));
+        let changed=set.mixed_speaker("FrontLeft",solver.layout().as_str(),45.,0.,0.).unwrap();
+        assert_eq!(changed.0,bed.0);assert!(changed.1.iter().all(|v|*v==0.));
+    }
+}
+
+#[cfg(test)]
+mod measured_response_tests {
+    use super::*;
+    fn manifest() -> std::path::PathBuf {
+        std::env::var_os("SDA_SHARED_PROFILE_MANIFEST").map(std::path::PathBuf::from)
+            .unwrap_or_else(||Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json"))
+    }
+    #[test]
+    fn shared_hrtfhq_lower_speaker_fallback_retains_the_selected_lower_field() {
+        let set = NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let companion = set.speaker_set.as_ref().unwrap();
+        let mut checked = 0;
+        for layout in [crate::vbap::LayoutId::Sony360Ra13, crate::vbap::LayoutId::Itu22_2] {
+            for speaker in crate::vbap::speakers(layout).iter().filter(|s| s.elevation < 0.0) {
+                let azimuth = f64::from(speaker.azimuth);
+                let elevation = f64::from(speaker.elevation);
+                if set.has_exact_measurement(azimuth, elevation)
+                    || companion.has_exact_measurement(azimuth, elevation) { continue; }
+                let actual = set.speaker_ir(azimuth, elevation).unwrap();
+                assert_eq!(actual.elevation, elevation, "{} lost its lower elevation", speaker.name);
+                let (left, right) = set.directional_grid.interpolate(&set.cache, azimuth, elevation);
+                assert_eq!(actual.dry, [left, right].concat());
+                assert!(actual.dry.iter().all(|v| v.is_finite()));
+                assert!(actual.dry.iter().any(|v| v.abs() > 1e-6));
+                assert_ne!(actual.dry, companion.nearest(azimuth, elevation).unwrap().dry);
+                let mut expected = set.directional_grid.interpolate(&set.cache, azimuth, elevation);
+                expected.0.resize(set.speaker_filter_len(), 0.0);
+                expected.1.resize(set.speaker_filter_len(), 0.0);
+                assert_eq!(set.mixed_speaker(speaker.name, layout.as_str(), azimuth, elevation, 0.0).unwrap(), expected);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 4, "both layouts must exercise missing lower speaker anchors");
+        // The accepted upper-speaker response remains on its existing fallback.
+        assert_eq!(set.speaker_ir(135.0, 35.0).unwrap().dry,
+            companion.nearest(135.0, 35.0).unwrap().dry);
+    }
+
+    #[test]
+    fn shared_hrtfhq_preserves_every_measured_anchor_and_its_matching_fallback() {
+        let mut set=NativeHrtfSet::load_without_shared_clarity(&manifest()).unwrap();
+        assert_eq!(set.positions.len(),542);
+        assert_eq!(set.subject_id.as_deref(),Some("apple-public-hrtfhq"));
+        let fallback=set.speaker_set.as_ref().unwrap();
+        assert_eq!(fallback.positions.len(),17);assert_eq!(fallback.subject_id,set.subject_id);
+        for (position,ir) in set.positions.iter().zip(set.cache.iter()) {
+            let pair=set.directional_grid.interpolate(&set.cache,position.azimuth,position.elevation);
+            let n=ir.dry.len()/2;
+            for (ear,actual) in [&pair.0,&pair.1].into_iter().enumerate() {
+                for (i,&sample) in actual.iter().enumerate() {
+                    let expected=if i<n {ir.dry[ear*n+i]} else {0.0};
+                    assert!((sample-expected).abs()<1e-6,"changed measured response at {}/{}, ear{ear}",position.azimuth,position.elevation);
+                }
+            }
+        }
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4,crate::vbap::LayoutId::Sony360Ra13] {
+            set.configure_spatial_cues(layout).unwrap();assert!(set.spatial_cues_active());
+        }
+    }
+    #[test]
+    fn shared_hrtfhq_rejects_old_processing_on_the_new_measurements() {
+        let original:serde_json::Value=serde_json::from_slice(&read(manifest()).unwrap()).unwrap();
+        let root=std::env::temp_dir().join(format!("sda-measured-policy-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("hrtf-set.json");
+        for flag in ["historicalInterpolation","frontEarIsolation","spatialCues","mobileDirectOnly"] {
+            let mut bad=original.clone();bad["processing"][flag]=true.into();
+            std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
+            let error=NativeHrtfSet::load_calibrated(&path).err().unwrap();
+            assert!(error.contains("Measured response profile"),"{flag}: {error}");
+        }
+        let mut bad=original;bad["measuredResponseVersion"]=99.into();
+        std::fs::write(&path,serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(NativeHrtfSet::load_calibrated(&path).is_err());
+        std::fs::remove_file(path).unwrap();std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn shared_hrtfhq_interpolation_does_not_jump_at_equal_weight_directions() {
+        let set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let q=std::f32::consts::FRAC_1_SQRT_2;
+        let position=crate::spatial::head_relative_adm([-0.8,-0.5,0.8],Some([q,0.0,0.0,q]));
+        let direction=crate::spatial::adm_to_spherical(position);
+        let el=f64::from(direction.elevation);
+        for az in [45.0,-45.0,135.0,-135.0] {
+            let a=set.directional_grid.interpolate(&set.cache,az-0.000001,el);
+            let b=set.directional_grid.interpolate(&set.cache,az+0.000001,el);
+            let energy:f64=a.0.iter().chain(&a.1).map(|&x|f64::from(x).powi(2)).sum();
+            let error:f64=a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)).map(|(&a,&b)|f64::from(a-b).powi(2)).sum();
+            assert!((error/energy).sqrt()<0.0001,"waveform jumps across equal weights {az}/{el}: {}",(error/energy).sqrt());
+        }
+    }
+    #[test]
+    fn shared_hrtfhq_head_pose_retains_measured_ear_timing() {
+        let set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+        let q=std::f32::consts::FRAC_1_SQRT_2;
+        let direction=crate::directional::Direction {position:[0.0,1.0,0.0],head:Some([0.0,0.0,q,q]),
+            width:0.0,height:0.0,depth:0.0,diffuse:0.0,horizontal_only:false};
+        let actual=set.directional_grid.footprint(&set.cache,direction);
+        let expected=set.directional_grid.interpolate(&set.cache,-90.0,0.0);
+        let front=set.directional_grid.interpolate(&set.cache,0.0,0.0);
+        let error=actual.0.iter().chain(&actual.1).zip(expected.0.iter().chain(&expected.1))
+            .map(|(a,b)|(*a-*b).abs()).fold(0.0f32,f32::max);
+        assert!(error<1e-5);
+        assert!(actual.0.iter().zip(&front.0).any(|(a,b)|(*a-*b).abs()>0.01));
     }
 }

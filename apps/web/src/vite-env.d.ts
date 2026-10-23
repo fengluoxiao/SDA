@@ -101,6 +101,7 @@ declare global {
     outputActive?: boolean;
     hrtfReady?: boolean;
     directionalHrtf?: boolean;
+    binauralEnabled?: boolean;
     programCodecSupported?: boolean | null;
   }
 
@@ -190,6 +191,8 @@ declare global {
       roomLabGenerate?: (config:RoomSimulationConfig) => Promise<CinemaRoomSummary>;
       roomLabCancel?: () => Promise<boolean>;
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
+      nativeRendererObjectRendering?: (enabled: boolean) => Promise<boolean>;
+      nativeRendererBinauralEnabled?: (enabled: boolean) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;
       nativeRendererDirectionalHrtf?: (enabled:boolean) => Promise<boolean>;
       nativeRendererProgramCodec?: (codec: string) => Promise<boolean>;

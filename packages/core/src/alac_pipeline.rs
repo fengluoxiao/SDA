@@ -84,7 +84,7 @@ impl Pipeline for AlacPipeline {
         let sample_pos = self.total_samples;
         self.total_samples += frames as u64;
         let labels = self.labels();
-        out.push_back(FrameData {
+        out.push_back(FrameData { reference_loudness: None, compatibility_bed: None,
             codec: "alac",
             sample_rate: self.sample_rate,
             sample_pos,

@@ -82,6 +82,26 @@ export function mpeghTracksFromMp4Box(file: any): Mp4AudioTrack[] {
   return result;
 }
 
+/** AV3A is an unknown sample entry in mp4box 0.5, so it may be absent
+ * from info.audioTracks. Its codec configuration is in each AV3A frame. */
+export function av3aTracksFromMp4Box(file: any): Mp4AudioTrack[] {
+  const tracks: Mp4AudioTrack[] = [];
+  for (const trak of file.moov?.traks ?? []) {
+    const entry = trak.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if (entry?.type !== "av3a") continue;
+    const data: Uint8Array | undefined = entry.data;
+    const channels = entry.channel_count ?? (data && data.length >= 20 ? new DataView(data.buffer, data.byteOffset + 8, 2).getUint16(0) : 0);
+    const sampleRate = entry.samplerate ?? (data && data.length >= 20 ? readU32(data, 16) / 65536 : 0);
+    const mdhd = trak.mdia?.mdhd;
+    if (!Number.isInteger(channels) || channels < 1 || channels > 16 || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+      throw new Error("Invalid Audio Vivid audio sample entry");
+    }
+    tracks.push({ trackId: trak.tkhd.track_id, codec: "av3a", sampleRate, channels,
+      durationSec: mdhd?.timescale > 0 ? mdhd.duration / mdhd.timescale : undefined });
+  }
+  return tracks;
+}
+
 /** ISO BMFF supplies raw AC-4 AUs; add Annex G framing for the byte-stream decoder. */
 export function ac4SyncFrame(payload: Uint8Array): Uint8Array {
   if (!payload.length || payload.length > 0xffffff) throw new Error("Invalid AC-4 MP4 access unit size");
@@ -216,7 +236,7 @@ export class Mp4Demuxer {
     this.file.onError = (e: unknown) => this.cb.onError?.(String(e));
     this.file.onReady = (info: { audioTracks: Array<{ id: number; codec: string; duration?: number; timescale?: number; movie_duration?: number; movie_timescale?: number; audio: { sample_rate: number; channel_count: number } }> }) => {
       const candidates: Mp4AudioTrack[] = [];
-      candidates.push(...mpeghTracksFromMp4Box(this.file));
+      candidates.push(...mpeghTracksFromMp4Box(this.file), ...av3aTracksFromMp4Box(this.file));
       const alac = alacTrackFromMp4Box(this.file as unknown as { moov?: { traks?: Mp4AlacTrack[] } });
       if (alac) candidates.push(alac);
       for (const t of info.audioTracks) {

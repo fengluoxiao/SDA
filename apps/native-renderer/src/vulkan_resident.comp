@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x=64) in;
+layout(set=0,binding=0,std430) readonly buffer Input {float v[];} src;
+layout(set=0,binding=1,std430) buffer Output {uint v[];} dst;
+layout(push_constant) uniform Shape {uint plane;uint parts;uint bins;} shape;
+void main(){
+ uint i=gl_GlobalInvocationID.x,n=shape.plane;if(i>=n)return;uint row=i/shape.bins,bin=i%shape.bins;
+ precise float lr=0.0,li=0.0,rr=0.0,ri=0.0;
+ for(uint part=0;part<shape.parts;part++){
+  uint x=(part*n+i)*2;uint h=2*n*shape.parts+((row*shape.parts+part)*shape.bins+bin)*4;
+  float xr=src.v[x],xi=src.v[x+1];
+  precise float ar=xr*src.v[h],bi=xi*src.v[h+1],ai=xr*src.v[h+1],br=xi*src.v[h];
+  precise float cr=xr*src.v[h+2],di=xi*src.v[h+3],ci=xr*src.v[h+3],dr=xi*src.v[h+2];
+  precise float lre=ar-bi,lim=ai+br,rre=cr-di,rim=ci+dr;
+  lr=lr+lre;li=li+lim;rr=rr+rre;ri=ri+rim;
+ }
+ vec4 value=vec4(lr,li,rr,ri);if(any(isnan(value))||any(isinf(value)))atomicOr(dst.v[4*n],1u);
+ uint outBase=row*shape.bins*4+bin*2;dst.v[outBase]=floatBitsToUint(lr);dst.v[outBase+1]=floatBitsToUint(li);dst.v[outBase+shape.bins*2]=floatBitsToUint(rr);dst.v[outBase+shape.bins*2+1]=floatBitsToUint(ri);
+}

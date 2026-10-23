@@ -1,20 +1,34 @@
 name: release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build desktop assets for
+        required: true
+        type: string
+      platform:
+        description: Desktop platforms to build
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - windows
+          - macos
 
 permissions:
   contents: write
 
 jobs:
   build-windows:
+    if: ${{ inputs.platform == 'both' || inputs.platform == 'windows' }}
     name: Windows NSIS installers
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag }}
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
@@ -76,6 +90,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    if: ${{ inputs.platform == 'both' || inputs.platform == 'macos' }}
     name: macOS DMG (${{ matrix.arch }})
     runs-on: macos-latest
     strategy:
@@ -85,6 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag }}
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
@@ -115,6 +131,12 @@ jobs:
 
       - name: Build web + package Electron (unsigned DMG)
         run: |
+          if [ '${{ matrix.arch }}' = 'arm64' ]; then export SDA_NATIVE_TARGET=aarch64-apple-darwin; else export SDA_NATIVE_TARGET=x86_64-apple-darwin; fi
+          rustup target add "$SDA_NATIVE_TARGET"
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          node scripts/build-head-tracking-helper.mjs
+          node scripts/build-native-renderer.mjs
           pnpm --filter @sda/web build
           pnpm --filter @sda/desktop exec electron-builder --mac dmg --${{ matrix.arch }} --publish never
 
@@ -126,6 +148,7 @@ jobs:
           if-no-files-found: error
 
   publish-release:
+    if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     name: Publish release assets
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
@@ -136,11 +159,12 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Upload installers and DMGs to GitHub Release
+      - name: Upload requested desktop assets to the existing GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag }}
           files: |
             release-assets/*.exe
             release-assets/*.dmg
-          fail_on_unmatched_files: true
-          generate_release_notes: true
+          fail_on_unmatched_files: false
+          generate_release_notes: false

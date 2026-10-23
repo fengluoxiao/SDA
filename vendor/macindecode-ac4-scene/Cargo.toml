@@ -18,7 +18,7 @@ audio-decode = ["dep:macindecode-ac4-decode", "macindecode-ac4-decode/audio-deco
 
 [dependencies]
 macindecode-ac4-bitstream = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123" }
-macindecode-ac4-decode = { git = "https://github.com/SakuzyPeng/MacinDecode-AC4-Core.git", rev = "a23965312a53d3cfb1a63cbae692a788efe46123", optional = true }
+macindecode-ac4-decode = { path = "../macindecode-ac4-decode", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

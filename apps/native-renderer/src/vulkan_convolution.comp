@@ -1,0 +1,120 @@
+#version 450
+// One source/filter row per group. 2048-point overlap-save, <=4 partitions.
+#ifndef CHAIN_LOCAL_SIZE
+#define CHAIN_LOCAL_SIZE 64
+#endif
+const uint STRIDE=CHAIN_LOCAL_SIZE;
+const uint SLOTS=(1025+CHAIN_LOCAL_SIZE-1)/CHAIN_LOCAL_SIZE;
+layout(local_size_x=CHAIN_LOCAL_SIZE) in;
+layout(set=0,binding=0,std430) readonly buffer Input {float v[];} src;
+layout(set=0,binding=1,std430) writeonly buffer Output {float v[];} dst;
+layout(push_constant) uniform Shape {uint rows;uint parts;} shape;
+shared vec2 work[2048];
+uint reverse11(uint x){
+#ifdef CHAIN_RADIX4
+ uint b=x&63;return ((((b&3)<<4)|(b&12)|((b>>4)&3))*32)+(x>>6);
+#else
+ return bitfieldReverse(x)>>21;
+#endif
+}
+vec2 twiddle(uint k,bool inverse){vec2 w=vec2(src.v[shape.rows+2*k],src.v[shape.rows+2*k+1]);if(inverse)w.y=-w.y;return w;}
+void fft_radix2(bool inverse){
+ for(uint width=2;width<=2048;width*=2){
+  uint halfWidth=width/2;
+  for(uint q=gl_LocalInvocationID.x;q<1024;q+=STRIDE){
+   uint j=q%halfWidth;uint base=(q/halfWidth)*width+j;
+   precise vec2 a=work[base];precise vec2 b=work[base+halfWidth];precise vec2 w=twiddle(j*(2048/width),inverse);
+   #ifdef CHAIN_FFT_FMA
+   precise float tr=fma(-b.y,w.y,b.x*w.x);precise float ti=fma(b.x,w.y,b.y*w.x);
+#else
+   precise float tr=b.x*w.x-b.y*w.y;precise float ti=b.x*w.y+b.y*w.x;
+#endif
+   work[base]=a+vec2(tr,ti);work[base+halfWidth]=a-vec2(tr,ti);
+  }
+  barrier();
+ }
+}
+// Arithmetic schedule derived from RustFFT 6.4.1 NeonRadix4/Butterfly32.
+// MIT license: scripts/vulkan-convolution-RUSTFFT-LICENSE.txt.
+precise vec2 rotate90(vec2 x,bool inverse){return inverse?vec2(-x.y,x.x):vec2(x.y,-x.x);}
+precise vec2 cmul(vec2 x,vec2 w){return vec2(fma(x.x,w.x,-x.y*w.y),fma(x.y,w.x,x.x*w.y));}
+void bf4(inout vec2 a,inout vec2 b,inout vec2 c,inout vec2 d,bool inverse){
+ precise vec2 m0=a+c;precise vec2 m2=a-c;precise vec2 m1=b+d;precise vec2 m3=rotate90(b-d,inverse);
+ a=m0+m1;b=m2+m3;c=m0-m1;d=m2-m3;
+}
+void fft_radix4(bool inverse){
+ uint tid=gl_LocalInvocationID.x;
+ // 64 independent size-32 bases: size-4 columns then size-8 rows.
+ for(uint q=tid;q<512;q+=STRIDE){
+  uint col=q%8;uint base=(q/8)*32;
+  precise vec2 a=work[base+col];precise vec2 b=work[base+col+8];precise vec2 c=work[base+col+16];precise vec2 d=work[base+col+24];
+  bf4(a,b,c,d,inverse);
+  if(col!=0){
+   b=(col==4)?(rotate90(b,inverse)+b)*0.7071067811865475244:cmul(b,twiddle(col*64,inverse));
+   if(col==2)c=(rotate90(c,inverse)+c)*0.7071067811865475244;
+   else if(col==4)c=rotate90(c,inverse);
+   else if(col==6)c=(rotate90(c,inverse)-c)*0.7071067811865475244;
+   else c=cmul(c,twiddle(col*128,inverse));
+   d=(col==4)?(rotate90(d,inverse)-d)*0.7071067811865475244:cmul(d,twiddle(col*192,inverse));
+  }
+  work[base+col]=a;work[base+col+8]=b;work[base+col+16]=c;work[base+col+24]=d;
+ }
+ barrier();
+ // Private copies prevent the transpose from overwriting another row's inputs.
+ precise vec2 held[(256/CHAIN_LOCAL_SIZE)*8];
+ for(uint q=tid;q<256;q+=STRIDE){uint base=(q/4)*32+(q%4)*8;for(uint k=0;k<8;k++)held[(q/STRIDE)*8+k]=work[base+k];}
+ barrier();
+ for(uint q=tid;q<256;q+=STRIDE){
+  uint h=(q/STRIDE)*8;uint base=(q/4)*32;uint col=q%4;
+  precise vec2 a=held[h];precise vec2 b=held[h+2];precise vec2 c=held[h+4];precise vec2 d=held[h+6];bf4(a,b,c,d,inverse);
+  precise vec2 e=held[h+1];precise vec2 f=held[h+3];precise vec2 g=held[h+5];precise vec2 j=held[h+7];bf4(e,f,g,j,inverse);
+  f=(rotate90(f,inverse)+f)*0.7071067811865475244;g=rotate90(g,inverse);j=(rotate90(j,inverse)-j)*0.7071067811865475244;
+  work[base+col]=a+e;work[base+col+16]=a-e;work[base+col+4]=b+f;work[base+col+20]=b-f;
+  work[base+col+8]=c+g;work[base+col+24]=c-g;work[base+col+12]=d+j;work[base+col+28]=d-j;
+ }
+ barrier();
+ for(uint width=128;width<=2048;width*=4){
+  uint cols=width/4;
+  for(uint q=tid;q<512;q+=STRIDE){
+   uint col=q%cols;uint base=(q/cols)*width+col;
+   precise vec2 a=work[base];precise vec2 b=cmul(work[base+cols],twiddle(col*(2048/width),inverse));
+   precise vec2 c=cmul(work[base+2*cols],twiddle(col*(4096/width),inverse));precise vec2 d=cmul(work[base+3*cols],twiddle(col*(6144/width),inverse));
+   bf4(a,b,c,d,inverse);work[base]=a;work[base+cols]=b;work[base+2*cols]=c;work[base+3*cols]=d;
+  }
+  barrier();
+ }
+}
+void fft(bool inverse){
+#ifdef CHAIN_RADIX4
+ fft_radix4(inverse);
+#else
+ fft_radix2(inverse);
+#endif
+}
+void main(){
+ uint row=gl_WorkGroupID.x;uint tid=gl_LocalInvocationID.x;
+ if(row>=shape.rows)return;
+ if(src.v[row]==0.0){for(uint i=tid;i<2048;i+=STRIDE)dst.v[row*2048+i]=0.0;return;}
+ uint pcmBase=shape.rows+4096;
+ uint filterBase=pcmBase+shape.rows*shape.parts*2048;
+ precise vec4 acc[SLOTS];for(uint j=0;j<SLOTS;j++)acc[j]=vec4(0.0);
+ for(uint part=0;part<shape.parts;part++){
+  for(uint i=tid;i<2048;i+=STRIDE)work[reverse11(i)]=vec2(src.v[pcmBase+(row*shape.parts+part)*2048+i],0.0);
+  barrier();fft(false);
+  for(uint j=0;j<SLOTS;j++){
+   uint bin=tid+j*STRIDE;if(bin>1024)break;
+   precise vec2 x=work[bin];uint f=filterBase+((row*shape.parts+part)*1025+bin)*4;
+   precise vec4 h=vec4(src.v[f],src.v[f+1],src.v[f+2],src.v[f+3]);
+   precise vec4 mac=vec4(x.x*h.x-x.y*h.y,x.x*h.y+x.y*h.x,x.x*h.z-x.y*h.w,x.x*h.w+x.y*h.z);
+   acc[j]+=mac;
+  }
+  barrier();
+ }
+ for(uint j=0;j<SLOTS;j++){
+  uint bin=tid+j*STRIDE;if(bin>1024)break;precise vec4 a=acc[j];
+  if(bin==0 || bin==1024)work[reverse11(bin)]=vec2(a.x,a.z);
+  else {work[reverse11(bin)]=vec2(a.x-a.w,a.y+a.z);work[reverse11(2048-bin)]=vec2(a.x+a.w,-a.y+a.z);}
+ }
+ barrier();fft(true);
+ for(uint i=tid;i<1024;i+=STRIDE){vec2 pcm=work[i+1024]*(1.0/2048.0);dst.v[(row*1024+i)*2]=pcm.x;dst.v[(row*1024+i)*2+1]=pcm.y;}
+}

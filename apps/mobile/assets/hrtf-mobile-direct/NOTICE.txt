@@ -1,0 +1,12 @@
+SDA Mobile Direct KU100 HRIR
+
+Derived from SADIE II Database V2.2, D1 KU100.
+Copyright 2018, University of York.
+Licensed under Apache License 2.0; see LICENSE-SADIE.txt.
+Record: https://zenodo.org/records/12092466
+Source SHA-256: e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2
+
+SDA selects 128 distinct original 48 kHz, 256-tap stereo HRIR measurements
+and packs the unmodified samples as float32. No BRIR, simulated room,
+room EQ, reflection or generated reverberation data is included.
+Original measurement-speaker response and inter-ear timing are retained.

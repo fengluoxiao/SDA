@@ -19,8 +19,10 @@ function sourceDirectory(subject){return subject==="ku100"?"hrtf":`hrtf-${subjec
 async function generate(_parameters,assessment,store){
  const record=JSON.stringify(assessment??null);
  if(record.length>1024*1024)throw new Error("测试记录过大");
- const subject=referenceSubject(assessment),directory=sourceDirectory(subject);
- const sourceRoot=path.join(bundledRoot(),directory),manifestPath=path.join(sourceRoot,"hrtf-set.json");
+ const subject=referenceSubject(assessment),base=bundledRoot();
+ const savedKu100=path.join(base,"hrtf-ku100-reference","hrtf-set.json");
+ const directory=subject==="ku100"&&fs.existsSync(savedKu100)?"hrtf-ku100-reference":sourceDirectory(subject);
+ const sourceRoot=path.join(base,directory),manifestPath=path.join(sourceRoot,"hrtf-set.json");
  if(!fs.existsSync(manifestPath))throw new Error(`内置实测 HRTF 不存在：${subject}`);
  const sourceBytes=fs.readFileSync(manifestPath),sourceManifest=JSON.parse(sourceBytes.toString("utf8"));
  if(sourceManifest?.sampleRate!==48000||sourceManifest.completeSubject!==true||!Array.isArray(sourceManifest.positions)||sourceManifest.positions.length<8)throw new Error("内置 HRTF 格式无效");

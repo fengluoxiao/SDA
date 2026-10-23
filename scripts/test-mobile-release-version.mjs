@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url),{parse}=require('yaml');
+const json=path=>JSON.parse(readFileSync(path,'utf8'));
+const app=json('apps/mobile/app.json').expo;
+assert.match(app.version,/^\d+\.\d+\.\d+$/);
+for(const file of ['package.json','apps/desktop/package.json','apps/mobile/package.json'])assert.equal(json(file).version,app.version,file+' version must match the release');
+assert.equal(Number(app.ios.buildNumber),app.android.versionCode);
+assert(Number.isInteger(app.android.versionCode)&&app.android.versionCode>1);
+const gradle=readFileSync('apps/mobile/android/app/build.gradle','utf8');
+assert(gradle.includes('versionName "'+app.version+'"'));
+assert(gradle.includes('versionCode '+app.android.versionCode));
+assert.match(gradle,/sdaOfficialRelease[^]*!sdaHasReleaseSigning/);
+for(const name of ['SDA_ANDROID_RELEASE_STORE_FILE','SDA_ANDROID_RELEASE_STORE_PASSWORD','SDA_ANDROID_RELEASE_KEY_ALIAS','SDA_ANDROID_RELEASE_KEY_PASSWORD'])assert(gradle.includes("System.getenv('"+name+"')"));
+const workflow=parse(readFileSync('.github/workflows/release.yml','utf8'));
+assert(workflow.on.workflow_dispatch);assert.equal(workflow.on.push,undefined,'publishing a mobile tag must not build desktop packages');
+assert.deepEqual(workflow.on.workflow_dispatch.inputs.platform.options,['both','windows','macos']);
+for(const name of ['build-windows','build-macos']){assert(workflow.jobs[name].if.includes('inputs.platform'));const checkout=workflow.jobs[name].steps.find(step=>step.uses?.startsWith('actions/checkout@'));assert.equal(checkout.with.ref,'$'+'{{ inputs.tag }}');}
+const publish=workflow.jobs['publish-release'];assert(publish.if.includes('always()'));assert(publish.if.includes('failure'));
+const upload=publish.steps.find(step=>step.uses?.startsWith('softprops/action-gh-release@'));assert.equal(upload.with.tag_name,'$'+'{{ inputs.tag }}');assert.equal(upload.with.generate_release_notes,false);
+console.log('Mobile release version, build numbers, private signing guard and manual-only desktop publishing checks passed.');

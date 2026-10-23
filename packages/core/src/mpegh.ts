@@ -14,19 +14,14 @@ export function initMpegh(): Promise<void> {
 export function isMhas(data: Uint8Array): boolean {return data[0]===0xc0&&data[1]===1&&data[2]===0xa5;}
 /** Do not enter the stateful decoder until a complete audio AU is buffered. */
 const CICP_LABELS:Record<number,string>={0:'L',1:'R',2:'C',3:'LFE',4:'Ls',5:'Rs',6:'Lc',7:'Rc',8:'Lb',9:'Rb',10:'Cb',13:'Ls',14:'Rs',15:'Lw',16:'Rw',17:'Tfl',18:'Tfr',19:'Tfc',20:'Tbl',21:'Tbr',22:'Tbc',23:'Tsl',24:'Tsr',25:'Tc',26:'LFE',30:'Tbl',31:'Tbr',32:'Tfl',33:'Tfr',41:'Lb',42:'Rb'};
-/** MHAS packet header, ISO/IEC 23008-3 escapedValue syntax. */
-export function mhasPacket(type:number,payload:Uint8Array):Uint8Array {
-  const bits:number[]=[];
-  const put=(v:number,n:number)=>{for(let i=n-1;i>=0;i--)bits.push((v>>>i)&1);};
-  const escaped=(v:number,a:number,b:number,c:number)=>{const max=2**a-1;put(Math.min(v,max),a);if(v>=max){v-=max;const m=2**b-1;put(Math.min(v,m),b);if(v>=m)put(v-m,c);}};
-  escaped(type,3,8,8);escaped(1,2,8,32);escaped(payload.length,11,24,24);
-  const result=new Uint8Array(bits.length/8+payload.length);
-  bits.forEach((b,i)=>result[i>>3]!|=b<<(7-(i&7)));result.set(payload,bits.length/8);return result;
-}
+import {mhasPacket} from './mhas';
+export {mhasPacket} from './mhas';
 export class MpeghDecoder {
   private pending=new Uint8Array(0);
   private frames:DecodedFrameData[]=[];
   private samplePos=0;
+  private objectRendering=true;
+  private compatibleFrames=new Map<number,Float32Array[]>();
   private dead=false;
   constructor(private rawAu=false,config?:Uint8Array,private referenceOnly?: (channels: Float32Array[], sampleRate: number) => void, private emitSourcesWithReference=false){
     if(!runtime)throw codecFailure("mpegh.failure_01",'MPEG-H runtime not initialized');
@@ -57,19 +52,24 @@ export class MpeghDecoder {
   }
   private takeFrame():void {
     const m=runtime, info=(k:number)=>m._sda_info(k);
+    if(info(12)!==0)throw codecFailure("mpegh.failure_13", "MPEG-H source capture exceeds its 128-lane/metadata bounds");
     let n=info(3);if(!n)return;
+    if(!Number.isInteger(n)||n<0||n>4096)throw codecFailure("mpegh.failure_13", "MPEG-H invalid source sample count");
     const objects=info(5),beds=info(6),hoa=info(7),rate=info(2);
-    if(this.referenceOnly){
+    if(this.referenceOnly || !this.objectRendering){
       const count=info(11),samples=info(10)/(count*3);
       if(count!==2 || !Number.isInteger(samples) || samples<=0)throw codecFailure("mpegh.failure_10",'MPEG-H invalid reference mix');
       const reference=[new Float32Array(samples),new Float32Array(samples)];
       const bytes=m.HEAPU8;let p=m._sda_rendered();
       for(let i=0;i<samples;i++)for(let c=0;c<2;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;reference[c]![i]=(v<<8>>8)/8388608;}
-      this.referenceOnly(reference,rate);
-      if(!this.emitSourcesWithReference){this.samplePos+=samples;return;}
+      const master=this.floatReference(reference);
+      if(this.emitSourcesWithReference || !this.referenceOnly) this.compatibleFrames.set(this.samplePos,master);
+      this.referenceOnly?.(master,rate);
+      if(this.referenceOnly && !this.emitSourcesWithReference){this.samplePos+=master[0]!.length;return;}
     }
 
     let channels:Float32Array[],labels:string[],events:ObjectEvent[]=[],objectChannels:{id:number;channel:number}[]=[];
+    if(!Number.isInteger(objects) || !Number.isInteger(beds) || objects<0 || beds<0 || beds+objects>128)throw codecFailure("mpegh.failure_13", "MPEG-H source capture exceeds its 128-lane/metadata bounds");
     if(objects){
       if(hoa)throw codecFailure("mpegh.failure_11",'MPEG-H mixed objects/HOA is not supported yet');
       const sourceBeds=Array.from({length:beds},(_,c)=>CICP_LABELS[m._sda_bed(c)]);
@@ -101,11 +101,28 @@ export class MpeghDecoder {
       labels=['L','R'];channels=labels.map(()=>new Float32Array(n));
       const bytes=m.HEAPU8;let p=m._sda_rendered();
       for(let s=0;s<n;s++)for(let c=0;c<count;c++,p+=3){const v=bytes[p]|bytes[p+1]<<8|bytes[p+2]<<16;channels[c]![s]=(v<<8>>8)/8388608;}
+      channels=this.floatReference(channels);n=channels[0]!.length;
     }
     this.frames.push({codec:'mpegh',sampleRate:rate,samplePos:this.samplePos,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels,programLoudness:null,rampDuration:0});
     this.samplePos+=n;
   }
-  nextFrame():DecodedFrameData|null{return this.frames.shift()??null;}
+  private floatReference(fallback:Float32Array[]):Float32Array[]{
+    const m=runtime,frames=m._sda_info(13),count=m._sda_info(14);
+    if(typeof m._sda_reference!=="function")throw codecFailure("mpegh.failure_10","MPEG-H runtime is stale; rebuild the shared decoder");
+    if(!frames)return fallback;
+    if(count!==2||frames<0||frames>4096)throw codecFailure("mpegh.failure_10","MPEG-H invalid float programme reference");
+    const raw=m.HEAPF32 as Float32Array,p=m._sda_reference()>>>2;
+    const master=[new Float32Array(frames),new Float32Array(frames)];
+    for(let i=0;i<frames;i++){master[0]![i]=raw[p+i*2]!;master[1]![i]=raw[p+i*2+1]!;}
+    return master;
+  }
+  setObjectRendering(enabled:boolean):void{this.objectRendering=enabled;}
+  nextFrame():DecodedFrameData|null{
+    const frame=this.frames.shift()??null;if(!frame)return null;
+    const compatible=this.compatibleFrames.get(frame.samplePos);this.compatibleFrames.delete(frame.samplePos);
+    if(!this.objectRendering&&compatible){frame.channels=compatible;frame.labels=['L','R'];frame.rawBedLabels=['L','R'];frame.events=[];frame.objectChannels=[];}
+    return frame;
+  }
   drainErrors():string[]{return [];}
   flush():void{if(this.pending.length)throw codecFailure("mpegh.failure_16",`MPEG-H truncated stream (${this.pending.length} bytes remain)`);}
   free():void{if(!this.dead){runtime._sda_close();this.dead=true;this.frames=[];this.pending=new Uint8Array(0);}}

@@ -14,7 +14,8 @@ const EMPTY_CLOCK: u64 = u64::MAX;
 const READ_CACHE_SIZE: usize = 32;
 
 pub(super) struct AbsolutePcmRing {
-    slots: Vec<Slot>,
+    clocks: Vec<u64>,
+    samples: Vec<f32>,
     /// Highest clock ever written; zero when nothing was ever queued. Gives the
     /// suspend wake probe an O(1) "anything queued ahead?" answer.
     highest_written: u64,
@@ -26,13 +27,8 @@ impl AbsolutePcmRing {
     pub(super) fn new(capacity: usize) -> Self {
         assert!(capacity > 0);
         Self {
-            slots: vec![
-                Slot {
-                    clock: EMPTY_CLOCK,
-                    sample: 0.0
-                };
-                capacity
-            ],
+            clocks: vec![EMPTY_CLOCK; capacity],
+            samples: vec![0.0; capacity],
             highest_written: 0,
             read_start: EMPTY_CLOCK,
             read_cache: [Slot {
@@ -44,9 +40,8 @@ impl AbsolutePcmRing {
 
     pub(super) fn clear(&mut self) {
         self.read_start = EMPTY_CLOCK;
-        for slot in &mut self.slots {
-            slot.clock = EMPTY_CLOCK;
-        }
+        self.clocks.fill(EMPTY_CLOCK);
+        self.highest_written = 0;
     }
 
     /// Returns whether this whole block fits in the bounded future window.
@@ -59,7 +54,7 @@ impl AbsolutePcmRing {
         if samples == 0 {
             return true;
         }
-        let capacity = self.slots.len() as u64;
+        let capacity = self.clocks.len() as u64;
         if samples as u64 > capacity {
             return false;
         }
@@ -78,7 +73,7 @@ impl AbsolutePcmRing {
         // A new write may reuse physical slots even when its absolute clock is
         // outside the cached range. Commit consumed tags before any overwrite.
         self.flush_read_cache();
-        let capacity = self.slots.len();
+        let capacity = self.clocks.len();
         for (offset, &sample) in samples.iter().enumerate() {
             let Some(clock) = start.checked_add(offset as u64) else {
                 break;
@@ -86,9 +81,9 @@ impl AbsolutePcmRing {
             if clock < now {
                 continue;
             }
-            let slot = &mut self.slots[(clock % capacity as u64) as usize];
-            slot.clock = clock;
-            slot.sample = sample;
+            let index = (clock % capacity as u64) as usize;
+            self.clocks[index] = clock;
+            self.samples[index] = sample;
         }
         if start + samples.len() as u64 > self.highest_written {
             self.highest_written = start + samples.len() as u64;
@@ -97,9 +92,9 @@ impl AbsolutePcmRing {
 
     /// Whether the ring currently holds any unplayed samples in its future window.
     pub(super) fn has_any(&self) -> bool {
-        self.slots
+        self.clocks
             .iter()
-            .any(|slot| slot.clock != EMPTY_CLOCK && self.has_at(slot.clock))
+            .any(|&clock| clock != EMPTY_CLOCK && self.has_at(clock))
     }
 
     /// O(1) wake probe for suspended sources: was anything queued past `now`
@@ -117,13 +112,13 @@ impl AbsolutePcmRing {
     fn sample_at(&self, clock: u64) -> Option<f32> {
         if let Some(index) = clock
             .checked_sub(self.read_start)
-            .filter(|index| *index < READ_CACHE_SIZE.min(self.slots.len()) as u64)
+            .filter(|index| *index < READ_CACHE_SIZE.min(self.clocks.len()) as u64)
         {
             let slot = self.read_cache[index as usize];
             return (slot.clock == clock).then_some(slot.sample);
         }
-        let slot = self.slots[(clock % self.slots.len() as u64) as usize];
-        (slot.clock == clock).then_some(slot.sample)
+        let index = (clock % self.clocks.len() as u64) as usize;
+        (self.clocks[index] == clock).then_some(self.samples[index])
     }
 
     /// Whether the upcoming render block carries signal above `threshold`.
@@ -144,17 +139,23 @@ impl AbsolutePcmRing {
         if self.read_start == EMPTY_CLOCK {
             return;
         }
-        let count = READ_CACHE_SIZE.min(self.slots.len());
-        let start = (self.read_start % self.slots.len() as u64) as usize;
-        let first = count.min(self.slots.len() - start);
-        self.slots[start..start + first].copy_from_slice(&self.read_cache[..first]);
-        self.slots[..count - first].copy_from_slice(&self.read_cache[first..count]);
+        let count = READ_CACHE_SIZE.min(self.clocks.len());
+        let start = (self.read_start % self.clocks.len() as u64) as usize;
+        let first = count.min(self.clocks.len() - start);
+        for (index, slot) in self.read_cache[..first].iter().enumerate() {
+            self.clocks[start + index] = slot.clock;
+            self.samples[start + index] = slot.sample;
+        }
+        for (index, slot) in self.read_cache[first..count].iter().enumerate() {
+            self.clocks[index] = slot.clock;
+            self.samples[index] = slot.sample;
+        }
         self.read_start = EMPTY_CLOCK;
     }
 
     /// Consumes exactly one absolute-clock sample.
     pub(super) fn take(&mut self, clock: u64) -> Option<f32> {
-        let cache_len = READ_CACHE_SIZE.min(self.slots.len()) as u64;
+        let cache_len = READ_CACHE_SIZE.min(self.clocks.len()) as u64;
         if clock
             .checked_sub(self.read_start)
             .is_none_or(|index| index >= cache_len)
@@ -164,10 +165,20 @@ impl AbsolutePcmRing {
             // Group accesses to each large track ring: 118 interleaved tracks
             // otherwise touch 118 distant pages for every rendered sample.
             let count = cache_len as usize;
-            let start = (clock % self.slots.len() as u64) as usize;
-            let first = count.min(self.slots.len() - start);
-            self.read_cache[..first].copy_from_slice(&self.slots[start..start + first]);
-            self.read_cache[first..count].copy_from_slice(&self.slots[..count - first]);
+            let start = (clock % self.clocks.len() as u64) as usize;
+            let first = count.min(self.clocks.len() - start);
+            for index in 0..first {
+                self.read_cache[index] = Slot {
+                    clock: self.clocks[start + index],
+                    sample: self.samples[start + index],
+                };
+            }
+            for index in first..count {
+                self.read_cache[index] = Slot {
+                    clock: self.clocks[index - first],
+                    sample: self.samples[index - first],
+                };
+            }
         }
         let slot = &mut self.read_cache[(clock - self.read_start) as usize];
         (slot.clock == clock).then(|| {
@@ -180,6 +191,40 @@ impl AbsolutePcmRing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_storage_preserves_capacity_and_avoids_slot_padding() {
+        let ring = AbsolutePcmRing::new(480_000);
+        assert_eq!(ring.clocks.len(), 480_000);
+        assert_eq!(ring.samples.len(), 480_000);
+        assert_eq!(
+            ring.clocks.len() * std::mem::size_of::<u64>()
+                + ring.samples.len() * std::mem::size_of::<f32>(),
+            5_760_000
+        );
+    }
+
+    #[test]
+    fn packed_ring_matches_sparse_clock_reference_through_wraps_and_clear() {
+        let mut ring = AbsolutePcmRing::new(67);
+        let mut reference = std::collections::BTreeMap::new();
+        for at in 0..500_u64 {
+            if at % 7 == 0 {
+                let pcm: Vec<_> = (0..31).map(|n| (at + n) as f32 / 1000.0).collect();
+                ring.write(at, at, &pcm);
+                for (n, &sample) in pcm.iter().enumerate() {
+                    reference.insert(at + n as u64, sample);
+                }
+            }
+            if at == 250 {
+                ring.clear();
+                reference.clear();
+            }
+            assert_eq!(ring.has_at(at), reference.contains_key(&at));
+            assert_eq!(ring.take(at), reference.remove(&at));
+            assert_eq!(ring.take(at), None);
+        }
+    }
 
     #[test]
     fn read_cache_preserves_late_writes_wrap_and_consumption() {

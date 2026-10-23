@@ -1,0 +1,83 @@
+{
+  "archiveSha256": "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2",
+  "method": "Prior effective 45ms response vs 5-80ms; one pair-common scalar per residual direction for equal energy, unchanged direct. Runtime early_ms=90 avoids a second 45ms cutoff. Final program-level residual scalar determined separately.",
+  "directions": [
+    {
+      "name": "FrontLeft",
+      "pairEnergyMatchDb": -0.0676308047213511,
+      "energy45": 0.022339880067071032,
+      "energy80": 0.022339880067071032,
+      "energyAfter45msFraction": 0.014077933347727499
+    },
+    {
+      "name": "FrontRight",
+      "pairEnergyMatchDb": -0.06611281132051897,
+      "energy45": 0.020778113832076502,
+      "energy80": 0.0207781138320765,
+      "energyAfter45msFraction": 0.011023377953512745
+    },
+    {
+      "name": "Center",
+      "pairEnergyMatchDb": -0.1244506988768149,
+      "energy45": 0.016053671854707824,
+      "energy80": 0.016053671854707827,
+      "energyAfter45msFraction": 0.025896081207575954
+    },
+    {
+      "name": "SurroundLeft",
+      "pairEnergyMatchDb": -0.03472183599698603,
+      "energy45": 0.017229867102467475,
+      "energy80": 0.017229867102467464,
+      "energyAfter45msFraction": 0.006259738720062904
+    },
+    {
+      "name": "SurroundRight",
+      "pairEnergyMatchDb": -0.05254099327278273,
+      "energy45": 0.0162436465866246,
+      "energy80": 0.0162436465866246,
+      "energyAfter45msFraction": 0.010894294184283983
+    },
+    {
+      "name": "RearLeft",
+      "pairEnergyMatchDb": -0.05027740157206563,
+      "energy45": 0.016253729223505858,
+      "energy80": 0.016253729223505858,
+      "energyAfter45msFraction": 0.00869575975279298
+    },
+    {
+      "name": "RearRight",
+      "pairEnergyMatchDb": -0.055602225004171266,
+      "energy45": 0.016033961437256675,
+      "energy80": 0.016033961437256678,
+      "energyAfter45msFraction": 0.010612053111445483
+    },
+    {
+      "name": "TopFrontLeft",
+      "pairEnergyMatchDb": -0.051842041465444584,
+      "energy45": 0.014841478500665068,
+      "energy80": 0.014841478500665072,
+      "energyAfter45msFraction": 0.00812089306602114
+    },
+    {
+      "name": "TopFrontRight",
+      "pairEnergyMatchDb": -0.10118197396655716,
+      "energy45": 0.014139535808650664,
+      "energy80": 0.014139535808650665,
+      "energyAfter45msFraction": 0.017845295103369508
+    },
+    {
+      "name": "TopRearLeft",
+      "pairEnergyMatchDb": -0.08568743001443417,
+      "energy45": 0.019472327787213785,
+      "energy80": 0.01947232778721379,
+      "energyAfter45msFraction": 0.013915602344014276
+    },
+    {
+      "name": "TopRearRight",
+      "pairEnergyMatchDb": -0.06153538202196161,
+      "energy45": 0.018864061500479933,
+      "energy80": 0.018864061500479926,
+      "energyAfter45msFraction": 0.012569052287243901
+    }
+  ]
+}

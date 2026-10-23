@@ -1,0 +1,44 @@
+name: Apple DSP check
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ios-airpods-head-tracking]
+    paths:
+      - '.github/workflows/apple-dsp-check.yml'
+permissions:
+  contents: read
+jobs:
+  dsp:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/native-renderer
+          key: apple-dsp
+      - name: Check Accelerate and convolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dsp-artifacts
+          uname -m | tee dsp-artifacts/architecture.txt
+          test "$(uname -m)" = arm64
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib apple_fft::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/apple-fft.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib convolution::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/convolution.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib render_command::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/queue.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib pcm_ring::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/pcm.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib filter_preparation::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/preparation.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib async_ -- --test-threads=1 2>&1 | tee dsp-artifacts/async.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib delayed_preparation -- --test-threads=1 2>&1 | tee dsp-artifacts/delayed.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --features caller-participating-dsp --lib audio_executor::tests -- --test-threads=1 2>&1 | tee dsp-artifacts/executor.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --features caller-participating-dsp --lib moving_bundled_cues_match_both_mixers_and_layouts -- --test-threads=1 2>&1 | tee dsp-artifacts/dispatch-parity.txt
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --release --lib benchmark_apple_against_rustfft -- --ignored --nocapture 2>&1 | tee dsp-artifacts/benchmark.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Apple-DSP-check
+          path: dsp-artifacts/

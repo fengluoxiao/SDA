@@ -1,0 +1,40 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <application>
+        <!-- Public optional FastRPC libraries; required for regular apps on Android 12+. -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <uses-native-library android:name="libsdsprpc.so" android:required="false" />
+        <!-- Optional public libraries from LiteRT 2.3.0 MediaTek AAR; expose vendor drivers on Android 12+. -->
+        <uses-native-library android:name="libneuron_sys_util.mtk.so" android:required="false" />
+        <uses-native-library android:name="libneuronusdk_adapter.mtk.so" android:required="false" />
+        <uses-native-library android:name="libneuronusdk_adapter.9.mtk.so" android:required="false" />
+        <uses-native-library android:name="libneuron_adapter_mgvi.so" android:required="false" />
+        <uses-native-library android:name="libapuwareutils_v2.mtk.so" android:required="false" />
+        <uses-native-library android:name="libapuwareutils.mtk.so" android:required="false" />
+        <uses-native-library android:name="libapuwareapusys_v2.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpuop_mtk_nn.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpuop_mtk_cv.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_runtime_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_engine_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_pattern_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpuop25_mtk_nn.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpuop25_mtk_cv.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_runtime_25_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_engine_25_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_pattern_25_pub.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_config.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpup30_mtk_nn.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpup30_mtk_cv.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_runtime_30.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_engine_30.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpu_pattern_30.mtk.so" android:required="false" />
+        <uses-native-library android:name="libmvpuop30_mtk_nn.mtk.so" android:required="false" />
+        <service android:name="app.sda.mobile.sda.SdaPlaybackService"
+            android:exported="false" android:stopWithTask="false"
+            android:foregroundServiceType="mediaPlayback" />
+    </application>
+</manifest>

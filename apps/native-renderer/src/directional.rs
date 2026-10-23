@@ -12,7 +12,7 @@ pub struct Direction {
     pub depth: f32,
 }
 
-type Route = (
+pub(crate) type Route = (
     Direction,
     crate::vbap::LayoutId,
     [f32; crate::vbap::MAX_BUS_COUNT],
@@ -39,6 +39,269 @@ struct DiffuseField {
 // and listener changes still retarget immediately.
 const CONTINUOUS_DIRECTION_DEADBAND_COS: f32 = 0.999_847_7;
 const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
+
+/// Blend in the measured anchor continuously as coherent energy collapses.
+/// The 0.72..0.90 interval is an engineering guard transition, not a fitted
+/// perceptual threshold. Smoothstep has zero slope at both endpoints.
+fn ku100_notch_guard_mix(energy_ratio: f64) -> f32 {
+    let t = ((0.90 - energy_ratio) / (0.90 - 0.72)).clamp(0.0, 1.0);
+    (t * t * (3.0 - 2.0 * t)) as f32
+}
+
+/// Preserve the guard's binaural ratio when it has replaced a cancelling
+/// mixture. With no guard use per-ear measurement energies; at full guard use
+/// the guarded waveform's ratio, as the previously accepted common-scalar path
+/// did. Intermediate targets vary continuously and still sum to measured total
+/// energy. This is not an ear-balancing or content-dependent loudness control.
+fn normalize_guarded_ear_energy(output: &mut [Vec<f32>; 2], measured: [f64; 2], guard: f32) {
+    let actual: [f64; 2] = std::array::from_fn(|ear| {
+        output[ear].iter().map(|v| f64::from(*v).powi(2)).sum()
+    });
+    let total = measured.iter().sum::<f64>();
+    let actual_total = actual.iter().sum::<f64>();
+    if total <= 1e-20 || actual_total <= 1e-20 { return; }
+    let guard = f64::from(guard.clamp(0.0, 1.0));
+    for ear in 0..2 {
+        let target = measured[ear] * (1.0 - guard)
+            + total * (actual[ear] / actual_total) * guard;
+        if actual[ear] > 1e-20 {
+            let scale = (target / actual[ear]).sqrt() as f32;
+            for sample in &mut output[ear] { *sample *= scale; }
+        }
+    }
+}
+
+/// Symmetric directions can differ by a few f32 ulps between platform math
+/// libraries. KU100's notch guard may use the dominant HRIR outright, so a
+/// numerical tie must not select a different ear response on Android/Windows.
+fn dominant_measurement(weights: &[(usize, f64)], irs: &[StereoIr]) -> usize {
+    let peak = weights.iter().map(|(_, weight)| *weight).fold(0.0_f64, f64::max);
+    // Horizontal ties need the same geometric convention as elevated ties.
+    // Manifest order is not spatial: at +/-45 degrees, choosing the last row
+    // can anchor one ear pair at 40 degrees and its mirror at 50 degrees.
+    // That breaks the calibrated set's bilateral symmetry for the dominant
+    // front music objects even though each input HRIR pair is valid.
+    // Collapse only f32-scale weight ties. Compare measured geometry in a
+    // canonical hemisphere, not manifest indices: mirrored inputs must select
+    // mirrored HRIRs. Larger absolute azimuth preserves the established left
+    // hemisphere convention (e.g. +60 at +45) on the right (-60 at -45).
+    // This is a deterministic boundary convention, not an acoustic preference.
+    weights.iter().filter(|(_, weight)| peak - *weight <= 1e-6)
+        .map(|(index, _)| *index)
+        .max_by(|&a, &b| irs[a].azimuth.abs().total_cmp(&irs[b].azimuth.abs())
+            .then_with(|| irs[a].elevation.total_cmp(&irs[b].elevation))
+            .then_with(|| a.cmp(&b)))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod dominant_measurement_tests {
+    use super::dominant_measurement;
+
+    #[test]
+    #[ignore = "offline all-enabled front/back listening diagnostic; requires SDA_FRONT_BACK_DIR and SDA_PROBE_ROOM"]
+    fn export_front_back_all_enabled() {
+        use std::io::Write;
+        let output = std::path::PathBuf::from(std::env::var("SDA_FRONT_BACK_DIR").unwrap());
+        let room = std::sync::Arc::new(crate::cinema::RoomProfile::load(
+            &std::env::var("SDA_PROBE_ROOM").unwrap()).unwrap());
+        let mut noise = Vec::with_capacity(144384);
+        let mut seed = 12345u32;
+        for i in 0..144384 {
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            let envelope = ((i as f32 / 480.0).min(1.0))
+                * (((144000-i.min(144000)) as f32 / 480.0).min(1.0));
+            noise.push((seed as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32 * 0.03 * envelope);
+        }
+        let render = |y: f32| {
+            let mut e = crate::Engine::new(48000, 2);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json");
+            e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.04).unwrap();
+            e.configure_room(crate::cinema::Settings { enabled: true, ..Default::default() }, Some(room.clone())).unwrap();
+            e.configure_near_field(crate::near_field::Settings { enabled: true, metres_per_unit: 1.0 }).unwrap();
+            e.set_direct_objects(true).unwrap();
+            e.set_directional_hrtf(true);
+            e.set_program_codec("eac3".into());
+            e.output_active = true;
+            e.paused = false;
+            e.direct_mix = 1.0;
+            let mut source = crate::Source { kind: crate::SourceKind::Object,
+                position: [0.0,y,0.0], gain: 1.0, target_gain: 1.0,
+                availability: 1.0, availability_target: 1.0, ..Default::default() };
+            source.samples.write(0, 0, &noise);
+            e.sources.insert("obj:1".into(), source);
+            e.route_source_now("obj:1", 0).unwrap();
+            let mut pcm = vec![0.0; 144384*2];
+            e.render_into(&mut pcm, 2);
+            assert!(pcm.iter().any(|v| v.abs() > 1e-5));
+            assert!(pcm.iter().all(|v| v.is_finite()));
+            assert!(e.sources["obj:1"].continuous_active);
+            pcm.truncate(144000*2);
+            pcm
+        };
+        let front = render(0.65);
+        let rear = render(-0.65);
+        let energy = |a: &[f32]| a.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let correlation = front.iter().zip(&rear).map(|(a,b)| f64::from(*a)*f64::from(*b)).sum::<f64>()
+            / (energy(&front)*energy(&rear)).sqrt();
+        println!("all-enabled front/rear correlation={correlation}, front RMS={}, rear RMS={}",
+            (energy(&front)/front.len() as f64).sqrt(), (energy(&rear)/rear.len() as f64).sqrt());
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, pcm) in [("front", &front), ("rear", &rear)] {
+            let mut file = std::io::BufWriter::new(std::fs::File::create(output.join(format!("{name}.wav"))).unwrap());
+            let bytes = (pcm.len()*2) as u32;
+            file.write_all(b"RIFF").unwrap(); file.write_all(&(36+bytes).to_le_bytes()).unwrap();
+            file.write_all(b"WAVEfmt ").unwrap(); file.write_all(&16u32.to_le_bytes()).unwrap();
+            for v in [1u16,2] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            for v in [48000u32,192000] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            for v in [4u16,16] { file.write_all(&v.to_le_bytes()).unwrap(); }
+            file.write_all(b"data").unwrap(); file.write_all(&bytes.to_le_bytes()).unwrap();
+            for v in pcm { file.write_all(&((v.clamp(-1.0,1.0)*32767.0).round() as i16).to_le_bytes()).unwrap(); }
+            file.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn same_x_front_back_keep_distinct_ku100_filters() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        let pair = |y| set.directional_dry_compact(super::Direction {
+            position: [0.0, y, 0.0], head: None, diffuse: 0.0,
+            horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        let front = pair(0.6);
+        let back = pair(-0.6);
+        let norm = |p: &(Vec<f32>, Vec<f32>)| p.0.iter().chain(&p.1).map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt();
+        let a = norm(&front); let b = norm(&back);
+        let correlation = front.0.iter().chain(&front.1).zip(back.0.iter().chain(&back.1))
+            .map(|(x,y)| f64::from(*x)*f64::from(*y)).sum::<f64>()/(a*b);
+        assert!(correlation < 0.95, "front/back filters collapsed: {correlation}");
+        // Direction-only assets cannot supply a distance dimension: the
+        // desktop near-field stage is separate and must not be baked into HRIRs.
+        assert_eq!(front, pair(0.3));
+    }
+
+    fn measured(azimuth: f64) -> super::StereoIr {
+        super::StereoIr { azimuth, elevation: 45.0, dry: vec![], wet: vec![] }
+    }
+
+    #[test]
+    fn symmetric_anchor_selection_ignores_platform_roundoff_and_order() {
+        for sign in [-1.0, 1.0] {
+            for reversed in [false, true] {
+                let mut irs = vec![measured(sign * 30.0), measured(sign * 60.0)];
+                if reversed { irs.reverse(); }
+                for epsilon in [-1e-7, -1e-15, 0.0, 1e-15, 1e-7] {
+                    for weights in [vec![(0, 0.5 + epsilon), (1, 0.5)],
+                                    vec![(1, 0.5), (0, 0.5 + epsilon)]] {
+                        let selected = dominant_measurement(&weights, &irs);
+                        assert_eq!(irs[selected].azimuth, sign * 60.0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_weights_still_select_the_strongest_measurement() {
+        let irs = vec![measured(-60.0), measured(-30.0)];
+        assert_eq!(dominant_measurement(&[(0, 0.479999), (1, 0.480001)], &irs), 1);
+    }
+
+    #[test]
+    fn horizontal_boundary_selection_is_mirrored_and_order_independent() {
+        for sign in [-1.0, 1.0] {
+            for reversed in [false, true] {
+                let mut irs = vec![measured(sign * 50.0), measured(sign * 40.0)];
+                for ir in &mut irs { ir.elevation = 0.0; }
+                if reversed { irs.reverse(); }
+                for epsilon in [-1e-7, 0.0, 1e-7] {
+                    let index = dominant_measurement(&[(0, 0.5), (1, 0.5 + epsilon)], &irs);
+                    assert_eq!(irs[index].azimuth, sign * 50.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ku100_front_horizontal_midpoints_preserve_left_right_mirror_symmetry() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        // Test the bilateral frontal grid used by the dominant music pair.
+        // The rear seam includes a single unpaired -180-degree measurement;
+        // its measured ears are not required to be identical.
+        for azimuth in [5.0_f64, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0] {
+            let position = |az: f64| [-az.to_radians().sin() as f32,
+                az.to_radians().cos() as f32, 0.0];
+            let pair = |az| set.directional_dry_compact(super::Direction {
+                position: position(az), head: None, diffuse: 0.0,
+                horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+            }, crate::vbap::LayoutId::Dolby7_1_4,
+                [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+            let left = pair(azimuth);
+            let right = pair(-azimuth);
+            let energy: f64 = left.0.iter().chain(&left.1)
+                .map(|v| f64::from(*v).powi(2)).sum();
+            let error: f64 = left.0.iter().chain(&left.1)
+                .zip(right.1.iter().chain(&right.0))
+                .map(|(a,b)| f64::from(a-b).powi(2)).sum();
+            assert!((error/energy).sqrt() < 1e-3,
+                "horizontal KU100 mirror at {azimuth} degrees: {}", (error/energy).sqrt());
+        }
+    }
+
+    #[test]
+    fn ku100_elevated_boundary_filters_preserve_left_right_mirror_symmetry() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        let pair = |position| set.directional_dry_compact(super::Direction {
+            position, head: None, diffuse: 0.0, horizontal_only: false,
+            width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        for y in [-1.0, 1.0] {
+            for z in [-1.0, 1.0] {
+                let left = pair([-1.0, y, z]);
+                let right = pair([1.0, y, z]);
+                let energy: f64 = left.0.iter().chain(&left.1).map(|v| f64::from(*v).powi(2)).sum();
+                let difference: f64 = left.0.iter().chain(&left.1)
+                    .zip(right.1.iter().chain(&right.0))
+                    .map(|(a,b)| (f64::from(*a)-f64::from(*b)).powi(2)).sum();
+                assert!((difference / energy).sqrt() < 1e-3,
+                    "mirrored KU100 boundary y={y} z={z}: relative error {}", (difference / energy).sqrt());
+            }
+        }
+    }
+
+    #[test]
+    fn ku100_upper_front_boundary_does_not_flip_hrir_from_coordinate_roundoff() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../web/public/hrtf-dense/hrtf-set.json"),
+        ).unwrap();
+        for side in [-1.0_f32, 1.0] {
+            let pair = |x| set.directional_dry_compact(super::Direction {
+                position: [x, 1.0, 1.0], head: None, diffuse: 0.0,
+                horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+            }, crate::vbap::LayoutId::Dolby7_1_4,
+                [1.0; crate::vbap::MAX_BUS_COUNT], [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+            let reference = pair(side);
+            for delta in [-f32::EPSILON, f32::EPSILON] {
+                let perturbed = pair(side + delta);
+                let error = reference.0.iter().chain(&reference.1)
+                    .zip(perturbed.0.iter().chain(&perturbed.1))
+                    .map(|(a,b)| (a-b).abs()).fold(0.0_f32, f32::max);
+                assert!(error < 5e-5, "side={side} delta={delta}: HRIR discontinuity {error}");
+            }
+        }
+    }
+}
 
 fn equivalent_direction(a: Direction, b: Direction) -> bool {
     if a.diffuse != b.diffuse
@@ -92,6 +355,13 @@ impl Default for Frame {
     }
 }
 pub struct ContinuousSource {
+    preparation: Option<crate::filter_preparation::LatestPreparation<Route, Result<(Route, crate::convolution::PreparedStereoFilter), String>>>,
+    preparing_route: Option<Route>,
+    preparation_version: u64,
+    applied_preparation_version: u64,
+    last_preparation_error: Option<String>,
+    preparation_set: u64,
+    preparation_fn: Option<std::sync::Arc<dyn Fn(Route) -> Result<(Route, crate::convolution::PreparedStereoFilter), String> + Send + Sync>>,
     pub perf_id: String,
     hardware: crate::hardware::Chain,
     convolver: crate::convolution::StereoPartitionedConvolver,
@@ -112,7 +382,14 @@ pub struct ContinuousSource {
 impl ContinuousSource {
     pub fn new(set: &crate::hrtf::NativeHrtfSet) -> Result<Self, String> {
         let zero = vec![0.0; set.directional_filter_len()];
-        Ok(Self {
+        let mut source = Self {
+            preparation: None,
+            preparing_route: None,
+            preparation_version: 0,
+            applied_preparation_version: 0,
+            last_preparation_error: None,
+            preparation_set: 0,
+            preparation_fn: None,
             perf_id: String::new(),
             hardware: crate::hardware::Chain::new(&set.cinema.monitor.hardware),
             convolver: crate::convolution::StereoPartitionedConvolver::new(
@@ -129,8 +406,16 @@ impl ContinuousSource {
             frames: [Frame::default(); crate::convolution::DEFAULT_PARTITION],
             left: [0.0; crate::convolution::DEFAULT_PARTITION],
             right: [0.0; crate::convolution::DEFAULT_PARTITION],
-        })
+        };
+        if cfg!(all(target_os = "ios", feature = "async-filter-preparation")) {
+            source.configure_preparation(set);
+        }
+        Ok(source)
     }
+    pub(crate) fn effective_route(&self) -> Option<Route> {
+        self.pending.or(self.route)
+    }
+
     pub fn schedule(
         &mut self,
         direction: Direction,
@@ -139,12 +424,41 @@ impl ContinuousSource {
         amounts: [f32; crate::vbap::MAX_BUS_COUNT],
     ) {
         let route = (direction, layout, gains, amounts);
-        let current = self.pending.as_ref().or(self.route.as_ref());
-        self.pending = current
+        // Metadata may repeat before the next convolution block. An equivalent
+        // pending target still needs to be applied; it is not the active filter.
+        if self.pending.as_ref().is_some_and(|pending| equivalent_route(pending, &route)) {
+            return;
+        }
+        self.pending = self.route.as_ref()
             .is_none_or(|current| !equivalent_route(current, &route))
             .then_some(route);
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        self.finish_with_preparation(set, cfg!(all(target_os = "ios", feature = "async-filter-preparation")))
+    }
+    fn finish_with_preparation(&mut self, set: &crate::hrtf::NativeHrtfSet, asynchronous: bool) -> Result<(), String> {
+        self.prepare_finish(set, asynchronous)?;
+        self.convolver.begin_block(&self.input)?;
+        self.convolver.calculate_spectra();
+        self.finish_prepared();
+        Ok(())
+    }
+    fn prepare_finish(&mut self, set: &crate::hrtf::NativeHrtfSet, asynchronous: bool) -> Result<(), String> {
+        // No old filter exists on first use. Preserve synchronous initialization
+        // so the asynchronous update path cannot silently consume startup PCM.
+        let asynchronous = asynchronous && self.route.is_some()
+            && self.preparation_set == set.preparation_id()
+            && self.pending.or(self.route).is_some_and(|target| target.0.head.is_some())
+            && self.pending.is_none_or(|target| self.route.is_some_and(|current| head_only_update(current, target)));
+        if asynchronous {
+            self.update_prepared_route(set)?;
+        } else if self.pending.is_some() {
+            // Authored metadata and neutral resets are synchronous. Cancel an
+            // outstanding head-only result before applying this new route.
+            if let Some(preparation) = self.preparation.take() { preparation.cancel(); }
+            self.preparing_route = None;
+            self.preparation_set = 0;
+        }
         let _perf = crate::performance::span(
             "hrtf.object.convolution",
             &self.perf_id,
@@ -154,7 +468,8 @@ impl ContinuousSource {
             *input = self.hardware.process(frame.input);
         }
         if self.input.iter().any(|x| *x != 0.0) || !self.convolver.tail_is_silent() {
-            if let Some((direction, layout, gains, amounts)) = self.pending.take() {
+            let pending = if asynchronous { None } else { self.pending.take() };
+            if let Some((direction, layout, gains, amounts)) = pending {
                 let _filter_perf = crate::performance::span(
                     "hrtf.object.filter_update",
                     &self.perf_id,
@@ -169,19 +484,30 @@ impl ContinuousSource {
                     // Two valid HRTFs can have opposing narrow-band phase.
                     // Keep the click-free handoff short so motion does not
                     // dwell in their destructive output sum for a full block.
+                    let transition_samples=crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES;
+                    #[cfg(test)]
+                    let transition_samples=std::env::var("SDA_DIAGNOSTIC_TRANSITION_SAMPLES")
+                        .ok().map(|value| {let n=value.parse::<usize>().expect("invalid diagnostic transition");assert!((1..=256).contains(&n));n})
+                        .unwrap_or(transition_samples);
                     self.convolver.transition_to_pair(
                         &left,
                         &right,
-                        crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES,
+                        transition_samples,
                     );
                 }
                 self.route = Some((direction, layout, gains, amounts));
+                if cfg!(all(target_os = "ios", feature = "async-filter-preparation")) {
+                    self.configure_preparation(set);
+                    self.pending = None;
+                }
             }
         }
         self.left.fill(0.0);
         self.right.fill(0.0);
-        self.convolver
-            .process_block(&self.input, &mut self.left, &mut self.right)?;
+        Ok(())
+    }
+    fn finish_prepared(&mut self) {
+        self.convolver.finish_prepared_block(&self.input, &mut self.left, &mut self.right);
         let occlusion_targets = self.occlusion_targets;
         for (i, frame) in self.frames.iter_mut().enumerate() {
             let output = self.near.process([self.left[i], self.right[i]], frame.near);
@@ -191,8 +517,80 @@ impl ContinuousSource {
             frame.near = [1.0; 2];
         }
         self.occlusion_targets = [1.0; 2];
+    }
+    fn update_prepared_route(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
+        if self.preparation_set != set.preparation_id() {
+            self.configure_preparation(set);
+        }
+        let target = self.pending.or(self.route);
+        let preparation = self.preparation.as_ref().unwrap();
+        // An exact latest target is still correct after a slow preparation.
+        // The age gate applies only to intermediate moving-target results.
+        let completed = preparation.take().or_else(|| preparation.take_recent(
+            self.applied_preparation_version, std::time::Duration::from_millis(50)));
+        if let Some((version, result)) = completed {
+            if version <= self.preparation_version {
+                let (route, filter) = match result {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        // Retain the audible filter, and allow the current target
+                        // to be retried rather than permanently losing updates.
+                        self.preparing_route = None;
+                        self.last_preparation_error = Some(error);
+                        return Ok(());
+                    }
+                };
+                {
+                    if !self.convolver.accepts_prepared_filter(&filter) {
+                        self.preparing_route = None;
+                        return Err("asynchronous HRTF filter shape changed".into());
+                    }
+                    if self.route.is_none() { self.convolver.set_prepared_filter(filter); }
+                    else { self.convolver.transition_to(filter, crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES); }
+                    self.route = Some(route);
+                    self.last_preparation_error = None;
+                    self.applied_preparation_version = version;
+                    if target.as_ref().is_some_and(|target| equivalent_route(target, &route)) { self.pending = None; }
+                }
+            }
+        }
+        if let Some(target) = target {
+            if self.preparing_route.as_ref().is_none_or(|old| !equivalent_route(old, &target))
+                || (self.pending.is_some() && self.preparation.as_ref().unwrap().needs_retry(std::time::Duration::from_millis(50))) {
+                if let Some(version) = self.preparation.as_ref().unwrap().submit(target, self.preparation_fn.as_ref().unwrap().clone()) {
+                    self.preparation_version = version;
+                    self.preparing_route = Some(target);
+                }
+            }
+        }
         Ok(())
     }
+    fn configure_preparation(&mut self, set: &crate::hrtf::NativeHrtfSet) {
+        if let Some(previous) = &self.preparation { previous.cancel(); }
+        // A new asset revision needs a new filter even when spatial metadata
+        // is unchanged. Keep the old audible filter until the replacement lands.
+        self.pending = self.pending.or(self.route);
+        self.preparation = Some(crate::filter_preparation::LatestPreparation::new());
+        self.preparation.as_ref().unwrap().warm();
+        let snapshot = set.preparation_snapshot();
+        self.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            let (direction, layout, gains, amounts) = route;
+            let (left, right) = snapshot.directional_dry_compact(direction, layout, gains, amounts)?;
+            Ok((route, crate::convolution::PreparedStereoFilter::from_pair(
+                &left, &right, crate::convolution::DEFAULT_PARTITION)))
+        }));
+        self.preparation_set = set.preparation_id();
+        self.preparation_version = 0;
+        self.applied_preparation_version = 0;
+        self.last_preparation_error = None;
+        self.preparing_route = None;
+    }
+}
+fn head_only_update(current: Route, target: Route) -> bool {
+    let mut direction = current.0;
+    direction.head = target.0.head;
+    direction == target.0 && current.1 == target.1
+        && current.2 == target.2 && current.3 == target.3
 }
 pub fn finish_sources<'a>(
     sources: impl Iterator<Item = &'a mut ContinuousSource>,
@@ -200,6 +598,68 @@ pub fn finish_sources<'a>(
 ) -> Result<(), String> {
     use rayon::prelude::*;
     let mut sources: Vec<_> = sources.collect();
+    #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
+    let block_started = std::time::Instant::now();
+    #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
+    if let Some(mut lease) = crate::spectral_accelerator::begin(
+        sources.len() * 2,
+        sources.iter().map(|s| s.convolver.spectral_shape()),
+    ) {
+        crate::audio_executor::run(&mut sources, |source| {
+            source.prepare_finish(set, cfg!(all(target_os="ios",feature="async-filter-preparation")))?;
+            source.convolver.begin_block(&source.input)?;
+            Ok::<(), String>(())
+        })?;
+        if sources.iter().any(|s| {
+            let (parts, bins) = s.convolver.spectral_shape();
+            parts > lease.batch().shape.parts || bins != lease.batch().shape.bins
+        }) {
+            return crate::audio_executor::run(&mut sources, |source| {
+                source.convolver.calculate_spectra(); source.finish_prepared(); Ok::<(), String>(())
+            });
+        }
+        if sources.iter().all(|s| !s.convolver.block_is_prepared()) {
+            return crate::audio_executor::run(&mut sources, |source| { source.finish_prepared(); Ok::<(), String>(()) });
+        }
+        let started = std::time::Instant::now();
+        for (i, source) in sources.iter().enumerate() { source.convolver.pack_spectra(lease.batch_mut(), i * 2); }
+        lease.batch_mut().finish_packet();
+        lease.packed_in(started.elapsed());
+        if lease.is_qualifying() {
+            let cpu = std::time::Instant::now();
+            #[cfg(target_os="android")]
+            let cpu_work=std::sync::atomic::AtomicU64::new(0);
+            crate::audio_executor::run(&mut sources, |source| {
+                #[cfg(target_os="android")]
+                let ticks=crate::spectral_accelerator::cooperation::cpu_ns();
+                source.convolver.calculate_spectra();
+                #[cfg(target_os="android")]
+                {let elapsed=crate::spectral_accelerator::cooperation::cpu_ns().saturating_sub(ticks);if ticks>0{cpu_work.fetch_add(elapsed,std::sync::atomic::Ordering::Relaxed);}}
+                Ok::<(), String>(())
+            })?;
+            #[cfg(target_os="android")]
+            {lease.batch_mut().cpu_work_ns=cpu_work.load(std::sync::atomic::Ordering::Relaxed);}
+            let cpu_time = cpu.elapsed();
+            let copy = std::time::Instant::now();
+            for (i, source) in sources.iter().enumerate() { source.convolver.export_spectra(lease.batch_mut(), i * 2); }
+            lease.submit_reference(cpu_time, copy.elapsed());
+        } else if lease.execute() {
+            for (i, source) in sources.iter_mut().enumerate() { source.convolver.import_spectra(lease.batch(), i * 2); }
+        } else {
+            crate::audio_executor::run(&mut sources, |source| { source.convolver.calculate_spectra(); Ok::<(), String>(()) })?;
+        }
+        let result = crate::audio_executor::run(&mut sources, |source| { source.finish_prepared(); Ok::<(), String>(()) });
+        lease.completed_in(block_started.elapsed());
+        return result;
+    }
+    if cfg!(target_os = "ios") || crate::realtime::android_audio_policy() {
+        // Android's continuous object path must share the caller-participating
+        // executor used by mixing, buses and legacy direct convolution.
+        let result = crate::audio_executor::run(&mut sources, |source| source.finish(set));
+        #[cfg(any(target_os = "android", all(target_os = "ios", feature = "coreml-audio")))]
+        crate::spectral_accelerator::observe_native_block(block_started.elapsed());
+        return result;
+    }
     let worker_count = crate::direct_renderer::worker_count_for_sources(sources.len());
     if let Some(pool) =
         crate::direct_renderer::workers().filter(|_| sources.len() >= 8 && worker_count > 1)
@@ -215,9 +675,275 @@ pub fn finish_sources<'a>(
     }
 }
 
+/// Additional measured support, separate from the unchanged historical 61 anchors.
+struct LowerSupport {
+    irs: Vec<StereoIr>,
+    grid: Grid,
+}
+impl LowerSupport {
+    fn new(original: &[StereoIr]) -> Self {
+        let mut irs = original.to_vec();
+        let bytes = include_bytes!("../assets/ku100-lower/lower-support.f32");
+        for (i, raw) in bytes.chunks_exact(512 * 2 * 4).enumerate() {
+            irs.push(StereoIr {
+                azimuth: if i == 12 { 0.0 } else { -180.0 + i as f64 * 30.0 },
+                elevation: if i == 12 { -90.0 } else { -60.0 },
+                dry: raw.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(),
+                wet: Vec::new(),
+            });
+        }
+        // 74 entries cannot recursively create another lower support bank.
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        Self { irs, grid }
+    }
+    fn weights(&self, original: &Grid, az: f64, el: f64) -> Vec<(usize, f64)> {
+        let t = ((-el - 30.0) / 30.0).clamp(0.0, 1.0);
+        let mix = t * t * (3.0 - 2.0 * t);
+        let extended = self.grid.weights(az, el);
+        if mix == 1.0 { return extended; }
+        // Fade SUPPORT weights, not independently rendered waveforms. The existing
+        // delay-aligned interpolator then avoids a second unaligned crossfade.
+        let mut weights = vec![0.0; self.irs.len()];
+        for (i, w) in original.weights(az, el) { weights[i] += w * (1.0 - mix); }
+        for (i, w) in extended { weights[i] += w * mix; }
+        weights.into_iter().enumerate().filter(|(_, w)| *w > 0.0).collect()
+    }
+}
+
+/// Direction-independent spectral coordinates for the historical KU100 pack.
+/// Time-domain blending around a changing dominant neighbour is not continuous:
+/// both its correlation alignment and its cancellation fallback jump at ties.
+/// Interpolate measured power and frequency-unwrapped phase instead, on a
+/// common clock. There is no dominant anchor, source gain, or programme selector.
+struct SpectralBank {
+    responses: Vec<[Vec<(f64, f64)>; 2]>, // (power, unwrapped phase), positive bins
+    endpoints: Vec<[[f64; 2]; 2]>,        // real DC/Nyquist, per ear
+    inverse: std::sync::Arc<dyn rustfft::Fft<f64>>,
+    #[cfg(test)]
+    forward: std::sync::Arc<dyn rustfft::Fft<f64>>,
+    length: usize,
+    output_length: usize,
+}
+impl SpectralBank {
+    fn new(irs: &[StereoIr]) -> Self {
+        use rustfft::{FftPlanner, num_complex::Complex};
+        let output_length =
+            irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + INTERPOLATION_TAIL;
+        // Zero padding keeps phase interpolation's short residual tail from
+        // wrapping into the direct onset. Plan once, never in a route update.
+        let length = (output_length * 2).next_power_of_two();
+        let mut planner = FftPlanner::<f64>::new();
+        let forward = planner.plan_fft_forward(length);
+        let inverse = planner.plan_fft_inverse(length);
+        let mut responses = Vec::with_capacity(irs.len());
+        let mut endpoints = Vec::with_capacity(irs.len());
+        for ir in irs {
+            let n = ir.dry.len() / 2;
+            let mut ends = [[0.0; 2]; 2];
+            let pair = std::array::from_fn(|ear| {
+                let mut bins = vec![Complex::new(0.0, 0.0); length];
+                for (bin, &sample) in bins.iter_mut().zip(&ir.dry[ear * n..(ear + 1) * n]) {
+                    bin.re = f64::from(sample);
+                }
+                forward.process(&mut bins);
+                ends[ear] = [bins[0].re, bins[length / 2].re];
+                let mut previous = bins[0].arg();
+                let mut phase = previous;
+                bins[..=length / 2]
+                    .iter()
+                    .enumerate()
+                    .map(|(k, bin)| {
+                        let wrapped = bin.arg();
+                        if k != 0 {
+                            let delta = (wrapped - previous + std::f64::consts::PI)
+                                .rem_euclid(std::f64::consts::TAU)
+                                - std::f64::consts::PI;
+                            phase += delta;
+                        }
+                        previous = wrapped;
+                        (bin.norm_sqr(), phase)
+                    })
+                    .collect()
+            });
+            responses.push(pair);
+            endpoints.push(ends);
+        }
+        Self {
+            responses,
+            endpoints,
+            inverse,
+            #[cfg(test)]
+            forward,
+            length,
+            output_length,
+        }
+    }
+
+    #[cfg(test)]
+    fn blend_power_phase(
+        &self, a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), mix: f32,
+    ) -> (Vec<f32>, Vec<f32>) {
+        self.blend_response(a,b,mix,false)
+    }
+
+    #[cfg(test)]
+    fn blend_response(
+        &self, a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>), mix: f32, preserve_phase: bool,
+    ) -> (Vec<f32>, Vec<f32>) {
+        use rustfft::num_complex::Complex;
+        if mix == 0.0 || a == b { return a.clone(); }
+        if mix == 1.0 && !preserve_phase { return b.clone(); }
+        assert!((0.0..=1.0).contains(&mix));
+        let t = f64::from(mix);
+        let output: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+            let (first, second) = if ear == 0 { (&a.0, &b.0) } else { (&a.1, &b.1) };
+            assert!(first.len() <= self.output_length && second.len() <= self.output_length);
+            let mut x = vec![Complex::new(0.0, 0.0); self.length];
+            let mut y = x.clone();
+            for (bin, &v) in x.iter_mut().zip(first) { bin.re = f64::from(v); }
+            for (bin, &v) in y.iter_mut().zip(second) { bin.re = f64::from(v); }
+            self.forward.process(&mut x);
+            self.forward.process(&mut y);
+            // Unwrap the phase DIFFERENCE on the endpoints' common clock.
+            // Power interpolation cannot create a per-bin cancellation notch.
+            // Finite FIR truncation and spatial phase continuity need separate tests.
+            let mut previous = (y[0] * x[0].conj()).arg();
+            let mut difference = previous;
+            for k in 1..self.length / 2 {
+                let wrapped = (y[k] * x[k].conj()).arg();
+                difference += (wrapped - previous + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                previous = wrapped;
+                let magnitude = ((1.0-t)*x[k].norm_sqr()+t*y[k].norm_sqr()).sqrt();
+                x[k] = Complex::from_polar(magnitude, x[k].arg()+if preserve_phase {0.0} else {t*difference});
+                x[self.length-k] = x[k].conj();
+            }
+            for k in [0, self.length/2] {
+                let value = if preserve_phase {
+                    ((1.0-t)*x[k].norm_sqr()+t*y[k].norm_sqr()).sqrt()*x[k].re.signum()
+                } else {x[k].re*(1.0-t)+y[k].re*t};
+                x[k] = Complex::new(value, 0.0);
+            }
+            self.inverse.process(&mut x);
+            x[..self.output_length].iter().map(|v| (v.re/self.length as f64) as f32).collect()
+        });
+        let [left, right] = output;
+        (left, right)
+    }
+
+    fn interpolate(&self, irs: &[StereoIr], weights: &[(usize, f64)]) -> (Vec<f32>, Vec<f32>) {
+        use rustfft::num_complex::Complex;
+        // No FFT roundtrip at measured directions: the approved 61 anchors
+        // (and the separately measured lower anchors) remain bit-identical.
+        if let [(index, weight)] = weights {
+            if *weight == 1.0 {
+                let ir = &irs[*index];
+                let n = ir.dry.len() / 2;
+                let pair: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+                    let mut out = vec![0.0; self.output_length];
+                    out[..n].copy_from_slice(&ir.dry[ear * n..(ear + 1) * n]);
+                    out
+                });
+                let [left, right] = pair;
+                return (left, right);
+            }
+        }
+        let mut bins = vec![Complex::new(0.0, 0.0); self.length];
+        let mut scratch = vec![Complex::new(0.0, 0.0); self.inverse.get_inplace_scratch_len()];
+        let output: [Vec<f32>; 2] = std::array::from_fn(|ear| {
+            for k in 1..self.length / 2 {
+                let (mut power, mut phase) = (0.0, 0.0);
+                for &(index, weight) in weights {
+                    let (p, a) = self.responses[index][ear][k];
+                    power += weight * p;
+                    phase += weight * a;
+                }
+                bins[k] = Complex::from_polar(power.max(0.0).sqrt(), phase);
+                bins[self.length - k] = bins[k].conj();
+            }
+            // A real impulse requires real DC/Nyquist bins, even if measured
+            // endpoint signs differ. Never synthesize an imaginary endpoint.
+            bins[0] = Complex::new(
+                weights
+                    .iter()
+                    .map(|&(i, w)| self.endpoints[i][ear][0] * w)
+                    .sum(),
+                0.0,
+            );
+            bins[self.length / 2] = Complex::new(
+                weights
+                    .iter()
+                    .map(|&(i, w)| self.endpoints[i][ear][1] * w)
+                    .sum(),
+                0.0,
+            );
+            self.inverse.process_with_scratch(&mut bins, &mut scratch);
+            bins[..self.output_length]
+                .iter()
+                .map(|v| (v.re / self.length as f64) as f32)
+                .collect()
+        });
+        let [left, right] = output;
+        (left, right)
+    }
+}
+
+#[cfg(test)]
+struct DiagnosticTriangle {
+    indices: [usize;3],
+    inverse: [[f64;3];3],
+}
+
+#[cfg(test)]
+fn load_diagnostic_triangles(irs: &[StereoIr]) -> Option<std::sync::Arc<Vec<DiagnosticTriangle>>> {
+    let path=std::env::var("SDA_DIAGNOSTIC_TRIANGLE_GRID").ok()?;
+    let data:serde_json::Value=serde_json::from_slice(&std::fs::read(path).expect("triangle sidecar missing")).unwrap();
+    let points=data["positions"].as_array().unwrap();
+    // Matching standard fallback retains its original interpolation. Never
+    // apply one geometry's indices to another response bank.
+    if points.len()!=irs.len() { return None; }
+    for (p,ir) in points.iter().zip(irs) {
+        assert!((p["azimuth"].as_f64().unwrap()-ir.azimuth).abs()<1e-9);
+        assert!((p["elevation"].as_f64().unwrap()-ir.elevation).abs()<1e-9);
+    }
+    let faces=data["faces"].as_array().unwrap().iter().map(|f| {
+        let indices: [usize;3]=std::array::from_fn(|i| f["indices"][i].as_u64().unwrap() as usize);
+        assert!(indices.iter().all(|i| *i<irs.len()));
+        let inverse:[[f64;3];3]=std::array::from_fn(|i| std::array::from_fn(|j| f["inverse"][i][j].as_f64().unwrap()));
+        assert!(inverse.iter().flatten().all(|v| v.is_finite()));
+        // Validate supplied matrix against actual directions, not sidecar alone.
+        let dirs=indices.map(|i| unit(irs[i].azimuth,irs[i].elevation));
+        for i in 0..3 { for j in 0..3 {
+            let value:f64=inverse[i].iter().zip(dirs[j]).map(|(a,b)| a*b).sum();
+            assert!((value-if i==j {1.0}else{0.0}).abs()<1e-7);
+        }}
+        DiagnosticTriangle {indices,inverse}
+    }).collect();
+    Some(std::sync::Arc::new(faces))
+}
+
 pub struct Grid {
     directions: Vec<[f64; 3]>,
-    arrivals: Vec<[usize; 2]>,
+    triangle_support: Option<std::sync::Arc<crate::triangle_support::TriangleSupport>>,
+    #[cfg(test)]
+    diagnostic_triangles: Option<std::sync::Arc<Vec<DiagnosticTriangle>>>,
+    historical_arrivals: Option<Vec<[usize; 2]>>,
+    spectral_bank: Option<std::sync::Arc<SpectralBank>>,
+    // Asset-scoped experimental pairwise clock; legacy packs keep false.
+    consistent_waveform: bool,
+    #[cfg(test)]
+    rear_spectral_control: Option<std::sync::Arc<SpectralBank>>,
+    #[cfg(test)]
+    rear_hemisphere_control: bool,
+    #[cfg(test)]
+    historical_correlation_clock: bool,
+    #[cfg(test)]
+    historical_forced_anchor: Option<usize>,
+    #[cfg(test)]
+    historical_disable_guard: bool,
+    #[cfg(test)]
+    historical_pairwise_alignment: bool,
+    lower_support: Option<std::sync::Arc<LowerSupport>>,
     /// KU100's measured pinna notches can cancel a moving tone when adjacent
     /// directions are added in the time domain. Complete subject sets keep
     /// the normal continuous interpolation path.
@@ -246,7 +972,25 @@ impl Clone for Grid {
     fn clone(&self) -> Self {
         Self {
             directions: self.directions.clone(),
-            arrivals: self.arrivals.clone(),
+            triangle_support: self.triangle_support.clone(),
+            #[cfg(test)]
+            diagnostic_triangles: self.diagnostic_triangles.clone(),
+            historical_arrivals: self.historical_arrivals.clone(),
+            spectral_bank: self.spectral_bank.clone(),
+            consistent_waveform: self.consistent_waveform,
+            #[cfg(test)]
+            rear_spectral_control: self.rear_spectral_control.clone(),
+            #[cfg(test)]
+            rear_hemisphere_control: self.rear_hemisphere_control,
+            #[cfg(test)]
+            historical_correlation_clock: self.historical_correlation_clock,
+            #[cfg(test)]
+            historical_forced_anchor: self.historical_forced_anchor,
+            #[cfg(test)]
+            historical_disable_guard: self.historical_disable_guard,
+            #[cfg(test)]
+            historical_pairwise_alignment: self.historical_pairwise_alignment,
+            lower_support: self.lower_support.clone(),
             ku100_notch_guard: self.ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -384,6 +1128,43 @@ fn unit(az: f64, el: f64) -> [f64; 3] {
     let e = el.to_radians();
     [-a.sin() * e.cos(), a.cos() * e.cos(), e.sin()]
 }
+// 40 samples neighbour alignment + 40 weighted timeline + 16 sinc support.
+pub(crate) const INTERPOLATION_TAIL: usize = 96;
+const FRACTIONAL_RADIUS: isize = 16;
+
+/// Offline HRIR shift. Linear interpolation adds a direction-dependent low-pass
+/// (half-sample: -6 dB at 16 kHz / 48 kHz), including in the notch-guard fallback.
+/// Use a DC-normalized Blackman-windowed sinc; integer shifts remain exact.
+/// No bulk delay is added. Like integer alignment, this crops samples before
+/// the finite HRIR's time origin; positive tails have explicit padding.
+fn add_fractional_shifted(output: &mut [f32], input: &[f32], shift: f64, gain: f32) {
+    let base = shift.floor() as isize;
+    let fraction = shift - base as f64;
+    if fraction < 1e-12 {
+        add_shifted(output, input, base, gain);
+        return;
+    }
+    if 1.0 - fraction < 1e-12 {
+        add_shifted(output, input, base + 1, gain);
+        return;
+    }
+    let mut kernel = [0.0_f64; (2 * FRACTIONAL_RADIUS + 1) as usize];
+    for (i, value) in kernel.iter_mut().enumerate() {
+        let x = (i as isize - FRACTIONAL_RADIUS) as f64 - fraction;
+        if x.abs() < FRACTIONAL_RADIUS as f64 {
+            let phase = std::f64::consts::PI * x;
+            let window_phase = phase / FRACTIONAL_RADIUS as f64;
+            *value = (phase.sin() / phase)
+                * (0.42 + 0.5 * window_phase.cos() + 0.08 * (2.0 * window_phase).cos());
+        }
+    }
+    let sum: f64 = kernel.iter().sum();
+    for (i, value) in kernel.iter().enumerate() {
+        add_shifted(output, input, base + i as isize - FRACTIONAL_RADIUS,
+            gain * (value / sum) as f32);
+    }
+}
+
 fn add_shifted(output: &mut [f32], input: &[f32], offset: isize, gain: f32) {
     if gain == 0.0 {
         return;
@@ -398,33 +1179,106 @@ fn add_shifted(output: &mut [f32], input: &[f32], offset: isize, gain: f32) {
     }
 }
 impl Grid {
+    pub(crate) fn with_triangle_support(mut self, path:&std::path::Path, irs:&[StereoIr]) -> Result<Self,String> {
+        self.triangle_support=Some(crate::triangle_support::TriangleSupport::load(path,irs)?);
+        Ok(self)
+    }
     pub fn new(irs: &[StereoIr]) -> Self {
         Self::new_with_notch_guard(irs, false)
     }
     pub fn new_with_notch_guard(irs: &[StereoIr], ku100_notch_guard: bool) -> Self {
         Self {
+            triangle_support: None,
+            #[cfg(test)]
+            diagnostic_triangles: load_diagnostic_triangles(irs),
             directions: irs
                 .iter()
                 .map(|ir| unit(ir.azimuth, ir.elevation))
                 .collect(),
-            arrivals: irs
-                .iter()
-                .map(|ir| {
-                    let n = ir.dry.len() / 2;
-                    std::array::from_fn(|ear| {
-                        ir.dry[ear * n..(ear + 1) * n]
-                            .iter()
-                            .enumerate()
-                            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-                            .map_or(0, |x| x.0)
-                    })
-                })
-                .collect(),
+            historical_arrivals: None,
+            spectral_bank: None,
+            consistent_waveform: false,
+            #[cfg(test)]
+            rear_spectral_control: None,
+            #[cfg(test)]
+            rear_hemisphere_control: false,
+            #[cfg(test)]
+            historical_correlation_clock: false,
+            #[cfg(test)]
+            historical_forced_anchor: None,
+            #[cfg(test)]
+            historical_disable_guard: false,
+            #[cfg(test)]
+            historical_pairwise_alignment: false,
+            lower_support: None,
             ku100_notch_guard,
             alignment_lags: std::sync::Mutex::new(std::collections::HashMap::new()),
             diffuse_static: std::array::from_fn(|_| std::sync::OnceLock::new()),
             diffuse_fields: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Historical packs retain their calibrated measured anchors. KU100 uses
+    /// continuous spectral interpolation between them; other subject packs
+    /// retain the existing waveform path.
+    pub(crate) fn with_historical_interpolation(mut self, irs: &[StereoIr], enabled: bool) -> Self {
+        if enabled {
+            if self.ku100_notch_guard {
+                self.spectral_bank = Some(std::sync::Arc::new(SpectralBank::new(irs)));
+                // Isolate interpolation choice without replacing measurements
+                // or directions. Release never reads this diagnostic flag.
+                #[cfg(test)]
+                if std::env::var("SDA_DIAGNOSTIC_WAVEFORM_INTERPOLATION").as_deref() == Ok("1") {
+                    self.spectral_bank = None;
+                }
+            }
+            self.historical_arrivals = Some(irs.iter().map(|ir| {
+                let n = ir.dry.len() / 2;
+                std::array::from_fn(|ear| ir.dry[ear*n..(ear+1)*n].iter().enumerate()
+                    .max_by(|a,b| a.1.abs().total_cmp(&b.1.abs())).map_or(0, |x| x.0))
+            }).collect());
+            // Only the calibrated historical KU100 61-point profile lacks lower
+            // support. Raw/other-subject grids do not receive these measurements;
+            // directions >= -30 use only the original bank.
+            if self.ku100_notch_guard && irs.len() == 61
+                && irs.iter().filter(|ir| ir.elevation == -30.0).count() == 12
+                && irs.iter().all(|ir| ir.elevation >= -30.0)
+            {
+                self.lower_support = Some(std::sync::Arc::new(LowerSupport::new(irs)));
+            }
+        }
+        self
+    }
+
+    /// Explicit asset-scoped audition policy. Unlike the test-only environment
+    /// switch, the same manifest selects the same interpolator in release hosts.
+    /// Does not quantize direction, alter measurements or disable object DSP.
+    pub(crate) fn with_aligned_waveform_interpolation(mut self) -> Self {
+        #[cfg(test)]
+        if std::env::var("SDA_DIAGNOSTIC_PAIRWISE_CLOCK").as_deref()==Ok("1") {
+            self.historical_correlation_clock=true;
+            self.historical_pairwise_alignment=true;
+            // Attribution control only: distinguish dominant-anchor guard
+            // switches from the pairwise clock itself on real head trajectories.
+            self.historical_disable_guard = std::env::var("SDA_DIAGNOSTIC_PAIRWISE_SKIP_GUARD").as_deref()==Ok("1");
+        }
+        #[cfg(test)]
+        if std::env::var("SDA_DIAGNOSTIC_REAR_SPECTRAL").as_deref()==Ok("1") {
+            self.rear_spectral_control = self.spectral_bank.clone();
+            self.rear_hemisphere_control = std::env::var("SDA_DIAGNOSTIC_REAR_HEMISPHERE").as_deref()==Ok("1");
+        }
+        self.spectral_bank = None;
+        self
+    }
+
+    /// Explicit opt-in: aligned pairwise interpolation on one consistent clock.
+    /// The dominant-anchor fallback is omitted because switching its reference
+    /// introduces discontinuities even after the pairwise clock correction.
+    /// Existing manifests retain their previous interpolation policy.
+    pub(crate) fn with_consistent_waveform_interpolation(self) -> Self {
+        let mut result=self.with_aligned_waveform_interpolation();
+        result.consistent_waveform=true;
+        result
     }
 
     #[cfg(test)]
@@ -447,7 +1301,7 @@ impl Grid {
         horizontal_only: bool,
         head: Option<[f32; 4]>,
     ) -> DiffuseField {
-        let length = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + 4 + 127;
+        let length = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0) + INTERPOLATION_TAIL + 127;
         let mut field = (vec![0.0; length], vec![0.0; length]);
         let mut reference_energy = 0.0;
         for i in 0..12 {
@@ -509,25 +1363,67 @@ impl Grid {
             horizontal_only,
             head: head.map(|orientation| orientation.map(f32::to_bits)),
         };
-        let mut cache = self
-            .diffuse_fields
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(field) = cache.get(&key) {
-            return field.clone();
+        {
+            let cache = self.diffuse_fields.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(field) = cache.get(&key) {
+                return field.clone();
+            }
         }
+        // Interpolation can be expensive. Never hold the shared cache mutex
+        // while building a field; unrelated sources must be able to proceed.
+        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
+        let mut cache = self.diffuse_fields.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = cache.get(&key) { return existing.clone(); }
         // Head tracking may report every frame. Exact keys retain precision;
         // the small bound only limits retained historic poses.
         if cache.len() >= 8 {
             cache.clear();
         }
-        let field = std::sync::Arc::new(self.build_diffuse_field(irs, horizontal_only, head));
         cache.insert(key, field.clone());
         field
     }
 
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
         let u = unit(az, el);
+        if let Some(support) = &self.triangle_support {
+            // Validated sphere; retain a finite legacy fallback if numerical
+            // roundoff ever leaves a direction outside all faces.
+            if let Some(weights) = support.weights(u) { return weights; }
+        }
+        #[cfg(test)]
+        if let Some(faces) = &self.diagnostic_triangles {
+            if let Some((index, _)) = self.directions.iter().enumerate().find(|(_, p)| {
+                p.iter().zip(u).map(|(a,b)| (a-b).powi(2)).sum::<f64>() < 1e-18
+            }) { return vec![(index, 1.0)]; }
+            let solve = |target:[f64;3]| {
+              for face in faces.iter() {
+                let gains: [f64;3] = std::array::from_fn(|i| face.inverse[i].iter().zip(target).map(|(a,b)| a*b).sum());
+                if gains.iter().all(|g| *g >= -1e-9) {
+                    let sum: f64 = gains.iter().map(|g| g.max(0.0)).sum();
+                    assert!(sum > 0.0);
+                    return face.indices.iter().zip(gains).filter_map(|(&i,g)| {
+                        let w=g.max(0.0)/sum; (w>1e-12).then_some((i,w))
+                    }).collect::<Vec<_>>();
+                }
+              }
+              panic!("diagnostic triangle grid does not enclose direction {az}/{el}");
+            };
+            let primary=solve(u);
+            if std::env::var("SDA_DIAGNOSTIC_TRIANGLE_SYMMETRIC").as_deref()!=Ok("1") { return primary; }
+            let reflected=solve([-u[0],u[1],u[2]]);
+            let mut combined=vec![0.0;self.directions.len()];
+            for (index,weight) in primary {combined[index]+=weight*0.5;}
+            for (index,weight) in reflected {
+                let p=self.directions[index];
+                let mirror=self.directions.iter().position(|q| {
+                    (q[0]+p[0]).abs()<1e-9 && (q[1]-p[1]).abs()<1e-9 && (q[2]-p[2]).abs()<1e-9
+                }).expect("diagnostic sphere has no mirror position");
+                combined[mirror]+=weight*0.5;
+            }
+            return combined.into_iter().enumerate().filter(|(_,w)| *w>1e-12).collect();
+        }
         let mut distances: Vec<_> = self
             .directions
             .iter()
@@ -577,10 +1473,51 @@ impl Grid {
         }
         weights
     }
-    pub fn interpolate(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
-        let weights = self.weights(az, el);
+    fn interpolate_historical(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        #[cfg(test)]
+        if let Some(bank) = &self.rear_spectral_control {
+            let mix=if self.rear_hemisphere_control { rear_hemisphere_weight(az,el) } else { rear_interpolation_weight(az,el) };
+            if mix>0.0 {
+                let weights=self.weights(az,el);
+                let spectral=if std::env::var("SDA_DIAGNOSTIC_REAR_PAIRWISE").as_deref()==Ok("1") {
+                    self.interpolate_historical_weighted_policy(irs,weights.clone(),true,true)
+                } else { bank.interpolate(irs,&weights) };
+                let preserve_phase=std::env::var("SDA_DIAGNOSTIC_REAR_KEEP_PHASE").as_deref()==Ok("1");
+                if mix==1.0 && !preserve_phase { return spectral; }
+                let mut waveform=self.interpolate_historical_weighted(irs,weights);
+                if preserve_phase { return bank.blend_response(&waveform,&spectral,mix,true); }
+                if std::env::var("SDA_DIAGNOSTIC_REAR_POLAR").as_deref()==Ok("1") {
+                    return bank.blend_power_phase(&waveform,&spectral,mix);
+                }
+                // Diagnostic only: exposes transition cancellation risk; never
+                // normalize/boost to conceal it or claim production readiness.
+                for (a,b) in waveform.0.iter_mut().chain(&mut waveform.1).zip(spectral.0.iter().chain(&spectral.1)) {
+                    *a=*a*(1.0-mix)+*b*mix;
+                }
+                return waveform;
+            }
+        }
+        if el < -30.0 {
+            if let Some(lower) = &self.lower_support {
+                return lower.grid.interpolate_historical_weighted(&lower.irs, lower.weights(self, az, el));
+            }
+        }
+        self.interpolate_historical_weighted(irs, self.weights(az, el))
+    }
+    fn interpolate_historical_weighted(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>) -> (Vec<f32>, Vec<f32>) {
+        #[cfg(not(test))]
+        let (correlation_clock,pairwise)=(self.consistent_waveform,self.consistent_waveform);
+        #[cfg(test)]
+        let (correlation_clock,pairwise)=(self.consistent_waveform || self.historical_correlation_clock,self.consistent_waveform || self.historical_pairwise_alignment);
+        self.interpolate_historical_weighted_policy(irs,weights,correlation_clock,pairwise)
+    }
+    fn interpolate_historical_weighted_policy(&self, irs: &[StereoIr], weights: Vec<(usize, f64)>, correlation_clock: bool, pairwise: bool) -> (Vec<f32>, Vec<f32>) {
+        if let Some(bank) = &self.spectral_bank {
+            return bank.interpolate(irs, &weights);
+        }
+        let arrivals = self.historical_arrivals.as_ref().expect("historical profile");
         let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
-        let mut output = [vec![0.0; n + 4], vec![0.0; n + 4]];
+        let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
         // The dominant measurement anchors the output position (its ITD and
         // level pattern are physically intact); every other neighbour is
         // whole-waveform aligned to it per ear before mixing. Aligning to a
@@ -591,10 +1528,13 @@ impl Grid {
         // level; the mix interpolates each ear's fine structure toward the
         // dominant direction, which is the physically expected behaviour of
         // a source between two measurements.
-        let dominant = weights
-            .iter()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map_or(0, |x| x.0);
+        let dominant = if self.ku100_notch_guard {
+            dominant_measurement(&weights, irs)
+        } else {
+            weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
+        };
+        #[cfg(test)]
+        let dominant = self.historical_forced_anchor.unwrap_or(dominant);
         for ear in 0..2 {
             // Keep the fine waveform locked to the dominant measurement, but
             // move that temporary timeline to the weighted measured arrival.
@@ -605,10 +1545,13 @@ impl Grid {
             // the neighbour-to-dominant alignment or the interaural balance.
             let target_arrival: f64 = weights
                 .iter()
-                .map(|&(index, weight)| self.arrivals[index][ear] as f64 * weight)
+                .map(|&(index, weight)| arrivals[index][ear] as f64 * weight)
                 .sum();
             let timeline_shift =
-                (target_arrival - self.arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
+                (target_arrival - arrivals[dominant][ear] as f64).clamp(-16.0, 16.0);
+            let timeline_shift = if correlation_clock {
+                -weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,dominant,i)[ear]).sum::<f64>()
+            } else { timeline_shift };
             for &(index, weight) in &weights {
                 let len = irs[index].dry.len() / 2;
                 let alignment_shift = if index == dominant {
@@ -617,16 +1560,11 @@ impl Grid {
                     self.neighbour_shift(irs, dominant, index)[ear]
                 };
                 let shift = alignment_shift + timeline_shift;
-                let base = shift.floor() as isize;
-                let fraction = (shift - base as f64) as f32;
+                let shift = if pairwise {
+                    weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,i,index)[ear]).sum::<f64>()
+                } else { shift };
                 let input = &irs[index].dry[ear * len..(ear + 1) * len];
-                add_shifted(
-                    &mut output[ear],
-                    input,
-                    base,
-                    weight as f32 * (1.0 - fraction),
-                );
-                add_shifted(&mut output[ear], input, base + 1, weight as f32 * fraction);
+                add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
             }
         }
         // Delay alignment prevents duplicated onsets, but interpolation of
@@ -652,29 +1590,36 @@ impl Grid {
                 // head rather than a complete individual subject. Its
                 // adjacent pinna notches are valid measurements, but a time
                 // domain sum can erase a narrow-band source between them.
-                // Keep the dominant measured response intact in that case;
+                // Blend the dominant response progressively; preserve interpolation
+                // for mild cancellation instead of replacing elevation spectra.
                 // convolver filter transitions still smooth movement between
                 // anchors. Other subjects retain the lighter fallback.
                 let floor = if self.ku100_notch_guard {
-                    1.0
+                    ku100_notch_guard_mix(ratio)
                 } else {
                     (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
                 };
+                let floor = if self.consistent_waveform { 0.0 } else { floor };
+                #[cfg(test)]
+                let floor = if self.historical_disable_guard { 0.0 } else { floor };
                 if floor > 0.0 {
-                    let mut anchor = [vec![0.0; n + 4], vec![0.0; n + 4]];
+                    let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
                     for ear in 0..2 {
                         let target_arrival: f64 = weights
                             .iter()
-                            .map(|&(index, weight)| self.arrivals[index][ear] as f64 * weight)
+                            .map(|&(index, weight)| arrivals[index][ear] as f64 * weight)
                             .sum();
-                        let shift = (target_arrival - self.arrivals[dominant][ear] as f64)
+                        let shift = (target_arrival - arrivals[dominant][ear] as f64)
                             .clamp(-16.0, 16.0);
-                        let base = shift.floor() as isize;
-                        let fraction = (shift - base as f64) as f32;
+                        let shift = if correlation_clock {
+                            -weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,dominant,i)[ear]).sum::<f64>()
+                        } else { shift };
+                        let shift = if pairwise {
+                            weights.iter().map(|&(i,w)| w*self.neighbour_shift(irs,i,dominant)[ear]).sum::<f64>()
+                        } else { shift };
                         let len = irs[dominant].dry.len() / 2;
                         let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
-                        add_shifted(&mut anchor[ear], input, base, 1.0 - fraction);
-                        add_shifted(&mut anchor[ear], input, base + 1, fraction);
+                        add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
                     }
                     for ear in 0..2 {
                         for (mixed, stable) in output[ear].iter_mut().zip(&anchor[ear]) {
@@ -689,6 +1634,127 @@ impl Grid {
                 .map(|v| (*v as f64).powi(2))
                 .sum::<f64>();
             if actual > 1e-20 {
+                let scale = (target / actual).sqrt() as f32;
+                for ear in &mut output {
+                    for v in ear {
+                        *v *= scale;
+                    }
+                }
+            }
+        }
+        let [left, right] = output;
+        (left, right)
+    }
+    pub fn interpolate(&self, irs: &[StereoIr], az: f64, el: f64) -> (Vec<f32>, Vec<f32>) {
+        if self.historical_arrivals.is_some() {
+            return self.interpolate_historical(irs, az, el);
+        }
+        let weights = self.weights(az, el);
+        let n = irs.iter().map(|ir| ir.dry.len() / 2).max().unwrap_or(0);
+        let mut output = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
+        // The dominant measurement anchors the output position (its ITD and
+        // level pattern are physically intact); every other neighbour is
+        // whole-waveform aligned to it per ear before mixing. Aligning to a
+        // weighted average arrival instead leaves the fine phase structure
+        // misaligned, and the mix then cancels the correlated part between
+        // the ears, collapsing interaural coherence (unfocused, "wide"
+        // imaging). Per-ear alignment keeps the frontal IACC at the measured
+        // level; the mix interpolates each ear's fine structure toward the
+        // dominant direction, which is the physically expected behaviour of
+        // a source between two measurements.
+        let dominant = if self.ku100_notch_guard {
+            dominant_measurement(&weights, irs)
+        } else {
+            weights.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0, |x| x.0)
+        };
+        // Use the same waveform-correlation clock for alignment and timeline
+        // restoration. Absolute peak indices can jump between pinna-response
+        // lobes even when the actual waveforms hardly change.
+        // A pure measured-response profile uses one pairwise weighted clock.
+        // Choosing a dominant neighbour at equal weights can select different
+        // references across libm/platform rounding, creating a waveform jump.
+        let shifts: Vec<[f64; 2]> = weights.iter()
+            .map(|&(index, _)| {
+                if self.consistent_waveform {
+                    let mut shift=[0.0;2];
+                    for &(other,weight) in &weights {
+                        let pair=self.neighbour_shift(irs,other,index);
+                        for ear in 0..2 { shift[ear]+=weight*pair[ear]; }
+                    }
+                    shift
+                } else { self.neighbour_shift(irs,dominant,index) }
+            })
+            .collect();
+        let timeline: [f64; 2] = if self.consistent_waveform { [0.0;2] } else {
+            std::array::from_fn(|ear| {
+                -weights.iter().zip(&shifts)
+                    .map(|((_, weight), shift)| weight * shift[ear]).sum::<f64>()
+            })
+        };
+        for ear in 0..2 {
+            for (&(index, weight), alignment) in weights.iter().zip(&shifts) {
+                let len = irs[index].dry.len() / 2;
+                let shift = alignment[ear] + timeline[ear];
+                let input = &irs[index].dry[ear * len..(ear + 1) * len];
+                add_fractional_shifted(&mut output[ear], input, shift, weight as f32);
+            }
+        }
+        // Delay alignment prevents duplicated onsets, but interpolation of
+        // different waveforms (including fractional shifts) loses energy. Use
+        // the weighted measurement energy as a layout-independent reference.
+        // The legacy path normalizes total energy. KU100 also restores each
+        // ear's weighted measured energy below where the cancellation guard
+        // has not substituted its protected binaural ratio.
+        let target: f64 = weights
+            .iter()
+            .map(|(i, w)| irs[*i].dry.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() * w)
+            .sum();
+        let actual: f64 = output.iter().flatten().map(|v| (*v as f64).powi(2)).sum();
+        if target > 1e-20 {
+            // Energy normalization alone cannot recover a cancelled direct
+            // response. KU100 progressively blends in an aligned measured
+            // anchor instead of switching to it abruptly below 0.90 energy.
+            // Full protection remains for severe cancellation; other sets
+            // retain their existing lighter fallback.
+            let ratio = actual / target;
+            let mut guard_mix = 0.0;
+            if !self.consistent_waveform && weights.len() > 1 && ratio < if self.ku100_notch_guard { 0.90 } else { 0.72 } {
+                let floor = if self.ku100_notch_guard {
+                    ku100_notch_guard_mix(ratio)
+                } else {
+                    (1.0 - (ratio / 0.72).sqrt()).clamp(0.0, 1.0) as f32 * 0.32
+                };
+                guard_mix = floor;
+                if floor > 0.0 {
+                    let mut anchor = [vec![0.0; n + INTERPOLATION_TAIL], vec![0.0; n + INTERPOLATION_TAIL]];
+                    for ear in 0..2 {
+                        // The protective anchor must use exactly the same
+                        // timeline as the coherent mixture it is blended into.
+                        let shift = timeline[ear];
+                        let len = irs[dominant].dry.len() / 2;
+                        let input = &irs[dominant].dry[ear * len..(ear + 1) * len];
+                        add_fractional_shifted(&mut anchor[ear], input, shift, 1.0);
+                    }
+                    for ear in 0..2 {
+                        for (mixed, stable) in output[ear].iter_mut().zip(&anchor[ear]) {
+                            *mixed = *mixed * (1.0 - floor) + *stable * floor;
+                        }
+                    }
+                }
+            }
+            let actual = output
+                .iter()
+                .flatten()
+                .map(|v| (*v as f64).powi(2))
+                .sum::<f64>();
+            if self.ku100_notch_guard {
+                let measured = std::array::from_fn(|ear| weights.iter().map(|&(index, weight)| {
+                    let len = irs[index].dry.len() / 2;
+                    weight * irs[index].dry[ear * len..(ear + 1) * len]
+                        .iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+                }).sum());
+                normalize_guarded_ear_energy(&mut output, measured, guard_mix);
+            } else if actual > 1e-20 {
                 let scale = (target / actual).sqrt() as f32;
                 for ear in &mut output {
                     for v in ear {
@@ -780,8 +1846,312 @@ impl Grid {
 }
 
 #[cfg(test)]
+fn rear_interpolation_weight(az: f64, el: f64) -> f32 {
+    let rear=((az.abs()-60.0)/60.0).clamp(0.0,1.0);
+    let upper=((el-20.0)/25.0).clamp(0.0,1.0);
+    let t=rear.max(upper); (t*t*(3.0-2.0*t)) as f32
+}
+
+/// Offline isolation of rear timing: all front-facing and polar responses stay
+/// on G. Using the unit vector's rearward component also removes azimuth
+/// dependence at the poles; elevation alone never activates this control.
+#[cfg(test)]
+fn rear_hemisphere_weight(az: f64, el: f64) -> f32 {
+    if el.abs() >= 90.0 { return 0.0; }
+    let rearward = -az.to_radians().cos() * el.to_radians().cos();
+    let t = (rearward / 0.5).clamp(0.0,1.0);
+    (t*t*(3.0-2.0*t)) as f32
+}
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn asynchronous_gate_never_defers_authored_position_width_or_gain() {
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0], head: None, diffuse: 0.0,
+            horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let current = (direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        let mut target = current;
+        target.0.head = Some([0.0,0.0,0.1,0.9949874]);
+        assert!(head_only_update(current,target));
+        target.0.position[0] = 0.1;
+        assert!(!head_only_update(current,target));
+        target = current; target.0.width = 1.0;
+        assert!(!head_only_update(current,target));
+        target = current; target.0.diffuse = 0.2;
+        assert!(!head_only_update(current,target));
+        target = current; target.2[0] *= 0.5;
+        // Pick a nonzero route bus rather than assuming the layout's first one.
+        let bus = current.2.iter().position(|gain| *gain != 0.0).unwrap();
+        target.2[bus] = current.2[bus] * 0.5;
+        assert!(!head_only_update(current,target));
+    }
+    #[test]
+    fn async_preparation_failure_retries_without_losing_audible_route() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+            horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
+        let mut source = ContinuousSource::new(&set).unwrap();
+        source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        for frame in &mut source.frames { frame.input=0.01; }
+        source.finish_with_preparation(&set,false).unwrap();
+        let old = source.route;
+        source.configure_preparation(&set);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_calls = calls.clone();
+        let snapshot = set.clone();
+        source.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            if worker_calls.fetch_add(1,std::sync::atomic::Ordering::Relaxed)==0 { return Err("injected failure".into()); }
+            let (l,r)=snapshot.directional_dry_compact(route.0,route.1,route.2,route.3)?;
+            Ok((route,crate::convolution::PreparedStereoFilter::from_pair(&l,&r,crate::convolution::DEFAULT_PARTITION)))
+        }));
+        let moved = Direction { position:[0.8,0.6,0.0], ..direction };
+        source.schedule(moved,solver.layout(),solver.pan(moved.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while source.pending.is_some() {
+            source.update_prepared_route(&set).unwrap();
+            assert!(source.route==old || source.route.unwrap().0.position==moved.position);
+            assert!(std::time::Instant::now()<deadline); std::thread::yield_now();
+        }
+        assert!(calls.load(std::sync::atomic::Ordering::Relaxed)>=2);
+        assert_eq!(source.route.unwrap().0.position,moved.position);
+    }
+    #[test]
+    fn async_first_filter_does_not_consume_audio_through_zero_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+            horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
+        let mut asynchronous = ContinuousSource::new(&set).unwrap();
+        let mut reference = ContinuousSource::new(&set).unwrap();
+        for source in [&mut asynchronous,&mut reference] {
+            source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+            for frame in &mut source.frames { frame.input=0.01; }
+        }
+        asynchronous.finish_with_preparation(&set,true).unwrap();
+        reference.finish_with_preparation(&set,false).unwrap();
+        assert_eq!(asynchronous.route,reference.route);
+        assert!(asynchronous.frames.iter().zip(&reference.frames).all(|(a,b)|a.output==b.output));
+    }
+    #[test]
+    fn delayed_preparation_keeps_audio_blocks_running_on_previous_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let direction = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let mut actual = ContinuousSource::new(&set).unwrap();
+        let mut reference = ContinuousSource::new(&set).unwrap();
+        for source in [&mut actual, &mut reference] {
+            source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+            for frame in &mut source.frames { frame.input = 0.01; }
+            source.finish_with_preparation(&set,false).unwrap();
+        }
+        let old_route = actual.route;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let snapshot = set.clone();
+        actual.configure_preparation(&set);
+        actual.preparation_fn = Some(std::sync::Arc::new(move |route: Route| {
+            started_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            let (l,r) = snapshot.directional_dry_compact(route.0,route.1,route.2,route.3)?;
+            Ok((route,crate::convolution::PreparedStereoFilter::from_pair(&l,&r,crate::convolution::DEFAULT_PARTITION)))
+        }));
+        let moved = Direction { head: Some([0.0,0.0,0.2,0.9797959]), ..direction };
+        actual.schedule(moved,solver.layout(),solver.pan(moved.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
+        actual.update_prepared_route(&set).unwrap();
+        started_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        // Hold preparation blocked while the actual production finish path runs.
+        for _ in 0..4 {
+            for source in [&mut actual,&mut reference] { for frame in &mut source.frames { frame.input = 0.01; } }
+            actual.finish_with_preparation(&set,true).unwrap();
+            reference.finish_with_preparation(&set,false).unwrap();
+            assert_eq!(actual.route,old_route);
+            assert!(actual.frames.iter().zip(&reference.frames).all(|(a,b)| a.output == b.output));
+        }
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while actual.pending.is_some() {
+            actual.update_prepared_route(&set).unwrap();
+            assert!(std::time::Instant::now()<deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(actual.route.unwrap().0.head,moved.head);
+    }
+    #[test]
+    #[ignore = "host timing experiment; not an iOS latency guarantee"]
+    fn moving_ku100_preparation_progresses_across_multiple_sources() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut sources: Vec<_> = (0..8).map(|_| ContinuousSource::new(&set).unwrap()).collect();
+        let mut applied = [0; 8];
+        for tick in 0..20 {
+            for (i, source) in sources.iter_mut().enumerate() {
+                let angle = (tick as f32 + i as f32 * 5.0).to_radians();
+                let direction = Direction { position: [angle.sin(), angle.cos(), 0.0], head: None,
+                    diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+                source.pending = Some((direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]));
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(33);
+            let mut done = [false; 8];
+            while std::time::Instant::now() < deadline {
+                for (i, source) in sources.iter_mut().enumerate() {
+                    if done[i] { continue; }
+                    source.update_prepared_route(&set).unwrap();
+                    if source.pending.is_none() { applied[i] += 1; done[i] = true; }
+                }
+                if done.iter().all(|value| *value) { break; }
+                std::thread::yield_now();
+            }
+        }
+        assert!(applied.iter().all(|count| *count >= 10), "moving targets stalled: {applied:?}");
+    }
+    #[test]
+    fn async_prepared_route_matches_synchronous_filter_and_keeps_old_route() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let mut source = ContinuousSource::new(&set).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
+        let first = (base, solver.layout(), solver.pan(base.position, 0.0), amounts);
+        source.pending = Some(first);
+        let settle = |source: &mut ContinuousSource| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while source.pending.is_some() {
+                source.update_prepared_route(&set).unwrap();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        settle(&mut source);
+        assert_eq!(source.route, Some(first));
+        let mut replacement = set.clone();
+        replacement.configure_spatial_cues(solver.layout()).unwrap();
+        assert_ne!(replacement.preparation_id(), set.preparation_id());
+        source.update_prepared_route(&replacement).unwrap();
+        assert_eq!(source.preparation_set, replacement.preparation_id());
+        // Return to the original asset revision before moving the source.
+        source.update_prepared_route(&set).unwrap();
+        let moved = Direction { position: [0.7, 0.7, 0.0], ..base };
+        let second = (moved, solver.layout(), solver.pan(moved.position, 0.0), amounts);
+        source.pending = Some(second);
+        source.update_prepared_route(&set).unwrap();
+        assert_eq!(source.route, Some(first), "old route remains while preparing");
+        settle(&mut source);
+        let (l,r) = set.directional_dry_compact(second.0,second.1,second.2,second.3).unwrap();
+        let mut reference = crate::convolution::StereoPartitionedConvolver::new(&l,&r,crate::convolution::DEFAULT_PARTITION).unwrap();
+        let mut a = [0.0; crate::convolution::DEFAULT_PARTITION];
+        let mut b = a; let mut c = a; let mut d = a;
+        let input = [0.001; crate::convolution::DEFAULT_PARTITION];
+        // Let the normal short transition finish, then compare stationary output.
+        for block in 0..8 {
+            source.convolver.process_block(&input,&mut a,&mut b).unwrap();
+            reference.process_block(&input,&mut c,&mut d).unwrap();
+            if block >= 4 {
+                assert!(a.iter().zip(&c).chain(b.iter().zip(&d)).all(|(a,b)| (a-b).abs()<1e-5));
+            }
+        }
+    }
+    #[test]
+    fn head_turn_selects_ku100_filter_before_stereo_convolution() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let irs: Vec<_> = [-60.0, -30.0, 0.0, 30.0, 60.0].iter()
+            .map(|&az| set.nearest(az, 0.0).unwrap()).collect();
+        let grid = Grid::new(&irs);
+        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+        let half = 30.0_f32.to_radians() / 2.0;
+        let pose = [0.0, 0.0, half.sin(), half.cos()];
+        let tracked = grid.direct_footprint(&irs, Direction { head: Some(pose), ..base });
+        let relative = spatial::head_relative_adm(base.position, Some(pose));
+        let expected = grid.direct_footprint(&irs, Direction { position: relative, ..base });
+        for (actual, expected) in tracked.0.iter().chain(&tracked.1).zip(expected.0.iter().chain(&expected.1)) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        assert_ne!(tracked, grid.direct_footprint(&irs, base));
+    }
     use super::*;
+
+    #[test]
+    fn historical_profile_is_opt_in_and_clone_preserves_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let measurements: Vec<_> = [(0.0,0.0), (30.0,0.0), (-30.0,0.0), (150.0,0.0), (-150.0,0.0)].iter().map(|&(az,el)| set.nearest(az,el).unwrap()).collect();
+        let irs = &measurements;
+        let current = Grid::new_with_notch_guard(irs, true);
+        let disabled = current.clone().with_historical_interpolation(irs, false);
+        let legacy = current.clone().with_historical_interpolation(irs, true);
+        let cloned = legacy.clone();
+        assert!(current.historical_arrivals.is_none());
+        for (az, el) in [(0.0, 0.0), (17.0, 11.0), (153.0, -13.0), (-172.0, 29.0)] {
+            assert_eq!(current.interpolate(irs, az, el), disabled.interpolate(irs, az, el));
+            let a = legacy.interpolate(irs, az, el);
+            assert_eq!(a, cloned.interpolate(irs, az, el));
+            assert!(a.0.iter().chain(&a.1).all(|v| v.is_finite()));
+        }
+        for ir in irs {
+            let a = legacy.interpolate(irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len()/2;
+            assert_eq!(&a.0[..n], &ir.dry[..n]);
+            assert_eq!(&a.1[..n], &ir.dry[n..]);
+        }
+    }
+
+    #[test]
+    fn repeated_direction_updates_preserve_audible_filter_and_retargeting() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf-dense/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        let mut once = ContinuousSource::new(&set).unwrap();
+        let mut repeated = ContinuousSource::new(&set).unwrap();
+        let mut energy = 0.0_f64;
+        let mut max_difference = 0.0_f32;
+        for block in 0..16 {
+            let direction = Direction { position: [0.2, if block < 8 { 0.8 } else { -0.8 }, 0.3],
+                head: None, diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
+            let gains = solver.pan(direction.position, 0.0);
+            if block == 0 || block == 8 {
+                once.schedule(direction, solver.layout(), gains, [0.0; crate::vbap::MAX_BUS_COUNT]);
+            }
+            // The engine schedules once per block, including silent blocks.
+            // Repeating a target on audible re-entry must preserve the pending filter.
+            repeated.schedule(direction, solver.layout(), gains, [0.0; crate::vbap::MAX_BUS_COUNT]);
+            for i in 0..crate::convolution::DEFAULT_PARTITION {
+                let input = if block == 0 || (6..=8).contains(&block) { 0.0 } else {
+                    ((block * crate::convolution::DEFAULT_PARTITION + i) as f32 * 0.13).sin() * 0.05
+                };
+                once.frames[i].input = input;
+                repeated.frames[i].input = input;
+            }
+            once.finish(&set).unwrap();
+            repeated.finish(&set).unwrap();
+            for (a,b) in once.frames.iter().zip(&repeated.frames) {
+                for ear in 0..2 {
+                    energy += f64::from(a.output[ear]).powi(2);
+                    max_difference = max_difference.max((a.output[ear]-b.output[ear]).abs());
+                }
+            }
+        }
+        assert!(energy > 1e-5, "reference must be audible");
+        assert!(max_difference < 1e-6, "repeated direction updates change audio: {max_difference}");
+    }
 
     #[test]
     fn partial_neighbour_selection_matches_full_sort() {
@@ -1278,16 +2648,18 @@ mod tests {
                 wet: vec![],
             },
         ];
-        let grid = Grid::new(&irs);
         let expected: f64 = irs[0].dry.iter().map(|v| (*v as f64).powi(2)).sum();
-        for az in [-30.0, -15.0, 0.0, 15.0, 30.0] {
-            let (l, r) = grid.interpolate(&irs, az, 0.0);
-            let energy: f64 = l.iter().chain(&r).map(|v| (*v as f64).powi(2)).sum();
-            assert!((energy / expected - 1.0).abs() < 1e-6, "energy dip at {az}");
-            assert!(
-                l.iter().zip(&r).all(|(l, r)| (r - l * 0.7).abs() < 1e-6),
-                "interaural balance changed"
-            );
+        for notch_guard in [false, true] {
+            let grid = Grid::new_with_notch_guard(&irs, notch_guard);
+            for az in [-30.0, -15.0, 0.0, 15.0, 30.0] {
+                let (l, r) = grid.interpolate(&irs, az, 0.0);
+                let energy: f64 = l.iter().chain(&r).map(|v| (*v as f64).powi(2)).sum();
+                assert!((energy / expected - 1.0).abs() < 1e-6, "energy dip at {az}");
+                assert!(
+                    l.iter().zip(&r).all(|(l, r)| (r - l * 0.7).abs() < 1e-6),
+                    "interaural balance changed"
+                );
+            }
         }
     }
     #[test]
@@ -1324,6 +2696,34 @@ mod tests {
             "direct anchor was lost during cancellation: {actual} / {target}"
         );
         assert!(out_left.iter().chain(&out_right).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn ku100_notch_guard_mix_is_bounded_and_monotonic() {
+        assert_eq!(ku100_notch_guard_mix(0.0), 1.0);
+        assert_eq!(ku100_notch_guard_mix(0.72), 1.0);
+        assert_eq!(ku100_notch_guard_mix(0.90), 0.0);
+        assert_eq!(ku100_notch_guard_mix(2.0), 0.0);
+        assert!((ku100_notch_guard_mix(0.81) - 0.5).abs() < 1e-6);
+        let mut previous = 1.0;
+        for step in 0..=1000 {
+            let mix = ku100_notch_guard_mix(step as f64 / 1000.0);
+            assert!((0.0..=1.0).contains(&mix));
+            assert!(mix <= previous);
+            previous = mix;
+        }
+    }
+
+    #[test]
+    fn ku100_notch_guard_mix_has_no_threshold_jump() {
+        let epsilon = 1e-5;
+        for boundary in [0.72, 0.90] {
+            let below = ku100_notch_guard_mix(boundary - epsilon);
+            let at = ku100_notch_guard_mix(boundary);
+            let above = ku100_notch_guard_mix(boundary + epsilon);
+            assert!((below - at).abs() < 1e-7);
+            assert!((above - at).abs() < 1e-7);
+        }
     }
 
     #[test]
@@ -1411,6 +2811,32 @@ mod tests {
         );
     }
     #[test]
+    fn rear_seam_stays_continuous_when_waveform_peaks_change_lobes() {
+        // Nearly identical double-lobed responses can select different absolute
+        // peaks. Those peak indices are not a reliable waveform time origin.
+        let make = |azimuth, reverse: bool| {
+            let mut dry = vec![0.0; 256];
+            for ear in 0..2 {
+                let base = ear * 128 + 40 + ear * 3;
+                dry[base] = if reverse { 0.98 } else { 1.0 };
+                dry[base + 10] = if reverse { 1.0 } else { 0.98 };
+            }
+            StereoIr { azimuth, elevation: 0.0, dry, wet: vec![] }
+        };
+        let irs = vec![make(150.0, false), make(-150.0, true)];
+        for guard in [false, true] {
+            let grid = Grid::new_with_notch_guard(&irs, guard);
+            let a = grid.interpolate(&irs, 179.999, 0.0);
+            let b = grid.interpolate(&irs, -179.999, 0.0);
+            let energy: f64 = a.0.iter().chain(&a.1).map(|v| f64::from(*v).powi(2)).sum();
+            let error: f64 = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                .map(|(a,b)| (f64::from(*a)-f64::from(*b)).powi(2)).sum();
+            assert!((error / energy).sqrt() < 0.001,
+                "rear seam waveform jumped despite almost identical measurements: {}", (error / energy).sqrt());
+        }
+    }
+
+    #[test]
     fn interpolation_keeps_the_timeline_continuous_when_dominant_changes() {
         let make = |left: usize, right: usize| {
             let mut dry = vec![0.0; 256];
@@ -1457,6 +2883,149 @@ mod tests {
                 dry: dry.clone(),
                 wet: dry,
             }
+        }
+    }
+    #[test]
+    fn energy_correction_respects_guard_endpoints_and_blends_continuously() {
+        let base = [vec![0.5, -0.25, 0.125], vec![0.125, -0.0625, 0.03125]];
+        let measured = [0.8, 0.2];
+        let energy = |v: &Vec<f32>| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+        let original_total = energy(&base[0])+energy(&base[1]);
+        let mut previous: Option<f64> = None;
+        for step in 0..=100 {
+            let guard = step as f32 / 100.0;
+            let mut output = base.clone();
+            normalize_guarded_ear_energy(&mut output, measured, guard);
+            let left = energy(&output[0]); let right = energy(&output[1]);
+            assert!((left+right-1.0).abs()<1e-6);
+            for ear in 0..2 {
+                let expected = measured[ear]*(1.0-f64::from(guard))
+                    + energy(&base[ear])/original_total*f64::from(guard);
+                assert!((energy(&output[ear])-expected).abs()<1e-6);
+            }
+            if step==0 { assert!((left/right-4.0).abs()<1e-5); }
+            if step==100 { assert!((left/right-16.0).abs()<1e-4); }
+            if let Some(prev) = previous { assert!((left-prev).abs()<0.002); }
+            previous = Some(left);
+            let mut mirror = [base[1].clone(),base[0].clone()];
+            normalize_guarded_ear_energy(&mut mirror, [measured[1],measured[0]], guard);
+            assert_eq!(output[0],mirror[1]); assert_eq!(output[1],mirror[0]);
+        }
+        let mut silence=[vec![0.0;4],vec![0.0;4]];
+        normalize_guarded_ear_energy(&mut silence, [0.0,0.0], 0.5);
+        assert!(silence.iter().flatten().all(|v| *v==0.0));
+    }
+
+    #[test]
+    fn mobile_ku100_guard_aware_energy_is_finite_mirrored_and_anchor_preserving() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        // Read the actual asymmetric measurements, not the legacy mirrored set.
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let irs: Vec<StereoIr> = manifest["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes = std::fs::read(path.parent().unwrap().join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr {
+                azimuth: p["azimuth"].as_f64().unwrap(),
+                elevation: p["elevation"].as_f64().unwrap(),
+                dry: bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+                wet: vec![],
+            }
+        }).collect();
+        let mirrored: Vec<StereoIr> = irs.iter().map(|r| {
+            let n = r.dry.len()/2;
+            StereoIr { azimuth: -r.azimuth, elevation: r.elevation,
+                dry: r.dry[n..].iter().chain(&r.dry[..n]).copied().collect(), wet: vec![] }
+        }).collect();
+        let grid = Grid::new_with_notch_guard(&irs, true);
+        let mirror_grid = Grid::new_with_notch_guard(&mirrored, true);
+        for el in [0.0, 15.0, 45.0] {
+            for az in -180..180 {
+                let pair = grid.interpolate(&irs, az as f64, el);
+                let mirror = mirror_grid.interpolate(&mirrored, -(az as f64), el);
+                let weights = grid.weights(az as f64, el);
+                let target: f64 = weights.iter().map(|&(i,w)| {
+                    w*irs[i].dry.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+                }).sum();
+                let actual: f64 = pair.0.iter().chain(&pair.1).map(|v| f64::from(*v).powi(2)).sum();
+                assert!((actual/target-1.0).abs()<1e-5, "az={az} el={el}: {actual}/{target}");
+                for (samples, mirrored_samples) in [(&pair.0, &mirror.1), (&pair.1, &mirror.0)] {
+                    assert!(samples.iter().all(|v| v.is_finite()));
+                    assert!(samples.iter().zip(mirrored_samples).all(|(a,b)| (a-b).abs()<1e-6), "hemisphere bias at {az}/{el}");
+                }
+            }
+        }
+        for ir in &irs {
+            let pair = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n=ir.dry.len()/2;
+            for (out, input) in [(&pair.0,&ir.dry[..n]),(&pair.1,&ir.dry[n..])] {
+                assert!(out[..n].iter().zip(input).all(|(a,b)| (a-b).abs()<1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn moving_bundled_cues_match_both_mixers_and_layouts() {
+        for layout in [crate::vbap::LayoutId::Dolby7_1_4, crate::vbap::LayoutId::Sony360Ra13] {
+            let build = |fast: bool| {
+                let path = std::env::var_os("SDA_COORDINATE_PARITY_MANIFEST").map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json"));
+                let mut e = crate::Engine::new(48000, 2);
+                e.set_layout(layout).unwrap();
+                e.directional_hrtf = true;
+                e.disable_fast_objects = !fast;
+                e.replace_hrtf(crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap(), 0.0).unwrap();
+                assert!(e.active_hrtf_set.as_ref().unwrap().spatial_cues_active());
+                e.direct_mix = 1.0;
+                e.paused = false;
+                e.output_active = true;
+                for id in 0..8 {
+                    let mut source = crate::Source {
+                        kind: crate::SourceKind::Object,
+                        position: [-0.8, -0.4, 0.1],
+                        gain: 1.0, target_gain: 1.0,
+                        availability: 1.0, availability_target: 1.0,
+                        ..Default::default()
+                    };
+                    if id != 0 {
+                        source.spatial_events.insert(0, crate::SpatialEvent {
+                            position: [0.8, -0.4, 0.1], extent: [0.0;3],
+                            zone_exclusion: Default::default(), horizontal_only: false,
+                            diffuse: 0.0, spread: 0.0, distance_m: None, ramp: 32768,
+                        });
+                    }
+                    let pcm: Vec<_> = (0..32768).map(|i| 0.01*(i as f32*0.13+id as f32).sin()).collect();
+                    source.samples.write(0, 0, &pcm);
+                    let key = format!("obj:{id}");
+                    e.sources.insert(key.clone(), source);
+                    e.route_source_now(&key, 0).unwrap();
+                }
+                e
+            };
+            let mut fast = build(true);
+            let mut general = build(false);
+            let mut peak = 0.0_f32;
+            for frames in [31, 993, 17, 1007].into_iter().cycle().take(64) {
+                let mut a = vec![0.0; frames*2];
+                let mut b = a.clone();
+                fast.render_into(&mut a, 2);
+                general.render_into(&mut b, 2);
+                for (&x,&y) in a.iter().zip(&b) {
+                    assert!(x.is_finite() && y.is_finite());
+                    assert!((x-y).abs() < 1e-5, "{layout:?}: {x} != {y}");
+                    peak = peak.max(x.abs());
+                }
+                for (id, source) in &fast.sources {
+                    assert!((source.motion_cues.gain()-general.sources[id].motion_cues.gain()).abs() < 1e-6);
+                }
+            }
+            assert!(peak > 1e-6);
+            assert!(fast.fast_object_blocks > 0);
+            assert!(fast.fast_mix_controls.capacity() >= crate::convolution::DEFAULT_PARTITION);
+            assert_eq!(general.fast_object_blocks, 0);
+            assert_eq!(fast.sources["obj:0"].motion_cues.gain(), 1.0);
+            assert!(fast.sources["obj:1"].motion_cues.gain() < 0.5);
+            assert!(fast.sources.values().all(|s| s.continuous_active && s.continuous.is_some()));
         }
     }
     #[test]
@@ -1648,6 +3217,29 @@ mod tests {
         {
             assert!((cached - independent).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn concurrent_diffuse_cache_misses_preserve_independent_filters() {
+        let irs: Vec<_> = (0..12).map(|i| StereoIr {
+            azimuth: i as f64 * 30.0, elevation: 0.0,
+            dry: (0..256).map(|n| ((n + i) as f32 * 0.17).sin() * 0.02).collect(),
+            wet: vec![],
+        }).collect();
+        let grid = Grid::new(&irs);
+        let half = 0.2_f32;
+        let pose = Some([0.0, 0.0, half.sin(), half.cos()]);
+        let expected = Grid::new(&irs).diffuse_field(&irs, false, pose);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| grid.diffuse_field(&irs, false, pose))).collect();
+            for handle in handles {
+                let field = handle.join().unwrap();
+                assert_eq!(field.left, expected.left);
+                assert_eq!(field.right, expected.right);
+                assert_eq!(field.reference_energy, expected.reference_energy);
+            }
+        });
+        assert_eq!(grid.diffuse_field_cache_len(), 1);
     }
     #[test]
     #[ignore = "offline full engine realtime budget measurement"]
@@ -2042,7 +3634,7 @@ mod tests {
         }
     }
     #[test]
-    fn shared_reflections_match_independent_objects_with_near_field_and_focus() {
+    fn shared_reflections_match_independent_static_objects_with_near_field_and_focus() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../web/public/hrtf/hrtf-set.json");
         let mut set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
@@ -2067,7 +3659,9 @@ mod tests {
             for (id, (a, b)) in old.iter_mut().zip(&mut new).enumerate() {
                 let gains = solver.pan([id as f32 * 0.2 - 0.3, 0.6, 0.4], 0.0);
                 let direction = Direction {
-                    position: [(block as f32 * 0.04 + id as f32).sin() * 0.6, 0.5, 0.3],
+                    // Compare decomposition at a fixed direction. Legacy and continuous
+                    // paths intentionally use different motion crossfade durations.
+                    position: [(id as f32).sin() * 0.6, 0.5, 0.3],
                     head: None,
                     diffuse: 0.0,
                     horizontal_only: false,
@@ -2349,5 +3943,649 @@ mod tests {
             ea > 0.0 && eb > 0.0 && (ea / eb - 1.0).abs() < 0.1,
             "rear pole energy must match: {ea} vs {eb}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fractional_delay_regressions {
+    use super::*;
+
+    #[test]
+    fn fractional_delay_preserves_high_frequency_magnitude_and_phase() {
+        let mut input = vec![0.0; 256];
+        input[96] = 1.0;
+        for shift in [-15.75, -0.5, 0.125, 0.5, 0.875, 15.75, 55.5] {
+            let mut out = vec![0.0; input.len() + INTERPOLATION_TAIL];
+            add_fractional_shifted(&mut out, &input, shift, 1.0);
+            assert!((out.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+            for frequency in [1000.0, 4000.0, 8000.0, 12000.0, 16000.0, 18000.0, 20000.0] {
+                let omega = std::f64::consts::TAU * frequency / 48000.0;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, &value) in out.iter().enumerate() {
+                    let phase = omega * (i as f64 - 96.0 - shift);
+                    re += value as f64 * phase.cos();
+                    im -= value as f64 * phase.sin();
+                }
+                let db = 20.0 * re.hypot(im).log10();
+                assert!(db.abs() < 0.02, "shift={shift} f={frequency}: {db} dB");
+                assert!(im.atan2(re).abs() < 0.002, "fractional timing changed");
+            }
+        }
+    }
+
+    #[test]
+    fn integer_shifts_are_exact_and_positive_tail_is_retained() {
+        let mut input = vec![0.0; 256];
+        input[255] = 0.75;
+        let mut out = vec![0.0; input.len() + INTERPOLATION_TAIL];
+        add_fractional_shifted(&mut out, &input, 56.0, 1.0);
+        assert_eq!(out[311], 0.75);
+        assert_eq!(out.iter().filter(|x| **x != 0.0).count(), 1);
+        out.fill(0.0);
+        add_fractional_shifted(&mut out, &input, 55.5, 1.0);
+        assert!((out.iter().sum::<f32>() - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fractional_delay_is_continuous_across_integer_boundary() {
+        let mut input = vec![0.0; 128];
+        input[64] = 1.0;
+        let mut a = vec![0.0; 256];
+        let mut b = a.clone();
+        add_fractional_shifted(&mut a, &input, 1.0 - 1e-7, 1.0);
+        add_fractional_shifted(&mut b, &input, 1.0 + 1e-7, 1.0);
+        assert!(a.iter().zip(&b).all(|(x,y)| (x-y).abs() < 1e-6));
+    }
+
+    #[test]
+    fn mobile_ku100_retains_measured_anchors_and_front_back_difference() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let pair = |az: f64, el: f64| set.directional_dry_compact(Direction {
+            position: unit(az, el).map(|v| v as f32), head: None,
+            diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
+        }, crate::vbap::LayoutId::Dolby7_1_4,
+            { let mut g = [0.0; crate::vbap::MAX_BUS_COUNT]; g[0] = 1.0; g },
+            [0.0; crate::vbap::MAX_BUS_COUNT]).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let irs: Vec<_> = manifest["positions"].as_array().unwrap().iter().map(|position| {
+            set.nearest(position["azimuth"].as_f64().unwrap(),
+                position["elevation"].as_f64().unwrap()).unwrap().clone()
+        }).collect();
+        assert_eq!(irs.len(), 128);
+        let grid = Grid::new_with_notch_guard(&irs, true);
+        for ir in &irs {
+            let got = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&got.0[..n], &ir.dry[..n]);
+            assert_eq!(&got.1[..n], &ir.dry[n..]);
+            assert!(got.0[n..].iter().chain(&got.1[n..]).all(|x| *x == 0.0));
+        }
+        for az in [0.0, 180.0] {
+            let ir = set.nearest(az, 0.0).unwrap();
+            let got = pair(az, 0.0);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&got.0[..n], &ir.dry[..n]);
+            assert_eq!(&got.1[..n], &ir.dry[n..]);
+        }
+        for (front, rear) in [(0.0, 180.0), (25.0, 155.0), (-25.0, -155.0)] {
+            let a = pair(front, 0.0); let b = pair(rear, 0.0);
+            let energy = |p: &(Vec<f32>,Vec<f32>)| p.0.iter().chain(&p.1)
+                .map(|v| f64::from(*v).powi(2)).sum::<f64>();
+            let corr = a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+                .map(|(x,y)| f64::from(*x)*f64::from(*y)).sum::<f64>()
+                / (energy(&a)*energy(&b)).sqrt();
+            assert!(corr < 0.95, "front={front} rear={rear}: {corr}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod restored_historical_interpolation_regressions {
+    use super::*;
+
+    #[test]
+    fn all_61_measured_anchors_remain_exact() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut irs = Vec::new();
+        for position in json["positions"].as_array().unwrap() {
+            let bytes = std::fs::read(
+                path.parent().unwrap().join(position["dry"].as_str().unwrap()),
+            ).unwrap();
+            assert_eq!(bytes.len() % 4, 0);
+            let dry: Vec<f32> = bytes.chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            irs.push(StereoIr {
+                azimuth: position["azimuth"].as_f64().unwrap(),
+                elevation: position["elevation"].as_f64().unwrap(),
+                wet: dry.clone(),
+                dry,
+            });
+        }
+        assert_eq!(irs.len(), 61);
+        let grid = Grid::new_with_notch_guard(&irs, true)
+            .with_historical_interpolation(&irs, true);
+        for ir in &irs {
+            let (left, right) = grid.interpolate(&irs, ir.azimuth, ir.elevation);
+            let n = ir.dry.len() / 2;
+            assert_eq!(&left[..n], &ir.dry[..n]);
+            assert_eq!(&right[..n], &ir.dry[n..]);
+            assert!(left[n..].iter().chain(&right[n..]).all(|x| *x == 0.0));
+        }
+    }
+}
+
+#[cfg(test)]
+mod spectral_interpolation_audit {
+    use super::*;
+    #[test]
+    fn historical_pairwise_clock_preserves_anchors_and_removes_reference_choice() {
+        let irs:Vec<StereoIr>=[(30.0,1.0,0.8),(60.0,0.8,1.0),(90.0,0.9,0.9)].into_iter().map(|(az,a,b)| {
+            let mut dry=vec![0.0;1024];
+            for ear in 0..2 {dry[ear*512+128]=a;dry[ear*512+130]=b;}
+            StereoIr{azimuth:az,elevation:0.0,dry,wet:vec![]}
+        }).collect();
+        let mut grid=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_aligned_waveform_interpolation();
+        grid.historical_pairwise_alignment=true;
+        for (i,ir) in irs.iter().enumerate() {
+            let p=grid.interpolate_historical_weighted(&irs,vec![(i,1.0)]);
+            assert_eq!(&p.0[..512],&ir.dry[..512]);assert_eq!(&p.1[..512],&ir.dry[512..]);
+        }
+        let mut a=grid.clone();a.historical_forced_anchor=Some(0);
+        let mut b=grid.clone();b.historical_forced_anchor=Some(1);
+        let weights=vec![(0,0.4),(1,0.4),(2,0.2)];
+        assert_eq!(a.interpolate_historical_weighted(&irs,weights.clone()),b.interpolate_historical_weighted(&irs,weights));
+        let p=grid.interpolate_historical_weighted(&irs,vec![(0,0.40001),(1,0.39999),(2,0.2)]);
+        let q=grid.interpolate_historical_weighted(&irs,vec![(0,0.39999),(1,0.40001),(2,0.2)]);
+        assert!(relative_error(&p,&q)<0.0001);
+    }
+    #[test]
+    fn historical_correlation_clock_removes_peak_lobe_pivot_jump() {
+        let irs:Vec<StereoIr>=[(30.0,1.0,0.8),(60.0,0.8,1.0)].into_iter().map(|(az,a,b)| {
+            let mut dry=vec![0.0;1024];
+            for ear in 0..2 {dry[ear*512+128]=a;dry[ear*512+130]=b;}
+            StereoIr{azimuth:az,elevation:0.0,dry,wet:vec![]}
+        }).collect();
+        let legacy=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_aligned_waveform_interpolation();
+        let mut corrected=legacy.clone();corrected.historical_correlation_clock=true;
+        let below=vec![(0,0.50001),(1,0.49999)];let above=vec![(0,0.49999),(1,0.50001)];
+        let old_a=legacy.interpolate_historical_weighted(&irs,below.clone());
+        let old_b=legacy.interpolate_historical_weighted(&irs,above.clone());
+        let new_a=corrected.interpolate_historical_weighted(&irs,below);
+        let new_b=corrected.interpolate_historical_weighted(&irs,above);
+        assert!(relative_error(&old_a,&old_b)>0.5,"fixture must expose old peak-pivot mismatch");
+        assert!(relative_error(&new_a,&new_b)<0.0001);
+        let mut forced_a=corrected.clone();forced_a.historical_forced_anchor=Some(0);
+        let mut forced_b=corrected.clone();forced_b.historical_forced_anchor=Some(1);
+        let a=forced_a.interpolate_historical_weighted(&irs,vec![(0,0.5),(1,0.5)]);
+        let b=forced_b.interpolate_historical_weighted(&irs,vec![(0,0.5),(1,0.5)]);
+        assert!(relative_error(&a,&b)<1e-6);
+    }
+    #[test]
+    fn rear_magnitude_control_preserves_phase_while_interpolating_power() {
+        let bank=SpectralBank::new(&restored_irs());
+        let mut a=(vec![0.0;bank.output_length],vec![0.0;bank.output_length]);let mut b=a.clone();
+        a.0[128]=0.7;a.1[136]=0.4;b.0[139]=0.5;b.1[147]=0.8;
+        assert_eq!(bank.blend_response(&a,&b,0.0,true),a);
+        for t in [0.25,0.5,0.75,1.0] {
+            let c=bank.blend_response(&a,&b,t,true);
+            for (ear,impulse) in [&c.0,&c.1].into_iter().enumerate() {
+                let peak=impulse.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+                assert_eq!(peak,128+8*ear);
+                let (aa,bb)=if ear==0 {(0.7f64,0.5f64)} else {(0.4,0.8)};
+                let expected=((1.0-f64::from(t))*aa*aa+f64::from(t)*bb*bb).sqrt();
+                for (i,&v) in impulse.iter().enumerate() {
+                    let target=if i==peak {expected} else {0.0};
+                    assert!((f64::from(v)-target).abs()<1e-6);
+                }
+            }
+        }
+    }
+    #[test]
+    fn rear_polar_blend_preserves_endpoints_delay_and_binaural_symmetry() {
+        let irs = restored_irs();
+        let bank = SpectralBank::new(&irs);
+        let mut a = (vec![0.0; bank.output_length], vec![0.0; bank.output_length]);
+        let mut b = a.clone();
+        a.0[128] = 0.7; a.1[136] = 0.4;
+        b.0[136] = 0.5; b.1[144] = 0.8;
+        assert_eq!(bank.blend_power_phase(&a,&b,0.0),a);
+        assert_eq!(bank.blend_power_phase(&a,&b,1.0),b);
+        assert_eq!(bank.blend_power_phase(&a,&a,0.37),a);
+        for t in [0.125,0.25,0.5,0.75,0.875] {
+            let c = bank.blend_power_phase(&a,&b,t);
+            let mirrored = bank.blend_power_phase(&(a.1.clone(),a.0.clone()),&(b.1.clone(),b.0.clone()),t);
+            assert_eq!(c.0,mirrored.1); assert_eq!(c.1,mirrored.0);
+            for (ear, impulse) in [&c.0,&c.1].into_iter().enumerate() {
+                let peak = impulse.iter().enumerate().max_by(|a,b|a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
+                assert_eq!(peak,128+8*ear+(8.0*t) as usize);
+                let (aa,bb) = if ear==0 {(0.7f64,0.5f64)} else {(0.4,0.8)};
+                let expected = (1.0-f64::from(t))*aa*aa+f64::from(t)*bb*bb;
+                for freq in [375.0,750.0,1500.0,3000.0,6000.0] {
+                    let ratio = power(impulse,freq)/expected;
+                    assert!((ratio-1.0).abs()<0.01,"frequency {freq}, ratio {ratio}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "actual542 rear transition filter audit; requires SDA_REAR_POLAR_AUDIT_OUT"]
+    fn export_rear_polar_transition_filters() {
+        use std::io::Write;
+        let keep_phase=std::env::var("SDA_REAR_AUDIT_KEEP_PHASE").as_deref()==Ok("1");
+        let correlation_clock=std::env::var("SDA_REAR_AUDIT_CORRELATION_CLOCK").as_deref()==Ok("1");
+        let disable_guard=std::env::var("SDA_REAR_AUDIT_SKIP_GUARD").as_deref()==Ok("1");
+        let pairwise=std::env::var("SDA_REAR_AUDIT_PAIRWISE_ALIGNMENT").as_deref()==Ok("1");
+        let local_pairwise=std::env::var("SDA_REAR_AUDIT_LOCAL_PAIRWISE").as_deref()==Ok("1");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/ios-experiments/fullheight-combined/hrtf-dense");
+        let manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(source.join("hrtf-set.json")).unwrap()).unwrap();
+        let irs:Vec<StereoIr>=manifest["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes=std::fs::read(source.join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr{azimuth:p["azimuth"].as_f64().unwrap(),elevation:p["elevation"].as_f64().unwrap(),
+                dry:bytes.chunks_exact(4).map(|b|f32::from_le_bytes(b.try_into().unwrap())).collect(),wet:vec![]}
+        }).collect();
+        assert_eq!(irs.len(),542);
+        let spectral=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true)
+            .with_triangle_support(&source.join("triangle-grid.json"),&irs).unwrap();
+        let mut waveform=spectral.clone().with_aligned_waveform_interpolation();
+        waveform.historical_correlation_clock=correlation_clock;
+        waveform.historical_disable_guard=disable_guard;
+        waveform.historical_pairwise_alignment=pairwise;
+        let bank=spectral.spectral_bank.as_ref().unwrap();
+        let output=std::path::PathBuf::from(std::env::var("SDA_REAR_POLAR_AUDIT_OUT").unwrap());
+        std::fs::create_dir_all(&output).unwrap();
+        let mut file=std::io::BufWriter::new(std::fs::File::create(output.join("kernels.f32")).unwrap());
+        let mut points=Vec::new();
+        for i in 0..=240 { for side in [-1.0,1.0] {points.push((side*(60.0+i as f64/4.0),0.0));} }
+        for az in [-135.0,-45.0,0.0,45.0,135.0] { for i in 0..=100 {points.push((az,20.0+i as f64/4.0));} }
+        if std::env::var("SDA_REAR_AUDIT_FRONT_CHECK").as_deref()==Ok("1") {
+            points.clear();
+            for el in [0.0,10.0,20.0] {
+                for az in [-60.0,-45.0,-30.0,-15.0,0.0,15.0,30.0,45.0,60.0] {points.push((az,el));}
+            }
+        }
+        let mut rows=Vec::new();
+        for (az,el) in points {
+            let a=waveform.interpolate(&irs,az,el);
+            let b=if local_pairwise {waveform.interpolate_historical_weighted_policy(&irs,waveform.weights(az,el),true,true)} else {spectral.interpolate(&irs,az,el)};
+            let t=rear_interpolation_weight(az,el);
+            let c=bank.blend_response(&a,&b,t,keep_phase);
+            for pair in [&a,&b,&c] { for sample in pair.0.iter().chain(&pair.1) {
+                assert!(sample.is_finite());file.write_all(&sample.to_le_bytes()).unwrap();
+            }}
+            let eval=|az,el| {
+                let a=waveform.interpolate(&irs,az,el);
+                let b=if local_pairwise {waveform.interpolate_historical_weighted_policy(&irs,waveform.weights(az,el),true,true)} else {spectral.interpolate(&irs,az,el)};
+                let c=bank.blend_response(&a,&b,rear_interpolation_weight(az,el),keep_phase);(a,b,c)
+            };
+            let minus=eval(az-0.0001,el);let plus=eval(az+0.0001,el);
+            rows.push(serde_json::json!({"azimuth":az,"elevation":el,"mix":t,"tapCount":c.0.len(),
+                "historicalCorrelationClock":correlation_clock,
+                "diagnosticGuardDisabled":disable_guard,
+                "diagnosticPairwiseAlignment":pairwise,
+                "diagnosticLocalPairwise":local_pairwise,
+                "minusDominant":dominant_measurement(&waveform.weights(az-0.0001,el),&irs),
+                "plusDominant":dominant_measurement(&waveform.weights(az+0.0001,el),&irs),
+                "waveformAzimuthMicroJump":relative_error(&minus.0,&plus.0),
+                "spectralAzimuthMicroJump":relative_error(&minus.1,&plus.1),
+                "polarAzimuthMicroJump":relative_error(&minus.2,&plus.2)}));
+        }
+        file.flush().unwrap();
+        std::fs::write(output.join("rows.json"),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+        println!("Exported {} actual542 directions with waveform, spectral and polar kernels",rows.len());
+    }
+    #[test]
+    fn rear_control_keeps_front_exact_and_rear_matches_spectral() {
+        let irs=restored_irs();
+        let original=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true);
+        let waveform=original.clone().with_aligned_waveform_interpolation();
+        let mut candidate=waveform.clone();
+        candidate.rear_spectral_control=original.spectral_bank.clone();
+        for az in [-60.0,-45.0,-30.0,0.0,30.0,45.0,60.0] {
+            assert_eq!(candidate.interpolate(&irs,az,0.0),waveform.interpolate(&irs,az,0.0));
+        }
+        for (az,el) in [(-135.0,0.0),(135.0,0.0),(180.0,0.0),(0.0,60.0),(45.0,45.0)] {
+            assert_eq!(candidate.interpolate(&irs,az,el),original.interpolate(&irs,az,el));
+        }
+        for az in -180..180 {
+            let p=candidate.interpolate(&irs,az as f64,30.0);
+            assert!(p.0.iter().chain(&p.1).all(|v|v.is_finite()));
+            assert_eq!(rear_interpolation_weight(az as f64,30.0),rear_interpolation_weight(-(az as f64),30.0));
+        }
+    }
+    #[test]
+    fn rear_hemisphere_control_preserves_elevated_front_and_poles() {
+        let irs=restored_irs();
+        let original=Grid::new_with_notch_guard(&irs,true).with_historical_interpolation(&irs,true);
+        let waveform=original.clone().with_aligned_waveform_interpolation();
+        let mut candidate=waveform.clone();
+        candidate.rear_spectral_control=original.spectral_bank.clone();
+        candidate.rear_hemisphere_control=true;
+        assert!(candidate.clone().rear_hemisphere_control);
+        for az in (-90..=90).step_by(15) {
+            for el in (-90..=90).step_by(15) {
+                assert_eq!(rear_hemisphere_weight(az as f64,el as f64),0.0);
+                assert_eq!(candidate.interpolate(&irs,az as f64,el as f64),waveform.interpolate(&irs,az as f64,el as f64));
+            }
+        }
+        for az in -180..=180 {
+            assert_eq!(rear_hemisphere_weight(az as f64,90.0),0.0);
+            assert_eq!(rear_hemisphere_weight(az as f64,-90.0),0.0);
+            assert_eq!(rear_hemisphere_weight(az as f64,35.0),rear_hemisphere_weight(-(az as f64),35.0));
+            assert!(rear_hemisphere_weight(az as f64,89.999)<1e-8);
+        }
+        for az in [-180.0,-135.0,135.0,180.0] {
+            assert_eq!(rear_hemisphere_weight(az,0.0),1.0);
+            assert_eq!(candidate.interpolate(&irs,az,0.0),original.interpolate(&irs,az,0.0));
+        }
+    }
+    fn restored_irs() -> Vec<StereoIr> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile/assets/hrtf-restored/hrtf-dense");
+        let m: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("hrtf-set.json")).unwrap()).unwrap();
+        let irs: Vec<StereoIr> = m["positions"].as_array().unwrap().iter().map(|p| {
+            let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
+            StereoIr { azimuth: p["azimuth"].as_f64().unwrap(), elevation: p["elevation"].as_f64().unwrap(),
+                dry: bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet: vec![] }
+        }).collect();
+        irs
+    }
+    fn power(samples: &[f32], frequency: f64) -> f64 {
+        let step = std::f64::consts::TAU * frequency / 48000.0;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, &x) in samples.iter().enumerate() {
+            let (s, c) = (step * i as f64).sin_cos();
+            re += f64::from(x) * c; im += f64::from(x) * s;
+        }
+        re * re + im * im
+    }
+    fn pair_energy(p: &(Vec<f32>, Vec<f32>)) -> f64 {
+        p.0.iter().chain(&p.1).map(|v| f64::from(*v).powi(2)).sum()
+    }
+    fn relative_error(a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>)) -> f64 {
+        (a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1))
+            .map(|(x,y)| f64::from(x-y).powi(2)).sum::<f64>() / pair_energy(a)).sqrt()
+    }
+    #[test]
+    fn lower_support_preserves_original_domain_and_all_61_anchors() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let mut old = grid.clone(); old.lower_support = None;
+        assert!(grid.lower_support.is_some());
+        for el in (-30..=90).step_by(10) { for az in (-180..180).step_by(15) {
+            assert_eq!(grid.interpolate(&irs,az as f64,el as f64), old.interpolate(&irs,az as f64,el as f64));
+        }}
+        for ir in &irs {
+            assert_eq!(grid.interpolate(&irs,ir.azimuth,ir.elevation),old.interpolate(&irs,ir.azimuth,ir.elevation));
+        }
+    }
+    #[test]
+    fn lower_support_nadir_is_measured_and_azimuth_independent() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let lower = grid.lower_support.as_ref().unwrap();
+        assert_eq!(lower.irs.len(), 74);
+        for anchor in lower.irs.iter().skip(61) {
+            let n=anchor.dry.len()/2;
+            let response=grid.interpolate(&irs,anchor.azimuth,anchor.elevation);
+            assert_eq!(&response.0[..n],&anchor.dry[..n]);
+            assert_eq!(&response.1[..n],&anchor.dry[n..]);
+        }
+        let anchor = lower.irs.last().unwrap(); let n = anchor.dry.len()/2;
+        let pole = grid.interpolate(&irs,0.0,-90.0);
+        assert_eq!(&pole.0[..n],&anchor.dry[..n]);
+        assert_eq!(&pole.1[..n],&anchor.dry[n..]);
+        assert_eq!(pole.0,pole.1);
+        for az in (-180..180).step_by(5) { assert_eq!(pole, grid.interpolate(&irs,az as f64,-90.0)); }
+    }
+    #[test]
+    fn lower_support_is_mirrored_bounded_and_continuous_at_handover() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        for el in (-90..=-35).step_by(5) { for az in (5..180).step_by(15) {
+            let a=grid.interpolate(&irs,az as f64,el as f64);
+            let b=grid.interpolate(&irs,-(az as f64),el as f64);
+            assert!(a.0.iter().chain(&a.1).all(|v|v.is_finite()));
+            assert!((pair_energy(&a)-1.05677).abs()<0.001);
+            let err=relative_error(&a,&(b.1,b.0));
+            if err >= 0.002 {
+                let mut old=grid.clone(); old.lower_support=None;
+                let oa=old.interpolate(&irs,az as f64,el as f64);
+                let ob=old.interpolate(&irs,-(az as f64),el as f64);
+                // The preserved -30 ring already contains median-plane
+                // asymmetry. The transition must not worsen it; do not hide
+                // that inherited response by changing the approved anchors.
+                let inherited=relative_error(&oa,&(ob.1,ob.0));
+                assert!(err <= inherited+0.002,"transition mirror {az}/{el}: {err} > {inherited}");
+            }
+            if el <= -60 { assert!(err<0.002,"deep mirror {az}/{el}: {err}"); }
+        }}
+        for el in [-30.0,-60.0] { for az in (-180..180).step_by(15) {
+            let a=grid.interpolate(&irs,az as f64,el-0.0001);
+            let b=grid.interpolate(&irs,az as f64,el+0.0001);
+            assert!(relative_error(&a,&b)<0.002,"handover {az}/{el}");
+        }}
+    }
+    #[test]
+    fn historical_cell_boundaries_have_no_pivot_jump() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        // Includes all hemispheres, the azimuth wrap, lower handover, poles,
+        // and former dominant-neighbour ties (e.g. +/-105 at elevation 40).
+        for el in (-90..=90).step_by(5) {
+            for az in (-180..180).step_by(5) {
+                let (az, el) = (az as f64, el as f64);
+                for ((aaz, ael), (baz, bel)) in [
+                    ((az - 0.0001, el), (az + 0.0001, el)),
+                    (
+                        (az, (el - 0.0001).max(-90.0)),
+                        (az, (el + 0.0001).min(90.0)),
+                    ),
+                ] {
+                    let a = grid.interpolate(&irs, aaz, ael);
+                    let b = grid.interpolate(&irs, baz, bel);
+                    let error = relative_error(&a, &b);
+                    assert!(error < 0.002, "boundary {az}/{el}: {error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn historical_spectral_power_and_low_band_itd_follow_measurements() {
+        use rustfft::num_complex::Complex;
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let bank = grid.spectral_bank.as_ref().unwrap();
+        let response = |pcm: &[f32], bin: usize| -> Complex<f64> {
+            pcm.iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    Complex::from_polar(
+                        f64::from(v),
+                        -std::f64::consts::TAU * bin as f64 * i as f64 / bank.length as f64,
+                    )
+                })
+                .sum()
+        };
+        for el in (-85..=85).step_by(10) {
+            for az in (-175..180).step_by(10) {
+                let (support, bank, weights) = if el < -30 {
+                    let lower = grid.lower_support.as_ref().unwrap();
+                    (
+                        &lower.irs,
+                        lower.grid.spectral_bank.as_ref().unwrap(),
+                        lower.weights(&grid, az as f64, el as f64),
+                    )
+                } else {
+                    (&irs, bank, grid.weights(az as f64, el as f64))
+                };
+                let pair = grid.interpolate(&irs, az as f64, el as f64);
+                let h = [response(&pair.0, 21), response(&pair.1, 21)];
+                let phase: [f64; 2] = std::array::from_fn(|ear| {
+                    weights
+                        .iter()
+                        .map(|&(i, w)| bank.responses[i][ear][21].1 * w)
+                        .sum()
+                });
+                for ear in 0..2 {
+                    let phase_error = (h[ear].arg() - phase[ear] + std::f64::consts::PI)
+                        .rem_euclid(std::f64::consts::TAU)
+                        - std::f64::consts::PI;
+                    assert!(
+                        phase_error.abs() < std::f64::consts::TAU * 21.0 / bank.length as f64,
+                        "arrival {az}/{el}, ear {ear}: {phase_error}"
+                    );
+                }
+                let expected_itd_phase = phase[0] - phase[1];
+                let error = ((h[0] / h[1]).arg() - expected_itd_phase + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                // One sample at 492 Hz. This tests binaural phase, not independent
+                // ear energy only; a continuous but arbitrary delay is not a fix.
+                assert!(
+                    error.abs() < std::f64::consts::TAU * 21.0 / bank.length as f64,
+                    "ITD {az}/{el}: {error}"
+                );
+                for (ear, pcm) in [&pair.0, &pair.1].iter().enumerate() {
+                    let energy: f64 = pcm.iter().map(|&v| f64::from(v).powi(2)).sum();
+                    let target_energy: f64 = weights
+                        .iter()
+                        .map(|&(i, w)| {
+                            let n = support[i].dry.len() / 2;
+                            support[i].dry[ear * n..(ear + 1) * n]
+                                .iter()
+                                .map(|&v| f64::from(v).powi(2))
+                                .sum::<f64>()
+                                * w
+                        })
+                        .sum();
+                    assert!(
+                        (energy / target_energy - 1.0).abs() < 0.002,
+                        "energy {az}/{el}, ear {ear}: {}",
+                        energy / target_energy
+                    );
+                    let pre: f64 = pcm[..100].iter().map(|&v| f64::from(v).powi(2)).sum();
+                    assert!(
+                        pre / energy < 0.002,
+                        "pre-onset {az}/{el}, ear {ear}: {}",
+                        pre / energy
+                    );
+                    for bin in [21, 43, 64, 85, 128, 171] {
+                        let target: f64 = weights
+                            .iter()
+                            .map(|&(i, w)| bank.responses[i][ear][bin].0 * w)
+                            .sum();
+                        let db = 10.0 * (response(pcm, bin).norm_sqr() / target).log10();
+                        assert!(
+                            db.abs() < 0.3,
+                            "power {az}/{el}, ear {ear}, bin {bin}: {db}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "offline cached spectral interpolation benchmark; run in release mode"]
+    fn benchmark_historical_spectral_updates() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let started = std::time::Instant::now();
+        for i in 0..4000 {
+            let az = (i as f64 * 137.507764).rem_euclid(360.0) - 180.0;
+            let el = ((i % 179) as f64) - 89.0;
+            std::hint::black_box(grid.interpolate(&irs, az, el));
+        }
+        println!(
+            "cached historical spectral interpolation: {} us/update (4000 moving directions)",
+            started.elapsed().as_secs_f64() * 1e6 / 4000.0
+        );
+    }
+    #[test]
+    #[ignore = "offline effective filter dump; requires SDA_FILTER_AUDIT_REQUESTS/OUT"]
+    fn export_actual_direction_filters() {
+        use std::io::Write;
+        let requests: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(
+            std::env::var("SDA_FILTER_AUDIT_REQUESTS").unwrap()).unwrap()).unwrap();
+        let irs = if let Ok(path) = std::env::var("SDA_FILTER_AUDIT_MANIFEST") {
+            let path = std::path::PathBuf::from(path);
+            let root = path.parent().unwrap();
+            let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            manifest["positions"].as_array().unwrap().iter().map(|p| {
+                let bytes = std::fs::read(root.join(p["dry"].as_str().unwrap())).unwrap();
+                StereoIr { azimuth:p["azimuth"].as_f64().unwrap(), elevation:p["elevation"].as_f64().unwrap(),
+                    dry:bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(), wet:vec![] }
+            }).collect()
+        } else { restored_irs() };
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let root = std::path::PathBuf::from(std::env::var("SDA_FILTER_AUDIT_OUT").unwrap());
+        std::fs::create_dir_all(&root).unwrap();
+        let mut file = std::io::BufWriter::new(std::fs::File::create(root.join("filters.f32")).unwrap());
+        let mut rows = Vec::new();
+        for request in requests {
+            let az = request["az"].as_f64().unwrap(); let el = request["el"].as_f64().unwrap();
+            let (left,right) = grid.interpolate(&irs,az,el);
+            for x in left.iter().chain(&right) { file.write_all(&x.to_le_bytes()).unwrap(); }
+            let (support,weights) = if el < -30.0 && grid.lower_support.is_some() {
+                let lower = grid.lower_support.as_ref().unwrap();
+                (lower.irs.len(),lower.weights(&grid,az,el))
+            } else { (irs.len(),grid.weights(az,el)) };
+            rows.push(serde_json::json!({"az":az,"el":el,"tapCount":left.len(),"support":support,"weights":weights}));
+        }
+        std::fs::write(root.join("rows.json"),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+    }
+    #[test]
+    #[ignore = "offline interpolation boundary audit; requires SDA_BOUNDARY_AUDIT_OUT"]
+    fn audit_historical_cell_boundaries() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let mut rows = Vec::new();
+        for el in (-30..=85).step_by(5) {
+            for az in (-180..180).step_by(5) {
+                let a = grid.interpolate(&irs,az as f64-0.0001,el as f64);
+                let b = grid.interpolate(&irs,az as f64+0.0001,el as f64);
+                let err = relative_error(&a,&b);
+                let weights = grid.weights(az as f64,el as f64);
+                rows.push(serde_json::json!({"az":az,"el":el,"relativeWaveformJump":err,
+                    "weights":weights}));
+            }
+        }
+        std::fs::write(std::env::var("SDA_BOUNDARY_AUDIT_OUT").unwrap(),serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+    }
+    #[test]
+    #[ignore = "offline measured-grid interpolation audit; requires SDA_SPECTRAL_AUDIT_OUT"]
+    fn audit_interpolated_voice_band() {
+        let irs = restored_irs();
+        let grid = Grid::new_with_notch_guard(&irs, true).with_historical_interpolation(&irs, true);
+        let freq = [500.0, 750.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0];
+        let mut rows = Vec::new();
+        for el in (-90..=90).step_by(5) { for az in (-180..180).step_by(5) {
+            let (l,r) = grid.interpolate(&irs, az as f64, el as f64);
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()), "non-finite response at {az}/{el}");
+            assert!(l.iter().chain(&r).map(|v| f64::from(*v).powi(2)).sum::<f64>() > 1e-12, "silent response at {az}/{el}");
+            let (support, weights) = if el < -30 {
+                let lower = grid.lower_support.as_ref().unwrap();
+                (&lower.irs, lower.weights(&grid, az as f64, el as f64))
+            } else { (&irs, grid.weights(az as f64,el as f64)) };
+            let ratios: Vec<f64> = freq.iter().map(|&f| {
+                let target: f64 = weights.iter().map(|&(i,w)| {
+                    let ir = &support[i]; let n = ir.dry.len()/2;
+                    (power(&ir.dry[..n], f)+power(&ir.dry[n..], f))*w
+                }).sum();
+                10.0*((power(&l,f)+power(&r,f)).max(1e-20)/target.max(1e-20)).log10()
+            }).collect();
+            rows.push(serde_json::json!({"az":az,"el":el,"relativeBandDb":ratios}));
+        }}
+        let path=std::env::var("SDA_SPECTRAL_AUDIT_OUT").unwrap();
+        std::fs::write(path,serde_json::to_vec_pretty(&serde_json::json!({"frequencies":freq,"rows":rows})).unwrap()).unwrap();
     }
 }

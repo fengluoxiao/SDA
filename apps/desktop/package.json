@@ -1,6 +1,6 @@
 {
   "name": "@sda/desktop",
-  "version": "0.2.0",
+  "version": "0.9.0",
   "private": true,
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
@@ -42,6 +42,7 @@
       "personal-hrtf-library.cjs",
       "parametric-hrtf.mjs",
       "generated-hrtf.cjs",
+      "hrtf-policy.cjs",
       "personal-hrtf-worker.cjs",
       "preload.cjs",
       "cinema-profiles.cjs",

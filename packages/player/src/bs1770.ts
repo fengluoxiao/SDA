@@ -153,8 +153,11 @@ export class LoudnessMeter {
   /** Mean-square energy per completed 400 ms block (sum over weighted channels). */
   private readonly blockEnergy: number[] = [];
 
-  constructor(sampleRate: number, channelCount: number) {
-    this.weights = channelWeights(channelCount);
+  constructor(sampleRate: number, channelCount: number, weights?: readonly number[]) {
+    if (weights && (weights.length !== channelCount || weights.some(w => !Number.isFinite(w) || w < 0))) {
+      throw new Error("Invalid loudness channel weights");
+    }
+    this.weights = weights ? [...weights] : channelWeights(channelCount);
     this.filters = Array.from({ length: channelCount }, () => [highShelf(sampleRate), rlbHighPass(sampleRate)] as const);
     this.blockSamples = Math.round(sampleRate * 0.4);
     this.hopSamples = Math.round(sampleRate * 0.1);

@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use eac3::{
     inspect_access_unit, merge_core_with_dependent, BedChannel, CorePcmFrame, FrameType,
-    OamdElementKind, OamdPayload, ObjectPcmPushResult, JOC_QMF_LATENCY_SAMPLES,
+    OamdElementKind, OamdPayload, ObjectPcmPushResult,
 };
 
 use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline, ProgramLoudnessMetadata};
@@ -22,6 +22,7 @@ pub struct Eac3Pipeline {
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
     last_joc_layout: Option<JocPresentationLayout>,
+    reference: crate::loudness::SpeakerReference,
 }
 
 impl Eac3Pipeline {
@@ -35,6 +36,7 @@ impl Eac3Pipeline {
             total_samples: 0,
             declared: None,
             last_joc_layout: None,
+            reference: Default::default(),
         }
     }
 
@@ -62,7 +64,7 @@ impl Eac3Pipeline {
     ) {
         let sample_pos = self.total_samples;
         self.total_samples += core.samples_per_channel() as u64;
-        out.push_back(bed_frame(
+        let mut frame = bed_frame(
             "eac3",
             core,
             Vec::new(),
@@ -70,7 +72,9 @@ impl Eac3Pipeline {
             Some(loudness),
             sample_pos,
             &[],
-        ));
+        );
+        self.measure_reference(&mut frame);
+        out.push_back(frame);
     }
 
     fn process_frame(
@@ -160,7 +164,7 @@ impl Eac3Pipeline {
         }
     }
 
-    fn build_object_frame(
+    fn build_object_frame_inner(
         &mut self,
         result: ObjectPcmPushResult,
         loudness_override: Option<ProgramLoudnessMetadata>,
@@ -170,7 +174,11 @@ impl Eac3Pipeline {
         let sample_pos = self.total_samples;
         self.total_samples += pcm.samples_per_channel() as u64;
 
+        let processing_latency = pcm.processing_latency_samples() as u64;
         let core = pcm.core;
+        let compatibility_bed = Some(crate::CompatibilityBed::from_frame(bed_frame(
+            "eac3", core.clone(), Vec::new(), Vec::new(), Some(loudness.clone()), sample_pos, &[],
+        )));
         let raw_bed_labels = Self::raw_bed_labels(&core);
         let joc_slot_count = pcm.object_channels.len();
         let Some(slot_layout) = consistent_joc_slot_layout(
@@ -215,7 +223,7 @@ impl Eac3Pipeline {
             }
             let object_channels =
                 self.sparse_declare(dynamic_object_declarations(&slot_layout.slots, joc_channel_base));
-            return FrameData {
+            return FrameData { reference_loudness:None, compatibility_bed,
                 codec: "eac3",
                 sample_rate: core.sample_rate,
                 sample_pos,
@@ -257,14 +265,14 @@ impl Eac3Pipeline {
         let mut events = Vec::new();
         for (oamd, sample_offset) in &pcm.oamd_payloads {
             let event_sample_pos =
-                sample_pos + sample_offset.unwrap_or(0) as u64 + JOC_QMF_LATENCY_SAMPLES as u64;
+                sample_pos + sample_offset.unwrap_or(0) as u64 + processing_latency;
             events.extend(extract_events(oamd, event_sample_pos, dynamic_count));
         }
         events.sort_by_key(|event| event.sample_pos);
 
         let declarations = dynamic_object_declarations(&slot_layout.slots, joc_channel_base);
         let object_channels = self.sparse_declare(declarations);
-        FrameData {
+        FrameData { reference_loudness:None, compatibility_bed,
             codec: "eac3",
             sample_rate: core.sample_rate,
             sample_pos,
@@ -288,6 +296,22 @@ impl Eac3Pipeline {
         self.last_joc_layout.as_ref().filter(|layout| {
             layout.slots.len() == joc_slot_count && layout.has_lfe == has_lfe
         })
+    }
+
+    fn measure_reference(&mut self, frame: &mut FrameData) {
+        // Plain stereo keeps its established measurement/cache route.
+        if frame.compatibility_bed.is_none() && frame.labels == ["FrontLeft", "FrontRight"] && frame.object_channels.is_empty() && frame.events.is_empty() {return;}
+
+        let (pcm, labels) = frame.compatibility_bed.as_ref().map_or((frame.channels.as_slice(),frame.labels.as_slice()),|b|(b.channels.as_slice(),b.labels.as_slice()));
+        // The object programme is measured from its complete decoded core,
+        // not by treating reconstructed object slots as speaker channels.
+        if frame.compatibility_bed.is_some() || frame.object_channels.is_empty() && frame.events.is_empty() && !frame.labels.iter().any(|s|s.starts_with("Obj_")) {
+            frame.reference_loudness=self.reference.measure(pcm,labels,frame.sample_rate);
+        }
+    }
+    fn build_object_frame(&mut self,result:ObjectPcmPushResult,loudness:Option<ProgramLoudnessMetadata>)->FrameData {
+        let mut frame=self.build_object_frame_inner(result,loudness);
+        self.measure_reference(&mut frame);frame
     }
 
     fn sparse_declare(&mut self, current: Vec<ObjectChannelDecl>) -> Vec<ObjectChannelDecl> {
@@ -489,6 +513,7 @@ fn extract_events(
                 .to_string();
 
                 events.push(ObjectEvent {
+                    diffuse: 0.0,
                     id,
                     sample_pos: base_sample_pos + sample_offset,
                     has_pos,
@@ -535,7 +560,7 @@ fn bed_frame(
         channels.push(lfe);
         labels.push("LFE".to_string());
     }
-    FrameData {
+    FrameData { reference_loudness: None, compatibility_bed: None,
         codec,
         sample_rate: core.sample_rate,
         sample_pos,
@@ -553,6 +578,14 @@ fn bed_frame(
 mod tests {
     use super::*;
 
+    #[test]
+    fn object_programme_uses_compatible_speaker_reference_and_keeps_plain_stereo_policy() {
+        let mut f=FrameData{reference_loudness:None,compatibility_bed:None,codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.;1024];2],labels:vec!["FrontLeft".into(),"FrontRight".into()],raw_bed_labels:vec![],object_channels:vec![],events:vec![],program_loudness:None,ramp_duration:0};
+        let mut pipeline=Eac3Pipeline::new();pipeline.measure_reference(&mut f);assert!(f.reference_loudness.is_none());
+        f.compatibility_bed=Some(crate::CompatibilityBed{channels:f.channels.clone(),labels:f.labels.clone()});
+        f.channels=vec![vec![1.;1024]];f.labels=vec!["Obj_42".into()];f.object_channels=vec![ObjectChannelDecl{id:42,channel:0}];
+        pipeline.measure_reference(&mut f);let m=f.reference_loudness.as_ref().unwrap();assert!(m.integrated_lufs.is_none());assert!(m.true_peak_dbtp.is_none(),"unrendered object PCM must not contaminate the compatible reference");
+    }
     #[test]
     fn object_gain_preserves_db_and_silence() {
         assert_eq!(object_gain_db(Some(-3.0), false), -3);

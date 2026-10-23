@@ -1,5 +1,6 @@
+import { av3aStartupDecision, AV3A_STARTUP_MAX_SECONDS } from "./av3a-startup.js";
 import {connectPerformanceWorker} from "./performance-sink";
-import { isStereoMasterFrame } from "./stereo-master.js";
+import { isStereoMasterFrame, isAv3aBedFrame } from "./stereo-master.js";
 import { AlacStereoUpmixer, isAlacStereoFrame } from "./alac-stereo-upmix.js";
 import { masterBalanceGainDb } from "./bs1770.js";
 /**
@@ -284,6 +285,7 @@ export class SdaPlayer {
   readonly id = SdaPlayer.nextId++;
 
   private worker: Worker;
+  private objectRenderingEnabled = true;
   private renderer: SpatialRenderer | null = null;
   private readonly headPoseOptions: HeadPoseOptions | undefined;
   private readonly outputBackend: OutputBackend;
@@ -381,14 +383,20 @@ export class SdaPlayer {
   private mpeghMeasurement: FrameLoudness | null = null;
   private balanceAnalysisAbort = new AbortController();
   private nonStereoProgrammeSeen = false;
+  private decodedProgrammeReference = false;
   private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
   /** Live BS.1770-4 measurement from the decoder worker (metadata-less content). */
   private measuredLoudness: FrameLoudness | null = null;
+  /** First usable programme reference, independent of preroll batching and toggle timing. */
+  private startupMeasuredLoudness: FrameLoudness | null = null;
   private measuredLoudnessBlocks = 0;
   /** Measurement balance for this track has been scheduled (or found unnecessary). */
   private measuredLoudnessSettled = false;
+  private av3aStartupPrepared = false;
+  private stereoStartupEligible = false;
+  private mpeghReference = false;
   private balancedLoudnessBlocks = 0;
   /** Persisted measurement for the upcoming track, set by the UI per track. */
   private cachedMeasuredLufs: number | null = null;
@@ -579,9 +587,15 @@ export class SdaPlayer {
   }
 
   /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
+  setObjectRenderingEnabled(enabled: boolean): void {
+    this.objectRenderingEnabled = enabled;
+    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: enabled && this.outputMode !== "stereo" });
+  }
+
   setOutputMode(mode: OutputMode): void {
     if (!this.initArgs) return;
     this.initArgs.mode = mode;
+    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: this.objectRenderingEnabled && mode !== "stereo" });
     this.renderer?.setOutputMode(mode);
     this.emitHealth();
   }
@@ -991,7 +1005,7 @@ export class SdaPlayer {
   }
 
   /** Play a File/Blob (browser) end-to-end. */
-  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto"): Promise<void> {
+  async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto"): Promise<void> {
     if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
     await this.renderer?.ctx.resume();
     if (this.disposed) return;
@@ -1077,7 +1091,7 @@ export class SdaPlayer {
   async prepareFileStream(
     readRange: (offset: number, length: number) => Promise<Uint8Array>,
     size: number,
-    codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto",
+    codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto",
   ): Promise<void> {
     this.balanceAnalysisAbort.abort();
     const analysisAbort = this.balanceAnalysisAbort = new AbortController();
@@ -1092,12 +1106,12 @@ export class SdaPlayer {
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
-  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
+  open(codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto", bwfMetadata?: BwfMetadata): void {
     this.decodeChunkSize = bwfMetadata ? PCM_DECODE_CHUNK_SIZE : COMPRESSED_DECODE_CHUNK_SIZE;
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
+    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, objectRendering:this.objectRenderingEnabled && this.outputMode !== "stereo", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
@@ -1184,11 +1198,16 @@ export class SdaPlayer {
     this.scheduledProgramLoudnessGainDb = undefined;
     this.stereoBalanceEligible = false;
     this.nonStereoProgrammeSeen = false;
+    this.decodedProgrammeReference = false;
     this.setVolumeBalance(this.volumeBalanceEnabled);
     this.measuredLoudness = null;
+    this.startupMeasuredLoudness = null;
     this.measuredLoudnessBlocks = 0;
     this.balancedLoudnessBlocks = 0;
     this.measuredLoudnessSettled = false;
+    this.av3aStartupPrepared = false;
+    this.stereoStartupEligible = false;
+    this.mpeghReference = false;
     this.cachedMeasuredLufs = null;
     this.cachedMeasuredTruePeakDbtp = null;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -1257,6 +1276,40 @@ export class SdaPlayer {
     }
   }
 
+  private av3aStartupPending(): boolean {
+    return (this.trackCodec === "av3a" || this.stereoStartupEligible) && this.volumeBalanceEnabled && this.stereoBalanceEligible
+      && !this.playbackStarted && !this.av3aStartupPrepared && this.cachedMeasuredLufs == null;
+  }
+
+  private observeMeasuredLoudness(measurement: FrameLoudness): void {
+    this.measuredLoudness = measurement;
+    this.measuredLoudnessBlocks = measurement.blocks;
+    if (this.startupMeasuredLoudness == null && measurement.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+        && measurement.integratedLufs != null && Number.isFinite(measurement.integratedLufs)) {
+      this.startupMeasuredLoudness = { ...measurement };
+    }
+  }
+
+  private prepareAv3aStartup(): boolean {
+    if (!this.av3aStartupPending()) return true;
+    const reference = this.startupMeasuredLoudness ?? this.measuredLoudness;
+    const measurement = this.mpeghReference && reference
+      ? {...reference, truePeakDbtp: null} : reference;
+    const decision = av3aStartupDecision(measurement, this.aheadSeconds(), this.ended);
+    if (!decision.ready) return false;
+    this.av3aStartupPrepared = true;
+    if (decision.gainDb != null) {
+      const origin = this.startupOrigin ?? this.pcmQueue[0]?.samplePos ?? 0;
+      this.programLoudnessGainDb = decision.gainDb;
+      this.scheduledProgramLoudnessGainDb = decision.gainDb;
+      this.measuredLoudnessSettled = true;
+      this.balancedLoudnessBlocks = reference?.blocks ?? 0;
+      this.renderer?.setProgramLoudnessGainDb(decision.gainDb, origin);
+      this.setNativeProgramGainDb(decision.gainDb, origin);
+    }
+    return true;
+  }
+
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
     const effective = enabled && this.stereoBalanceEligible;
@@ -1269,6 +1322,7 @@ export class SdaPlayer {
     } catch (error) {
       console.warn(`[SDA] player#${this.id} native program-balance toggle failed:`, error);
     }
+    this.pumpPcm();
   }
 
   /** 码流携带的节目响度元数据（Dolby dialnorm），无元数据时为 null。 */
@@ -1279,7 +1333,7 @@ export class SdaPlayer {
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
   setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
-    if (this.mpeghMeasurement) return;
+    if (this.mpeghMeasurement || this.decodedProgrammeReference) return;
     this.cachedMeasuredTruePeakDbtp = truePeakDbtp;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
@@ -1580,9 +1634,10 @@ export class SdaPlayer {
       || this.nativeStartPending
       || this.startupOrigin === null
     ) return;
+    if (this.av3aStartupPending()) return;
     const startupAhead = this.outputBackend === "native-sidecar" && this.knownBedLabels.length >= 64 ? 1.5 : STARTUP_AHEAD_SECONDS;
     const required = Math.min(startupAhead, this.renderer?.maxBufferedSeconds() ?? startupAhead) * this.sampleRate;
-    if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
+    if (!force && !this.ended && this.startupAcceptedEnd - this.startupOrigin < required) return;
     if (this.pausedState) return;
     if (this.outputBackend === "native-sidecar") {
       const origin = this.startupOrigin;
@@ -1854,7 +1909,8 @@ export class SdaPlayer {
     // renderer 为 null（重建中）也要继续节流：queuedSamples 仍在累计，
     // 否则整个文件会在重建窗口内灌进 worker 解码（帧随即因 renderer 缺席堆积，
     // 缓冲爆炸）。disposed 时退出避免死等。
-    while (!this.disposed && epoch === this.decodeEpoch && this.aheadSeconds() > this.targetAheadSeconds()) {
+    while (!this.disposed && epoch === this.decodeEpoch && this.aheadSeconds() > (this.av3aStartupPending()
+      ? Math.max(this.targetAheadSeconds(), AV3A_STARTUP_MAX_SECONDS + 0.5) : this.targetAheadSeconds())) {
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -1931,12 +1987,13 @@ export class SdaPlayer {
       case "flushed":
         // Only a complete decode is a track measurement. A stopped intro must
         // never replace a complete cached value or freeze the next playback.
-        if (this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+        if (!this.decodedProgrammeReference && this.stereoBalanceEligible && this.measuredLoudnessBlocks >= MEASURED_LOUDNESS_MIN_BLOCKS
             && this.measuredLoudness?.integratedLufs != null
             && Number.isFinite(this.measuredLoudness.integratedLufs)) {
-          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp);
+          this.cb.onMeasuredLoudness?.(this.measuredLoudness.integratedLufs, this.measuredLoudness.truePeakDbtp ?? undefined);
         }
         this.ended = true;
+        this.pumpPcm();
         {let end=this.submittedEndSample();for(const frame of this.pcmQueue)end=Math.max(end,frame.samplePos+(frame.channels[0]?.length??0));void this.nativeRendererSink?.endAt?.(end);}
         this.startPlaybackIfReady(true);
         this.checkEnded();
@@ -1956,16 +2013,20 @@ export class SdaPlayer {
     // listening transform. Its single program gain must stay linked across
     // the generated bed, never be calculated separately per copied channel.
     const stereoMaster = isStereoMasterFrame(frame);
+    if (frame.referenceLoudness && !this.decodedProgrammeReference) {
+      this.decodedProgrammeReference=true;this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;this.measuredLoudnessSettled=false;this.startupMeasuredLoudness=null;
+    }
+    this.mpeghReference = frame.codec === "mpegh";
+    this.stereoStartupEligible = this.mpeghReference || stereoMaster || frame.referenceLoudness != null;
     const alacStereoSource = isAlacStereoFrame(frame);
     const upmixed = this.alacStereoUpmixEnabled && alacStereoSource;
     if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
-    if (!mpegh && !stereoMaster) this.nonStereoProgrammeSeen = true;
-    const eligible = !this.nonStereoProgrammeSeen && (mpegh
-      ? true
-      : stereoMaster);
+    const av3aBed = isAv3aBedFrame(frame) || frame.referenceLoudness != null;
+    if (!mpegh && !av3aBed && !stereoMaster) this.nonStereoProgrammeSeen = true;
+    const eligible = !this.nonStereoProgrammeSeen && (mpegh || av3aBed || stereoMaster);
     if (eligible !== this.stereoBalanceEligible) {
       this.stereoBalanceEligible = eligible;
       this.setVolumeBalance(this.volumeBalanceEnabled);
@@ -1975,8 +2036,7 @@ export class SdaPlayer {
 
     }
     if (frame.loudness) {
-      this.measuredLoudness = frame.loudness;
-      this.measuredLoudnessBlocks = frame.loudness.blocks;
+      this.observeMeasuredLoudness(frame.loudness);
 
     }
 
@@ -2020,6 +2080,7 @@ export class SdaPlayer {
   /** 把队列里的帧泵入 worklet 环形缓冲，保持喂入量领先播放头 ~TARGET 秒。 */
   private pumpPcm(): void {
     if ((this.outputBackend === "web-audio" && !this.renderer) || !this.initialRendererReady || this.recreatePending > 0) return;
+    if (!this.prepareAv3aStartup()) return;
     let outstandingSamples = [...this.inFlight.values()].reduce((sum, pending) => sum + pending.samples, 0);
     while (
       this.inFlight.size < MAX_IN_FLIGHT_BATCHES &&
@@ -2032,8 +2093,8 @@ export class SdaPlayer {
       const renderer = this.renderer;
       if (this.stereoBalanceEligible) {
         // MPEG-H reference loudness supplies one linked master gain.
-        // The upstream reference is quantized, not a true-peak measurement of
-        // SDA's object render: never use it to justify positive gain.
+        // The float master is a programme reference, not a true-peak
+        // measurement of SDA's HRTF output. Keep its correction nonpositive.
         const stereoMaster = frame.codec !== "mpegh";
         if (this.cachedMeasuredLufs != null && !this.measuredLoudnessSettled) {
           // A cached complete-track measurement applies from the first submitted sample.
@@ -2045,13 +2106,14 @@ export class SdaPlayer {
           this.measuredLoudnessSettled = true;
         } else if (this.cachedMeasuredLufs == null && frame.loudness
             && frame.loudness.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
-            && (!this.measuredLoudnessSettled || frame.loudness.blocks >= this.balancedLoudnessBlocks + 50)
+            && (!this.measuredLoudnessSettled || (!this.mpeghReference && frame.loudness.blocks >= this.balancedLoudnessBlocks + 50))
             && frame.loudness.integratedLufs != null && Number.isFinite(frame.loudness.integratedLufs)) {
           // Follow cumulative measurements at most every five seconds; a quiet
           // intro must not freeze the correction for the whole programme.
+          const reference = !this.measuredLoudnessSettled ? this.startupMeasuredLoudness ?? frame.loudness : frame.loudness;
           this.measuredLoudnessSettled = true;
-          this.balancedLoudnessBlocks = frame.loudness.blocks;
-          this.applyMeasuredLoudnessBalance(frame.loudness.integratedLufs, frame.samplePos, stereoMaster ? frame.loudness.truePeakDbtp ?? null : null);
+          this.balancedLoudnessBlocks = reference.blocks;
+          this.applyMeasuredLoudnessBalance(reference.integratedLufs!, frame.samplePos, stereoMaster ? reference.truePeakDbtp ?? null : null);
         }
       }
 

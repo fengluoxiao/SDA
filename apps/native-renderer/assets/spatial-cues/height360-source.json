@@ -1,0 +1,149 @@
+{
+  "archiveSha256": "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2",
+  "directions": [
+    {
+      "name": "FrontLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_45,0_ele_0,0.wav",
+      "sourceAzimuth": 45.0,
+      "sourceElevation": 0.0,
+      "angularErrorDegrees": 14.999999999999996,
+      "sourceOnset": 38,
+      "targetOnset": 100,
+      "pairGain": 0.8622032023981653,
+      "earlyToDirectDb": -17.509765637256965
+    },
+    {
+      "name": "FrontRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_315,0_ele_0,0.wav",
+      "sourceAzimuth": 315.0,
+      "sourceElevation": 0.0,
+      "angularErrorDegrees": 15.000000000000018,
+      "sourceOnset": 39,
+      "targetOnset": 95,
+      "pairGain": 0.81051779550667,
+      "earlyToDirectDb": -17.841602759044175
+    },
+    {
+      "name": "Center",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_0,0_ele_0,0.wav",
+      "sourceAzimuth": 0.0,
+      "sourceElevation": 0.0,
+      "angularErrorDegrees": 0.0,
+      "sourceOnset": 41,
+      "targetOnset": 101,
+      "pairGain": 0.7718571775004696,
+      "earlyToDirectDb": -18.219269789419286
+    },
+    {
+      "name": "SurroundLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_108,4_ele_-17,5.wav",
+      "sourceAzimuth": 108.4,
+      "sourceElevation": -17.5,
+      "angularErrorDegrees": 17.570711132875704,
+      "sourceOnset": 32,
+      "targetOnset": 99,
+      "pairGain": 0.6935003095184292,
+      "earlyToDirectDb": -18.644642931033534
+    },
+    {
+      "name": "SurroundRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_251,6_ele_-17,5.wav",
+      "sourceAzimuth": 251.6,
+      "sourceElevation": -17.5,
+      "angularErrorDegrees": 17.570711132875704,
+      "sourceOnset": 34,
+      "targetOnset": 99,
+      "pairGain": 0.7077280657527858,
+      "earlyToDirectDb": -18.14219998824546
+    },
+    {
+      "name": "UpperFrontLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_45,0_ele_35,3.wav",
+      "sourceAzimuth": 45.0,
+      "sourceElevation": 35.3,
+      "angularErrorDegrees": 13.677703252461663,
+      "sourceOnset": 34,
+      "targetOnset": 100,
+      "pairGain": 0.6786067638472775,
+      "earlyToDirectDb": -18.55736203543816
+    },
+    {
+      "name": "UpperFrontRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_315,0_ele_35,3.wav",
+      "sourceAzimuth": 315.0,
+      "sourceElevation": 35.3,
+      "angularErrorDegrees": 13.67770325246169,
+      "sourceOnset": 35,
+      "targetOnset": 103,
+      "pairGain": 0.797391057841412,
+      "earlyToDirectDb": -18.59181777570305
+    },
+    {
+      "name": "UpperCenter",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_0,0_ele_45,0.wav",
+      "sourceAzimuth": 0.0,
+      "sourceElevation": 45.0,
+      "angularErrorDegrees": 14.999999999999996,
+      "sourceOnset": 41,
+      "targetOnset": 106,
+      "pairGain": 0.8676331470834743,
+      "earlyToDirectDb": -17.045624932477818
+    },
+    {
+      "name": "UpperRearLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_108,4_ele_17,5.wav",
+      "sourceAzimuth": 108.4,
+      "sourceElevation": 17.5,
+      "angularErrorDegrees": 12.584961590981209,
+      "sourceOnset": 33,
+      "targetOnset": 95,
+      "pairGain": 0.735832278855131,
+      "earlyToDirectDb": -17.684388191398117
+    },
+    {
+      "name": "UpperRearRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_251,6_ele_17,5.wav",
+      "sourceAzimuth": 251.6,
+      "sourceElevation": 17.5,
+      "angularErrorDegrees": 12.584961590981209,
+      "sourceOnset": 30,
+      "targetOnset": 95,
+      "pairGain": 0.738830276713149,
+      "earlyToDirectDb": -16.758385480054972
+    },
+    {
+      "name": "LowerFrontLeft",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_18,4_ele_-17,5.wav",
+      "sourceAzimuth": 18.4,
+      "sourceElevation": -17.5,
+      "angularErrorDegrees": 11.262250821716144,
+      "sourceOnset": 41,
+      "targetOnset": 97,
+      "pairGain": 0.7220914458744129,
+      "earlyToDirectDb": -19.359183010073394
+    },
+    {
+      "name": "LowerFrontRight",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_341,6_ele_-17,5.wav",
+      "sourceAzimuth": 341.6,
+      "sourceElevation": -17.5,
+      "angularErrorDegrees": 11.262250821716144,
+      "sourceOnset": 43,
+      "targetOnset": 97,
+      "pairGain": 0.8140530445010664,
+      "earlyToDirectDb": -18.89005948782112
+    },
+    {
+      "name": "LowerCenter",
+      "source": "D1/D1_BRIR_WAV/48K_24bit/azi_341,6_ele_-17,5.wav",
+      "sourceAzimuth": 341.6,
+      "sourceElevation": -17.5,
+      "angularErrorDegrees": 17.592381796764464,
+      "sourceOnset": 43,
+      "targetOnset": 108,
+      "pairGain": 0.7915374919321856,
+      "earlyToDirectDb": -18.89005948782112
+    }
+  ],
+  "method": "Derived nearest-measurement residual, 5-80ms gate, unchanged direct, pair-common gain/delay. Not an exact measured 360RA room or approved previous profile."
+}

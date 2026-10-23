@@ -1,0 +1,351 @@
+{
+  "schemaVersion": 2,
+  "measuredResponseVersion": 3,
+  "sampleRate": 48000,
+  "subjectId": "apple-public-hrtfhq",
+  "completeSubject": true,
+  "azimuthConvention": "positive azimuth left, positive elevation up",
+  "processing": {
+    "calibrated": true,
+    "preserveMeasurements": true,
+    "historicalInterpolation": false,
+    "mobileDirectOnly": false,
+    "spatialCues": false,
+    "frontEarIsolation": false,
+    "dryTapLimit": 512,
+    "wetTapLimit": 512,
+    "runtimeEnergyNormalization": false,
+    "note": "Original calibrated measurement files preserved. Versioned shared clarity is applied to preparation copies only; no KU100 far-ear policy or runtime energy normalization."
+  },
+  "levelMatchDb": 0,
+  "positions": [
+    {
+      "azimuth": 0,
+      "elevation": 0,
+      "dry": "direction-000.f32",
+      "wet": "direction-000.f32",
+      "assets": {
+        "dry": {
+          "sha256": "d109aaccac570ca51575fb62febf0966be786b51f2638fdb084c8ce3ea64e470"
+        },
+        "wet": {
+          "sha256": "d109aaccac570ca51575fb62febf0966be786b51f2638fdb084c8ce3ea64e470"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-018.f32",
+        "sourceSha256": "001f1d37ea049cb503e8042b0e8289cb34abd586da451bdc9bf24f8fee4d0b93"
+      }
+    },
+    {
+      "azimuth": 30,
+      "elevation": 0,
+      "dry": "direction-001.f32",
+      "wet": "direction-001.f32",
+      "assets": {
+        "dry": {
+          "sha256": "f126852ffdc28d3a09a2b46dab437938c3233c2d2789c0b805c83c68a288b06d"
+        },
+        "wet": {
+          "sha256": "f126852ffdc28d3a09a2b46dab437938c3233c2d2789c0b805c83c68a288b06d"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-021.f32",
+        "sourceSha256": "99460df0d18901c18552655bae6f78e8d383ffcffcd64ccd3cf9f3c109c6d0b1"
+      }
+    },
+    {
+      "azimuth": -30,
+      "elevation": 0,
+      "dry": "direction-002.f32",
+      "wet": "direction-002.f32",
+      "assets": {
+        "dry": {
+          "sha256": "0490cef309447183703a50744e4f90d9b905b56f98f5e7aa09211c69be23f0c4"
+        },
+        "wet": {
+          "sha256": "0490cef309447183703a50744e4f90d9b905b56f98f5e7aa09211c69be23f0c4"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-015.f32",
+        "sourceSha256": "08136435538710d5bd7acefc3b090594c8fc7be26a84040786abdaa891a3acd0"
+      }
+    },
+    {
+      "azimuth": 60,
+      "elevation": 0,
+      "dry": "direction-003.f32",
+      "wet": "direction-003.f32",
+      "assets": {
+        "dry": {
+          "sha256": "1e67ebec19cdcedf025cb01dad3a885b6b72be549f0ecbf315615ef7eb95199d"
+        },
+        "wet": {
+          "sha256": "1e67ebec19cdcedf025cb01dad3a885b6b72be549f0ecbf315615ef7eb95199d"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-024.f32",
+        "sourceSha256": "d9cc83012d67a5edd7145d7f5a1e048e6a0c0e6fe94d374f6c9b063fc8b86fe6"
+      }
+    },
+    {
+      "azimuth": -60,
+      "elevation": 0,
+      "dry": "direction-004.f32",
+      "wet": "direction-004.f32",
+      "assets": {
+        "dry": {
+          "sha256": "68d541bbd84a2aa4c202e42e3d35f982acab04a5e754a36f81173307a09c8190"
+        },
+        "wet": {
+          "sha256": "68d541bbd84a2aa4c202e42e3d35f982acab04a5e754a36f81173307a09c8190"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-012.f32",
+        "sourceSha256": "6c176104e02bf1801351d6ee52f4e8cab915570a62145b8cb6ce3be6acc4114d"
+      }
+    },
+    {
+      "azimuth": 100,
+      "elevation": 0,
+      "dry": "direction-005.f32",
+      "wet": "direction-005.f32",
+      "assets": {
+        "dry": {
+          "sha256": "257c7e15116ea73fa8f1fed5e27536ddf0c7a69de31b4082ed5737e09581056c"
+        },
+        "wet": {
+          "sha256": "257c7e15116ea73fa8f1fed5e27536ddf0c7a69de31b4082ed5737e09581056c"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-028.f32",
+        "sourceSha256": "412f55023979661dc341c6a5dd1d7b85c4165d1fc6c0e242c7d9ba479c6e0231"
+      }
+    },
+    {
+      "azimuth": -100,
+      "elevation": 0,
+      "dry": "direction-006.f32",
+      "wet": "direction-006.f32",
+      "assets": {
+        "dry": {
+          "sha256": "173d5e00c6041207a4c9c7ef113b5f419fb2818c4d2ff77a0324b4f576b65222"
+        },
+        "wet": {
+          "sha256": "173d5e00c6041207a4c9c7ef113b5f419fb2818c4d2ff77a0324b4f576b65222"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-008.f32",
+        "sourceSha256": "2a2f370267e502d8d3b24519830848c4b2fa440e8559b8b0452c73adb0c21893"
+      }
+    },
+    {
+      "azimuth": 110,
+      "elevation": 0,
+      "dry": "direction-007.f32",
+      "wet": "direction-007.f32",
+      "assets": {
+        "dry": {
+          "sha256": "5e6338bd0c866f899d55b299700a3a69f5653e31e34fbf4295a9af6300800815"
+        },
+        "wet": {
+          "sha256": "5e6338bd0c866f899d55b299700a3a69f5653e31e34fbf4295a9af6300800815"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-029.f32",
+        "sourceSha256": "0b8a903d346560b8e001497258c5ca38bbf058f3af0cfd86883324798beb7d69"
+      }
+    },
+    {
+      "azimuth": -110,
+      "elevation": 0,
+      "dry": "direction-008.f32",
+      "wet": "direction-008.f32",
+      "assets": {
+        "dry": {
+          "sha256": "6b0334b2bdc17d24ac5f01f86657ceb67e3ca4fdf7cd1e34f71d9baff4235939"
+        },
+        "wet": {
+          "sha256": "6b0334b2bdc17d24ac5f01f86657ceb67e3ca4fdf7cd1e34f71d9baff4235939"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-007.f32",
+        "sourceSha256": "34a80f5f0836ab5432de268437e6d6767ac92a8cd52c1d8ef11751b7de2d301a"
+      }
+    },
+    {
+      "azimuth": 140,
+      "elevation": 0,
+      "dry": "direction-009.f32",
+      "wet": "direction-009.f32",
+      "assets": {
+        "dry": {
+          "sha256": "db67af1bec1a79434f1635260ce7edcd62f128c89db811502434500897c2e96e"
+        },
+        "wet": {
+          "sha256": "db67af1bec1a79434f1635260ce7edcd62f128c89db811502434500897c2e96e"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-032.f32",
+        "sourceSha256": "b8b78283b9668aee104826dd1cd4df5d010b8741f6d3694b073fa1b333cb1235"
+      }
+    },
+    {
+      "azimuth": -140,
+      "elevation": 0,
+      "dry": "direction-010.f32",
+      "wet": "direction-010.f32",
+      "assets": {
+        "dry": {
+          "sha256": "94c5df76676b4342ac6567472a9baefdbc2a169c546a4069f8f81de816892f17"
+        },
+        "wet": {
+          "sha256": "94c5df76676b4342ac6567472a9baefdbc2a169c546a4069f8f81de816892f17"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-004.f32",
+        "sourceSha256": "91809d2705470dd21732cf3f133763c88684f81196dbf2b898e35303f6bc1b13"
+      }
+    },
+    {
+      "azimuth": 45,
+      "elevation": 45,
+      "dry": "direction-011.f32",
+      "wet": "direction-011.f32",
+      "assets": {
+        "dry": {
+          "sha256": "b844c2073e7aacc397a14d97770fa308f0443140952e470da1fd0f2904be48fc"
+        },
+        "wet": {
+          "sha256": "b844c2073e7aacc397a14d97770fa308f0443140952e470da1fd0f2904be48fc"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-551.f32",
+        "sourceSha256": "a6558a488a7f262d1f0c8f75d62111c3b423c19d5f963db493bb1d51da621680"
+      }
+    },
+    {
+      "azimuth": -45,
+      "elevation": 45,
+      "dry": "direction-012.f32",
+      "wet": "direction-012.f32",
+      "assets": {
+        "dry": {
+          "sha256": "1ffb43f8ccecb7e695ff5a997c035d8dd3481ee66eea840c0da80df5b801401e"
+        },
+        "wet": {
+          "sha256": "1ffb43f8ccecb7e695ff5a997c035d8dd3481ee66eea840c0da80df5b801401e"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-552.f32",
+        "sourceSha256": "17d343763bd104355cac220d3c6f1cee2d24212ec17275dbbb77884e9c2cb89e"
+      }
+    },
+    {
+      "azimuth": 90,
+      "elevation": 45,
+      "dry": "direction-013.f32",
+      "wet": "direction-013.f32",
+      "assets": {
+        "dry": {
+          "sha256": "0a26dbecc835ce14b01316f523e8cc6d580b3c62eca1eff53a9ca3ac3a596e48"
+        },
+        "wet": {
+          "sha256": "0a26dbecc835ce14b01316f523e8cc6d580b3c62eca1eff53a9ca3ac3a596e48"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-045.f32",
+        "sourceSha256": "336d007c0598adde17ab25076ee43f8ff2c186b0c8bf7500f030f6ed07e1a5a7"
+      }
+    },
+    {
+      "azimuth": -90,
+      "elevation": 45,
+      "dry": "direction-014.f32",
+      "wet": "direction-014.f32",
+      "assets": {
+        "dry": {
+          "sha256": "7fa67b23d6e7640b8cf16e25748f2cb365b1afed4202a4154eb679f1951f3535"
+        },
+        "wet": {
+          "sha256": "7fa67b23d6e7640b8cf16e25748f2cb365b1afed4202a4154eb679f1951f3535"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-039.f32",
+        "sourceSha256": "d430274747e49abbbc611844aadcf572ab6a667b341f0763a090098917ecfbf0"
+      }
+    },
+    {
+      "azimuth": 135,
+      "elevation": 45,
+      "dry": "direction-015.f32",
+      "wet": "direction-015.f32",
+      "assets": {
+        "dry": {
+          "sha256": "89691220b11b48a77b3cf95f42a8e6a52ca8dc6ad4a05820c170f15862579c9d"
+        },
+        "wet": {
+          "sha256": "89691220b11b48a77b3cf95f42a8e6a52ca8dc6ad4a05820c170f15862579c9d"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-553.f32",
+        "sourceSha256": "1cbac458fcd77ef11e1096652f72817fbd620eb07bd0294331be5f7fc8fd8362"
+      }
+    },
+    {
+      "azimuth": -135,
+      "elevation": 45,
+      "dry": "direction-016.f32",
+      "wet": "direction-016.f32",
+      "assets": {
+        "dry": {
+          "sha256": "0e3eac25453dcab43fb5aa9b9352a23582c1d6b27f2074308e4eb4d77b61b3fb"
+        },
+        "wet": {
+          "sha256": "0e3eac25453dcab43fb5aa9b9352a23582c1d6b27f2074308e4eb4d77b61b3fb"
+        }
+      },
+      "measurement": {
+        "sourceFile": "direction-554.f32",
+        "sourceSha256": "4b279479e556e0651198eefae074acf779538a8025594f08d4df2273c739564d"
+      }
+    }
+  ],
+  "calibration": {
+    "method": "One common stereo gain and one common delay from synthetic frontal response; never fitted to music, sources or ears",
+    "commonGain": 0.8035689911221481,
+    "commonDelaySamples": 162,
+    "captureRun": 38924265715,
+    "captureCommit": "d808534c105f51a89c9db68e85a646c2b0424d6e",
+    "auditionReferenceRun": 38914469033,
+    "referenceSource": "Current shared front impulse including fixed shelf; matching Apple impulse under the same shelf",
+    "referenceMasterDb": -12,
+    "referenceAtmosDb": 2,
+    "referenceCommonOutputScalar": 0.25411082690296116,
+    "referenceRendererDelaySamples": 2288,
+    "sameOriginal551ResponseBytes": true
+  },
+  "source": {
+    "name": "Apple public AVAudioEnvironmentNode HRTFHQ response measurements",
+    "os": "Version 26.6.2 (Build 25G83)",
+    "reportSha256": "33d138ff966c40d901630c9902ee717d06e5e1b87477a21efb999c9dda0ee1bd"
+  },
+  "sharedRenderProfile": "apple-hrtfhq-542-v1",
+  "sharedDepthVersion": 1,
+  "sharedClarityVersion": 1
+}

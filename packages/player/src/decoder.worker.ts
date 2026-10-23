@@ -2,7 +2,7 @@ import {PerformanceSink} from "./performance-sink";
 const perf=new PerformanceSink("decoder");
 import {DecoderDiagnostics} from './decoder-diagnostics';
 const diagnostic=new DecoderDiagnostics(()=>!!perf.endpoint,value=>perf.diagnostic(value));
-import { isStereoMasterFrame } from "./stereo-master.js";
+import { isStereoMasterFrame, isAv3aBedFrame, AV3A_714_WEIGHTS } from "./stereo-master.js";
 /**
  * Decoder worker script — runs demux + wasm decode off the UI thread.
  * Loaded as a module worker; messages:
@@ -30,6 +30,7 @@ declare const self: {
 
 import {initIamf,isIamf,IamfDecoder} from "../../core/src/iamf.js";
 
+let objectRenderingEnabled = true;
 let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | null = null;
 let demuxer: Demuxer | null = null;
 let sniffPrefix = new Uint8Array(0);
@@ -37,6 +38,7 @@ let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
+let decodedReferenceLoudness: DecodedFrameData["referenceLoudness"];
 const lastObjectTargets = new Map<number, ObjectEvent>();
 let frameBatcher = new FrameBatcher(postFrame);
 let outputSampleRate: number | undefined;
@@ -70,19 +72,20 @@ function measureMpeghReference(channels:Float32Array[],sampleRate:number):void {
 }
 
 function postFrame(frame: DecodedFrameData): void {
-  if(frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
+  if (frame.referenceLoudness) {decodedReferenceLoudness=frame.referenceLoudness;frame.loudness=frame.referenceLoudness;}
+  if(!frame.referenceLoudness && frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
   // ALAC/stereo). Attached on a subset of frames to bound message overhead.
   // ADM tracks are unrendered sources, not BS.1770 speaker channels. Applying
   // channel-layout weights to 118 objects is both incorrect and very costly.
-  if (frame.codec !== "mpegh" && isStereoMasterFrame(frame) && frame.channels[0]?.length) {
-    loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length);
+  if (!frame.referenceLoudness && frame.codec !== "mpegh" && (isStereoMasterFrame(frame) || isAv3aBedFrame(frame)) && frame.channels[0]?.length) {
+    loudnessMeter ??= new LoudnessMeter(frame.sampleRate, frame.channels.length, isAv3aBedFrame(frame) ? AV3A_714_WEIGHTS : undefined);
     const at=perf.endpoint?performance.now():null;
     loudnessMeter.push(frame.channels);
-    if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,frame.samplesPerChannel);
+    if(at!==null)perf.record("decode.loudness",frame.codec,performance.now()-at,(frame.channels[0]?.length ?? 0));
     if (++loudnessPostCounter % 8 === 0) frame.loudness = loudnessMeter.integrated();
   }
-  perf.record("decode.output_audio",frame.codec,0,frame.samplesPerChannel/frame.sampleRate);
+  perf.record("decode.output_audio",frame.codec,0,(frame.channels[0]?.length ?? 0)/frame.sampleRate);
   if(perf.endpoint)perf.trace({type:"decodeTrace",sample:frame.samplePos,startedMs:perfDecodeStartMs,epoch,ids:frame.labels.map((label,i)=>label.startsWith("Obj_")?`obj:${label.slice(4)}`:`bed:${i}`)});
   post(
     { type: "frame", frame },
@@ -94,10 +97,11 @@ function drainFrames(): void {
   if (!decoder) return;
   while (true) {
     const perfStart=perf.endpoint?performance.now():null;
+    (decoder as unknown as { setObjectRendering?(enabled: boolean): void }).setObjectRendering?.(objectRenderingEnabled);
     const frame = decoder.nextFrame();
-    if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?frame.samplesPerChannel/frame.sampleRate:0);
+    if(perfStart!==null)perf.record("decode.next_frame",frame?.codec??"drain",performance.now()-perfStart,frame?(frame.channels[0]?.length ?? 0)/frame.sampleRate:0);
     if (!frame) break;
-    diagnostic.record('frame',{codec:frame.codec,sample:frame.samplePos,samples:frame.samplesPerChannel,rate:frame.sampleRate,channels:frame.labels.length,objects:frame.objectChannels.length,epoch});
+    diagnostic.record('frame',{codec:frame.codec,sample:frame.samplePos,samples:(frame.channels[0]?.length ?? 0),rate:frame.sampleRate,channels:frame.labels.length,objects:frame.objectChannels.length,epoch});
     acceptDecodedFrame(frame);
   }
   for (const message of decoder.drainErrors()) {
@@ -123,7 +127,7 @@ async function processDecodedFrames(): Promise<void> {
     const output = outputSampleRate && frame.sampleRate !== outputSampleRate
       ? await (resampler ??= new AlacResampler(outputSampleRate)).push(frame)
       : frame;
-    if(resampleStarted!==null)perf.record("decode.resample",frame.codec,performance.now()-resampleStarted,frame.samplesPerChannel);
+    if(resampleStarted!==null)perf.record("decode.resample",frame.codec,performance.now()-resampleStarted,(frame.channels[0]?.length ?? 0));
     if (output) {
       compactObjectEvents(output);
       frameBatcher.push(output);
@@ -163,7 +167,13 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       post({ type: "ready" });
       break;
     }
+    case "objectRendering": {
+      objectRenderingEnabled = msg.enabled !== false;
+      (decoder as unknown as { setObjectRendering?(enabled: boolean): void } | null)?.setObjectRendering?.(objectRenderingEnabled);
+      break;
+    }
     case "open": {
+      objectRenderingEnabled = msg.objectRendering !== false;
       drainDecoderCheckpoints();diagnostic.reset();diagnostic.record('open',{codec:msg.codec,epoch});
       decoder?.free();
       resampler?.destroy();
@@ -174,6 +184,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       frameBatcher = new FrameBatcher(postFrame);
       loudnessMeter = null;
       loudnessPostCounter = 0;
+      decodedReferenceLoudness = undefined;
       // Keep the existing immediate decoder for raw and legacy MP4 streams.
       // ALAC replaces it in onTrack before MP4Box starts delivering packets,
       // because only the discovered track carries its required codec cookie.
@@ -197,7 +208,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
         frameBatcher.push(tail);
       }
       frameBatcher.flush();
-      if (loudnessMeter) post({ type: "loudness-complete", loudness: loudnessMeter.integrated() });
+      if (decodedReferenceLoudness || loudnessMeter) post({ type: "loudness-complete", loudness: decodedReferenceLoudness ?? loudnessMeter!.integrated() });
       post({ type: "flushed" });
       break;
     }
@@ -229,9 +240,9 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
               decoder = new SdaDecoder("dts");
               decoderConfigurationError = null;
             }
-            if (t.codec === "ac-4") {
+            if (t.codec === "ac-4" || t.codec === "av3a") {
               decoder?.free();
-              decoder = new SdaDecoder("ac4");
+              decoder = new SdaDecoder(t.codec === "av3a" ? "av3a" : "ac4");
               decoderConfigurationError = null;
             }
             if (t.codec === "adm" || t.codec === "pcm") {
@@ -247,6 +258,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
                 decoderConfigurationError = null;
                 loudnessMeter = null;
                 loudnessPostCounter = 0;
+      decodedReferenceLoudness = undefined;
               } catch (error) {
                 decoder?.free();
                 decoder = null;

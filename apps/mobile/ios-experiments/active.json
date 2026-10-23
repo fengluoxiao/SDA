@@ -1,0 +1,28 @@
+{
+  "id": "apple-hrtfhq-542-v1",
+  "directionCount": 542,
+  "assetFamily": "assets/hrtf/apple-hrtfhq-v1",
+  "triangleSupportSha256": "564e49ec0818bc808146417e56c19bfbb2b2688cb9d0d1fe86651a897f9574eb",
+  "includedHorizontalDirectionSet": 218,
+  "enabledComponents": [
+    "measured-hrtfhq-responses",
+    "full-height-support",
+    "mirrored-triangle-interpolation",
+    "shared-object-convolution",
+    "head-tracking",
+    "aligned-pairwise-waveform",
+    "approved-legacy61-half-residual",
+    "approved-rear-balance",
+    "shared-legacy-midrange-clarity"
+  ],
+  "userFacingName": "HRTFHQ \u7a7a\u95f4\u6e32\u67d3",
+  "subjectId": "apple-public-hrtfhq",
+  "measuredResponseVersion": 3,
+  "historicalInterpolation": false,
+  "spatialCues": false,
+  "frontEarIsolation": false,
+  "renderRevision": "shared-hrtfhq-clarity-20261019",
+  "scope": "Approved HRTFHQ with half-strength retained61 residual, rear balance and common-ear midrange presentation; no per-song analysis.",
+  "sharedDepthVersion": 1,
+  "sharedClarityVersion": 1
+}

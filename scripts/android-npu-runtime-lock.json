@@ -1,0 +1,148 @@
+{
+  "version": "2.3.0",
+  "minimumSdk": 26,
+  "modernMinimumSdk": 31,
+  "abi": "arm64-v8a",
+  "files": {
+    "legacy/libhexagon_interface.so": {
+      "sha256": "1df2852172af6f7eb62e75f5ceda3764aa268ab498a983d10a41d41d67a1f67b",
+      "size": 85096,
+      "source": "https://storage.googleapis.com/mirror.tensorflow.org/storage.cloud.google.com/download.tensorflow.org/tflite/hexagon_nn_headers_v1.20.0.9.tgz"
+    },
+    "legacy/libhexagon_nn_skel.so": {
+      "sha256": "d07c410f8ce3f056bf89c1ac5129c7ddbd8e298d7fcf12ec0cb41a93cb077bcd",
+      "size": 1148720,
+      "source": "https://storage.googleapis.com/download.tensorflow.org/tflite/hexagon_nn_skel_v1.20.0.1.run"
+    },
+    "legacy/libhexagon_nn_skel_v65.so": {
+      "sha256": "cc89ae72987f7d402058289bbb22491b271ff08bdba8574a4aaff0d46dc02271",
+      "size": 1165168,
+      "source": "https://storage.googleapis.com/download.tensorflow.org/tflite/hexagon_nn_skel_v1.20.0.1.run"
+    },
+    "legacy/libhexagon_nn_skel_v66.so": {
+      "sha256": "7a80b19ec553ffd782fc3409c003e2430d841f006f7be97e48b1e04f2d841b31",
+      "size": 1161072,
+      "source": "https://storage.googleapis.com/download.tensorflow.org/tflite/hexagon_nn_skel_v1.20.0.1.run"
+    },
+    "common/libLiteRt.so": {
+      "sha256": "e5b7e3413a8b428b1a1b669f368cf613058868bc7b63e10d0b9c2e6ba55c97d8",
+      "size": 5629696,
+      "source": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert/2.3.0/litert-2.3.0.aar"
+    },
+    "common/libLiteRtCompilerPlugin_Qualcomm.so": {
+      "sha256": "51cff612134bc5d0e3b56db9c285f734218ae984f7201569d067b9e86b2b5ae2",
+      "size": 773288,
+      "source": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert-npu-runtime-qualcomm/2.3.0/litert-npu-runtime-qualcomm-2.3.0.aar"
+    },
+    "common/libLiteRtDispatch_Qualcomm.so": {
+      "sha256": "22e2d581555617c4a4dabc46ed74833829816e9cd13a0eea27dd4d2178049751",
+      "size": 445712,
+      "source": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert-npu-runtime-qualcomm/2.3.0/litert-npu-runtime-qualcomm-2.3.0.aar"
+    },
+    "common/libLiteRtCompilerPlugin_MediaTek.so": {
+      "sha256": "c51db22e0770b50031f6c4547826ad86ff17f45dcc8ee18a424110df5bcc89cf",
+      "size": 429120,
+      "source": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert-npu-runtime-mediatek/2.3.0/litert-npu-runtime-mediatek-2.3.0.aar"
+    },
+    "common/libLiteRtDispatch_MediaTek.so": {
+      "sha256": "62350e65cc6a2b9ab8cf9753740a22f1bd73327b7aec49a30f1214ebc0545b7f",
+      "size": 330968,
+      "source": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert-npu-runtime-mediatek/2.3.0/litert-npu-runtime-mediatek-2.3.0.aar"
+    },
+    "common/libQnnHtp.so": {
+      "sha256": "09e930b6af975bae23bcf6965ac2ce60f6b999aff37cb7eabe9b4d7c1bc3f264",
+      "size": 3978976,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpPrepare.so": {
+      "sha256": "fb2580518a1072b2d32324727c187b8c8fc77a385ded839666eb5bc66cd0ad94",
+      "size": 85026120,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV68Stub.so": {
+      "sha256": "1270be8956345e08001007a47af0b64bded0917bb7a8290fccb1936652778ebb",
+      "size": 783992,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV69Stub.so": {
+      "sha256": "b7063e6824cf46f9c06357a45ab8b33a12de7b08e61104f0ee4d1fb3ab8d46d6",
+      "size": 783992,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV73Stub.so": {
+      "sha256": "d4749b598dad6f57db495da1b9d6490d9b02dd88032b3bcfd9015728dd8bcc0a",
+      "size": 791424,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV75Stub.so": {
+      "sha256": "8be2bf0b0c6839d3e3bf9d8435e9b92d3fde0ccdea343d89960d75285ad28dab",
+      "size": 791424,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV79Stub.so": {
+      "sha256": "42c2e49965c66e4924fe509ba9547c4d04ad9e618c950dd8b1eaa84fab0d0ca9",
+      "size": 791424,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV81Stub.so": {
+      "sha256": "5b0ea1ef9929bdfcdda0d8dfc6ddffdc913fa2be02cf01a1574d644b2e0e0d38",
+      "size": 816184,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnIr.so": {
+      "sha256": "2e40d5c9e843a2c583f59abbd6a09ab2f95c14f599aaee9226eaf8b10df3bc4f",
+      "size": 1955504,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnSaver.so": {
+      "sha256": "632ee1cd0f7f0855086e9da989a4725e437108dd5bf504bc9bc6ac535a9bc1a8",
+      "size": 809568,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnSystem.so": {
+      "sha256": "b30bd9880dc48f6c5349185a7d45b326f8a064b10072e60094354fa23d9a2027",
+      "size": 4068024,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV68Skel.so": {
+      "sha256": "e97388c45019995caa75c3c5c963e1dcce50081045f0eb4486e6365cb2ad83d6",
+      "size": 10981860,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV69Skel.so": {
+      "sha256": "93c395d8fe86021708bb8ee8ed6926416794f6167e7a236e7d75d490ceb99e55",
+      "size": 12383460,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV73Skel.so": {
+      "sha256": "e3070ed8ec0fc24ea6e44ef54c599d43bcb1d95dd5aa377c0cd55d74f49fb2dd",
+      "size": 12375248,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV75Skel.so": {
+      "sha256": "2f6cfe5aae553d8ec88b6741bf8598a557375eacfc58056c2667fc43fda64f6a",
+      "size": 12358868,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV79Skel.so": {
+      "sha256": "238675526b2932efe83a66784937e310ce238e76577e16e9c4358e81711e5333",
+      "size": 12559528,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libQnnHtpV81Skel.so": {
+      "sha256": "9b7266e38aea818a1caeba5cbfebd9a8cbdba8f25dd82126d9b44ebf4fec4fa0",
+      "size": 13546372,
+      "source": "https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.50.0.260828/v2.50.0.260828.zip"
+    },
+    "common/libneuronusdk_adapter.mtk.so": {
+      "sha256": "95b8b0acd2324fa5052e76e176f8aa2f5a8c351090f1b284a27a307242a53a81",
+      "size": 13681472,
+      "source": "https://s3.ap-southeast-1.amazonaws.com/mediatek.neuropilot.com/66f2c33a-2005-4f0b-afef-2053c8654e4f.gz"
+    },
+    "common/libneuronusdk_adapter.so": {
+      "sha256": "a1537f7e487571257a0b45486d0b4ca04c08e49d951bfce34615d89bb17cb48e",
+      "size": 14390776,
+      "source": "https://s3.ap-southeast-1.amazonaws.com/mediatek.neuropilot.com/66f2c33a-2005-4f0b-afef-2053c8654e4f.gz"
+    }
+  }
+}

@@ -26,16 +26,20 @@ fn take_due<T>(events: &mut std::collections::BTreeMap<u64, T>, at: u64) -> Opti
 }
 
 #[derive(Clone, Copy)]
-pub struct Context {
+pub struct Context<'a> {
     pub layout: vbap::LayoutId,
     pub head: Option<[f32; 4]>,
     pub extent: source_extent::Settings,
     pub near_active: bool,
+    pub bundled_cues: bool,
     pub near_field: crate::near_field::Settings,
     pub sample_rate: u32,
     pub start: u64,
     pub offset: usize,
     pub bass_crossover_hz: Option<f32>,
+    pub(crate) spatial_layer: crate::spatial_layer::Settings,
+    pub(crate) auxiliary_gains: &'a [f32; convolution::DEFAULT_PARTITION],
+    pub(crate) temporal: crate::temporal_detail::Control<'a>,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -43,6 +47,7 @@ pub struct Frame {
     pub reflections: [f32; vbap::MAX_BUS_COUNT],
     pub diffuse: [f32; vbap::MAX_BUS_COUNT],
     pub bass: f32,
+    pub(crate) auxiliary_reference: crate::auxiliary_balance::Reference,
 }
 pub struct Buffer {
     pub frames: Vec<Frame>,
@@ -112,13 +117,13 @@ pub fn mix(
     sources: &mut [&mut Source],
     buffers: &mut Vec<Buffer>,
     controls: &[Controls],
-    ctx: Context,
+    ctx: Context<'_>,
     solver: &vbap::VbapSolver,
     activity: &[ObjectActivitySnapshot],
 ) -> usize {
     let pool = crate::direct_renderer::workers();
     let groups = crate::direct_renderer::worker_count_for_sources(sources.len())
-        .min(pool.map_or(1, |pool| pool.current_num_threads()))
+        .min(pool.map_or(1, |pool| pool.current_num_threads()+usize::from(crate::realtime::android_audio_policy())))
         .min(sources.len());
     let chunk = sources.len().div_ceil(groups);
     let used = sources.len().div_ceil(chunk);
@@ -131,7 +136,20 @@ pub fn mix(
             mix_source(source, buffer, controls, ctx, solver);
         }
     };
-    if let Some(pool) = pool {
+    if (cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) || crate::realtime::android_audio_policy()) && groups > 1 {
+        let pool = pool.expect("parallel groups require a pool");
+        let (local, remote) = sources.split_at_mut(chunk);
+        let (local_buffer, remote_buffers) = buffers.split_first_mut().unwrap();
+        crate::audio_executor::join_on(pool,
+            || process((local, local_buffer)),
+            || {
+                if crate::realtime::android_audio_policy() {
+                    remote.par_chunks_mut(chunk).zip(remote_buffers.par_iter_mut()).for_each(process);
+                } else {
+                    for pair in remote.chunks_mut(chunk).zip(remote_buffers.iter_mut()) { process(pair); }
+                }
+            });
+    } else if let Some(pool) = pool.filter(|_| groups > 1) {
         pool.install(|| {
             sources
                 .par_chunks_mut(chunk)
@@ -150,7 +168,7 @@ fn mix_source(
     source: &mut Source,
     buffer: &mut Buffer,
     controls: &[Controls],
-    ctx: Context,
+    ctx: Context<'_>,
     vbap: &vbap::VbapSolver,
 ) {
     let perf_id = if crate::performance::enabled() {
@@ -320,6 +338,10 @@ fn mix_source(
             * source.gain
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
+        sample *= ctx.spatial_layer.source_gain(source, at);
+        sample = crate::auxiliary_balance::process_source_detail(source, sample, at,
+            ctx.auxiliary_gains[block_index], &mut buffer.frames[block_index].auxiliary_reference,
+            ctx.sample_rate, vbap,Some(ctx.temporal),block_index);
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source
@@ -443,6 +465,7 @@ fn mix_source(
                 [1.0; 2]
             };
         }
+        let cue_gain = source.motion_cues.next(source.position, at, ctx.sample_rate, ctx.bundled_cues);
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
         if block_index == 0 {
@@ -471,7 +494,7 @@ fn mix_source(
             } else {
                 1.0
             };
-            input * proximity_dry
+            input * proximity_dry * cue_gain
         } else {
             0.0
         };

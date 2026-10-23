@@ -1,0 +1,1 @@
+Three complete frames (7,245 bytes) from the public AVS3 decoder regression fixture at https://github.com/1254qwer/avs3a-rust/blob/59213e47a27ffa6ba9211bac1f5a6c6fd182e9d8/tests/fixtures/test.av3a . Original full-stream SHA-256: e8648fe7a67fdafe94bf6d9653d510a6f6a574aa293a24e29e8fc257d6e01574. 7.1.4, 44.1 kHz, 832 kbps. Test input only; not a user music file or runtime sample.

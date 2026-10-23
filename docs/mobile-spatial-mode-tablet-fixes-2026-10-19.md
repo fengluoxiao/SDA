@@ -1,0 +1,64 @@
+# Mobile spatial mode and tablet fixes — 2026-10-19
+
+Scope: retain the user-approved B renderer recipe for all twelve listening materials. The user then deferred Android/iOS packaging, Git commit and push and requested source integration plus mobile fixes. No distributable app packaging, install, commit or push is part of this change. Release-profile host checks and Android Kotlin compilation are validation only.
+
+## Shared Off / Fixed / tracking transition
+
+The mobile facade previously selected FrameData.compatibility_bed while binaural output was off, discarded its object PCM/events and cleared the object snapshot caches. This applies to E-AC-3 and MPEG-H/360RA alike: the MPEG-H bridge already captures a codec stereo reference beside its object scene. Turning Fixed back on therefore operated on queued channel-only frames until newly decoded object frames caught up.
+
+The facade now keeps the object decoder and frame router independent of the final binaural bypass. A complete scene and a codec-provided Lo/Ro reference are handed to the render worker in one PCM transaction with one acknowledgement. Compatibility PCM is checked before scene mutation, included in queue memory accounting and retained in bounded absolute-clock rings. It is consumed at the same sample clock and cleared by a transport reset. Missing reference coverage uses the established speaker-projection fallback rather than stale reference samples.
+
+The full scene's filters, source identity, convolution histories and metadata stay warm while Off selects the compatible/plain output. A fully available compatible block also keeps the same object fast path active; formats without one retain the existing general-path plain projection. The later gain correction removes the separate object E-AC-3 presentation boost; decoder loudness metadata remains independent of final-output selection. There is no song-specific rule, fixed mute delay, decoder reopen or seek on a mode change. Existing partition latency, 5ms guard lookahead and short output crossfades remain.
+
+Object targets advance at the audio presentation clock while Off; only their visibility is suppressed. Fixed immediately obtains retained targets without waiting for a new codec metadata frame. Consumed events are pruned during feed so long Off sessions cannot accumulate an unbounded metadata queue.
+
+## Metadata typography and tablet cover blending
+
+Tablet and optional phone tablet-style playback reuse the existing gradient player's title font (20pt / 26pt line height) and artist font (19pt), keeping existing tablet spacing. The tablet-only 28pt title and 20pt artist overrides were removed. The user explicitly requested this synchronization without Expo Go review.
+
+The initial all-edge alpha mask was applied too broadly and was rejected by the user after device review. Portrait now returns the original contained image directly. In landscape only, native tablets and phones with the tablet-style option use the previously accepted right-edge Gaussian backdrop transition using the same 30% region and alpha ramp as the original landscape gradient. The foreground image remains intact. A measured tablet cover rectangle aligns the sampled backdrop to the full player surface; viewport-keyed geometry prevents stale rotation measurements. The backdrop includes its base color, blur opacity and tint before masking, so it matches the screen background at the edge. Missing mask support leaves the sharp image visible.
+
+## Head icon states
+
+Off uses the ordinary icon color. Fixed uses the selected theme accent and a stationary icon. Tracking keeps the theme accent and rotates only the icon using the real head-yaw state; Fixed and Off force its display angle to zero. iOS native menus, their fallback and Android native glass buttons receive the same state. Menu actions and 44pt touch targets are retained.
+
+## Verification
+
+- Shared renderer release-profile host suite: **350 passed, 0 failed, 35 ignored**. This includes Atmos/7.1.4 and Sony 360RA-13, serial and parallel object paths, queued PCM without new input, retained convolver identity, compatible-output samples, malformed transaction rejection, reset behavior, applied listener-yaw telemetry and lower-speaker HRTFHQ interpolation.
+- Mobile facade release-profile `ios-host` suite: **105 passed, 0 failed, 2 ignored**. A real MHAS fixture exercises the MPEG-H decoder, compatible reference and object snapshot through Off/Fixed. Unknown future codec labels cover uneven packets, delayed initial/intermediate reference delivery, release of multiple pending frames and non-Obj_ channel names.
+- Mobile TypeScript and `test-ios-ui`, `test-spatial-playback-modes`, `test-mobile-spatial-indicator`, `test-artwork-edge-blend`, `test-tablet-player-layout`, `test-ios-spatial-enhancement` checks passed. The obsolete all-edge mask and generator were removed by the later orientation correction.
+- `test-mobile-production-fixtures` passed using an in-memory production bundle; development preview/mock media are excluded.
+- Non-test release-profile `cargo check --lib` passed for the shared renderer and the mobile facade (`ios-host`, no default features). Existing compiler warnings remain.
+- Android native chrome `:sda-core:compileReleaseKotlin` passed (61 tasks, BUILD SUCCESSFUL). This compiles the controls only; no APK was assembled or installed.
+
+Host suites use an optimized profile with LTO disabled through task environment variables; repository Cargo profiles are unchanged. Test logs are under `C:/Users/legendshop/Downloads/SDA-hrtfhq-base-fusion-20261019/logs`. No physical-device listening or visual parity is claimed by host checks.
+
+## Shared contract for later object codecs
+
+The mode setter now only sends the final-output control, stores the selected mode and permits an immediate UI snapshot. It does not call a decoder, clear object metadata, or inspect a codec name. Decoder object rendering remains an independent capability and stays enabled for ordinary spatial Off/Fixed/tracking selection.
+
+A bounded PresentationQueue joins ordered compatible PCM chunks to the complete scene frames before routing them. This handles different packet sizes and delayed compatible output without altering object PCM, declarations, gain or metadata times. Only true input EOS may exhaust an auxiliary reference early, where silence fills its tail to the primary scene's duration. Startup publishes clocks of scene frames actually committed after joining, not the newest decoder packet. The common queue and router contain no E-AC-3/MPEG-H/AC-4/etc dispatch. Unit tests deliberately use an unknown future codec label and explicit declarations with non-Obj_ channel names, proving the behavior depends on the FrameData contract rather than a format list. A reference that starts late announces itself with labelled empty channels on the first scene frame; later absent chunks remain pending. This startup convention is documented in the common CompatibilityBed contract and covered by a regression test.
+
+The head icon also consumes renderer-applied listener yaw from the common native status; it is not driven solely by the manual yaw control or a simulated loop. No additional motion/audio commands are issued by UI polling.
+
+## Packaging follow-up authorized on 2026-10-19
+
+After accepting the source fixes, the user requested a Git push and iOS CI packaging, plus a locally built Android Universal APK. This supersedes the earlier packaging deferral for the follow-up delivery. Only the iOS workflow is dispatched; Android packaging runs locally for the project's supported arm64-v8a and x86_64 ABIs. The physical-device validation limitation above still applies.
+
+## HRTFHQ lower-speaker follow-up
+
+The user asked whether the historical 360RA bottom optimization was still present. Continuous object rendering is retained, and the selected 542-direction HRTFHQ bank has 181 measured lower-hemisphere directions down to -90 degrees. The historical KU100 61+13 lower-support bank remains exclusive to its original profile; it is not mixed into HRTFHQ.
+
+A separate omission was reproduced in speaker preparation: the 360RA-13 lower speakers are at azimuth 0/+30/-30, elevation -20 degrees, between the HRTFHQ bank's -15/-30 rings. With neither an exact dense measurement nor an exact companion measurement, speaker_ir previously fell back to the 17-direction companion bank (horizontal and upper measurements), returning a horizontal response. The before-fix regression failed with LowerFrontLeft reporting 0 instead of -20 degrees.
+
+The common speaker fallback now interpolates the selected HRTFHQ field for missing lower directions when its measurement range covers that elevation. Exact anchors keep their existing priority; upper/horizontal fallback, the approved B gains/shelf, object metadata and the historical KU100 policy remain unchanged. There is no codec/layout whitelist in this fallback. The regression exercises all three 360RA lower speakers plus the two missing 22.2 lower anchors, compares actual mixed-speaker output to the selected interpolator and verifies the accepted upper fallback remains intact. Packaging is refreshed from the commit containing this correction.
+
+The complete renderer host suite after the lower-speaker correction passed: **350 passed, 0 failed, 35 ignored**.
+
+## User correction after device review
+
+The user clarified that Gaussian edge blending belongs to landscape tablet/phone playback, not portrait. The rejected four-edge alpha fade is removed; the original portrait image is returned without a wrapper, mask or overlay. Landscape reuses PhoneLandscapeBlur, keeps the image geometry and blends only its right edge. Regression tests check portrait identity, both native platforms, missing native managers, nested cover offsets and exact backdrop alignment.
+
+Settings and head actions now use the same 22pt native Image sizing, 44pt host and fallback font size. The independent object-bearing E-AC-3 +2 dB stage is removed completely (including its envelope and reset state). The accepted spatial-only +2 dB base and +4 dB auxiliary lift still produce the intended net +2/+6 endpoints. Decoder dialogue/programme loudness metadata is unchanged. A PCM regression compares object and bed scenes across E-AC-3/MPEG-H in both spatial and plain modes and verifies no codec-only boost; the full renderer suite passes 350 tests, with 35 intentionally ignored.
+
+The user further clarified that landscape Gaussian blur must cover part of the sharp image just like the gradient. Both now share the same rightmost-30% geometry helper and existing alpha ramp, rather than the older 8%/32pt cap. The opaque base/blur/tint composition makes the final edge match the actual background. Portrait still returns the untouched image.

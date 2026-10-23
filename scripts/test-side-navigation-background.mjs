@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFileSync,existsSync} from 'node:fs';
+const source=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');
+assert.doesNotMatch(source,/IOSSideNavigationBackground|nativeRightEdgeActive|hasNativeRightScrollEdge|IOSRightScrollEdge/);
+assert.match(source,/testID="landscape-side-actions-dock"/);assert.match(source,/testID="landscape-side-tab-dock"/);
+assert.equal(existsSync('apps/mobile/src/IOSSideNavigationBackground.tsx'),false);
+assert.equal(existsSync('apps/mobile/src/IOSRightScrollEdge.tsx'),false);
+assert.equal(JSON.parse(readFileSync('apps/mobile/modules/sda-core/expo-module.config.json','utf8')).apple.modules.includes('SdaScrollEdgeModule'),false);
+assert.equal(JSON.parse(readFileSync('apps/mobile/package.json','utf8')).dependencies['expo-blur'],undefined);
+const actionRow=source.slice(source.indexOf('const actionRow ='),source.indexOf('const cover ='));
+assert.doesNotMatch(actionRow,/hasNativeIOSChrome|IOSAction/,'library rows retain Expo Go/release parity');
+assert.doesNotMatch(readFileSync('apps/mobile/src/SideNavigationRail.tsx','utf8'),/IOSSideRailBackdrop|expo-blur/);
+assert.match(readFileSync('apps/mobile/src/IOSNativePage.tsx','utf8'),/translucent: true/,'native title bars are unchanged');
+console.log('Side regions: no backdrop overlay or release-only switch; existing capsules, native headers and shared rows retained.');

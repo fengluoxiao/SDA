@@ -47,7 +47,7 @@ fn frame(
     channels: Vec<Vec<f32>>,
     labels: Vec<String>,
 ) -> FrameData {
-    FrameData {
+    FrameData { reference_loudness: None, compatibility_bed: None,
         codec: "dts",
         sample_rate,
         sample_pos,
@@ -175,6 +175,7 @@ fn render_hd(
                 .map(|s| s.role)
             {
                 events.push(ObjectEvent {
+            diffuse: 0.0,
                     id,
                     sample_pos,
                     has_pos: true,

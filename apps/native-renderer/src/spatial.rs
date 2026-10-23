@@ -102,6 +102,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn left_right_and_front_back_directions_are_distinct_and_pose_rotates_world_front() {
+        let left = adm_to_spherical([-1.0, 0.0, 0.0]);
+        let right = adm_to_spherical([1.0, 0.0, 0.0]);
+        let front = adm_to_spherical([0.0, 1.0, 0.0]);
+        let back = adm_to_spherical([0.0, -1.0, 0.0]);
+        assert!((left.azimuth - 90.0).abs() < 1e-5);
+        assert!((right.azimuth + 90.0).abs() < 1e-5);
+        assert!(front.azimuth.abs() < 1e-5);
+        assert!((back.azimuth.abs() - 180.0).abs() < 1e-5);
+
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let head_left = head_relative_adm([0.0, 1.0, 0.0], Some([0.0, 0.0, half, half]));
+        assert!(head_left[0] > 0.99 && head_left[1].abs() < 1e-4,
+            "turning head left makes a world-front source head-relative right: {head_left:?}");
+    }
+
+    #[test]
     fn head_rotation_preserves_height_and_world_locked_direction() {
         for degrees in [-90.0_f32, -45.0, 0.0, 45.0, 90.0] {
             let angle = degrees.to_radians();

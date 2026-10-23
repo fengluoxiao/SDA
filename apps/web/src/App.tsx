@@ -1,12 +1,14 @@
+import { readObjectRendering, enableObjectRenderingDefaults } from "./object-rendering-preference";
+import sharedRenderProfile from "../../mobile/ios-experiments/active.json";
+import {migrateSharedHrtf, playbackHrtfSet, SHARED_HRTF_PROFILE} from "./shared-hrtf-profile";
 import {LiveObjectView, createObjectViewStore} from "./components/LiveObjectView";
 import {formatAutoLayout, resolveAutoLayout, uses360RaLowerLayer} from "./auto-layout";
-import ObjectRenderingStatus from "./components/ObjectRenderingStatus";
 import {GlassRefraction} from "./components/GlassRefraction";
 import SheetHeading from "./components/SheetHeading";
 import { readAhead } from "./read-ahead";
 import { Slider } from "./components/Slider";
 import { readPlaybackMode, PLAYBACK_MODE_KEY, nextPlaylistItemId, adjacentPlaylistItemId, type PlaybackMode } from "./playbackOrder";
-import DirectionalHrtfPanel, {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
+import {readDirectionalHrtf} from "./components/DirectionalHrtfPanel";
 import NearFieldPanel, {readNearField} from "./components/NearFieldPanel";
 import SourceExtentPanel, {readSourceExtent} from "./components/SourceExtentPanel";
 import type { HrtfTestVisual, PhrtfParameters } from "./phrtf";
@@ -21,7 +23,7 @@ import {createHardwarePreset} from "./hardware-presets";
 import {alignMonitorToRoom} from "./monitor-alignment";
 import type {RemoteTools} from "./remote-session";
 import {useRemoteSession} from "./remote-session";
-import {ROOM_LISTENING_LEVELS} from "./room-listening";
+import {roomListeningSettings} from "./room-listening";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WindowTitlebar } from "./components/WindowTitlebar";
 import { MediaPicker } from "./components/MediaPicker";
@@ -201,14 +203,16 @@ function persistBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnos
  * 不把 KU100 与 D2/Hx 的头部、耳道或房间响应做频段拼接。 */
 type BinauralHead = string;
 const BINAURAL_HEAD_STORAGE_KEY = "sda-binaural-head";
+const sharedHrtfActive = sharedRenderProfile.id === SHARED_HRTF_PROFILE;
+const defaultBinauralHead = sharedHrtfActive ? "hrtfhq" : "ku100";
 /** 完整 HRTF 档案 id（KU100、D2 或 H3–H20 受试者）。 */
-const BINAURAL_HEAD_IDS = ["ku100", "d2", ...Array.from({ length: 18 }, (_, i) => `h${i + 3}`)] as const;
+const BINAURAL_HEAD_IDS = [...(sharedHrtfActive ? ["hrtfhq"] : []), "ku100", "d2", ...Array.from({ length: 18 }, (_, i) => `h${i + 3}`)] as const;
 function readBinauralHead(): BinauralHead {
   try {
     const v = localStorage.getItem(BINAURAL_HEAD_STORAGE_KEY);
-    return v && ((BINAURAL_HEAD_IDS as readonly string[]).includes(v) || /^personal-[a-f0-9]{64}$/.test(v)) ? v : "ku100";
+    return v && ((BINAURAL_HEAD_IDS as readonly string[]).includes(v) || /^personal-[a-f0-9]{64}$/.test(v)) ? v : defaultBinauralHead;
   } catch {
-    return "ku100";
+    return defaultBinauralHead;
   }
 }
 /** 每个完整测量 subject 直接选择自己的 HRTF 集；禁止加载旧的 KU100+耳廓 hybrid。 */
@@ -217,10 +221,10 @@ function readKu100Calibration(): boolean {
   try { return localStorage.getItem(KU100_CALIBRATION_KEY) !== "0"; } catch { return true; }
 }
 function binauralHeadBaseUrl(head: BinauralHead, calibrated = readKu100Calibration()): string {
-  return assetUrl(head === "ku100" ? (calibrated ? "hrtf" : "hrtf-raw") : `hrtf-${head}`);
+  return assetUrl(playbackHrtfSet(head, false, calibrated, sharedHrtfActive));
 }
 function nativeHrtfSetName(head: BinauralHead, dense = readDenseBinauralObjects(), calibrated = readKu100Calibration()): string {
-  return head === "ku100" ? `${dense ? "hrtf-dense" : "hrtf"}${calibrated ? "" : "-raw"}` : `hrtf-${head}${dense && !head.startsWith("personal-") ? "-dense" : ""}`;
+  return playbackHrtfSet(head, dense, calibrated, sharedHrtfActive);
 }
 type StereoRenderMode = "original" | "dry" | "room";
 function readStereoRenderMode(): StereoRenderMode {
@@ -313,12 +317,14 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
 function measuredLoudnessStorageKey(info: { codec: string; channels: number; sampleRate: number }, source: PlaybackSource): string {
   const identity = source.kind === "path" ? `${source.path}:${source.version ?? "unknown"}` : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
   // v6 replaces a sample-peak cache with the BS.1770-style true-peak estimate.
-  return `sda-measured-lufs-v6:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
+  const version = ["mpegh","mha1","mhm1","mhas"].includes(info.codec) ? "v7-mpegh-prelimit" : "v6";
+  return `sda-measured-lufs-${version}:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
 }
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
-  { id: "ku100", label: "KU100", description: "Neumann KU100 完整校准 HRTF/BRIR（默认）" },
+  ...(sharedHrtfActive ? [{id: "hrtfhq", label: "HRTFHQ（默认）", description: "四个平台共用的 HRTFHQ 响应，支持逐对象定位与头部追踪"}] : []),
+  { id: "ku100", label: "KU100", description: "Neumann KU100 完整校准 HRTF/BRIR" },
   { id: "d2", label: "D2 假人头", description: "SADIE II D2 完整单一测量 HRTF/BRIR" },
   ...Array.from({ length: 18 }, (_, i) => ({
     id: `h${i + 3}` as BinauralHead,
@@ -328,6 +334,7 @@ const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; descripti
 ];
 
 try {
+  if (window.sdaDesktop) migrateSharedHrtf(localStorage, sharedRenderProfile.id);
   localStorage.removeItem("sda-layout-level-compensation-enabled");
 } catch {
   // Private-mode failures must not prevent app startup.
@@ -356,6 +363,7 @@ export function App() {
   const retiringPlayerRef = useRef<SdaPlayer | null>(null);
   const [playerReady, setPlayerReady] = useState<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
+  const outputLayoutRestore = useRef<LayoutId | "auto" | null>(null);
   /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
   const [layoutId, setLayoutId] = useState<LayoutId | "auto">("auto");
   /** Latest requested layout, including a selection made while sidecar/HRTF
@@ -467,8 +475,7 @@ export function App() {
   const currentCodecRef = useRef<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("output");
-  const [directObjectHrtf, setDirectObjectHrtf] = useState(() => localStorage.getItem("sda-direct-object-hrtf") === "true");
-  const [directObjectHrtfBusy, setDirectObjectHrtfBusy] = useState(false);
+  const [directObjectHrtf, setDirectObjectHrtf] = useState(readObjectRendering);
   const [stereoRenderMode, setStereoRenderMode] = useState(readStereoRenderMode);
   const [stereoRenderBusy, setStereoRenderBusy] = useState(false);
   const [alacStereoUpmixEnabled, setAlacStereoUpmixEnabled] = useState(readAlacStereoUpmixEnabled);
@@ -592,9 +599,10 @@ export function App() {
       if (desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
       if (desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
       if (desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
-      if (!await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+      if (!await desktop.nativeRendererObjectRendering?.(readObjectRendering())) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
+      if (desktop.nativeRendererBinauralEnabled && !await desktop.nativeRendererBinauralEnabled(m !== "stereo")) throw new Error("空间音频输出模式未被接受");
       if (!hrtfQueued) throw new Error("native renderer could not queue the selected complete HRTF set");
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       // Configuration is ready; only this replacement may submit new sources.
@@ -865,10 +873,10 @@ export function App() {
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
           // Feed the persisted measurement so balance applies from sample 0.
-          const key = measuredLoudnessStorageKey(t, source);
+          const key = t.codec === "av3a" ? null : measuredLoudnessStorageKey(t, source);
           measuredLoudnessKeyRef.current = key;
           try {
-            const stored = localStorage.getItem(key);
+            const stored = key ? localStorage.getItem(key) : null;
             const cached = stored ? JSON.parse(stored) : null;
             createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.truePeakDbtp) ? cached.truePeakDbtp : null);
           } catch {
@@ -990,6 +998,7 @@ export function App() {
         },
       });
       createdPlayer = player;
+      player.setObjectRenderingEnabled(readObjectRendering());
       player.setAlacStereoUpmixEnabled(alacStereoUpmixEnabledRef.current);
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = (labels: readonly string[], hasDynamics: boolean, codec?: string) => {
@@ -1125,7 +1134,9 @@ export function App() {
       // storing every sample here re-rendered the entire Three.js interface
       // ten times per second and competed with remote-desktop video encoding.
       nativeRendererRunningRef.current = next.running === true;
-      if (Number.isSafeInteger(next.samplePos)) nativeRendererSampleRef.current = next.samplePos;
+      if (typeof next.samplePos === "number" && Number.isSafeInteger(next.samplePos)) {
+        nativeRendererSampleRef.current = next.samplePos;
+      }
       nativeRemoteSyncRef.current = next.remoteSynchronized === true;
       nativeRemoteWaitingRef.current = next.remoteSyncWaiting === true;
       setNativeRendererStatus((previous) => {
@@ -1246,7 +1257,8 @@ export function App() {
       if (next.running && desktop.nativeRendererDirectionalHrtf && !await desktop.nativeRendererDirectionalHrtf(readDirectionalHrtf())) throw new Error("连续方向设置恢复失败");
       if (next.running && desktop.nativeRendererNearField && !await desktop.nativeRendererNearField(readNearField())) throw new Error("近场设置恢复失败");
       if (next.running && desktop.nativeRendererSourceExtent && !await desktop.nativeRendererSourceExtent(readSourceExtent())) throw new Error("声源范围设置恢复失败");
-      if (next.running && !await desktop.nativeRendererObjectHrtf?.(localStorage.getItem("sda-direct-object-hrtf") === "true")) {
+      if (next.running && desktop.nativeRendererBinauralEnabled && !await desktop.nativeRendererBinauralEnabled(playerRef.current?.outputMode !== "stereo")) throw new Error("输出模式恢复失败");
+      if (next.running && !await desktop.nativeRendererObjectRendering?.(readObjectRendering())) {
         throw new Error("逐对象 HRTF 设置未被原生渲染器接受");
       }
       setNativeRendererStatus(next);
@@ -1258,23 +1270,6 @@ export function App() {
     }
   }, [nativeRendererStatus?.running]);
 
-  const changeDirectObjectHrtf = async (enabled: boolean) => {
-    if (directObjectHrtfBusy) return;
-    setDirectObjectHrtfBusy(true);
-    try {
-      const desktop = window.sdaDesktop;
-      const status = await desktop?.getNativeRendererStatus?.();
-      if (status?.running && !await desktop?.nativeRendererObjectHrtf?.(enabled)) {
-        throw new Error("原生渲染器未接受设置");
-      }
-      localStorage.setItem("sda-direct-object-hrtf", String(enabled));
-      setDirectObjectHrtf(enabled);
-    } catch (error) {
-      setErrors((prev) => [...prev, `逐对象 HRTF 切换失败: ${String(error)}`]);
-    } finally {
-      setDirectObjectHrtfBusy(false);
-    }
-  };
   const changeStereoRenderMode = async (next: StereoRenderMode) => {
     if (stereoRenderBusy) return;
     setStereoRenderBusy(true);
@@ -1617,14 +1612,30 @@ export function App() {
   }, [playing, paused, play]);
 
   const changeOutputMode = useCallback((next: OutputMode) => {
-    playerRef.current?.setOutputMode(next);
-    if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
-      layoutIdRef.current = "2.0";
-      setLayoutId("2.0");
-      setDetectedLayout(null);
-      playerRef.current?.setLayout(LAYOUTS["2.0"]);
-    }
-    setMode(next);
+    const apply = async () => {
+      const api = window.sdaDesktop;
+      if ((await api?.getNativeRendererStatus?.())?.running && !await api?.nativeRendererBinauralEnabled?.(next !== "stereo")) {
+        setErrors(previous => [...previous, "原生渲染器未接受输出模式，请更新后重试"]);
+        return;
+      }
+      if (next === "stereo" && outputLayoutRestore.current === null) outputLayoutRestore.current = layoutId;
+      playerRef.current?.setOutputMode(next);
+      if (next === "stereo" && layoutId !== "2.0" && layoutId !== "2.1") {
+        layoutIdRef.current = "2.0";
+        setLayoutId("2.0");
+        setDetectedLayout(null);
+        playerRef.current?.setLayout(LAYOUTS["2.0"]);
+      } else if (next !== "stereo" && outputLayoutRestore.current !== null) {
+        const restore = outputLayoutRestore.current;
+        outputLayoutRestore.current = null;
+        layoutIdRef.current = restore;
+        setLayoutId(restore);
+        if (restore === "auto") playerRef.current?.setAutoLayout();
+        else playerRef.current?.setLayout(LAYOUTS[restore]);
+      }
+      setMode(next);
+    };
+    void apply().catch(error => setErrors(previous => [...previous, String(error)]));
   }, [layoutId]);
 
   const changeLayout = useCallback((next: LayoutId | "auto") => {
@@ -1688,7 +1699,7 @@ export function App() {
     const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
     if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead,effectiveDense,ku100Calibration),.04))throw new Error("HRTF 未就绪");
     const current=await api.getCinemaSettings();
-    if(!await api.nativeRendererCinema?.({...current.settings,enabled:true,reflectionMode:"full",...ROOM_LISTENING_LEVELS,speakers:{}},roomId))throw new Error("房间档案未被接受");
+    if(!await api.nativeRendererCinema?.(roomListeningSettings(current.settings),roomId))throw new Error("房间档案未被接受");
     setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
   };
   const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full")=>{
@@ -1772,7 +1783,7 @@ export function App() {
     if (!(BINAURAL_HEAD_IDS as readonly string[]).includes(next) && !/^personal-[a-f0-9]{64}$/.test(next)) throw new Error("未知 HRTF 档案");
 
     const previous = binauralHead;
-    const nextManualDense = !next.startsWith("personal-") && denseBinauralObjects;
+    const nextManualDense = next === "hrtfhq" || (!next.startsWith("personal-") && denseBinauralObjects);
     const nextDense = effectiveDenseBinauralObjects(currentCodecRef.current, nextManualDense, next);
     const previousDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, previous);
     const api = window.sdaDesktop;
@@ -1785,14 +1796,31 @@ export function App() {
         throw new Error("原生渲染器未接受个人 HRTF，已恢复原档案");
       }
     }
+    const previousDirectional = readDirectionalHrtf();
     try {
+      if (next === "hrtfhq" && api) {
+        if (!await api.nativeRendererObjectRendering?.(true)) {
+          throw new Error("原生渲染器未接受共享 HRTFHQ 配置");
+        }
+      }
       await playerRef.current?.setDenseBinauralObjects(nextDense,denseBinauralBaseUrl(ku100Calibration,next));
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(next));
     } catch (error) {
+      if (next === "hrtfhq") {
+        await api?.nativeRendererObjectHrtf?.(directObjectHrtf);
+        await api?.nativeRendererDirectionalHrtf?.(previousDirectional);
+      }
       await api?.nativeRendererHrtf?.(nativeHrtfSetName(previous, previousDense), .04);
       await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(previous));
       await playerRef.current?.setDenseBinauralObjects(previousDense, denseBinauralBaseUrl());
       throw error;
+    }
+    if (next === "hrtfhq") {
+      localStorage.setItem("sda-direct-object-hrtf", "true");
+      localStorage.setItem("sda-directional-hrtf-v1", "true");
+      enableObjectRenderingDefaults();
+      playerRef.current?.setObjectRenderingEnabled(true);
+      setDirectObjectHrtf(true);
     }
     setBinauralHead(next);
     setDenseBinauralObjects(nextManualDense);
@@ -1907,7 +1935,7 @@ export function App() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.dts,.iamf,.mhas,.mha";
+    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.av3a,.dts,.iamf,.mhas,.mha";
     input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
   }, [appendToPlaylist]);
@@ -2271,13 +2299,6 @@ export function App() {
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>
-                <label className="settings-switch" title="独立启用基础逐对象处理。关闭后，连续方向或近场仍可自动启用对象处理。">
-                  <span>基础逐对象双耳渲染 <small>实验性</small></span>
-                  <input type="checkbox" role="switch" checked={directObjectHrtf}
-                    disabled={directObjectHrtfBusy || nativeRendererBusy}
-                    onChange={(event) => void changeDirectObjectHrtf(event.target.checked)} />
-                </label>
-                <ObjectRenderingStatus direct={directObjectHrtf}/>
                 <label className="settings-switch" title={`启动或停止桌面唯一的 Rust/${isMac ? "CoreAudio" : "WASAPI"} 空间输出。停止后桌面不会退回 Web Audio 输出。`}>
                   <span>音频输出 <small>{nativeRendererStatus?.running ? nativeRendererStatus.detail : "未启动（无法播放）"}</small></span>
                   <input type="checkbox" role="switch" checked={nativeRendererStatus?.running ?? false}
@@ -2285,7 +2306,7 @@ export function App() {
                 </label>
               </fieldset>
             )}
-            {window.sdaDesktop?.startNativeRenderer&&<><DirectionalHrtfPanel codec={track?.codec}/><SourceExtentPanel/><NearFieldPanel/></>}
+            {window.sdaDesktop?.startNativeRenderer&&<fieldset disabled={!directObjectHrtf} style={{border:0,padding:0,margin:0}}><SourceExtentPanel/><NearFieldPanel/></fieldset>}
             </div>
             <div className="settings-content" id="settings-content-eq" role="tabpanel" aria-labelledby="settings-tab-eq" hidden={settingsTab !== "eq"}>
             {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
@@ -2472,7 +2493,7 @@ export function App() {
                 <dd>{debug || "—"}</dd>
               </dl>
             ) : (
-              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .dts / .iamf / .mhas 文件开始</p>
+              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .av3a / .dts / .iamf / .mhas 文件开始</p>
             )}
           </div>
         )}
@@ -2553,7 +2574,7 @@ export function App() {
                 onChange={event=>void changeKu100Calibration(event.target.checked)}/>
             </label>}
             <p className="settings-description">
-              每个档案使用单一人头或受试者的完整 HRIR/BRIR（头部、耳道、耳廓与房间响应来自同一测量系统）。不再将 KU100 与另一套耳廓做频段拼接。播放中切换实时生效。
+              每个档案独立使用自己的空间响应。默认 HRTFHQ 与移动端采用同一套响应，其他测量档案可用于个人对照。播放中切换实时生效。
             </p>
             <div className="pinna-list">
               {BINAURAL_HEADS.map((head) => (
@@ -2569,7 +2590,7 @@ export function App() {
                 </button>
               ))}
             </div>
-            <label className="settings-switch" title="使用当前耳廓档案自己的 61 向 HRTF，开启和关闭可对照标准方向集。360RA 因含耳下层会在播放期间自动使用该网格；个人生成档案暂无独立高解析测量集。">
+            <label className="settings-switch" title="使用当前档案的高解析方向集，HRTFHQ 为 542 个方向；关闭后可对照标准方向集。360RA 因含耳下层会在播放期间自动使用该网格；个人生成档案暂无独立高解析测量集。">
               <span>高解析 HRTF</span>
               <input
                 type="checkbox"

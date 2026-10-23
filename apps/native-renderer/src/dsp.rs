@@ -244,6 +244,8 @@ impl MonoCompressor {
     }
 }
 
+/// Historical sample-only guard retained for archived diagnostic references.
+/// Production final output uses `true_peak_guard::TruePeakGuard`.
 /// Linked 5 ms sample-peak guard. Both ears share one envelope so limiting
 /// cannot move a binaural image. Its short recovery avoids one sparse-object
 /// transient audibly suppressing the following object-update interval.
@@ -260,6 +262,11 @@ pub(super) struct StereoPeakGuard {
 }
 
 impl StereoPeakGuard {
+    #[cfg(test)]
+    pub(super) fn diagnostic_gain(&self) -> f32 {
+        self.gain
+    }
+
     pub(super) fn new(sample_rate: u32) -> Self {
         let lookahead = ((sample_rate as f32 * 0.005).round() as usize).max(1);
         Self {
@@ -302,7 +309,15 @@ impl StereoPeakGuard {
             self.hold = self.left.len();
         }
         if self.gain > self.attack_target {
-            self.gain = self.attack_target.max(self.gain + self.attack_step);
+            let next_gain = self.attack_target.max(self.gain + self.attack_step);
+            // A remaining float-ulp gap divided by the lookahead length may
+            // round back to the current gain. Without completing this attack,
+            // the envelope stays in this branch and never reaches hold/release.
+            self.gain = if next_gain == self.gain {
+                self.attack_target
+            } else {
+                next_gain
+            };
             if self.gain == self.attack_target {
                 self.attack_step = 0.0;
             }
@@ -450,5 +465,56 @@ mod tests {
             "20 ms release must recover within one object-update interval: {}",
             guard.gain
         );
+    }
+
+    #[test]
+    fn peak_guard_small_input_rounding_does_not_shift_binaural_image() {
+        // Source reductions can differ by a few float ulps with hash-map
+        // iteration order. An attack/release branch may amplify that tiny
+        // difference; neither ear may get a separate envelope as a result.
+        // This is a bounded numerical regression, not a clarity metric.
+        for sample_rate in [44_100, 48_000, 96_000] {
+            let mut reference = StereoPeakGuard::new(sample_rate);
+            let mut perturbed = StereoPeakGuard::new(sample_rate);
+            let mut maximum_difference = 0.0_f32;
+            let frames = sample_rate as usize;
+            let mut minimum_gain = 1.0_f32;
+            for index in 0..frames {
+                let level = if index % 4_800 < 1_200 { 1.6 } else { 0.4 };
+                let left = level * (index as f32 * 0.071).sin();
+                let right = left * -0.37;
+                let epsilon = if index % 2 == 0 { 1.0e-7 } else { -1.0e-7 };
+                let a = reference.process(left, right);
+                let b = perturbed.process(left * (1.0 + epsilon), right * (1.0 + epsilon));
+                minimum_gain = minimum_gain.min(reference.gain);
+                for ear in 0..2 {
+                    assert!(b[ear].is_finite() && b[ear].abs() <= 1.0);
+                    maximum_difference = maximum_difference.max((a[ear] - b[ear]).abs());
+                }
+                assert!((b[1] + 0.37 * b[0]).abs() < 2.0e-7,
+                    "rounding changed linked stereo ratio at {sample_rate} Hz/{index}");
+            }
+            assert!(minimum_gain < 0.8, "fixture must exercise peak protection");
+            assert!(maximum_difference < 1.0e-3,
+                "small input rounding grew unbounded at {sample_rate} Hz: {maximum_difference}");
+        }
+    }
+
+    #[test]
+    fn peak_guard_completes_an_attack_smaller_than_one_gain_ulp() {
+        let mut guard = StereoPeakGuard::new(96_000);
+        guard.gain = 0.75;
+        guard.attack_target = f32::from_bits(guard.gain.to_bits() - 1);
+        guard.attack_step = (guard.attack_target - guard.gain) / guard.left.len() as f32;
+        guard.hold = guard.left.len();
+        assert_eq!(guard.gain + guard.attack_step, guard.gain,
+            "fixture must reproduce float rounding stall");
+        let target = guard.attack_target;
+        guard.process(0.0, 0.0);
+        assert_eq!(guard.gain, target);
+        for _ in 0..(guard.left.len() + 4_800) {
+            guard.process(0.0, 0.0);
+        }
+        assert!(guard.gain > 0.97, "stalled attack must no longer prevent release");
     }
 }

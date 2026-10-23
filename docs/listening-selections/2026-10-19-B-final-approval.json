@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-19",
+  "source": "explicit-user-chat-after-fixed-gain-listening",
+  "profile": "base-shelf",
+  "confirmedTracks": [
+    "rain",
+    "seiza",
+    "how-love",
+    "ether",
+    "very-first",
+    "wonderful-world",
+    "lose-dance",
+    "hitoshizuku",
+    "egaku",
+    "doll",
+    "2step",
+    "montero"
+  ],
+  "pendingTracks": [],
+  "recipe": {
+    "mainNetDb": 2,
+    "auxiliaryNetDb": 6,
+    "highShelfHz": 4000,
+    "highShelfDb": 1.5,
+    "geometry": "Front45",
+    "rearExtraDb": 0
+  },
+  "currentScope": "Integrate B and fix mobile Off/Fixed transitions, tablet text size, spatial icon states and artwork blur blending.",
+  "packagingCommitAndPush": "User deferred these actions in the following message; none performed."
+}

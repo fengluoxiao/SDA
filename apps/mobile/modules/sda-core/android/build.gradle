@@ -1,0 +1,126 @@
+buildscript {
+  repositories { mavenCentral() }
+  dependencies {
+    classpath("org.jetbrains.kotlin.plugin.compose:org.jetbrains.kotlin.plugin.compose.gradle.plugin:${kotlinVersion}")
+  }
+}
+
+apply plugin: 'com.android.library'
+
+group = 'app.sda.mobile'
+version = '0.1.0'
+
+apply plugin: 'expo-module-gradle-plugin'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+android {
+  namespace "app.sda.mobile.sda"
+  buildFeatures { compose true }
+  defaultConfig {
+    minSdkVersion 26
+    versionCode 1
+    versionName '0.1.0'
+    testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+  }
+  sourceSets.main.assets.srcDir("$buildDir/generated/sdaRooms")
+}
+
+// Package the desktop catalog's current 7.1.4 and 360RA assets directly; no second copy
+// of the room responses or hand-maintained mobile acoustics parameters.
+def desktopRooms = file('../../../../desktop/builtin-rooms')
+def syncSdaRooms = tasks.register('syncSdaRooms') {
+  inputs.dir(desktopRooms)
+  outputs.dir("$buildDir/generated/sdaRooms")
+  doLast {
+    def catalog = new groovy.json.JsonSlurper().parse(new File(desktopRooms, 'catalog.json'))
+    def rooms = catalog.profiles.findAll { it.summary.layout in ['7.1.4', '360RA-13'] }
+    if (rooms.collect { it.summary.layout }.toSet() != ['7.1.4', '360RA-13'].toSet()) throw new GradleException('Desktop 7.1.4 / 360RA room assets are missing')
+    project.sync { spec ->
+      spec.from(desktopRooms)
+      spec.into("$buildDir/generated/sdaRooms/builtin-rooms")
+      spec.include(rooms.collect { it.file } + ['NOTICE.txt', 'LICENSE-SADIE.txt', 'MATERIAL-SOURCES.md'])
+      // aapt transparently expands *.gz assets and drops the suffix; retain
+      // the original archive bytes so the desktop checksum stays meaningful.
+      spec.rename { name -> name.endsWith('.gz') ? name + '.bin' : name }
+    }
+    file("$buildDir/generated/sdaRooms/builtin-rooms/catalog.json").text = groovy.json.JsonOutput.toJson([version: 1, profiles: rooms])
+  }
+}
+tasks.named('preBuild').configure { dependsOn(syncSdaRooms) }
+
+dependencies {
+  // Android-only Backdrop avoids the newer KMP dependency graph for this prototype.
+  implementation 'io.github.kyant0:backdrop:1.0.6'
+  implementation 'io.github.kyant0:shapes:1.2.0'
+  implementation 'androidx.compose.foundation:foundation:1.10.6'
+  implementation 'androidx.compose.material:material:1.10.6'
+  implementation 'androidx.compose.material:material-icons-extended:1.7.8'
+  implementation 'androidx.media3:media3-exoplayer:1.5.1'
+  androidTestImplementation 'androidx.test:runner:1.6.2'
+  androidTestImplementation 'junit:junit:4.13.2'
+}
+
+def syncBackdropLicense = tasks.register('syncBackdropLicense', Sync) {
+  from(projectDir) { include 'BACKDROP-LICENSE.txt', 'BACKDROP-NOTICE.md' }
+  into("$buildDir/generated/backdropLicenses/licenses/backdrop")
+}
+android.sourceSets.main.assets.srcDir("$buildDir/generated/backdropLicenses")
+tasks.named('preBuild').configure { dependsOn(syncBackdropLicense) }
+
+// The framework PopupMenu keeps the platform layout but shares surface and control colors
+// with the JS Material palette. Generate overlays instead of duplicating colors.
+def popupPalette = file('../../../src/android-material-schemes.json')
+def popupThemeResources = layout.buildDirectory.dir('generated/sdaPopupThemes/res')
+def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
+  inputs.file(popupPalette)
+  outputs.dir(popupThemeResources)
+  doLast {
+    def palettes = new groovy.json.JsonSlurper().parse(popupPalette)
+    def output = popupThemeResources.get().asFile
+    def names = []
+    def xml = new StringBuilder('<resources>\n')
+    palettes.each { id, modes ->
+      modes.each { mode, colors ->
+        def name = "SdaPopupTheme_${id}_${mode}"
+        names.add(name)
+        xml.append("  <style name=\"${name}\">\n")
+        // Framework popup drawables resolve colorBackground (via colorPopupBackground)
+        // or colorBackgroundFloating. Set both public attributes; retain native geometry.
+        xml.append("    <item name=\"android:colorBackground\">${colors.panel}</item>\n")
+        xml.append("    <item name=\"android:colorBackgroundFloating\">${colors.panel}</item>\n")
+        xml.append("    <item name=\"android:colorAccent\">${colors.primary}</item>\n")
+        xml.append("    <item name=\"android:colorControlActivated\">${colors.primary}</item>\n")
+        xml.append("    <item name=\"android:colorControlNormal\">${colors.muted}</item>\n")
+        xml.append("    <item name=\"android:textColor\">${colors.ink}</item>\n")
+        xml.append("    <item name=\"android:textColorPrimary\">${colors.ink}</item>\n")
+        xml.append("    <item name=\"android:textColorSecondary\">${colors.muted}</item>\n")
+        xml.append('  </style>\n')
+      }
+    }
+    xml.append('</resources>\n')
+    new File(output, 'values').mkdirs()
+    new File(output, 'values/sda_popup_themes.xml').setText(xml.toString(), 'UTF-8')
+    new File(output, 'raw').mkdirs()
+    def keep = names.collect { "@style/${it}" }.join(',')
+    new File(output, 'raw/sda_popup_theme_keep.xml').setText("<resources xmlns:tools=\"http://schemas.android.com/tools\" tools:keep=\"${keep}\"/>\n", 'UTF-8')
+  }
+}
+android.sourceSets.main.res.srcDir(popupThemeResources)
+tasks.named('preBuild').configure { dependsOn(generateSdaPopupThemes) }
+
+// Public vendor runtimes are assets: DSP ELFs are not Android/arm64 JNI libraries.
+// Enable after accepting the SDK runtime terms; ordinary builds retain NNAPI/CPU.
+if ((findProperty('sdaVendorAudio') ?: 'false').toBoolean()) {
+  def npuAssets = "$buildDir/generated/sdaNpuAssets"
+  android.sourceSets.main.assets.srcDir(npuAssets)
+  def prepareNpuRuntimes = tasks.register('prepareSdaNpuRuntimes', Exec) {
+    inputs.file(file('../../../../../scripts/prepare-android-npu.py'))
+    inputs.file(file('../../../../../scripts/android-npu-runtime-lock.json'))
+    outputs.dir(npuAssets)
+    def arguments = [System.getenv('SDA_PYTHON') ?: 'python3', file('../../../../../scripts/prepare-android-npu.py').absolutePath, '--output', npuAssets]
+    if ((findProperty('sdaVendorAudioLegacyOnly') ?: 'false').toBoolean()) arguments.add('--legacy-only')
+    inputs.property('legacyOnly', (findProperty('sdaVendorAudioLegacyOnly') ?: 'false'))
+    commandLine(arguments)
+  }
+  tasks.named('preBuild').configure { dependsOn(prepareNpuRuntimes) }
+}

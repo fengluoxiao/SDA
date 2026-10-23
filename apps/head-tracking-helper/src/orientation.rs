@@ -87,6 +87,47 @@ pub struct HeadOrientation {
 }
 
 impl HeadOrientation {
+    /// Core Motion replaces AACP decoding, not the shared attitude filter.
+    pub fn process_quaternion(&mut self, q: [f64; 4]) -> Option<Orientation> {
+        let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !q.iter().all(|v| v.is_finite()) || !norm.is_finite() || norm < 1e-9 { return None; }
+        let [x, y, z, w] = q.map(|v| v / norm);
+        // Same yaw(Z) * pitch(X) output convention as the packet provider.
+        let yaw = 2.0 * z.atan2(w);
+        let pitch = (2.0 * (w * x + y * z)).clamp(-1.0, 1.0).asin();
+        let previous = self.samples.last().copied().unwrap_or([0.0, pitch, yaw]);
+        let values = [0.0, previous[1] + angle_delta(previous[1], pitch),
+            previous[2] + angle_delta(previous[2], yaw)];
+        let neutral = match self.neutral {
+            Some(neutral) => neutral,
+            None => {
+                let max_step = CALIBRATION_MAX_STEP_COUNTS / 32_000.0 * std::f64::consts::PI;
+                if !self.samples.is_empty() && (1..3).any(|axis| (values[axis] - previous[axis]).abs() > max_step) {
+                    self.samples.clear();
+                }
+                self.samples.push(values);
+                if self.samples.len() == CALIBRATION_SAMPLES {
+                    let mut mean = [0.0; 3];
+                    for sample in &self.samples { for axis in 1..3 { mean[axis] += sample[axis] / CALIBRATION_SAMPLES as f64; } }
+                    self.neutral = Some(mean);
+                    self.orientation_samples = vec![self.continuity_origin; ORIENTATION_MEDIAN_SAMPLES - 1];
+                    self.last_orientation = Some(self.continuity_origin);
+                    self.stationary_samples = vec![self.continuity_origin; STATIONARY_WINDOW_SAMPLES];
+                    self.locked_orientation = Some(self.continuity_origin);
+                }
+                return None;
+            }
+        };
+        self.samples.clear(); self.samples.push(values);
+        let [pitch, yaw] = self.filter_orientation([
+            self.continuity_origin[0] + values[1] - neutral[1],
+            self.continuity_origin[1] + values[2] - neutral[2],
+        ]);
+        let (sp, cp) = (pitch * 0.5).sin_cos();
+        let (sy, cy) = (yaw * 0.5).sin_cos();
+        Some(Orientation { x: cy * sp, y: sy * sp, z: sy * cp, w: cy * cp })
+    }
+
     pub fn begin_transport_session(&mut self) {
         self.continuity_origin = self
             .last_orientation
@@ -439,6 +480,34 @@ impl HeadOrientation {
             }
         }
         filtered
+    }
+}
+
+#[cfg(test)]
+mod quaternion_provider_tests {
+    use super::*;
+    fn yaw(degrees: f64) -> [f64;4] {
+        let half = degrees.to_radians() / 2.0;
+        [0.0,0.0,half.sin(),half.cos()]
+    }
+    #[test]
+    fn core_motion_calibrates_and_uses_shared_stationary_filter() {
+        let mut tracker = HeadOrientation::default();
+        for _ in 0..10 { assert!(tracker.process_quaternion(yaw(30.0)).is_none()); }
+        let neutral = tracker.process_quaternion(yaw(30.0)).unwrap();
+        assert!(neutral.z.abs() < 1e-9);
+        for _ in 0..20 { assert!(tracker.process_quaternion(yaw(30.1)).unwrap().z.abs() < 1e-9); }
+        let mut last = neutral;
+        for n in 0..40 { last = tracker.process_quaternion(yaw(30.0+n as f64)).unwrap(); }
+        assert!(last.z > 0.1);
+        for _ in 0..40 { last = tracker.process_quaternion(yaw(30.0)).unwrap(); }
+        assert!(last.z.abs() < 0.02);
+    }
+    #[test]
+    fn core_motion_rejects_invalid_samples() {
+        let mut tracker = HeadOrientation::default();
+        assert!(tracker.process_quaternion([0.0;4]).is_none());
+        assert!(tracker.process_quaternion([f64::NAN;4]).is_none());
     }
 }
 
