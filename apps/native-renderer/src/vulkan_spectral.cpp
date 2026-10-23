@@ -37,7 +37,7 @@ struct State {
  VkDescriptorSetLayout descriptor_layout=VK_NULL_HANDLE;VkPipelineLayout pipeline_layout=VK_NULL_HANDLE;
  VkPipeline pipeline=VK_NULL_HANDLE;VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;VkDescriptorSet descriptor=VK_NULL_HANDLE;
  VkCommandPool command_pool=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;
- bool in_flight=false;Timings timings{};Buffer input,output;uint32_t plane=0,parts=0,bins=0;char error[256]{};
+ uint8_t resident_parts[256]{};bool in_flight=false;Timings timings{};Buffer input,output;uint32_t plane=0,parts=0,bins=0;char error[256]{};
  bool fail(const char* what,int result=-1){snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
  bool check(VkResult result,const char* what){return result==VK_SUCCESS || fail(what,result);}
  void release(Buffer& b){
@@ -167,7 +167,7 @@ struct State {
   release(input);release(output);uint64_t used=cpu_bytes;
   if(!create_buffer(input,uint64_t(n)*6*p*sizeof(float),used) || !create_buffer(output,uint64_t(n)*4*sizeof(float),used))return false;
   // Padded/unprepared rows start with finite zero coefficients.
-  memset(input.mapped,0,uint64_t(n)*6*p*sizeof(float));
+  memset(input.mapped,0,uint64_t(n)*6*p*sizeof(float));memset(resident_parts,0,sizeof(resident_parts));
   VkDescriptorBufferInfo buffers[2]={{input.buffer,0,uint64_t(n)*6*p*sizeof(float)},{output.buffer,0,uint64_t(n)*4*sizeof(float)}};
   VkWriteDescriptorSet writes[2]{};
   for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i];}
@@ -185,14 +185,22 @@ struct State {
  int finish_run(int result,uint64_t wall_start,uint64_t cpu_start){
   timings.total=monotonic_ns()-wall_start;uint64_t cpu_end=thread_cpu_ns();timings.host_cpu=cpu_start&&cpu_end>=cpu_start?cpu_end-cpu_start:0;return result;
  }
- int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,const uint8_t* dirty=nullptr){
+ int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,const uint8_t* dirty=nullptr,const uint8_t* active=nullptr){
   if(!plane || inputs!=uint64_t(plane)*6*parts || outputs!=uint64_t(plane)*4){fail("audio packet shape mismatch");return -1;}
   auto start=monotonic_ns(),cpu_start=thread_cpu_ns();timings={};timings.input_flags=input.flags;timings.output_flags=output.flags;timings.input_allocated=input.allocated;timings.output_allocated=output.allocated;
   auto done=[&](int result){return finish_run(result,start,cpu_start);};
   if(in_flight){fail("previous GPU work still pending");return done(-1);}
+  uint8_t previous[256]{};
   if(dirty && bins){
    auto mapped=static_cast<float*>(input.mapped);size_t signal=size_t(plane)*2*parts;
-   memcpy(mapped,src,signal*sizeof(float));
+   memcpy(previous,resident_parts,sizeof(previous));
+   if(active){
+    for(uint32_t row=0;row<plane/bins;row++){for(uint32_t part=0;part<parts;part++){
+     size_t x=(size_t(part)*plane+size_t(row)*bins)*2;
+     if(active[row]&(1u<<part))memcpy(mapped+x,src+x,size_t(bins)*2*sizeof(float));
+     else if(previous[row]&(1u<<part))memset(mapped+x,0,size_t(bins)*2*sizeof(float));
+    }resident_parts[row]=active[row];}
+   }else memcpy(mapped,src,signal*sizeof(float));
    size_t stride=size_t(parts)*bins*4;
    for(uint32_t row=0;row<plane/bins;row++)if(dirty[row])memcpy(mapped+signal+row*stride,src+signal+row*stride,stride*sizeof(float));
   }else memcpy(input.mapped,src,inputs*sizeof(float));
@@ -209,7 +217,11 @@ struct State {
   if(!check(waited,"wait for audio compute"))return done(-1);in_flight=false;
   uint64_t readback_start=monotonic_ns();
   if(!output.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=output.memory;range.size=VK_WHOLE_SIZE;if(!check(vkInvalidateMappedMemoryRanges(device,1,&range),"invalidate audio output"))return done(-1);}
-  memcpy(dst,output.mapped,outputs*sizeof(float));timings.readback=monotonic_ns()-readback_start;
+  if(active&&bins){auto mapped=static_cast<const float*>(output.mapped);for(uint32_t row=0;row<plane/bins;row++)for(uint32_t field=0;field<4;field++){
+   size_t base=size_t(field)*plane+size_t(row)*bins;
+   if(active[row])memcpy(dst+base,mapped+base,size_t(bins)*sizeof(float));
+   else if(previous[row])memset(dst+base,0,size_t(bins)*sizeof(float));
+  }}else memcpy(dst,output.mapped,outputs*sizeof(float));timings.readback=monotonic_ns()-readback_start;
   if(monotonic_ns()-start>timeout){fail("GPU readback exceeded audio deadline");return done(1);}return done(0);
  }
 
@@ -230,9 +242,9 @@ int sda_vk_configure_resident(void* handle,uint32_t rows,uint32_t parts,uint32_t
  auto s=static_cast<State*>(handle);if(!s || !rows || rows>256 || bins<2 || bins>4097)return -1;
  bool ok=s->configure(rows*bins,parts,cpu,bins);if(!ok)copy_error(s,err,cap);return ok?0:-1;
 }
-int sda_vk_run_resident(void*handle,const float*src,size_t inputs,float*dst,size_t outputs,const uint8_t*dirty,uint64_t timeout,char*err,size_t cap){
+int sda_vk_run_resident(void*handle,const float*src,size_t inputs,float*dst,size_t outputs,const uint8_t*dirty,const uint8_t*active,uint64_t timeout,char*err,size_t cap){
  auto s=static_cast<State*>(handle);if(!s || !src || !dst || !dirty || !s->bins)return -1;
- int rc=s->run(src,inputs,dst,outputs,timeout,dirty);if(rc)copy_error(s,err,cap);return rc;
+ int rc=s->run(src,inputs,dst,outputs,timeout,dirty,active);if(rc)copy_error(s,err,cap);return rc;
 }
 void sda_vk_timings(void* handle,Timings* out){if(handle && out)*out=static_cast<State*>(handle)->timings;}
 void sda_vk_close(void* handle){if(handle){auto s=static_cast<State*>(handle);s->~State();free(s);}}

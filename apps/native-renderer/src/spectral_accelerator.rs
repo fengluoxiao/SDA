@@ -15,6 +15,9 @@ pub(crate) struct Batch {
     pub reference: Vec<f32>,
     pub resident: bool,
     pub filter_dirty: Vec<u8>,
+    pub packed_parts:Vec<u8>,
+    previous_parts:Vec<u8>,
+    reference_rows:Vec<u8>,
     filter_keys: Vec<Option<(u64,u64,bool)>>,
     pub cpu_work_ns: u64,
     pub worker_cpu_ns: u64,
@@ -27,7 +30,7 @@ impl Batch {
             input: vec![0.; shape.plane() * 6 * shape.parts],
             output: vec![0.; shape.plane() * 4],
             reference: vec![0.; shape.plane() * 4],
-            resident:false, filter_dirty:vec![0;shape.rows],filter_keys:vec![None;shape.rows],
+            resident:false, filter_dirty:vec![0;shape.rows],filter_keys:vec![None;shape.rows],packed_parts:vec![0;shape.rows],previous_parts:vec![0;shape.rows],reference_rows:vec![0;shape.rows],
             cpu_work_ns:0,worker_cpu_ns:0,checked_parity:None,
         }
     }
@@ -37,10 +40,20 @@ impl Batch {
         if self.filter_keys[row]!=key {self.filter_dirty[row]=1;self.filter_keys[row]=key;}
     }
     pub fn clear(&mut self) {
-        if self.resident {let count=self.shape.plane()*self.shape.parts*2;self.input[..count].fill(0.);self.filter_dirty.fill(0);}else{self.input.fill(0.);}
+        if self.resident {self.filter_dirty.fill(0);self.packed_parts.fill(0);}else{self.input.fill(0.);self.output.fill(0.);self.reference.fill(0.);}
         self.cpu_work_ns=0;self.worker_cpu_ns=0;self.checked_parity=None;
-        self.output.fill(0.);
-        self.reference.fill(0.);
+    }
+    pub fn finish_packet(&mut self){
+        if !self.resident{return;}let s=self.shape;
+        for row in 0..s.rows {
+            let missing=self.previous_parts[row]&!self.packed_parts[row];
+            for part in 0..s.parts {if missing&(1<<part)!=0{let x=(part*s.rows+row)*s.bins*2;self.input[x..x+s.bins*2].fill(0.);}}
+            if self.packed_parts[row]==0&&self.reference_rows[row]!=0 {
+                for field in 0..4{let base=field*s.plane()+row*s.bins;self.reference[base..base+s.bins].fill(0.);}
+                self.reference_rows[row]=0;
+            }
+        }
+        self.previous_parts.copy_from_slice(&self.packed_parts);
     }
     pub fn pack(
         &mut self,
@@ -54,6 +67,7 @@ impl Batch {
         assert!(row < s.rows && part < s.parts);
         assert!(input.len() >= s.bins && left.len() >= s.bins && right.len() >= s.bins);
         if self.resident {
+            self.packed_parts[row]|=1<<part;
             let x=(part*s.rows+row)*s.bins*2;
             // Complex32 is repr(C), two adjacent f32s, as in the existing SIMD path.
             unsafe { std::ptr::copy_nonoverlapping(input.as_ptr().cast::<f32>(),self.input.as_mut_ptr().add(x),s.bins*2); }
@@ -80,6 +94,7 @@ impl Batch {
     }
     pub fn store_reference(&mut self, row: usize, left: &[Complex32], right: &[Complex32]) {
         let s = self.shape;
+        if self.resident{self.reference_rows[row]=1;}
         assert!(row < s.rows);
         for (ear, values) in [left, right].into_iter().enumerate() {
             for (bin, value) in values.iter().take(s.bins).enumerate() {
@@ -237,9 +252,11 @@ mod tests {
                         old.pack(row,part,&x,&l,&r);resident.pack(row,part,&x,&l,&r);
                     }
                 }
-                old.scalar_reference();resident.scalar_reference();assert_eq!(old.output,resident.output);
+                old.scalar_reference();resident.finish_packet();resident.scalar_reference();assert_eq!(old.output,resident.output);
             }
-            resident.clear();resident.row(0,9999,1,false);assert_eq!(resident.filter_dirty[0],1);
+            let spectrum=vec![Complex32::new(0.4,-0.3);shape.bins];resident.store_reference(0,&spectrum,&spectrum);
+            resident.clear();resident.finish_packet();resident.scalar_reference();assert!(resident.output.iter().all(|v|*v==0.));assert!(resident.reference.iter().all(|v|*v==0.));
+            resident.row(0,9999,1,false);assert_eq!(resident.filter_dirty[0],1);
         }
     }
     #[test]

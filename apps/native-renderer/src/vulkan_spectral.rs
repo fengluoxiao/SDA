@@ -11,7 +11,7 @@ unsafe extern "C"{
  fn sda_vk_configure(handle:*mut c_void,plane:u32,parts:u32,cpu_bytes:u64,error:*mut c_char,capacity:usize)->i32;
  fn sda_vk_run(handle:*mut c_void,input:*const f32,inputs:usize,output:*mut f32,outputs:usize,timeout:u64,error:*mut c_char,capacity:usize)->i32;
  fn sda_vk_configure_resident(handle:*mut c_void,rows:u32,parts:u32,bins:u32,cpu_bytes:u64,error:*mut c_char,capacity:usize)->i32;
- fn sda_vk_run_resident(handle:*mut c_void,input:*const f32,inputs:usize,output:*mut f32,outputs:usize,dirty:*const u8,timeout:u64,error:*mut c_char,capacity:usize)->i32;
+ fn sda_vk_run_resident(handle:*mut c_void,input:*const f32,inputs:usize,output:*mut f32,outputs:usize,dirty:*const u8,active:*const u8,timeout:u64,error:*mut c_char,capacity:usize)->i32;
  fn sda_vk_close(handle:*mut c_void);
  fn sda_vk_timings(handle:*mut c_void,timings:*mut Timings);
 }
@@ -33,14 +33,14 @@ impl Drop for Backend{fn drop(&mut self){unsafe{sda_vk_close(self.handle.as_ptr(
 impl ComputeBackend for Backend{
  fn configure(&mut self,shape:Shape)->Result<String,String>{
   self.shape=None;let mut error=[0;256];
-  let cpu_bytes=shape.plane().checked_mul(6*shape.parts+8).and_then(|n|n.checked_mul(4)).and_then(|n|n.checked_add(shape.rows*(std::mem::size_of::<Option<(u64,u64,bool)>>()+1))).ok_or("Vulkan audio shape overflow")?;
+  let cpu_bytes=shape.plane().checked_mul(6*shape.parts+8).and_then(|n|n.checked_mul(4)).and_then(|n|n.checked_add(shape.rows*(std::mem::size_of::<Option<(u64,u64,bool)>>()+4))).ok_or("Vulkan audio shape overflow")?;
   let result=unsafe{sda_vk_configure_resident(self.handle.as_ptr(),shape.rows as u32,shape.parts as u32,shape.bins as u32,cpu_bytes as u64,error.as_mut_ptr(),error.len())};
   if result!=0{return Err(format!("system-vulkan-shape-unavailable:{}",reason(&error)));}self.shape=Some(shape);Ok(self.device_name())
  }
  fn packet(&self,shape:Shape)->Batch {Batch::resident(shape)}
  fn execute(&mut self,batch:&mut Batch,timeout_ns:u64)->Result<(),String>{
   if self.shape!=Some(batch.shape){return Err("Vulkan packet shape mismatch".into());}let mut error=[0;256];
-  let result=unsafe{sda_vk_run_resident(self.handle.as_ptr(),batch.input.as_ptr(),batch.input.len(),batch.output.as_mut_ptr(),batch.output.len(),batch.filter_dirty.as_ptr(),timeout_ns,error.as_mut_ptr(),error.len())};
+  let result=unsafe{sda_vk_run_resident(self.handle.as_ptr(),batch.input.as_ptr(),batch.input.len(),batch.output.as_mut_ptr(),batch.output.len(),batch.filter_dirty.as_ptr(),batch.packed_parts.as_ptr(),timeout_ns,error.as_mut_ptr(),error.len())};
   if result!=0{return Err(format!("system-vulkan-audio:{}",reason(&error)));}
   let mut t=Timings::default();unsafe{sda_vk_timings(self.handle.as_ptr(),&mut t)};batch.worker_cpu_ns=t.host_cpu;Ok(())
  }

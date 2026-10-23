@@ -623,6 +623,7 @@ pub fn finish_sources<'a>(
         }
         let started = std::time::Instant::now();
         for (i, source) in sources.iter().enumerate() { source.convolver.pack_spectra(lease.batch_mut(), i * 2); }
+        lease.batch_mut().finish_packet();
         lease.packed_in(started.elapsed());
         if lease.is_qualifying() {
             let cpu = std::time::Instant::now();
