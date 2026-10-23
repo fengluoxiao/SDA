@@ -1,6 +1,8 @@
 import React, { memo, useEffect, useState } from "react";
 import { AppState, StyleSheet, Text } from "react-native";
 
+export const SYSTEM_CLOCK_LINE_HEIGHT = 18;
+
 function localTime() {
   return new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
@@ -28,5 +30,5 @@ export const SystemClock = memo(function SystemClock({ color, sideDock }: { colo
 });
 
 const styles = StyleSheet.create({
-  clock: { width: 48, flexShrink: 0, textAlign: "center", fontSize: 13, lineHeight: 18, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  clock: { width: 48, flexShrink: 0, textAlign: "center", fontSize: 13, lineHeight: SYSTEM_CLOCK_LINE_HEIGHT, fontWeight: "600", fontVariant: ["tabular-nums"] },
 });
