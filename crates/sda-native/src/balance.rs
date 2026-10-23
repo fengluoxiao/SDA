@@ -46,6 +46,8 @@ pub struct VolumeBalance {
     non_stereo_seen: bool,
     meter: Option<LoudnessMeter>,
     decoded_reference: Option<Measurement>,
+    /// Keep the first usable reference independent of decoder batch size or bypass state.
+    startup_reference: Option<Measurement>,
     post_counter: usize,
     cached: Option<Measurement>,
     settled: bool,
@@ -88,7 +90,7 @@ impl VolumeBalance {
         };
         let mut measurement = frame.reference_loudness.clone();
         if measurement.is_some() {
-            if self.decoded_reference.is_none() {self.cached=None;self.settled=false;self.meter=None;self.post_counter=0;}
+            if self.decoded_reference.is_none() {self.cached=None;self.settled=false;self.meter=None;self.post_counter=0;self.startup_reference=None;}
             self.decoded_reference = measurement.clone();
         }
         if let Some(channels) = channels.filter(|_| measurement.is_none()) {
@@ -100,17 +102,24 @@ impl VolumeBalance {
                 measurement = self.meter.as_ref().map(LoudnessMeter::integrated);
             }
         }
+        if self.startup_reference.is_none() {
+            let required = if self.early_alac_balance && frame.codec == "alac" { 7 } else { MIN_BLOCKS };
+            self.startup_reference = measurement.as_ref().filter(|m| m.blocks >= required
+                && m.integrated_lufs.is_some_and(|v| v.is_finite())).cloned();
+        }
         PendingFrame { frame, measurement }
     }
     pub fn startup_measurement_ready(&self) -> bool {
-        self.cached.is_some() || self.decoded_reference.as_ref().is_some_and(|m|m.blocks>=MIN_BLOCKS) || self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
+        self.cached.is_some() || self.startup_reference.is_some() || self.decoded_reference.as_ref().is_some_and(|m|m.blocks>=MIN_BLOCKS) || self.meter.as_ref().is_some_and(|meter| meter.integrated().blocks >= MIN_BLOCKS)
     }
     /// Use the normal measurement/target before any PCM is made audible. This
     /// consumes the existing decode preroll, never a second pass or cache.
     pub fn prime_av3a_startup(&mut self, origin: u64, ended: bool) -> Option<Command> {
         if !self.enabled || self.settled { return None; }
-        let m = self.cached.clone().or_else(|| self.decoded_reference.clone()).or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
-        if !ended && m.blocks < MIN_BLOCKS { return None; }
+        let m = self.cached.clone().or_else(|| self.startup_reference.clone()).or_else(|| self.decoded_reference.clone()).or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
+        // A frozen reference has already passed its route-specific threshold,
+        // including the existing Apple ALAC early-start opt-in.
+        if !ended && m.blocks < MIN_BLOCKS && self.startup_reference.is_none() { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
         self.gain_db = master_gain(lufs, if self.mpegh_reference { None } else { m.true_peak_dbtp });
         self.balanced_blocks = m.blocks;
@@ -139,7 +148,7 @@ impl VolumeBalance {
             if !self.settled {
                 self.gain_db = master_gain(
                     cached.integrated_lufs.unwrap(),
-                    if stereo || referenced { cached.true_peak_dbtp } else { None },
+                    if f.codec != "mpegh" && (stereo || referenced) { cached.true_peak_dbtp } else { None },
                 );
                 self.settled = true;
                 commands.push(Command::SetProgramGain {
@@ -147,7 +156,7 @@ impl VolumeBalance {
                     at: Some(f.sample_pos),
                 });
             }
-        } else if let Some(m) = &frame.measurement {
+        } else if let Some(m) = (if self.settled { None } else { self.startup_reference.as_ref() }).or(frame.measurement.as_ref()) {
             // Seven overlapping 400 ms windows cover one second of audible
             // material. Do not count a silent intro toward this estimate.
             let early = self.early_alac_balance && f.codec == "alac" && !self.settled;
@@ -156,7 +165,7 @@ impl VolumeBalance {
                 if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                     self.settled = true;
                     self.balanced_blocks = m.blocks;
-                    let gain = master_gain(lufs, if stereo || referenced { m.true_peak_dbtp } else { None });
+                    let gain = master_gain(lufs, if f.codec != "mpegh" && (stereo || referenced) { m.true_peak_dbtp } else { None });
                     let previous = self.gain_db;
                     self.gain_db = gain;
                     if early && (gain - previous).abs() >= 0.05 {
@@ -315,6 +324,53 @@ mod tests {
         assert_eq!(multichannel.integrated().integrated_lufs,stereo.integrated().integrated_lufs);
         assert_eq!(multichannel.integrated().true_peak_dbtp,stereo.integrated().true_peak_dbtp);
     }
+    #[test]
+    fn startup_and_live_toggle_use_the_same_first_ready_programme_reference() {
+        for codec in ["eac3", "av3a", "mpegh"] {
+            let mut startup = VolumeBalance { enabled: true, ..Default::default() };
+            let mut live = VolumeBalance::default();
+            for (blocks, lufs) in [(56, -15.0), (57, -14.75), (61, -14.5)] {
+                let mut f = frame(codec, blocks as u64 * 4800);
+                f.reference_loudness = Some(Measurement { integrated_lufs: Some(lufs), blocks, true_peak_dbtp: Some(-1.5) });
+                let mut startup_frame = frame(codec, blocks as u64 * 4800);
+                startup_frame.reference_loudness = f.reference_loudness.clone();
+                startup.measure(startup_frame, None);
+                let pending = live.measure(f, None); live.route(&pending);
+            }
+            startup.prime_av3a_startup(0, false).expect("ready programme");
+            assert_eq!(startup.gain_db, live.gain_db, "{codec}: decoder batching must not select a different reference");
+            assert_eq!(startup.gain_db, -3.25);
+            live.enabled = true;
+            let pending = live.measure(frame(codec, 62 * 4800), None); live.route(&pending);
+            assert_eq!(live.gain_db, startup.gain_db, "{codec}: live activation retains the same normalization");
+        }
+    }
+    #[test]
+    fn frozen_reference_preserves_alac_early_start_threshold() {
+        let mut b = VolumeBalance { enabled: true, ..Default::default() };
+        b.enable_alac_startup();
+        let mut f = frame("alac", 48000);
+        f.reference_loudness = Some(Measurement { integrated_lufs: Some(-14.75), blocks: 7, true_peak_dbtp: Some(-1.5) });
+        b.measure(f, None);
+        assert!(b.startup_measurement_ready());
+        assert!(b.prime_av3a_startup(0, false).is_some());
+        assert_eq!(b.gain_db, -3.25);
+    }
+    #[test]
+    fn mpegh_reference_peak_policy_is_identical_before_and_during_playback() {
+        let mut startup = VolumeBalance { enabled: true, ..Default::default() };
+        let mut live = VolumeBalance::default();
+        let mut f = frame("mpegh", 0);
+        f.reference_loudness = Some(Measurement { integrated_lufs: Some(-14.75), blocks: MIN_BLOCKS, true_peak_dbtp: Some(6.0) });
+        let mut startup_frame = frame("mpegh", 0);
+        startup_frame.reference_loudness = f.reference_loudness.clone();
+        startup.measure(startup_frame, None);
+        startup.prime_av3a_startup(0, false).unwrap();
+        let pending = live.measure(f, None); live.route(&pending);
+        assert_eq!(startup.gain_db, -3.25);
+        assert_eq!(live.gain_db, startup.gain_db, "the float programme tap is not a final-output peak measurement");
+    }
+
     fn frame(codec: &'static str, at: u64) -> FrameData {
         FrameData { reference_loudness: None, compatibility_bed: None,
             codec,

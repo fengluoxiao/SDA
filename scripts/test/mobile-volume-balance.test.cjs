@@ -40,6 +40,7 @@ const kotlin=fs.readFileSync('apps/mobile/modules/sda-core/android/src/main/java
 assert.match(kotlin,/nativeSetVolumeBalance/);assert.match(kotlin,/nativeSetMeasuredLoudness/);
 assert.match(kotlin,/nativeFinish\(ptr\)[\s\S]*?check\(result >= 0\)[\s\S]*?nativeCompleteLoudness\(ptr\)/);
 assert.match(kotlin,/getBoolean\("volumeBalanceEnabled", false\)/);
-assert.match(kotlin,/sda-measured-lufs-v6:\$contentHash:48000/);
+assert.match(kotlin,/val referenceVersion = if .*"mhas".*"v7-mpegh-prelimit" else "v6"/);
+assert.match(kotlin,/sda-measured-lufs-\$referenceVersion:\$contentHash:48000/);
 assert.match(fs.readFileSync('apps/mobile/App.tsx','utf8'),/this\.state\.headYaw, track\.contentHash/);
 console.log('Windows/Android balance golden vectors, protective gain, cache and JNI wiring passed.');

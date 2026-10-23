@@ -30,7 +30,8 @@ const state={stereoBalanceEligible:true,programLoudness:null,measuredLoudnessBlo
 const complete=new Function('MEASURED_LOUDNESS_MIN_BLOCKS','return function(){'+finish+'}')(57);
 complete.call(state);assert.deepEqual(persisted,[-10.66]);
 state.measuredLoudness={integratedLufs:null};complete.call(state);assert.equal(persisted.length,1);
-assert(app.includes('sda-measured-lufs-v6:'));
+assert.match(app,/const version = .*"v7-mpegh-prelimit" : "v6"/);
+assert(app.includes('sda-measured-lufs-${version}:'));
 console.log('Complete-track cache regression: only decoder completion persists; invalid estimates excluded; partial v2 ignored.');
 
 // Combined stereo energy: dual mono is 3.01 LU above a one-channel master.
