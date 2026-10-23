@@ -16,6 +16,24 @@ fn select_fast(scores: &[(usize, u64)], minimum: usize) -> Option<Vec<usize>> {
         .collect();
     (fast.len() >= minimum).then_some(fast)
 }
+// CPU presence is stable across hotplug. sched_getaffinity only reports the
+// currently usable subset and must never define a process-lifetime topology.
+fn present_cpu_ids(text: &str) -> Option<Vec<usize>> {
+    let mut ids = Vec::new();
+    for group in text.trim().split(',') {
+        let mut range = group.trim().split('-');
+        let first = range.next()?.parse::<usize>().ok()?;
+        let last = match range.next() {
+            Some(value) => value.parse::<usize>().ok()?,
+            None => first,
+        };
+        if range.next().is_some() || first > last || last >= 64 { return None; }
+        ids.extend(first..=last);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    (!ids.is_empty()).then_some(ids)
+}
 #[cfg(target_os = "android")]
 mod platform {
     use std::{
@@ -87,8 +105,12 @@ mod platform {
             let Some(current) = Mask::for_tid(tid) else {
                 continue;
             };
-            let target = current.intersect(Mask::from_ids(&topology.fast));
-            if target.ids().len() >= 2 && target.0 != current.0 {
+            // Reapply the full preferred set, not its intersection with our
+            // previous pin. The kernel intersects this with the task's cpuset
+            // and online CPUs. This also restores cores after hotplug/cpuset
+            // transitions instead of permanently shrinking the audio mask.
+            let target = Mask::from_ids(&topology.fast);
+            if target.0 != current.0 {
                 let rc = unsafe { sched_setaffinity(tid, 128, (&target as *const Mask).cast()) };
                 eprintln!(
                     "SDA audio CPU refresh tid={tid} target={:?} result={rc}",
@@ -104,19 +126,13 @@ mod platform {
         }
     }
     fn discover() -> Topology {
-        let Some(mask) = Mask::current() else {
+        let Some(ids) = std::fs::read_to_string("/sys/devices/system/cpu/present")
+            .ok().and_then(|text| super::present_cpu_ids(&text)) else {
             return Topology {
                 fast: vec![],
-                source: "affinity-unavailable",
+                source: "present-topology-unavailable",
             };
         };
-        let ids = mask.ids();
-        if ids.len() > 64 || ids.iter().any(|i| *i >= 64) {
-            return Topology {
-                fast: vec![],
-                source: "unsupported-topology-size",
-            };
-        }
         for (file, source) in [
             ("cpu_capacity", "capacity"),
             ("cpufreq/cpuinfo_max_freq", "maximum-frequency"),
@@ -158,14 +174,12 @@ mod platform {
         let topology = TOPOLOGY.get_or_init(discover);
         let before = Mask::current();
         let mut result = None;
-        if let Some(before) = before {
-            let target = before.intersect(Mask::from_ids(&topology.fast));
-            // Respect current cpuset restrictions and keep enough independent
-            // CPUs for caller + helpers. A homogeneous CPU stays unrestricted.
-            if target.ids().len() >= 2 {
-                result =
-                    Some(unsafe { sched_setaffinity(0, 128, (&target as *const Mask).cast()) });
-            }
+        if before.is_some() && topology.fast.len() >= 2 {
+            let target = Mask::from_ids(&topology.fast);
+            // sched_setaffinity enforces the system cpuset/online restriction.
+            // Failure (e.g. no fast core allowed in background) leaves the
+            // system-selected affinity intact. Homogeneous CPUs stay untouched.
+            result = Some(unsafe { sched_setaffinity(0, 128, (&target as *const Mask).cast()) });
         }
         let actual = Mask::current().map(|m| m.ids()).unwrap_or_default();
         let tid = unsafe { gettid() };
@@ -188,6 +202,23 @@ pub use platform::{dsp_capacity, enter, prepare, refresh};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_hotplug_does_not_hide_present_performance_cores() {
+        let present = present_cpu_ids("0-7\n").unwrap();
+        // At startup affinity may expose only 0..=5; cores 6/7 still belong
+        // in the cached topology so later playback can use them.
+        let scores: Vec<_> = present.into_iter()
+            .map(|id| (id, if id < 4 { 1843200 } else { 2208000 })).collect();
+        assert_eq!(select_fast(&scores, 2), Some(vec![4, 5, 6, 7]));
+    }
+    #[test]
+    fn present_cpu_ranges_are_bounded_and_sparse_lists_are_supported() {
+        assert_eq!(present_cpu_ids("0-3,6-7"), Some(vec![0,1,2,3,6,7]));
+        assert_eq!(present_cpu_ids("2,0-2"), Some(vec![0,1,2]));
+        for invalid in ["", "1-0", "0-64", "0-3-7", "0,", "a"] {
+            assert_eq!(present_cpu_ids(invalid), None, "{invalid}");
+        }
+    }
     #[test]
     fn two_online_fast_cores_are_usable_when_other_cores_are_offline() {
         assert_eq!(select_fast(&[(0,1843200),(1,1843200),(2,1843200),(3,1843200),(6,2208000),(7,2208000)],2),Some(vec![6,7]));
