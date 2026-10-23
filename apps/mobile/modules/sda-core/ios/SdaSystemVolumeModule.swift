@@ -3,10 +3,19 @@ import AVFoundation
 import MediaPlayer
 import UIKit
 
+// Keep Apple's slider geometry and touch area; center its public layout rect.
+private final class CenteredSystemVolumeView: MPVolumeView {
+ override func volumeSliderRect(forBounds bounds: CGRect) -> CGRect {
+  var rect = super.volumeSliderRect(forBounds: bounds)
+  rect.origin.y = bounds.midY - rect.height / 2
+  return rect
+ }
+}
+
 // MPVolumeView owns system-volume writes and route-specific behavior. The app
 // observes changes only; mounting/reloading this view never sets device volume.
 final class SdaSystemVolumeView: ExpoView, UIGestureRecognizerDelegate {
- private let volumeView = MPVolumeView(frame: .zero)
+ private let volumeView = CenteredSystemVolumeView(frame: .zero)
  private let session = AVAudioSession.sharedInstance()
  private var observation: NSKeyValueObservation?
  private var observers: [NSObjectProtocol] = []

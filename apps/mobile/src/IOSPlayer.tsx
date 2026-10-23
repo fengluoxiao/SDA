@@ -167,8 +167,9 @@ function ThemedPlayer(p: PlayerProps) {
     return () => cancelAnimationFrame(pending);
   }, [measureTabletArtwork, page, layoutReady]);
   const tabletArtworkFrame = layoutReady && measuredTabletArtwork?.key === tabletArtworkKey ? measuredTabletArtwork.frame : null;
-  const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings && hasArtwork, page, rootRef: surfaceRef,
-    layoutKey: [width, height, cutoutSide, navigationPreferences.sideTabPosition, tabletPlayer].join(":"), mediaKey: p.selectedUri || "", artworkUri });
+  const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings, page, rootRef: surfaceRef,
+    layoutKey: [width, height, cutoutSide, navigationPreferences.sideTabPosition, tabletPlayer].join(":"), mediaKey: `${p.selectedUri || ""}:${hasArtwork ? artworkUri : "placeholder"}`, artworkUri: hasArtwork ? artworkUri : "" });
+  const fallbackArtwork = React.useMemo(() => <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />, []);
   const transportMargin = tabletLayout?.transportGap ?? landscapeSpacing?.transportGap ?? playerGap + transportInset;
   const measurePlayerBlock = (key: keyof typeof playerBlocks, value: number) => {
     setBlockMeasurements(previous => Math.abs((previous[layoutKey] || initialBlocks)[key] - value) < 0.5
@@ -260,7 +261,7 @@ function ThemedPlayer(p: PlayerProps) {
   </>;
   const headerActions = <>
         {showSystemClock && <SystemClock color={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive} />}
-        {circularMiniPlayerActive && <CircularMiniPlayer elementRef={sharedMini.miniRef} onLayout={sharedMini.capture} visibility={sharedMini.miniOpacity} interactive={page !== 0} title={title} artist={artist} artworkUri={artworkUri} color={immersiveHome ? pc.ink : c.ink}
+        {circularMiniPlayerActive && <CircularMiniPlayer elementRef={sharedMini.miniRef} onLayout={sharedMini.capture} visibility={sharedMini.miniOpacity} interactive={page !== 0} title={title} artist={artist} artworkUri={hasArtwork ? artworkUri : ""} color={immersiveHome ? pc.ink : c.ink}
           positionMs={Math.floor(p.positionMs / 1000) * 1000} durationMs={p.durationMs} playing={playing} disabled={p.busy || p.preparingAudio === true}
           onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
         {circularMiniPlayerActive ? <Animated.View testID="landscape-side-action-controls" pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, alignItems: "center", gap: sideActionMetrics.gap, transform: [{ translateY: sharedMini.active ? sideActionsTravel : page === 0 ? -collapsedMiniSpace : 0 }] }}>{sideActions}</Animated.View> : sideActions}
@@ -303,7 +304,7 @@ function ThemedPlayer(p: PlayerProps) {
     {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /></View> : <View style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     </>}
   </View>}
-  {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={artworkUri} playing={playing} onReady={sharedMini.onArtworkReady} />}
+  {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
   {/* Keep both the moving and settled artwork below the original edge treatment. */}
   {immersiveHome && !tabletPlayer && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
@@ -334,7 +335,7 @@ function ThemedPlayer(p: PlayerProps) {
             {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
               {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </View>}
-            {!tabletPlayer && !hasArtwork && <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />}
+            {!tabletPlayer && !hasArtwork && <Animated.View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ opacity: sharedMini.mainOpacity }}>{fallbackArtwork}</Animated.View>}
           </Pressable>
           <View style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, landscapePlayer && np.landscapeControls, sideNavigationRight && { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }, tabletLayout && { width: tabletLayout.controlsWidth, alignSelf: "center", paddingLeft: 0, paddingRight: 0, paddingTop: 0, gap: 0 }]}>
           <View style={[np.metadata, { transform: [{ translateY: tabletPlayer || landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>

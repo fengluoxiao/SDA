@@ -19,4 +19,10 @@ assert.deepEqual(workflow.on.workflow_dispatch.inputs.platform.options,['both','
 for(const name of ['build-windows','build-macos']){assert(workflow.jobs[name].if.includes('inputs.platform'));const checkout=workflow.jobs[name].steps.find(step=>step.uses?.startsWith('actions/checkout@'));assert.equal(checkout.with.ref,'$'+'{{ inputs.tag }}');}
 const publish=workflow.jobs['publish-release'];assert(publish.if.includes('always()'));assert(publish.if.includes('failure'));
 const upload=publish.steps.find(step=>step.uses?.startsWith('softprops/action-gh-release@'));assert.equal(upload.with.tag_name,'$'+'{{ inputs.tag }}');assert.equal(upload.with.generate_release_notes,false);
-console.log('Mobile release version, build numbers, private signing guard and manual-only desktop publishing checks passed.');
+const android=parse(readFileSync('.github/workflows/android-release-windows.yml','utf8'));
+assert(android.on.workflow_dispatch === null || android.on.workflow_dispatch);assert.equal(android.on.push,undefined);
+assert.equal(android.jobs.android['runs-on'],'windows-2022');
+const build=android.jobs.android.steps.find(step=>step.name==='Build and verify official APK');
+assert.equal(build.run,'./scripts/build-android-release-windows.ps1');
+for(const name of ['SDA_ANDROID_KEYSTORE_BASE64','SDA_ANDROID_RELEASE_STORE_PASSWORD','SDA_ANDROID_RELEASE_KEY_ALIAS','SDA_ANDROID_RELEASE_KEY_PASSWORD']) assert.equal(build.env[name],String.fromCharCode(36)+'{{ secrets.'+name+' }}');
+console.log('Mobile release version, build numbers, private signing guard, Windows Android and manual-only desktop publishing checks passed.');

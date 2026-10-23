@@ -1,0 +1,76 @@
+name: Android official release (Windows)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-official-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  android:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: '1'
+      NODE_ENV: production
+      EXPO_NO_TELEMETRY: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/android-rust
+    steps:
+      - name: Enable long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/sda-native -> ../../android-rust
+          key: android-windows-ndk27-release
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-windows-release-${{ hashFiles('apps/mobile/android/**/*.gradle', 'apps/mobile/android/gradle/wrapper/gradle-wrapper.properties', 'pnpm-lock.yaml') }}
+          restore-keys: gradle-windows-release-
+      - name: Install dependencies and Android tools
+        run: |
+          pnpm install --prod=false --frozen-lockfile --config.node-linker=hoisted
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency install failed' }
+          node scripts/prepare-ac4.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'AC4 preparation failed' }
+          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed' }
+      - name: Build and verify official APK
+        run: ./scripts/build-android-release-windows.ps1
+        env:
+          SDA_ANDROID_KEYSTORE_BASE64: ${{ secrets.SDA_ANDROID_KEYSTORE_BASE64 }}
+          SDA_ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_STORE_PASSWORD }}
+          SDA_ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.SDA_ANDROID_RELEASE_KEY_ALIAS }}
+          SDA_ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-Android-Windows-${{ github.run_number }}
+          path: android-artifacts/
+          if-no-files-found: error
+          retention-days: 14

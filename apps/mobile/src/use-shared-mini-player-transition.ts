@@ -67,7 +67,7 @@ export function useSharedMiniPlayerTransition({ enabled, page, layoutKey, mediaK
     }
     if (old.target === target) return;
     const frames = moving.current?.frames ?? (cached.current?.key === layoutKey ? cached.current.frames : null);
-    if (!frames || readyUri !== artworkUri || !artworkUri) { settle(target); return; }
+    if (!frames || (!!artworkUri && readyUri !== artworkUri)) { settle(target); return; }
     const id = ++generation.current;
     clearTimer(); ++readGeneration.current;
     const pending = { id, frames, target, ready: false }; moving.current = pending; setMotion(pending);

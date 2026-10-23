@@ -95,5 +95,12 @@ props={...props,page:0};render();runFrames();assert.equal(result.active,true);an
 await measure();const beforeReduced=animations.length;events.reduceMotionChanged(true);render();props={...props,page:1};render();runFrames();assert.equal(animations.length,beforeReduced);assert.equal(result.miniOpacity,1);
 events.reduceMotionChanged(false);render();props={...props,page:0};render();runFrames();state.currentState='background';events.change('background');render();assert.equal(result.active,false);assert.equal(result.mainOpacity,1);
 state.currentState='active';props={...props,layoutKey:'667:375:left'};render();assert.equal(result.frames,null,'rotation discards old coordinates');assert.equal(result.mainOpacity,1);
+// A track with no artwork uses its measured music-note view without an image load.
+state.currentState='active';props={...props,page:0,mediaKey:'no-cover',artworkUri:''};render();
+result.artworkRef.current=node(120,100,114,114);await measure();
+props={...props,page:1};render();assert.equal(result.active,true,'placeholder must animate without onLoad');runFrames();assert.equal(animations.at(-1).config.toValue,1);assert.equal(result.frames.artwork.width,114);
+animations.at(-1).callback({finished:true});render();props={...props,page:0};render();runFrames();assert.equal(result.active,true,'placeholder returns along the same independent routes');animations.at(-1).callback({finished:true});render();assert.equal(result.mainOpacity,1);
+// Replacing it with an unloaded image restores the image readiness guard.
+props={...props,mediaKey:'cover-again',artworkUri:'file:///new.jpg'};render();await measure();props={...props,page:1};render();runFrames();assert.equal(result.active,false);
 for(const slot of slots)slot?.cleanup?.();assert.deepEqual(Object.keys(events),[]);assert.equal(timers.size,0);globalThis.setTimeout=realTimeout;globalThis.clearTimeout=realClearTimeout;
-console.log('Shared transition passed: separate straight routes, straight track expansion, connected ring geometry, image readiness, committed-node start, native-position reversal, frozen endpoints, stale-callback rejection, timeout recovery, cancellation, reduced motion, background and rotation.');
+console.log('Shared transition passed: separate straight routes, straight track expansion, connected ring geometry, image and placeholder readiness, committed-node start, native-position reversal, frozen endpoints, stale-callback rejection, timeout recovery, cancellation, reduced motion, background and rotation.');

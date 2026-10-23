@@ -35,8 +35,8 @@ const Stroke = memo(function Stroke({ frames, fraction, value, color }: { frames
 
 // One persistent image is preloaded before hiding either real artwork view.
 // Position and scale have separate containers and share the same measured center.
-export const SharedMiniPlayerArtwork = memo(function SharedMiniPlayerArtwork({ frames, value, active, home, artworkUri, playing, onReady }: {
-  frames: MiniPlayerFrames | null; value: Animated.Value; active: boolean; home: boolean; artworkUri: string; playing: boolean; onReady(uri: string): void;
+export const SharedMiniPlayerArtwork = memo(function SharedMiniPlayerArtwork({ frames, value, active, home, artworkUri, playing, fallbackArtwork, fallbackColor, onReady }: {
+  frames: MiniPlayerFrames | null; value: Animated.Value; active: boolean; home: boolean; artworkUri: string; playing: boolean; fallbackArtwork: React.ReactNode; fallbackColor: string; onReady(uri: string): void;
 }) {
   const styles = useMemo(() => {
     const geometry = frames ?? { artwork: { x: 0, y: 0, width: 1, height: 1 }, progress: { x: 0, y: 0, width: 1, height: 1 }, time: { x: 0, y: 0, width: 1, height: 1 }, mini: { x: 0, y: 0, width: 48, height: 54 } };
@@ -46,6 +46,7 @@ export const SharedMiniPlayerArtwork = memo(function SharedMiniPlayerArtwork({ f
       image: { left: 0, top: 0, width: cover.width, height: cover.height, borderRadius: sample(p => p.round * Math.min(cover.width, cover.height) / 2),
         transform: [{ scaleX: sample(p => p.width / cover.width) }, { scaleY: sample(p => p.height / cover.height) }] },
       shade: { opacity: sample(p => p.symbolOpacity * .3) },
+      placeholder: { opacity: sample(p => 1 - p.symbolOpacity) },
       symbol: { left: cover.width / 2 - 8, top: cover.height / 2 - 8, opacity: sample(p => p.symbolOpacity) },
     };
   }, [frames, value]);
@@ -54,9 +55,9 @@ export const SharedMiniPlayerArtwork = memo(function SharedMiniPlayerArtwork({ f
     <Animated.View style={[s.origin, styles.position]}>
       <Animated.View style={[s.artwork, styles.image]}>
         {!!artworkUri && !!frames && <Image key={artworkUri} source={{ uri: artworkUri }} onLoad={() => onReady(artworkUri)} resizeMode="contain" style={StyleSheet.absoluteFill} />}
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: "#000000" }, styles.shade]} />
+        {artworkUri ? <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: "#000000" }, styles.shade]} /> : <Animated.View testID="shared-mini-player-placeholder" style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }, styles.placeholder]}>{fallbackArtwork}</Animated.View>}
       </Animated.View>
-      <Animated.View style={[s.symbol, styles.symbol]}><IOSPlaybackSymbol playing={playing} color="#ffffff" size={12} /></Animated.View>
+      <Animated.View style={[s.symbol, styles.symbol]}><IOSPlaybackSymbol playing={playing} color={artworkUri ? "#ffffff" : fallbackColor} size={12} /></Animated.View>
     </Animated.View>
   </View>;
 });
