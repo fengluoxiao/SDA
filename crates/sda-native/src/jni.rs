@@ -327,6 +327,12 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeRefreshCpuBudge
     budget as jint
 }
 
+/// Platform thermal hints, sampled on the control executor, never on an audio callback.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeUpdateAudioComputePressure(
+    _env: JNIEnv, _class: JClass, status: jint, headroom: jni::sys::jfloat,
+) { sda_native_renderer::spectral_accelerator::cooperation::thermal(status,headroom); }
+
 /// Decoder placement is configured once by the owning Java feed thread.
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePrepareDecoderThread(

@@ -4,9 +4,16 @@ fn main() {
             .flag("-std=c++17").flag("-fno-exceptions").flag("-fno-rtti")
             .flag("-Wno-missing-field-initializers")
             .cpp_link_stdlib(None::<&str>).compile("sda_vulkan_audio");
+        if std::env::var_os("CARGO_FEATURE_VULKAN_CONVOLUTION_PROBE").is_some() {
+            cc::Build::new().cpp(true).file("../../scripts/vulkan-convolution-probe.cpp")
+                .flag("-std=c++17").flag("-ffp-contract=off").flag("-fno-exceptions")
+                .flag("-fno-rtti").cpp_link_stdlib(None::<&str>).compile("sdaconvolutionprobe");
+            println!("cargo:rerun-if-changed=../../scripts/vulkan-convolution-probe.cpp");
+        }
         println!("cargo:rustc-link-lib=dl");
         println!("cargo:rerun-if-changed=src/vulkan_spectral.cpp");
         println!("cargo:rerun-if-changed=src/vulkan_spectral.spv");
+        println!("cargo:rerun-if-changed=src/vulkan_resident.spv");
     }
     let revision = std::env::var("GITHUB_SHA").ok().or_else(|| std::process::Command::new("git").args(["rev-parse", "HEAD"])
         .output().ok().filter(|output| output.status.success())

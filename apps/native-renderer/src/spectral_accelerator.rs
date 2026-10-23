@@ -4,6 +4,8 @@
 //! framework-managed, unverified per-prediction hardware placement separately.
 use rustfft::num_complex::Complex32;
 
+#[cfg(any(target_os="android",test))]
+pub mod cooperation;
 mod model_graph;
 pub(crate) use model_graph::{Graph, Shape};
 pub(crate) struct Batch {
@@ -11,6 +13,12 @@ pub(crate) struct Batch {
     pub input: Vec<f32>,
     pub output: Vec<f32>,
     pub reference: Vec<f32>,
+    pub resident: bool,
+    pub filter_dirty: Vec<u8>,
+    filter_keys: Vec<Option<(u64,u64,bool)>>,
+    pub cpu_work_ns: u64,
+    pub worker_cpu_ns: u64,
+    pub checked_parity: Option<bool>,
 }
 impl Batch {
     pub fn new(shape: Shape) -> Self {
@@ -19,10 +27,18 @@ impl Batch {
             input: vec![0.; shape.plane() * 6 * shape.parts],
             output: vec![0.; shape.plane() * 4],
             reference: vec![0.; shape.plane() * 4],
+            resident:false, filter_dirty:vec![0;shape.rows],filter_keys:vec![None;shape.rows],
+            cpu_work_ns:0,worker_cpu_ns:0,checked_parity:None,
         }
     }
+    pub fn resident(shape:Shape)->Self {let mut batch=Self::new(shape);batch.resident=true;batch}
+    pub fn row(&mut self,row:usize,id:u64,revision:u64,target:bool){
+        if !self.resident{return;}let key=Some((id,revision,target));
+        if self.filter_keys[row]!=key {self.filter_dirty[row]=1;self.filter_keys[row]=key;}
+    }
     pub fn clear(&mut self) {
-        self.input.fill(0.);
+        if self.resident {let count=self.shape.plane()*self.shape.parts*2;self.input[..count].fill(0.);self.filter_dirty.fill(0);}else{self.input.fill(0.);}
+        self.cpu_work_ns=0;self.worker_cpu_ns=0;self.checked_parity=None;
         self.output.fill(0.);
         self.reference.fill(0.);
     }
@@ -37,6 +53,16 @@ impl Batch {
         let s = self.shape;
         assert!(row < s.rows && part < s.parts);
         assert!(input.len() >= s.bins && left.len() >= s.bins && right.len() >= s.bins);
+        if self.resident {
+            let x=(part*s.rows+row)*s.bins*2;
+            // Complex32 is repr(C), two adjacent f32s, as in the existing SIMD path.
+            unsafe { std::ptr::copy_nonoverlapping(input.as_ptr().cast::<f32>(),self.input.as_mut_ptr().add(x),s.bins*2); }
+            if self.filter_dirty[row]!=0 {
+                let base=2*s.plane()*s.parts+(row*s.parts+part)*s.bins*4;
+                for bin in 0..s.bins {let b=base+bin*4;self.input[b]=left[bin].re;self.input[b+1]=left[bin].im;self.input[b+2]=right[bin].re;self.input[b+3]=right[bin].im;}
+            }
+            return;
+        }
         let base = part * 6 * s.plane() + row * s.bins;
         for (field, values, imaginary) in [
             (0, input, false),
@@ -98,6 +124,16 @@ impl Batch {
     }
     #[cfg(test)]
     pub fn scalar_reference(&mut self) {
+        if self.resident {
+            let s=self.shape;let n=s.plane();self.output.fill(0.);
+            for row in 0..s.rows {for bin in 0..s.bins {let i=row*s.bins+bin;for part in 0..s.parts {
+                let x=(part*s.rows+row)*s.bins*2+bin*2;let h=2*n*s.parts+((row*s.parts+part)*s.bins+bin)*4;
+                let xr=self.input[x];let xi=self.input[x+1];
+                self.output[i]+=xr*self.input[h]-xi*self.input[h+1];self.output[n+i]+=xr*self.input[h+1]+xi*self.input[h];
+                self.output[2*n+i]+=xr*self.input[h+2]-xi*self.input[h+3];self.output[3*n+i]+=xr*self.input[h+3]+xi*self.input[h+2];
+            }}}
+            return;
+        }
         let n = self.shape.plane();
         self.output.fill(0.);
         for part in 0..self.shape.parts {
@@ -184,6 +220,28 @@ pub fn status() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resident_packets_match_original_mac_and_retain_only_versioned_coefficients() {
+        for parts in 1..=4 {
+            let shape=Shape::bounded(8,parts,17).unwrap();
+            let mut old=Batch::new(shape);let mut resident=Batch::resident(shape);
+            for frame in 0..3 {
+                old.clear();resident.clear();
+                for row in 0..shape.rows {
+                    let revision=if frame==2&&row==0{2}else{1};
+                    resident.row(row,row as u64+1,revision,false);
+                    assert_eq!(resident.filter_dirty[row]!=0,frame==0 || (frame==2&&row==0));
+                    for part in 0..parts {
+                        let x:Vec<_>=(0..shape.bins).map(|i|Complex32::new((i+frame+1)as f32*0.01,-((row+part+1)as f32)*0.03)).collect();
+                        let l=vec![Complex32::new(0.2*revision as f32,0.1);shape.bins];let r=vec![Complex32::new(-0.1,0.3);shape.bins];
+                        old.pack(row,part,&x,&l,&r);resident.pack(row,part,&x,&l,&r);
+                    }
+                }
+                old.scalar_reference();resident.scalar_reference();assert_eq!(old.output,resident.output);
+            }
+            resident.clear();resident.row(0,9999,1,false);assert_eq!(resident.filter_dirty[0],1);
+        }
+    }
     #[test]
     fn batch_memory_is_bounded_for_dense_scenes() {
         assert!(Shape::bounded(256, 2, 1025).is_some());

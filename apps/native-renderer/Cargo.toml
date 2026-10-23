@@ -7,6 +7,8 @@ default = ["cpal-output"]
 # windows crate cannot build, and for engine-only mobile targets.
 cpal-output = ["dep:cpal", "dep:windows", "dep:asio-sys"]
 pcm-diagnostic = []
+# Standalone experiment only; never enabled by mobile packaging.
+vulkan-convolution-probe = []
 # Experimental asynchronous filter pipeline; opt-in until moving-source latency
 # and Apple-platform parity have been validated.
 async-filter-preparation = []
@@ -58,3 +60,7 @@ parse_cfg = { path = "vendor/parse_cfg" }
 [[example]]
 name = "output_sessions"
 required-features = ["cpal-output"]
+
+[[example]]
+name = "vulkan_convolution_probe"
+required-features = ["vulkan-convolution-probe"]

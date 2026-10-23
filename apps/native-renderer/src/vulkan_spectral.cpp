@@ -37,7 +37,7 @@ struct State {
  VkDescriptorSetLayout descriptor_layout=VK_NULL_HANDLE;VkPipelineLayout pipeline_layout=VK_NULL_HANDLE;
  VkPipeline pipeline=VK_NULL_HANDLE;VkDescriptorPool descriptor_pool=VK_NULL_HANDLE;VkDescriptorSet descriptor=VK_NULL_HANDLE;
  VkCommandPool command_pool=VK_NULL_HANDLE;VkCommandBuffer command=VK_NULL_HANDLE;VkFence fence=VK_NULL_HANDLE;
- bool in_flight=false;Timings timings{};Buffer input,output;uint32_t plane=0,parts=0;char error[256]{};
+ bool in_flight=false;Timings timings{};Buffer input,output;uint32_t plane=0,parts=0,bins=0;char error[256]{};
  bool fail(const char* what,int result=-1){snprintf(error,sizeof(error),"%s (%d)",what,result);return false;}
  bool check(VkResult result,const char* what){return result==VK_SUCCESS || fail(what,result);}
  void release(Buffer& b){
@@ -98,7 +98,7 @@ struct State {
    }
   }
   if(!physical)return fail("no hardware Vulkan compute queue");
-  if(props.limits.maxComputeWorkGroupInvocations<64 || props.limits.maxComputeWorkGroupSize[0]<64 || props.limits.maxPushConstantsSize<8)return fail("insufficient compute limits");
+  if(props.limits.maxComputeWorkGroupInvocations<64 || props.limits.maxComputeWorkGroupSize[0]<64 || props.limits.maxPushConstantsSize<12)return fail("insufficient compute limits");
   vkGetPhysicalDeviceMemoryProperties(physical,&memory_props);
   float priority=0.5f;VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};q.queueFamilyIndex=info.queue_family;q.queueCount=1;q.pQueuePriorities=&priority;
   VkDeviceCreateInfo dc{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};dc.queueCreateInfoCount=1;dc.pQueueCreateInfos=&q;
@@ -115,7 +115,7 @@ struct State {
   for(uint32_t i=0;i<2;++i){bindings[i].binding=i;bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;bindings[i].descriptorCount=1;bindings[i].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;}
   VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};dl.bindingCount=2;dl.pBindings=bindings;
   if(!check(vkCreateDescriptorSetLayout(device,&dl,nullptr,&descriptor_layout),"create descriptor layout"))return false;
-  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,8};
+  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,12};
   VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pl.setLayoutCount=1;pl.pSetLayouts=&descriptor_layout;pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&push;
   if(!check(vkCreatePipelineLayout(device,&pl,nullptr,&pipeline_layout),"create pipeline layout"))return false;
   VkShaderModuleCreateInfo sh{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sh.codeSize=bytes;sh.pCode=code;VkShaderModule shader=VK_NULL_HANDLE;
@@ -158,14 +158,16 @@ struct State {
   b.coherent=(b.flags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)!=0;
   return check(vkMapMemory(device,b.memory,0,VK_WHOLE_SIZE,0,&b.mapped),"map audio storage");
  }
- bool configure(uint32_t n,uint32_t p,uint64_t cpu_bytes){
-  if(!n || !p || p>4 || cpu_bytes>BUDGET)return fail("invalid bounded audio shape");
+ bool configure(uint32_t n,uint32_t p,uint64_t cpu_bytes,uint32_t b=0){
+  if(!n || !p || p>4 || cpu_bytes>BUDGET || (b && (n%b || n/b>256)))return fail("invalid bounded audio shape");
   uint64_t groups=(uint64_t(n)+63)/64;if(groups>props.limits.maxComputeWorkGroupCount[0])return fail("compute dispatch limit exceeded");
   if(in_flight && !check(vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX),"drain previous submission"))return false;
   in_flight=false;plane=0;parts=0;
   if(!check(vkResetCommandBuffer(command,0),"reset compute commands"))return false;
   release(input);release(output);uint64_t used=cpu_bytes;
   if(!create_buffer(input,uint64_t(n)*6*p*sizeof(float),used) || !create_buffer(output,uint64_t(n)*4*sizeof(float),used))return false;
+  // Padded/unprepared rows start with finite zero coefficients.
+  memset(input.mapped,0,uint64_t(n)*6*p*sizeof(float));
   VkDescriptorBufferInfo buffers[2]={{input.buffer,0,uint64_t(n)*6*p*sizeof(float)},{output.buffer,0,uint64_t(n)*4*sizeof(float)}};
   VkWriteDescriptorSet writes[2]{};
   for(uint32_t i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=descriptor;writes[i].dstBinding=i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i];}
@@ -175,20 +177,25 @@ struct State {
   VkBufferMemoryBarrier before{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};before.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;before.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;before.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;before.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;before.buffer=input.buffer;before.size=VK_WHOLE_SIZE;
   vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&before,0,nullptr);
   vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline_layout,0,1,&descriptor,0,nullptr);
-  uint32_t shape[2]={n,p};vkCmdPushConstants(command,pipeline_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,8,shape);vkCmdDispatch(command,static_cast<uint32_t>(groups),1,1);
+  uint32_t shape[3]={n,p,b};vkCmdPushConstants(command,pipeline_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,12,shape);vkCmdDispatch(command,static_cast<uint32_t>(groups),1,1);
   VkBufferMemoryBarrier after{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};after.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;after.dstAccessMask=VK_ACCESS_HOST_READ_BIT;after.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;after.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;after.buffer=output.buffer;after.size=VK_WHOLE_SIZE;
   vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&after,0,nullptr);
-  if(!check(vkEndCommandBuffer(command),"record compute commands"))return false;plane=n;parts=p;return true;
+  if(!check(vkEndCommandBuffer(command),"record compute commands"))return false;plane=n;parts=p;bins=b;return true;
  }
  int finish_run(int result,uint64_t wall_start,uint64_t cpu_start){
   timings.total=monotonic_ns()-wall_start;uint64_t cpu_end=thread_cpu_ns();timings.host_cpu=cpu_start&&cpu_end>=cpu_start?cpu_end-cpu_start:0;return result;
  }
- int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout){
+ int run(const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,const uint8_t* dirty=nullptr){
   if(!plane || inputs!=uint64_t(plane)*6*parts || outputs!=uint64_t(plane)*4){fail("audio packet shape mismatch");return -1;}
   auto start=monotonic_ns(),cpu_start=thread_cpu_ns();timings={};timings.input_flags=input.flags;timings.output_flags=output.flags;timings.input_allocated=input.allocated;timings.output_allocated=output.allocated;
   auto done=[&](int result){return finish_run(result,start,cpu_start);};
   if(in_flight){fail("previous GPU work still pending");return done(-1);}
-  memcpy(input.mapped,src,inputs*sizeof(float));
+  if(dirty && bins){
+   auto mapped=static_cast<float*>(input.mapped);size_t signal=size_t(plane)*2*parts;
+   memcpy(mapped,src,signal*sizeof(float));
+   size_t stride=size_t(parts)*bins*4;
+   for(uint32_t row=0;row<plane/bins;row++)if(dirty[row])memcpy(mapped+signal+row*stride,src+signal+row*stride,stride*sizeof(float));
+  }else memcpy(input.mapped,src,inputs*sizeof(float));
   if(!input.coherent){VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=input.memory;range.size=VK_WHOLE_SIZE;if(!check(vkFlushMappedMemoryRanges(device,1,&range),"flush audio input"))return done(-1);}
   timings.upload=monotonic_ns()-start;
   if(timings.upload>=timeout){fail("GPU upload exceeded audio deadline");return done(1);}
@@ -218,6 +225,14 @@ int sda_vk_configure(void* handle,uint32_t plane,uint32_t parts,uint64_t cpu_byt
 }
 int sda_vk_run(void* handle,const float* src,size_t inputs,float* dst,size_t outputs,uint64_t timeout,char* error,size_t capacity){
  auto s=static_cast<State*>(handle);if(!s || !src || !dst)return -1;int result=s->run(src,inputs,dst,outputs,timeout);if(result)copy_error(s,error,capacity);return result;
+}
+int sda_vk_configure_resident(void* handle,uint32_t rows,uint32_t parts,uint32_t bins,uint64_t cpu,char*err,size_t cap){
+ auto s=static_cast<State*>(handle);if(!s || !rows || rows>256 || bins<2 || bins>4097)return -1;
+ bool ok=s->configure(rows*bins,parts,cpu,bins);if(!ok)copy_error(s,err,cap);return ok?0:-1;
+}
+int sda_vk_run_resident(void*handle,const float*src,size_t inputs,float*dst,size_t outputs,const uint8_t*dirty,uint64_t timeout,char*err,size_t cap){
+ auto s=static_cast<State*>(handle);if(!s || !src || !dst || !dirty || !s->bins)return -1;
+ int rc=s->run(src,inputs,dst,outputs,timeout,dirty);if(rc)copy_error(s,err,cap);return rc;
 }
 void sda_vk_timings(void* handle,Timings* out){if(handle && out)*out=static_cast<State*>(handle)->timings;}
 void sda_vk_close(void* handle){if(handle){auto s=static_cast<State*>(handle);s->~State();free(s);}}

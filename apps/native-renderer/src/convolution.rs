@@ -93,6 +93,8 @@ impl PreparedStereoFilter {
 pub struct StereoPartitionedConvolver {
     partition: usize,
     fft_len: usize,
+    spectral_identity: u64,
+    spectral_revision: u64,
     forward: Arc<dyn Fft<f32>>,
     inverse: Arc<dyn Fft<f32>>,
     filters_left: Vec<Vec<Complex32>>,
@@ -148,7 +150,9 @@ impl StereoPartitionedConvolver {
             .max(inverse.get_inplace_scratch_len());
         let (filters_left, filters_right) =
             prepare_filters_stereo(left, right, partition, fft_len, &forward);
+        static NEXT_SPECTRAL_ID: std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
         Ok(Self {
+            spectral_identity:NEXT_SPECTRAL_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed),spectral_revision:0,
             partition,
             fft_len,
             forward,
@@ -211,6 +215,7 @@ impl StereoPartitionedConvolver {
         self.silent_blocks >= self.history.len() + 1
     }
     fn commit_filter(&mut self, filter: PreparedStereoFilter) {
+        self.spectral_revision=self.spectral_revision.wrapping_add(1);
         self.spare_filter = Some(PreparedStereoFilter {
             filters_left: std::mem::replace(&mut self.filters_left, filter.filters_left),
             filters_right: std::mem::replace(&mut self.filters_right, filter.filters_right),
@@ -218,6 +223,7 @@ impl StereoPartitionedConvolver {
     }
     /// Retarget without discarding the overlap or the partition history.
     pub fn transition_to(&mut self, filter: PreparedStereoFilter, samples: usize) {
+        self.spectral_revision=self.spectral_revision.wrapping_add(1);
         assert_eq!(filter.filters_left.len(), self.history.len());
         if let Some((old, elapsed, duration)) = self.transition.take() {
             let mix = elapsed as f32 / duration as f32;
@@ -244,6 +250,7 @@ impl StereoPartitionedConvolver {
     /// but reuse the abandoned transition target when a moving object changes
     /// direction again before its prior handoff completes.
     pub fn transition_to_pair(&mut self, left: &[f32], right: &[f32], samples: usize) {
+        self.spectral_revision=self.spectral_revision.wrapping_add(1);
         let recycle = if let Some((old, elapsed, duration)) = self.transition.take() {
             let mix = elapsed as f32 / duration as f32;
             for (current, target) in self
@@ -289,6 +296,7 @@ impl StereoPartitionedConvolver {
         );
     }
     pub fn reset(&mut self) {
+        self.spectral_revision=self.spectral_revision.wrapping_add(1);
         self.block_prepared = false;
         self.previous_input.fill(0.0);
         for spectrum in &mut self.history {
@@ -358,6 +366,8 @@ impl StereoPartitionedConvolver {
 
     pub(crate) fn pack_spectra(&self, batch: &mut crate::spectral_accelerator::Batch, row: usize) {
         if !self.block_prepared { return; }
+        batch.row(row,self.spectral_identity,self.spectral_revision,false);
+        if self.transition.is_some(){batch.row(row+1,self.spectral_identity,self.spectral_revision,true);}
         for part in 0..self.history.len() {
             let input = &self.history[(self.history_cursor + self.history.len() - part) % self.history.len()];
             batch.pack(row, part, input, &self.filters_left[part], &self.filters_right[part]);

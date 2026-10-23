@@ -97,6 +97,7 @@ impl ComputeBackend for Backend {
             self.notes.join(";")
         ))
     }
+    fn packet(&self,shape:Shape)->Batch {self.active.as_ref().map_or_else(||Batch::new(shape),|b|b.packet(shape))}
     fn execute(&mut self, batch: &mut Batch, timeout: u64) -> Result<(), String> {
         self.active
             .as_mut()

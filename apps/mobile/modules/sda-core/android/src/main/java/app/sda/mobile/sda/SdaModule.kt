@@ -43,6 +43,25 @@ class SdaModule : Module() {
     @Volatile private var inputBytesSubmitted = 0L
     @Volatile private var dspCpuBudget = 0
     @Volatile private var audioCpuPolicy = JSONObject()
+    private var audioPolicyMonitor: java.util.concurrent.ScheduledExecutorService? = null
+    private fun startAudioPolicy(context: android.content.Context) {
+        if (audioPolicyMonitor != null) return
+        val power = context.getSystemService(android.os.PowerManager::class.java)
+        val monitor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "SDA thermal policy").apply { priority = Thread.MIN_PRIORITY }
+        }
+        audioPolicyMonitor = monitor
+        // getThermalHeadroom is sampled at most once per ten seconds. Unsupported
+        // devices report NaN; measured render pressure remains available.
+        monitor.scheduleWithFixedDelay({
+            if (!destroyed) runCatching {
+                val status = if (android.os.Build.VERSION.SDK_INT >= 29) power.currentThermalStatus else 0
+                val headroom = if (android.os.Build.VERSION.SDK_INT >= 30) power.getThermalHeadroom(10) else Float.NaN
+                SdaEngine.nativeUpdateAudioComputePressure(status, headroom)
+                if (backgroundSession != 0L) dspCpuBudget = SdaEngine.nativeRefreshCpuBudget()
+            }
+        }, 0, 10, java.util.concurrent.TimeUnit.SECONDS)
+    }
     private val nativeLock = Object()
     private val lifecycleLock = Object()
 
@@ -275,7 +294,7 @@ class SdaModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
-        OnCreate { appContext.reactContext?.let { VendorNpuRuntime.prepare(it) } }
+        OnCreate { appContext.reactContext?.let { VendorNpuRuntime.prepare(it); startAudioPolicy(it.applicationContext) } }
         Name("SdaEngine")
         Events("onMediaCommand")
         OnActivityEntersForeground { inBackground = false; refreshAudioSchedulingSoon(); diagnostics?.event("foreground", generation) }
@@ -810,6 +829,7 @@ class SdaModule : Module() {
         }
 
         OnDestroy {
+            audioPolicyMonitor?.shutdownNow(); audioPolicyMonitor = null
             diagnostics?.configure(false) { JSONObject() }
             synchronized(nativeLock) {
                 destroyed = true

@@ -9,7 +9,8 @@ a=p.parse_args()
 ndk=os.environ.get('ANDROID_NDK_HOME') or os.environ.get('ANDROID_NDK_ROOT')
 compiler=a.glslc or (Path(ndk)/'shader-tools'/('windows-x86_64' if sys.platform=='win32' else 'darwin-x86_64' if sys.platform=='darwin' else 'linux-x86_64')/('glslc.exe' if sys.platform=='win32' else 'glslc') if ndk else None)
 if compiler is None:p.error('Set ANDROID_NDK_HOME or pass --glslc')
-source=root/'apps/native-renderer/src/vulkan_spectral.comp'
-output=source.with_suffix('.spv')
-subprocess.run([str(compiler),'--target-env=vulkan1.0','-fshader-stage=compute','-O',str(source),'-o',str(output)],check=True)
-print(f'Compiled {output.name}: {output.stat().st_size} bytes')
+for name in ['vulkan_spectral','vulkan_resident']:
+ source=root/f'apps/native-renderer/src/{name}.comp'
+ output=source.with_suffix('.spv')
+ subprocess.run([str(compiler),'--target-env=vulkan1.0','-fshader-stage=compute','-O',str(source),'-o',str(output)],check=True)
+ print(f'Compiled {output.name}: {output.stat().st_size} bytes')

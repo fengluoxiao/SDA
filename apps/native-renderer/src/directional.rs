@@ -626,7 +626,18 @@ pub fn finish_sources<'a>(
         lease.packed_in(started.elapsed());
         if lease.is_qualifying() {
             let cpu = std::time::Instant::now();
-            crate::audio_executor::run(&mut sources, |source| { source.convolver.calculate_spectra(); Ok::<(), String>(()) })?;
+            #[cfg(target_os="android")]
+            let cpu_work=std::sync::atomic::AtomicU64::new(0);
+            crate::audio_executor::run(&mut sources, |source| {
+                #[cfg(target_os="android")]
+                let ticks=crate::spectral_accelerator::cooperation::cpu_ns();
+                source.convolver.calculate_spectra();
+                #[cfg(target_os="android")]
+                {let elapsed=crate::spectral_accelerator::cooperation::cpu_ns().saturating_sub(ticks);if ticks>0{cpu_work.fetch_add(elapsed,std::sync::atomic::Ordering::Relaxed);}}
+                Ok::<(), String>(())
+            })?;
+            #[cfg(target_os="android")]
+            {lease.batch_mut().cpu_work_ns=cpu_work.load(std::sync::atomic::Ordering::Relaxed);}
             let cpu_time = cpu.elapsed();
             let copy = std::time::Instant::now();
             for (i, source) in sources.iter().enumerate() { source.convolver.export_spectra(lease.batch_mut(), i * 2); }

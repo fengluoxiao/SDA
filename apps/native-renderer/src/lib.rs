@@ -3638,6 +3638,7 @@ pub fn spawn_render_worker(
         .name("sda-native-render".into())
         .spawn(move || {
             let _realtime = realtime::ProAudio::enter();
+            #[cfg(target_os="android")] spectral_accelerator::cooperation::new_render_session();
             let mut block = vec![0.0_f32; convolution::DEFAULT_PARTITION * 2];
             let mut observed_epoch = 0_u64;
             let mut mirror_epoch = 0_u64;
@@ -3801,6 +3802,8 @@ pub fn spawn_render_worker(
                         .callback_output_enabled
                         .store(true, Ordering::Release);
                 }
+                #[cfg(target_os="android")]
+                spectral_accelerator::cooperation::observe(frames,engine.output_sample_rate as usize,fifo.available_read(),started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
                 let elapsed = started.elapsed().as_micros() as u64;
                 telemetry
                     .render_block_total_micros

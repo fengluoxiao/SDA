@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 pub(super) trait Backend {
     fn configure(&mut self, shape: Shape) -> Result<String, String>;
+    fn packet(&self,shape:Shape)->Batch {Batch::new(shape)}
     fn execute(&mut self, batch: &mut Batch, timeout_ns: u64) -> Result<(), String>;
     fn details(&self) -> serde_json::Value { serde_json::json!({}) }
     fn deactivate(&mut self) {}
@@ -89,6 +90,9 @@ struct Client {
     native_ns: u64,
     block_base_ns: u64,
     failed: Vec<Shape>,
+    cooperative:bool,
+    cpu_work_ns:u64,
+    retry_after_frame:u64,
 }
 pub(super) struct Service {
     client: Mutex<Client>,
@@ -97,7 +101,8 @@ pub(super) struct Service {
 static SERVICE: OnceLock<Service> = OnceLock::new();
 fn environment_epoch()->u64 {
     #[cfg(all(target_os="ios",feature="coreml-audio"))] { return super::apple::epoch(); }
-    #[cfg(not(all(target_os="ios",feature="coreml-audio")))] { 0 }
+    #[cfg(target_os="android")] { return super::cooperation::epoch(); }
+    #[cfg(not(any(target_os="android",all(target_os="ios",feature="coreml-audio"))))] { 0 }
 }
 #[cfg(all(target_os="ios",feature="coreml-audio"))]
 pub(crate) fn release_inactive_backend() {
@@ -105,6 +110,18 @@ pub(crate) fn release_inactive_backend() {
         service.metrics.active.store(false,Ordering::Release);
         if let Ok(client)=service.client.try_lock() { let _=client.tx.try_send(Command::Deactivate); }
     }
+}
+fn cooperative_deadline()->u64 {
+ #[cfg(any(target_os="android",test))] {return super::cooperation::deadline_ns();}
+ #[cfg(not(any(target_os="android",test)))] {0}
+}
+fn cooperative_share()->u32 {
+ #[cfg(any(target_os="android",test))] {return super::cooperation::share();}
+ #[cfg(not(any(target_os="android",test)))] {0}
+}
+fn saves_cpu(cpu:u64,pack:u64,copy:u64,worker:u64)->bool {
+ #[cfg(any(target_os="android",test))] {return super::cooperation::cpu_saving(cpu,pack,copy.saturating_mul(2),worker);}
+ #[cfg(not(any(target_os="android",test)))] {let _=(cpu,pack,copy,worker);false}
 }
 fn ns(d: Duration) -> u64 {
     d.as_nanos().min(u64::MAX as u128) as u64
@@ -139,7 +156,7 @@ impl Service {
                                     "explicitAcceleratorCount":if cfg!(target_os="android"){1}else{0},
                                     "backendDetails":details});
                             }
-                            Batch::new(shape)
+                            backend.packet(shape)
                         });
                         if let Err(e) = &result { wm.detail("shape-unavailable", e); }
                         Response::Configured(result)
@@ -149,6 +166,7 @@ impl Service {
                         let result = backend.execute(&mut batch, timeout_ns);
                         let elapsed_ns = ns(submitted.elapsed()); wm.last_ns.store(elapsed_ns, Ordering::Relaxed);
                         if result.is_ok() { wm.audio_jobs.fetch_add(1, Ordering::Relaxed); }
+                        if qualifying && batch.resident && result.is_ok(){batch.checked_parity=Some(batch.reference_matches());}
                         if qualifying || result.is_err() {
                             if let Ok(mut detail)=wm.detail.lock() { detail["backendDetails"]=backend.details(); }
                         }
@@ -182,6 +200,7 @@ impl Service {
                 native_ns: 0,
                 block_base_ns: 0,
                 failed: Vec::new(),
+                cooperative:false,cpu_work_ns:0,retry_after_frame:0,
             }),
             metrics,
         }
@@ -223,6 +242,18 @@ impl Service {
             }
             return None;
         }
+        if client.cooperative {
+            let share=cooperative_share();
+            if cooperative_deadline()==0{return None;}
+            if client.qualified>=8 && !client.active {
+                if share==0 || client.frame<client.retry_after_frame{return None;}
+                client.qualified=0;client.warmup=0;
+            }
+            if client.active && (share==0 || client.frame.wrapping_mul(share as u64)%100>=share as u64) {
+                if share==0 {self.metrics.active.store(false,Ordering::Release);}
+                return None;
+            }
+        }
         if client.pending || (!client.active && client.frame % 16 != 0) {
             return None;
         }
@@ -262,7 +293,7 @@ impl Client {
     fn accept(&mut self, response: Response, metrics: &Metrics) {
         self.pending = false;
         match response {
-            Response::Configured(Ok(batch)) => self.ready = Some(batch),
+            Response::Configured(Ok(batch)) => {self.cooperative=batch.resident;self.ready = Some(batch)},
             Response::Configured(Err(error)) => {
                 if let Ok(mut d) = metrics.detail.try_lock() { d["driverError"] = error.into(); }
                 self.reject(metrics, "driver-does-not-support-fp32-audio-graph");
@@ -287,14 +318,14 @@ impl Client {
                     return;
                 }
                 if qualifying {
-                    if !batch.reference_matches() {
+                    if !batch.checked_parity.unwrap_or_else(||batch.reference_matches()) {
                         self.reject(metrics, "fp32-audio-parity-failed");
                         return;
                     }
                     if let Ok(mut d)=metrics.detail.try_lock() {
                         let matched=d["parityMatchedBatches"].as_u64().unwrap_or(0)+1;
                         d["parityMatchedBatches"]=matched.into();
-                        d["lastQualification"]=serde_json::json!({"cpuMacNs":self.cpu_ns,"packingNs":self.pack_ns,"resultCopyNs":self.copy_ns,"executionNs":elapsed_ns,"cpuRenderBlockNs":self.native_ns});
+                        d["lastQualification"]=serde_json::json!({"cpuMacNs":self.cpu_ns,"packingNs":self.pack_ns,"resultCopyNs":self.copy_ns,"executionNs":elapsed_ns,"cpuRenderBlockNs":self.native_ns,"cpuTotalThreadNs":batch.cpu_work_ns,"gpuHostThreadNs":batch.worker_cpu_ns,"cooperative":self.cooperative});
                     }
                     // Warm the driver with real audio while CPU output continues.
                     // No warmup result is ever used as a playback result.
@@ -302,6 +333,22 @@ impl Client {
                         self.warmup += 1;
                         self.ready = Some(batch);
                         return;
+                    }
+                    if self.cooperative {
+                        self.cpu_work_ns=batch.cpu_work_ns;
+                        self.qualified+=1;
+                        let within_audio_budget=self.pack_ns.saturating_add(self.copy_ns).saturating_add(elapsed_ns)<=cooperative_deadline();
+                        let saving=saves_cpu(batch.cpu_work_ns,self.pack_ns,self.copy_ns,batch.worker_cpu_ns);
+                        if self.qualified>=8 {
+                            self.active=within_audio_budget&&saving;
+                            self.retry_after_frame=self.frame+128;
+                            if let Ok(mut d)=metrics.detail.try_lock(){
+                                d["state"]=(if self.active{"cooperative-ready"}else{"cooperative-standby"}).into();
+                                d["reason"]=(if !within_audio_budget{"audio-reserve-budget-insufficient"}else if !saving{"no-measured-host-cpu-saving"}else{"waiting-for-cpu-pressure"}).into();
+                                d["qualifiedForCpuRelief"]=self.active.into();
+                            }
+                        }
+                        self.ready=Some(batch);return;
                     }
                     let full_cost = self
                         .block_base_ns
@@ -321,6 +368,11 @@ impl Client {
                             d["state"] = "qualified".into();
                         }
                     }
+                }
+                if self.cooperative && !qualifying && !saves_cpu(self.cpu_work_ns,self.pack_ns,self.copy_ns,batch.worker_cpu_ns) {
+                    self.active=false;self.qualified=8;self.retry_after_frame=self.frame+128;
+                    metrics.active.store(false,Ordering::Release);
+                    if let Ok(mut d)=metrics.detail.try_lock(){d["state"]="cooperative-standby".into();d["reason"]="host-cpu-saving-lost".into();}
                 }
                 self.ready = Some(batch);
             }
@@ -389,7 +441,7 @@ impl Lease<'_> {
             self.metrics.applied.fetch_add(1, Ordering::Relaxed);
             self.metrics.active_epoch.store(self.client.epoch,Ordering::Release);
             self.metrics.active.store(true, Ordering::Release);
-            if self.client.native_ns > 0 && ns(elapsed) >= self.client.native_ns {
+            if !self.client.cooperative && self.client.native_ns > 0 && ns(elapsed) >= self.client.native_ns {
                 self.client.reject(
                     self.metrics,
                     "complete-render-block-slower-than-cpu-reference",
@@ -404,11 +456,10 @@ impl Lease<'_> {
                 .saturating_sub(self.client.copy_ns);
         }
     }
-    pub fn execute(&mut self) -> bool { self.execute_with_limit(1_000_000) }
+    pub fn execute(&mut self) -> bool { self.execute_with_limit(if self.client.cooperative {4_000_000}else{1_000_000}) }
     fn execute_with_limit(&mut self, limit_ns:u64) -> bool {
-        let budget = (self.client.cpu_ns * 8 / 10)
-            .saturating_sub(self.client.pack_ns + self.client.copy_ns)
-            .min(limit_ns);
+        let budget = if self.client.cooperative {cooperative_deadline()}else{self.client.cpu_ns * 8 / 10}
+            .saturating_sub(self.client.pack_ns + self.client.copy_ns).min(limit_ns);
         if budget == 0 {
             self.client.reject(self.metrics, "no-profitable-deadline");
             return false;
@@ -501,6 +552,7 @@ pub(crate) fn status() -> serde_json::Value {
         .unwrap_or(serde_json::json!({}));
     #[cfg(target_os = "android")]
     {
+        result["cooperation"]=super::cooperation::status();
         result["runtime"] = result["backendDetails"]["runtime"].as_str().unwrap_or("android-audio-backend-selection").into();
         let active = m.active.load(Ordering::Acquire);
         let kind = result["backendDetails"]["acceleratorKind"].as_str();
@@ -716,4 +768,42 @@ mod tests {
         panic!("new playback epoch did not get an independent packet");
     }
 
+}
+
+#[cfg(test)]
+mod cooperative_tests {
+ use super::*;
+ struct Resident;
+ impl Backend for Resident {
+  fn configure(&mut self,_:Shape)->Result<String,String>{Ok("synthetic-test-GPU".into())}
+  fn packet(&self,s:Shape)->Batch{Batch::resident(s)}
+  fn execute(&mut self,b:&mut Batch,_:u64)->Result<(),String>{b.scalar_reference();b.worker_cpu_ns=10_000;Ok(())}
+ }
+ #[test]
+ fn qualified_gpu_stays_idle_when_cool_and_shares_only_under_pressure(){
+  use super::super::cooperation as policy;
+  policy::new_render_session();policy::thermal(0,f32::NAN);
+  for _ in 0..100{policy::observe(1024,48000,16000,5_000_000);}
+  let service=Service::spawn(||Ok(Box::new(Resident)));let shape=Shape::bounded(8,1,9).unwrap();
+  for _ in 0..5000{
+   if let Some(mut lease)=service.begin_in_epoch(shape,0){
+    lease.batch_mut().input.fill(0.1);lease.batch_mut().scalar_reference();
+    let b=lease.batch_mut();b.reference.copy_from_slice(&b.output);b.cpu_work_ns=1_000_000;
+    lease.packed_in(Duration::from_micros(1));lease.submit_reference(Duration::from_millis(1),Duration::from_micros(1));lease.completed_in(Duration::from_millis(2));
+   }
+   if service.client.lock().unwrap().active{break;}
+   std::thread::sleep(Duration::from_micros(100));
+  }
+  assert!(service.client.lock().unwrap().active,"CPU-saving calibration did not finish");
+  assert_eq!(service.metrics.applied.load(Ordering::Relaxed),0);
+  assert!(service.begin_in_epoch(shape,0).is_none(),"cool CPU must keep GPU on standby");
+  policy::thermal(2,0.8);for _ in 0..100{policy::observe(1024,48000,16000,5_000_000);}
+  let mut applied=false;
+  for _ in 0..100{if let Some(mut lease)=service.begin_in_epoch(shape,0){lease.batch_mut().input.fill(0.2);lease.packed_in(Duration::from_micros(1));applied=lease.execute();lease.completed_in(Duration::from_millis(2));if applied{break;}}}
+  assert!(applied,"pressure must allow qualified GPU to share actual work");
+  assert_eq!(service.metrics.applied.load(Ordering::Relaxed),1);
+  policy::thermal(0,f32::NAN);for _ in 0..1100{policy::observe(1024,48000,16000,5_000_000);}
+  assert_eq!(policy::share(),0);assert!(service.begin_in_epoch(shape,0).is_none());
+  policy::new_render_session();
+ }
 }
