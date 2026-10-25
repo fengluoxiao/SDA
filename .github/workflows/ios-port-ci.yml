@@ -1,6 +1,11 @@
 name: iOS device package
 on:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Optional pinned runtime source to package with this workflow
+        required: false
+        type: string
   push:
     branches: [feat/android-port]
     paths:
@@ -48,6 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           submodules: recursive
       - name: Select SDK
         id: sdk
@@ -75,6 +81,24 @@ jobs:
           workspaces: crates/sda-native -> ../../ios-build/cargo
           key: ios-device-${{ matrix.sdk }}-${{ steps.xcode.outputs.fingerprint }}
           cache-on-failure: true
+      - name: Validate provenance inputs and pin runtime source
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          export SDA_SOURCE_COMMIT="$source_sha"
+          echo "SDA_SOURCE_COMMIT=$source_sha" >> "$GITHUB_ENV"
+          if [[ -n "$REQUESTED_SOURCE_REF" && "$GITHUB_WORKFLOW_SHA" != "$source_sha" ]]; then
+            # Only the provenance collector comes from the current workflow.
+            # All application/Rust/assets remain at the requested source.
+            git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
+            git show "$GITHUB_WORKFLOW_SHA:scripts/record-ios-build.mjs" > "$RUNNER_TEMP/sda-record-ios-build.mjs"
+            cp "$RUNNER_TEMP/sda-record-ios-build.mjs" scripts/record-ios-build.mjs
+            changed="$(git diff --name-only)"
+            [[ "$changed" == 'scripts/record-ios-build.mjs' ]]
+          fi
+          node scripts/record-ios-build.mjs --check-inputs
       - name: Install dependencies and prepare resources
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
@@ -82,7 +106,7 @@ jobs:
       - name: Build device Rust library
         run: |
           set -o pipefail
-          bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+          GITHUB_SHA="$SDA_SOURCE_COMMIT" bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
       - name: Restore CocoaPods downloads
         uses: actions/cache@v4
         with:
