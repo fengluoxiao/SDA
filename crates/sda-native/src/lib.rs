@@ -473,7 +473,7 @@ impl MobileEngine {
         let frames = samples.len() / 2;
         if frames > 0 {
             let reference = vec![samples.iter().step_by(2).copied().collect(), samples.iter().skip(1).step_by(2).copied().collect()];
-            let frame = self.alac_adapter.live_frame(&samples, upmix, self.decoded_sample_pos())?;
+            let frame = self.alac_adapter.live_sda_frame(&samples, upmix, self.decoded_sample_pos())?;
             self.feed_alac_pcm(frame, reference)?;
         }
         Ok((frames, self.alac_decoder.as_ref().is_some_and(mp3::Mp3FileDecoder::is_finished)))

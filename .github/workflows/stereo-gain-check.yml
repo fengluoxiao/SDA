@@ -55,6 +55,16 @@ jobs:
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib stereo_and_immersive_formats_share_peak_protection_at_full_output -- --test-threads=1 2>&1 | tee gain-artifacts/peak-protection.txt
           python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed;' in Path('gain-artifacts/peak-protection.txt').read_text()"
+      - name: Check matched Atmos stereo and upmix final loudness
+        run: |
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --no-default-features --features ios-host --lib native_upmix_output_loudness_matches_same_programme_atmos -- --test-threads=1 2>&1 | tee gain-artifacts/matched-loudness.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed;' in Path('gain-artifacts/matched-loudness.txt').read_text()"
+      - name: Check untouched Apple speaker PCM mapping and levels
+        run: |
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --no-default-features --features ios-host --lib stereo_and_upmix_speaker_pcm_have_correct_order_and_no_fake_objects -- --test-threads=1 2>&1 | tee gain-artifacts/system-speaker.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed;' in Path('gain-artifacts/system-speaker.txt').read_text()"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

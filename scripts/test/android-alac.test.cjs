@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const read = p => fs.readFileSync(p, 'utf8');
 const engine = read('crates/sda-native/src/lib.rs');
-assert.match(engine, /self.alac_adapter.live_frame\(&samples, upmix, self.decoded_sample_pos\(\)\)/);
+assert.match(engine, /self.alac_adapter.live_sda_frame\(&samples, upmix, self.decoded_sample_pos\(\)\)/);
 assert.match(engine, /self.feed_alac_pcm\(frame, reference\)/);
 const bridge = read('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaModule.kt');
 assert.match(bridge, /nativePullAlac\(ptr, 4096, alacStereoUpmix\)/);

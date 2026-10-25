@@ -705,7 +705,7 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
         host.check_codec("alac")?;
         let mut adapter = host.alac.lock().map_err(|_| "ALAC adapter poisoned")?;
         for pcm in pcm.chunks(8192) {
-            let frame = adapter.live_frame(pcm,upmix,e.decoded_sample_pos())?;
+            let frame = adapter.live_sda_frame(pcm,upmix,e.decoded_sample_pos())?;
             let reference = vec![pcm.iter().step_by(2).copied().collect(),pcm.iter().skip(1).step_by(2).copied().collect()];
             e.feed_alac_pcm(frame,reference)?;
         }
