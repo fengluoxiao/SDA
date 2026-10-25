@@ -478,15 +478,6 @@ impl MobileEngine {
     }
 
     pub(crate) fn feed_alac_pcm(&mut self, frame: FrameData, reference: Vec<Vec<f32>>) -> EngineResult<()> {
-        // The Android file source announces its codec without changing the
-        // existing iOS externally decoded PCM path.
-        if self.alac_decoder.is_some() && self.announced_codec.as_deref() != Some("alac") {
-            if let Some(pipeline) = &self.pipeline {
-                pipeline.commands.push(render_command::RenderCommand::Command(Command::SetProgramCodec { codec: "alac".into() }))
-                    .map_err(|_| "ALAC codec command queue full")?;
-                self.announced_codec = Some("alac".into());
-            }
-        }
         self.balance.enable_alac_startup();
         // Reserve all buses once, before the first ALAC PCM. Live dry/wet
         // transitions change samples, not the convolution graph or its tails.
@@ -942,7 +933,7 @@ impl MobileEngine {
 
     /// Codec in use (meaningful after auto-detection).
     pub fn codec_name(&self) -> &str {
-        if self.alac_decoder.is_some() { "alac" } else if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
+        if self.alac_decoder.is_some() { "alac" } else if self.mp3_decoder.is_some() { "mp3" } else if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
     }
 
     /// Drains queued FrameData into the render pipeline once started.
@@ -966,6 +957,22 @@ impl MobileEngine {
             }
         }
         while let Some(pending_frame) = pending.pop_front() {
+            // Both iOS external ALAC PCM and Android file-decoded stereo use
+            // this common path. Announce once before its gain/PCM commands;
+            // changing upmix changes channels, never the programme calibration.
+            let stereo_codec = match pending_frame.frame.codec {
+                "alac" => Some("alac"),
+                "mp3" | "mp3-stereo-bed" => Some("mp3"),
+                _ => None,
+            };
+            if let Some(codec) = stereo_codec {
+                if self.announced_codec.as_deref() != Some(codec) {
+                    pipeline.commands.push(render_command::RenderCommand::Command(
+                        Command::SetProgramCodec { codec: codec.into() },
+                    )).map_err(|_| "stereo codec command queue full")?;
+                    self.announced_codec=Some(codec.into());
+                }
+            }
             for command in self.balance.route(&pending_frame) {
                 pipeline.commands.push(render_command::RenderCommand::Command(command))
                     .map_err(|_| "volume balance command queue full")?;
@@ -1209,6 +1216,33 @@ mod tests {
         assert!(engine.startup.lock().unwrap().started, "short files must drain at EOF");
         assert_eq!(engine.startup.lock().unwrap().origin, Some(24000));
         assert_eq!(commands.pending_len_for_debug(), 6);
+    }
+
+    #[test]
+    fn stereo_codec_is_announced_once_before_live_pcm_across_upmix_changes() {
+        fn queued(codec: &'static str, already_announced: bool) -> usize {
+            let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+            let canonical=if codec=="alac" { "alac" } else { "mp3" };
+            if already_announced { engine.announced_codec=Some(canonical.into()); }
+            let commands=Arc::new(render_command::RenderCommandQueue::new(256));
+            engine.pipeline=Some(RenderPipeline {commands:commands.clone(),
+                fifo:Arc::new(stereo_fifo::StereoFifo::new(4096)),telemetry:Arc::new(RuntimeTelemetry::default())});
+            let mut adapter=alac_pcm::AlacPcm::default();
+            for (i,upmix) in [false,true,false].into_iter().enumerate() {
+                let pcm=vec![0.001f32;2048];
+                let mut frame=adapter.frame(&pcm,codec=="alac" && upmix,(i*1024) as u64).unwrap();
+                frame.codec=codec;
+                let pending=engine.balance.measure(frame,None);
+                engine.pending.lock().unwrap().push_back(pending);
+                engine.drain_pending_into_pipeline().unwrap();
+                assert_eq!(engine.announced_codec.as_deref(),Some(canonical));
+            }
+            commands.pending_len_for_debug()
+        }
+        for codec in ["alac","mp3","mp3-stereo-bed"] {
+            assert_eq!(queued(codec,false),queued(codec,true)+1,
+                "stereo format must be sent once, without restarting the upmix or clock: {codec}");
+        }
     }
 
     struct MobileTestOutput;

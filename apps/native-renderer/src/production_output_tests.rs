@@ -2,7 +2,7 @@
 use super::*;
 #[test]
 fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
-    for codec in ["eac3", "mpegh", "av3a", "adm", "future-object-format"] {
+    for codec in ["eac3", "mpegh", "av3a", "alac", "mp3", "mp3-stereo-bed", "adm", "future-object-format"] {
         for spatial in [false, true] {
             let mut full = Engine::new(48000, 2);
             let mut quiet = Engine::new(48000, 2);
@@ -14,7 +14,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
             quiet.set_master_preamp_db(-6.).unwrap();
             quiet.program_enabled = true;
             quiet.set_program_target(0.5, true);
-            let calibration = if ["mpegh","av3a","ac4"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
+            let calibration = if ["mpegh","av3a","ac4","alac","mp3","mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
             let ratio = 0.25 * 10f32.powf(-6. / 20.) * 0.5 * calibration;
             for i in 0..96000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
@@ -149,7 +149,7 @@ fn declare_makeup_source(e: &mut Engine, object: bool, label: &str) {
 
 #[test]
 fn programme_makeup_obeys_format_volume_and_metadata_policy() {
-    for codec in ["eac3", "ac4", "truehd", "mlpa", "ac3", "mpegh", "av3a", "alac", "adm", "future-object-format"] {
+    for codec in ["eac3", "ac4", "truehd", "mlpa", "ac3", "mpegh", "av3a", "alac", "mp3", "mp3-stereo-bed", "adm", "future-object-format"] {
         for volume in [false, true] {
             for spatial in [false, true] {
                 for (object, label) in [(false, "FrontLeft"), (false, "Tfl"), (true, "")] {
@@ -159,7 +159,7 @@ fn programme_makeup_obeys_format_volume_and_metadata_policy() {
                     e.program_enabled = volume;
                     e.set_program_target(0.5, true);
                     declare_makeup_source(&mut e, object, label);
-                    let eligible = volume && (["mpegh","av3a","ac4"].contains(&codec)
+                    let eligible = volume && (["mpegh","av3a","ac4","alac","mp3","mp3-stereo-bed"].contains(&codec)
                         || (["eac3", "truehd", "mlpa"].contains(&codec) && (object || label == "Tfl")));
                     assert_eq!(e.programme_output_makeup.target_db(), if eligible { 2.5 } else { 0.0 },
                         "{codec} volume={volume} spatial={spatial} object={object} label={label}");
@@ -173,7 +173,7 @@ fn programme_makeup_obeys_format_volume_and_metadata_policy() {
 
 #[test]
 fn programme_makeup_is_linked_and_leaves_unselected_codecs_bit_identical() {
-    for codec in ["eac3", "ac4", "truehd", "mlpa", "mpegh", "av3a", "alac", "adm"] {
+    for codec in ["eac3", "ac4", "truehd", "mlpa", "mpegh", "av3a", "alac", "mp3", "mp3-stereo-bed", "adm"] {
         for spatial in [false, true] {
             let mut old = Engine::new(48000, 2);
             let mut new = Engine::new(48000, 2);
@@ -186,7 +186,7 @@ fn programme_makeup_is_linked_and_leaves_unselected_codecs_bit_identical() {
             declare_makeup_source(&mut new, true, "");
             // Reference bypasses only the selected format calibration.
             old.programme_output_makeup = Default::default();
-            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
+            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4", "alac", "mp3", "mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
             for i in 0..24000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
                 let a = old.process_final_output([x, -0.4 * x]);
@@ -237,6 +237,9 @@ fn atmos_makeup_ramps_on_live_toggle_and_cannot_leak_into_the_next_programme() {
     e.refresh_programme_output_makeup(true);
     assert_eq!(e.programme_output_makeup.target_db(), 2.5, "silent object intervals retain programme identity");
     e.set_program_codec("alac".into());
+    assert_eq!(e.programme_output_makeup.target_db(), 2.5, "stereo retains the shared calibration");
+    assert!(!e.dolby_spatial_programme_seen);
+    e.set_program_codec("adm".into());
     assert_eq!(e.programme_output_makeup.target_db(), 0.0);
     e.reset_session(0);
     assert_eq!(e.programme_output_makeup.gain(), 1.0);
@@ -244,7 +247,7 @@ fn atmos_makeup_ramps_on_live_toggle_and_cannot_leak_into_the_next_programme() {
 }
 
 #[test]
-fn atmos_makeup_remains_inside_the_existing_loudness_and_peak_guards() {
+fn atmos_makeup_keeps_peak_protection_without_live_loudness_ducking() {
     for spatial in [false, true] {
         let mut e = Engine::new(48000, 2);
         e.set_spatial_enhancement(spatial).unwrap();
@@ -260,14 +263,13 @@ fn atmos_makeup_remains_inside_the_existing_loudness_and_peak_guards() {
             assert!((y[1] + y[0] * 0.7).abs() < 2e-7);
             if i >= 48000 * 5 { sum += y.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>(); }
         }
-        if spatial {
-            // At 1 kHz the BS.1770 K weighting is approximately +0.7 dB.
-            let lufs = -0.691 + 10. * (sum / 48000.).log10() + 0.7;
-            assert!(lufs <= -18.0, "guard must include makeup: {lufs} LUFS");
-            assert!(lufs > -19.5, "protected output unexpectedly below the common reference: {lufs}");
-            assert!((e.output_dynamics.detector_target_lufs() + 19.2).abs() < 1e-6);
-            assert!(e.output_dynamics.maximum_attenuation_db > 1.5);
-        }
+        // Programme normalization is upstream. The final path meters loudness
+        // without riding it; the linked true-peak checks above still apply.
+        assert!((sum / 96000.).sqrt() > 0.1, "fixed compensation was silently ducked");
+        assert_eq!(e.output_dynamics.gain_db(), 0.0);
+        assert_eq!(e.output_dynamics.maximum_attenuation_db, 0.0);
+        assert_eq!(e.program_gain, 1.0);
+        assert_eq!(e.programme_output_makeup.target_db(), 2.5);
     }
 }
 
@@ -329,7 +331,7 @@ fn atmos_volume_compensation_is_identical_across_spatial_switch_states() {
 }
 
 #[test]
-fn programme_makeup_survives_supported_format_switches_and_clears_for_ordinary_audio() {
+fn programme_makeup_survives_supported_format_switches_and_clears_for_unselected_programmes() {
     let mut e=Engine::new(48000,2);
     e.set_spatial_enhancement(true).unwrap();
     e.program_enabled=true;
@@ -337,7 +339,7 @@ fn programme_makeup_survives_supported_format_switches_and_clears_for_ordinary_a
     e.set_program_target(0.5,true);
     declare_makeup_source(&mut e,true,"");
     e.output_active=true;e.paused=false;
-    for codec in ["mpegh","av3a","ac4","truehd","mlpa","eac3"] {
+    for codec in ["mpegh","av3a","ac4","truehd","mlpa","eac3","alac","mp3","mp3-stereo-bed"] {
         let previous=e.programme_output_makeup.gain();
         e.set_program_codec(codec.into());
         assert_eq!(e.programme_output_makeup.target_db(),2.5,"{codec}");
@@ -345,7 +347,7 @@ fn programme_makeup_survives_supported_format_switches_and_clears_for_ordinary_a
         assert_eq!(e.sources.len(),1);
         assert_eq!(e.program_gain,0.5);
     }
-    e.set_program_codec("alac".into());
+    e.set_program_codec("pcm".into());
     assert_eq!(e.programme_output_makeup.target_db(),0.0);
     for _ in 0..960 {e.advance_output_envelopes();}
     assert_eq!(e.programme_output_makeup.gain(),1.0);

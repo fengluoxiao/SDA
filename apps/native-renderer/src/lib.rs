@@ -1489,10 +1489,10 @@ impl Engine {
     }
 
     // SDA calibration selected by the project owner, independent of the spatial
-    // switch. Named immersive formats use it for both beds and objects. Dolby
+    // switch. Stereo and named immersive formats share the same final output calibration. Dolby
     // E-AC-3/TrueHD additionally require declared spatial programme metadata.
     fn refresh_programme_output_makeup(&mut self, immediate: bool) {
-        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4"));
+        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4" | "alac" | "mp3" | "mp3-stereo-bed"));
         let dolby_codec = matches!(self.program_codec.as_deref(), Some("eac3" | "truehd" | "mlpa"));
         self.dolby_spatial_programme_seen = dolby_codec && (self.dolby_spatial_programme_seen || self.sources.values().any(|source| source.kind == SourceKind::Object
                 || source.bed_label.as_deref().is_some_and(|label| matches!(label,
@@ -1988,7 +1988,7 @@ impl Engine {
     // foreground/auxiliary ratio; the linked final-output guard handles excess
     // processed-output loudness, then true-peak protection handles intersample peaks.
     fn process_final_output(&mut self, mix: [f32; 2]) -> [f32; 2] {
-        // Selected spatial formats share +2.5 dB when programme balance is on. Keep it
+        // Selected stereo and spatial formats share +2.5 dB when programme balance is on. Keep it
         // outside programme measurement and include it in the final guard policy.
         let gain = self.comparison_gain
             * self.cinema.monitor.master_gain() * self.master_preamp.gain();

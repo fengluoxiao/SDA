@@ -104,8 +104,8 @@ android {
         // Both shared native ABIs link libaaudio (Android API 26+).
         minSdkVersion Math.max(26, rootProject.ext.minSdkVersion as int)
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 902
-        versionName "0.9.2"
+        versionCode 921
+        versionName "0.9.21"
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         // RN's architecture property alone does not filter prebuilt AAR/JNI libraries.
         // Keep the final APK restricted to the requested native engine ABI(s).

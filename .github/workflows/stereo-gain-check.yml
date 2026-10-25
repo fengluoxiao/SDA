@@ -1,0 +1,53 @@
+name: Stereo programme gain and shared room check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stereo:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/gain-check/cargo
+      MACINDECODE_AC4_SPEC_DIR: ${{ github.workspace }}/tmp/MacinDecode-AC4-Core/spec
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/sda-native -> ../../gain-check/cargo
+          key: stereo-programme-gain-macos
+      - name: Prepare native inputs
+        run: |
+          mkdir -p gain-artifacts
+          echo "SDA_NODE=$(command -v node)" >> "$GITHUB_ENV"
+          node scripts/prepare-ac4.mjs
+      - name: Check actual native iOS PCM gain and live upmix
+        run: |
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --no-default-features --features ios-host --lib alac_native_balance_changes_output_pcm_in_stereo_and_upmix -- --test-threads=1 2>&1 | tee gain-artifacts/native-pcm.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed' in Path('gain-artifacts/native-pcm.txt').read_text()"
+      - name: Check common native stereo format declarations
+        run: |
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --no-default-features --features ios-host --lib stereo_codec_is_announced_once_before_live_pcm_across_upmix_changes -- --test-threads=1 2>&1 | tee gain-artifacts/codec-declaration.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed' in Path('gain-artifacts/codec-declaration.txt').read_text()"
+      - name: Check shared residual and independent room isolation
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib shared_hrtfhq_depth_preserves_direct_and_respects_layout_and_user_room -- --test-threads=1 2>&1 | tee gain-artifacts/shared-room.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed' in Path('gain-artifacts/shared-room.txt').read_text()"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stereo-programme-gain-check
+          path: gain-artifacts/
+          retention-days: 14
