@@ -474,13 +474,13 @@ final class SdaPlayer {
     self.recordPlaybackEvent("routeChange",detail:String(describing:note.userInfo ?? [:]))
     self.stopHeadTracking()
     if (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { _ = try? self.setPaused(true) }
-    else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
+    else { do { try self.recoverOutputIfNeeded("routeChange") } catch { self.failure = error.localizedDescription; self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
     self.startHeadTracking()
    }
   })
   observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object:nil, queue:nil) { [weak self] _ in
    guard let self else { return }
-   self.locked { do { try self.recoverOutputIfNeeded("configurationChange") } catch { self.failure = String(describing:error); self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
+   self.locked { do { try self.recoverOutputIfNeeded("configurationChange") } catch { self.failure = error.localizedDescription; self.recordPlaybackEvent("outputRecoveryError",detail:String(describing:error)) } }
   })
  }
  func play(_ uri: String, _ name: String, _ yaw: Double, _ hash: String) throws -> String {
@@ -656,7 +656,7 @@ final class SdaPlayer {
     }
     if !keepFeeding { return }
    }
-  } catch { locked { if generation == token { finishPreparation(); done = true; failure = String(describing:error); failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
+  } catch { locked { if generation == token { finishPreparation(); done = true; failure = error.localizedDescription; failureDiagnostic=Self.safePlaybackFailure(error); compressedInputDiagnostic=input.diagnosticState; recordPlaybackEvent("feedError",detail:String(describing:error)); _ = try? setPaused(true) } } }
  }
  // Called only by the serialized native feeder under the player lock, before
  // stopping the old consumer. No React timer/import/bridge round trip at EOF.
@@ -676,7 +676,7 @@ final class SdaPlayer {
   } catch {
    // play() changes generation even on failure; the outgoing feeder must not
    // swallow this error through its stale-generation catch guard.
-   stopNative(); done = true; failure = String(describing:error);failureDiagnostic=Self.safePlaybackFailure(error)
+   stopNative(); done = true; failure = error.localizedDescription;failureDiagnostic=Self.safePlaybackFailure(error)
    recordPlaybackEvent("nativeQueueError",detail:failure ?? "")
   }
   return true

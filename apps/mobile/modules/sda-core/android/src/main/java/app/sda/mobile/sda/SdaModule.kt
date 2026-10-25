@@ -574,7 +574,7 @@ class SdaModule : Module() {
             }
             val isAlac = isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
             val input = try {
-                if (isMp3 || isAlac) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName)
+                if (isMp3 || isAlac) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName, if (isContainer) mp3Cache else null)
             } catch (error: Throwable) {
                 if (ownsSourceCopy) mp3Cache?.delete()
                 throw error

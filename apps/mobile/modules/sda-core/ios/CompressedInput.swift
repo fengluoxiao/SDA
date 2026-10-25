@@ -12,6 +12,8 @@ final class CompressedInput {
  private(set) var av3aSpeakerBed = false
  private var file: FileHandle?
  private var indexed: IndexedCompressedInput?
+ private var preflightIndex: IndexedCompressedInput?
+ private var indexPreflightAttempted = false
  private var submittedHash = SHA256()
  private var submittedCompressedBytes: UInt64 = 0
  private var firstCompressedPTS: CMTime?
@@ -113,6 +115,7 @@ final class CompressedInput {
      throw SdaError.message("当前 ALAC 路径仅支持立体声，不会下混多声道母版")
     }
    }
+   if !isAlac { _ = try validatedIndex() }
    let r = try AVAssetReader(asset: asset)
    let settings: [String:Any]? = isAlac ? [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:48000,
     AVNumberOfChannelsKey:2, AVLinearPCMBitDepthKey:32, AVLinearPCMIsFloatKey:true,
@@ -142,7 +145,7 @@ final class CompressedInput {
   error.domain == AVFoundationErrorDomain && error.code == -11880
  }
  var diagnosticState: [String:Any] {
-  var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis,"indexedPrepared":indexedPrepared]
+  var value:[String:Any] = ["backend":indexed != nil ? "indexed-mp4" : (file != nil ? "raw-file" : "avassetreader"),"indexedRecoveries":indexedRecoveryCount,"submittedCompressedBytes":submittedCompressedBytes,"readerRetries":retries,"indexedRecoveryMillis":indexedRecoveryMillis,"indexedPrepared":indexedPrepared,"indexPreflight":indexPreflightAttempted]
   if let nativeCodec { value["declaredCodec"]=nativeCodec }
   if let id=selectedTrackID { value["trackId"]=id }
   if let code=lastReaderErrorCode { value["lastReaderErrorCode"]=code }
@@ -158,14 +161,23 @@ final class CompressedInput {
   do { indexedPrepared=try adoptVerifiedIndex(recovery:false) }
   catch { indexedRecoveryFailure="initial-prefix-or-index-unverified" }
  }
+ // Inspect the physical sample bounds before playback, not at the fragile
+ // final reader cursor. Reuse the metadata index for later hash verification.
+ private func validatedIndex() throws -> IndexedCompressedInput? {
+  if !indexPreflightAttempted {
+   indexPreflightAttempted=true
+   preflightIndex=try IndexedCompressedInput.open(url,trackID:selectedTrackID)
+  }
+  return preflightIndex
+ }
  private func adoptVerifiedIndex(recovery: Bool) throws -> Bool {
   guard !isAlac, indexed == nil, submittedCompressedBytes > 0,
    let firstCompressedPTS, firstCompressedPTS.isNumeric, let selectedTrackID, selectedTrackID > 0 else { return false }
   let started=Date()
-  guard let replacement=try IndexedCompressedInput.open(url,trackID:selectedTrackID) else { indexedRecoveryFailure="unsupported-container";return false }
+  guard let replacement=try validatedIndex() else { indexedRecoveryFailure="unsupported-container";return false }
   var expected=submittedHash
   try replacement.verifyContinuation(firstPTS:firstCompressedPTS,lastEnd:resumeTimeValid && nextTime.isNumeric ? nextTime : nil,submittedBytes:submittedCompressedBytes,digest:Data(expected.finalize()))
-  reader?.cancelReading();reader=nil;trackOutput=nil;indexed=replacement
+  reader?.cancelReading();reader=nil;trackOutput=nil;indexed=replacement;preflightIndex=nil
   if recovery { indexedRecoveryCount += 1 }
   indexedRecoveryFailure=nil
   indexedRecoveryMillis=Date().timeIntervalSince(started)*1000

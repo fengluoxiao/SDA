@@ -76,24 +76,37 @@ final class IndexedCompressedInput {
   if let trackID, trackID <= 0 { return nil }
   let f=try FileHandle(forReadingFrom:url)
   do {
-   let length=try f.seekToEnd(); var at:UInt64=0; var moov:Data?; var mdats:[Range<UInt64>]=[]
+   let length=try f.seekToEnd(); var at:UInt64=0; var moov:Data?; var mdats:[Range<UInt64>]=[]; var trailingProblem:SdaError?
    while at < length {
-    guard length-at >= 8 else { throw invalid("文件尾 box") }
+    guard length-at >= 8 else { trailingProblem=invalid("文件尾 box");break }
     let h=try exact(f,offset:at,count:Int(min(16,length-at))); var size=try number(h,0,4); let kind=UInt32(try number(h,4,4)); var header:UInt64=8
-    if size == 1 { guard h.count >= 16 else { throw invalid("文件头") }; size=try number(h,8,8); header=16 }
+    if size == 1 { guard h.count >= 16 else { if kind == tag("moov") { throw invalid("文件头") };trailingProblem=invalid("文件头");break }; size=try number(h,8,8); header=16 }
     if size == 0 { size=length-at }
-    guard size >= header, size <= length-at else { throw invalid("文件 box 范围") }
+    guard size >= header, size <= length-at else {
+     // Some tagged files have a malformed non-audio trailer or an mdat size
+     // that includes padding never written to disk. Never invent those bytes:
+     // every selected-track sample must still fit a physically present mdat.
+     if kind == tag("moov") { throw invalid("文件 box 范围") }
+     if kind == tag("mdat"), size >= header { mdats.append(at+header..<length) }
+     trailingProblem=invalid("文件 box 范围");break
+    }
     if kind == tag("moov") {
      guard moov == nil, size-header <= 64*1024*1024 else { throw invalid("moov 长度或重复") }
      moov=try exact(f,offset:at+header,count:Int(size-header))
     } else if kind == tag("mdat") { mdats.append(at+header..<at+size) }
     at += size
    }
-   guard let data=moov, let parsed=try parse(data,mdats:mdats,trackID:trackID) else { try f.close(); return nil }
+   guard let data=moov else { if let trailingProblem { throw trailingProblem };try f.close();return nil }
+   guard let parsed=try parse(data,mdats:mdats,fileLength:length,trackID:trackID) else {
+    if let trailingProblem { throw trailingProblem };try f.close();return nil
+   }
+   // Only a complete, validated sample table can make a damaged trailer
+   // irrelevant. Truncated or out-of-range audio above still throws.
+
    return IndexedCompressedInput(file:f,index:parsed)
   } catch { try? f.close(); throw error }
  }
- private static func parse(_ d: Data, mdats: [Range<UInt64>], trackID: CMPersistentTrackID?) throws -> Index? {
+ private static func parse(_ d: Data, mdats: [Range<UInt64>], fileLength: UInt64, trackID: CMPersistentTrackID?) throws -> Index? {
   let whole=0..<d.count
   if try child(d,whole,"mvex") != nil { return nil }
   let movieScale: Int32? = try child(d,whole,"mvhd").map { try scale(d,$0) }
@@ -147,18 +160,23 @@ final class IndexedCompressedInput {
     guard first >= 1, first <= chunks, count > 0, runs.last.map({ first > $0.first }) ?? (first == 1) else { throw invalid("stsc 范围") }
     runs.append((first,count))
    }
-   var packets=[Packet](); packets.reserveCapacity(total); var run=0; var time:Int64=0
+   var packets=[Packet](); packets.reserveCapacity(total); var run=0; var time:Int64=0; var missingAudioBytes:UInt64=0
    for chunk in 0..<chunks {
     while run+1 < runs.count && runs[run+1].first <= chunk+1 { run += 1 }
     var offset=try number(d,offsetsBox.lowerBound+8+chunk*width,width)
     for _ in 0..<min(runs[run].count,total-packets.count) {
      let i=packets.count; let (stop,overflow)=offset.addingReportingOverflow(UInt64(sizes[i]))
-     guard !overflow, mdats.contains(where: { offset >= $0.lowerBound && stop <= $0.upperBound }) else { throw invalid("样本超出 mdat") }
+     guard !overflow else { throw invalid("样本偏移溢出") }
+     if !mdats.contains(where: { offset >= $0.lowerBound && stop <= $0.upperBound }) {
+      if stop > fileLength { missingAudioBytes=max(missingAudioBytes,stop-fileLength) }
+      else { throw invalid("样本超出 mdat") }
+     }
      packets.append(Packet(offset:offset,size:sizes[i],time:time,duration:durations[i])); time += durations[i]; offset=stop
     }
     if packets.count == total { break }
    }
    guard packets.count == total else { throw invalid("chunk 少于样本数量") }
+   if missingAudioBytes > 0 { throw SdaError.message("音频文件不完整：末尾缺少 \(missingAudioBytes) 字节，请重新下载或重新传输原文件。") }
    var editStart:Int64=0; var leading:Int64=0; var endTime=time
    if let edts=try child(d,track.body,"edts"), let elst=try child(d,edts,"elst") {
     guard let movieScale, elst.count >= 8 else { return nil }

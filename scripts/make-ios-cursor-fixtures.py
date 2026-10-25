@@ -46,14 +46,28 @@ def generate(source,out):
    track_parts.append(box(k,v))
   new_track=b''.join(track_parts)+box(b'edts',edit)
   return box(b'moov',b''.join(box(k,patch_clock(v,declared)) for k,v in children(moov) if k==b'mvhd')+box(b'trak',new_track))
+ accepted=[]
  for use64,name,clipped_tail in [(False,'cursor32.m4a',False),(True,'cursor64.m4a',False),(False,'cursor-clipped-tail.m4a',True)]:
   template=make([0]*618,use64,clipped_tail);start=len(ftyp)+len(template)+8;positions=[];offset=start
   for i,v in enumerate(sequence):
    if i%15==0:positions.append(offset)
    offset+=len(v)
-  built=make(positions,use64,clipped_tail);assert len(built)==len(template);data=ftyp+built+box(b'mdat',payload);(out/name).write_bytes(data)
+  built=make(positions,use64,clipped_tail);assert len(built)==len(template);data=ftyp+built+box(b'mdat',payload);(out/name).write_bytes(data);accepted.append(name)
   if name=='cursor32.m4a':
    (out/'truncated.m4a').write_bytes(data[:-1])
+   (out/'truncated-52151.m4a').write_bytes(data[:-52151])
    (out/'ambiguous.m4a').write_bytes(ftyp+built+box(b'mdat',bytes(len(payload))))
- (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
+   variants={
+    'cursor-id3-tail.m4a':data+b'TAG'+bytes(125),
+    'cursor-short-padding.m4a':data+bytes(3),
+    'cursor-invalid-free-tail.m4a':data+u32(4096)+b'free'+bytes(8),
+    'cursor-short-extended-tail.m4a':data+u32(1)+b'free'+bytes(4),
+    'cursor-overdeclared-mdat.m4a':ftyp+built+u32(len(payload)+8+65536)+b'mdat'+payload,
+    'cursor-overdeclared-mdat64.m4a':ftyp+make([v+8 for v in positions],False)+u32(1)+b'mdat'+struct.pack('>Q',2**64-1)+payload,
+   }
+   for variant,content in variants.items():(out/variant).write_bytes(content);accepted.append(variant)
+   (out/'truncated-mdat64.m4a').write_bytes(variants['cursor-overdeclared-mdat64.m4a'][:-1])
+   (out/'invalid-first-box.m4a').write_bytes(u32(4096)+b'ftyp'+bytes(4))
+   (out/'truncated-moov.m4a').write_bytes(ftyp+u32(len(built))+b'moov'+built[8:-1])
+ (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'accepted':accepted,'rejected':['truncated-52151.m4a','truncated.m4a','truncated-mdat64.m4a','invalid-first-box.m4a','truncated-moov.m4a'],'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
 if __name__=='__main__':generate(Path(sys.argv[1]),Path(sys.argv[2]))

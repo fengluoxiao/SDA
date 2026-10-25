@@ -28,19 +28,23 @@ object Eac3Input {
         }
     }
 
-    fun open(context: Context, uri: Uri, displayName: String): InputStream {
+    fun open(context: Context, uri: Uri, displayName: String, localContainer: java.io.File? = null): InputStream {
         return when (displayName.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
             "eac3", "ec3", "ac4", "mhas", "av3a" -> context.contentResolver.openInputStream(uri)
                 ?: throw IllegalArgumentException("无法打开所选音频文件")
-            "m4a", "mp4" -> openContainer(context, uri)
+            "m4a", "mp4" -> openContainer(context, uri, localContainer)
             else -> throw IllegalArgumentException("支持 .eac3/.ec3、.ac4、.av3a、.mhas，以及包含 Atmos/360RA/Audio Vivid 音轨的 .m4a/.mp4")
         }
     }
 
-    private fun openContainer(context: Context, uri: Uri): InputStream {
+    private fun openContainer(context: Context, uri: Uri, localContainer: java.io.File?): InputStream {
         val extractor = MediaExtractor()
         try {
-            extractor.setDataSource(context, uri, null)
+            val source = localContainer ?: if (uri.scheme == "file") uri.path?.let { java.io.File(it) } else null
+            if (source != null) {
+                Mp4AudioBounds.validateEac3(source)
+                extractor.setDataSource(source.absolutePath)
+            } else extractor.setDataSource(context, uri, null)
             val formats = (0 until extractor.trackCount).map { extractor.getTrackFormat(it) }
             val track = formats.indexOfFirst {
                 it.getString(MediaFormat.KEY_MIME) in setOf("audio/eac3", "audio/eac3-joc")

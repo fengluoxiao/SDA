@@ -75,7 +75,7 @@ enum SdaError: LocalizedError {
   let manifest=try JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("manifest.json"))) as! [String:Any]
   let sizes=manifest["sizes"] as! [Int]
   var checks:[[String:Any]]=[]
-  for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
+  for name in (manifest["accepted"] as! [String]) {
    for start in [0,2] {
     checkpoint("manual-index \(name) start=\(start)")
     guard let reader=try IndexedCompressedInput.open(root.appendingPathComponent(name)) else { throw SdaError.message("Synthetic EC3 index not found") }
@@ -120,9 +120,20 @@ enum SdaError: LocalizedError {
   var rejected=false
   do { try bad.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:nil,submittedBytes:UInt64(sizes[0]),digest:Data(repeating:0,count:32)) } catch { rejected=true }
   guard rejected else { throw SdaError.message("Mismatched prefix was accepted") }
+  for name in (manifest["rejected"] as! [String]) {
+   rejected=false
+   do { _ = try IndexedCompressedInput.open(root.appendingPathComponent(name)) } catch {
+    rejected=true
+    if name == "truncated-52151.m4a" && !error.localizedDescription.contains("52151") { throw SdaError.message("Missing byte count was not reported") }
+   }
+   guard rejected else { throw SdaError.message("Truncated media was treated as EOF: " + name) }
+  }
+  checkpoint("truncated-preflight-before-playback")
   rejected=false
-  do { _ = try IndexedCompressedInput.open(root.appendingPathComponent("truncated.m4a")) } catch { rejected=true }
-  guard rejected else { throw SdaError.message("Truncated media was treated as EOF") }
+  do { _ = try CompressedInput(url:root.appendingPathComponent("truncated-52151.m4a"),name:"truncated-52151.m4a") } catch {
+   rejected=error.localizedDescription.contains("52151")
+  }
+  guard rejected else { throw SdaError.message("Truncated MP4 was not rejected before playback") }
   let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"partialPrerollVerified":true,"clampedTimestampTailVerified":true,"ambiguityRejected":true,"earlyCompletionTailVerified":true,"syntheticOnly":true]
   print(String(decoding:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]),as:UTF8.self))
  }
