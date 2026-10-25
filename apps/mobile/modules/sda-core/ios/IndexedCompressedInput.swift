@@ -131,7 +131,7 @@ final class IndexedCompressedInput {
    let references=try children(d,dref.lowerBound+8..<dref.upperBound)
    guard references.count == 1, references[0].kind == tag("url "),references[0].body.count >= 4,
     try number(d,references[0].body.lowerBound,4) & 1 == 1 else { return nil }
-   if try child(d,stbl,"ctts") != nil { return nil }
+   let composition=try child(d,stbl,"ctts")
    let timescale=try scale(d,required(d,mdia,"mdhd"))
    guard let sz=try child(d,stbl,"stsz"), let sc=try child(d,stbl,"stsc"), let ts=try child(d,stbl,"stts") else { return nil }
    guard sz.count >= 12 else { throw invalid("stsz 长度") }
@@ -177,6 +177,18 @@ final class IndexedCompressedInput {
    }
    guard packets.count == total else { throw invalid("chunk 少于样本数量") }
    if missingAudioBytes > 0 { throw SdaError.message("音频文件不完整：末尾缺少 \(missingAudioBytes) 字节，请重新下载或重新传输原文件。") }
+   if let composition {
+    guard composition.count >= 8 else { throw invalid("ctts 长度") }
+    let version=try number(d,composition.lowerBound,1)
+    guard version <= 1 else { return nil }
+    let count=Int(try number(d,composition.lowerBound+4,4))
+    guard count <= 4_194_304, composition.count >= 8+count*8 else { throw invalid("ctts 数量或长度") }
+    // Zero composition offsets do not change the stts clock. Some audio
+    // remuxers retain a short all-zero run from the original segment.
+    // Nonzero/reordered presentation stays on AVFoundation, but physical
+    // truncation must already have been rejected above for either case.
+    for i in 0..<count { if try number(d,composition.lowerBound+12+i*8,4) != 0 { return nil } }
+   }
    var editStart:Int64=0; var leading:Int64=0; var endTime=time
    if let edts=try child(d,track.body,"edts"), let elst=try child(d,edts,"elst") {
     guard let movieScale, elst.count >= 8 else { return nil }

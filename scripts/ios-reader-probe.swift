@@ -102,7 +102,7 @@ enum SdaError: LocalizedError {
   try clipped.verifyContinuation(firstPTS:CMTime(value:-3072,timescale:48000),lastEnd:CMTime(value:Int64(9224*1536-3072-766),timescale:48000),submittedBytes:UInt64(prefixCount),digest:Data(SHA256.hash(data:expected.prefix(prefixCount))))
   var clippedTail=Data();while let packet=try clipped.next(chunkBytes:24576) { clippedTail.append(packet) }
   guard clippedTail == expected.suffix(from:prefixCount) else { throw SdaError.message("Clamped timestamp dropped or repeated the tail") }
-  for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a"] {
+  for name in ["cursor32.m4a","cursor64.m4a","cursor-clipped-tail.m4a","cursor-zero-ctts.m4a","cursor-short-zero-ctts.m4a"] {
    checkpoint("automatic-index \(name)")
    let input=try CompressedInput(url:root.appendingPathComponent(name),name:name)
    inspected=input
@@ -124,16 +124,19 @@ enum SdaError: LocalizedError {
    rejected=false
    do { _ = try IndexedCompressedInput.open(root.appendingPathComponent(name)) } catch {
     rejected=true
-    if name == "truncated-52151.m4a" && !error.localizedDescription.contains("52151") { throw SdaError.message("Missing byte count was not reported") }
+    if ["truncated-52151.m4a","truncated-zero-ctts.m4a","truncated-nonzero-ctts.m4a"].contains(name) && !error.localizedDescription.contains("52151") { throw SdaError.message("Missing byte count was not reported") }
    }
    guard rejected else { throw SdaError.message("Truncated media was treated as EOF: " + name) }
   }
-  checkpoint("truncated-preflight-before-playback")
-  rejected=false
-  do { _ = try CompressedInput(url:root.appendingPathComponent("truncated-52151.m4a"),name:"truncated-52151.m4a") } catch {
-   rejected=error.localizedDescription.contains("52151")
+  for name in (manifest["unsupportedForIndex"] as! [String]) {
+   guard try IndexedCompressedInput.open(root.appendingPathComponent(name)) == nil else { throw SdaError.message("Reordered presentation was sent to the DTS-only reader") }
   }
-  guard rejected else { throw SdaError.message("Truncated MP4 was not rejected before playback") }
+  checkpoint("truncated-preflight-before-playback")
+  for name in ["truncated-52151.m4a","truncated-zero-ctts.m4a","truncated-nonzero-ctts.m4a"] {
+   rejected=false
+   do { _ = try CompressedInput(url:root.appendingPathComponent(name),name:name) } catch { rejected=error.localizedDescription.contains("52151") }
+   guard rejected else { throw SdaError.message("Truncated MP4 was not rejected before playback: " + name) }
+  }
   let report:[String:Any] = ["ok":true,"cases":checks,"hashMismatchRejected":true,"truncationRejected":true,"partialPrerollVerified":true,"clampedTimestampTailVerified":true,"ambiguityRejected":true,"earlyCompletionTailVerified":true,"syntheticOnly":true]
   print(String(decoding:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]),as:UTF8.self))
  }

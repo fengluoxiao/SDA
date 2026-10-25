@@ -29,9 +29,10 @@ def generate(source,out):
  # Match the failing metadata shape, using only the existing generated tones.
  count=9270;sequence=[packets[i%len(packets)] for i in range(count)];lengths=[len(v) for v in sequence];declared=count*1536-766
  payload=b''.join(sequence);out.mkdir(parents=True,exist_ok=True);(out/'expected.eac3').write_bytes(payload)
- def make(offsets,use64,clipped_tail=False):
+ def make(offsets,use64,clipped_tail=False,composition=None):
   timing=u32(2)+u32(count-1)+u32(1536)+u32(1)+u32(770) if clipped_tail else u32(1)+u32(count)+u32(1536)
   table=box(b'stsd',stsd)+full(b'stts',timing)+full(b'stsc',u32(2)+u32(1)+u32(15)+u32(1)+u32(618)+u32(15)+u32(1))
+  if composition is not None:table+=full(b'ctts',u32(1)+u32(composition[0])+u32(composition[1]))
   table+=full(b'stsz',u32(0)+u32(count)+b''.join(u32(v) for v in lengths))
   table+=full(b'co64' if use64 else b'stco',u32(len(offsets))+b''.join(struct.pack('>Q' if use64 else '>I',v) for v in offsets))
   new_minf=b''.join(box(k,table if k==b'stbl' else v) for k,v in children(minf))
@@ -58,6 +59,9 @@ def generate(source,out):
    (out/'truncated-52151.m4a').write_bytes(data[:-52151])
    (out/'ambiguous.m4a').write_bytes(ftyp+built+box(b'mdat',bytes(len(payload))))
    variants={
+    'cursor-zero-ctts.m4a':ftyp+make([v+24 for v in positions],False,composition=(count,0))+box(b'mdat',payload),
+    'cursor-short-zero-ctts.m4a':ftyp+make([v+24 for v in positions],False,composition=(112,0))+box(b'mdat',payload),
+    'cursor-nonzero-ctts.m4a':ftyp+make([v+24 for v in positions],False,composition=(count,1536))+box(b'mdat',payload),
     'cursor-id3-tail.m4a':data+b'TAG'+bytes(125),
     'cursor-short-padding.m4a':data+bytes(3),
     'cursor-invalid-free-tail.m4a':data+u32(4096)+b'free'+bytes(8),
@@ -65,9 +69,13 @@ def generate(source,out):
     'cursor-overdeclared-mdat.m4a':ftyp+built+u32(len(payload)+8+65536)+b'mdat'+payload,
     'cursor-overdeclared-mdat64.m4a':ftyp+make([v+8 for v in positions],False)+u32(1)+b'mdat'+struct.pack('>Q',2**64-1)+payload,
    }
-   for variant,content in variants.items():(out/variant).write_bytes(content);accepted.append(variant)
+   for variant,content in variants.items():
+    (out/variant).write_bytes(content)
+    if variant!='cursor-nonzero-ctts.m4a':accepted.append(variant)
+   (out/'truncated-zero-ctts.m4a').write_bytes(variants['cursor-short-zero-ctts.m4a'][:-52151])
+   (out/'truncated-nonzero-ctts.m4a').write_bytes(variants['cursor-nonzero-ctts.m4a'][:-52151])
    (out/'truncated-mdat64.m4a').write_bytes(variants['cursor-overdeclared-mdat64.m4a'][:-1])
    (out/'invalid-first-box.m4a').write_bytes(u32(4096)+b'ftyp'+bytes(4))
    (out/'truncated-moov.m4a').write_bytes(ftyp+u32(len(built))+b'moov'+built[8:-1])
- (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'accepted':accepted,'rejected':['truncated-52151.m4a','truncated.m4a','truncated-mdat64.m4a','invalid-first-box.m4a','truncated-moov.m4a'],'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
+ (out/'manifest.json').write_text(json.dumps({'samples':count,'sizes':lengths,'accepted':accepted,'unsupportedForIndex':['cursor-nonzero-ctts.m4a'],'rejected':['truncated-zero-ctts.m4a','truncated-nonzero-ctts.m4a','truncated-52151.m4a','truncated.m4a','truncated-mdat64.m4a','invalid-first-box.m4a','truncated-moov.m4a'],'primingSamples':2,'editOvershootSamples':2306,'authoredSilenceOrToneFixtureOnly':True},indent=2))
 if __name__=='__main__':generate(Path(sys.argv[1]),Path(sys.argv[2]))
