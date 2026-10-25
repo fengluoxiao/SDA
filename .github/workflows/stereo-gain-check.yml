@@ -50,6 +50,11 @@ jobs:
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib stereo_bass -- --test-threads=1 2>&1 | tee gain-artifacts/stereo-bass.txt
           python3 -c "from pathlib import Path; assert 'test result: ok. 4 passed;' in Path('gain-artifacts/stereo-bass.txt').read_text()"
+      - name: Check full-level stereo and immersive peak protection
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib stereo_and_immersive_formats_share_peak_protection_at_full_output -- --test-threads=1 2>&1 | tee gain-artifacts/peak-protection.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed;' in Path('gain-artifacts/peak-protection.txt').read_text()"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

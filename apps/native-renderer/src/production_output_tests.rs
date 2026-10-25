@@ -422,3 +422,32 @@ fn programme_gain_handoff_keeps_protected_output_continuous_for_spatial_formats(
         }
     }
 }
+
+
+#[test]
+fn stereo_and_immersive_formats_share_peak_protection_at_full_output() {
+    fn render(codec:&str,balance:bool,binaural:bool)->Vec<[f32;2]> {
+        let mut e=Engine::new(48000,2);
+        e.set_binaural_enabled(binaural);e.set_spatial_enhancement(binaural).unwrap();
+        e.set_program_codec(codec.into());declare_makeup_source(&mut e,true,"");
+        e.program_enabled=balance;e.set_program_target(1.,true);e.set_output_volume(1.,true);
+        assert_eq!(e.programme_output_makeup.target_db(),if balance {2.5} else {0.});
+        let ceiling=10f32.powf(true_peak_guard::CEILING_DB as f32/20.);
+        let output:Vec<_>=(0..24000).map(|i| {
+            let x=if i%3000<8 {2.5} else {(i as f32*0.51).sin()*1.2+(i as f32*0.013).sin()*0.2};
+            let y=e.process_final_output([x,-x*0.43]);
+            assert!(y.iter().all(|v|v.is_finite() && v.abs()<=ceiling+1e-7),"peak protection bypassed: {codec} balance={balance} binaural={binaural}: {y:?}");
+            assert!((y[1]+y[0]*0.43).abs()<2e-7,"ears limited independently");
+            y
+        }).collect();
+        assert!(output.iter().any(|v|v[0].abs()>0.4),"test accidentally muted output");
+        assert_eq!(e.output_dynamics.maximum_attenuation_db,0.,"peak test introduced loudness ducking");
+        output
+    }
+    for balance in [false,true] {for binaural in [false,true] {
+        let reference=render("alac",balance,binaural);
+        for codec in ["mp3","mp3-stereo-bed","eac3","truehd","mlpa","mpegh","av3a","ac4"] {
+            assert_eq!(render(codec,balance,binaural),reference,"final peak protection differs for {codec}");
+        }
+    }}
+}
