@@ -12,6 +12,15 @@ pub(super) struct BusRenderer {
     reflections_active: bool,
     diffuse_input: Vec<[f32; vbap::MAX_BUS_COUNT]>,
     diffuser: crate::source_extent::Diffuser,
+    stereo_bass: Option<FrontBass>,
+    stereo_bass_enabled: bool,
+}
+
+#[derive(Clone)]
+struct FrontBass {
+    indices: [usize; 2],
+    normal: [convolution::PreparedStereoFilter; 2],
+    preserved: [convolution::PreparedStereoFilter; 2],
 }
 
 struct Bus {
@@ -46,11 +55,12 @@ impl BusRenderer {
         solver: &vbap::VbapSolver,
         wet_weight: f32,
     ) -> Result<Self, String> {
+        let bass = crate::stereo_bass::prepare(set, solver, wet_weight)?;
         let mut buses = Vec::with_capacity(solver.bus_count());
         let mut reflections = Vec::with_capacity(solver.bus_count());
         for index in 0..solver.bus_count() {
             let (azimuth, elevation) = solver.speaker_direction(index);
-            let (left, right) = set.mixed_speaker(
+            let (mut left, mut right) = set.mixed_speaker(
                 vbap::speakers(solver.layout())[index].name,
                 solver.layout().as_str(),
                 azimuth as f64,
@@ -64,8 +74,22 @@ impl BusRenderer {
                 elevation as f64,
                 0.0,
             )?;
-            let residual_left: Vec<_> = left.iter().zip(dry_left).map(|(a, b)| a - b).collect();
-            let residual_right: Vec<_> = right.iter().zip(dry_right).map(|(a, b)| a - b).collect();
+            if let Some(b) = &bass {
+                if let Some(i) = b.indices.iter().position(|v| *v == index) {
+                    left = b.normal[i].0.clone();
+                    right = b.normal[i].1.clone();
+                }
+            }
+            let residual_left: Vec<_> = left
+                .iter()
+                .zip(dry_left.into_iter().chain(std::iter::repeat(0.)))
+                .map(|(a, b)| a - b)
+                .collect();
+            let residual_right: Vec<_> = right
+                .iter()
+                .zip(dry_right.into_iter().chain(std::iter::repeat(0.)))
+                .map(|(a, b)| a - b)
+                .collect();
             reflections.push(Bus {
                 perf_id: vbap::speakers(solver.layout())[index].name.into(),
                 perf_stage: "hrtf.reflection_bus",
@@ -95,7 +119,22 @@ impl BusRenderer {
                 right: vec![0.0; convolution::DEFAULT_PARTITION],
             });
         }
+        let stereo_bass = bass.map(|b| {
+            let normal = std::array::from_fn(|i| buses[b.indices[i]].convolver.prepared_filter());
+            let preserved = std::array::from_fn(|i| {
+                buses[b.indices[i]]
+                    .convolver
+                    .prepare_pair(&b.preserved[i].0, &b.preserved[i].1)
+            });
+            FrontBass {
+                indices: b.indices,
+                normal,
+                preserved,
+            }
+        });
         Ok(Self {
+            stereo_bass,
+            stereo_bass_enabled: false,
             buses,
             reflections,
             reflections_active: false,
@@ -104,12 +143,58 @@ impl BusRenderer {
         })
     }
 
+    pub(super) fn stereo_bass_preservation_active(&self) -> bool {
+        self.stereo_bass_enabled
+    }
+
+    pub(super) fn set_stereo_bass_preservation(&mut self, enabled: bool) {
+        let enabled = enabled && self.stereo_bass.is_some();
+        if enabled == self.stereo_bass_enabled {
+            return;
+        }
+        self.stereo_bass_enabled = enabled;
+        if let Some(b) = &self.stereo_bass {
+            for i in 0..2 {
+                let filter = if enabled {
+                    b.preserved[i].clone()
+                } else {
+                    b.normal[i].clone()
+                };
+                self.buses[b.indices[i]]
+                    .convolver
+                    .transition_to(filter, convolution::DEFAULT_PARTITION);
+            }
+        }
+    }
+
     pub(super) fn transition_filters_from(&mut self, prepared: &Self) {
         // Same layout and asset length: preserve PCM history, hardware and tails.
-        for (old, new) in self.buses.iter_mut().chain(&mut self.reflections)
-            .zip(prepared.buses.iter().chain(&prepared.reflections)) {
-            old.convolver.transition_to(new.convolver.prepared_filter(), convolution::DEFAULT_PARTITION);
+        for (index, (old, new)) in self.buses.iter_mut().zip(&prepared.buses).enumerate() {
+            let filter = if self.stereo_bass_enabled {
+                prepared
+                    .stereo_bass
+                    .as_ref()
+                    .and_then(|b| {
+                        b.indices
+                            .iter()
+                            .position(|i| *i == index)
+                            .map(|i| b.preserved[i].clone())
+                    })
+                    .unwrap_or_else(|| new.convolver.prepared_filter())
+            } else {
+                new.convolver.prepared_filter()
+            };
+            old.convolver
+                .transition_to(filter, convolution::DEFAULT_PARTITION);
         }
+        for (old, new) in self.reflections.iter_mut().zip(&prepared.reflections) {
+            old.convolver.transition_to(
+                new.convolver.prepared_filter(),
+                convolution::DEFAULT_PARTITION,
+            );
+        }
+        self.stereo_bass = prepared.stereo_bass.clone();
+        self.stereo_bass_enabled &= self.stereo_bass.is_some();
     }
 
     pub(super) fn bus_count(&self) -> usize {
@@ -197,29 +282,33 @@ impl BusRenderer {
         use rayon::prelude::*;
         let active = self.reflections_active;
         let count = self.buses.len() + usize::from(active) * self.reflections.len();
-        if (cfg!(any(target_os = "ios", feature = "caller-participating-dsp")) || crate::realtime::android_audio_policy()) {
+        if (cfg!(any(target_os = "ios", feature = "caller-participating-dsp"))
+            || crate::realtime::android_audio_policy())
+        {
             crate::audio_executor::run(&mut self.buses, finish_bus)?;
-            if active { crate::audio_executor::run(&mut self.reflections, finish_bus)?; }
-        } else {
-        if let Some(pool) = crate::direct_renderer::workers().filter(|_| count >= 8) {
             if active {
-                pool.install(|| {
-                    self.buses
-                        .par_iter_mut()
-                        .chain(self.reflections.par_iter_mut())
-                        .try_for_each(finish_bus)
-                })?;
-            } else {
-                pool.install(|| self.buses.par_iter_mut().try_for_each(finish_bus))?;
+                crate::audio_executor::run(&mut self.reflections, finish_bus)?;
             }
-        } else if active {
-            self.buses
-                .iter_mut()
-                .chain(&mut self.reflections)
-                .try_for_each(finish_bus)?;
         } else {
-            self.buses.iter_mut().try_for_each(finish_bus)?;
-        }
+            if let Some(pool) = crate::direct_renderer::workers().filter(|_| count >= 8) {
+                if active {
+                    pool.install(|| {
+                        self.buses
+                            .par_iter_mut()
+                            .chain(self.reflections.par_iter_mut())
+                            .try_for_each(finish_bus)
+                    })?;
+                } else {
+                    pool.install(|| self.buses.par_iter_mut().try_for_each(finish_bus))?;
+                }
+            } else if active {
+                self.buses
+                    .iter_mut()
+                    .chain(&mut self.reflections)
+                    .try_for_each(finish_bus)?;
+            } else {
+                self.buses.iter_mut().try_for_each(finish_bus)?;
+            }
         }
         if active
             && self
@@ -325,6 +414,49 @@ mod adm_tests {
                 } else {
                     assert!(*gain > 0.0);
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bass_preservation_tests {
+    use super::*;
+    #[test]
+    fn stereo_bass_does_not_move_or_reprocess_any_rear_or_height_bus() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+        let mut set = hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        set.configure_spatial_cues(solver.layout()).unwrap();
+        let wet = set.effective_wet(0.);
+        let mut a = BusRenderer::new(&set, &solver, wet).unwrap();
+        let mut b = BusRenderer::new(&set, &solver, wet).unwrap();
+        b.set_stereo_bass_preservation(true);
+        assert!(b.stereo_bass_enabled);
+        for index in 2..solver.bus_count() {
+            let mut input = [0f32; convolution::DEFAULT_PARTITION];
+            input[0] = 0.1;
+            for block in 0..160 {
+                if block > 0 {
+                    input.fill(0.);
+                }
+                let (mut al, mut ar, mut bl, mut br) = (
+                    [0.; convolution::DEFAULT_PARTITION],
+                    [0.; convolution::DEFAULT_PARTITION],
+                    [0.; convolution::DEFAULT_PARTITION],
+                    [0.; convolution::DEFAULT_PARTITION],
+                );
+                a.buses[index]
+                    .convolver
+                    .process_block(&input, &mut al, &mut ar)
+                    .unwrap();
+                b.buses[index]
+                    .convolver
+                    .process_block(&input, &mut bl, &mut br)
+                    .unwrap();
+                assert_eq!(al, bl, "rear/height left response changed: {index}");
+                assert_eq!(ar, br, "rear/height right response changed: {index}");
             }
         }
     }

@@ -135,6 +135,10 @@ pub mod live_spatial_cues;
 pub mod source_extent;
 pub mod spatial;
 pub mod stereo_fifo;
+mod stereo_bass;
+#[cfg(test)]
+mod stereo_bass_tests;
+pub const STEREO_BASS_PRESERVATION:&str="front-direct-crossfeed-lowband-v1";
 pub mod vbap;
 
 pub mod device_output;
@@ -957,6 +961,7 @@ pub struct RuntimeTelemetry {
     pub near_field_enabled: AtomicBool,
     pub room_enabled: AtomicBool,
     pub spatial_cues_enabled: AtomicBool,
+    pub stereo_bass_preservation_active: AtomicBool,
     /// Actual renderer envelope, separate from the controller's scheduled gain.
     program_gain_db_bits: AtomicU64,
     listener_yaw_degrees_bits: AtomicU64,
@@ -1046,6 +1051,7 @@ impl RuntimeTelemetry {
         });
         self.listener_yaw_degrees_bits.store(yaw.to_bits(),Ordering::Release);
         self.program_enabled.store(engine.program_enabled, Ordering::Release);
+        self.stereo_bass_preservation_active.store(engine.binaural_enabled && engine.bus_renderer.as_ref().is_some_and(|b|b.stereo_bass_preservation_active()),Ordering::Release);
         self.spatial_enhancement_enabled.store(engine.spatial_enhancement_enabled, Ordering::Release);
         self.auxiliary_balance_enabled.store(engine.auxiliary_balance.enabled(), Ordering::Release);
         for (field,value) in self.auxiliary_balance_levels.iter().zip(engine.auxiliary_balance.levels()) {
@@ -1484,8 +1490,15 @@ impl Engine {
     fn set_program_codec(&mut self, codec: String) {
         if self.program_codec.as_ref() != Some(&codec) { self.dolby_spatial_programme_seen = false; }
         self.program_codec = Some(codec);
+        self.refresh_stereo_bass();
         self.refresh_directional_hrtf();
         self.refresh_programme_output_makeup(!self.output_active || self.paused);
+    }
+
+    fn refresh_stereo_bass(&mut self) {
+        let enabled=matches!(self.program_codec.as_deref(),Some("alac" | "mp3" | "mp3-stereo-bed"));
+        if let Some(bus)=&mut self.bus_renderer {bus.set_stereo_bass_preservation(enabled);}
+        if let Some(bus)=&mut self.stereo_dry_bus {bus.set_stereo_bass_preservation(enabled);}
     }
 
     // SDA calibration selected by the project owner, independent of the spatial
@@ -1558,6 +1571,7 @@ impl Engine {
         self.active_hrtf_set = Some(set);
         self.hrtf_wet_weight = wet;
         self.bus_renderer = Some(bus);
+        self.refresh_stereo_bass();
         self.stereo_dry_bus = None;
         for source in self.sources.values_mut() {
             source.direct = None;
@@ -1588,6 +1602,7 @@ impl Engine {
             &self.vbap,
             self.hrtf_wet_weight,
         )?);
+        self.refresh_stereo_bass();
         for source in self.sources.values_mut() {
             source.direct = None;
             source.continuous = None;
@@ -2133,6 +2148,7 @@ impl Engine {
         self.pending_object_events.clear();
         self.sources.clear();
         self.program_codec = None;
+        self.refresh_stereo_bass();
         self.programme_output_makeup = Default::default();
         self.dolby_spatial_programme_seen = false;
         self.refresh_directional_hrtf();
@@ -2617,6 +2633,7 @@ impl Engine {
                 .as_ref()
                 .and_then(|set| bus_renderer::BusRenderer::new(set, &self.vbap, 0.0).ok());
         }
+        self.refresh_stereo_bass();
         let stereo_index = if stereo && self.stereo_dry_bus.is_some() {
             match self.stereo_mode {
                 StereoMode::Original => 0,

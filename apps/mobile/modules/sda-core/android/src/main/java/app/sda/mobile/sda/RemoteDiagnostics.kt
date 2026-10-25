@@ -51,7 +51,7 @@ class RemoteDiagnostics(private val context: Context, private val port: Int = 87
         private val playbackKeys = listOf("positionMs", "fifoFrames", "pendingBatches", "decodedSamplePos", "consumedSamplePos",
             "sourceCodec", "outputChannels", "outputLayout", "paused", "preparingAudio", "underruns", "callbackMissingFrames",
             "renderBlocks", "renderTotalMicros", "renderMaxMicros", "renderWorstStagesMicros", "rendererRevision", "rendererArchitecture",
-            "spatialBalanceAlgorithm", "liveLoudnessDucking", "fftBackend", "volumeBalanceEnabled", "volumeBalanceEligible",
+            "spatialBalanceAlgorithm", "stereoBassPreservationActive", "stereoBassPreservationAlgorithm", "liveLoudnessDucking", "fftBackend", "volumeBalanceEnabled", "volumeBalanceEligible",
             "programGainDb", "renderedProgramGainDb", "rendererProgramEnabled", "spatialEnhancementEnabled", "auxiliaryBalanceEnabled",
             "auxiliaryBalanceLevels", "temporalDetailEnabled", "temporalDetailLevels", "listenerYawDegrees", "binauralEnabled",
             "objectRendering", "objectConvolverCount", "continuousObjectCount", "hrtfReady", "hrtfDirections")

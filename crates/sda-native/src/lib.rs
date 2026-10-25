@@ -121,6 +121,8 @@ pub struct PlaybackStatus {
     pub renderer_architecture: &'static str,
     pub fft_backend: &'static str,
     pub renderer_configuration: EngineConfig,
+    pub stereo_bass_preservation_active: bool,
+    pub stereo_bass_preservation_algorithm: &'static str,
     pub renderer_revision: &'static str,
     pub spatial_balance_algorithm: &'static str,
     pub live_loudness_ducking: bool,
@@ -647,6 +649,8 @@ impl MobileEngine {
             renderer_architecture: std::env::consts::ARCH,
             fft_backend: if cfg!(target_vendor="apple") { "Accelerate with RustFFT fallback" } else { "RustFFT" },
             renderer_configuration: self.config.clone(),
+            stereo_bass_preservation_active:self.pipeline.as_ref().is_some_and(|p|p.telemetry.stereo_bass_preservation_active.load(std::sync::atomic::Ordering::Acquire)),
+            stereo_bass_preservation_algorithm:sda_native_renderer::STEREO_BASS_PRESERVATION,
             renderer_revision: sda_native_renderer::BUILD_REVISION,
             spatial_balance_algorithm: sda_native_renderer::SPATIAL_BALANCE_ALGORITHM,
             live_loudness_ducking: false,
@@ -1861,3 +1865,6 @@ mod av3a_tests;
 #[cfg(test)]
 #[path = "av3a_startup_tests.rs"]
 mod av3a_startup_tests;
+
+#[cfg(test)]
+mod stereo_bass_audit;
