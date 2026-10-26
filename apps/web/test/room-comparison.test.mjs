@@ -29,3 +29,11 @@ test('all nine comparison conditions share one downward-only reference for every
 test('missing stage reference cannot silently use another stage',()=>{
   assert.throws(()=>comparisonGain('7.1.4',{comparison:{energyDb:{room:-5}}},'room','early'));
 });
+
+test('HRTFHQ stages share their own native reference without consulting KU100 levels',()=>{
+ const simulation={hrtfProfile:'apple-hrtfhq-542-v1',comparison:{energyDb:{hrtfhq:-4,direct:-4,early:-3,room:-2}}};
+ const direct=comparisonGain('future-layout',simulation,'hrtfhq','full');assert.equal(direct,0);
+ for(const [stage,energy]of [['direct',-4],['early',-3],['full',-2]])assert.equal(energy+comparisonGain('future-layout',simulation,'room',stage),-4);
+ assert.throws(()=>comparisonGain('7.1.4',simulation,'raw','full'));
+ assert.throws(()=>comparisonGain('7.1.4',{hrtfProfile:simulation.hrtfProfile,comparison:{energyDb:{room:-2}}},'room','early'));
+});

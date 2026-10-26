@@ -1,14 +1,11 @@
-"""Generate binaural room responses using measured Genelec/KU100 directivities."""
+"""Generate room responses with the native-prepared shared HRTFHQ receiver."""
 import argparse
+from room_hrtfhq import load_receiver, native_comparison
 import hashlib
-import io
 import json
 import math
 import os
 from pathlib import Path
-import re
-import wave
-import zipfile
 
 # Windows portable Python needs the wheel's BLAS DLL directories explicitly.
 _dll_handles = []
@@ -19,8 +16,7 @@ if os.name == "nt":
             if directory.is_dir():
                 _dll_handles.append(os.add_dll_directory(str(directory.resolve())))
 import numpy as np
-import h5py
-from scipy.signal import resample_poly, sosfilt, butter
+from scipy.signal import sosfilt, butter
 import pyroomacoustics as pra
 from pyroomacoustics.directivities import MeasuredDirectivity, Rotation3D
 from pyroomacoustics.doa import GridSphere
@@ -30,8 +26,6 @@ RATE = 48000
 # Retain the documented ISM DC-artifact correction as one causal filter below.
 # This generator runs in its own Python process; no host player setting changes.
 pra.constants.set("rir_hpf_enable", False)
-SOURCE_HASH = "d0891fe5413d28c4ea94f422ab9683ef0501b6206c1bba75dacc1ee6f723a7ac"
-HRTF_HASH = "e5b58f6479d90cbc692a75ac2ccb8ad4385d22544121300733d2ef70bf2339e2"
 MATERIAL_DATA = json.loads(Path(__file__).with_name("room-materials.json").read_text(encoding="utf-8"))
 MATERIAL_ALIASES = {"treated":"rockwool_50mm_80kgm3", "living":"plasterboard", "reflective":"hard_surface"}
 
@@ -87,51 +81,13 @@ def remove_ism_dc(values):
 def receiver_reference():
     return {"kind":"relative-digital", "propagationReferenceMetres":1.0,
             "pressureLaw":"1/r", "hrirMeasurementRadiusMetres":1.2,
-            "hrirProcessing":"publisher diffuse-field equalized, time-aligned and windowed; preserved as supplied",
+            "hrirProcessing":"Native-prepared shared HRTFHQ v3 including common-ear clarity v1; one receiver filter per reflection path",
             "makeupGainDb":0.0, "absoluteSplCalibrated":False,
             "rirHighpassEnabled":False,
             "dcCorrection":"causal 2nd-order Butterworth 10 Hz; ISM numerical DC artifact correction, no gain normalization",
             "timing":"geometric r/c plus supplied FIR/filter latency; no second 1.2m flight time added",
-            "source":"https://doi.org/10.3390/app8112029"}
+            "source":"SDA shared apple-hrtfhq-542-v1 public synthetic transfer measurements; not personalized Spatial Audio"}
 
-def load_measurements(source, archive):
-    if source != "ideal" and hashlib.sha256(Path(source).read_bytes()).hexdigest() != SOURCE_HASH:
-        raise ValueError("DIRPAT source checksum mismatch")
-    if hashlib.sha256(Path(archive).read_bytes()).hexdigest() != HRTF_HASH:
-        raise ValueError("SADIE source checksum mismatch")
-    source_grid, source_ir = None, None
-    if source != "ideal":
-        with h5py.File(source) as f:
-            source_ir = resample_poly(f["Data.IR"][0], 160, 147, axis=-1)
-            # Same DIRPAT position-order repair as pyroomacoustics._read_dirpat.
-            pos = f["ReceiverPosition"][:, :, 0].reshape(36, -1, 3).swapaxes(0, 1).reshape(-1, 3)
-        source_grid = GridSphere(spherical_points=pos[:, :2].T)
-    directions, irs = [], []
-    with zipfile.ZipFile(archive) as z:
-        for name in z.namelist():
-            if "D1_HRIR_WAV/48K_24bit/" not in name or not name.endswith(".wav"):
-                continue
-            match = re.search(r"azi_(-?\d+),(\d+)_ele_(-?\d+),(\d+)", name)
-            if not match:
-                continue
-            az, el = float(match[1]+"."+match[2]), float(match[3]+"."+match[4])
-            with wave.open(io.BytesIO(z.read(name))) as w:
-                if w.getframerate() != RATE or w.getnchannels() != 2 or w.getsampwidth() != 3:
-                    raise ValueError("Unexpected SADIE PCM format")
-                b = np.frombuffer(w.readframes(w.getnframes()), dtype=np.uint8).reshape(-1, 3)
-                v = b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16)
-                v = (v ^ 0x800000) - 0x800000
-                irs.append((v.reshape(-1, 2).T / 8388608).astype(np.float32))
-                directions.append([math.radians(az), math.pi/2-math.radians(el)])
-    points = np.array(directions).T
-    cart = np.array([np.cos(points[0])*np.sin(points[1]),np.sin(points[0])*np.sin(points[1]),np.cos(points[1])]).T
-    # SADIE repeats pole coordinates with different azimuth labels. Keep one
-    # original response per unique position; Voronoi integration needs uniqueness.
-    _, unique = np.unique(np.round(cart, 8), axis=0, return_index=True)
-    unique.sort()
-    receiver_grid = GridSphere(spherical_points=points[:,unique])
-    receiver_ir = np.array(irs)[unique]
-    return source_grid, source_ir, receiver_grid, receiver_ir
 
 def geometry(config):
     size = np.array([config["length"], config["width"], config["height"]], float)
@@ -166,45 +122,12 @@ def pink_reference(pairs):
     power = [float(np.sum(np.abs(np.fft.rfft(a,n=65536))**2*weight)/weight.sum()) for pair in pairs for a in pair]
     return float(10*np.log10(np.mean(power)))
 
-def source_orientation(direction):
-    az = np.rad2deg(np.arctan2(direction[1], direction[0]))
-    el = np.rad2deg(np.arctan2(direction[2], np.linalg.norm(direction[:2])))
-    # Rotation3D uses extrinsic rotations: pitch the +X axis before yawing it.
-    return Rotation3D([-el, az], rot_order="yz")
-
-def early_response(speaker):
-    direct = np.array([speaker["directLeft"], speaker["directRight"]])
-    room = np.array([speaker["roomLeft"], speaker["roomRight"]])
-    # Same complementary 10 ms transition as native cinema::Settings::mix.
-    late = np.clip((np.arange(direct.shape[1])-speaker["onsetSample"]-50*48+240)/480, 0, 1)
-    return direct + (room-direct)*(1-late)
-
-def comparison_references(config, output, assets):
-    result = {"room":pink_reference([(s["roomLeft"],s["roomRight"]) for s in output])}
-    result["direct"] = pink_reference([(s["directLeft"],s["directRight"]) for s in output])
-    result["early"] = pink_reference([early_response(s) for s in output])
-    for mode, directory in [("raw","hrtf-raw"),("calibrated","hrtf")]:
-        root = Path(assets)/directory
-        manifest = json.loads((root/"hrtf-set.json").read_text(encoding="utf-8"))
-        pairs = []
-        for s in config["speakers"]:
-            def vector(az,el):
-                az,el=np.deg2rad([az,el]); return np.array([np.cos(az)*np.cos(el),np.sin(az)*np.cos(el),np.sin(el)])
-            entry = max(manifest["positions"],key=lambda e:np.dot(vector(s["azimuth"],s["elevation"]),vector(e["azimuth"],e["elevation"])))
-            dry=np.fromfile(root/entry["dry"],dtype="<f4").reshape(2,-1)
-            wet=np.fromfile(root/entry["wet"],dtype="<f4").reshape(2,-1)
-            d=np.pad(dry,((0,0),(0,wet.shape[1]-dry.shape[1])))
-            pairs.append(d+.04*(wet-d))
-        result[mode]=pink_reference(pairs)
-    reference=min(result.values())
-    return {"metric":"20 Hz-20 kHz pink-noise response energy, equal independent speaker feeds; not perceived loudness",
-            "energyDb":result,"gainDb":{key:max(-40,reference-value) for key,value in result.items()},
-            "limited":any(value-reference>40 for value in result.values())}
-
 def simulate(config, source, archive, assets):
     material_key, material = material_spec(config["material"])
     config = {**config, "material":material_key}
-    sg, si, rg, ri = load_measurements(source, archive)
+    if source != "ideal":
+        raise ValueError("Room generation uses an ideal source and the shared HRTFHQ receiver")
+    rg, ri, receiver_hash = load_receiver(archive)
     size, listener, positions = geometry(config)
     receivers = [MeasuredDirectivity(Rotation3D([0, 0, 0]), rg, ri[:, ear, :], RATE) for ear in range(2)]
     surfaces=studio_surfaces() if material_key=="studio" else None
@@ -214,7 +137,7 @@ def simulate(config, source, archive, assets):
     output, path_report = [], {}
     for index, (speaker, position) in enumerate(zip(config["speakers"], positions)):
         direction = listener-position
-        directivity = None if source == "ideal" else MeasuredDirectivity(source_orientation(direction), sg, si, RATE)
+        directivity = None
         responses = []
         for order in [0, config["order"]]:
             room = pra.ShoeBox(size, fs=RATE, materials=material, max_order=order, air_absorption=True)
@@ -237,26 +160,27 @@ def simulate(config, source, archive, assets):
         output.append(entry)
         path_report[speaker["name"]] = paths_for(size,listener,position)
         print(json.dumps({"progress":index+1,"total":len(positions)}),flush=True)
-    ideal = source == "ideal"
     if surfaces:material_info={**material_info,"coeffs":np.mean([s["coeffs"] for s in surfaces.values()],axis=0).tolist()}
-    return {"version":1,"name":f"{'SDA Near-field Control Room' if surfaces else 'SADIE KU100 Reference' if ideal else 'Genelec 8020 v2'} / {config['layout']} / {config['length']}x{config['width']}x{config['height']} m / {config['material']}",
-        "source":("SADIE II D1 KU100 publisher-equalized HRIR; ideal omnidirectional source; pyroomacoustics image-source simulation. Geometry and uniform material coverage are design assumptions; material coefficients use the cited literature table. Relative digital reference, not absolute SPL." if ideal else "DIRPAT Genelec 8020 measured directivity + SADIE II equalized HRIR; finite-order simulation. Source recording calibration is not established; not an absolute SPL model."),
-        "license":("Apache-2.0; SADIE II Copyright 2018 University of York; generated derivative" if ideal else "SADIE II Apache-2.0; DIRPAT publisher Public Domain Mark (embedded legacy license differs); local simulation derivative"),
+    return {"version":1,"name":f"SDA HRTFHQ Control Room / {config['layout']} / {config['length']}x{config['width']}x{config['height']} m / {config['material']}",
+        "source":"Native-prepared SDA shared HRTFHQ v3 receiver with clarity v1; pyroomacoustics image-source simulation; geometric/material design assumptions; relative digital reference, not absolute SPL.",
+        "license":"SDA synthetic public HRTFHQ transfer measurements; pyroomacoustics simulation derivative; see bundled provenance and license notices",
         "measurement":"simulated","sampleRate":RATE,"layout":config["layout"],"speakers":output,
-        "simulation":{"engine":f"pyroomacoustics {pra.__version__}","revision":5 if surfaces else 4,"config":config,"listener":listener.tolist(),"size":size.tolist(),
+        "simulation":{"engine":f"pyroomacoustics {pra.__version__}","revision":6 if surfaces else 4,"config":config,"listener":listener.tolist(),"size":size.tolist(),
           **({"surfaces":surfaces,"studioDesign":studio_design_report(config,size,listener,positions,surfaces)} if surfaces else {}),
           "reference":receiver_reference(),
           "material":{"id":material_key,**material_info,"centerFreqs":MATERIAL_DATA["center_freqs"],"source":MATERIAL_DATA["source"],"reference":MATERIAL_DATA["reference"],"sourceSha256":MATERIAL_DATA["sourceSha256"],"coverage":"per-surface area-weighted coverage; 8kHz floor coefficient held at 4kHz" if surfaces else "all six surfaces; design assumption"},
           "positions":{s["name"]:p.tolist() for s,p in zip(config["speakers"],positions)},"paths":path_report,
-          "sourceModel":"ideal-omnidirectional" if ideal else "DIRPAT-Genelec-8020", "sourceSha256":None if ideal else SOURCE_HASH,"hrtfSha256":HRTF_HASH,"comparison":comparison_references(config,output,assets),
-          "pathTimes":"geometric propagation only; publisher-aligned HRIR/filter latency retained, not original measurement flight time"}}
+          "sourceModel":"ideal-omnidirectional", "sourceSha256":None, "hrtfSha256":receiver_hash, "hrtfProfile":"apple-hrtfhq-542-v1", "receiverPreparation":"native-shared-clarity-v1", "comparison":{},
+          "pathTimes":"geometric propagation only; native-prepared HRIR/filter latency retained once, not measurement flight time"}}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True); parser.add_argument("--source", required=True)
+    parser.add_argument("--config", required=True); parser.add_argument("--source", choices=["ideal"], default="ideal")
     parser.add_argument("--hrtf", required=True); parser.add_argument("--output", required=True)
+    parser.add_argument("--reference-helper", required=True); parser.add_argument("--live-hrtf", required=True)
     parser.add_argument("--assets", default="apps/web/public")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
     profile = simulate(config,args.source,args.hrtf,args.assets)
+    profile["simulation"]["comparison"] = native_comparison(profile, args.reference_helper, args.live_hrtf, pink_reference)
     Path(args.output).write_text(json.dumps(profile,separators=(",",":"),allow_nan=False),encoding="utf-8")

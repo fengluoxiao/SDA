@@ -1,0 +1,18 @@
+SDA HRTFHQ room catalog, 2026-10-26
+
+The active catalog uses native-prepared apple-hrtfhq-542-v1 receivers, including
+the shared common-ear clarity preparation. Synthetic measurement provenance
+and calibration are recorded in assets/hrtf/apple-hrtfhq-v1. No music or user
+recordings are part of these room assets. This is shared SDA convolution of
+public AVAudioEnvironmentNode HRTFHQ transfer measurements, not personalized
+Spatial Audio or an Apple API running on Windows or Android.
+
+pyroomacoustics 0.10.1 supplies the image-source simulation. Room dimensions,
+material coverage and placement are design assumptions. The native room
+compositor supplies the direct/early/full energy references. One receiver
+filter is used per reflection path; the selected direct HRTF is retained once.
+These are simulated reference rooms, not measured or certified studios.
+
+The existing NOTICE.txt and LICENSE-SADIE.txt apply to legacy KU100 archives
+retained for loading saved profile IDs. They do not describe the new active
+HRTFHQ catalog. The KU100 generation path has been removed.

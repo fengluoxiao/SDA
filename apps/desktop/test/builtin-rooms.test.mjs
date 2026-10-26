@@ -9,7 +9,7 @@ const temp=fs.mkdtempSync(path.resolve(import.meta.dirname,'../../../tmp/builtin
 const cache=path.join(temp,'cache');
 const lib=createBuiltinRooms(root,cache);
 const list=lib.list();
-assert.deepEqual(list.map(x=>x.layout),['7.1.4','2.0','5.1','9.1.4','9.1.6','360RA-13','22.2','11.1.8']);
+assert.deepEqual(list.map(x=>x.layout),['7.1.4','2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','9.1.2','9.1.4','9.1.6','360RA-13','22.2','11.1.8']);
 assert(list.every(x=>x.builtin&&x.measurement==='simulated'));
 assert.equal(createRoomLab({runtimeFile:path.join(temp,'missing.json'),storeRoot:temp,assetsRoot:temp}).status().available,false);
 for(const item of list){
@@ -18,7 +18,11 @@ for(const item of list){
  const c=profile.simulation.config;
  assert.deepEqual([c.length,c.width,c.height,c.earHeight,c.placement,c.order],[6,5,3.2,1.2,.7,10]);
  assert.equal(profile.simulation.sourceModel,'ideal-omnidirectional');
- assert.equal(profile.simulation.revision,5);
+ assert.equal(profile.simulation.revision,6);
+ assert.equal(profile.simulation.hrtfProfile,"apple-hrtfhq-542-v1");
+ assert.equal(profile.simulation.receiverPreparation,"native-shared-clarity-v1");
+ assert.equal(profile.simulation.comparison.basis,"native-mixed-speaker-v1");
+ assert.equal(profile.simulation.comparison.energyDb.hrtfhq,profile.simulation.comparison.energyDb.direct);
  assert.equal(c.material,'studio');
  assert.equal(c.listeningDistance,1.2);
  assert.equal(profile.simulation.reference.makeupGainDb,0);
@@ -67,3 +71,17 @@ assert.throws(()=>createBuiltinRooms(badRoot,path.join(temp,'bad-cache')).read(l
 const pkg=JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname,'../package.json')));
 for(const file of ['builtin-rooms/**','builtin-rooms.cjs','cinema-profiles.cjs','monitor-settings.cjs','room-layouts.cjs'])assert(pkg.build.files.includes(file));
 console.log('PASS cache recovery, archive corruption, path rejection and packaging inclusion');
+
+const catalog=JSON.parse(fs.readFileSync(path.join(root,'catalog.json'),'utf8'));
+for(const entry of catalog.profiles){
+ for(const oldId of entry.supersedes??[]){
+  const saved={settings:{enabled:false,directDb:-2},profileId:oldId,layoutProfiles:{[entry.summary.layout]:oldId}};
+  const upgraded=lib.upgrade(saved);
+  assert.equal(upgraded.profileId,entry.id);assert.equal(upgraded.layoutProfiles[entry.summary.layout],entry.id);
+  assert.strictEqual(upgraded.settings,saved.settings,'upgrading a preset must preserve disabled state and controls');
+  assert.strictEqual(lib.upgrade(upgraded),upgraded,'repeated upgrade is stable');
+  assert(lib.read(oldId).profile,'legacy IDs remain verifiable by their original data');
+ }
+}
+const personal={profileId:'f'.repeat(64),settings:{enabled:true}};assert.strictEqual(lib.upgrade(personal),personal);
+console.log('PASS HRTFHQ receiver identity, native comparison references, saved preset upgrade and personal-profile isolation');

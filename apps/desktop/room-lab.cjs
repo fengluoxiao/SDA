@@ -22,11 +22,14 @@ function validateConfig(input) {
   return result;
 }
 
-function createRoomLab({runtimeFile,storeRoot,assetsRoot,performanceEvent=()=>{}}) {
+function createRoomLab({runtimeFile,storeRoot,assetsRoot,nativeRoot=()=>null,performanceEvent=()=>{}}) {
   let child=null,progress={running:false,current:0,total:0,error:null};
   const runtime=()=>{
     if(!fs.existsSync(runtimeFile))throw new Error('尚未配置房间仿真运行环境');
     const config=JSON.parse(fs.readFileSync(runtimeFile,'utf8'));
+    const native=nativeRoot();
+    if(native){config.source='ideal';config.hrtf=path.join(native,'room-hrtfhq','hrtf-set.json');config.roomReference=path.join(native,process.platform==='win32'?'SdaRoomReference.exe':'SdaRoomReference');config.liveHrtf=path.join(native,'hrtf-assets','hrtf-dense','hrtf-set.json');}
+    for(const key of ['roomReference','liveHrtf'])if(typeof config[key]!=='string'||!fs.existsSync(config[key]))throw new Error(`HRTFHQ 仿真工具缺失：${key}`);
     for(const key of ['python','script','source','hrtf'])if(typeof config[key]!=='string'||(key==='source'&&config[key]==='ideal'?false:!fs.existsSync(config[key])))throw new Error(`仿真文件缺失：${key}`);
     return config;
   };
@@ -44,7 +47,7 @@ function createRoomLab({runtimeFile,storeRoot,assetsRoot,performanceEvent=()=>{}
       try{
         const workerStarted=performance.now();
         try { await new Promise((resolve,reject)=>{
-          child=spawn(run.python,[run.script,'--config',configPath,'--source',run.source,'--hrtf',run.hrtf,'--assets',assetsRoot,'--output',output],{
+          child=spawn(run.python,[run.script,'--config',configPath,'--source',run.source,'--hrtf',run.hrtf,'--assets',assetsRoot,'--reference-helper',run.roomReference,'--live-hrtf',run.liveHrtf,'--output',output],{
             windowsHide:true,env:{...process.env,PYTHONPATH:run.pythonPath??'',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['ignore','pipe','pipe']});
           let stderr='',pending='';
           const timeout=setTimeout(()=>{progress.error='仿真超过十分钟';child?.kill();},600000);

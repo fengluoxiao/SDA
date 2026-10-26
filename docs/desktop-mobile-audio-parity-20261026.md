@@ -44,3 +44,20 @@ Synthetic MP3/SRC and programme-control regressions do not replace listening on
 actual headphones. The local Windows compiler required a shortened diagnostic
 feature list for windows-rs; its upstream source/manifest is restored afterwards.
 The GNU C++ static link also explicitly includes libgcc_eh for GCC 16 TLS.
+
+## Built-in room follow-up
+
+The legacy KU100 generator was removed. New rooms use 542 native-prepared
+HRTFHQ receiver responses (640 taps per ear, including shared clarity) for each
+image-source reflection path. All 13 supported desktop layouts now have a
+HRTFHQ preset. The Rust room compositor exports direct/early/full filters for
+their matching references; no KU100 reference table is used for these presets.
+Room comparison retains HRTFHQ instead of forcing the previous KU100 head.
+The selected direct response remains present once, and explicit room simulation
+suppresses the separate default short-depth bank.
+
+Saved built-in IDs migrate to the corresponding new layout when using HRTFHQ;
+disabled state, calibration controls and imported personal room IDs are retained.
+Older archives remain readable under their original hashes and attribution.
+Generation uses the staged native room tool; there is no remaining KU100/SADIE
+archive loading path in scripts/room-simulator.py.

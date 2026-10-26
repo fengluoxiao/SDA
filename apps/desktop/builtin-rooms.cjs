@@ -14,11 +14,20 @@ function createBuiltinRooms(root,cacheRoot) {
       if(!/^[a-f0-9]{64}$/.test(e.id)||e.file!==`${e.id}.json.gz`||seen.has(e.id)
         ||!Number.isInteger(e.bytes)||e.bytes<1||e.bytes>64*1024*1024||!/^[a-f0-9]{64}$/.test(e.compressedSha256)
         ||e.summary?.id!==e.id)throw new Error('Invalid built-in room entry');
+      if(e.supersedes!==undefined&&(!Array.isArray(e.supersedes)||e.supersedes.some(id=>!/^([a-f0-9]{64})$/.test(id))))throw new Error("Invalid legacy room mapping");
       seen.add(e.id);
     }
     catalog=value.profiles;return catalog;
   };
   return {
+    upgrade(cinema){
+      if(!cinema)return cinema;
+      const current=id=>entries().find(e=>e.supersedes?.includes(id))?.id??id;
+      const profileId=current(cinema.profileId);
+      const layoutProfiles=Object.fromEntries(Object.entries(cinema.layoutProfiles??{}).map(([layout,id])=>[layout,current(id)]));
+      if(profileId===cinema.profileId&&Object.entries(layoutProfiles).every(([layout,id])=>id===cinema.layoutProfiles?.[layout]))return cinema;
+      return {...cinema,profileId,layoutProfiles};
+    },
     list:()=>entries().map(e=>({...e.summary,builtin:true})),
     has:id=>typeof id==='string'&&/^[a-f0-9]{64}$/.test(id)&&(entries().some(e=>e.id===id)||fs.existsSync(path.join(root,`${id}.json.gz`))),
     read(id){

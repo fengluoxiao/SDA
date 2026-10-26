@@ -25,7 +25,8 @@ test('room import, apply acknowledgement, persistence, export and removal',async
   vm.runInNewContext(code,{fs,path,Buffer,cinemaProfiles,__dirname:directory,require:name=>name==='./room-layout-follow.cjs'?roomLayoutFollow:name==='./room-inspection.cjs'?{createRoomInspection:options=>{const service=createRoomInspection(options);services.push(service);return service;}}:({createBuiltinRooms:()=>({list:()=>[],has:()=>false})}),app:{getPath:()=>directory,on(){}},
     BrowserWindow:{fromWebContents:()=>null},
     dialog:{showOpenDialog:async()=>({filePaths:[input]}),showSaveDialog:async()=>({filePath:path.join(directory,'report.json')})},
-    ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},readSettings:()=>stored,writeSettings:value=>{stored={...stored,...value};},
+    ipcMain:{handle:(name,handler)=>handlers.set(name,handler),on:(name,handler)=>handlers.set(name,handler)},readSettings:()=>stored,writeSettings:value=>{stored={...stored,...value};},
+    nativeRendererSelectedHrtf:null,performanceMonitor:{measure:(_stage,_id,action)=>action(),emit(){}},exclusiveAudioUpdate:action=>action(),
     nativeRenderer:{stdin:{}},nativeRendererCommandAck:async command=>{sent=command;return accepted;},writeStartupLog(){}});
   const call=(name,...args)=>handlers.get(`sda:${name}`)({sender:{}},...args);
   const room=await call('cinema-import');assert.equal(room.layout,'2.0');

@@ -295,6 +295,7 @@ let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启
 // Older bundled sidecars do not advertise the codec gate. Keep this tri-state
 // until ready/first use so an old binary cannot hold the PCM queue on timeout.
 let nativeRendererProgramCodecSupported = null;
+let nativeRendererSelectedHrtf = null;
 let nativeRendererObjectActivity = [];
 let nativeRendererHealthTimer = null;
 const nativeRendererPendingBatches = new Map();
@@ -1705,6 +1706,7 @@ ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
   if (!accepted) return false;
+  nativeRendererSelectedHrtf = set;
   // HRTF loading reapplies presentation defaults. Restore the user preference
   // only for the shared mobile profile, leaving explicit personal heads alone.
   if (set === "hrtf" || set === "hrtf-dense") {
@@ -1761,6 +1763,7 @@ app.on("before-quit",()=>roomInspectionService?.close());
 let roomLabService;
 const roomLab = () => roomLabService ??= createRoomLab({
   performanceEvent:value=>performanceMonitor.emit(value),
+  nativeRoot:()=>{const executable=bundledNativeRendererPath();return executable?path.dirname(executable):null;},
   runtimeFile: process.env.SDA_ROOM_RUNTIME ?? path.join(__dirname,"room-simulator","runtime.json"),
   storeRoot:app.getPath("userData"),
   assetsRoot:app.isPackaged ? path.join(__dirname,"web") : path.resolve(__dirname,"../web/public"),
@@ -1786,7 +1789,10 @@ function readCinemaProfile(id) {
 }
 ipcMain.handle("sda:cinema-settings", async () => {
   try {
-    const value = readSettings().cinema;
+    const stored = readSettings().cinema;
+    const shared = nativeRendererSelectedHrtf === "hrtf" || nativeRendererSelectedHrtf === "hrtf-dense";
+    const value = shared ? builtinRooms().upgrade(stored) : stored;
+    if(value !== stored)writeSettings({cinema:value});
     if (!value) return { settings: defaultCinemaSettings(), profileId: null };
     const settings = cinemaProfiles.validateSettings(value.settings);
     if (value.profileId) await roomInspection().inspect(value.profileId);

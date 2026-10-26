@@ -29,11 +29,13 @@ export interface RoomSimulation {
   reference?:{kind:string;propagationReferenceMetres:number;absoluteSplCalibrated:boolean;makeupGainDb:number;};
   material?:{id:string;description:string;coeffs:number[];centerFreqs:number[];source:string;reference:string;coverage:string;};
   sourceModel?:string;
+  hrtfProfile?:string;
+  receiverPreparation?:string;
   revision?:number;
   engine:string; config:RoomSimulationConfig; listener:[number,number,number]; size:[number,number,number];
   positions:Record<string,[number,number,number]>;
   paths:Record<string,{wall:string;order:number;distance:number;arrivalMs:number;points:[number,number,number][]}[]>;
-  comparison:{metric:string;energyDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early",number>>;gainDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early",number>>;limited:boolean};
+  comparison:{metric:string;energyDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early"|"hrtfhq",number>>;gainDb:Record<"raw"|"calibrated"|"room",number>&Partial<Record<"direct"|"early"|"hrtfhq",number>>;limited:boolean;basis?:string};
 }
 
 interface LocalHeadphoneProfileAsset {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {validateConfig} from '../room-lab.cjs';
 import profiles from '../cinema-profiles.cjs';
 import {readFileSync} from 'node:fs';
+import {gunzipSync} from 'node:zlib';
 const config={layout:'7.1.4',length:6,width:4,height:2.8,earHeight:1.2,placement:.85,material:'treated',order:6};
 test('simulation has canonical non-LFE directions for every layout',()=>{
   for(const layout of ['2.0','2.1','5.1','5.1.2','5.1.4','7.1.2','7.1.4','9.1.2','9.1.4','9.1.6']){
@@ -16,7 +17,8 @@ test('simulation has canonical non-LFE directions for every layout',()=>{
   assert.throws(()=>validateConfig({...config,material:'arbitrary'}));
 });
 test('generated simulation retains provenance and response data through import',()=>{
-  const source=JSON.parse(readFileSync('tmp/room-smoke-profile.json','utf8'));
+  const catalog=JSON.parse(readFileSync('apps/desktop/builtin-rooms/catalog.json','utf8'));
+  const source=JSON.parse(gunzipSync(readFileSync('apps/desktop/builtin-rooms/'+catalog.profiles.find(e=>e.summary.layout==='2.0').file)));
   const profile=profiles.validateRoom(source);
   assert.equal(profile.measurement,'simulated');assert.equal(profile.simulation.engine,'pyroomacoustics 0.10.1');
   assert.deepEqual(profile.speakers[0].roomLeft,source.speakers[0].roomLeft);

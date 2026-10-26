@@ -1,4 +1,6 @@
 import { copyFile, cp, mkdir, readdir, readFile, rm, lstat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { spawn, execFileSync } from "node:child_process";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +15,7 @@ const targetName = `SdaNativeRenderer${exeSuffix}`;
 const targetTriple=process.env.SDA_NATIVE_TARGET;
 
 await new Promise((resolveRun, reject) => {
-  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", ...(targetTriple?["--target",targetTriple]:[])], {
+  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", "--bin", "sda-native-renderer", "--example", "room_hrtf", ...(targetTriple?["--target",targetTriple]:[])], {
     cwd: renderer,
     stdio: "inherit",
     windowsHide: true,
@@ -28,9 +30,12 @@ const cargoTarget = process.env.CARGO_TARGET_DIR ? resolve(renderer, process.env
 const source = join(cargoTarget, ...(targetTriple?[targetTriple]:[]), "release", exeName);
 const target = join(destination, targetName);
 await copyFile(source, target);
+const roomHelper = join(destination, `SdaRoomReference${exeSuffix}`);
+await copyFile(join(cargoTarget, ...(targetTriple?[targetTriple]:[]), "release", "examples", `room_hrtf${exeSuffix}`), roomHelper);
 if (!isWindows) {
   const { chmod } = await import("node:fs/promises");
   await chmod(target, 0o755);
+  await chmod(roomHelper, 0o755);
 }
 const hrtfDestination = join(destination, "hrtf-assets");
 const hrtfSets = [
@@ -80,10 +85,24 @@ await cp(join(root,'apps/mobile/assets/hrtf-restored/hrtf'),join(hrtfDestination
 await cp(join(root,'apps/mobile/ios-experiments/fullheight-combined/hrtf-dense'),join(hrtfDestination,'hrtf-ku100-reference-dense'),{recursive:true});
 const experiment=stageSharedExperiment(hrtfDestination);
 if(experiment) { verifySharedExperiment(hrtfDestination); console.log(`Native experimental renderer: ${experiment.id}`); }
+// Commit the native-prepared receiver data separately, so cross-target builds
+// never need to execute a target-platform helper on the build host.
+const receiver = JSON.parse(gunzipSync(await readFile(join(root,"assets/hrtf/apple-hrtfhq-v1/room-receiver.json.gz")),{maxOutputLength:16*1024*1024}));
+if(receiver.manifest?.profileId!=="apple-hrtfhq-542-v1"||receiver.manifest.positions?.length!==542)throw new Error("Invalid prepared room receiver");
+const receiverHash=createHash("sha256");
+const roomReceiverRoot=join(destination,"room-hrtfhq");await mkdir(roomReceiverRoot,{recursive:true});
+for(const entry of receiver.manifest.positions){
+  if(!/^direction-\d{3}\.f32$/.test(entry.dry))throw new Error("Invalid room receiver path");
+  const data=Buffer.from(receiver.files[entry.dry],"base64");
+  if(data.length!==640*2*4)throw new Error("Invalid room receiver length");
+  receiverHash.update(data);
+  await writeFile(join(roomReceiverRoot,entry.dry),data);
+}
+if(receiverHash.digest("hex")!==receiver.manifest.receiverSha256)throw new Error("Prepared room receiver checksum mismatch");
+await writeFile(join(roomReceiverRoot,"hrtf-set.json"),JSON.stringify(receiver.manifest,null,2)+"\n");
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);
 
-const {createHash} = await import('node:crypto');
 const bytes = await readFile(target);
 const sourceCommit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 if (!bytes.includes(Buffer.from(sourceCommit)) || !bytes.includes(Buffer.from('front-direct-mirror-lowband-v2'))) throw new Error('Staged renderer does not match the current source revision and stereo calibration');
-await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');
+await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');

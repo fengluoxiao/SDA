@@ -1708,20 +1708,22 @@ export function App() {
     if(!await api.nativeRendererCinema?.(roomListeningSettings(current.settings),roomId))throw new Error("房间档案未被接受");
     setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
   };
-  const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full")=>{
+  const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full",receiverProfile?:string)=>{
     const api=window.sdaDesktop;if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
     if(!comparisonRestore.current)comparisonRestore.current={head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,stereo:stereoRenderMode,cinema:await api.getCinemaSettings()};
     localStorage.setItem("sda-room-comparison-backup",JSON.stringify(comparisonRestore.current));
     try{
       if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
       if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("对照布局设置失败");
-      const calibrated=next!=="raw";
-      if(!await api.nativeRendererHrtf?.(nativeHrtfSetName("ku100",false,calibrated),.04))throw new Error("HRTF 对照切换失败");
-      const settings:CinemaSettings={monitor:(await api.getCinemaSettings()).settings.monitor,enabled:true,reflectionMode:stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
-      if(!await api.nativeRendererCinema?.(settings,next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
-      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl("ku100",calibrated));await playerRef.current?.setDenseBinauralObjects(false,denseBinauralBaseUrl(calibrated,"ku100"));
-      localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,"ku100");localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,"0");localStorage.setItem(KU100_CALIBRATION_KEY,calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode","room");
-      setBinauralHead("ku100");setDenseBinauralObjects(false);setKu100Calibration(calibrated);setStereoRenderMode("room");
+      const hq=receiverProfile==="apple-hrtfhq-542-v1";
+      const head:BinauralHead=hq?"hrtfhq":"ku100",calibrated=next!=="raw",dense=hq;
+      if(next==="hrtfhq"&&!hq)throw new Error("选择新版 HRTFHQ 房间后再对照");
+      if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(head,dense,calibrated),.04))throw new Error("HRTF 对照切换失败");
+      const settings:CinemaSettings={monitor:(await api.getCinemaSettings()).settings.monitor,enabled:true,reflectionMode:next==="hrtfhq"?"direct":stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
+      if(!await api.nativeRendererCinema?.(settings,hq||next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
+      await playerRef.current?.setBinauralHead(binauralHeadBaseUrl(head,calibrated));await playerRef.current?.setDenseBinauralObjects(dense,denseBinauralBaseUrl(calibrated,head));
+      localStorage.setItem(BINAURAL_HEAD_STORAGE_KEY,head);localStorage.setItem(DENSE_BINAURAL_STORAGE_KEY,dense?"1":"0");localStorage.setItem(KU100_CALIBRATION_KEY,calibrated?"1":"0");localStorage.setItem("sda-stereo-render-mode","room");
+      setBinauralHead(head);setDenseBinauralObjects(dense);setKu100Calibration(calibrated);setStereoRenderMode("room");
       comparisonGain.current=gainDb;setRoomComparison(next);
     }catch(error){await restoreRoomComparison();throw error;}
   };
