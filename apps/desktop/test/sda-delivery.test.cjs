@@ -13,6 +13,7 @@ async function streamAndSeek(file,reference,lossless=false){
  const {Session}=require('../authored-playback.cjs');const session=new Session(codec,file,'7.1.4',lossless?'sdar':'m4a',[]);
  try{
   const ready=await session.ready;assert.equal(ready.nativeScene.processing.programmeHandled,true);assert.equal(ready.nativeScene.processing.sourceSpatialHandled,true);
+  require('../authored-playback.cjs').validateResources(ready);assert(Buffer.byteLength(JSON.stringify({type:'configureAuthoredScene',scene:ready.nativeScene}))<=16*1024);
   const resources=ready.nativeScene.resources;assert(fs.existsSync(resources.hrtf));assert(fs.existsSync(path.join(resources.root,'hrtf','hrtf-set.json')),'companion HRTF is source-owned');
   for(const sample of [0,10137,205169,288000,15379]){
    const response=await session.request({type:'seek',sample});assert.equal(response.header.sample,sample);

@@ -227,7 +227,7 @@ pub unsafe extern "C" fn sda_ios_command(
             },
             "sdar" => {
                 host.check_codec("sdar")?;
-                let temp=args.get("tempRoot").and_then(Value::as_str);
+                let temp=a.get("tempRoot").and_then(Value::as_str);
                 return Ok(json!(e.open_sdar(str_arg("path")?,temp)?));
             }
             "sdarInfo" => { return Ok(e.sdar_info()); }
