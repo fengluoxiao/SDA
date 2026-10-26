@@ -30,6 +30,8 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-Bstatic");
         println!("cargo:rustc-link-arg=-Wl,--start-group");
         println!("cargo:rustc-link-arg=-lstdc++");
+        // GCC 16 static C++ exceptions use emulated TLS from libgcc_eh.
+        println!("cargo:rustc-link-arg=-lgcc_eh");
         println!("cargo:rustc-link-arg=-lwinpthread");
         println!("cargo:rustc-link-arg=-lssp");
         println!("cargo:rustc-link-arg=-lmingwex");

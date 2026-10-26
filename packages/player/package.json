@@ -9,6 +9,7 @@
     "@alexanderolsen/libsamplerate-js": "2.1.2",
     "@sda/core": "workspace:*",
     "@sda/demux": "workspace:*",
-    "@sda/renderer": "workspace:*"
+    "@sda/renderer": "workspace:*",
+    "mpg123-decoder": "1.0.3"
   }
 }

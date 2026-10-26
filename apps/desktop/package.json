@@ -1,11 +1,11 @@
 {
   "name": "@sda/desktop",
-  "version": "0.9.23",
+  "version": "0.9.25",
   "private": true,
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
   "scripts": {
-    "dev": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && env -u ELECTRON_RUN_AS_NODE electron . --dev",
+    "dev": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/start-desktop.mjs --dev",
     "build": "node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && pnpm --filter @sda/web build && electron-builder",
     "pack": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && electron-builder --dir"
   },

@@ -103,6 +103,15 @@ declare global {
     directionalHrtf?: boolean;
     binauralEnabled?: boolean;
     programCodecSupported?: boolean | null;
+    rendererRevision?: string;
+    stereoBassPreservationActive?: boolean;
+    stereoBassPreservationAlgorithm?: string;
+    spatialEnhancementEnabled?: boolean;
+    spatialBalanceAlgorithm?: string;
+    temporalDetailEnabled?: boolean;
+    programEnabled?: boolean;
+    programGainDb?: number;
+    programmeOutputMakeupDb?: number;
   }
 
   interface NativeRendererObjectActivity {
@@ -191,6 +200,8 @@ declare global {
       roomLabGenerate?: (config:RoomSimulationConfig) => Promise<CinemaRoomSummary>;
       roomLabCancel?: () => Promise<boolean>;
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
+      getSpatialBalanceEnabled?: () => boolean;
+      nativeRendererSpatialBalance?: (enabled: boolean) => Promise<boolean>;
       nativeRendererObjectRendering?: (enabled: boolean) => Promise<boolean>;
       nativeRendererBinauralEnabled?: (enabled: boolean) => Promise<boolean>;
       nativeRendererObjectHrtf?: (enabled: boolean) => Promise<boolean>;

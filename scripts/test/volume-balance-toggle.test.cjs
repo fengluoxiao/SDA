@@ -9,31 +9,31 @@ const constants=source.match(/const MEASURED_LOUDNESS_\w+ = [^;]+;/g).join('\n')
 const method=name=>source.match(new RegExp('  (?:private )?'+name+'\\([^]*?\\n  }'))[0];
 const start=source.indexOf('      if (this.stereoBalanceEligible) {',source.indexOf('  private pumpPcm'));
 const block=source.slice(start,source.indexOf('\n\n      // (Re)declare bed sources',start));
-const methods=['observeMeasuredLoudness','prepareAv3aStartup','applyMeasuredLoudnessBalance','setVolumeBalance'].map(method).join('\n');
+const methods=['observeMeasuredLoudness','prepareAv3aStartup','applyMeasuredLoudnessBalance','setVolumeBalance','setMeasuredLoudness'].map(method).join('\n');
 const code=transformSync(constants+'\nexport class Harness {'+methods+'\n process(frame:any){const renderer=this.renderer;'+block+'} av3aStartupPending(){return !this.av3aStartupPrepared;} aheadSeconds(){return 7;} pumpPcm(){} }',{loader:'ts',format:'cjs'}).code;
 const m={exports:{}};new Function('module','exports','masterBalanceGainDb','av3aStartupDecision',code)(m,m.exports,masterBalanceGainDb,av3aStartupDecision);
 function make(codec,enabled){const p=new m.exports.Harness();p.calls=[];Object.assign(p,{id:0,trackCodec:codec,mpeghReference:codec==='mpegh',sampleRate:48000,renderer:null,volumeBalanceEnabled:enabled,stereoBalanceEligible:true,startupMeasuredLoudness:null,measuredLoudness:null,cachedMeasuredLufs:null,cachedMeasuredTruePeakDbtp:null,measuredLoudnessSettled:false,av3aStartupPrepared:false,balancedLoudnessBlocks:0,scheduledProgramLoudnessGainDb:null,startupOrigin:0,pcmQueue:[],ended:false,setNativeProgramGainDb(gainDb,at){this.calls.push({gainDb,at});}});return p;}
 const measurement=(blocks,integratedLufs,truePeakDbtp=-1.5)=>({blocks,integratedLufs,truePeakDbtp});
 const frame=(codec,loudness)=>({codec,samplePos:loudness.blocks*4800,loudness,referenceLoudness:loudness});
 for(const codec of ['alac','av3a','eac3','mpegh']){
-  const startup=make(codec,true),live=make(codec,false),delayed=make(codec,false);
-  for(const [blocks,lufs] of [[56,-15],[57,-14.75],[61,-14.5]]){
+  const startup=make(codec,true),live=make(codec,false),delayed=make(codec,false),minimum=codec==='alac'?7:57;
+  for(const [blocks,lufs] of [[minimum-1,-15],[minimum,-14.75],[minimum+4,-14.5]]){
     const value=measurement(blocks,lufs);
     for(const p of [startup,live,delayed])p.observeMeasuredLoudness(value);
     live.process(frame(codec,value));
   }
-  assert(startup.prepareAv3aStartup());delayed.process(frame(codec,measurement(61,-14.5)));
-  for(const p of [startup,live,delayed]){assert.equal(p.programLoudnessGainDb,-3.25,codec+' must use the same first valid reference');assert.equal(p.balancedLoudnessBlocks,57,'later updates must share the same reference clock');}
+  assert(startup.prepareAv3aStartup());delayed.process(frame(codec,measurement(minimum+4,-14.5)));
+  for(const p of [startup,live,delayed]){assert.equal(p.programLoudnessGainDb,-3.25,codec+' must use the same first valid reference');assert.equal(p.balancedLoudnessBlocks,minimum,'later updates must share the same reference clock');}
   for(const p of [startup,live,delayed]){
     const reference=p.startupMeasuredLoudness,calls=p.calls.length;
     for(const enabled of [false,true,false,true])p.setVolumeBalance(enabled);
     assert.equal(p.programLoudnessGainDb,-3.25);assert.equal(p.startupMeasuredLoudness,reference);assert.equal(p.calls.length,calls,'toggles must not reschedule or remeasure the programme');
   }
-  const peak=measurement(57,-14.75,6),a=make(codec,true),b=make(codec,false);
+  const peak=measurement(minimum,-14.75,6),a=make(codec,true),b=make(codec,false);
   a.observeMeasuredLoudness(peak);b.observeMeasuredLoudness(peak);a.prepareAv3aStartup();b.process(frame(codec,peak));
   assert.equal(a.programLoudnessGainDb,b.programLoudnessGainDb,'startup/live peak policy must agree');assert.equal(a.programLoudnessGainDb,codec==='mpegh'?-3.25:-7);
   const cached=make(codec,false);cached.cachedMeasuredLufs=-12;cached.cachedMeasuredTruePeakDbtp=-1.5;cached.observeMeasuredLoudness(measurement(57,-14.75));cached.process(frame(codec,measurement(57,-14.75)));assert.equal(cached.programLoudnessGainDb,-6,'a complete cached reference retains precedence');
-  if(codec!=='mpegh'){for(const p of [startup,live,delayed]){p.process(frame(codec,measurement(107,-10)));assert.equal(p.programLoudnessGainDb,-8,'later measurement updates keep the same cadence after every startup route');}}
+  for(const p of [startup,live,delayed]){p.process(frame(codec,measurement(minimum+50,-10)));assert.equal(p.programLoudnessGainDb,-3.25,'later passages must not retarget the selected programme gain');const calls=p.calls.length;p.setMeasuredLoudness(-2,-1);p.process(frame(codec,measurement(minimum+100,-3)));assert.equal(p.calls.length,calls,'late cache must not replace an active reference');assert.equal(p.programLoudnessGainDb,-3.25);}
 }
 console.log('Volume balance toggle parity passed: first-ready reference, delayed preroll, live bypass/re-enable, cached precedence and codec-specific peak policy.');
 

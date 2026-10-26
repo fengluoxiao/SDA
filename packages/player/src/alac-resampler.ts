@@ -13,7 +13,7 @@ export class AlacResampler {
 
   async push(frame: DecodedFrameData): Promise<DecodedFrameData | null> {
     if (frame.sampleRate === this.targetRate && !this.converter) return frame;
-    if (!["alac", "pcm", "adm"].includes(frame.codec)) {
+    if (!["alac", "pcm", "adm", "mp3"].includes(frame.codec)) {
       throw new Error(`Native ${this.targetRate} Hz output requires sample-clock conversion for ${frame.codec} ${frame.sampleRate} Hz`);
     }
     let prefixSamples = 0;

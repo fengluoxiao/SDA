@@ -119,7 +119,7 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
-const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".av3a", ".dts", ".iamf", ".mhas", ".mha"]);
+const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".mp3", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".av3a", ".dts", ".iamf", ".mhas", ".mha"]);
 const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
 const MAX_FOLDER_MEDIA_FILES = 2000;
 const MAX_FOLDER_ENTRIES = 20000;
@@ -205,6 +205,10 @@ function readVolumeBalanceEnabled() {
 function writeVolumeBalanceEnabled(enabled) {
   if (typeof enabled !== "boolean") throw new Error("invalid volume balance setting");
   writeSettings({ volumeBalanceEnabled: enabled });
+}
+
+function readSpatialBalanceEnabled() {
+  return readSettings().spatialBalanceEnabled !== false;
 }
 
 function readHeadTrackingEnabled() {
@@ -328,6 +332,15 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     programCodecSupported: typeof telemetry.programCodecSupported === "boolean"
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
+    rendererRevision: telemetry.rendererRevision,
+    stereoBassPreservationActive: telemetry.stereoBassPreservationActive,
+    stereoBassPreservationAlgorithm: telemetry.stereoBassPreservationAlgorithm,
+    spatialEnhancementEnabled: telemetry.spatialEnhancementEnabled,
+    spatialBalanceAlgorithm: telemetry.spatialBalanceAlgorithm,
+    temporalDetailEnabled: telemetry.temporalDetailEnabled,
+    programEnabled: telemetry.programEnabled,
+    programGainDb: telemetry.programGainDb,
+    programmeOutputMakeupDb: telemetry.programmeOutputMakeupDb,
     remoteSynchronized:telemetry.remoteSynchronized===true,
     remoteSyncWaiting:telemetry.remoteSyncWaiting===true,
   };
@@ -549,7 +562,7 @@ function consumeNativeRendererOutput(chunk) {
       const message = JSON.parse(line);
       if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
         nativeRendererProgramCodecSupported = Array.isArray(message.features) && message.features.includes("programCodec");
-        setNativeRendererStatus(true, `渲染 ${message.sampleRate}Hz / ${message.outputChannels}ch（等待完整 HRTF）`, true, {
+        setNativeRendererStatus(true, `渲染 ${message.sampleRate ?? message.sample_rate}Hz / ${message.outputChannels ?? message.output_channels}ch（等待完整 HRTF）`, true, {
           programCodecSupported: nativeRendererProgramCodecSupported,
         });
       } else if (message?.type === "outputDevices") {
@@ -610,7 +623,7 @@ function consumeNativeRendererOutput(chunk) {
           true,
           `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun · ${hrtf} · ${ownership}`,
           Boolean(message.referenceMix),
-          { samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true, remoteSynchronized:message.remoteSynchronized===true,remoteSyncWaiting:message.remoteSyncWaiting===true },
+          { ...message, samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true },
         );
       }
     } catch { /* malformed helper output is ignored; stderr still records it */ }
@@ -1691,7 +1704,13 @@ ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
   if ((!NATIVE_HRTF_SET_PATTERN.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
-  return accepted;
+  if (!accepted) return false;
+  // HRTF loading reapplies presentation defaults. Restore the user preference
+  // only for the shared mobile profile, leaving explicit personal heads alone.
+  if (set === "hrtf" || set === "hrtf-dense") {
+    return nativeRendererCommandAck({ type: "setSpatialEnhancement", enabled: readSpatialBalanceEnabled() }, "setSpatialEnhancement");
+  }
+  return true;
 });
 ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusiveAudioUpdate(async () => {
   if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6", "360RA-13", "22.2", "11.1.8"]).has(layout)) return false;
@@ -1822,6 +1841,13 @@ ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId)
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 })));
+ipcMain.on("sda:get-spatial-balance-enabled", (event) => { event.returnValue = readSpatialBalanceEnabled(); });
+ipcMain.handle("sda:native-renderer-spatial-balance", async (_event, enabled) => {
+  if (typeof enabled !== "boolean") return false;
+  if (nativeRendererStatus.running && !await nativeRendererCommandAck({ type: "setSpatialEnhancement", enabled }, "setSpatialEnhancement")) return false;
+  writeSettings({ spatialBalanceEnabled: enabled });
+  return true;
+});
 ipcMain.handle("sda:native-renderer-object-rendering", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;
   return nativeRendererCommandAck({ type: "setObjectRendering", enabled }, "setObjectRendering");

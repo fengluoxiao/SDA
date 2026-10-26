@@ -1,6 +1,6 @@
-import { copyFile, cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { copyFile, cp, mkdir, readdir, readFile, rm, lstat, writeFile } from "node:fs/promises";
+import { spawn, execFileSync } from "node:child_process";
+import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stageSharedExperiment, verifySharedExperiment } from './stage-shared-render-experiment.mjs';
 
@@ -24,7 +24,8 @@ await new Promise((resolveRun, reject) => {
 
 const destination = join(root, "apps", "desktop", "native-renderer");
 await mkdir(destination, { recursive: true });
-const source = join(renderer, "target", ...(targetTriple?[targetTriple]:[]), "release", exeName);
+const cargoTarget = process.env.CARGO_TARGET_DIR ? resolve(renderer, process.env.CARGO_TARGET_DIR) : join(renderer, "target");
+const source = join(cargoTarget, ...(targetTriple?[targetTriple]:[]), "release", exeName);
 const target = join(destination, targetName);
 await copyFile(source, target);
 if (!isWindows) {
@@ -37,6 +38,10 @@ const hrtfSets = [
   ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}-dense`),
   ...Array.from({ length: 18 }, (_, index) => `hrtf-h${index + 3}`),
 ];
+const assetRelative = relative(root, resolve(hrtfDestination));
+if (assetRelative.startsWith("..") || isAbsolute(assetRelative) || (await lstat(hrtfDestination).catch(() => null))?.isSymbolicLink()) {
+  throw new Error("Refusing to replace native HRTF assets outside this workspace");
+}
 await rm(hrtfDestination, { recursive: true, force: true });
 await mkdir(hrtfDestination, { recursive: true });
 for (const set of hrtfSets) {
@@ -76,3 +81,9 @@ await cp(join(root,'apps/mobile/ios-experiments/fullheight-combined/hrtf-dense')
 const experiment=stageSharedExperiment(hrtfDestination);
 if(experiment) { verifySharedExperiment(hrtfDestination); console.log(`Native experimental renderer: ${experiment.id}`); }
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);
+
+const {createHash} = await import('node:crypto');
+const bytes = await readFile(target);
+const sourceCommit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
+if (!bytes.includes(Buffer.from(sourceCommit)) || !bytes.includes(Buffer.from('front-direct-mirror-lowband-v2'))) throw new Error('Staged renderer does not match the current source revision and stereo calibration');
+await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');

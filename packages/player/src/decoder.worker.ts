@@ -19,6 +19,7 @@ import { createDemuxer, sniffContainer, type BwfMetadata, type BinauralRenderMet
 import { canCoalesceObjectEvent } from "./control.js";
 import { LoudnessMeter } from "./bs1770.js";
 import { FrameBatcher } from "./frame-batcher.js";
+import { Mp3Decoder, sniffMp3 } from "./mp3-decoder.js";
 import { AlacResampler } from "./alac-resampler.js";
 import {initMpegh, isMhas, MpeghDecoder} from "../../core/src/mpegh.js";
 
@@ -31,7 +32,7 @@ declare const self: {
 import {initIamf,isIamf,IamfDecoder} from "../../core/src/iamf.js";
 
 let objectRenderingEnabled = true;
-let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | null = null;
+let decoder: SdaDecoder | IamfDecoder | MpeghDecoder | Mp3Decoder | null = null;
 let demuxer: Demuxer | null = null;
 let sniffPrefix = new Uint8Array(0);
 let bwfMetadata: BwfMetadata | undefined;
@@ -226,6 +227,16 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
           break;
         }
         const kind: ContainerKind = msg.kind ?? (bwfMetadata ? "bwf" : sniffContainer(chunk));
+        const mp3 = kind === "raw" ? sniffMp3(chunk) : null;
+        if (mp3 === "need-more") {
+          sniffPrefix = chunk;
+          post({ type: "push-ack", sequence: msg.sequence });
+          break;
+        }
+        if (mp3 === "mp3") {
+          decoder?.free();
+          decoder = await Mp3Decoder.create(sampleRate => post({ type: "track", track: { codec: "mp3", sampleRate, channels: 2, container: "raw" } }));
+        }
         if(kind === "mp4" || isMhas(chunk)) await initMpegh();
         if(kind === "raw" && isMhas(chunk)) {decoder?.free();decoder=new MpeghDecoder(false,undefined,measureMpeghReference,true);}
         if(kind === "raw" && isIamf(chunk)) {await initIamf();decoder?.free();decoder=new IamfDecoder();}

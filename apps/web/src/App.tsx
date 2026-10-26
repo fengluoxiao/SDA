@@ -454,6 +454,7 @@ export function App() {
   const [volume, setVolume] = useState(1);
   const [balanceAnalysisProgress, setBalanceAnalysisProgress] = useState<number | null>(null);
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(readVolumeBalanceEnabled);
+  const [spatialBalanceEnabled, setSpatialBalanceEnabled] = useState(() => window.sdaDesktop?.getSpatialBalanceEnabled?.() ?? true);
   const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
     const readBand = (band: keyof BinauralEqBands) => {
@@ -1147,6 +1148,11 @@ export function App() {
           previous.hrtfReady === next.hrtfReady &&
           previous.directionalHrtf === next.directionalHrtf &&
           previous.programCodecSupported === next.programCodecSupported &&
+          previous.rendererRevision === next.rendererRevision &&
+          previous.spatialEnhancementEnabled === next.spatialEnhancementEnabled &&
+          previous.programEnabled === next.programEnabled &&
+          previous.programGainDb === next.programGainDb &&
+          previous.programmeOutputMakeupDb === next.programmeOutputMakeupDb &&
           previous.remoteSynchronized === next.remoteSynchronized &&
           previous.remoteSyncWaiting === next.remoteSyncWaiting
         ) return previous;
@@ -1724,6 +1730,13 @@ export function App() {
     if(stored){try{comparisonRestore.current=JSON.parse(stored);void restoreRoomComparison().catch(e=>setErrors(v=>[...v,`恢复对照前设置失败: ${String(e)}`]));}catch(e){setErrors(v=>[...v,String(e)]);}}
   },[]);
 
+  const changeSpatialBalance = useCallback(async (enabled: boolean) => {
+    try {
+      if (!await window.sdaDesktop?.nativeRendererSpatialBalance?.(enabled)) throw new Error("空间平衡设置未被接受");
+      setSpatialBalanceEnabled(enabled);
+    } catch (error) { setErrors((previous) => [...previous, String(error)]); }
+  }, []);
+
   const changeVolumeBalance = useCallback((enabled: boolean) => {
     setVolumeBalanceEnabled(enabled);
     persistVolumeBalanceEnabled(enabled);
@@ -1935,7 +1948,7 @@ export function App() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".mkv,.mka,.mp4,.m4a,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.av3a,.dts,.iamf,.mhas,.mha";
+    input.accept = ".mkv,.mka,.mp4,.m4a,.mp3,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.av3a,.dts,.iamf,.mhas,.mha";
     input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
   }, [appendToPlaylist]);
@@ -2270,11 +2283,9 @@ export function App() {
             </div>
             <div className="settings-content" id="settings-content-output" role="tabpanel" aria-labelledby="settings-tab-output" hidden={settingsTab !== "output"}>
             <OutputPanel />
-            <fieldset className="settings-group" disabled={mode === "multichannel" && !alacUpmixActive}>
+            <fieldset className="settings-group">
               <legend>输出</legend>
-              <label className="settings-switch" title={alacUpmixActive
-                ? "先按原始 ALAC L/R 的 BS.1770-4 响度与真峰值估计，再将同一节目增益联动应用到生成的全部 7.1.4 声道。以 Apple Music Atmos music 的 -18 LKFS、-1 dBTP 上限作监听安全参考；不会逐声道归一化或改变声像，也不代表 Dolby 交付认证。"
-                : "适用于纯立体声和 360RA。360RA 播放时累计分析固定参考混音，以 −18 LUFS 为本软件对齐目标，仅衰减偏响曲目，不放大安静曲目，平滑更新统一增益，保留对象相对音量。其它空间格式保持旁路；此目标不代表 Dolby 母版认证。"}>
+              <label className="settings-switch" title="按解码参考响度选择固定节目增益，统一作用于最终输出。启动参考确定后不会随段落自动降低音量；空间格式采用验证过的参考混音，保留对象和声道间的相对音量。峰值保护独立生效。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
@@ -2292,10 +2303,16 @@ export function App() {
                   onChange={(event) => changeAlacStereoUpmix(event.target.checked)} />
               </label>
             </fieldset>}
-            {mode === "multichannel" && !alacUpmixActive && <p className="settings-disabled">音量平衡适用于立体声和 360RA；真实多声道与沉浸式节目保持原始声道关系。</p>}
-            {mode === "multichannel" && alacUpmixActive && <p className="settings-disabled">按原始 ALAC 立体声的 -18 LKFS / -1 dBTP 监听参考测量，使用一个联动增益作用于生成的全部 7.1.4 声道。</p>}
+            <p className="dim">固定节目增益采用 −18 LUFS 监听参考；开启时使用 +2.5 dB 输出补偿。峰值保护始终工作，上混另保留 −2 dB 校准。</p>
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
+            {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"}>
+              <legend>HRTFHQ</legend>
+              <label className="settings-switch" title="增强原有方向细节，不根据播放段落降低整个节目的音量。">
+                <span>空间平衡</span>
+                <input type="checkbox" role="switch" checked={spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />
+              </label>
+            </fieldset>}
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>
@@ -2493,7 +2510,7 @@ export function App() {
                 <dd>{debug || "—"}</dd>
               </dl>
             ) : (
-              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .ac4 / .av3a / .dts / .iamf / .mhas 文件开始</p>
+              <p className="dim">拖入 .mkv / .mp4 / .mp3 / .bwf / .wav / .thd / .ec3 / .ac4 / .av3a / .dts / .iamf / .mhas 文件开始</p>
             )}
           </div>
         )}

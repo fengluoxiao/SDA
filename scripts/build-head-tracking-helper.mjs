@@ -59,7 +59,8 @@ const destination = join(root, "apps", "desktop", "head-tracking-helper");
 await mkdir(destination, { recursive: true });
 
 const binaryName = isWindows ? "SdaAirPodsHeadTracking.exe" : "SdaAirPodsHeadTracking";
-const sourceBinary = join(helper, "target", ...(targetTriple?[targetTriple]:[]), "release", binaryName);
+const cargoTarget = process.env.CARGO_TARGET_DIR ? resolve(helper, process.env.CARGO_TARGET_DIR) : join(helper, "target");
+const sourceBinary = join(cargoTarget, ...(targetTriple?[targetTriple]:[]), "release", binaryName);
 await Promise.all([
   copyFile(sourceBinary, join(destination, binaryName)),
   copyFile(join(helper, "LICENSE"), join(destination, "LICENSE.txt")),

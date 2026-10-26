@@ -73,6 +73,7 @@ export function discretePcmChannelLabels(channelCount: number): string[] {
 }
 
 export interface PlayerHealthSnapshot {
+  programmeBalancePolicy: typeof PROGRAMME_BALANCE_POLICY;
   /** AudioContext output FIFO requested by the active playback session. */
   requestedOutputLatencySeconds: number;
   /** Recommended output FIFO retained for future playback sessions. A sustained
@@ -230,9 +231,9 @@ const OUTPUT_LATENCY_STEPS_SECONDS = [0.1, 0.2, 0.3] as const;
  *  observed; replays use the persisted measurement instead and balance from
  *  sample 0. */
 const MEASURED_LOUDNESS_MIN_BLOCKS = 57;
-/** The settle is a gentle staircase: ≤0.75 dB per 250 ms scheduled step. */
-const MEASURED_LOUDNESS_STEP_DB = 0.75;
-const MEASURED_LOUDNESS_STEP_SECONDS = 0.25;
+const MEASURED_LOUDNESS_ALAC_MIN_BLOCKS = 7;
+export const PROGRAMME_BALANCE_POLICY = "fixed-startup-reference-v1";
+// One startup/cache reference per track, matching the native mobile controller.
 
 function validatedOutputLatencySeconds(value: number | undefined): OutputLatencySeconds {
   return OUTPUT_LATENCY_STEPS_SECONDS.includes(value as OutputLatencySeconds)
@@ -575,15 +576,9 @@ export class SdaPlayer {
   setAlacStereoUpmixEnabled(enabled: boolean): void {
     if (this.alacStereoUpmixEnabled === enabled) return;
     this.alacStereoUpmixEnabled = enabled;
-    this.alacStereoUpmixer.reset();
-    // A channel-layout change must not leave the native renderer with a stale
-    // program-balance state. Reassert the one linked gain immediately so the
-    // first generated 7.1.4 frame has the same protection as its 2.0 source.
+    // The fixed 7.1.4 native bed and warmed low-pass state survive the toggle.
+    // Only decoded PCM crossfades; normalization remains the selected reference.
     this.setVolumeBalance(this.volumeBalanceEnabled);
-    if (this.programLoudnessGainDb != null) {
-      this.renderer?.setProgramLoudnessGainDb(this.programLoudnessGainDb);
-      this.setNativeProgramGainDb(this.programLoudnessGainDb);
-    }
   }
 
   /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
@@ -1284,7 +1279,7 @@ export class SdaPlayer {
   private observeMeasuredLoudness(measurement: FrameLoudness): void {
     this.measuredLoudness = measurement;
     this.measuredLoudnessBlocks = measurement.blocks;
-    if (this.startupMeasuredLoudness == null && measurement.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
+    if (this.startupMeasuredLoudness == null && measurement.blocks >= (this.trackCodec === "alac" ? MEASURED_LOUDNESS_ALAC_MIN_BLOCKS : MEASURED_LOUDNESS_MIN_BLOCKS)
         && measurement.integratedLufs != null && Number.isFinite(measurement.integratedLufs)) {
       this.startupMeasuredLoudness = { ...measurement };
     }
@@ -1295,7 +1290,7 @@ export class SdaPlayer {
     const reference = this.startupMeasuredLoudness ?? this.measuredLoudness;
     const measurement = this.mpeghReference && reference
       ? {...reference, truePeakDbtp: null} : reference;
-    const decision = av3aStartupDecision(measurement, this.aheadSeconds(), this.ended);
+    const decision = av3aStartupDecision(measurement, this.aheadSeconds(), this.ended, this.trackCodec === "alac" ? MEASURED_LOUDNESS_ALAC_MIN_BLOCKS : MEASURED_LOUDNESS_MIN_BLOCKS);
     if (!decision.ready) return false;
     this.av3aStartupPrepared = true;
     if (decision.gainDb != null) {
@@ -1333,7 +1328,7 @@ export class SdaPlayer {
   /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
    *  The balance then applies from sample 0 instead of after convergence. */
   setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
-    if (this.mpeghMeasurement || this.decodedProgrammeReference) return;
+    if (this.mpeghMeasurement || this.decodedProgrammeReference || this.measuredLoudnessSettled) return;
     this.cachedMeasuredTruePeakDbtp = truePeakDbtp;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
@@ -1355,18 +1350,10 @@ export class SdaPlayer {
 
   private applyMeasuredLoudnessBalance(integratedLufs: number, atSample: number, truePeakDbtp: number | null = null): void {
     const gainDb = masterBalanceGainDb(integratedLufs, truePeakDbtp);
-    const previous = this.scheduledProgramLoudnessGainDb ?? 0;
-    console.info(`[SDA balance] codec=${this.trackCodec} enabled=${this.volumeBalanceEnabled} lufs=${integratedLufs.toFixed(2)} targetDb=${gainDb.toFixed(2)} at=${atSample}`);
     this.scheduledProgramLoudnessGainDb = gainDb;
     this.programLoudnessGainDb = gainDb;
-    if (Math.abs(gainDb - previous) < 0.05) return;
-    const steps = Math.ceil(Math.abs(gainDb - previous) / MEASURED_LOUDNESS_STEP_DB);
-    const stepSamples = Math.round(Math.min(MEASURED_LOUDNESS_STEP_SECONDS, 4 / steps) * this.sampleRate);
-    for (let i = 1; i <= steps; i++) {
-      const target = i === steps ? gainDb : previous + ((gainDb - previous) * i) / steps;
-      this.renderer?.setProgramLoudnessGainDb(target, atSample + i * stepSamples);
-      this.setNativeProgramGainDb(target, atSample + i * stepSamples);
-    }
+    this.renderer?.setProgramLoudnessGainDb(gainDb, atSample);
+    this.setNativeProgramGainDb(gainDb, atSample);
   }
 
   setVolume(v: number): void {
@@ -1436,6 +1423,7 @@ export class SdaPlayer {
 
   private createHealthSnapshot(): PlayerHealthSnapshot {
     return {
+      programmeBalancePolicy: PROGRAMME_BALANCE_POLICY,
       requestedOutputLatencySeconds: this.requestedOutputLatencySeconds,
       nextRecommendedOutputLatencySeconds: this.pendingOutputLatencySeconds,
       baseLatencySeconds: this.renderer?.ctx.baseLatency ?? 0,
@@ -2014,13 +2002,16 @@ export class SdaPlayer {
     // the generated bed, never be calculated separately per copied channel.
     const stereoMaster = isStereoMasterFrame(frame);
     if (frame.referenceLoudness && !this.decodedProgrammeReference) {
-      this.decodedProgrammeReference=true;this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;this.measuredLoudnessSettled=false;this.startupMeasuredLoudness=null;
+      this.decodedProgrammeReference=true;this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;
+      if (!this.measuredLoudnessSettled) this.startupMeasuredLoudness=null;
     }
     this.mpeghReference = frame.codec === "mpegh";
     this.stereoStartupEligible = this.mpeghReference || stereoMaster || frame.referenceLoudness != null;
     const alacStereoSource = isAlacStereoFrame(frame);
     const upmixed = this.alacStereoUpmixEnabled && alacStereoSource;
-    if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);
+    if (alacStereoSource && this.outputBackend === "native-sidecar") {
+      frame = this.alacStereoUpmixer.liveSda(frame, this.alacStereoUpmixEnabled);
+    } else if (upmixed) frame = this.alacStereoUpmixer.upmix(frame);
     this.sampleRate = frame.sampleRate;
     this.recordDecode(frame.channels[0]?.length ?? 0, frame.sampleRate);
     const mpegh = frame.codec === "mpegh";
@@ -2105,12 +2096,12 @@ export class SdaPlayer {
           this.setNativeProgramGainDb(gainDb, frame.samplePos);
           this.measuredLoudnessSettled = true;
         } else if (this.cachedMeasuredLufs == null && frame.loudness
-            && frame.loudness.blocks >= MEASURED_LOUDNESS_MIN_BLOCKS
-            && (!this.measuredLoudnessSettled || (!this.mpeghReference && frame.loudness.blocks >= this.balancedLoudnessBlocks + 50))
+            && frame.loudness.blocks >= (frame.codec === "alac" ? MEASURED_LOUDNESS_ALAC_MIN_BLOCKS : MEASURED_LOUDNESS_MIN_BLOCKS)
+            && !this.measuredLoudnessSettled
             && frame.loudness.integratedLufs != null && Number.isFinite(frame.loudness.integratedLufs)) {
-          // Follow cumulative measurements at most every five seconds; a quiet
-          // intro must not freeze the correction for the whole programme.
-          const reference = !this.measuredLoudnessSettled ? this.startupMeasuredLoudness ?? frame.loudness : frame.loudness;
+          // Keep the first usable reference for the current source. Complete
+          // metering continues for the next playback cache, never live retargeting.
+          const reference = this.startupMeasuredLoudness ?? frame.loudness;
           this.measuredLoudnessSettled = true;
           this.balancedLoudnessBlocks = reference.blocks;
           this.applyMeasuredLoudnessBalance(reference.integratedLufs!, frame.samplePos, stereoMaster ? reference.truePeakDbtp ?? null : null);
@@ -2171,7 +2162,7 @@ export class SdaPlayer {
       const sourceStereoLabels = frame.codec === "alac" && frame.rawBedLabels.length === 2
         && ["L", "Left", "FrontLeft"].includes(frame.rawBedLabels[0]!)
         && ["R", "Right", "FrontRight"].includes(frame.rawBedLabels[1]!);
-      const upmixed = sourceStereoLabels && frame.labels.length > frame.rawBedLabels.length;
+      const upmixed = sourceStereoLabels && this.alacStereoUpmixEnabled;
       const stereoSource = sourceStereoLabels || isStereoMasterFrame(frame);
       const decodedFormatKey = `${frame.rawBedLabels.join(",")}|${bedLabels.join(",")}|${objectChannelCount}|${sourceStereoLabels}|${upmixed}`;
       if (decodedFormatKey !== this.decodedFormatKey) {
