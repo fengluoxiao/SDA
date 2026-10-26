@@ -293,6 +293,11 @@ const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   rendererPath:()=>bundledNativeRendererPath(),
   corePath:app.isPackaged?path.join(__dirname,"performance-core/sda_core.cjs"):path.resolve(__dirname,"../../packages/core/pkg-node/sda_core.cjs"),
 });
+const stereoLoudness = require("./stereo-loudness.cjs").createStereoLoudness({
+  ipcMain,
+  workerPath: path.join(__dirname, "upmix-export-worker.cjs"),
+  corePath: app.isPackaged ? path.join(__dirname, "performance-core/sda_core.cjs") : path.resolve(__dirname, "../../packages/core/pkg-node/sda_core.cjs"),
+});
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
@@ -2143,12 +2148,12 @@ app.on("before-quit", event => {
   nativeRendererQuitting = true;
   void (async () => {
     stopNativeRenderer();
-    await Promise.allSettled([upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+    await Promise.allSettled([stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   })().catch(error => writeStartupLog(`graceful exit failed: ${error}`)).finally(() => app.quit());
 });
 
 app.on("window-all-closed", async () => {
   stopNativeRenderer();
-  await Promise.allSettled([upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+  await Promise.allSettled([stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   if (process.platform !== "darwin") app.quit();
 });

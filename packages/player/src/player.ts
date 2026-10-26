@@ -399,7 +399,7 @@ export class SdaPlayer {
   private stereoStartupEligible = false;
   private mpeghReference = false;
   private balancedLoudnessBlocks = 0;
-  /** Persisted measurement for the upcoming track, set by the UI per track. */
+  /** Prepared measurement for the current playback, cleared on source reset. */
   private cachedMeasuredLufs: number | null = null;
   private cachedMeasuredTruePeakDbtp: number | null = null;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
@@ -1325,8 +1325,8 @@ export class SdaPlayer {
     return this.programLoudness;
   }
 
-  /** Persisted BS.1770-4 measurement for the upcoming track (UI cache hit).
-   *  The balance then applies from sample 0 instead of after convergence. */
+  /** Fresh BS.1770-4 reference prepared for this playback only.
+   *  It applies from sample zero and is reset with the source. */
   setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
     if (this.mpeghMeasurement || this.decodedProgrammeReference || this.measuredLoudnessSettled) return;
     this.cachedMeasuredTruePeakDbtp = truePeakDbtp;

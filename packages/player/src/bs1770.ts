@@ -206,6 +206,12 @@ export class LoudnessMeter {
     this.blockEnergy.push(energy);
   }
 
+  /** Drain interpolation lookahead without adding padded loudness blocks. */
+  finish(): IntegratedLoudness {
+    this.truePeak.push(this.filters.map(() => new Float32Array(16)));
+    return this.integrated();
+  }
+
   integrated(): IntegratedLoudness {
     const peakDbfs = this.samplePeak > 0 ? 20 * Math.log10(this.samplePeak) : -Infinity;
     const aboveAbsolute = this.blockEnergy.filter((energy) => energy > 0 && 10 * Math.log10(energy) > -69.309);

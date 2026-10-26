@@ -18,6 +18,17 @@ assert.equal(parsed.channels, 2);
 assert.equal(parsed.decoderConfig.byteLength, 36);
 assert.deepEqual([...parsed.decoderConfig], [...entry.subarray(20)], "preserves the complete ALAC atom");
 
+for (const rate of [96_000, 192_000]) {
+  const highRate = entry.slice();
+  const view = new DataView(highRate.buffer);
+  view.setUint32(16, 65536); // 1 Hz placeholder in the legacy header.
+  view.setUint32(52, rate); // Actual ALACSpecificConfig.sampleRate.
+  assert.equal(parseAlacSampleEntry(highRate).sampleRate, rate, "high-rate ALAC uses the decoder cookie");
+}
+const badCookie = entry.slice();
+new DataView(badCookie.buffer).setUint32(52, 0);
+assert.equal(parseAlacSampleEntry(badCookie), null, "rejects a zero-rate decoder cookie");
+
 const truncated = entry.slice();
 new DataView(truncated.buffer).setUint32(20, 37);
 assert.equal(parseAlacSampleEntry(truncated), null, "rejects an atom that exceeds its sample entry");

@@ -59,6 +59,7 @@
       "performance-*.ps1",
       "performance-*.py",
       "performance-core/**",
+      "stereo-loudness.cjs",
       "upmix-export.cjs",
       "upmix-wav.cjs",
       "upmix-export-worker.cjs"

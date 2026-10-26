@@ -16,23 +16,9 @@ const calls=[],p=new Harness();Object.assign(p,{stereoBalanceEligible:true,sampl
 const frame=(blocks,lufs)=>({codec:'alac',channels:[[],[]],labels:['L','R'],samplePos:blocks*4800,loudness:{blocks,integratedLufs:lufs,truePeakDbtp:-12}});
 p.process(frame(6,-17));assert.equal(calls.length,0);p.process(frame(7,-17.28));assert(Math.abs(calls.at(-1).gain+.72)<1e-6);const n=calls.length;p.process(frame(107,-10.66));p.process(frame(108,-8));p.process(frame(157,-22));assert.equal(calls.length,n);assert(Math.abs(calls.at(-1).gain+.72)<1e-6);
 p.cachedMeasuredLufs=-10.66;p.measuredLoudnessSettled=false;p.process(frame(0,-30));assert(Math.abs(calls.at(-1).gain+7.34)<1e-6);assert.equal(calls.at(-1).at,0);const cachedCalls=calls.length;p.process(frame(200,-5));assert.equal(calls.length,cachedCalls);
-const keyCode=app.match(/function measuredLoudnessStorageKey\([\s\S]*?\n}/)[0];const key=new Function(js(keyCode)+';return measuredLoudnessStorageKey')();assert.notEqual(key({channels:2,sampleRate:48000},{kind:'path',path:'a.m4a'}),key({channels:2,sampleRate:48000},{kind:'path',path:'b.m4a'}));
-const read=app.match(/const stored = key \? localStorage.getItem\(key\) : null;[\s\S]*?createdPlayer\?\.setMeasuredLoudness\([^\n]+/)[0];for(const v of [null,'',' ','invalid','-10.66',JSON.stringify({integratedLufs:-23,truePeakDbtp:-12})]){let actual;try{new Function('localStorage','key','createdPlayer',read)({getItem:()=>v},'test',{setMeasuredLoudness:(...x)=>actual=x})}catch{actual=[null,null]}assert.deepEqual(actual,v?.startsWith('{')?[-23,-12]:[null,null])}
-console.log('Loudness regression: missing cache, file isolation, quiet intro, fixed first reference, protective master attenuation with peak headroom, cached first sample passed.');
-
-// Partial/aborted playback cannot overwrite a full-track cache.
-const handle=player.slice(player.indexOf('  private handleFrame('),player.indexOf('  private submittedEndSample('));
-assert(!handle.includes('onMeasuredLoudness'));
-const finish=player.slice(player.indexOf('      case "flushed":')+'      case "flushed":'.length,player.indexOf('      case "error":',player.indexOf('      case "flushed":'))).replace(/break;\s*$/,'');
-const done=new Function(finish),persisted=[];
-const state={stereoBalanceEligible:true,programLoudness:null,measuredLoudnessBlocks:2515,measuredLoudness:{integratedLufs:-10.66},cb:{onMeasuredLoudness:x=>persisted.push(x)},pumpPcm(){},submittedEndSample(){return 0},pcmQueue:[],startPlaybackIfReady(){},checkEnded(){}};
-// Use production gate constant when executing the actual completion handler.
-const complete=new Function('MEASURED_LOUDNESS_MIN_BLOCKS','return function(){'+finish+'}')(57);
-complete.call(state);assert.deepEqual(persisted,[-10.66]);
-state.measuredLoudness={integratedLufs:null};complete.call(state);assert.equal(persisted.length,1);
-assert.match(app,/const version = .*"v7-mpegh-prelimit" : "v6"/);
-assert(app.includes('sda-measured-lufs-${version}:'));
-console.log('Complete-track cache regression: only decoder completion persists; invalid estimates excluded; partial v2 ignored.');
+assert(!app.includes('sda-measured-lufs-'),'desktop must never read/write a stored loudness reference');
+assert(!app.includes('onMeasuredLoudness:'),'completed playback must not persist a reference');
+console.log('Loudness regression: fresh programme reference from sample zero, quiet intro, fixed gain and no desktop loudness cache passed.');
 
 // Combined stereo energy: dual mono is 3.01 LU above a one-channel master.
 const sr=48000,tone=Float32Array.from({length:sr*7},(_,i)=>.3*Math.sin(2*Math.PI*997*i/sr));
@@ -54,5 +40,4 @@ const Toggle=new Function(js('class Toggle {'+toggle+'};exports.Toggle=Toggle').
 const t=new Toggle(),web=[],native=[];t.pumpPcm=()=>{};t.renderer={setVolumeBalance:x=>web.push(x)};t.nativeRendererSink={setProgramEnabled:x=>native.push(x)};
 for(const eligible of [false,true,false,true]){t.stereoBalanceEligible=eligible;t.setVolumeBalance(true);assert.equal(web.at(-1),eligible);assert.equal(native.at(-1),eligible);assert.equal(t.volumeBalanceEnabled,true)}
 t.setVolumeBalance(false);assert.equal(native.at(-1),false);
-state.stereoBalanceEligible=false;state.measuredLoudness={integratedLufs:-10};complete.call(state);assert.equal(persisted.length,1);
 console.log('Stereo-only eligibility: ADM, multichannel and objects excluded; preference retained across tracks; both outputs bypass.');

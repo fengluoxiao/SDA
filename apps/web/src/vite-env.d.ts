@@ -231,6 +231,9 @@ declare global {
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       localFilePath?: (file:File) => string;
+      analyzeStereoLoudness?: (filePath:string) => Promise<{codec:string;sampleRate:number;channels:number;integratedLufs:number|null;truePeakDbtp:number|null;blocks:number;frames:number;size:number;mtimeMs:number;policy:string}|null>;
+      cancelStereoLoudness?: () => Promise<boolean>;
+      onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;
       exportUpmixWav?: (inputPath:string, options:{volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean}) => Promise<{id?:string;cancelled?:boolean}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;

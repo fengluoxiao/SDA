@@ -144,13 +144,16 @@ export function parseAlacSampleEntry(data: Uint8Array): { sampleRate: number; ch
   // AudioSampleEntry: 6 reserved bytes, data-reference index, then version
   // fields; channel count/sample size/sample rate are at 8/10/16.
   if (data.length < 28) return null;
-  const channels = new DataView(data.buffer, data.byteOffset + 8, 2).getUint16(0);
-  const sampleRate = readU32(data, 16) / 65536;
-  if (!Number.isInteger(channels) || channels < 1 || !Number.isFinite(sampleRate) || sampleRate < 1) return null;
   for (let offset = 20; offset + 8 <= data.length;) {
     const size = readU32(data, offset);
     if (size < 8 || offset + size > data.length) return null;
     if (atomType(data, offset + 4) === "alac") {
+      // The 16.16 AudioSampleEntry field cannot represent 96/192 kHz;
+      // files may put 1 Hz there. The decoder cookie is authoritative.
+      if (size < 36) return null;
+      const channels = data[offset + 21]!;
+      const sampleRate = readU32(data, offset + 32);
+      if (channels < 1 || sampleRate < 1) return null;
       return { sampleRate, channels, decoderConfig: data.slice(offset, offset + size) };
     }
     offset += size;

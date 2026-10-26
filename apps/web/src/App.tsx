@@ -63,6 +63,13 @@ import {
 } from "./head-tracking-telemetry";
 import { HeadTrackingSession } from "./head-tracking-session";
 
+type StereoProgrammeReference = {
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  integratedLufs: number | null;
+  truePeakDbtp: number | null;
+};
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string; version?: string };
 
 function isFlacFile(name: string): boolean {
@@ -313,15 +320,6 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
   );
 }
 
-/** Cache key for a track's measured BS.1770-4 loudness (volume balance for
- *  metadata-less content such as ALAC). */
-function measuredLoudnessStorageKey(info: { codec: string; channels: number; sampleRate: number }, source: PlaybackSource): string {
-  const identity = source.kind === "path" ? `${source.path}:${source.version ?? "unknown"}` : `${source.file.name}:${source.file.size}:${source.file.lastModified}`;
-  // v6 replaces a sample-peak cache with the BS.1770-style true-peak estimate.
-  const version = ["mpegh","mha1","mhm1","mhas"].includes(info.codec) ? "v7-mpegh-prelimit" : "v6";
-  return `sda-measured-lufs-${version}:${info.codec}:${identity}:${info.channels}:${info.sampleRate}`;
-}
-
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
   ...(sharedHrtfActive ? [{id: "hrtfhq", label: "HRTFHQ（默认）", description: "四个平台共用的 HRTFHQ 响应，支持逐对象定位与头部追踪"}] : []),
@@ -536,8 +534,6 @@ export function App() {
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
   const fileNameRef = useRef<string | null>(null);
-  /** 当前曲目的实测响度缓存键（音量平衡用于无元数据内容）。 */
-  const measuredLoudnessKeyRef = useRef<string | null>(null);
   /** A monotonically increasing token makes the most recent play request win. */
   const playRequestRef = useRef(0);
   const playlistItemSerialRef = useRef(0);
@@ -567,6 +563,7 @@ export function App() {
       isCurrent: () => boolean,
       playbackPlaylistRevision: number,
       source: PlaybackSource,
+      sourceReference: StereoProgrammeReference | null = null,
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
@@ -874,27 +871,13 @@ export function App() {
           coverUrlRef.current = coverUrl ?? null;
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
-          // Feed the persisted measurement so balance applies from sample 0.
-          const key = t.codec === "av3a" ? null : measuredLoudnessStorageKey(t, source);
-          measuredLoudnessKeyRef.current = key;
-          try {
-            const stored = key ? localStorage.getItem(key) : null;
-            const cached = stored ? JSON.parse(stored) : null;
-            createdPlayer?.setMeasuredLoudness(Number.isFinite(cached?.integratedLufs) ? cached.integratedLufs : null, Number.isFinite(cached?.truePeakDbtp) ? cached.truePeakDbtp : null);
-          } catch {
-            createdPlayer?.setMeasuredLoudness(null);
+          // This reference belongs only to this playback. No stored loudness
+          // is read or written, including when balance is toggled later.
+          if (sourceReference && sourceReference.codec === t.codec && t.channels === 2 && sourceReference.sampleRate === t.sampleRate) {
+            createdPlayer?.setMeasuredLoudness(sourceReference.integratedLufs, sourceReference.truePeakDbtp);
           }
         },
         onBalanceAnalysis: progress => { if (isCurrent()) setBalanceAnalysisProgress(progress); },
-        onMeasuredLoudness: (integratedLufs, truePeakDbtp) => {
-          const key = measuredLoudnessKeyRef.current;
-          if (!isCurrent() || !key) return;
-          try {
-            localStorage.setItem(key, JSON.stringify({integratedLufs, truePeakDbtp}));
-          } catch {
-            // Persistence failures must not affect playback.
-          }
-        },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels, stereoSource, upmixed }) => {
           if (!isCurrent()) return;
           setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels, stereoSource, upmixed });
@@ -1042,6 +1025,7 @@ export function App() {
       // published instances. This prevents a dev remount from reviving a stale
       // session after the component has gone away.
       playRequestRef.current++;
+      void window.sdaDesktop?.cancelStereoLoudness?.();
       nativeSessionEpochRef.current++;
       playingRef.current = false;
       if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
@@ -1439,6 +1423,7 @@ export function App() {
     async (source: PlaybackSource) => {
       const feedRequest = ++feedRequestRef.current;
       const request = ++playRequestRef.current;
+      void window.sdaDesktop?.cancelStereoLoudness?.();
       // Claim playback before any await. The preload can synchronously drain a
       // burst of open-file events, and every later append must see this request
       // as active instead of constructing another player/session.
@@ -1481,9 +1466,29 @@ export function App() {
         : source.path.split(/[\\/]/).pop() ?? source.path;
       fileNameRef.current = sourceName.replace(/\.[^.]+$/, "");
       try {
+        const desktop = window.sdaDesktop;
+        let sourceReference: StereoProgrammeReference | null = null;
+        const localPath = source.kind === "path" ? source.path : desktop?.localFilePath?.(source.file);
+        if (localPath && desktop?.analyzeStereoLoudness) {
+          const unsubscribe = desktop.onStereoLoudnessProgress?.(progress => {
+            if (isCurrent()) setBalanceAnalysisProgress(progress);
+          });
+          setBalanceAnalysisProgress(0);
+          try {
+            // Measure the original stereo programme once, before either dry or
+            // upmixed PCM can start. Keep the same fixed gain even if balance
+            // is enabled later; a quiet intro must not become the whole reference.
+            const measured = await desktop.analyzeStereoLoudness(localPath);
+            if (!isCurrent()) return;
+            sourceReference = measured;
+          } finally {
+            unsubscribe?.();
+            if (isCurrent()) setBalanceAnalysisProgress(null);
+          }
+        }
         // Build privately first. A stale request never gets to replace or dispose
         // the active player published by a newer request.
-        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source);
+        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source, sourceReference);
         if (!player || !isCurrent()) return;
         playerRef.current = player;
         setPlayerReady(player);
@@ -1492,8 +1497,8 @@ export function App() {
           await player.dispose();
           return;
         }
-        player.setVolume(volume);
-        player.setVolumeBalance(volumeBalanceEnabled);
+        player.setVolume(volumeRef.current);
+        player.setVolumeBalance(volumeBalanceRef.current);
         player.setBinauralEqBands(binauralEqBandsRef.current);
         player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnostic);
         player.setHeadphoneCompensation(headphoneProfileId);
@@ -1984,6 +1989,7 @@ export function App() {
       // Invalidate the active reader and dispose it; SdaPlayer intentionally has
       // no public stop because file/session disposal is the safe stop boundary.
       playRequestRef.current++;
+      void window.sdaDesktop?.cancelStereoLoudness?.();
       const active = playerRef.current;
       const retiring = retiringPlayerRef.current;
       playerRef.current = null;
@@ -2005,6 +2011,7 @@ export function App() {
     setPlaylist([]);
     setPlaylistCurrentId(null);
     playRequestRef.current++;
+    void window.sdaDesktop?.cancelStereoLoudness?.();
     const active = playerRef.current;
     const retiring = retiringPlayerRef.current;
     playerRef.current = null;
@@ -2156,7 +2163,9 @@ export function App() {
     if(replaceOutput){
       // A receiver owns a different sidecar. Keep the playlist and source, but
       // retire the decoder whose native sources are about to disappear.
-      playRequestRef.current++;nativeSessionEpochRef.current++;
+      playRequestRef.current++;
+      void window.sdaDesktop?.cancelStereoLoudness?.();
+          nativeSessionEpochRef.current++;
       const active=playerRef.current;const retiring=retiringPlayerRef.current;
       playerRef.current=null;retiringPlayerRef.current=null;setPlayerReady(null);
       playingRef.current=false;pausedRef.current=false;setPlaying(false);setPaused(false);
