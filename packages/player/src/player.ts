@@ -120,6 +120,13 @@ export interface PlayerHealthSnapshot {
 
 export type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 
+export interface AuthoredPcmInput {
+  frames:number;inputRate:number;labels:string[];lossless:boolean;
+  summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"};
+  read():Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
+  close():Promise<unknown>;setLayout?(layout:string):Promise<unknown>;
+}
+
 export interface PlayerCallbacks {
   /** Measured-loudness balance converged (or applied from cache) for the
    *  current track; the UI persists it so replays balance from sample 0. */
@@ -432,6 +439,9 @@ export class SdaPlayer {
   private nextWorkerPushSequence = 1;
   private pendingWorkerPushes = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   private disposed = false;
+  private authoredInput:AuthoredPcmInput|null=null;
+  get isAuthoredSource():boolean{return this.authoredInput!==null;}
+  get isLosslessAuthoredSource():boolean{return this.authoredInput?.lossless===true;}
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
@@ -545,6 +555,7 @@ export class SdaPlayer {
   setLayout(layout: readonly VirtualSpeaker[], manual = true): void {
     if (!this.initArgs) return;
     if (manual) this.autoLayoutEnabled = false;
+    if(this.authoredInput){if(manual&&this.authoredInput.setLayout){const input=this.authoredInput;void(async()=>{const paused=this.pausedState;await this.pause();await input.setLayout!(layoutIdFor(layout));if(!this.disposed&&this.authoredInput===input&&!paused)await this.resume();})().catch(error=>this.cb.onError?.(String(error)));}this.initArgs.layout=layout;return;}
     this.initArgs.layout = layout;
     this.renderer?.setLayout(layout);
     if (this.outputBackend === "native-sidecar") {
@@ -562,6 +573,7 @@ export class SdaPlayer {
 
   /** 恢复按当前码流信息自动选择布局。 */
   setAutoLayout(): void {
+    if(this.authoredInput)return;
     const resolver = this.initArgs?.layoutResolver;
     if (!resolver) return;
     this.autoLayoutEnabled = true;
@@ -709,6 +721,7 @@ export class SdaPlayer {
 
   /** 设置最终双耳耳机补偿。profile 必须来自 renderer 注册的真实测量曲线。 */
   setHeadphoneCompensation(profileId: string | null): void {
+    if(this.authoredInput)return;
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
     }
@@ -730,6 +743,7 @@ export class SdaPlayer {
 
   /** 设置最终双耳的低、中、高三段 EQ，不改变空间化或耳机补偿 FIR。 */
   setBinauralEqBands(bands: BinauralEqBands): void {
+    if(this.authoredInput)return;
     this.binauralEqBands = bands;
     this.renderer?.setBinauralEqBands(bands);
     try {
@@ -751,6 +765,7 @@ export class SdaPlayer {
 
   /** 切换最终双耳低频诊断，不改变 HRTF、LFE 或物理多声道输出。 */
   setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
+    if(this.authoredInput)return;
     this.binauralLowFrequencyDiagnosticMode = mode;
     this.renderer?.setBinauralLowFrequencyDiagnostic(mode);
     try {
@@ -1022,6 +1037,24 @@ export class SdaPlayer {
       await reader.cancel();
       reader.releaseLock();
     }
+  }
+
+  /** A source-owned stream: all programme/spatial decisions come from its file. */
+  async playAuthoredPcm(input:AuthoredPcmInput):Promise<void>{
+    if(this.outputBackend!=="native-sidecar"||!this.initialRendererReady)throw Error("SDAR requires the native renderer");
+    this.authoredInput=input;this.resetOutputLatencyProtection(true);this.resetHealth();this.sampleRate=48000;
+    this.containerDurationSec=input.frames/48000;this.trackReported=true;this.trackCodec="sdar";this.autoLayoutEnabled=false;
+    this.stereoBalanceEligible=false;this.stereoStartupEligible=false;this.setVolumeBalance(this.volumeBalanceEnabled);
+    this.ensureStreamRate(48000);await this.nativeRendererSink?.setProgramCodec?.("sdar");
+    this.cb.onTrack?.({codec:"sdar",sampleRate:input.inputRate,channels:input.labels.length,container:"sdar",durationSec:input.frames/48000,title:input.summary.title??undefined,artist:input.summary.artist??undefined,album:input.summary.album??undefined,coverArt:input.coverArt});
+    this.visualTimer??=setInterval(()=>this.emitVisual(),1000/30);const epoch=this.decodeEpoch;
+    try{while(!this.disposed&&epoch===this.decodeEpoch&&this.authoredInput===input){const next=await input.read();if(this.disposed||epoch!==this.decodeEpoch||this.authoredInput!==input)return;
+      if(next.sampleRate!==48000||next.channels.length!==input.labels.length||next.channels.some(ch=>ch.length!==(next.channels[0]?.length??0)))throw Error("Invalid SDAR PCM topology");
+      if(next.channels[0]?.length)this.handleFrame({codec:"sdar",sampleRate:48000,samplePos:next.samplePos,channels:next.channels,labels:[...input.labels],rawBedLabels:[...input.labels],events:[],objectChannels:[],programLoudness:null,rampDuration:0});
+      if(next.eof||!next.channels[0]?.length)break;await this.pace(epoch);
+    }
+    if(this.disposed||epoch!==this.decodeEpoch)return;this.ended=true;void this.nativeRendererSink?.endAt?.(input.frames);this.pumpPcm();this.startPlaybackIfReady(true);this.checkEnded();
+    }catch(error){if(!this.disposed&&this.authoredInput===input)await this.pause();throw error;}
   }
 
   /** Feed browser-decoded, non-object PCM. The
@@ -1378,6 +1411,7 @@ export class SdaPlayer {
     this.rejectPendingWorkerPushes("player disposed");
     this.stop();
     this.performanceDisconnect?.();
+    const authored=this.authoredInput;this.authoredInput=null;if(authored)await authored.close().catch(()=>{});
     this.worker.terminate();
     this.nativeConsumedUnsubscribe?.();
     this.nativeConsumedUnsubscribe = undefined;

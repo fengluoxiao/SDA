@@ -21,6 +21,7 @@ pub enum RenderCommand {
         directional: bool,
     },
     /// Live asset replacement: no decoder restart, PCM flush or clock reset.
+    AuthoredScene {scene:Box<crate::authored::Scene>,reply:std::sync::mpsc::Sender<Result<(),String>>},
     HrtfPreset {
         set: Box<crate::hrtf::NativeHrtfSet>,
         wet: f32,

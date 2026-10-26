@@ -339,7 +339,13 @@ class SdaModule : Module() {
 
         AsyncFunction("metadata") { uriString: String ->
             val context = appContext.reactContext ?: throw RuntimeException("no react context")
-            MediaMetadata.read(context, Uri.parse(uriString)).toString()
+            val uri=Uri.parse(uriString)
+            val file=if(uri.scheme=="file") uri.path?.let { java.io.File(it) } else null
+            if(file!=null && file.isFile && SdaEngine.nativeIsSdar(file.absolutePath)) {
+                val metadata=JSONObject(SdaEngine.nativeSdarMetadata(file.absolutePath))
+                check(!metadata.has("error")) { metadata.optString("error") }
+                metadata.toString()
+            } else MediaMetadata.read(context, uri).toString()
         }
 
         AsyncFunction("durationMs") { uriString: String ->
@@ -558,11 +564,12 @@ class SdaModule : Module() {
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
             val isContainer = displayName.substringAfterLast('.', "").lowercase() in setOf("m4a", "mp4")
+            val isSdarName = displayName.substringAfterLast('.', "").equals("sdar", ignoreCase = true)
             // DocumentPicker normally supplies a local file. Reuse it rather
             // than copying the full song again just to probe its container.
             val localFile = if (uri.scheme == "file") uri.path?.let { java.io.File(it) }?.takeIf { it.isFile } else null
-            val ownsSourceCopy = (isMp3 || isContainer) && localFile == null
-            val mp3Cache = if (isMp3 || isContainer) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
+            val ownsSourceCopy = (isMp3 || isContainer || isSdarName) && localFile == null
+            val mp3Cache = if (isMp3 || isContainer || isSdarName) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
             if (ownsSourceCopy && mp3Cache != null) {
                 try {
                     val source = context.contentResolver.openInputStream(uri) ?: error("无法打开所选音频文件")
@@ -572,9 +579,11 @@ class SdaModule : Module() {
                     throw error
                 }
             }
-            val isAlac = isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
+            val isSdar = mp3Cache != null && SdaEngine.nativeIsSdar(mp3Cache.absolutePath)
+            if(isSdarName && !isSdar){if(ownsSourceCopy)mp3Cache?.delete();error("无效或尚未支持的 SDAR 床层文件")}
+            val isAlac = !isSdar && isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
             val input = try {
-                if (isMp3 || isAlac) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName, if (isContainer) mp3Cache else null)
+                if (isMp3 || isAlac || isSdar) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName, if (isContainer) mp3Cache else null)
             } catch (error: Throwable) {
                 if (ownsSourceCopy) mp3Cache?.delete()
                 throw error
@@ -586,6 +595,9 @@ class SdaModule : Module() {
                     if (isMpegh) check(SdaEngine.nativeOpenMpegh(it) == 0) {
                         "360RA 打开失败: ${SdaEngine.nativeLastError()}"
                     }
+                    if (isSdar && mp3Cache != null) check(SdaEngine.nativeOpenSdar(it, mp3Cache.absolutePath, context.cacheDir.absolutePath) > 0) {
+                        "SDAR 打开失败: ${SdaEngine.nativeLastError()}"
+                    }
                     if (isAlac && mp3Cache != null) check(SdaEngine.nativeOpenAlac(it, mp3Cache.absolutePath) > 0) {
                         "ALAC 打开失败: ${SdaEngine.nativeLastError()}"
                     }
@@ -594,7 +606,7 @@ class SdaModule : Module() {
                     }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
                     check(balanceError.isEmpty()) { balanceError }
-                    if (!isAv3a) loudnessCache.getString(cacheKey, null)?.let { cached ->
+                    if (!isAv3a && !isSdar) loudnessCache.getString(cacheKey, null)?.let { cached ->
                         // A damaged/stale cache is a miss, never a playback failure.
                         val valid = runCatching {
                             val m = JSONObject(cached)
@@ -631,7 +643,7 @@ class SdaModule : Module() {
             activeIsMp3 = isMp3
             alacStereoUpmix = renderingSettings().getBoolean("alacStereoUpmix")
             // Container AC-4 was normalized by the shared importer before opening.
-            activeSourceCodec = if (isAlac) "alac" else if (isMpegh) "mpegh" else if (isMp3) "mp3"
+            activeSourceCodec = if (isSdar) "sdar" else if (isAlac) "alac" else if (isMpegh) "mpegh" else if (isMp3) "mp3"
                 else if (displayName.substringAfterLast('.', "").equals("ac4", ignoreCase = true)) "ac4"
                 else if (displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)) "av3a" else "eac3"
             activeInput = input
@@ -683,10 +695,10 @@ class SdaModule : Module() {
                                 Thread.sleep(20)
                                 continue
                             }
-                            if (isMp3 || isAlac) {
+                            if (isMp3 || isAlac || isSdar) {
                                 val pulled = synchronized(nativeLock) {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
-                                    if (isAlac) SdaEngine.nativePullAlac(ptr, 4096, alacStereoUpmix) else SdaEngine.nativePullMp3(ptr, 4096)
+                                    if (isSdar) SdaEngine.nativePullSdar(ptr,4096) else if (isAlac) SdaEngine.nativePullAlac(ptr, 4096, alacStereoUpmix) else SdaEngine.nativePullMp3(ptr, 4096)
                                 }
                                 if (pulled == -4) break
                                 check(pulled >= 0) { "音频解码失败: ${SdaEngine.nativeLastError()}" }
@@ -713,7 +725,7 @@ class SdaModule : Module() {
                                     // Match Windows: save only successfully flushed full
                                     // decodes, not a stopped intro or a failed feed.
                                     val measurement = SdaEngine.nativeCompleteLoudness(ptr)
-                                    if (!isAv3a && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
+                                    if (!isAv3a && !isSdar && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
                                 }
                             }
                             while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {

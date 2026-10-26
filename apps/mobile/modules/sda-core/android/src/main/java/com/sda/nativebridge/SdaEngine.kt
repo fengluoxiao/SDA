@@ -15,6 +15,11 @@ object SdaEngine {
     external fun nativeHrtfLoaded(ptr: Long): Boolean
     external fun nativeOpenMpegh(ptr: Long): Int
     external fun nativeIsAlac(path: String): Boolean
+    external fun nativeSdarMetadata(path: String): String
+    external fun nativeIsSdar(path: String): Boolean
+    external fun nativeOpenSdar(ptr: Long, path: String, tempRoot: String): Int
+    external fun nativePullSdar(ptr: Long, maxFrames: Int): Int
+    external fun nativeSdarInfo(ptr: Long): String
     external fun nativeOpenAlac(ptr: Long, path: String): Int
     external fun nativePullAlac(ptr: Long, maxFrames: Int, upmix: Boolean): Int
     external fun nativeOpenMp3(ptr: Long, path: String): Int

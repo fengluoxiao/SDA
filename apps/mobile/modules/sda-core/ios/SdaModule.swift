@@ -95,6 +95,11 @@ public final class SdaModule: Module {
   AsyncFunction("durationMs") { (uri:String) in guard let u = URL(string:uri) else { return 0.0 }; return player.mediaDuration(u) }
   AsyncFunction("metadata") { (uri:String) in
    guard let u = URL(string:uri) else { throw SdaError.message("文件地址无效") }
+   let scoped=u.startAccessingSecurityScopedResource();defer {if scoped {u.stopAccessingSecurityScopedResource()}}
+   if u.isFileURL, let sdar=try player.decodeReply(sda_ios_sdar_metadata(u.path)) as? [String:Any] {
+    if let uri=sdar["coverUri"] as? String, let comma=uri.firstIndex(of:","),let data=Data(base64Encoded:String(uri[uri.index(after:comma)...])),let color=ArtworkColor.bottomBand(data){var result=sdar;result["artworkColor"]=color;return try player.json(result)}
+    return try player.json(sdar)
+   }
    let asset = AVURLAsset(url:u); var result: [String:Any] = ["durationMs":player.mediaDuration(u)]
    for item in asset.commonMetadata { if item.commonKey == .commonKeyTitle { result["title"] = item.stringValue }; if item.commonKey == .commonKeyArtist { result["artist"] = item.stringValue }; if item.commonKey == .commonKeyAlbumName { result["album"] = item.stringValue }; if item.commonKey == .commonKeyArtwork, let data = item.dataValue { result["coverUri"] = "data:image/jpeg;base64,"+data.base64EncodedString(); if let color = ArtworkColor.bottomBand(data) { result["artworkColor"] = color } } }
    return try player.json(result)

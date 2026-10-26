@@ -41,6 +41,7 @@ mod headphone_orientation;
 pub mod mpegh;
 pub mod balance;
 mod alac_pcm;
+mod sdar;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -139,6 +140,7 @@ pub struct PlaybackStatus {
     pub pending_batches: usize,
     pub paused: bool,
     pub hrtf_ready: bool,
+    pub authored_playback: bool,
     pub binaural_enabled: bool,
     pub listener_yaw_degrees: f64,
     pub object_rendering: bool,
@@ -238,6 +240,7 @@ pub struct MobileEngine {
     alac_adapter: alac_pcm::AlacPcm,
     mpegh_decoder: Option<mpegh::MpeghDecoder>,
     hrtf_loaded: bool,
+    sdar_source: Option<sdar::Source>,
 }
 
 /// Object-event throttle window; mirrors the web player's 66 ms batching.
@@ -279,6 +282,7 @@ impl MobileEngine {
             alac_adapter: Default::default(),
             mpegh_decoder: None,
             hrtf_loaded: false,
+            sdar_source: None,
         })
     }
 
@@ -376,6 +380,7 @@ impl MobileEngine {
     /// parsing happens on the caller, not the render worker. Decoder/FIFO intact.
     pub fn set_hrtf_preset(&mut self, path: &str, wet: f32, direct: bool,
         directional: bool) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if !wet.is_finite() || !(0.0..=1.0).contains(&wet) {
             return Err("invalid HRTF wet weight".into());
         }
@@ -406,10 +411,12 @@ impl MobileEngine {
 
     /// Prepare filters away from the render worker, then crossfade in place.
     pub fn set_spatial_cue_gain(&mut self, path: &str, gain: f32) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         let update = sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(path, &self.config.layout, gain)?;
         self.apply_spatial_cue_update(update)
     }
     pub fn apply_spatial_cue_update(&mut self, update: sda_native_renderer::live_spatial_cues::PreparedCueUpdate) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if let Some(pipeline) = &self.pipeline {
             let (reply, received) = std::sync::mpsc::channel();
             pipeline.commands.push(render_command::RenderCommand::SpatialCueGain { update: Box::new(update), reply })
@@ -423,6 +430,7 @@ impl MobileEngine {
 
     /// Open a seekable MP3 file. Decoded PCM enters the shared 48 kHz renderer as a stereo bed.
     pub fn open_mp3(&mut self, path: &str) -> EngineResult<u32> {
+        if self.sdar_source.is_some(){return Err("engine already has an authored source".into());}
         if self.mp3_decoder.is_some() {
             return Err("engine already has an active media source".into());
         }
@@ -458,6 +466,7 @@ impl MobileEngine {
 
     /// File-decoded ALAC uses the same PCM adapter as the iOS host.
     pub fn open_alac(&mut self, path: &str) -> EngineResult<u32> {
+        if self.sdar_source.is_some(){return Err("engine already has an authored source".into());}
         if self.alac_decoder.is_some() || self.mp3_decoder.is_some() || self.mpegh_decoder.is_some() {
             return Err("engine already has an active media source".into());
         }
@@ -502,6 +511,7 @@ impl MobileEngine {
     pub fn stereo_bed_mode(&self) -> bool { self.stereo_bed_mode }
 
     pub fn reset_source_state(&mut self) {
+        self.sdar_source=None;
         self.mp3_decoder = None;
         self.alac_decoder = None;
         self.alac_adapter = Default::default();
@@ -522,6 +532,7 @@ impl MobileEngine {
     /// Select the Windows MPEG-H decoder. Input is MHAS (mha1 is wrapped by the
     /// shared Windows MP4/MHAS adapter before it reaches JNI).
     pub fn open_mpegh(&mut self) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Err("engine already has an authored source".into());}
         if self.mp3_decoder.is_some() || self.mpegh_decoder.is_some() {
             return Err("engine already has an active media source".into());
         }
@@ -543,6 +554,7 @@ impl MobileEngine {
             || self.mp3_decoder.is_some() || self.mpegh_decoder.is_some() || self.alac_decoder.is_some() {
             return Err("compressed codec must be selected before feeding audio".into());
         }
+        if codec=="sdar" {self.announced_codec=Some("sdar".into());return Ok(());}
         if !matches!(codec,"eac3"|"truehd"|"ac4"|"dts"|"av3a") {
             return Err(format!("unsupported compressed codec: {codec}"));
         }
@@ -556,6 +568,7 @@ impl MobileEngine {
     /// Decoded frames are converted to `PcmFrame` render commands once the
     /// pipeline is started; before that they queue (visualizer-only use).
     pub fn feed(&mut self, data: &[u8]) -> EngineResult<DecodeStatus> {
+        if self.sdar_source.is_some()||self.announced_codec.as_deref()==Some("sdar"){if !data.is_empty(){return Err("SDAR requires its file decoder".into());}return Ok(DecodeStatus{codec:"sdar".into(),frames_pushed:0,sample_pos:self.decoded_sample_pos(),errors:vec![]});}
         self.compressed_input_bytes=self.compressed_input_bytes.saturating_add(data.len() as u64);
         if let Some(decoder) = &mut self.mpegh_decoder { decoder.push(data)?; }
         else { self.decoder.push(data)?; }
@@ -607,7 +620,7 @@ impl MobileEngine {
     }
 
     pub fn finish(&mut self) -> EngineResult<DecodeStatus> {
-        if let Some(decoder) = &self.mpegh_decoder { decoder.flush()?; } else { self.decoder.flush(); }
+        if self.sdar_source.is_none(){if let Some(decoder) = &self.mpegh_decoder { decoder.flush()?; } else { self.decoder.flush(); }}
         let status = self.feed(&[])?;
         if self.compressed_input_bytes > 0 && self.decoded_sample_pos() == 0 {
             return Err(format!("no decoded audio after {} compressed bytes (codec: {})",self.compressed_input_bytes,self.codec_name()));
@@ -661,6 +674,7 @@ impl MobileEngine {
             fifo_frames,
             pending_batches: pending_len,
             paused,
+            authored_playback:self.sdar_source.is_some(),
             hrtf_ready: self.pipeline.as_ref().map_or(self.hrtf_directions > 0, |p| p.telemetry.hrtf_ready.load(std::sync::atomic::Ordering::Acquire)),
             binaural_enabled: self.config.binaural_enabled,
             listener_yaw_degrees: self.pipeline.as_ref().map_or(0.0,|p|p.telemetry.listener_yaw_degrees()),
@@ -694,6 +708,7 @@ impl MobileEngine {
     /// flush the decoder, the queued frames and the rendered FIFO so the next
     /// `feed()` starts the new time base. Object-event coalescing resets.
     pub fn seek(&mut self, _position_ms: u64) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return self.seek_sdar(_position_ms);}
         self.decoder.reset();
         self.compressed_input_bytes = 0;
         self.announced_codec = None;
@@ -720,6 +735,7 @@ impl MobileEngine {
     }
 
     pub fn set_volume_balance(&mut self, enabled: bool) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if let Some(pipeline) = &self.pipeline {
             pipeline.commands.push(render_command::RenderCommand::Command(
                 Command::SetProgramEnabled {enabled:enabled && self.balance.eligible}
@@ -730,6 +746,7 @@ impl MobileEngine {
         Ok(())
     }
     pub fn set_measured_loudness(&mut self, json: &str) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         let measurement: balance::Measurement=serde_json::from_str(json).map_err(|e|e.to_string())?;
         self.balance.set_cached(measurement);
         Ok(())
@@ -740,6 +757,7 @@ impl MobileEngine {
 
     /// Selected spatial recipe and source-group control; independent of programme volume balance.
     pub fn set_spatial_enhancement(&self, enabled: bool) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
         pipeline.commands.push(render_command::RenderCommand::Command(
             Command::SetSpatialEnhancement { enabled }
@@ -747,6 +765,7 @@ impl MobileEngine {
     }
 
     pub fn set_spatial_layer_gain_db(&self, gain_db: f32) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if !gain_db.is_finite() || !(0.0..=6.0).contains(&gain_db) {
             return Err("spatial layer gain must be finite and between 0 and +6 dB".into());
         }
@@ -757,6 +776,7 @@ impl MobileEngine {
     }
 
     pub fn set_master_preamp_db(&self, gain_db: f32) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if !gain_db.is_finite() || !(-12.0..=12.0).contains(&gain_db) {
             return Err("master preamp must be finite and between -12 and +12 dB".into());
         }
@@ -777,6 +797,7 @@ impl MobileEngine {
     }
 
     pub fn set_object_rendering(&mut self, direct: bool, directional: bool) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if (direct || directional) && self.hrtf_directions == 0 { return Err("object rendering requires a loaded HRTF set".into()); }
         let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;
         pipeline.commands.push(render_command::RenderCommand::ObjectRendering { direct, directional })
@@ -790,6 +811,7 @@ impl MobileEngine {
     }
 
     pub fn set_binaural_enabled(&mut self, enabled: bool) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         if let Some(pipeline) = &self.pipeline {
             pipeline.commands.push(render_command::RenderCommand::Command(Command::SetBinauralEnabled { enabled }))
                 .map_err(|_| "command queue full".to_string())?;
@@ -801,6 +823,7 @@ impl MobileEngine {
 
     /// Apply the desktop near-field correction with the same distance mapping.
     pub fn set_near_field(&mut self, enabled: bool, metres_per_unit: f32) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         let settings = sda_native_renderer::near_field::Settings { enabled, metres_per_unit };
         if !settings.valid() { return Err("invalid near-field distance mapping".into()); }
         if let Some(pipeline) = &self.pipeline {
@@ -816,6 +839,7 @@ impl MobileEngine {
     /// Use the exact desktop room graph, with an acknowledged live switch.
     /// An empty path bypasses the room; asset parsing runs on the calling thread.
     pub fn set_room(&mut self, path: &str) -> EngineResult<()> {
+        if self.sdar_source.is_some(){return Ok(());}
         let profile = if path.is_empty() { None } else {
             let room = sda_native_renderer::cinema::RoomProfile::load(path)?;
             if room.layout != self.config.layout { return Err("room layout does not match playback layout".into()); }
@@ -842,6 +866,7 @@ impl MobileEngine {
     }
 
     pub fn stop(&mut self) {
+        self.sdar_source=None;
         if let Some(pipeline) = self.pipeline.take() {
             pipeline.telemetry.shutdown_requested.store(true, std::sync::atomic::Ordering::Release);
             let _ = pipeline.commands.push(render_command::RenderCommand::Command(Command::Shutdown));
@@ -939,7 +964,7 @@ impl MobileEngine {
 
     /// Codec in use (meaningful after auto-detection).
     pub fn codec_name(&self) -> &str {
-        if self.alac_decoder.is_some() { "alac" } else if self.mp3_decoder.is_some() { "mp3" } else if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
+        if self.sdar_source.is_some()||self.announced_codec.as_deref()==Some("sdar") { "sdar" } else if self.alac_decoder.is_some() { "alac" } else if self.mp3_decoder.is_some() { "mp3" } else if self.mpegh_decoder.is_some() { "mpegh" } else { self.decoder.codec_name() }
     }
 
     /// Drains queued FrameData into the render pipeline once started.

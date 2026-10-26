@@ -48,7 +48,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
   const [selection, setSelection] = React.useState<null | { title: string; options: { id: string; label: string }[]; selected: string; choose(id: string): void }>(null);
   const c = androidMaterialTheme(appTheme.id, dark);
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
-  const audioDisabled = p.busy || p.systemSpatial360RAActive;
+  const audioDisabled = p.busy || p.systemSpatial360RAActive || p.authoredPlayback===true;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const text = (value: string, muted = false, style: object = {}) => <Text style={[{ color: muted ? c.muted : c.ink }, style]}>{value}</Text>;
   const separator = () => null;
@@ -87,15 +87,15 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
         {action("停止播放", "stop.fill", p.stop, p.busy || !p.playing, true)}
       </View>)}
       {section("播放", <>
-        {toggle("音量平衡", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}{separator()}
+        {toggle("音量平衡", p.authoredPlayback?false:p.volumeBalanceEnabled, p.setVolumeBalance, p.busy||p.authoredPlayback===true)}{separator()}
         {menu("播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], PLAYBACK_MODES.map(id => ({ id, label: PLAYBACK_MODE_LABELS[id] })), p.playbackMode,
           id => { if (PLAYBACK_MODES.includes(id as typeof p.playbackMode)) p.setPlaybackMode(id as typeof p.playbackMode); })}
-      </>, "节目参考只衰减；杜比全景声、360RA、Audio Vivid 和 AC-4 开启后另含 +2.5 dB 输出校准，仍受输出保护。")}
-      {section("声音增强", toggle("空间平衡", p.spatialEnhancementEnabled, p.setSpatialEnhancement, audioDisabled),
+      </>, p.authoredPlayback?"当前 SDAR 由文件混音参数控制，已写入音频的处理不重复执行。":"节目参考只衰减；杜比全景声、360RA、Audio Vivid 和 AC-4 开启后另含 +2.5 dB 输出校准，仍受输出保护。")}
+      {section("声音增强", toggle("空间平衡", p.authoredPlayback?false:p.spatialEnhancementEnabled, p.setSpatialEnhancement, audioDisabled),
         "根据前后层级和可用余量调整空间细节，开关共用同一响度基准；测量不足时不额外增强。")}
       {section("360 Reality Audio", <View style={s.row}><View style={s.copy}>{text("系统空间音频", false, s.title)}{text("Android 系统多声道输出尚未接通", true, s.subtitle)}</View></View>,
         "360RA 文件仍可通过 SDA / HRTFHQ 双耳渲染播放。此项不是 Apple 系统空间音频的等价实现。")}
-      {section("ALAC 立体声", toggle("立体声上混 · 7.1.4", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy),
+      {section("ALAC 立体声", toggle("立体声上混 · 7.1.4", p.alacStereoUpmix, p.setAlacStereoUpmix, audioDisabled),
         "直接使用 SDA 共享上混处理，经共享 HRTF 渲染为双声道。不是原生 Atmos 或独立对象；播放中平滑切换，已缓冲音频播完后生效。")}
       {section("空间渲染", <>
         {menu("渲染预设", preset?.label || "自定义", renderingPresets.map(profile => ({ id: profile.id, label: profile.label })), preset?.id || "custom", p.setRenderingPreset, presetDisabled)}

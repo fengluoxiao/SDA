@@ -158,7 +158,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
   const { disabled, tag, pickerStyle, tint, scrollContentBackground, background, frame, buttonStyle } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const audioDisabled = p.systemSpatial360RAActive || p.busy;
+  const audioDisabled = p.systemSpatial360RAActive || p.busy || p.authoredPlayback===true;
   const presetDisabled = audioDisabled || p.roomBusy || p.nearFieldBusy;
   const preset = renderingPresets.find(profile => isPresetSelected(p, profile));
   return <Form modifiers={[
@@ -175,20 +175,20 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       </HStack>
     </Section>
     <Section title="播放" footer={<Text>节目参考只衰减；杜比全景声、360RA、Audio Vivid 和 AC-4 开启后另含 +2.5 dB 输出校准，仍受输出保护。Audio Vivid 起播前用短缓冲估计初始响度，播放中继续更新，不扫描整首歌曲。</Text>}>
-      <Toggle label="音量平衡" isOn={p.volumeBalanceEnabled} onIsOnChange={p.setVolumeBalance} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
+      <Toggle label="音量平衡" isOn={p.authoredPlayback?false:p.volumeBalanceEnabled} onIsOnChange={p.setVolumeBalance} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
       <Picker label="播放模式" selection={p.playbackMode} onSelectionChange={p.setPlaybackMode} modifiers={[pickerStyle("menu")]}>
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>
     </Section>
     <Section title="声音增强" footer={<Text>根据前后层级和可用余量调整空间细节，开关共用同一响度基准。测量不足时不额外增强，不识别人声。仅对 SDA 共享渲染生效，系统空间音频路径不应用。</Text>}>
-      <Toggle label="空间平衡" isOn={p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(p.busy || p.systemSpatial360RAActive)]} />
+      <Toggle label="空间平衡" isOn={p.authoredPlayback?false:p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]} />
     </Section>
     <Section title="360RA／Audio Vivid" footer={<Text>360RA / Audio Vivid：12 声道交给系统，旁路 SDA 共享渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。</Text>}>
-      <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
+      <Toggle label="系统空间音频 · 7.1.4" isOn={p.systemSpatial360RA} onIsOnChange={p.setSystemSpatial360RA} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
     </Section>
     <Section title="ALAC 立体声" footer={<Text>上混由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象。系统输出开启时，未上混提交 2.0，上混提交 7.1.4，旁路 SDA 共享渲染。上混播放中平滑切换，已缓冲音频播完后生效；系统输出开关下次播放生效；空间效果取决于输出设备及系统设置。</Text>}>
-      <Toggle label="立体声上混 · 7.1.4" isOn={p.alacStereoUpmix} onIsOnChange={p.setAlacStereoUpmix} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
-      <Toggle label="立体声系统空间音频" isOn={p.systemSpatialStereo} onIsOnChange={p.setSystemSpatialStereo} modifiers={[tint(appTheme.accent), disabled(p.busy)]} />
+      <Toggle label="立体声上混 · 7.1.4" isOn={p.alacStereoUpmix} onIsOnChange={p.setAlacStereoUpmix} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
+      <Toggle label="立体声系统空间音频" isOn={p.systemSpatialStereo} onIsOnChange={p.setSystemSpatialStereo} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
     </Section>
     <Section title="空间渲染" footer={<Text>{preset?.description || "当前使用自定义渲染设置。"} 切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。</Text>}>
       <Picker label="渲染预设" selection={preset?.id || "custom"} onSelectionChange={(id: string) => { if (renderingPresets.some(profile => profile.id === id)) p.setRenderingPreset(id); }} modifiers={[pickerStyle("menu"), disabled(presetDisabled)]}>

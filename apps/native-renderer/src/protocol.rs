@@ -38,6 +38,9 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     let _perf = crate::performance::span("native.command", command_name(&command), 1);
+    if state.authored.enabled && matches!(command_name(&command),"setHrtf"|"setCinema"|"setNearField"|"setSourceExtent"|"setObjectHrtf"|"setObjectRendering"|"setDirectionalHrtf"|"setBinauralEnabled"|"setStereoMode"|"setBinauralEq"|"clearHeadphoneCompensation"|"setMasterPreamp"|"setSpatialLayerGain"|"setComparisonGain"|"setSpeakerMutes"|"setMuted"|"setGain"|"setLfeMuted") {
+        write_event(&Event::Ack{command:command_name(&command),accepted:false,detail:Some("rendering is controlled by the current SDAR file")});return true;
+    }
     match command {
         Command::SetPerformance { enabled, path } => {
             let result = crate::performance::configure(enabled, path);
@@ -129,11 +132,13 @@ fn handle_command(
                 } else {
                     Vec::new()
                 };
+                let authored_position=state.authored.bed_positions.iter().find(|channel|channel.id==source_id).map(|channel|channel.position);
                 let bed_route = (!is_object).then(|| {
-                    bed_route_with_head(
+                    bed_route_custom(
                         bed_label.as_deref().unwrap_or(""),
                         &state.vbap,
                         state.head_pose,
+                        authored_position,
                     )
                 });
                 if let Some(existing) = state.sources.get_mut(&source_id) {
@@ -155,6 +160,10 @@ fn handle_command(
                     SourceKind::Bed
                 };
                 source.object_id = object_id;
+                source.authored_bed_position=authored_position;
+                if state.authored.enabled {source.muted=state.authored.muted_sources.contains(&source_id);
+                    if let Some(channel)=state.authored.bed_positions.iter().find(|ch|ch.id==source_id){source.gain=cinema::db(channel.gain_db);source.target_gain=source.gain;source.ramp_remaining=0;}
+                }
                 source.bed_label =
                     (!is_object).then(|| bed_label.unwrap_or_else(|| "Bed_0".into()));
                 // Grace window: a brand-new source must survive the render
@@ -600,6 +609,14 @@ fn handle_command(
                 detail: None,
             });
         }
+        Command::ConfigureAuthoredScene { scene } => {
+            let result=state.configure_authored_scene(scene);
+            write_event(&Event::Ack {command:"configureAuthoredScene",accepted:result.is_ok(),detail:result.err().as_deref()});
+        }
+        Command::SetAuthoredProcessing { settings } => {
+            let result=state.configure_authored_processing(settings);
+            write_event(&Event::Ack {command:"setAuthoredProcessing",accepted:result.is_ok(),detail:result.err().as_deref()});
+        }
         Command::SetSpatialEnhancement { enabled } => {
             let result = state.set_spatial_enhancement(enabled);
             write_event(&Event::Ack { command: "setSpatialEnhancement", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -631,7 +648,7 @@ fn handle_command(
             }
         }
         Command::SetProgramEnabled { enabled } => {
-            state.program_enabled = enabled;
+            state.program_enabled = if state.authored.enabled {!state.authored.programme_handled}else{enabled};
             state.set_program_target(state.program_metadata_gain, !state.output_active);
             write_event(&Event::Ack {
                 command: "setProgramEnabled",
@@ -800,6 +817,9 @@ pub(super) fn apply_render_command(
                 handle_command(state, Command::SetDirectionalHrtf { enabled: directional }, fifo, telemetry);
                 handle_command(state, Command::SetObjectHrtf { enabled: direct }, fifo, telemetry)
             }
+        }
+        render_command::RenderCommand::AuthoredScene {scene,reply} => {
+            let result=state.configure_authored_scene(*scene);telemetry.publish_rendering_state(state);let _=reply.send(result);true
         }
         render_command::RenderCommand::HrtfPreset { set, wet, direct, directional, reply } => {
             let result = state.configure_hrtf_preset(*set, wet, direct, directional);
@@ -1486,6 +1506,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetMasterPreamp { .. } => "setMasterPreamp",
         Command::SetSpatialLayerGain { .. } => "setSpatialLayerGain",
         Command::SetSpatialEnhancement { .. } => "setSpatialEnhancement",
+        Command::SetAuthoredProcessing { .. } => "setAuthoredProcessing",
+        Command::ConfigureAuthoredScene { .. } => "configureAuthoredScene",
         Command::SetComparisonGain { .. } => "setComparisonGain",
         Command::SetProgramEnabled { .. } => "setProgramEnabled",
         Command::SetProgramGain { .. } => "setProgramGain",
@@ -2191,7 +2213,7 @@ impl Engine {
         Ok(())
     }
 
-    fn configure_room_with_hrtf(&mut self, settings: cinema::Settings,
+    pub(crate) fn configure_room_with_hrtf(&mut self, settings: cinema::Settings,
         room: Option<Arc<cinema::RoomProfile>>, mut candidate: crate::hrtf::NativeHrtfSet,
         wet: f32) -> Result<(), String> {
         settings.validate()?;

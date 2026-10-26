@@ -13,7 +13,7 @@ import { MobileObjectScene, type MobileObjectPoint } from "./MobileObjectScene";
 import { IOSPlayer } from "./IOSPlayer";
 
 export interface TrackMetadata {
-  title?: string; artist?: string; album?: string; albumArtist?: string;
+  title?: string; artist?: string; album?: string; albumArtist?: string; authoredPlayback?:boolean; sourceCodec?:string;
   year?: string; track?: string; coverUri?: string; artworkColor?: string; durationMs?: number;
 }
 export interface QueueTrack {
@@ -21,6 +21,7 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  authoredPlayback?:boolean;
   binauralEnabled?: boolean; setBinauralEnabled?(enabled: boolean): void;
   headTrackingEnabled: boolean; headTrackingStatus: string;
   setHeadTracking(enabled: boolean): void;
@@ -305,7 +306,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </Pressable>)}
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("节目参考只衰减，保持声部比例；指定空间格式另含 +2.5 dB 输出校准，仍受输出保护", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled} disabled={p.busy} onValueChange={p.setVolumeBalance} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("节目参考只衰减，保持声部比例；指定空间格式另含 +2.5 dB 输出校准，仍受输出保护", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.authoredPlayback?false:p.volumeBalanceEnabled} disabled={p.busy||p.authoredPlayback} onValueChange={p.setVolumeBalance} /></View>
           </View>
           {label("播放模式", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
@@ -315,7 +316,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </View>
           {label("声音增强", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("按位置平滑调整辅助声部与清晰度，开关共用同一响度基准；可配合音量平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive} onValueChange={p.setSpatialEnhancement} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("按位置平滑调整辅助声部与清晰度，开关共用同一响度基准；可配合音量平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.authoredPlayback?false:p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive || p.authoredPlayback} onValueChange={p.setSpatialEnhancement} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360RA／Audio Vivid", true, s.groupTitle)}

@@ -10,15 +10,17 @@ import {AlacResampler} from "./alac-resampler";
 import {Mp3Decoder,sniffMp3} from "./mp3-decoder";
 import {TruePeakMeter,LoudnessMeter,masterBalanceGainDb} from "./bs1770";
 import {readSourceMetadata} from "./source-metadata";
+import {exportRenderMetadata,admBedMetadata} from "./export-scene";
 const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
+const delivery=require("../../../apps/desktop/sda-delivery.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
-const {buildMetadataChunks}=require("../../../apps/desktop/wav-metadata.cjs");
-const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean};
+const {buildMetadataChunks,chunk:riffChunk}=require("../../../apps/desktop/wav-metadata.cjs");
+const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
 const balancedPath=job.balancedPath??job.floatPath+".balanced";
 const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
 const cancelled=new Int32Array(job.cancel);
 const check=()=>{if(Atomics.load(cancelled,0))throw Error("EXPORT_CANCELLED");};
-function writeAll(fd:number,bytes:Buffer){let offset=0;while(offset<bytes.length)offset+=fs.writeSync(fd,bytes,offset,bytes.length-offset);}
+function writeAll(fd:number,bytes:Buffer,position?:number){let offset=0;while(offset<bytes.length)offset+=fs.writeSync(fd,bytes,offset,bytes.length-offset,position===undefined?null:position+offset);}
 let lastProgress=0;
 function progress(stage:string,value:number,force=false){const now=Date.now();if(force||now-lastProgress>200){lastProgress=now;parentPort!.postMessage({type:"progress",stage,progress:value});}}
 function frameData(frame:any):DecodedFrameData {
@@ -40,14 +42,43 @@ async function renderBalances(programmeDb:number,makeupDb:number):Promise<void>{
   child.on("close",code=>{clearInterval(timer);clearTimeout(readiness);if(Atomics.load(cancelled,0))reject(Error("EXPORT_CANCELLED"));else if(failure)reject(Error(failure));else if(code===0&&ready)resolve();else reject(Error(error||"原生平衡渲染失败"));});
  });
 }
+async function finishDelivery(master:string){
+ check();const format=job.format??"wav";
+ if(format==="wav"){fs.renameSync(master,job.outputPath);return;}
+ const target=job.deliveryPath;if(!target)throw Error("导出临时路径缺失");
+ progress("encode",.9,true);
+ if(format==="sdar")delivery.writeSdarMaster(master,target,{check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{ffmpegPath:job.ffmpegPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ else throw Error("不支持此导出格式");
+ check();fs.renameSync(target,job.outputPath);
+}
 async function run(){
  let input:number|undefined,spool:number|undefined,output:number|undefined,processed:number|undefined,decoder:any=null;
  const resampler={current:null as AlacResampler|null};
+ if(job.sourceMaster){
+  try{
+   check();if(sameFile(job.inputPath,job.outputPath))throw Error("导出文件不能覆盖源音频");
+   const master=delivery.readWaveMaster(job.inputPath);
+   // The authored bed is already processed. Conversion never runs the upmixer,
+   // loudness analysis or the current listening preset over it again.
+   if((job.format??"wav")==="wav"){
+    const target=job.deliveryPath!;delivery.writeWaveMaster(job.inputPath,target,{check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
+   }else await finishDelivery(job.inputPath);
+   parentPort!.postMessage({type:"done",format:job.format??"wav",frames:master.frames,sampleRate:48000,channels:12,bits:24,
+    volumeBalanceEnabled:master.render.baked.volumeBalance.enabled,spatialBalanceEnabled:master.render.baked.spatialBalance.enabled,
+    sourceLufs:master.render.baked.volumeBalance.sourceLufs,programmeGainDb:master.render.baked.volumeBalance.programmeGainDb,
+    truePeakDbtp:master.render.baked.peakProtection.truePeakDbtp,convertedMaster:true});
+  }finally{for(const file of [job.deliveryPath,job.masterPath])if(file)try{fs.unlinkSync(file);}catch{}}
+  return;
+ }
  try{
   if(!job.analysisOnly&&sameFile(job.inputPath,job.outputPath))throw Error("导出文件不能覆盖源音频");
   input=fs.openSync(job.inputPath,"r");const initial=fs.fstatSync(input);
   if(!job.analysisOnly)progress("metadata",0,true);
-  const metadata=job.analysisOnly?null:buildMetadataChunks(await readSourceMetadata(job.inputPath,check));
+  const sourceMetadata=job.analysisOnly?null:await readSourceMetadata(job.inputPath,check);
+  const renderAssets=job.renderAssets?Object.fromEntries(Object.entries(job.renderAssets).filter(([key])=>key!=="blobs")):null;
+  if(sourceMetadata&&job.renderAssets)for(const asset of job.renderAssets.blobs){const data=Buffer.from(asset.data);if(!sourceMetadata.blobs.some(existing=>existing.sha256===asset.sha256))sourceMetadata.blobs.push({...asset,data});}
+  const metadata=sourceMetadata?buildMetadataChunks(sourceMetadata):null;
   if(!job.analysisOnly)spool=fs.openSync(job.floatPath,"wx+");const mixer=new AlacStereoUpmixer(true),meter=new TruePeakMeter(48000,12);
   const source={meter:null as LoudnessMeter|null};
   let samples=0,inputClock=0,inputRate=0,codec="";
@@ -120,7 +151,7 @@ async function run(){
   }else{meter.push(Array.from({length:12},()=>new Float32Array(16)));inputPeak=meter.dbtp();}
   const gain=Number.isFinite(inputPeak)?Math.min(1,10**((-1.01-inputPeak)/20)):1;
   progress("write",.75,true);
-  output=fs.openSync(job.stagingPath,"wx");writeAll(output,wav.header(BigInt(samples),metadata!.bytes.length));
+  output=fs.openSync(job.stagingPath,"wx");writeAll(output,wav.header(BigInt(samples)));
   const verified=new TruePeakMeter(48000,12);let read=0,seed=0x534441;
   const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
   while(read<samples){
@@ -132,12 +163,16 @@ async function run(){
    read+=count;progress("write",.75+.25*read/samples);
   }
   verified.push(Array.from({length:12},()=>new Float32Array(16)));const peak=verified.dbtp();if(peak> -1)throw Error("导出峰值校验失败，未替换目标文件");
-  check();writeAll(output,metadata!.bytes);
-  fs.fsyncSync(output);fs.closeSync(output);output=undefined;check();fs.renameSync(job.stagingPath,job.outputPath);
-  parentPort!.postMessage({type:"done",metadata:metadata!.summary,frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"source-rate-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
+  const render=exportRenderMetadata(job.renderSnapshot,{frames:samples,sourceSampleRate:inputRate,sourceLufs:sourceMeasurement.integratedLufs,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,peakHeadroomGainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null},renderAssets);
+  const authored=admBedMetadata(render,sourceMetadata!.common.title),finalMetadata=buildMetadataChunks(sourceMetadata!,render);
+  const metadataBytes=Buffer.concat([riffChunk("axml",authored.axml),riffChunk("chna",authored.chna),riffChunk("sdrm",Buffer.from(JSON.stringify(render),"utf8")),finalMetadata.bytes]);
+  if(metadataBytes.length>64*1024*1024)throw Error("歌曲与渲染元数据超过 64 MiB，未替换目标文件");
+  check();writeAll(output,metadataBytes);writeAll(output,wav.header(BigInt(samples),metadataBytes.length),0);
+  fs.fsyncSync(output);fs.closeSync(output);output=undefined;check();await finishDelivery(job.stagingPath);
+  parentPort!.postMessage({type:"done",format:job.format??"wav",metadata:{...finalMetadata.summary,renderSchemaVersion:1,bedChannels:12,objects:0},frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"source-rate-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
  }finally{
   decoder?.free();resampler.current?.destroy();for(const fd of [input,spool,output,processed])if(fd!==undefined)try{fs.closeSync(fd);}catch{}
-  if(!job.analysisOnly)for(const file of [job.floatPath,job.stagingPath,balancedPath])try{fs.unlinkSync(file);}catch{}
+  if(!job.analysisOnly)for(const file of [job.floatPath,job.stagingPath,balancedPath,job.deliveryPath,job.masterPath])if(file)try{fs.unlinkSync(file);}catch{}
  }
 }
 run().catch(error=>parentPort!.postMessage({type:error.message==="STEREO_ANALYSIS_UNSUPPORTED"?"unsupported":error.message==="EXPORT_CANCELLED"?"cancelled":"error",error:error.message})).finally(()=>parentPort!.close());

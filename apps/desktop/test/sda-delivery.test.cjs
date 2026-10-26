@@ -1,0 +1,48 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const {Worker}=require('node:worker_threads'),{execFileSync,spawnSync}=require('node:child_process');
+const {readWaveMaster,writeSdarMaster,writeWaveMaster,encodeSdaM4a}=require('../sda-delivery.cjs');
+const ffmpeg=process.env.SDA_TEST_FFMPEG,codec=process.env.SDA_FORMAT_CODEC;assert(ffmpeg&&codec,'Set SDA_TEST_FFMPEG and SDA_FORMAT_CODEC');
+const {captureExportAssets}=require('../export-assets.cjs'),{validateSettings}=require('../cinema-profiles.cjs');
+const root=path.resolve(__dirname,'../../..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'sda-delivery-'));
+function exportMaster(input,output){const snapshot={schema:'sda.playback-snapshot',version:1,hrtf:{head:'hrtfhq',dense:true,directObjectHrtf:true},native:{directionalHrtf:true},cinema:{profileId:null,settings:validateSettings({enabled:false,directDb:0,earlyDb:-6,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}})},nearField:{enabled:false,metresPerUnit:1},sourceExtent:{enabled:false,width:0,diffusion:0},equalizer:{bands:{low:0,mid:0,high:0},lowFrequencyDiagnostic:'reference',headphoneProfileId:null},routing:{mutedSources:[],mutedSpeakers:[],activeFocus:[]},monitoring:{comparisonGainDb:0}};
+ const hrtfRoot=process.env.SDA_TEST_HRTF_ROOT??(fs.existsSync(path.join(root,'assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json'))?path.join(root,'assets/hrtf/apple-hrtfhq-v1'):path.join(root,'apps/desktop/native-renderer/hrtf-assets'));
+ const renderAssets=captureExportAssets({snapshot,selectedHrtf:'hrtf-dense',hrtfRoot,personalRoot:path.join(temp,'personal'),readRoom(){throw Error('unexpected room');},readHeadphone(){throw Error('unexpected headphone');}});
+ return new Promise((resolve,reject)=>{let result;const worker=new Worker(path.join(root,'apps/desktop/upmix-export-worker.cjs'),{workerData:{inputPath:input,outputPath:output,floatPath:path.join(temp,'spool.f32'),stagingPath:path.join(temp,'stage.wav'),corePath:path.join(root,'packages/core/pkg-node/sda_core.cjs'),renderSnapshot:snapshot,renderAssets,cancel:new SharedArrayBuffer(4)}});worker.on('message',m=>{if(m.type!=='progress')result=m;});worker.on('error',reject);worker.on('exit',code=>{try{assert.equal(code,0);assert.equal(result.type,'done',JSON.stringify(result));resolve(result);}catch(e){reject(e);}});});}
+function decode(file,name){const output=path.join(temp,name+'.f32'),result=JSON.parse(execFileSync(codec,['decode',file,output],{encoding:'utf8',stdio:['ignore','pipe','inherit']}));return {result,bytes:fs.readFileSync(output)};}
+async function streamAndSeek(file,reference,lossless=false){
+ const {Session}=require('../authored-playback.cjs');const session=new Session(codec,file,'7.1.4',lossless?'sdar':'m4a',[]);
+ try{
+  const ready=await session.ready;assert.equal(ready.nativeScene.processing.programmeHandled,true);assert.equal(ready.nativeScene.processing.sourceSpatialHandled,true);
+  const resources=ready.nativeScene.resources;assert(fs.existsSync(resources.hrtf));assert(fs.existsSync(path.join(resources.root,'hrtf','hrtf-set.json')),'companion HRTF is source-owned');
+  for(const sample of [0,10137,205169,288000,15379]){
+   const response=await session.request({type:'seek',sample});assert.equal(response.header.sample,sample);
+   const frame=await session.request({type:'pull',frames:733});assert.equal(frame.header.start,sample);
+   const count=Math.min(733,288000-sample);assert.equal(frame.header.frames,count);assert.equal(frame.payload.length,count*48);
+   let maxError=0;for(let i=0;i<count;i++)for(let ch=0;ch<12;ch++)maxError=Math.max(maxError,Math.abs(frame.payload.readFloatLE((i*12+ch)*4)-reference.readFloatLE(((sample+i)*12+ch)*4)));
+   assert(maxError<(lossless?1e-8:3e-4),`seek phase/sample identity at ${sample}: ${maxError}`);
+  }
+  const owned=resources.root;session.close();await new Promise(resolve=>session.child.once('exit',resolve));assert(!fs.existsSync(owned),'closing a source releases its extracted resources');
+ }finally{session.close();}
+}
+function conversion(input,output,format){return new Promise((resolve,reject)=>{let result;const worker=new Worker(path.join(root,'apps/desktop/upmix-export-worker.cjs'),{workerData:{inputPath:input,outputPath:output,sourceMaster:true,format,sampleRate:48000,bitrateKbps:512,ffmpegPath:ffmpeg,deliveryPath:output+'.delivery.tmp',floatPath:output+'.float.tmp',stagingPath:output+'.stage.tmp',corePath:path.join(root,'packages/core/pkg-node/sda_core.cjs'),cancel:new SharedArrayBuffer(4)}});worker.on('message',m=>{if(m.type!=='progress')result=m;});worker.on('error',reject);worker.on('exit',code=>{try{assert.equal(code,0);assert.equal(result?.type,'done',JSON.stringify(result));assert(fs.existsSync(input),'conversion must preserve its original master');assert(!fs.existsSync(output+'.delivery.tmp'));resolve(result);}catch(error){reject(error);}});});}
+function corr(a,b,ch){let dot=0,x=0,y=0;for(let i=9600;i<134400;i+=3){const v=a.readFloatLE((i*12+ch)*4),w=b.readFloatLE((i*12+ch)*4);dot+=v*w;x+=v*v;y+=w*w;}return dot/Math.sqrt(x*y);}
+(async()=>{try{
+ const input=path.join(temp,'source.wav'),master=path.join(temp,'master.wav');
+ execFileSync(ffmpeg,['-v','error','-f','lavfi','-i','aevalsrc=0.15*sin(2*PI*397*t)+0.08*sin(2*PI*80*t)+0.03*sin(2*PI*1001*t)|0.14*sin(2*PI*701*t)+0.08*sin(2*PI*80*t)-0.03*sin(2*PI*1001*t):s=48000:d=6','-c:a','pcm_f32le',input]);
+ await exportMaster(input,master);const data=readWaveMaster(master);assert.equal(data.frames,288000);assert.equal(data.render.playbackPolicy.authority,'file-authored');
+ const sdar=path.join(temp,'master.sdar');writeSdarMaster(master,sdar,{check(){}});assert.equal(fs.readFileSync(sdar).toString('ascii',0,4),'SDAR');const lossless=decode(sdar,'lossless');assert.equal(lossless.result.frames,288000);assert.equal(lossless.result.channels,12);
+ const bytes=fs.readFileSync(master);for(let frame=0;frame<288000;frame+=97)for(let ch=0;ch<12;ch++){const expected=bytes.readIntLE(data.data.offset+(frame*12+ch)*3,3)/8388608;assert.equal(lossless.bytes.readFloatLE((frame*12+ch)*4),expected,'SDAR master preserves every bed sample');}
+ await streamAndSeek(sdar,lossless.bytes,true);
+ const roundtrip=path.join(temp,'roundtrip.wav');await conversion(sdar,roundtrip,'wav');assert.deepEqual(fs.readFileSync(roundtrip),fs.readFileSync(master),'WAV master conversion preserves original bytes');
+ const repacked=path.join(temp,'repacked.sdar');await conversion(master,repacked,'sdar');assert.deepEqual(fs.readFileSync(repacked),fs.readFileSync(sdar));
+ console.log('PASS lossless SDAR master, exact PCM and metadata, source-preserving conversion, bounded stream/seek and owned resource teardown');
+ for(const sampleRate of [48000,44100,96000]){const output=path.join(temp,'delivery-'+sampleRate+'.m4a');const manifest=await encodeSdaM4a(master,output,{sampleRate,bitrateKbps:512},{ffmpegPath:ffmpeg,check(){}});assert.equal(manifest.baseLayout,'5.1');assert.equal(manifest.mobileDefaultLayout,'7.1.4');assert.deepEqual(manifest.tracks.flatMap(t=>t.channels).sort((a,b)=>a-b),Array.from({length:12},(_,i)=>i));
+ const audio=decode(output,'decoded-'+sampleRate);assert.equal(audio.result.frames,288000,'AAC priming, padding and SRC retain the master timeline');assert.equal(audio.bytes.length,288000*12*4);const correlations=Array.from({length:12},(_,ch)=>corr(lossless.bytes,audio.bytes,ch));console.log('SDA M4A',sampleRate,'channel correlations',correlations.map(v=>v.toFixed(5)).join(' '));if(correlations.some(v=>v<.9)){for(const channel of [0,1,6]){let best={lag:0,corr:-2};for(let lag=-160;lag<=160;lag++){let dot=0,x=0,y=0;for(let i=20000;i<100000;i+=31){let a=lossless.bytes.readFloatLE((i*12+channel)*4),b=audio.bytes.readFloatLE(((i+lag)*12+channel)*4);dot+=a*b;x+=a*a;y+=b*b;}const corr=dot/Math.sqrt(x*y);if(corr>best.corr)best={lag,corr};}console.log('TIMING',sampleRate,channel,best);}};assert(correlations.every(v=>v>.9),'Every source bed channel must survive with correct identity, phase and clock');
+ await streamAndSeek(output,audio.bytes);
+ const ordinary=spawnSync(ffmpeg,['-v','error','-i',output,'-map','0:a:0','-f','null','-'],{encoding:'utf8'});assert.notEqual(ordinary.status,0,'ordinary AAC playback must not bypass the SDA authored renderer');
+ const info=JSON.parse(execFileSync(codec,['info',output],{encoding:'utf8'}));assert.equal(info.transport.sampleRate,sampleRate);assert.deepEqual(info.render,data.render);
+ }
+ const converted=path.join(temp,'converted.m4a');await conversion(sdar,converted,'m4a');const convertedInfo=JSON.parse(execFileSync(codec,['info',converted],{encoding:'utf8'}));assert.deepEqual(convertedInfo.render,data.render);
+ await assert.rejects(()=>encodeSdaM4a(master,path.join(temp,'bad.m4a'),{sampleRate:12345,bitrateKbps:512},{ffmpegPath:ffmpeg,check(){}}),/采样率/);
+ assert.throws(()=>readWaveMaster(input),/SDA|元数据/);console.log('PASS private M4A codec/config identities, full height/back stems, source metadata, 44.1/48/96 kHz, bitrate validation and normal-player rejection');
+ }finally{const absolute=path.resolve(temp);assert.equal(path.dirname(absolute),path.resolve(os.tmpdir()));assert(path.basename(absolute).startsWith('sda-delivery-'));fs.rmSync(absolute,{recursive:true,force:true});}})().catch(error=>{console.error(error);process.exitCode=1;});

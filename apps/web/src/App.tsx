@@ -842,6 +842,7 @@ export function App() {
         onTrack: (t) => {
           if (!isCurrent()) return;
           currentCodecRef.current = t.codec;
+          if(t.codec!=="sdar"){
           const head = readBinauralHead();
           const effectiveDense = effectiveDenseBinauralObjects(t.codec, readDenseBinauralObjects(), head);
           // 360RA's three lower speakers sit below ear level. The ordinary set
@@ -863,6 +864,7 @@ export function App() {
             setLayoutId("auto");
             setDetectedLayout(formatLayout ?? null);
             createdPlayer?.setAutoLayout();
+          }
           }
           if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
           const coverUrl = t.coverArt
@@ -1026,6 +1028,7 @@ export function App() {
       // session after the component has gone away.
       playRequestRef.current++;
       void window.sdaDesktop?.cancelStereoLoudness?.();
+      void window.sdaDesktop?.closeAuthoredFile?.();
       nativeSessionEpochRef.current++;
       playingRef.current = false;
       if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
@@ -1424,6 +1427,7 @@ export function App() {
       const feedRequest = ++feedRequestRef.current;
       const request = ++playRequestRef.current;
       void window.sdaDesktop?.cancelStereoLoudness?.();
+      void window.sdaDesktop?.closeAuthoredFile?.();
       // Claim playback before any await. The preload can synchronously drain a
       // burst of open-file events, and every later append must see this request
       // as active instead of constructing another player/session.
@@ -1443,6 +1447,8 @@ export function App() {
       }
       setPlayerReady(null);
       if (!isCurrent()) return;
+      if((await window.sdaDesktop?.getNativeRendererStatus?.())?.running)await window.sdaDesktop?.nativeRendererPause?.(true);
+      if(!isCurrent())return;
       setErrors([]);
       setBalanceAnalysisProgress(null);
       setTrack(null);
@@ -1469,7 +1475,9 @@ export function App() {
         const desktop = window.sdaDesktop;
         let sourceReference: StereoProgrammeReference | null = null;
         const localPath = source.kind === "path" ? source.path : desktop?.localFilePath?.(source.file);
-        if (localPath && desktop?.analyzeStereoLoudness) {
+        const authored=localPath?await desktop?.probeAuthoredFile?.(localPath):null;
+        if(!isCurrent())return;
+        if (localPath && !authored && desktop?.analyzeStereoLoudness) {
           const unsubscribe = desktop.onStereoLoudnessProgress?.(progress => {
             if (isCurrent()) setBalanceAnalysisProgress(progress);
           });
@@ -1513,7 +1521,13 @@ export function App() {
         if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
-        if (isFlacFile(sourceName)) {
+        if(authored&&localPath&&desktop?.openAuthoredFile&&desktop.pullAuthoredFile&&desktop.closeAuthoredFile){
+          const target=layoutIdRef.current==="auto"?"7.1.4":layoutIdRef.current;
+          const opened=await desktop.openAuthoredFile(localPath,["5.1","7.1.4","9.1.6"].includes(target)?target:"7.1.4");
+          if(!isCurrent()||playerRef.current!==player){await desktop.closeAuthoredFile(opened.id);return;}
+          await player.playAuthoredPcm({frames:opened.frames,inputRate:opened.inputRate,labels:opened.labels,lossless:opened.lossless,summary:opened.summary,coverArt:opened.coverArt,
+            read:()=>desktop.pullAuthoredFile!(opened.id),close:()=>desktop.closeAuthoredFile!(opened.id),setLayout:layout=>desktop.setAuthoredFileLayout!(opened.id,layout)});
+        } else if (isFlacFile(sourceName)) {
           await player.playDecodedPcm(await decodeFlac(source), "flac");
         } else if (source.kind === "file") {
           await player.playFile(source.file, "auto");
@@ -1956,7 +1970,7 @@ export function App() {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".mkv,.mka,.mp4,.m4a,.mp3,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.av3a,.dts,.iamf,.mhas,.mha";
+    input.accept = ".sdar,.mkv,.mka,.mp4,.m4a,.mp3,.wav,.bwf,.rf64,.bw64,.thd,.mlp,.ec3,.eac3,.ac3,.ac4,.av3a,.dts,.iamf,.mhas,.mha";
     input.onchange = () => appendToPlaylist([...input.files ?? []].map((file) => ({ kind: "file", file })));
     input.click();
   }, [appendToPlaylist]);
@@ -1990,6 +2004,7 @@ export function App() {
       // no public stop because file/session disposal is the safe stop boundary.
       playRequestRef.current++;
       void window.sdaDesktop?.cancelStereoLoudness?.();
+      void window.sdaDesktop?.closeAuthoredFile?.();
       const active = playerRef.current;
       const retiring = retiringPlayerRef.current;
       playerRef.current = null;
@@ -2042,6 +2057,27 @@ export function App() {
                   ? id === "360RA-13" || id === "22.2"
                   : id !== "360RA-13" && id !== "22.2")).map(id=>({value:id,label:id === "11.1.8" ? (track?.codec === "iamf" ? "11.1.8（手动）" : "Dolby 11.1.8 · Atmos / 母版（手动）") : id === "22.2" ? "22.2 · 标准三层布局（手动）" : id === "360RA-13" ? "360RA · 13 音箱参考布局" : id === "2.1" ? "2.1（低音管理）" : id === "2.0" ? "2.0（立体声）" : `${track?.codec === "iamf" ? "IAMF" : "Dolby"} ${id}`})),
   ];
+
+  const captureExportRenderState = async ():Promise<Record<string,unknown>> => {
+    if(roomComparison!==null||roomAudition!==null)throw Error("请先结束临时房间/HRTF试听，再导出当前完整混音参数");
+    const snapshot = {
+      schema:"sda.playback-snapshot",version:1,capturedAt:new Date().toISOString(),
+      outputMode:mode,layout:{selection:layoutId,effective:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,speakers:outputSpeakers},
+      hrtf:{head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,profile:sharedRenderProfile,directObjectHrtf},
+      stereo:{renderMode:stereoRenderMode,upmix:alacStereoUpmixEnabled},
+      balance:{volume:volumeBalanceEnabled,spatial:spatialBalanceEnabled},
+      equalizer:{bands:binauralEqBands,lowFrequencyDiagnostic:binauralLowFrequencyDiagnostic,headphoneProfileId,profile:selectedHeadphoneProfile},
+      nearField:readNearField(),sourceExtent:readSourceExtent(),
+      monitoring:{volume,comparisonGainDb:comparisonGain.current,roomComparison,roomAudition},
+      routing:{mutedSources:[...effectiveMutedIds],mutedSpeakers:[...effectiveSpeakerMutes],soloSpeakers:[...soloSpeakerNames],focusedSpeakers:[...focusedSpeakers],activeFocus:[...activeSpeakerFocus]},
+      headTracking:{status:headTrackingStatus,pose:headTrackingSessionRef.current.latestPose,settings:{yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}},
+      captureClock:{positionSeconds:position,durationSeconds:duration},
+      source:{codec:track?.codec,sampleRate:track?.sampleRate,channels:track?.channels,rawBedLabels:track?.rawBedLabels},
+    };
+    const api=window.sdaDesktop;
+    const [native,cinema,device]=await Promise.all([api?.getNativeRendererStatus?.(),api?.getCinemaSettings?.(),api?.getOutputDevices?.()]);
+    return JSON.parse(JSON.stringify({...snapshot,native,cinema,outputDevice:device?.status?{mode:device.status.mode,sampleRate:device.status.sampleRate,channels:device.status.channels,bufferMs:device.status.bufferMs,exclusive:device.status.requested.exclusive,remoteCompatible:device.status.requested.remoteCompatible,actualName:device.status.actualName}:null}));
+  };
 
   const [remoteTools,setRemoteTools]=useState<RemoteTools|null>(null);
   const remoteToolsFetch=useRef<()=>Promise<void>>(async()=>{});
@@ -2165,6 +2201,7 @@ export function App() {
       // retire the decoder whose native sources are about to disappear.
       playRequestRef.current++;
       void window.sdaDesktop?.cancelStereoLoudness?.();
+      void window.sdaDesktop?.closeAuthoredFile?.();
           nativeSessionEpochRef.current++;
       const active=playerRef.current;const retiring=retiringPlayerRef.current;
       playerRef.current=null;retiringPlayerRef.current=null;setPlayerReady(null);
@@ -2249,7 +2286,7 @@ export function App() {
           >
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          {window.sdaDesktop?.exportUpmixWav && <button title="导出上混 WAV" onClick={()=>setFloatPanel(v=>v==="export"?null:"export")}><FileAudio size={16}/><span>导出 WAV</span></button>}
+          {window.sdaDesktop?.exportUpmixWav && <button title="导出音频" onClick={()=>setFloatPanel(v=>v==="export"?null:"export")}><FileAudio size={16}/><span>导出音频</span></button>}
           <button onClick={() => void openFile()}>
             <FolderOpen size={16} /><span>打开文件</span>
           </button>
@@ -2298,12 +2335,14 @@ export function App() {
             <OutputPanel />
             <fieldset className="settings-group">
               <legend>输出</legend>
+              {track?.codec==="sdar"&&<p className="dim">当前按文件混音参数播放，已写入的音量与空间处理不会再次应用。</p>}
               <label className="settings-switch" title="按解码参考响度选择固定节目增益，统一作用于最终输出。启动参考确定后不会随段落自动降低音量；空间格式采用验证过的参考混音，保留对象和声道间的相对音量。峰值保护独立生效。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
                   role="switch"
-                  checked={volumeBalanceEnabled}
+                  checked={track?.codec==="sdar"?false:volumeBalanceEnabled}
+                  disabled={track?.codec==="sdar"}
                   onChange={(event) => changeVolumeBalance(event.target.checked)}
                 />
               </label>
@@ -2319,11 +2358,11 @@ export function App() {
             <p className="dim">固定节目增益采用 −18 LUFS 监听参考；开启时使用 +2.5 dB 输出补偿。峰值保护始终工作，上混另保留 −2 dB 校准。</p>
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
-            {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"}>
+            {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"||track?.codec==="sdar"}>
               <legend>HRTFHQ</legend>
               <label className="settings-switch" title="增强原有方向细节，不根据播放段落降低整个节目的音量。">
                 <span>空间平衡</span>
-                <input type="checkbox" role="switch" checked={spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />
+                <input type="checkbox" role="switch" checked={track?.codec==="sdar"?false:spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />
               </label>
             </fieldset>}
             {window.sdaDesktop?.startNativeRenderer && (
@@ -2685,7 +2724,7 @@ export function App() {
             onToggleSolo={toggleSolo}
           />
         )}
-        {floatPanel === "export" && <UpmixExport source={lastSourceRef.current} codec={track?.codec??""} stereo={stereoProgram} volumeBalanceEnabled={volumeBalanceEnabled} spatialBalanceEnabled={spatialBalanceEnabled} onClose={()=>setFloatPanel(null)}/>}
+        {floatPanel === "export" && <UpmixExport source={lastSourceRef.current} codec={track?.codec??""} stereo={stereoProgram} volumeBalanceEnabled={volumeBalanceEnabled} spatialBalanceEnabled={spatialBalanceEnabled} captureRenderState={captureExportRenderState} onClose={()=>setFloatPanel(null)}/>}
         {stereoProgram && floatPanel === "stereo" && (
           <div className="panel float-panel" aria-label="立体声处理">
             <h2>立体声</h2>

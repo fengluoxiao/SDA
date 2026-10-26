@@ -15,7 +15,7 @@ function frame(id,payload) {return Buffer.concat([Buffer.from(id,'ascii'),syncsa
 function objectFrame(mime,filename,description,data) {
   return frame('GEOB',Buffer.concat([Buffer.from([3]),utf8(mime),zero,utf8(filename),zero,utf8(description),zero,Buffer.from(data)]));
 }
-function buildMetadataChunks(metadata) {
+function buildMetadataChunks(metadata,render) {
   const common=metadata.common,frames=[];
   const emit=(id,value)=>{const encoded=textFrame(id,value);if(encoded)frames.push(encoded);};
   const number=value=>value?.no?String(value.no)+(value.of?'/'+value.of:''):undefined;
@@ -42,6 +42,7 @@ function buildMetadataChunks(metadata) {
   }
   for(const asset of metadata.blobs)if(!used.has(asset.sha256))frames.push(objectFrame(asset.mimeType,asset.filename,'SDA source asset '+asset.sha256,asset.data));
   frames.push(objectFrame('application/json','source-metadata.json','SDA source metadata v1',utf8(JSON.stringify(metadata.source))));
+  if(render)frames.push(objectFrame('application/json','render-metadata.json','SDA render metadata v1',utf8(JSON.stringify(render))));
   const payload=Buffer.concat(frames),id3=chunk('id3 ',Buffer.concat([Buffer.from('ID3'),Buffer.from([4,0,0]),syncsafe(payload.length),payload]));
   const info=[];
   const fields={INAM:common.title,IART:common.artist,IPRD:common.album,ICRD:common.date??common.year,IGNR:common.genre?.join('; '),ITRK:number(common.track),ICOP:common.copyright};

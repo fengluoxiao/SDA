@@ -63,6 +63,9 @@
       "upmix-export.cjs",
       "upmix-wav.cjs",
       "wav-metadata.cjs",
+      "export-assets.cjs",
+      "authored-playback.cjs",
+      "sda-delivery.cjs",
       "upmix-export-worker.cjs"
     ],
     "asarUnpack": [
@@ -96,6 +99,14 @@
         {
           "from": "native-renderer",
           "to": "native-renderer"
+        },
+        {
+          "from": "audio-encoder/win32-${arch}",
+          "to": "audio-encoder"
+        },
+        {
+          "from": "licenses",
+          "to": "licenses"
         }
       ]
     },
@@ -118,6 +129,14 @@
         {
           "from": "native-renderer",
           "to": "native-renderer"
+        },
+        {
+          "from": "audio-encoder/darwin-${arch}",
+          "to": "audio-encoder"
+        },
+        {
+          "from": "licenses",
+          "to": "licenses"
         }
       ]
     },

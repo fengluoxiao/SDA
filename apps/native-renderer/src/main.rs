@@ -13,6 +13,8 @@ use sda_native_renderer::*;
 
 
 fn main() {
+    let args=std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|arg|arg=="--sda-file") {sda_format::cli::main(&args[2..]);return;}
     if bed_export::entry() { return; }
     if performance_simulation::entry() {
         return;

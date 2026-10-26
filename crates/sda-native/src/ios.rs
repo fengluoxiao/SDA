@@ -225,6 +225,15 @@ pub unsafe extern "C" fn sda_ios_command(
                 host.check_codec(codec)?;
                 e.select_compressed_codec(codec)?;
             },
+            "sdar" => {
+                host.check_codec("sdar")?;
+                let temp=args.get("tempRoot").and_then(Value::as_str);
+                return Ok(json!(e.open_sdar(str_arg("path")?,temp)?));
+            }
+            "sdarInfo" => { return Ok(e.sdar_info()); }
+            "pullSdar" => {
+                let (frames,eof)=e.pull_sdar(4096)?;return Ok(json!({"frames":frames,"eof":eof}));
+            }
             "mp3" => {
                 host.check_codec("mp3")?;
                 e.open_mp3(str_arg("path")?)?;
@@ -1232,3 +1241,7 @@ mod av3a_system_tests;
 #[cfg(test)]
 #[path = "av3a_native_tests.rs"]
 mod av3a_native_tests;
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_sdar_metadata(path:*const c_char)->*mut c_char {
+ guarded(||{let path=unsafe{text(path)?};if !sda_format::BedFile::is_sda(path){return Ok(Value::Null);}sda_format::metadata::track_metadata(path)})
+}

@@ -53,6 +53,7 @@ mod adm_zone;
 pub mod bus_renderer;
 pub mod callback_output;
 pub mod bed_export;
+pub mod authored;
 pub mod cinema;
 mod spatial_cues;
 mod shared_depth;
@@ -195,6 +196,8 @@ pub enum Command {
         volume: f32,
     },
     SetSpatialEnhancement { enabled: bool },
+    SetAuthoredProcessing { settings: authored::Processing },
+    ConfigureAuthoredScene { scene: authored::Scene },
     SetSpatialLayerGain {
         #[serde(rename = "gainDb")]
         gain_db: f32,
@@ -566,6 +569,9 @@ pub struct Health {
     spatial_enhancement_enabled: bool,
     spatial_balance_algorithm: &'static str,
     temporal_detail_enabled: bool,
+    authored_playback: bool,
+    authored_policy: &'static str,
+    master_preamp_db: f32,
     program_enabled: bool,
     program_gain_db: f64,
     programme_output_makeup_db: f32,
@@ -806,6 +812,7 @@ pub struct Source {
     kind: SourceKind,
     /// Canonical decoder bed label retained so a layout change can re-resolve it.
     bed_label: Option<String>,
+    authored_bed_position: Option<[f32;3]>,
     bed_events: BTreeMap<u64, String>,
     /// Parsed once at declaration; avoids source-ID parsing in the mix loop.
     object_id: Option<u32>,
@@ -879,6 +886,7 @@ impl Default for Source {
             near_target: [1.0; 2],
             kind: SourceKind::Bed,
             bed_label: None,
+            authored_bed_position: None,
             bed_events: BTreeMap::new(),
             object_id: None,
             activity_until: 0,
@@ -980,6 +988,7 @@ pub struct RuntimeTelemetry {
     listener_yaw_degrees_bits: AtomicU64,
     pub program_enabled: AtomicBool,
     pub spatial_enhancement_enabled: AtomicBool,
+    pub authored_playback: AtomicBool,
     pub auxiliary_balance_enabled: AtomicBool,
     pub temporal_detail_enabled: AtomicBool,
     temporal_detail_levels: [AtomicU64;4],
@@ -1066,6 +1075,7 @@ impl RuntimeTelemetry {
         self.program_enabled.store(engine.program_enabled, Ordering::Release);
         self.stereo_bass_preservation_active.store(engine.binaural_enabled && engine.bus_renderer.as_ref().is_some_and(|b|b.stereo_bass_preservation_active()),Ordering::Release);
         self.spatial_enhancement_enabled.store(engine.spatial_enhancement_enabled, Ordering::Release);
+        self.authored_playback.store(engine.authored.enabled,Ordering::Release);
         self.auxiliary_balance_enabled.store(engine.auxiliary_balance.enabled(), Ordering::Release);
         for (field,value) in self.auxiliary_balance_levels.iter().zip(engine.auxiliary_balance.levels()) {
             field.store(value.to_bits(), Ordering::Release);
@@ -1226,6 +1236,7 @@ pub struct Engine {
     program_gain_ramp_remaining: u32,
     program_events: BTreeMap<u64, ProgramGainEvent>,
     spatial_enhancement_enabled: bool,
+    authored: authored::Processing,
     auxiliary_balance: auxiliary_balance::AuxiliaryBalance,
     auxiliary_reference: Box<[auxiliary_balance::Reference]>,
     output_dynamics: output_dynamics::FinalMixAttenuator,
@@ -1371,6 +1382,7 @@ impl Engine {
             program_gain_ramp_remaining: 0,
             program_events: BTreeMap::new(),
             spatial_enhancement_enabled: false,
+            authored: Default::default(),
             auxiliary_balance: auxiliary_balance::AuxiliaryBalance::directional_detail(sample_rate),
             auxiliary_reference: vec![auxiliary_balance::Reference::default(); convolution::DEFAULT_PARTITION].into_boxed_slice(),
             output_dynamics: output_dynamics::FinalMixAttenuator::new(sample_rate, output_dynamics::Policy::default()).expect("valid spatial output policy"),
@@ -1404,10 +1416,11 @@ impl Engine {
     }
 
     pub fn set_binaural_enabled(&mut self, enabled: bool) {
+        if self.authored.enabled {return;}
         if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
         self.binaural_enabled = enabled;
         if !self.output_active || self.paused {
-            self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled, true, self.block_offset);
+            self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled && !self.authored.source_spatial_handled, true, self.block_offset);
             self.output_dynamics.set_enabled(enabled && !self.cinema.monitor.hardware.enabled, true);
         }
         if self.paused || !self.output_active { self.plain_warmup = 0; self.binaural_mix = if enabled { 1.0 } else { 0.0 }; }
@@ -1509,7 +1522,7 @@ impl Engine {
     }
 
     fn refresh_stereo_bass(&mut self) {
-        let enabled=matches!(self.program_codec.as_deref(),Some("alac" | "mp3" | "mp3-stereo-bed"));
+        let enabled=matches!(self.program_codec.as_deref(),Some("alac" | "mp3" | "mp3-stereo-bed")) || self.authored.enabled && self.authored.stereo_source;
         if let Some(bus)=&mut self.bus_renderer {bus.set_stereo_bass_preservation(enabled);}
         if let Some(bus)=&mut self.stereo_dry_bus {bus.set_stereo_bass_preservation(enabled);}
     }
@@ -1528,7 +1541,7 @@ impl Engine {
                     | "TopSideLeft" | "TopSideRight" | "TopMiddleLeft" | "TopMiddleRight"
                     | "TopSurroundLeft" | "TopSurroundRight" | "TopRearLeft" | "TopRearRight"
                     | "TopCenter"))));
-        let db = if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.5 } else { 0.0 };
+        let db = if self.authored.enabled {if self.authored.programme_handled {0.0}else{self.authored.makeup_db}} else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.5 } else { 0.0 };
         if self.programme_output_makeup.target_db() != db {
             self.programme_output_makeup.set(db, self.output_sample_rate, immediate)
                 .expect("valid programme output makeup");
@@ -1647,7 +1660,8 @@ impl Engine {
             if kind == SourceKind::Object {
                 self.route_source_now(&id, 0)?;
             } else if let Some(label) = label {
-                let route = bed_route_with_head(&label, &self.vbap, self.head_pose);
+                let position=self.sources.get(&id).and_then(|source|source.authored_bed_position);
+                let route = bed_route_custom(&label, &self.vbap, self.head_pose, position);
                 let source = self.sources.get_mut(&id).expect("source still exists");
                 Self::set_source_route(source, route, 0);
             }
@@ -1800,7 +1814,8 @@ impl Engine {
                 .get(id)
                 .and_then(|source| source.bed_label.as_deref())
                 .unwrap_or("");
-            let route = bed_route_with_head(label, &self.vbap, self.head_pose);
+            let position=self.sources.get(id).and_then(|source|source.authored_bed_position);
+            let route = bed_route_custom(label, &self.vbap, self.head_pose, position);
             Self::set_source_route(self.sources.get_mut(id).unwrap(), route, ramp);
             return Ok(());
         }
@@ -1938,6 +1953,7 @@ impl Engine {
     /// Source-local directional contrast. The approved common 4 kHz shelf is
     /// retained; layer-wide +2/+6 and common live loudness ducking are absent.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
+        if self.authored.enabled {return Ok(());}
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
@@ -1982,6 +1998,7 @@ impl Engine {
 
     fn set_program_target(&mut self, gain: f32, immediate: bool) {
         self.refresh_programme_output_makeup(immediate);
+        let gain=if self.authored.enabled {if self.authored.programme_handled {1.0}else{10f32.powf(self.authored.programme_gain_db/20.)}}else{gain};
         let target = if self.program_enabled {
             gain.clamp(0.0, 1000.0)
         } else {
@@ -2131,6 +2148,7 @@ impl Engine {
     }
 
     fn reset_session(&mut self, origin: u64) {
+        self.authored=Default::default();
         performance::reset();
         self.master_preamp.settle();
         self.spatial_preamp.settle();
@@ -2224,6 +2242,9 @@ impl Engine {
             stereo_bass_preservation_active: self.binaural_enabled && self.bus_renderer.as_ref().is_some_and(|b|b.stereo_bass_preservation_active()),
             stereo_bass_preservation_algorithm: STEREO_BASS_PRESERVATION,
             spatial_enhancement_enabled: self.spatial_enhancement_enabled,
+            authored_playback: self.authored.enabled,
+            authored_policy: "file-authored-v1",
+            master_preamp_db: self.master_preamp.target_db(),
             spatial_balance_algorithm: SPATIAL_BALANCE_ALGORITHM,
             temporal_detail_enabled: self.auxiliary_balance.temporal_enabled(),
             program_enabled: self.program_enabled,
@@ -2630,7 +2651,7 @@ impl Engine {
         }
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
         auxiliary_balance::refresh_beds(&mut self.sources, &self.vbap);
-        let auxiliary_enabled = self.binaural_enabled && self.spatial_enhancement_enabled
+        let auxiliary_enabled = self.binaural_enabled && self.spatial_enhancement_enabled && !self.authored.source_spatial_handled
             && !self.cinema.monitor.hardware.enabled && self.focused_speakers.is_empty()
             && self.speaker_mutes.is_empty()
             && self.speaker_levels.iter().all(|level| (*level - 1.0).abs() < 1e-4);
@@ -2673,7 +2694,7 @@ impl Engine {
         for source in self.sources.values_mut() {
             while source.bed_events.first_key_value().is_some_and(|(at, _)| *at <= self.sample_pos) {
                 let (_, label) = source.bed_events.pop_first().expect("checked event");
-                let route = bed_route_with_head(&label, &self.vbap, self.head_pose);
+                let route = bed_route_custom(&label, &self.vbap, self.head_pose, source.authored_bed_position);
                 source.bed_label = Some(label);
                 Self::set_source_route(source, route, 0);
             }
@@ -2861,7 +2882,7 @@ impl Engine {
                     direct_sum[1] += direct.right[block_index];
                 }
                 if let Some(label) = source.bed_events.remove(&at) {
-                    let route = bed_route_with_head(&label, &vbap, head_pose);
+                    let route = bed_route_custom(&label, &vbap, head_pose, source.authored_bed_position);
                     source.bed_label = Some(label);
                     source.auxiliary_route_at = u64::MAX;
                     Self::set_source_route(source, route, 0);
@@ -3545,6 +3566,9 @@ fn bed_route_with_head(
     solver: &vbap::VbapSolver,
     head: Option<[f32; 4]>,
 ) -> RouteGains {
+    bed_route_custom(label,solver,head,None)
+}
+fn bed_route_custom(label:&str,solver:&vbap::VbapSolver,head:Option<[f32;4]>,authored:Option<[f32;3]>)->RouteGains {
     let (name, position) = match label {
         "LFE" | "LFE2" | "Lfe" | "LowFrequencyEffects" | "LowFrequencyEffects2" => {
             return RouteGains {
@@ -3624,6 +3648,11 @@ fn bed_route_with_head(
         "I_L_R045" => ("I_L_R045", static_bed_position(-45.0, -15.0)),
         _ => ("Center", static_bed_position(0.0, 0.0)),
     };
+    if let Some(authored)=authored {
+        if authored.iter().zip(position).any(|(a,b)|(*a-b).abs()>1e-5) {
+            return RouteGains {buses:solver.pan(spatial::head_relative_adm(authored,head),0.),lfe:0.};
+        }
+    }
     if let Some(head) = head.and_then(spatial::normalize_quaternion) {
         if head[..3].iter().any(|v| v.abs() > 1e-6) {
             let position = solver

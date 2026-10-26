@@ -10,6 +10,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  authoredPlayback?:boolean;
   binauralEnabled?: boolean; objectRendering?: boolean; listenerYawDegrees?: number;
   outputLayout: "2.0" | "7.1.4" | "360RA-13";
   sourceCodec: string;
@@ -78,6 +79,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  authoredPlayback:boolean;
   binauralEnabled: boolean;
   headTrackingEnabled: boolean;
   headTrackingStatus: string;
@@ -126,6 +128,7 @@ interface State {
 
 export default class App extends React.Component<Record<string, never>, State> {
   state: State = {
+    authoredPlayback:false,
     binauralEnabled: true,
     headTrackingEnabled: false, headTrackingStatus: "未启用",
     alacStereoUpmix: false, systemSpatialStereo: false, sourceCodec: "", alacUpmixActive: false, outputChannels: 2,
@@ -277,6 +280,7 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   private cueUpdatePending = false;
   private setSpatialCueDb = async (db: number) => {
+    if(this.state.authoredPlayback)return;
     if (this.changingTrack || this.state.busy || this.cueUpdatePending || ![0, -3, -6, -9, -12].includes(db)) return;
     this.cueUpdatePending = true;
     this.setState({ spatialCueBusy: true, error: null });
@@ -290,6 +294,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setRenderingPreset = async (id: string) => {
+    if(this.state.authoredPlayback)return;
     if (this.changingTrack || this.state.busy || this.state.roomBusy || this.state.nearFieldBusy) return;
     if (!renderingPresets.some(profile => profile.id === id)) return;
     this.changingTrack = true;
@@ -313,6 +318,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setObjectRendering = (direct: boolean, directional: boolean) => {
+    if(this.state.authoredPlayback)return;
     try {
       this.getEngine().setObjectRendering(direct, directional);
       this.setState({ directObjects: direct, directionalObjects: directional, error: null });
@@ -322,6 +328,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setRoom = async (roomId: string) => {
+    if(this.state.authoredPlayback)return;
     if (this.state.roomBusy) return;
     this.setState({ roomBusy: true, error: null });
     try {
@@ -333,6 +340,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setNearField = async (nearField: boolean, metresPerUnit: number) => {
+    if(this.state.authoredPlayback)return;
     if (this.state.nearFieldBusy) return;
     this.setState({ nearFieldBusy: true, error: null });
     try {
@@ -383,8 +391,8 @@ export default class App extends React.Component<Record<string, never>, State> {
         const progress = (value: number, stage: string) => patch({ preparation: { state: "loading", progress: value, stage } });
         try {
         const extension = asset.name.split(".").pop()?.toLowerCase();
-        if (!extension || !["eac3", "ec3", "ac4", "m4a", "mp4", "mp3", "mhas", "av3a"].includes(extension)) {
-          throw new Error("请选择 .eac3/.ec3、.ac4、.av3a、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA/Audio Vivid 音轨的 .m4a/.mp4 文件");
+        if (!extension || !["sdar", "eac3", "ec3", "ac4", "m4a", "mp4", "mp3", "mhas", "av3a"].includes(extension)) {
+          throw new Error("请选择 .sdar、SDA M4A、.eac3/.ec3、.ac4、.av3a、.mp3、.mhas，或包含立体声 ALAC、Atmos/360RA/Audio Vivid 音轨的 .m4a/.mp4 文件");
         }
         progress(.02, "校验文件");
         const contentHash = await this.getEngine().contentHash(asset.uri);
@@ -439,6 +447,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   // Prepared compressed tracks are queue-owned. Android adopts the raw track instead of retaining a second picker copy.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
   private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
+    if(track.metadata.authoredPlayback)return null;
     if (!this.preparedTracks.has(track.contentHash)) {
       this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress));
     }
@@ -468,7 +477,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     this.changingTrack = true;
     this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
       durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [],
-      sourceCodec: "", alacUpmixActive: false, systemSpatial360RAActive: false, outputChannels: 2 });
+      authoredPlayback:false,sourceCodec: "", alacUpmixActive: false, systemSpatial360RAActive: false, outputChannels: 2 });
     try {
       const engine = this.getEngine();
       if (!this.poller) this.restartStatusPolling();
@@ -531,7 +540,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         headYaw: this.state.headTrackingEnabled && Number.isFinite(value.listenerYawDegrees) ? value.listenerYawDegrees! : this.state.headYaw,
         decodedMs: ((value.decodedSamplePos ?? 0) * 1000) / 48000,
         fifoFrames: value.fifoFrames ?? 0,
-        sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
+        authoredPlayback:value.authoredPlayback===true,sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
         systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         layout: value.outputLayout ?? this.state.layout,
         objects: feedDone ? [] : Object.values(objects).filter((object) => object.hasPos && object.pos.every(Number.isFinite)),
@@ -552,6 +561,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   private playbackDescription(value: Partial<PlaybackStatus>, feedDone: boolean): string {
+    if(value.authoredPlayback)return `SDAR · ${value.outputLayout??"7.1.4"} · 文件混音参数${value.roomEnabled?" · 房间仿真":""}`;
     return value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : value.binauralEnabled === false ? "直接下混 · HRTF 已关闭" : value.objectRendering === false ? "床声道兼容 · HRTF" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`;
   }
@@ -579,7 +589,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         fifoFrames: value.fifoFrames ?? 0, preparingAudio: value.preparingAudio === true,
         playing: snapshot.hasPlayback && !snapshot.feedDone, ended: snapshot.feedDone,
         paused: value.paused ?? false, error: snapshot.feedError ?? null,
-        sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true,
+        authoredPlayback:value.authoredPlayback===true,sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true,
         outputChannels: value.outputChannels ?? 2, systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         layout: value.outputLayout ?? previous.layout,
         headYaw: previous.headTrackingEnabled && Number.isFinite(value.listenerYawDegrees) ? value.listenerYawDegrees! : previous.headYaw,
@@ -633,13 +643,14 @@ export default class App extends React.Component<Record<string, never>, State> {
   private stop = () => {
     try {
       this.engine?.stop();
-      this.setState({ sourceCodec: "", alacUpmixActive: false, outputChannels: 2, systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      this.setState({ authoredPlayback:false,sourceCodec: "", alacUpmixActive: false, outputChannels: 2, systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }
   };
 
   private setSpatialEnhancement = (spatialEnhancementEnabled: boolean) => {
+    if(this.state.authoredPlayback)return;
     if (this.changingTrack || this.state.busy || this.state.systemSpatial360RAActive) return;
     try {
       const setter = this.getEngine().setSpatialEnhancement;
@@ -650,6 +661,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   private setVolumeBalance = (volumeBalanceEnabled: boolean) => {
+    if(this.state.authoredPlayback)return;
     try {
       this.getEngine().setVolumeBalance(volumeBalanceEnabled);
       this.setState({ volumeBalanceEnabled, error: null });

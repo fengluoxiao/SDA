@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 export interface UpmixExportStatus {
-  id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
+  format?:"wav"|"sdar"|"m4a";convertedMaster?:boolean;id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
   stage?:string;progress?:number;inputName?:string;outputPath?:string;error?:string;
   volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;programmeGainDb?:number;programmeMakeupDb?:number;sourceLufs?:number|null;balancePolicy?:string;spatialAlgorithm?:string|null;
   frames?:number;sampleRate?:number;channels?:number;bits?:number;gainDb?:number;truePeakDbtp?:number|null;
@@ -232,11 +232,17 @@ declare global {
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       localFilePath?: (file:File) => string;
+      probeAuthoredFile?: (path:string) => Promise<{kind:"sdar"|"m4a"|"wav-master";lossless:boolean}|null>;
+      openAuthoredFile?: (path:string,layout:string) => Promise<{id:string;kind:string;lossless:boolean;layout:string;frames:number;sampleRate:number;inputRate:number;channels:number;labels:string[];render:Record<string,unknown>;summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"}}>;
+      pullAuthoredFile?: (id:string) => Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
+      closeAuthoredFile?: (id?:string) => Promise<boolean>;
+      setAuthoredFileLayout?: (id:string,layout:string) => Promise<boolean>;
       analyzeStereoLoudness?: (filePath:string) => Promise<{codec:string;sampleRate:number;channels:number;integratedLufs:number|null;truePeakDbtp:number|null;blocks:number;frames:number;size:number;mtimeMs:number;policy:string}|null>;
       cancelStereoLoudness?: () => Promise<boolean>;
       onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;
-      exportUpmixWav?: (inputPath:string, options:{volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean}) => Promise<{id?:string;cancelled?:boolean}>;
+      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";sampleRate?:number;bitrateKbps?:number;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
+      getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[]}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
       cancelUpmixExport?: () => Promise<boolean>;
       revealUpmixExport?: () => Promise<void>;

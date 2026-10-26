@@ -8,6 +8,7 @@ import CryptoKit
 final class CompressedInput {
  private(set) var nativeCodec: String?
  private(set) var isAlac = false
+ private(set) var isSdar = false
  private(set) var isAv3a = false
  private(set) var av3aSpeakerBed = false
  private var file: FileHandle?
@@ -41,6 +42,17 @@ final class CompressedInput {
   scoped = url.startAccessingSecurityScopedResource()
   try Self.allowLockedPlaybackOfOwnedCopy(url)
   let ext = (name as NSString).pathExtension.lowercased()
+  let probeFile = try FileHandle(forReadingFrom:url)
+  let signature = try probeFile.read(upToCount:12) ?? Data()
+  try probeFile.close()
+  if signature.count == 12 {
+   let magic = String(data:signature.prefix(4),encoding:.ascii)
+   let atom = String(data:signature.subdata(in:4..<8),encoding:.ascii)
+   let profile = String(data:signature.suffix(4),encoding:.ascii)
+   isSdar = (magic == "SDAR" && profile == "BCH1") || (atom == "ftyp" && profile == "sda1")
+  }
+  if isSdar { nativeCodec="sdar"; return }
+  if ext == "sdar" { throw SdaError.message("无效或尚未支持的 SDAR 床层文件") }
   isAv3a = ext == "av3a"
   if ["eac3","ec3"].contains(ext) { nativeCodec="eac3" }
   else if ["ac4","av3a"].contains(ext) { nativeCodec=ext }
@@ -53,7 +65,7 @@ final class CompressedInput {
    }
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
-  } else { throw SdaError.message("支持立体声 ALAC、E-AC-3/Atmos M4A/MP4、MHAS、AV3A 和 MP3") }
+  } else { throw SdaError.message("支持 SDAR、SDA M4A、立体声 ALAC、E-AC-3/Atmos、MHAS、AV3A 和 MP3") }
  }
  // The Apple speaker route accepts the verified channel-based 7.1.4 profile.
  // Mix/HOA transport counts do not identify speaker layouts; keep their scene

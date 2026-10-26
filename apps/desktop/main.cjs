@@ -119,7 +119,7 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
-const MEDIA_EXTENSIONS = new Set([".mkv", ".mka", ".mp4", ".m4a", ".mp3", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".av3a", ".dts", ".iamf", ".mhas", ".mha"]);
+const MEDIA_EXTENSIONS = new Set([".sdar", ".mkv", ".mka", ".mp4", ".m4a", ".mp3", ".wav", ".bwf", ".rf64", ".bw64", ".thd", ".mlp", ".ec3", ".eac3", ".ac3", ".ac4", ".av3a", ".dts", ".iamf", ".mhas", ".mha"]);
 const MEDIA_DIALOG_EXTENSIONS = [...MEDIA_EXTENSIONS].map((extension) => extension.slice(1));
 const MAX_FOLDER_MEDIA_FILES = 2000;
 const MAX_FOLDER_ENTRIES = 20000;
@@ -290,13 +290,22 @@ let nativeRendererBuffer = "";
 const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   ipcMain,dialog,BrowserWindow,shell,
   workerPath:path.join(__dirname,"upmix-export-worker.cjs"),
+  encoderPath:()=>require("./upmix-export.cjs").resolveEncoder(app.isPackaged?process.resourcesPath:__dirname),
   rendererPath:()=>bundledNativeRendererPath(),
+  captureAssets:snapshot=>require("./export-assets.cjs").captureExportAssets({snapshot,selectedHrtf:nativeRendererSelectedHrtf,hrtfRoot:path.join(path.dirname(bundledNativeRendererPath()),"hrtf-assets"),personalRoot:personalHrtfDirectory(),readRoom:readCinemaProfile,readHeadphone:id=>{
+    if(id!==exclusiveHeadphoneId||!nativeRendererActiveHeadphoneFir)throw Error("耳机模拟切换尚未完成，请稍后导出");
+    return {...nativeRendererActiveHeadphoneFir,manifest:{targetId:id,sourceId:readSettings().headphoneSimulationSource??"reference"}};
+  }}),
   corePath:app.isPackaged?path.join(__dirname,"performance-core/sda_core.cjs"):path.resolve(__dirname,"../../packages/core/pkg-node/sda_core.cjs"),
 });
 const stereoLoudness = require("./stereo-loudness.cjs").createStereoLoudness({
   ipcMain,
   workerPath: path.join(__dirname, "upmix-export-worker.cjs"),
   corePath: app.isPackaged ? path.join(__dirname, "performance-core/sda_core.cjs") : path.resolve(__dirname, "../../packages/core/pkg-node/sda_core.cjs"),
+});
+const authoredPlayback = require("./authored-playback.cjs").createAuthoredPlayback({
+  ipcMain,rendererPath:()=>bundledNativeRendererPath(),
+  configureScene:scene=>nativeRendererCommandAck({type:"configureAuthoredScene",scene},"configureAuthoredScene",60000),
 });
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
@@ -307,6 +316,7 @@ let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启
 // until ready/first use so an old binary cannot hold the PCM queue on timeout.
 let nativeRendererProgramCodecSupported = null;
 let nativeRendererSelectedHrtf = null;
+let nativeRendererActiveHeadphoneFir = null;
 let nativeRendererObjectActivity = [];
 let nativeRendererHealthTimer = null;
 const nativeRendererPendingBatches = new Map();
@@ -351,6 +361,9 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     stereoBassPreservationActive: telemetry.stereoBassPreservationActive,
     stereoBassPreservationAlgorithm: telemetry.stereoBassPreservationAlgorithm,
     spatialEnhancementEnabled: telemetry.spatialEnhancementEnabled,
+    authoredPlayback:telemetry.authoredPlayback===true,
+    authoredPolicy:telemetry.authoredPolicy,
+    masterPreampDb:telemetry.masterPreampDb,
     spatialBalanceAlgorithm: telemetry.spatialBalanceAlgorithm,
     temporalDetailEnabled: telemetry.temporalDetailEnabled,
     programEnabled: telemetry.programEnabled,
@@ -483,7 +496,10 @@ function nativeRendererHeadphoneFir(preamp, left, right) {
     }
   }));
   nativeRendererControlChain = task.catch(() => {});
-  return task;
+  return task.then(accepted=>{
+    if(accepted)nativeRendererActiveHeadphoneFir={preamp:Math.fround(preamp),leftFir:Buffer.from(new Uint8Array(leftTaps.buffer,leftTaps.byteOffset,leftTaps.byteLength)),rightFir:Buffer.from(new Uint8Array(rightTaps.buffer,rightTaps.byteOffset,rightTaps.byteLength))};
+    return accepted;
+  });
 }
 
 function nativeRendererBatch(start, entries, events) {
@@ -1654,7 +1670,7 @@ ipcMain.handle("sda:native-renderer-headphone-profile", async (_event, id, sourc
   if (id !== null && typeof id !== "string") return false;
   if (id === null) {
     const accepted = await nativeRendererCommandAck({ type: "clearHeadphoneCompensation" }, "clearHeadphoneCompensation");
-    if (accepted) exclusiveHeadphoneId = null;
+    if (accepted) {exclusiveHeadphoneId = null;nativeRendererActiveHeadphoneFir=null;}
     writeStartupLog(`clearHeadphoneCompensation ACK -> ${accepted}`);
     return accepted;
   }
@@ -2148,12 +2164,12 @@ app.on("before-quit", event => {
   nativeRendererQuitting = true;
   void (async () => {
     stopNativeRenderer();
-    await Promise.allSettled([stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+    await Promise.allSettled([authoredPlayback.close(), stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   })().catch(error => writeStartupLog(`graceful exit failed: ${error}`)).finally(() => app.quit());
 });
 
 app.on("window-all-closed", async () => {
   stopNativeRenderer();
-  await Promise.allSettled([stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+  await Promise.allSettled([authoredPlayback.close(), stereoLoudness.close(), upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   if (process.platform !== "darwin") app.quit();
 });

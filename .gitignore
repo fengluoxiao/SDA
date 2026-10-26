@@ -65,3 +65,8 @@ apps/mobile/.expo/
 
 # Generated offline WAV export worker.
 /apps/desktop/upmix-export-worker.cjs
+
+# Generated platform AAC encoder and third-party distribution notices.
+/apps/desktop/audio-encoder/
+/apps/desktop/licenses/
+/crates/sda-format/target/

@@ -1,0 +1,7 @@
+Code from FAAD2 is copyright (c) Nero AG, www.nero.com
+
+SDA vendors FAAD2 2.11.4 from the knik0/faad2 upstream release.
+The decoder is built with LC_ONLY_DECODER and DISABLE_SBR for SDA-authored
+AAC-LC delivery. The original source and license are included in vendor/faad2.
+License: GNU General Public License version 2 or later; see COPYING.
+Upstream source: https://github.com/knik0/faad2/releases/tag/2.11.4

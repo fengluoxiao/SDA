@@ -24,6 +24,22 @@
           "UIInterfaceOrientationPortrait",
           "UIInterfaceOrientationLandscapeLeft",
           "UIInterfaceOrientationLandscapeRight"
+        ],
+        "UTImportedTypeDeclarations": [
+          {
+            "UTTypeIdentifier": "app.sda.bed-channel",
+            "UTTypeDescription": "SDAR Bed Channel",
+            "UTTypeConformsTo": [
+              "public.audio",
+              "public.data"
+            ],
+            "UTTypeTagSpecification": {
+              "public.filename-extension": [
+                "sdar"
+              ],
+              "public.mime-type": "audio/vnd.sda.bed"
+            }
+          }
         ]
       },
       "supportsTablet": true,

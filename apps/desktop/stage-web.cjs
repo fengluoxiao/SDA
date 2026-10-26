@@ -31,4 +31,8 @@ async function stageWeb() {
 
 // Multi-architecture packaging can invoke beforePack concurrently.
 let staging;
-module.exports = () => (staging ??= stageWeb());
+module.exports = async context => {
+  const {stageEncoder}=await import("../../scripts/stage-audio-encoder.mjs");
+  await stageEncoder(context?.electronPlatformName??process.platform,context?.arch??process.arch);
+  return (staging ??= stageWeb());
+};

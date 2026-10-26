@@ -514,3 +514,25 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePullAlac(
         Err(error) => { set_last_error(&error); -1 }
     }
 }
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeIsSdar(mut env:JNIEnv,_class:JClass,path:JString)->jni::sys::jboolean {
+ let path:Result<String,_>=env.get_string(&path).map(Into::into);path.ok().is_some_and(sda_format::BedFile::is_sda)as jni::sys::jboolean
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeOpenSdar(mut env:JNIEnv,_class:JClass,ptr:jlong,path:JString,temp:JString)->jint {
+ let result=(||->Result<u32,String>{let path:String=env.get_string(&path).map_err(|e|e.to_string())?.into();let temp:String=env.get_string(&temp).map_err(|e|e.to_string())?.into();take_engine(ptr).ok_or("engine unavailable")?.open_sdar(&path,Some(&temp))})();match result{Ok(rate)=>{set_last_error("");rate as jint},Err(error)=>{set_last_error(&error);-1}}
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePullSdar(_env:JNIEnv,_class:JClass,ptr:jlong,max_frames:jint)->jint {
+ match take_engine(ptr).ok_or("engine unavailable".to_string()).and_then(|engine|engine.pull_sdar(max_frames.max(1)as usize)){Ok((frames,eof))=>{set_last_error("");if eof&&frames==0{-4}else{frames as jint}},Err(error)=>{set_last_error(&error);-1}}
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSdarInfo(env:JNIEnv,_class:JClass,ptr:jlong)->jni::sys::jstring {
+ let text=take_engine(ptr).map(|e|e.sdar_info().to_string()).unwrap_or_else(||"null".into());env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSdarMetadata(mut env:JNIEnv,_class:JClass,path:JString)->jni::sys::jstring {
+ let result=(||->Result<String,String>{let path:String=env.get_string(&path).map_err(|e|e.to_string())?.into();if !sda_format::BedFile::is_sda(&path){return Ok("null".into());}Ok(sda_format::metadata::track_metadata(path)?.to_string())})();
+ let text=match result{Ok(text)=>text,Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
