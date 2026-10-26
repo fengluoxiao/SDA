@@ -138,7 +138,7 @@ pub mod stereo_fifo;
 mod stereo_bass;
 #[cfg(test)]
 mod stereo_bass_tests;
-pub const STEREO_BASS_PRESERVATION:&str="front-direct-crossfeed-lowband-v1";
+pub const STEREO_BASS_PRESERVATION:&str="front-direct-mirror-lowband-v2";
 pub mod vbap;
 
 pub mod device_output;

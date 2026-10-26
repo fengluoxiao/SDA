@@ -18,9 +18,9 @@ pub(super) struct BusRenderer {
 
 #[derive(Clone)]
 struct FrontBass {
-    indices: [usize; 2],
-    normal: [convolution::PreparedStereoFilter; 2],
-    preserved: [convolution::PreparedStereoFilter; 2],
+    indices: Vec<usize>,
+    normal: Vec<convolution::PreparedStereoFilter>,
+    preserved: Vec<convolution::PreparedStereoFilter>,
 }
 
 struct Bus {
@@ -120,12 +120,21 @@ impl BusRenderer {
             });
         }
         let stereo_bass = bass.map(|b| {
-            let normal = std::array::from_fn(|i| buses[b.indices[i]].convolver.prepared_filter());
-            let preserved = std::array::from_fn(|i| {
-                buses[b.indices[i]]
-                    .convolver
-                    .prepare_pair(&b.preserved[i].0, &b.preserved[i].1)
-            });
+            let normal = b
+                .indices
+                .iter()
+                .map(|&index| buses[index].convolver.prepared_filter())
+                .collect();
+            let preserved = b
+                .indices
+                .iter()
+                .enumerate()
+                .map(|(i, &index)| {
+                    buses[index]
+                        .convolver
+                        .prepare_pair(&b.preserved[i].0, &b.preserved[i].1)
+                })
+                .collect();
             FrontBass {
                 indices: b.indices,
                 normal,
@@ -154,7 +163,7 @@ impl BusRenderer {
         }
         self.stereo_bass_enabled = enabled;
         if let Some(b) = &self.stereo_bass {
-            for i in 0..2 {
+            for i in 0..b.indices.len() {
                 let filter = if enabled {
                     b.preserved[i].clone()
                 } else {
@@ -434,7 +443,10 @@ mod bass_preservation_tests {
         let mut b = BusRenderer::new(&set, &solver, wet).unwrap();
         b.set_stereo_bass_preservation(true);
         assert!(b.stereo_bass_enabled);
-        for index in 2..solver.bus_count() {
+        for (index, speaker) in vbap::speakers(solver.layout()).iter().enumerate() {
+            if matches!(speaker.name, "FrontLeft" | "FrontRight" | "Center") {
+                continue;
+            }
             let mut input = [0f32; convolution::DEFAULT_PARTITION];
             input[0] = 0.1;
             for block in 0..160 {
@@ -457,6 +469,55 @@ mod bass_preservation_tests {
                     .unwrap();
                 assert_eq!(al, bl, "rear/height left response changed: {index}");
                 assert_eq!(ar, br, "rear/height right response changed: {index}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stereo_front_tests {
+    use super::*;
+    #[test]
+    fn stereo_front_calibration_keeps_rear_height_and_reflection_pcm_identical() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+        let mut set = hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        set.configure_spatial_cues(solver.layout()).unwrap();
+        let mut normal = BusRenderer::new(&set, &solver, set.effective_wet(0.)).unwrap();
+        let mut candidate = BusRenderer::new(&set, &solver, set.effective_wet(0.)).unwrap();
+        candidate.set_stereo_bass_preservation(true);
+        let n = convolution::DEFAULT_PARTITION;
+        // Let the filter transition finish before delivering the fixture.
+        for _ in 0..2 {
+            normal.begin_block();
+            candidate.begin_block();
+            normal.finish_block().unwrap();
+            candidate.finish_block().unwrap();
+        }
+        for block in 0..40 {
+            normal.begin_block();
+            candidate.begin_block();
+            if block == 0 {
+                for (i, s) in vbap::speakers(solver.layout()).iter().enumerate() {
+                    if matches!(s.name, "FrontLeft" | "FrontRight" | "Center") {
+                        continue;
+                    }
+                    for bank in [&mut normal, &mut candidate] {
+                        bank.buses[i].input[0] = 0.01 * (i + 1) as f32;
+                        bank.reflections[i].input[0] = -0.003 * (i + 1) as f32;
+                        bank.reflections_active = true;
+                    }
+                }
+            }
+            normal.finish_block().unwrap();
+            candidate.finish_block().unwrap();
+            for i in 0..n {
+                assert_eq!(
+                    normal.output_at(i),
+                    candidate.output_at(i),
+                    "non-front content changed at block={block} sample={i}"
+                );
             }
         }
     }

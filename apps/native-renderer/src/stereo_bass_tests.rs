@@ -284,3 +284,29 @@ fn stereo_bass_follows_codec_and_survives_hrtf_or_layout_changes() {
         }
     }
 }
+
+
+#[test]
+#[ignore = "local stereo image FIR audit; requires SDA_STEREO_AUDIT_DIR"]
+fn export_stereo_image_responses() {
+    let root = std::path::PathBuf::from(std::env::var_os("SDA_STEREO_AUDIT_DIR").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    let mut set = hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+    let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+    set.configure_spatial_cues(solver.layout()).unwrap();
+    let mut dump = serde_json::Map::new();
+    for (tag, wet) in [("dry", 0.), ("room", set.effective_wet(0.))] {
+        let bank = crate::stereo_bass::prepare(&set, &solver, wet).unwrap().unwrap();
+        for (name, pairs) in [("normal", bank.normal), ("preserved", bank.preserved)] {
+            for (i, pair) in pairs.into_iter().enumerate() {
+                dump.insert(format!("{tag}-{name}-{i}"), serde_json::json!([pair.0, pair.1]));
+            }
+        }
+        for speaker in vbap::speakers(solver.layout()) {
+            let pair = set.mixed_speaker(speaker.name, solver.layout().as_str(),
+                speaker.azimuth as f64, speaker.elevation as f64, wet).unwrap();
+            dump.insert(format!("{tag}-{}", speaker.name), serde_json::json!([pair.0,pair.1]));
+        }
+    }
+    std::fs::write(root.join("filters.json"), serde_json::to_vec(&dump).unwrap()).unwrap();
+}

@@ -45,11 +45,16 @@ jobs:
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib shared_hrtfhq_depth_preserves_direct_and_respects_layout_and_user_room -- --test-threads=1 2>&1 | tee gain-artifacts/shared-room.txt
           python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed' in Path('gain-artifacts/shared-room.txt').read_text()"
-      - name: Check stereo bass, unchanged common signal and rear routing
+      - name: Check stereo bass, calibrated front image and rear routing
         run: |
           set -o pipefail
           cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib stereo_bass -- --test-threads=1 2>&1 | tee gain-artifacts/stereo-bass.txt
-          python3 -c "from pathlib import Path; assert 'test result: ok. 4 passed;' in Path('gain-artifacts/stereo-bass.txt').read_text()"
+          python3 -c "from pathlib import Path; assert 'test result: ok. 6 passed;' in Path('gain-artifacts/stereo-bass.txt').read_text()"
+      - name: Check unchanged rear height and reflection PCM
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --locked --no-default-features --lib stereo_front_calibration_keeps_rear_height_and_reflection_pcm_identical -- --test-threads=1 2>&1 | tee gain-artifacts/front-reflections.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 1 passed;' in Path('gain-artifacts/front-reflections.txt').read_text()"
       - name: Check full-level stereo and immersive peak protection
         run: |
           set -o pipefail

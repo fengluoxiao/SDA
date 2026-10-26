@@ -44,7 +44,13 @@ fn actual_mobile_alac_bass_output() {
         .collect();
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
-    for enabled in [false, true] {
+    let balances = match std::env::var("SDA_STEREO_AUDIT_BALANCE").ok().as_deref() {
+        None => vec![false, true],
+        Some("false") => vec![false],
+        Some("true") => vec![true],
+        Some(_) => panic!("SDA_STEREO_AUDIT_BALANCE must be true or false"),
+    };
+    for enabled in balances {
         for upmix in [false, true] {
             let mut e = MobileEngine::new(
                 EngineConfig {
