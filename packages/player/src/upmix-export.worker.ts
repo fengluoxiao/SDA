@@ -1,15 +1,19 @@
 /** Offline channel-bed export; independent decoder and bounded disk spool. */
 import fs from "node:fs";
+import path from "node:path";
+import {spawn} from "node:child_process";
 import {parentPort,workerData} from "node:worker_threads";
 import {createDemuxer,sniffContainer,readBwfMetadata,type DemuxedAudioPacket} from "@sda/demux";
 import type {DecodedFrameData} from "@sda/core";
 import {AlacStereoUpmixer} from "./alac-stereo-upmix";
 import {AlacResampler} from "./alac-resampler";
 import {Mp3Decoder,sniffMp3} from "./mp3-decoder";
-import {TruePeakMeter} from "./bs1770";
+import {TruePeakMeter,LoudnessMeter,masterBalanceGainDb} from "./bs1770";
 const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
-const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer};
+const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean};
+const balancedPath=job.balancedPath??job.floatPath+".balanced";
+const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
 const cancelled=new Int32Array(job.cancel);
 const check=()=>{if(Atomics.load(cancelled,0))throw Error("EXPORT_CANCELLED");};
 function writeAll(fd:number,bytes:Buffer){let offset=0;while(offset<bytes.length)offset+=fs.writeSync(fd,bytes,offset,bytes.length-offset);}
@@ -20,18 +24,33 @@ function frameData(frame:any):DecodedFrameData {
  const data={codec:frame.codec,sampleRate:frame.sampleRate,samplePos:frame.samplePos,channels,labels:frame.labels,rawBedLabels:frame.rawBedLabels,events:JSON.parse(frame.eventsJson),objectChannels:JSON.parse(frame.objectChannelsJson),programLoudness:null,rampDuration:0};
  frame.free();return data;
 }
+async function renderBalances(programmeDb:number,makeupDb:number):Promise<void>{
+ if(!job.rendererPath)throw Error("原生平衡渲染器不可用，请重新构建桌面版");
+ await new Promise<void>((resolve,reject)=>{
+  const child=spawn(job.rendererPath!,["--sda-export-upmix-bed",job.floatPath,balancedPath,String(programmeDb),String(makeupDb),String(spatialBalance)],{windowsHide:true,stdio:["pipe","pipe","pipe"]});
+  let error="",pending="",ready=false,failure="";
+  const readiness=setTimeout(()=>{failure="原生渲染器未确认平衡导出协议，请重新构建桌面版";child.kill();},5000);
+  const timer=setInterval(()=>{if(Atomics.load(cancelled,0)&&!child.stdin.destroyed&&!child.stdin.writableEnded)child.stdin.end();},50);
+  child.stdin.on("error",()=>{});
+  child.stdout.on("data",bytes=>{pending+=String(bytes);let i;while((i=pending.indexOf("\n"))>=0){const line=pending.slice(0,i);pending=pending.slice(i+1);try{const state=JSON.parse(line);if(state.type==="bedExportReady"&&state.protocol===1){ready=true;clearTimeout(readiness);}else if(!ready){failure="原生渲染器不支持平衡导出，请重新构建桌面版";child.kill();}if(state.frames>0)progress("balance",.4+.25*state.processedFrames/state.frames);}catch{}}});
+  child.stderr.on("data",bytes=>{error=(error+String(bytes)).slice(-3000);});
+  child.on("error",failure=>{clearInterval(timer);clearTimeout(readiness);reject(failure);});
+  child.on("close",code=>{clearInterval(timer);clearTimeout(readiness);if(Atomics.load(cancelled,0))reject(Error("EXPORT_CANCELLED"));else if(failure)reject(Error(failure));else if(code===0&&ready)resolve();else reject(Error(error||"原生平衡渲染失败"));});
+ });
+}
 async function run(){
- let input:number|undefined,spool:number|undefined,output:number|undefined,decoder:any=null;
+ let input:number|undefined,spool:number|undefined,output:number|undefined,processed:number|undefined,decoder:any=null;
  const resampler={current:null as AlacResampler|null};
  try{
   if(sameFile(job.inputPath,job.outputPath))throw Error("导出文件不能覆盖源音频");
   input=fs.openSync(job.inputPath,"r");const initial=fs.fstatSync(input);
   spool=fs.openSync(job.floatPath,"wx+");const mixer=new AlacStereoUpmixer(true),meter=new TruePeakMeter(48000,12);
+  const sourceMeter=new LoudnessMeter(48000,2),sourcePeak=new TruePeakMeter(48000,2);
   let samples=0,inputClock=0,inputRate=0,codec="";
   function store(frame:DecodedFrameData){
-   check();const wet=mixer.liveSda(frame,true);if(wet.channels.length!==12)throw Error("仅支持 ALAC、MP3 或 WAV 的普通双声道音频");
+   check();sourceMeter.push(frame.channels);sourcePeak.push(frame.channels);const wet=mixer.liveSda(frame,true);if(wet.channels.length!==12)throw Error("仅支持 ALAC、MP3 或 WAV 的普通双声道音频");
    if(wet.samplePos!==samples)throw Error("导出音频时间轴不连续");
-   const count=wet.channels[0]!.length;meter.push(wet.channels);
+   const count=wet.channels[0]!.length;if(!volumeBalance&&!spatialBalance)meter.push(wet.channels);
    const bytes=Buffer.allocUnsafe(count*48);
    for(let i=0;i<count;i++)for(let ch=0;ch<12;ch++){const value=wet.channels[ch]![i]!;if(!Number.isFinite(value))throw Error("音频包含无效采样");bytes.writeFloatLE(value,(i*12+ch)*4);}
    writeAll(spool!,bytes);samples+=count;
@@ -65,32 +84,46 @@ async function run(){
      onPacket(packet){pending.push({packet});},onPcmFrame(frame){pending.push({frame});},onError(message){throw Error(message);},
     },metadata);
    }
-   demuxer.push(chunk,start);await drain();progress("decode",position/initial.size*.65);
+   demuxer.push(chunk,start);await drain();progress("decode",position/initial.size*.4);
   }
   if(prefix.length)throw Error("输入音频头不完整");demuxer?.flush();await drain();
   if(decoder){decoder.flush();let frame;while((frame=decoder.nextFrame()))await accept(codec==="mp3"?frame:frameData(frame));const errors=decoder.drainErrors();if(errors.length)throw Error(String(errors[0]));}
   const tail=resampler.current?.finish();if(tail)store(tail);if(!samples)throw Error("没有可导出的音频");
   const final=fs.fstatSync(input);if(final.size!==initial.size||final.mtimeMs!==initial.mtimeMs)throw Error("导出期间源文件发生变化，请重试");
-  meter.push(Array.from({length:12},()=>new Float32Array(16)));const inputPeak=meter.dbtp();
+  sourcePeak.push([new Float32Array(16),new Float32Array(16)]);
+  const sourceMeasurement=sourceMeter.integrated(),programmeDb=volumeBalance&&sourceMeasurement.integratedLufs!==null?masterBalanceGainDb(sourceMeasurement.integratedLufs,sourcePeak.dbtp()):0;
+  const makeupDb=volumeBalance?2.5:0;
+  const disk=fs.statfsSync(path.dirname(job.outputPath));if(disk.bavail*disk.bsize<samples*((volumeBalance||spatialBalance)?84:36)+wav.HEADER_BYTES)throw Error("目标磁盘剩余空间不足以完成平衡渲染和 WAV 输出");
+  let audio=spool,inputPeak:number;
+  if(volumeBalance||spatialBalance){
+   progress("balance",.4,true);fs.fsyncSync(spool);await renderBalances(programmeDb,makeupDb);check();
+   processed=fs.openSync(balancedPath,"r");audio=processed;
+   if(fs.fstatSync(processed).size!==samples*48)throw Error("平衡渲染输出长度不正确");
+   const scan=new TruePeakMeter(48000,12);let at=0;
+   while(at<samples){check();const count=Math.min(4096,samples-at),bytes=Buffer.alloc(count*48);let offset=0;while(offset<bytes.length){const n=fs.readSync(audio,bytes,offset,bytes.length-offset,at*48+offset);if(!n)throw Error("平衡音频文件不完整");offset+=n;}const planes=Array.from({length:12},(_,ch)=>Float32Array.from({length:count},(_,i)=>bytes.readFloatLE((i*12+ch)*4)));scan.push(planes);at+=count;progress("peak",.65+.1*at/samples);}
+   scan.push(Array.from({length:12},()=>new Float32Array(16)));
+   // Reuse the final-stage meter result after the native source-domain balances.
+   inputPeak=scan.dbtp();
+  }else{meter.push(Array.from({length:12},()=>new Float32Array(16)));inputPeak=meter.dbtp();}
   const gain=Number.isFinite(inputPeak)?Math.min(1,10**((-1.01-inputPeak)/20)):1;
-  progress("write",.65,true);
+  progress("write",.75,true);
   output=fs.openSync(job.stagingPath,"wx");writeAll(output,wav.header(BigInt(samples)));
   const verified=new TruePeakMeter(48000,12);let read=0,seed=0x534441;
   const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
   while(read<samples){
    check();const count=Math.min(4096,samples-read),bytes=Buffer.allocUnsafe(count*48);let offset=0;
-   while(offset<bytes.length){const n=fs.readSync(spool,bytes,offset,bytes.length-offset,read*48+offset);if(!n)throw Error("临时音频文件不完整");offset+=n;}
+   while(offset<bytes.length){const n=fs.readSync(audio,bytes,offset,bytes.length-offset,read*48+offset);if(!n)throw Error("临时音频文件不完整");offset+=n;}
    const planes=Array.from({length:12},(_,ch)=>Float32Array.from({length:count},(_,i)=>bytes.readFloatLE((i*12+ch)*4)));
    const pcm=wav.encode24(planes,gain,random);writeAll(output,pcm);
    const quantized=Array.from({length:12},(_,ch)=>Float32Array.from({length:count},(_,i)=>pcm.readIntLE(i*36+ch*3,3)/8388608));verified.push(quantized);
-   read+=count;progress("write",.65+.35*read/samples);
+   read+=count;progress("write",.75+.25*read/samples);
   }
   verified.push(Array.from({length:12},()=>new Float32Array(16)));const peak=verified.dbtp();if(peak> -1)throw Error("导出峰值校验失败，未替换目标文件");
   fs.fsyncSync(output);fs.closeSync(output);output=undefined;check();fs.renameSync(job.stagingPath,job.outputPath);
-  parentPort!.postMessage({type:"done",frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS});
+  parentPort!.postMessage({type:"done",frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"offline-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
  }finally{
-  decoder?.free();resampler.current?.destroy();for(const fd of [input,spool,output])if(fd!==undefined)try{fs.closeSync(fd);}catch{}
-  for(const file of [job.floatPath,job.stagingPath])try{fs.unlinkSync(file);}catch{}
+  decoder?.free();resampler.current?.destroy();for(const fd of [input,spool,output,processed])if(fd!==undefined)try{fs.closeSync(fd);}catch{}
+  for(const file of [job.floatPath,job.stagingPath,balancedPath])try{fs.unlinkSync(file);}catch{}
  }
 }
 run().catch(error=>parentPort!.postMessage({type:error.message==="EXPORT_CANCELLED"?"cancelled":"error",error:error.message})).finally(()=>parentPort!.close());

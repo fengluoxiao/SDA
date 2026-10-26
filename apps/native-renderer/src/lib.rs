@@ -52,6 +52,7 @@ pub mod aaudio_output;
 mod adm_zone;
 pub mod bus_renderer;
 pub mod callback_output;
+pub mod bed_export;
 pub mod cinema;
 mod spatial_cues;
 mod shared_depth;

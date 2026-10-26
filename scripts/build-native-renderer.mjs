@@ -103,6 +103,7 @@ await writeFile(join(roomReceiverRoot,"hrtf-set.json"),JSON.stringify(receiver.m
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);
 
 const bytes = await readFile(target);
+if(!bytes.includes(Buffer.from('bedExportReady')))throw new Error('Native renderer lacks offline bed-balance export');
 const sourceCommit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 if (!bytes.includes(Buffer.from(sourceCommit)) || !bytes.includes(Buffer.from('front-direct-mirror-lowband-v2'))) throw new Error('Staged renderer does not match the current source revision and stereo calibration');
-await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');
+await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,bedExportProtocol:1,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');

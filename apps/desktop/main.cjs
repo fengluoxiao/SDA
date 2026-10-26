@@ -290,6 +290,7 @@ let nativeRendererBuffer = "";
 const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   ipcMain,dialog,BrowserWindow,shell,
   workerPath:path.join(__dirname,"upmix-export-worker.cjs"),
+  rendererPath:()=>bundledNativeRendererPath(),
   corePath:app.isPackaged?path.join(__dirname,"performance-core/sda_core.cjs"):path.resolve(__dirname,"../../packages/core/pkg-node/sda_core.cjs"),
 });
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({

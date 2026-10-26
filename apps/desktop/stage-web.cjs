@@ -12,6 +12,7 @@ async function stageWeb() {
     await access(executable);
     if(activeExperiment().measured && !(await readFile(executable)).includes(Buffer.from('Shared HRTFHQ clarity profile v1')))
       throw new Error('Native renderer is stale; rebuild it before packaging the shared HRTFHQ resources');
+    if(!(await readFile(executable)).includes(Buffer.from('bedExportReady')))throw new Error('Native renderer lacks balanced WAV export; rebuild it before packaging');
     verifySharedExperiment(join(__dirname,'native-renderer','hrtf-assets'));
   }
   const source = join(__dirname, '..', 'web', 'dist');

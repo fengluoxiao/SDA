@@ -2,6 +2,7 @@
 export interface UpmixExportStatus {
   id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
   stage?:string;progress?:number;inputName?:string;outputPath?:string;error?:string;
+  volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;programmeGainDb?:number;programmeMakeupDb?:number;sourceLufs?:number|null;balancePolicy?:string;spatialAlgorithm?:string|null;
   frames?:number;sampleRate?:number;channels?:number;bits?:number;gainDb?:number;truePeakDbtp?:number|null;
 }
 export interface MediaBrowserSaved { recent:string[]; favorites:string[]; }
@@ -230,7 +231,8 @@ declare global {
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       localFilePath?: (file:File) => string;
-      exportUpmixWav?: (inputPath:string) => Promise<{id?:string;cancelled?:boolean}>;
+      upmixExportBalancesVersion?: number;
+      exportUpmixWav?: (inputPath:string, options:{volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean}) => Promise<{id?:string;cancelled?:boolean}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
       cancelUpmixExport?: () => Promise<boolean>;
       revealUpmixExport?: () => Promise<void>;

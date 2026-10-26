@@ -13,6 +13,7 @@ use sda_native_renderer::*;
 
 
 fn main() {
+    if bed_export::entry() { return; }
     if performance_simulation::entry() {
         return;
     }

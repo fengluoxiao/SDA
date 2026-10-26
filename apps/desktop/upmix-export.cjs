@@ -6,17 +6,20 @@ function sameFile(input,output){
  const target=fs.realpathSync(output),a=fs.statSync(source),b=fs.statSync(target);
  return source.toLowerCase()===target.toLowerCase()||(a.ino!==0&&a.ino===b.ino&&a.dev===b.dev);
 }
-function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePath}){
+function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePath,rendererPath}){
  let job=null,last={state:'idle'};
  const emit=state=>{last=state;try{if(job?.owner&&!job.owner.isDestroyed())job.owner.send('sda:upmix-export-status',state);}catch{}};
- const clean=current=>{for(const file of [current.floatPath,current.stagingPath]){if(!file||!current.outputPath)continue;if(path.dirname(file)!==path.dirname(current.outputPath))continue;try{fs.unlinkSync(file);}catch{}}};
+ const clean=current=>{for(const file of [current.floatPath,current.stagingPath,current.balancedPath]){if(!file||!current.outputPath)continue;if(path.dirname(file)!==path.dirname(current.outputPath))continue;try{fs.unlinkSync(file);}catch{}}};
  const cancel=()=>{if(!job||job.selecting)return false;Atomics.store(job.cancel,0,1);emit({...last,state:'cancelling'});job.timeout??=setTimeout(()=>job?.worker.terminate(),5000);return true;};
  ipcMain.handle('sda:upmix-export-status',()=>last);
  ipcMain.handle('sda:upmix-export-cancel',(event)=>job?.owner===event.sender?cancel():false);
  ipcMain.handle('sda:upmix-export-reveal',()=>{if(last.state==='done'&&last.outputPath)shell.showItemInFolder(last.outputPath);});
- ipcMain.handle('sda:upmix-export-start',async(event,inputPath)=>{
+ ipcMain.handle('sda:upmix-export-start',async(event,inputPath,options={})=>{
   if(job)throw Error('已有导出任务正在运行');
   if(typeof inputPath!=='string'||!path.isAbsolute(inputPath)||!fs.statSync(inputPath).isFile())throw Error('请选择本地立体声音频');
+  if(!options||typeof options!=='object')throw Error('导出设置无效');
+  const settings={volumeBalanceEnabled:options.volumeBalanceEnabled??false,spatialBalanceEnabled:options.spatialBalanceEnabled??false};
+  if(Object.values(settings).some(value=>typeof value!=='boolean'))throw Error('平衡开关必须是布尔值');
   const owner=event.sender;job={owner,selecting:true};
   try{
    const selected=await dialog.showSaveDialog(BrowserWindow.fromWebContents(owner),{title:'导出 7.1.4 WAV',defaultPath:path.join(path.dirname(inputPath),path.parse(inputPath).name+'.SDA-7.1.4.wav'),filters:[{name:'7.1.4 WAV · 48 kHz / 24-bit',extensions:['wav']}],properties:['showOverwriteConfirmation','createDirectory']});
@@ -26,9 +29,9 @@ function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePa
    // A minimum sanity check; actual streaming writes report disk-full errors safely.
    if(available.bavail*available.bsize<Math.min(input.size*2,32*1024*1024))throw Error('目标磁盘可用空间不足');
    const id=crypto.randomUUID(),prefix=path.join(path.dirname(outputPath),'.sda-upmix-'+id),shared=new SharedArrayBuffer(4);
-   const current={id,owner,outputPath,floatPath:prefix+'.f32.tmp',stagingPath:prefix+'.wav.tmp',cancel:new Int32Array(shared),worker:null,timeout:null};job=current;
-   const state={id,state:'running',stage:'decode',progress:0,inputName:path.basename(inputPath),outputPath};emit(state);
-   const worker=current.worker=new Worker(workerPath,{workerData:{inputPath,outputPath,floatPath:current.floatPath,stagingPath:current.stagingPath,corePath,cancel:shared},trackUnmanagedFds:true});
+   const current={id,owner,outputPath,floatPath:prefix+'.f32.tmp',balancedPath:prefix+'.balanced.f32.tmp',stagingPath:prefix+'.wav.tmp',cancel:new Int32Array(shared),worker:null,timeout:null};job=current;
+   const state={id,state:'running',stage:'decode',progress:0,inputName:path.basename(inputPath),outputPath,...settings};emit(state);
+   const worker=current.worker=new Worker(workerPath,{workerData:{inputPath,outputPath,floatPath:current.floatPath,stagingPath:current.stagingPath,corePath,cancel:shared,balancedPath:current.balancedPath,rendererPath:typeof rendererPath==="function"?rendererPath():rendererPath,...settings},trackUnmanagedFds:true});
    let terminal=null;
    const onDestroyed=()=>{if(job===current)cancel();};owner.once?.('destroyed',onDestroyed);
    worker.on('message',message=>{

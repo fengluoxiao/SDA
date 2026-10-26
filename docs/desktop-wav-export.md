@@ -9,11 +9,26 @@ The shared mobile/desktop upmix matrix and its fixed -2 dB calibration produce
 12 channels at 48 kHz. Files use 24-bit PCM WAVEFORMATEXTENSIBLE with speaker mask
 0x2d63f. On disk the order is FL, FR, FC, LFE, BL, BR, SL, SR, TFL, TFR, TBL, TBR;
 back channels are reordered from SDA's internal side-before-back bed. This is a
-channel bed. Spatial-balance listening processing, HRTF, virtual room, headphone EQ, listening makeup and device volume
-are outside the export. No proprietary/object-based master format is generated.
+channel bed. Export snapshots the current playback volume-balance and spatial-balance switches
+at the start of each job. One export action writes exactly one final WAV with
+both enabled effects baked into its audio. The export panel only reports these
+settings; it does not create alternate versions or separate channel files. HRTF, virtual room, headphone EQ
+and device volume remain outside the export. No proprietary/object-based master format is generated.
 
-A bounded floating-point disk spool permits a full-track true-peak scan before
-quantization. One linked nonpositive gain leaves -1 dBTP headroom with a small
+A bounded floating-point disk spool permits offline whole-track reference
+measurement. Volume balance measures the original stereo master at 48 kHz,
+selects one nonpositive -18 LUFS programme gain with the source true-peak bound,
+and includes the same +2.5 dB calibration when enabled. This complete-track
+reference is deterministic and does not depend on the playback cursor/cache.
+
+Spatial balance calls the native renderer in a device-free offline mode. Its
+source-domain controller, world-direction membership, spectral redistribution
+and common clarity shelf are the same Rust kernels as playback, applied to the
+12 bed channels before HRTF. Protected fronts and LFE retain their source-domain
+baseline. No separate JavaScript imitation or binaural mix is used.
+
+Both balances are rendered to a second bounded spool. A fresh true-peak scan
+after both operations determines final headroom before quantization. One linked nonpositive gain leaves -1 dBTP headroom with a small
 rounding margin. PCM24 uses TPDF dither and is measured again before publication.
 There is no section-dependent gain envelope or independent channel normalization.
 RIFF is used for ordinary files; RF64/ds64 is selected automatically above 4 GiB.
@@ -37,3 +52,8 @@ and hardware routing to remain active, also bypassing the normal output-dynamics
 and stereo bass paths. The stored hardware parameters remain available when the
 monitor is explicitly enabled. Default mobile monitor settings follow the same
 bypass path; hardware simulation remains an explicit desktop listening effect.
+
+Export protocol v1 requires a native readiness handshake; an older sidecar is
+rejected instead of silently exporting unprocessed audio or opening another
+playback session. Cancellation closes the helper control pipe and removes all
+intermediate files. The settings snapshot is immutable for a running export.

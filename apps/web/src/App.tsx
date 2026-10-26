@@ -2676,7 +2676,7 @@ export function App() {
             onToggleSolo={toggleSolo}
           />
         )}
-        {floatPanel === "export" && <UpmixExport source={lastSourceRef.current} codec={track?.codec??""} stereo={stereoProgram} onClose={()=>setFloatPanel(null)}/>}
+        {floatPanel === "export" && <UpmixExport source={lastSourceRef.current} codec={track?.codec??""} stereo={stereoProgram} volumeBalanceEnabled={volumeBalanceEnabled} spatialBalanceEnabled={spatialBalanceEnabled} onClose={()=>setFloatPanel(null)}/>}
         {stereoProgram && floatPanel === "stereo" && (
           <div className="panel float-panel" aria-label="立体声处理">
             <h2>立体声</h2>
