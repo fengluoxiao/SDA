@@ -1,10 +1,11 @@
-//! Windows packages/player/src/bs1770.ts and player.ts playback policy.
+//! Native programme normalization: one selected gain per source instance.
 //! Measure the stereo master / verified speaker beds / MPEG-H reference, never raw objects
 //! or the HRTF output. Gain uses the shared renderer's sample-clock envelope.
 use sda_core::FrameData;
 use sda_native_renderer::Command;
 
 pub const MIN_BLOCKS: usize = 57;
+pub const PROGRAMME_BALANCE_POLICY: &str = "fixed-startup-reference-v1";
 /// Shared stereo / Audio Vivid decoded preroll; silence must not hold playback forever.
 pub const AV3A_STARTUP_MAX_SECONDS: u64 = 7;
 pub use sda_core::loudness::{LoudnessMeter, ReferenceLoudness as Measurement};
@@ -51,7 +52,6 @@ pub struct VolumeBalance {
     post_counter: usize,
     cached: Option<Measurement>,
     settled: bool,
-    balanced_blocks: usize,
     pub gain_db: f64,
     completed: bool,
     early_alac_balance: bool,
@@ -69,7 +69,7 @@ impl VolumeBalance {
         };
     }
     pub fn set_cached(&mut self, cached: Measurement) {
-        if self.decoded_reference.is_some() {return;}
+        if self.decoded_reference.is_some() || self.settled {return;}
         self.cached = if cached.blocks >= MIN_BLOCKS
             && cached.integrated_lufs.is_some_and(|v| v.is_finite())
         {
@@ -90,7 +90,14 @@ impl VolumeBalance {
         };
         let mut measurement = frame.reference_loudness.clone();
         if measurement.is_some() {
-            if self.decoded_reference.is_none() {self.cached=None;self.settled=false;self.meter=None;self.post_counter=0;self.startup_reference=None;}
+            if self.decoded_reference.is_none() {
+                self.cached = None;
+                if !self.settled {
+                    self.meter = None;
+                    self.post_counter = 0;
+                    self.startup_reference = None;
+                }
+            }
             self.decoded_reference = measurement.clone();
         }
         if let Some(channels) = channels.filter(|_| measurement.is_none()) {
@@ -122,7 +129,6 @@ impl VolumeBalance {
         if !ended && m.blocks < MIN_BLOCKS && self.startup_reference.is_none() { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
         self.gain_db = master_gain(lufs, if self.mpegh_reference { None } else { m.true_peak_dbtp });
-        self.balanced_blocks = m.blocks;
         self.settled = true;
         Some(Command::SetProgramGain { gain: 10_f64.powf(self.gain_db / 20.0) as f32, at: Some(origin) })
     }
@@ -144,55 +150,27 @@ impl VolumeBalance {
         if !eligible {
             return commands;
         }
-        if let Some(cached) = &self.cached {
-            if !self.settled {
-                self.gain_db = master_gain(
-                    cached.integrated_lufs.unwrap(),
-                    if f.codec != "mpegh" && (stereo || referenced) { cached.true_peak_dbtp } else { None },
-                );
+        // A louder later section, late cache delivery, bypass or upmix toggle
+        // must not acquire a second normalization envelope for this source.
+        // Metering continues in measure() so a complete decode can be cached.
+        if self.settled { return commands; }
+        let early = self.early_alac_balance && f.codec == "alac";
+        let required_blocks = if early { 7 } else { MIN_BLOCKS };
+        let measurement = self.cached.as_ref()
+            .or(self.startup_reference.as_ref())
+            .or(frame.measurement.as_ref());
+        if let Some(m) = measurement.filter(|m| m.blocks >= required_blocks) {
+            if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
+                self.gain_db = master_gain(lufs,
+                    if f.codec != "mpegh" && (stereo || referenced) { m.true_peak_dbtp } else { None });
                 self.settled = true;
+                // Startup preroll applies this at the source origin. Live user
+                // activation uses the same reference and the renderer's existing
+                // linked short ramp, never a staircase scheduled seconds ahead.
                 commands.push(Command::SetProgramGain {
                     gain: 10_f64.powf(self.gain_db / 20.0) as f32,
                     at: Some(f.sample_pos),
                 });
-            }
-        } else if let Some(m) = (if self.settled { None } else { self.startup_reference.as_ref() }).or(frame.measurement.as_ref()) {
-            // Seven overlapping 400 ms windows cover one second of audible
-            // material. Do not count a silent intro toward this estimate.
-            let early = self.early_alac_balance && f.codec == "alac" && !self.settled;
-            let required_blocks = if early { 7 } else { MIN_BLOCKS };
-            if m.blocks >= required_blocks && (!self.settled || (f.codec != "mpegh" && m.blocks >= self.balanced_blocks + 50)) {
-                if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
-                    self.settled = true;
-                    self.balanced_blocks = m.blocks;
-                    let gain = master_gain(lufs, if f.codec != "mpegh" && (stereo || referenced) { m.true_peak_dbtp } else { None });
-                    let previous = self.gain_db;
-                    self.gain_db = gain;
-                    if early && (gain - previous).abs() >= 0.05 {
-                        // Use the renderer's existing 50 ms linked ramp, not
-                        // another multi-second startup staircase. The event is
-                        // source-clocked so it cannot attenuate earlier audio.
-                        commands.push(Command::SetProgramGain {
-                            gain: 10_f64.powf(gain / 20.0) as f32,
-                            at: Some(f.sample_pos),
-                        });
-                    } else if (gain - previous).abs() >= 0.05 {
-                        let steps = ((gain - previous).abs() / 0.75).ceil() as u64;
-                        let samples = (0.25_f64.min(4.0 / steps as f64) * f.sample_rate as f64)
-                            .round() as u64;
-                        for i in 1..=steps {
-                            let db = if i == steps {
-                                gain
-                            } else {
-                                previous + (gain - previous) * i as f64 / steps as f64
-                            };
-                            commands.push(Command::SetProgramGain {
-                                gain: 10_f64.powf(db / 20.0) as f32,
-                                at: Some(f.sample_pos + i * samples),
-                            });
-                        }
-                    }
-                }
             }
         }
         commands
@@ -442,46 +420,24 @@ mod tests {
             .contains("null"));
     }
     #[test]
-    fn windows_protective_gain_and_sample_clock_staircase_match() {
+    fn protective_gain_formula_is_preserved_without_replaying_the_legacy_staircase() {
         for v in fixture()["gains"].as_array().unwrap() {
-            assert_eq!(
-                master_gain(v["lufs"].as_f64().unwrap(), v["peak"].as_f64()),
-                v["gainDb"].as_f64().unwrap()
-            );
+            assert_eq!(master_gain(v["lufs"].as_f64().unwrap(),v["peak"].as_f64()),v["gainDb"].as_f64().unwrap());
         }
-        assert_eq!(master_gain(f64::NAN, Some(-1.0)), 0.0);
-        let mut balance = VolumeBalance {
-            enabled: true,
-            ..Default::default()
-        };
+        assert_eq!(master_gain(f64::NAN,Some(-1.)),0.);
+        let mut balance=VolumeBalance {enabled:true,..Default::default()};
+        let mut selected=None;
         for step in fixture()["schedule"].as_array().unwrap() {
-            let pending = PendingFrame {
-                frame: frame("alac", step["at"].as_u64().unwrap()),
-                measurement: Some(Measurement {
-                    integrated_lufs: step["lufs"].as_f64(),
-                    blocks: step["blocks"].as_u64().unwrap() as usize,
-                    true_peak_dbtp: step["peak"].as_f64(),
-                }),
-            };
-            let commands = balance.route(&pending);
-            let gains: Vec<_> = commands
-                .iter()
-                .filter_map(|c| {
-                    if let Command::SetProgramGain { gain, at } = c {
-                        Some((*gain, *at))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let expected = step["calls"].as_array().unwrap();
-            assert_eq!(gains.len(), expected.len());
-            for ((gain, at), v) in gains.iter().zip(expected) {
-                assert_eq!(*at, v["at"].as_u64());
-                assert!(
-                    (*gain as f64 - 10_f64.powf(v["gainDb"].as_f64().unwrap() / 20.0)).abs() < 1e-7
-                );
-            }
+            let m=Measurement {integrated_lufs:step["lufs"].as_f64(),blocks:step["blocks"].as_u64().unwrap() as usize,true_peak_dbtp:step["peak"].as_f64()};
+            let at=step["at"].as_u64().unwrap();
+            let commands=balance.route(&PendingFrame{frame:frame("alac",at),measurement:Some(m.clone())});
+            let gains:Vec<_>=commands.iter().filter_map(|c|if let Command::SetProgramGain{gain,at}=c {Some((*gain,*at))}else{None}).collect();
+            if selected.is_none() && m.blocks>=MIN_BLOCKS && m.integrated_lufs.is_some_and(|v|v.is_finite()) {
+                let db=master_gain(m.integrated_lufs.unwrap(),m.true_peak_dbtp);selected=Some(db);
+                assert_eq!(gains.len(),1);assert_eq!(gains[0].1,Some(at));
+                assert!((f64::from(gains[0].0)-10f64.powf(db/20.)).abs()<1e-7);
+            } else {assert!(gains.is_empty(),"legacy moving-reference staircase returned");}
+            if let Some(db)=selected {assert_eq!(balance.gain_db,db);}
         }
     }
     #[test]
@@ -596,4 +552,70 @@ mod tests {
         f.channels.push(vec![0.0; 1024]);
         assert!(!stereo_master(&f));
     }
+}
+
+
+#[cfg(test)]
+mod fixed_programme_tests {
+    use super::*;
+    fn pending(codec: &'static str, at:u64, blocks:usize, lufs:f64) -> PendingFrame {
+        let f=FrameData { reference_loudness:None,compatibility_bed:None,codec,sample_rate:48000,sample_pos:at,
+            channels:vec![vec![0.;1024];2],labels:vec!["L".into(),"R".into()],raw_bed_labels:vec!["L".into(),"R".into()],
+            object_channels:vec![],events:vec![],program_loudness:None,ramp_duration:0 };
+        PendingFrame {frame:f,measurement:Some(Measurement{integrated_lufs:Some(lufs),blocks,true_peak_dbtp:Some(-2.)})}
+    }
+    fn gain_commands(commands:&[Command])->usize {commands.iter().filter(|c|matches!(c,Command::SetProgramGain{..})).count()}
+    #[test]
+    fn programme_balance_stays_fixed_after_startup_for_every_reference_route() {
+        for codec in ["alac","mp3","av3a","eac3","mpegh"] {
+            let mut b=VolumeBalance{enabled:true,..Default::default()};
+            if codec=="alac" {b.enable_alac_startup();}
+            let blocks=if codec=="alac" {7} else {MIN_BLOCKS};
+            let first=b.route(&pending(codec,0,blocks,-10.));
+            assert_eq!(b.gain_db,-8.);
+            assert_eq!(gain_commands(&first),1,"startup must schedule one calibration, not a future staircase");
+            for (i,lufs) in [-5.,-30.,-4.,-22.].into_iter().enumerate() {
+                let commands=b.route(&pending(codec,(i as u64+1)*240000,blocks+(i+1)*60,lufs));
+                assert_eq!(gain_commands(&commands),0,"{codec}: playback acquired an automatic gain update");
+                assert_eq!(b.gain_db,-8.,"{codec}: selected programme gain drifted");
+            }
+        }
+    }
+    #[test]
+    fn programme_balance_late_cache_reference_and_toggle_cannot_retune_a_track() {
+        let mut b=VolumeBalance::default();b.enable_alac_startup();
+        b.route(&pending("alac",0,7,-10.));assert_eq!(b.gain_db,-8.);
+        b.set_cached(Measurement{integrated_lufs:Some(-2.),blocks:200,true_peak_dbtp:Some(-2.)});
+        b.enabled=true;
+        let commands=b.route(&pending("alac",480000,107,-4.));
+        assert_eq!(gain_commands(&commands),0,"late cache changed current calibration");
+        assert_eq!(b.gain_db,-8.);
+        let mut f=pending("alac",720000,160,-3.).frame;
+        f.reference_loudness=Some(Measurement{integrated_lufs:Some(-3.),blocks:160,true_peak_dbtp:Some(-2.)});
+        let p=b.measure(f,None);let commands=b.route(&p);
+        assert_eq!(gain_commands(&commands),0,"late decoded reference changed current calibration");
+        assert_eq!(b.gain_db,-8.);
+        b.reset();b.set_cached(Measurement{integrated_lufs:Some(-3.),blocks:200,true_peak_dbtp:Some(-2.)});
+        b.route(&pending("alac",0,MIN_BLOCKS,-3.));assert_eq!(b.gain_db,-15.,"new source must select a new reference");
+    }
+    #[test]
+    fn programme_balance_keeps_full_track_metering_without_retargeting_playback() {
+        let mut b=VolumeBalance{enabled:true,..Default::default()};b.enable_alac_startup();
+        for chunk in 0..120 {
+            let at=chunk*4096;
+            let level=if chunk<24 {0.04} else {0.65};
+            let mono:Vec<f32>=(0..4096).map(|n|level*(std::f32::consts::TAU*997.*(at+n) as f32/48000.).sin()).collect();
+            let mut f=pending("alac",at as u64,0,-30.).frame;f.channels=vec![mono.clone(),mono];
+            let frame=b.measure(f,None);b.route(&frame);
+        }
+        assert!(b.settled);assert_eq!(b.gain_db,0.,"quiet startup reference must remain selected");
+        assert!(b.complete_measurement().is_none(),"unfinished playback must not cache an intro");
+        b.finish();let full=b.complete_measurement().expect("complete full-track measurement");
+        assert!(full.blocks>MIN_BLOCKS && full.integrated_lufs.unwrap()>-10.);
+        let expected=master_gain(full.integrated_lufs.unwrap(),full.true_peak_dbtp);
+        assert!(expected < -8.,"later loud audio was not measured");
+        let mut next=VolumeBalance{enabled:true,..Default::default()};next.set_cached(full);
+        next.route(&pending("alac",0,MIN_BLOCKS,-30.));assert_eq!(next.gain_db,expected);
+    }
+
 }

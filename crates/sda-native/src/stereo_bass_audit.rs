@@ -67,6 +67,8 @@ fn actual_mobile_alac_bass_output() {
             e.set_volume_balance(enabled).unwrap();
             let mut adapter = alac_pcm::AlacPcm::default();
             let deadline = Instant::now() + Duration::from_secs(180);
+            let mut trace = Vec::new();
+            let mut previous_gain = f64::NAN;
             for (i, chunk) in pcm.chunks(8192).enumerate() {
                 while e
                     .decoded_sample_pos()
@@ -84,7 +86,19 @@ fn actual_mobile_alac_bass_output() {
                     chunk.iter().skip(1).step_by(2).copied().collect(),
                 ];
                 e.feed_alac_pcm(frame, reference).unwrap();
+                if i % 12 == 0 || e.balance.gain_db != previous_gain {
+                    trace.push(serde_json::json!({
+                        "submittedSeconds": (i * 4096 + chunk.len() / 2) as f64 / 48000.,
+                        "programmeGainDb": e.balance.gain_db,
+                        "status": e.playback_status(),
+                    }));
+                }
+                previous_gain = e.balance.gain_db;
             }
+            std::fs::write(
+                dir.join(format!("mobile-{tag}-balance-{enabled}-upmix-{upmix}-trace.json")),
+                serde_json::to_vec_pretty(&trace).unwrap(),
+            ).unwrap();
             e.finish().unwrap();
             while sink.samples.lock().unwrap().len() < pcm.len() {
                 assert!(Instant::now() < deadline, "drain stalled");

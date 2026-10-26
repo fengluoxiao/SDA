@@ -1,0 +1,13 @@
+# Fixed native programme balance — 2026-10-26
+
+The supplied ALAC track reproduced a 3.7415 dB programme-gain reduction around source seconds 7–8 and a further 0.1511 dB change near 12.5 seconds in 0.9.24. The first usable reference was followed by repeated later estimates and future `SetProgramGain` staircases. This changed overall playback level even though the source was not progressively fading.
+
+`fixed-startup-reference-v1` selects one programme gain per native source instance. It uses the existing complete cache when available, otherwise the existing first usable startup reference. After selection, later measurements, late cache delivery, late decoded references and volume-balance/upmix toggles do not select a new gain. A source reset can select a new reference. Eligibility checks remain active on every frame.
+
+The shared −18 LUFS attenuation formula, reference-peak policy, no-boost rule, startup thresholds and preroll cap remain unchanged. The renderer retains its short linked ramp for explicit activation and independent true-peak protection. Complete metering continues; only successful complete eligible decodes become a cache. A cold startup reference is an estimate and need not equal the eventual whole-track measurement. A later playback may use that more complete cache; no new full-file analysis or startup wait was added. The Apple system-speaker/System Spatial host is unchanged.
+
+Regression tests fail on 0.9.24 and pass after the fix. Eighteen balance tests cover initial selection, silence/cache thresholds, ALAC early start, cached and decoded references, stereo/MP3/verified beds/MPEG-H, bypass/live activation, late cache/reference delivery, source reset, complete metering and persistence, unchanged meter vectors and protective gain math. Existing native PCM, upmix matrix, speaker mapping, peak protection and same-programme Atmos loudness tests also pass.
+
+The actual native mobile adapter/renderer/queue/output was replayed against the supplied track's continuous first 28 seconds in four balance/upmix combinations. Both enabled paths hold −8.382820944964829 dB after startup. The first six seconds are bit-identical to 0.9.24. With balance disabled, the entire captured PCM is bit-identical in both upmix modes. Independent 4x oversampled peak checks pass. These are host-native captures; installed iPhone/Android packages have not been verified by listening.
+
+Diagnostics and package provenance expose `programmeBalancePolicy`, and both package verifiers require the policy string in native binaries. CI adds the 18 balance tests to the existing 13 audio checks. User audio and captures remain private outside the repository.

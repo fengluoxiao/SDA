@@ -150,6 +150,7 @@ pub struct PlaybackStatus {
     pub near_field_enabled: bool,
     pub room_enabled: bool,
     pub spatial_cues_enabled: bool,
+    pub programme_balance_policy: &'static str,
     pub volume_balance_enabled: bool,
     pub volume_balance_eligible: bool,
     pub program_gain_db: f64,
@@ -670,6 +671,7 @@ impl MobileEngine {
             object_convolver_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.object_convolver_count.load(std::sync::atomic::Ordering::Acquire)),
             continuous_object_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.continuous_object_count.load(std::sync::atomic::Ordering::Acquire)),
             near_field_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.near_field_enabled.load(std::sync::atomic::Ordering::Acquire)),
+            programme_balance_policy: balance::PROGRAMME_BALANCE_POLICY,
             volume_balance_enabled: self.balance.enabled,
             volume_balance_eligible: self.balance.eligible,
             preparing_audio: self.balance.enabled && pending_len > 0

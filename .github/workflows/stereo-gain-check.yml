@@ -30,6 +30,11 @@ jobs:
           mkdir -p gain-artifacts
           echo "SDA_NODE=$(command -v node)" >> "$GITHUB_ENV"
           node scripts/prepare-ac4.mjs
+      - name: Check fixed programme gain startup toggles and complete measurement
+        run: |
+          set -o pipefail
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --no-default-features --features ios-host --lib balance:: -- --test-threads=1 2>&1 | tee gain-artifacts/programme-balance.txt
+          python3 -c "from pathlib import Path; assert 'test result: ok. 18 passed;' in Path('gain-artifacts/programme-balance.txt').read_text()"
       - name: Check actual native iOS PCM gain and live upmix
         run: |
           set -o pipefail

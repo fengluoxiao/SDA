@@ -33,13 +33,16 @@ def main():
     algorithm_match = re.search(r'pub const STEREO_BASS_PRESERVATION\s*:\s*&str\s*=\s*"([^"]+)"', renderer)
     assert algorithm_match, 'Missing stereo front/bass algorithm'
     algorithm = algorithm_match.group(1)
+    policy_match = re.search(r'PROGRAMME_BALANCE_POLICY\s*:\s*&str\s*=\s*"([^"]+)"', (ROOT / 'crates/sda-native/src/balance.rs').read_text(encoding='utf-8'))
+    assert policy_match, 'Missing programme balance policy'
+    policy = policy_match.group(1)
     if sys.argv[1] == 'stage':
         shader = (ROOT / 'apps/native-renderer/src/vulkan_resident.spv').read_bytes()
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
         prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'packages/core/', 'packages/player/', 'scripts/')
         extensions = ('.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml')
         info = {'sourceCommit': sha, 'appVersion': config['version'], 'androidVersionCode': config['android']['versionCode'],
-                'stereoProgrammeMakeupDb': 2.5, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
+                'stereoProgrammeMakeupDb': 2.5, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
                 'officialAndroidRelease': True, 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,
                 'sourceHashes': {name: digest((ROOT / name).read_bytes()) for name in files if name and name.startswith(prefixes) and name.endswith(extensions)},
@@ -47,7 +50,7 @@ def main():
         for abi, machine in ABIS.items():
             data = (ROOT / f'apps/mobile/android/app/src/main/jniLibs/{abi}/libsda_native.so').read_bytes()
             assert struct.unpack_from('<H', data, 18)[0] == machine
-            for marker in [sha.encode(), algorithm.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', shader]: assert marker in data, abi
+            for marker in [sha.encode(), algorithm.encode(), policy.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', shader]: assert marker in data, abi
             info['nativeLibraries'][abi] = {'sha256': digest(data), 'allocatedSectionHashes': allocated_hashes(data)}
         text = json.dumps(info, indent=2) + chr(10)
         (ROOT / 'apps/mobile/android/app/src/main/assets/sda-build-info.json').write_text(text, encoding='utf-8')
