@@ -4,6 +4,7 @@ export interface UpmixExportStatus {
   stage?:string;progress?:number;inputName?:string;outputPath?:string;error?:string;
   volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;programmeGainDb?:number;programmeMakeupDb?:number;sourceLufs?:number|null;balancePolicy?:string;spatialAlgorithm?:string|null;
   frames?:number;sampleRate?:number;channels?:number;bits?:number;gainDb?:number;truePeakDbtp?:number|null;
+  metadata?:{schemaVersion:number;fields:string[];coverCount:number;lyrics:{format:string;source:string;filename:string}[]};
 }
 export interface MediaBrowserSaved { recent:string[]; favorites:string[]; }
 export interface MediaBrowserPlaces extends MediaBrowserSaved { places:{name:string;path:string}[];initial:string; }

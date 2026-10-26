@@ -62,6 +62,7 @@
       "stereo-loudness.cjs",
       "upmix-export.cjs",
       "upmix-wav.cjs",
+      "wav-metadata.cjs",
       "upmix-export-worker.cjs"
     ],
     "asarUnpack": [

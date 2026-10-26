@@ -6,7 +6,7 @@ const { EventEmitter } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const { buildSync } = require('esbuild');
-const { createStereoLoudness } = require('../stereo-loudness.cjs');
+const { createStereoLoudness, validMeasurement } = require('../stereo-loudness.cjs');
 const ffmpeg = process.env.SDA_TEST_FFMPEG;
 assert(ffmpeg, 'Set SDA_TEST_FFMPEG');
 const root = path.resolve(__dirname, '../../..');
@@ -43,7 +43,12 @@ class Owner extends EventEmitter {
     execFileSync(ffmpeg, ['-v','error','-f','lavfi','-i',expression,'-c:a','pcm_f32le',wav]);
     const pcm = execFileSync(ffmpeg, ['-v','error','-i',wav,'-f','f32le','-'], { maxBuffer: 8*1024*1024 });
     buildSync({entryPoints:[path.join(root,'packages/player/src/bs1770.ts')],bundle:true,platform:'node',format:'cjs',outfile:path.join(temp,'meter.cjs')});
-    const {LoudnessMeter,masterBalanceGainDb} = require(path.join(temp,'meter.cjs'));
+    const {LoudnessMeter,TruePeakMeter,masterBalanceGainDb} = require(path.join(temp,'meter.cjs'));
+    for (const rate of [44100,48000,96000,192000]) {
+      const tail = new TruePeakMeter(rate,2);
+      tail.push([new Float32Array([1]),new Float32Array([1])]);
+      assert(tail.finish()>=-0.001,'true-peak tail must include the final sample at '+rate);
+    }
     const meter = new LoudnessMeter(48000, 2);
     const planes = [0,1].map(ch => Float32Array.from({length:pcm.length/8},(_,i)=>pcm.readFloatLE(i*8+ch*4)));
     meter.push(planes.map(plane=>plane.subarray(0,48000)));
@@ -52,8 +57,11 @@ class Owner extends EventEmitter {
     const complete = meter.integrated();
     const measurement = await run(wav);
     assert.equal(measurement.type, 'measurement');
+    assert(validMeasurement(measurement));
+    assert(validMeasurement({...measurement,policy:'offline-full-track-reference-v1'}),'compatible reference policies keep the same measurement protocol');
+    assert(!validMeasurement({...measurement,protocol:999}),'unknown result protocols must fail explicitly');
     assert.equal(measurement.frames, 576000);
-    assert.equal(measurement.policy, 'offline-full-track-reference-v1');
+    assert.equal(measurement.policy, 'source-rate-full-track-reference-v1');
     assert(Math.abs(measurement.integratedLufs-complete.integratedLufs)<1e-8);
     assert.equal(masterBalanceGainDb(intro.integratedLufs,intro.truePeakDbtp),0);
     assert(masterBalanceGainDb(measurement.integratedLufs,measurement.truePeakDbtp)<-10,'quiet intro must not suppress full-programme attenuation');
@@ -64,6 +72,7 @@ class Owner extends EventEmitter {
       const result=await run(file);
       assert.equal(result.type,'measurement',JSON.stringify(result));
       assert.equal(result.sampleRate,rate);
+      assert.equal(result.measurementSampleRate,rate,'measurement uses the complete original source, not the listening SRC');
       assert.equal(result.frames,576000,'source clock after SRC');
       assert(Math.abs(result.integratedLufs-measurement.integratedLufs)<0.5,'ALAC/MP3 use the same original stereo reference');
     }

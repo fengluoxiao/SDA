@@ -9,8 +9,10 @@ import {AlacStereoUpmixer} from "./alac-stereo-upmix";
 import {AlacResampler} from "./alac-resampler";
 import {Mp3Decoder,sniffMp3} from "./mp3-decoder";
 import {TruePeakMeter,LoudnessMeter,masterBalanceGainDb} from "./bs1770";
+import {readSourceMetadata} from "./source-metadata";
 const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
+const {buildMetadataChunks}=require("../../../apps/desktop/wav-metadata.cjs");
 const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean};
 const balancedPath=job.balancedPath??job.floatPath+".balanced";
 const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
@@ -44,12 +46,13 @@ async function run(){
  try{
   if(!job.analysisOnly&&sameFile(job.inputPath,job.outputPath))throw Error("导出文件不能覆盖源音频");
   input=fs.openSync(job.inputPath,"r");const initial=fs.fstatSync(input);
+  if(!job.analysisOnly)progress("metadata",0,true);
+  const metadata=job.analysisOnly?null:buildMetadataChunks(await readSourceMetadata(job.inputPath,check));
   if(!job.analysisOnly)spool=fs.openSync(job.floatPath,"wx+");const mixer=new AlacStereoUpmixer(true),meter=new TruePeakMeter(48000,12);
-  const sourceMeter=new LoudnessMeter(48000,2),sourcePeak=new TruePeakMeter(48000,2);
+  const source={meter:null as LoudnessMeter|null};
   let samples=0,inputClock=0,inputRate=0,codec="";
   function store(frame:DecodedFrameData){
-   check();if(job.analysisOnly&&frame.channels.some(channel=>channel.some(value=>!Number.isFinite(value))))throw Error("音频包含无效采样");sourceMeter.push(frame.channels);if(!job.analysisOnly)sourcePeak.push(frame.channels);
-   if(job.analysisOnly){samples+=frame.channels[0]!.length;return;}
+   check();
    const wet=mixer.liveSda(frame,true);if(wet.channels.length!==12)throw Error("仅支持 ALAC、MP3 或 WAV 的普通双声道音频");
    if(wet.samplePos!==samples)throw Error("导出音频时间轴不连续");
    const count=wet.channels[0]!.length;if(!volumeBalance&&!spatialBalance)meter.push(wet.channels);
@@ -61,6 +64,11 @@ async function run(){
    if(!["alac","mp3","pcm"].includes(frame.codec)||frame.channels.length!==2||frame.events.length||frame.objectChannels.length)throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"导出需要普通立体声输入，不能使用已有多声道或对象音轨");
    if(frame.samplePos!==inputClock||(inputRate&&inputRate!==frame.sampleRate))throw Error("输入音频格式或时间轴发生变化");
    inputRate=frame.sampleRate;codec=frame.codec;inputClock+=frame.channels[0]!.length;
+   // Measure the original programme at its own rate. Analysis does not need
+   // the listening SRC, HRTF, upmix or output device; export shares this reference.
+   if(frame.channels.some(channel=>channel.some(value=>!Number.isFinite(value))))throw Error("音频包含无效采样");
+   (source.meter??=new LoudnessMeter(frame.sampleRate,2)).push(frame.channels);
+   if(job.analysisOnly){samples+=frame.channels[0]!.length;return;}
    if(frame.sampleRate!==48000){resampler.current??=new AlacResampler(48000);const converted=await resampler.current.push(frame);if(converted)store(converted);}else store(frame);
   }
   const pending:({packet:DemuxedAudioPacket}|{frame:DecodedFrameData})[]=[];
@@ -91,14 +99,14 @@ async function run(){
   if(prefix.length)throw Error("输入音频头不完整");demuxer?.flush();await drain();
   if(decoder){decoder.flush();let frame;while((frame=decoder.nextFrame()))await accept(codec==="mp3"?frame:frameData(frame));const errors=decoder.drainErrors();if(errors.length)throw Error(String(errors[0]));}
   const tail=resampler.current?.finish();if(tail)store(tail);if(!samples)throw Error("没有可导出的音频");
-  const final=fs.fstatSync(input);if(final.size!==initial.size||final.mtimeMs!==initial.mtimeMs)throw Error("导出期间源文件发生变化，请重试");
-  if(!job.analysisOnly)sourcePeak.push([new Float32Array(16),new Float32Array(16)]);
-  const sourceMeasurement=job.analysisOnly?sourceMeter.finish():sourceMeter.integrated(),sourceTruePeak=job.analysisOnly?sourceMeasurement.truePeakDbtp:sourcePeak.dbtp(),programmeDb=volumeBalance&&sourceMeasurement.integratedLufs!==null?masterBalanceGainDb(sourceMeasurement.integratedLufs,sourceTruePeak):0;
+  const final=fs.fstatSync(input),current=fs.statSync(job.inputPath);
+  if([final,current].some(stat=>["dev","ino","size","mtimeMs","ctimeMs"].some(key=>stat[key as keyof typeof stat]!==initial[key as keyof typeof initial])))throw Error("处理期间源文件发生变化，请重试");
+  const sourceMeasurement=source.meter!.finish(),sourceTruePeak=sourceMeasurement.truePeakDbtp,programmeDb=volumeBalance&&sourceMeasurement.integratedLufs!==null?masterBalanceGainDb(sourceMeasurement.integratedLufs,sourceTruePeak):0;
   if(job.analysisOnly){
-   parentPort!.postMessage({type:"measurement",codec,sampleRate:inputRate,channels:2,frames:samples,blocks:sourceMeasurement.blocks,integratedLufs:sourceMeasurement.integratedLufs,truePeakDbtp:Number.isFinite(sourceTruePeak)?sourceTruePeak:null,policy:"offline-full-track-reference-v1",size:initial.size,mtimeMs:initial.mtimeMs});return;
+   parentPort!.postMessage({type:"measurement",protocol:1,codec,sampleRate:inputRate,channels:2,frames:Math.round(samples*48000/inputRate),sourceFrames:samples,measurementSampleRate:inputRate,blocks:sourceMeasurement.blocks,integratedLufs:sourceMeasurement.integratedLufs,truePeakDbtp:Number.isFinite(sourceTruePeak)?sourceTruePeak:null,policy:"source-rate-full-track-reference-v1",size:initial.size,mtimeMs:initial.mtimeMs});return;
   }
   const makeupDb=volumeBalance?2.5:0;
-  const disk=fs.statfsSync(path.dirname(job.outputPath));if(disk.bavail*disk.bsize<samples*((volumeBalance||spatialBalance)?84:36)+wav.HEADER_BYTES)throw Error("目标磁盘剩余空间不足以完成平衡渲染和 WAV 输出");
+  const disk=fs.statfsSync(path.dirname(job.outputPath));if(disk.bavail*disk.bsize<samples*((volumeBalance||spatialBalance)?84:36)+wav.HEADER_BYTES+(metadata?.bytes.length??0))throw Error("目标磁盘剩余空间不足以完成平衡渲染和 WAV 输出");
   let audio=spool,inputPeak:number;
   if(volumeBalance||spatialBalance){
    progress("balance",.4,true);fs.fsyncSync(spool!);await renderBalances(programmeDb,makeupDb);check();
@@ -112,7 +120,7 @@ async function run(){
   }else{meter.push(Array.from({length:12},()=>new Float32Array(16)));inputPeak=meter.dbtp();}
   const gain=Number.isFinite(inputPeak)?Math.min(1,10**((-1.01-inputPeak)/20)):1;
   progress("write",.75,true);
-  output=fs.openSync(job.stagingPath,"wx");writeAll(output,wav.header(BigInt(samples)));
+  output=fs.openSync(job.stagingPath,"wx");writeAll(output,wav.header(BigInt(samples),metadata!.bytes.length));
   const verified=new TruePeakMeter(48000,12);let read=0,seed=0x534441;
   const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
   while(read<samples){
@@ -124,8 +132,9 @@ async function run(){
    read+=count;progress("write",.75+.25*read/samples);
   }
   verified.push(Array.from({length:12},()=>new Float32Array(16)));const peak=verified.dbtp();if(peak> -1)throw Error("导出峰值校验失败，未替换目标文件");
+  check();writeAll(output,metadata!.bytes);
   fs.fsyncSync(output);fs.closeSync(output);output=undefined;check();fs.renameSync(job.stagingPath,job.outputPath);
-  parentPort!.postMessage({type:"done",frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"offline-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
+  parentPort!.postMessage({type:"done",metadata:metadata!.summary,frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"source-rate-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
  }finally{
   decoder?.free();resampler.current?.destroy();for(const fd of [input,spool,output,processed])if(fd!==undefined)try{fs.closeSync(fd);}catch{}
   if(!job.analysisOnly)for(const file of [job.floatPath,job.stagingPath,balancedPath])try{fs.unlinkSync(file);}catch{}

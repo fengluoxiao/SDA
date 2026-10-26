@@ -1,10 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
-const POLICY = 'offline-full-track-reference-v1';
+const POLICIES = new Set(['offline-full-track-reference-v1', 'source-rate-full-track-reference-v1']);
 
 function validMeasurement(value) {
-  return value?.policy === POLICY && ['alac', 'mp3', 'pcm'].includes(value.codec)
+  return POLICIES.has(value?.policy) && (value.protocol === undefined || value.protocol === 1) && ['alac', 'mp3', 'pcm'].includes(value.codec)
     && value.channels === 2 && Number.isFinite(value.sampleRate) && value.sampleRate > 0
     && Number.isSafeInteger(value.frames) && value.frames > 0
     && Number.isSafeInteger(value.blocks) && value.blocks >= 0
@@ -47,7 +47,8 @@ function createStereoLoudness({ ipcMain, workerPath, corePath }) {
           if (!owner.isDestroyed()) owner.send('sda:stereo-loudness-progress', message.progress);
         } else if (message.type === 'unsupported') result = null;
         else if (message.type === 'measurement' && validMeasurement(message)) result = message;
-        else failure = Error(message.error || '整曲响度分析失败');
+        else failure = Error(message.error || (message.type === 'measurement'
+          ? '响度分析结果与主程序不兼容，请完全退出并重新打开桌面版' : '整曲响度分析失败'));
       });
       worker.on('error', error => { failure = error; });
       worker.on('exit', code => {

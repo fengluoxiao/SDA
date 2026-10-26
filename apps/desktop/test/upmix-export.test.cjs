@@ -11,7 +11,7 @@ function generate(name,codec,rate=48000,channels=2){const file=path.join(temp,na
  const large=wav.header(150000000n);assert.equal(large.toString('ascii',0,4),'RF64');assert.equal(large.toString('ascii',12,16),'ds64');assert.equal(large.readBigUInt64LE(28),150000000n*36n);assert.equal(large.readBigUInt64LE(36),150000000n);
  for(const [name,encoder,rate] of [['stereo.wav','pcm_f32le',48000],['stereo.m4a','alac',44100],['stereo.mp3','libmp3lame',44100]]){
   const input=generate(name,encoder,rate),result=await job(input,name);assert.equal(result.result.type,'done',JSON.stringify(result.result));const done=result.result;assert.equal(done.channels,12);assert.equal(done.sampleRate,48000);assert.equal(done.bits,24);assert.equal(done.frames,33600);assert(done.truePeakDbtp<=-1);
-  const bytes=fs.readFileSync(result.output);assert.equal(bytes.length,wav.HEADER_BYTES+33600*36);assert.equal(bytes.readUInt32LE(wav.HEADER_BYTES-4),33600*36);
+  const bytes=fs.readFileSync(result.output);assert(bytes.length>=wav.HEADER_BYTES+33600*36);assert.equal(bytes.readUInt32LE(4),bytes.length-8);assert.equal(bytes.readUInt32LE(wav.HEADER_BYTES-4),33600*36);
   const decoded=execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-i',result.output,'-f','f32le','-c:a','pcm_f32le','-'],{maxBuffer:8*1024*1024});assert.equal(decoded.length,33600*12*4);
   if(encoder==='pcm_f32le'){
    const original=execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-i',input,'-f','f32le','-c:a','pcm_f32le','-']);const gain=Math.fround(.7943282)*10**(done.gainDb/20);

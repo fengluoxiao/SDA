@@ -11,7 +11,7 @@ function run(input,name,volume,spatial,cancelDuringRender=false){return new Prom
  worker.on('error',reject);worker.on('message',m=>{if(cancelDuringRender&&m.stage==='balance')Atomics.store(new Int32Array(cancel),0,1);if(['done','error','cancelled'].includes(m.type))result=m;});
  worker.on('exit',code=>{clearTimeout(timeout);try{assert.equal(code,0);assert(result);assert(!fs.existsSync(floatPath)&&!fs.existsSync(balancedPath)&&!fs.existsSync(stagingPath));resolve({output,result});}catch(e){reject(e);}});
 });}
-function pcm(file){const bytes=fs.readFileSync(file),frames=(bytes.length-HEADER_BYTES)/36;return {frames,at:(i,ch)=>bytes.readIntLE(HEADER_BYTES+i*36+ch*3,3)/8388608};}
+function pcm(file){const bytes=fs.readFileSync(file),frames=bytes.readUInt32LE(HEADER_BYTES-4)/36;return {frames,at:(i,ch)=>bytes.readIntLE(HEADER_BYTES+i*36+ch*3,3)/8388608};}
 function amplitude(data,ch,hz){let re=0,im=0;for(let i=96000;i<144000;i++){const phase=2*Math.PI*hz*i/48000,x=data.at(i,ch);re+=x*Math.cos(phase);im+=x*Math.sin(phase);}return Math.hypot(re,im)*2/48000;}
 (async()=>{try{
  // The production weak-detail stimulus has a stronger body than presence;

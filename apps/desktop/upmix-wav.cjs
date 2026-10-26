@@ -9,9 +9,10 @@ function infoChunk(){
  const body=Buffer.concat([Buffer.from('INFO'),sub('ISFT',software),sub('ICMT',comment)]),chunk=Buffer.alloc(8+body.length);chunk.write('LIST');chunk.writeUInt32LE(body.length,4);body.copy(chunk,8);return chunk;
 }
 const INFO=infoChunk();const HEADER_BYTES=12+36+48+INFO.length+8;
-function header(frames){
+function header(frames,metadataBytes=0){
+ if(!Number.isSafeInteger(metadataBytes)||metadataBytes<0||metadataBytes%2)throw Error("Invalid WAV metadata size");
  if(typeof frames!=='bigint'||frames<0n)throw Error('Invalid WAV frame count');
- const data=frames*BigInt(ALIGN),total=BigInt(HEADER_BYTES)+data,riff=total-8n,rf64=riff>0xffffffffn;
+ const data=frames*BigInt(ALIGN),total=BigInt(HEADER_BYTES)+data+BigInt(metadataBytes),riff=total-8n,rf64=riff>0xffffffffn;
  const b=Buffer.alloc(HEADER_BYTES);b.write(rf64?'RF64':'RIFF');b.writeUInt32LE(rf64?0xffffffff:Number(riff),4);b.write('WAVE',8);
  b.write(rf64?'ds64':'JUNK',12);b.writeUInt32LE(28,16);
  if(rf64){b.writeBigUInt64LE(riff,20);b.writeBigUInt64LE(data,28);b.writeBigUInt64LE(frames,36);}

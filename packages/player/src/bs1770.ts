@@ -124,14 +124,21 @@ export class TruePeakMeter {
         for (const phase of this.filters) {
           let interpolated = 0;
           for (const { offset, coefficient } of phase) {
-            const index = (this.write - offset + this.delay) % this.delay;
+            const relative = this.write - offset;
+            const index = relative < 0 ? relative + this.delay : relative;
             interpolated += line[index]! * coefficient;
           }
           this.peak = Math.max(this.peak, Math.abs(interpolated));
         }
       }
-      this.write = (this.write + 1) % this.delay;
+      if (++this.write === this.delay) this.write = 0;
     }
+  }
+
+  /** Finish only interpolation history, including the 192 kHz/1x tail. */
+  finish(): number {
+    this.push(this.history.map(() => new Float32Array(this.delay)));
+    return this.dbtp();
   }
 
   dbtp(): number {
@@ -208,7 +215,7 @@ export class LoudnessMeter {
 
   /** Drain interpolation lookahead without adding padded loudness blocks. */
   finish(): IntegratedLoudness {
-    this.truePeak.push(this.filters.map(() => new Float32Array(16)));
+    this.truePeak.finish();
     return this.integrated();
   }
 
