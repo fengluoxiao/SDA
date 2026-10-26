@@ -105,6 +105,3 @@ class Owner extends EventEmitter {
     fs.rmSync(absolute,{recursive:true,force:true});
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});
-
-
-
