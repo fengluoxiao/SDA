@@ -7,7 +7,7 @@
  *  - native WASAPI endpoint management and shared/exclusive binaural output
  */
 
-const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor, nativeTheme, utilityProcess } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, powerSaveBlocker, powerMonitor, nativeTheme, utilityProcess, shell } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -287,6 +287,11 @@ let nativeRendererWritable = true;
 // on drain so the codec timeline never loses a frame to congestion.
 const nativeRendererBatchQueue = [];
 let nativeRendererBuffer = "";
+const upmixExport=require("./upmix-export.cjs").createUpmixExport({
+  ipcMain,dialog,BrowserWindow,shell,
+  workerPath:path.join(__dirname,"upmix-export-worker.cjs"),
+  corePath:app.isPackaged?path.join(__dirname,"performance-core/sda_core.cjs"):path.resolve(__dirname,"../../packages/core/pkg-node/sda_core.cjs"),
+});
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
   nativeCommand:command=>nativeRendererCommand(command,true),nativePid:()=>nativeRenderer?.pid
@@ -334,6 +339,9 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
     rendererRevision: telemetry.rendererRevision,
+    monitorEnabled: telemetry.monitorEnabled,
+    hardwareSimulationEnabled: telemetry.hardwareSimulationEnabled,
+    hardwareInputDb: telemetry.hardwareInputDb,
     stereoBassPreservationActive: telemetry.stereoBassPreservationActive,
     stereoBassPreservationAlgorithm: telemetry.stereoBassPreservationAlgorithm,
     spatialEnhancementEnabled: telemetry.spatialEnhancementEnabled,
@@ -2134,12 +2142,12 @@ app.on("before-quit", event => {
   nativeRendererQuitting = true;
   void (async () => {
     stopNativeRenderer();
-    await Promise.allSettled([remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+    await Promise.allSettled([upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   })().catch(error => writeStartupLog(`graceful exit failed: ${error}`)).finally(() => app.quit());
 });
 
 app.on("window-all-closed", async () => {
   stopNativeRenderer();
-  await Promise.allSettled([remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
+  await Promise.allSettled([upmixExport.close(), remoteSession.stop(), stopHeadTrackingGracefully(false), nativeRendererExit]);
   if (process.platform !== "darwin") app.quit();
 });

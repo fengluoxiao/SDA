@@ -62,3 +62,6 @@ apps/mobile/.expo/
 *.jks
 *.p12
 *.mobileprovision
+
+# Generated offline WAV export worker.
+/apps/desktop/upmix-export-worker.cjs

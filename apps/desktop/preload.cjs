@@ -1,5 +1,5 @@
 /** Preload: expose the minimal file-access bridge to the web build. */
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 let nativeBackdrop = process.argv.find(arg => arg.startsWith("--sda-native-backdrop="))?.split("=")[1] === "acrylic" ? "acrylic" : "none";
 ipcRenderer.on("sda:window-backdrop", (_event, material) => {
   nativeBackdrop = material === "acrylic" ? "acrylic" : "none";
@@ -137,6 +137,12 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   onHeadTrackingStatus: (callback) => subscribe("sda:head-tracking-status", callback),
   onHeadTrackingPose: (callback) => subscribe("sda:head-tracking-pose", callback),
   onHeadTrackingRecenter: (callback) => subscribe("sda:head-tracking-recenter", callback),
+  localFilePath: (file) => webUtils.getPathForFile(file),
+  exportUpmixWav: (inputPath) => ipcRenderer.invoke("sda:upmix-export-start", inputPath),
+  getUpmixExportStatus: () => ipcRenderer.invoke("sda:upmix-export-status"),
+  cancelUpmixExport: () => ipcRenderer.invoke("sda:upmix-export-cancel"),
+  revealUpmixExport: () => ipcRenderer.invoke("sda:upmix-export-reveal"),
+  onUpmixExportStatus: callback => subscribe("sda:upmix-export-status", callback),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
   pickFolder: () => ipcRenderer.invoke("sda:pick-folder"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),

@@ -2195,6 +2195,7 @@ impl Engine {
         room: Option<Arc<cinema::RoomProfile>>, mut candidate: crate::hrtf::NativeHrtfSet,
         wet: f32) -> Result<(), String> {
         settings.validate()?;
+        let settings = settings.for_render();
         candidate.configure_cinema(settings.clone(), room.clone());
         candidate.configure_spatial_cues(self.layout)?;
         let wet = candidate.effective_wet(wet);
@@ -2333,5 +2334,40 @@ mod pause_resume_tests {
         assert!(!telemetry.callback_output_enabled.load(Ordering::Acquire),"empty reserve must await normal prebuffer");
         handle_command(&mut e,Command::Reset{origin:20000},&fifo,&telemetry);
         assert_ne!(e.render_epoch,epoch,"seek/reset must still flush stale audio");
+    }
+}
+
+#[cfg(test)]
+mod monitor_master_gate_tests {
+    use super::*;
+    fn configured(master:bool, hardware:bool) -> Engine {
+        let mut e=Engine::new(48000,2);
+        let mut settings=cinema::Settings::default();
+        settings.monitor.enabled=master;
+        settings.monitor.hardware.enabled=hardware;
+        settings.monitor.hardware.input_db=3.;
+        e.configure_room_with_hrtf(settings,None,crate::hrtf::NativeHrtfSet::synthetic(16,128,128).unwrap(),0.04).unwrap();
+        e
+    }
+    #[test]
+    fn monitor_master_off_bypasses_stored_hardware_gain_and_keeps_output_protection() {
+        let mut saved=cinema::Settings::default();saved.monitor.hardware.enabled=true;saved.monitor.hardware.input_db=3.;
+        assert!(!saved.clone().for_render().monitor.hardware.enabled);
+        assert!(saved.monitor.hardware.enabled);assert_eq!(saved.monitor.hardware.input_db,3.);
+        let mut stale=configured(false,true);let mut bypass=configured(false,false);
+        assert!(!stale.cinema.monitor.hardware.enabled);
+        assert!(!stale.active_hrtf_set.as_ref().unwrap().cinema.monitor.hardware.enabled);
+        for i in 0..8192 {
+            let x=(i as f32*0.13).sin()*0.9;
+            assert_eq!(stale.hardware_stereo[0].process(x),x);
+            assert_eq!(stale.hardware_lfe.process(x),x);
+            assert_eq!(stale.process_final_output([x,x*0.7]),bypass.process_final_output([x,x*0.7]));
+        }
+    }
+    #[test]
+    fn monitor_master_on_keeps_the_explicit_hardware_effect() {
+        let mut e=configured(true,true);assert!(e.cinema.monitor.hardware.enabled);
+        let mut last=0.;for _ in 0..4096 {last=e.hardware_stereo[0].process(0.1);}
+        assert!(last>0.13&&last<0.16,"explicit +3 dB should remain active: {last}");
     }
 }

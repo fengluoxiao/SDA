@@ -1,3 +1,4 @@
+import UpmixExport from "./components/UpmixExport";
 import { readObjectRendering, enableObjectRenderingDefaults } from "./object-rendering-preference";
 import sharedRenderProfile from "../../mobile/ios-experiments/active.json";
 import {migrateSharedHrtf, playbackHrtfSet, SHARED_HRTF_PROFILE} from "./shared-hrtf-profile";
@@ -500,7 +501,7 @@ export function App() {
   const headTrackingSessionRef = useRef(new HeadTrackingSession({yawMode:"yaw",sensitivity:1,smoothingMs:220,deadZoneDegrees:2.5,maxDegreesPerSecond:480}));
   const previousTelemetryPoseRef = useRef<{ orientation: Quaternion; timestampMs: number } | null>(null);
   const lastTelemetryUiUpdateRef = useRef(0);
-  const [floatPanel, setFloatPanel] = useState<"remote" | "roomcalibration" | "roomlab" | "stream" | "metadata" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
+  const [floatPanel, setFloatPanel] = useState<"export" | "remote" | "roomcalibration" | "roomlab" | "stream" | "metadata" | "binaural" | "stereo" | "cinema" | "headphone" | "head-tracking" | "objects" | "channels" | "playlist" | "pinna" | null>(null);
   const [hrtfTestVisual,setHrtfTestVisual]=useState<HrtfTestVisual|null>(null);
   const [roomVisual,setRoomVisual]=useState<RoomVisual|null>(null);
   const [roomComparison,setRoomComparison]=useState<ComparisonMode|null>(null);
@@ -2239,6 +2240,7 @@ export function App() {
           >
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
+          {window.sdaDesktop?.exportUpmixWav && <button title="导出上混 WAV" onClick={()=>setFloatPanel(v=>v==="export"?null:"export")}><FileAudio size={16}/><span>导出 WAV</span></button>}
           <button onClick={() => void openFile()}>
             <FolderOpen size={16} /><span>打开文件</span>
           </button>
@@ -2674,6 +2676,7 @@ export function App() {
             onToggleSolo={toggleSolo}
           />
         )}
+        {floatPanel === "export" && <UpmixExport source={lastSourceRef.current} codec={track?.codec??""} stereo={stereoProgram} onClose={()=>setFloatPanel(null)}/>}
         {stereoProgram && floatPanel === "stereo" && (
           <div className="panel float-panel" aria-label="立体声处理">
             <h2>立体声</h2>

@@ -11,12 +11,17 @@ export function isAlacStereoFrame(frame: Pick<DecodedFrameData, "codec" | "chann
 }
 /** Native-mobile matrix. The authored side signal, including bass, stays intact. */
 export class AlacStereoUpmixer {
+  constructor(private readonly acceptOtherStereo = false) {}
+  private accepts(frame: DecodedFrameData): boolean {
+    return isAlacStereoFrame(frame) || (this.acceptOtherStereo && ["mp3","pcm"].includes(frame.codec)
+      && isAlacStereoFrame({...frame,codec:"alac"}));
+  }
   private lfeState = 0;
   private nextSample: number | null = null;
   private liveMix: number | null = null;
   reset(): void { this.lfeState = 0; this.nextSample = null; this.liveMix = null; }
   upmix(frame: DecodedFrameData): DecodedFrameData {
-    if (!isAlacStereoFrame(frame)) return frame;
+    if (!this.accepts(frame)) return frame;
     if (this.nextSample !== frame.samplePos) this.reset();
     const left = frame.channels[0]!, right = frame.channels[1]!;
     const samples = Math.min(left.length, right.length);
@@ -39,7 +44,7 @@ export class AlacStereoUpmixer {
   }
   /** Always reserve the native 7.1.4 bed; reuse state through a 50 ms toggle. */
   liveSda(frame: DecodedFrameData, enabled: boolean): DecodedFrameData {
-    if (!isAlacStereoFrame(frame)) return frame;
+    if (!this.accepts(frame)) return frame;
     const wet = this.upmix(frame);
     const target = enabled ? 1 : 0;
     let mix = this.liveMix ?? target;

@@ -5,9 +5,9 @@
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
   "scripts": {
-    "dev": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/start-desktop.mjs --dev",
-    "build": "node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && pnpm --filter @sda/web build && electron-builder",
-    "pack": "node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && electron-builder --dir"
+    "dev": "node ../../scripts/build-upmix-export.mjs && node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/start-desktop.mjs --dev",
+    "build": "node ../../scripts/build-upmix-export.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && pnpm --filter @sda/web build && electron-builder",
+    "pack": "node ../../scripts/build-upmix-export.mjs && node ../../scripts/build-remote-web.mjs && node ../../scripts/build-head-tracking-helper.mjs && node ../../scripts/build-native-renderer.mjs && node ../../scripts/stage-head-tracking-driver.mjs && electron-builder --dir"
   },
   "devDependencies": {
     "@sda/web": "workspace:*",
@@ -58,7 +58,10 @@
       "performance-*.html",
       "performance-*.ps1",
       "performance-*.py",
-      "performance-core/**"
+      "performance-core/**",
+      "upmix-export.cjs",
+      "upmix-wav.cjs",
+      "upmix-export-worker.cjs"
     ],
     "asarUnpack": [
       "node_modules/h5wasm/**",
@@ -71,7 +74,8 @@
       "performance-*.py",
       "performance-codec-probe.cjs",
       "performance-framing.cjs",
-      "performance-core/**"
+      "performance-core/**",
+      "upmix-export-worker.cjs"
     ],
     "win": {
       "icon": "assets/icon.ico",

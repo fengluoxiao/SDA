@@ -1,4 +1,9 @@
 /// <reference types="vite/client" />
+export interface UpmixExportStatus {
+  id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
+  stage?:string;progress?:number;inputName?:string;outputPath?:string;error?:string;
+  frames?:number;sampleRate?:number;channels?:number;bits?:number;gainDb?:number;truePeakDbtp?:number|null;
+}
 export interface MediaBrowserSaved { recent:string[]; favorites:string[]; }
 export interface MediaBrowserPlaces extends MediaBrowserSaved { places:{name:string;path:string}[];initial:string; }
 export interface MediaBrowserDirectory { path:string;parent:string;entries:{name:string;path:string;directory:boolean}[]; }
@@ -106,6 +111,9 @@ declare global {
     binauralEnabled?: boolean;
     programCodecSupported?: boolean | null;
     rendererRevision?: string;
+    monitorEnabled?: boolean;
+    hardwareSimulationEnabled?: boolean;
+    hardwareInputDb?: number;
     stereoBassPreservationActive?: boolean;
     stereoBassPreservationAlgorithm?: string;
     spatialEnhancementEnabled?: boolean;
@@ -221,6 +229,12 @@ declare global {
       onHeadTrackingStatus?: (callback: (status: HeadTrackingStatus) => void) => () => void;
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
+      localFilePath?: (file:File) => string;
+      exportUpmixWav?: (inputPath:string) => Promise<{id?:string;cancelled?:boolean}>;
+      getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
+      cancelUpmixExport?: () => Promise<boolean>;
+      revealUpmixExport?: () => Promise<void>;
+      onUpmixExportStatus?: (callback:(status:UpmixExportStatus)=>void) => (()=>void);
       pickFile?: () => Promise<string | null>;
       pickFolder?: () => Promise<{ canceled: boolean; paths: string[] }>;
       openPath?: (filePath: string) => Promise<{ id: number; size: number; mtimeMs?: number; name: string }>;

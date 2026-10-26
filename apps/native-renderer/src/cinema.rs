@@ -57,6 +57,12 @@ fn bounded(value: f32, low: f32, high: f32) -> bool {
     value.is_finite() && value >= low && value <= high
 }
 impl Settings {
+    /// Keep saved submodule parameters, but a disabled monitor bypasses hardware.
+    pub fn for_render(mut self) -> Self {
+        self.monitor.hardware.enabled &= self.monitor.enabled;
+        self
+    }
+
     /// Explicit listening preset shared with desktop UI. Default/deserialization stay
     /// neutral for authored-room comparison and existing user calibration.
     pub fn room_listening() -> Self {

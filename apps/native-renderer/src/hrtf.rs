@@ -728,7 +728,7 @@ impl NativeHrtfSet {
             self.speaker_prepared.clear();
             return;
         }
-        self.cinema = settings;
+        self.cinema = settings.for_render();
         self.room_profile = profile;
         self.speaker_prepared.clear();
     }
