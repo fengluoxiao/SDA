@@ -1,0 +1,42 @@
+name: Apple spatial transfer reference
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/apple-spatial-reference-20261016]
+    paths:
+      - '.github/workflows/apple-spatial-reference.yml'
+      - 'scripts/apple-spatial-reference.swift'
+      - 'scripts/apple-spatial-directions.json'
+permissions:
+  contents: read
+concurrency:
+  group: apple-spatial-reference-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+          submodules: false
+      - name: Compile public AVAudioEngine probe
+        run: |
+          set -o pipefail
+          mkdir -p apple-spatial-output
+          sw_vers | tee apple-spatial-output/host.txt
+          xcodebuild -version | tee -a apple-spatial-output/host.txt
+          xcrun swiftc -swift-version 5 scripts/apple-spatial-reference.swift -o apple-spatial-probe 2>&1 | tee apple-spatial-output/compile.log
+      - name: Render synthetic impulses only
+        run: |
+          set -o pipefail
+          ./apple-spatial-probe scripts/apple-spatial-directions.json apple-spatial-output 2>&1 | tee apple-spatial-output/render.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apple-public-hrtfhq-reference
+          path: apple-spatial-output/
+          retention-days: 7
+          if-no-files-found: error
