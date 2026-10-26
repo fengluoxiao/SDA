@@ -17,7 +17,7 @@ function captureExportAssets({snapshot,selectedHrtf,hrtfRoot,personalRoot,readRo
  hrtf={...captureHrtf(set),wetWeight:.04};
  const companion=set==='hrtf-dense'?'hrtf':set==='hrtf-ku100-reference-dense'?'hrtf-ku100-reference':set==='hrtf-dense-raw'?'hrtf-raw':set.endsWith('-dense')&&(set.startsWith('hrtf-h')||set==='hrtf-d2-dense')?set.slice(0,-6):null;
  if(companion)hrtf.companion=captureHrtf(companion);
- const cinema=snapshot.cinema;if(cinema?.settings?.enabled){if(!cinema.profileId)throw Error('房间仿真已开启但没有有效房间档案');const profile=readRoom(cinema.profileId).profile;room={id:cinema.profileId,layout:profile.layout,profile:add(Buffer.from(JSON.stringify(profile)),'application/json','room.json','room-profile')};}
+ const cinema=snapshot.cinema;if(cinema?.settings?.enabled&&cinema.profileId){const profile=readRoom(cinema.profileId).profile;room={id:cinema.profileId,layout:profile.layout,profile:add(Buffer.from(JSON.stringify(profile)),'application/json','room.json','room-profile')};}
  const id=snapshot.equalizer?.headphoneProfileId;
  if(id){const profile=readHeadphone(id);headphone={id,preamp:profile.preamp??1,manifest:profile.manifest??profile.profile??null,left:add(profile.leftFir,'application/octet-stream','headphone-left.f32','headphone-fir'),right:add(profile.rightFir,'application/octet-stream','headphone-right.f32','headphone-fir')};}
  return {schema:'sda.render-assets',version:1,hrtf,room,headphone,blobs:[...blobs.values()]};

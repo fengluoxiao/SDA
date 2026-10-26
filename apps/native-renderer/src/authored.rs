@@ -370,7 +370,8 @@ impl Engine {
                 authored_room(profile, layout).map(std::sync::Arc::new)
             })
             .transpose()?;
-        if settings.enabled && room.is_none() {
+        if settings.enabled && snapshot["cinema"]["profileId"].as_str().is_some() && room.is_none()
+        {
             return Err("authored room response missing".into());
         }
         let near: near_field::Settings = serde_json::from_value(snapshot["nearField"].clone())
@@ -517,7 +518,7 @@ mod scene_tests {
             )
             .unwrap();
         }
-        let scene:Scene=serde_json::from_value(json!({"version":1,"layout":"7.1.4","render":{"schema":"sda.render-metadata","version":1,"playbackSnapshot":{"schema":"sda.playback-snapshot","version":1,"hrtf":{"directObjectHrtf":true},"native":{"directionalHrtf":true,"masterPreampDb":-2.5},"cinema":{"settings":{"enabled":true,"directDb":-2,"earlyDb":-8,"lateDb":-4,"earlyMs":40}},"nearField":{"enabled":false,"metresPerUnit":1.2},"sourceExtent":{"enabled":true,"width":0.2,"diffusion":0.3},"equalizer":{"bands":{"low":1.25,"mid":-0.5,"high":0.75},"lowFrequencyDiagnostic":"reference"},"monitoring":{"comparisonGainDb":-3},"routing":{"mutedSpeakers":[],"activeFocus":[]}}},"resources":{"root":root,"hrtf":root.join("hrtf-set.json"),"hrtfWet":0.04,"room":root.join("room.json"),"headphone":{"left":root.join("left.f32"),"right":root.join("right.f32"),"preamp":0.8}},"processing":{"enabled":true,"version":1,"programmeHandled":true,"sourceSpatialHandled":true,"spatialPresentation":true,"stereoSource":true,"programmeGainDb":-12,"makeupDb":2.5,"bedPositions":[{"id":"bed:0","position":static_bed_position(30.,0.),"gainDb":-1.5}],"mutedSources":[]}})).unwrap();
+        let scene:Scene=serde_json::from_value(json!({"version":1,"layout":"7.1.4","render":{"schema":"sda.render-metadata","version":1,"playbackSnapshot":{"schema":"sda.playback-snapshot","version":1,"hrtf":{"directObjectHrtf":true},"native":{"directionalHrtf":true,"masterPreampDb":-2.5},"cinema":{"profileId":"authored-fixture-room","settings":{"enabled":true,"directDb":-2,"earlyDb":-8,"lateDb":-4,"earlyMs":40}},"nearField":{"enabled":false,"metresPerUnit":1.2},"sourceExtent":{"enabled":true,"width":0.2,"diffusion":0.3},"equalizer":{"bands":{"low":1.25,"mid":-0.5,"high":0.75},"lowFrequencyDiagnostic":"reference"},"monitoring":{"comparisonGainDb":-3},"routing":{"mutedSpeakers":[],"activeFocus":[]}}},"resources":{"root":root,"hrtf":root.join("hrtf-set.json"),"hrtfWet":0.04,"room":root.join("room.json"),"headphone":{"left":root.join("left.f32"),"right":root.join("right.f32"),"preamp":0.8}},"processing":{"enabled":true,"version":1,"programmeHandled":true,"sourceSpatialHandled":true,"spatialPresentation":true,"stereoSource":true,"programmeGainDb":-12,"makeupDb":2.5,"bedPositions":[{"id":"bed:0","position":static_bed_position(30.,0.),"gainDb":-1.5}],"mutedSources":[]}})).unwrap();
         Fixture { root, scene }
     }
     fn rendered(e: &mut Engine) -> Vec<f32> {
@@ -589,6 +590,23 @@ mod scene_tests {
                 .any(|(x, y)| (*x - y).abs() > 1e-6),
             "embedded room must audibly affect the shared output"
         );
+    }
+    #[test]
+    fn intrinsic_hrtf_room_can_be_authored_without_an_external_profile() {
+        let fixture = fixture();
+        let mut scene = fixture.scene.clone();
+        scene.resources.room = None;
+        scene.render["playbackSnapshot"]["cinema"]["profileId"] = serde_json::Value::Null;
+        scene.render["playbackSnapshot"]["cinema"]["settings"]["reflectionMode"] = json!("early");
+        let mut engine = Engine::new(48000, 2);
+        engine.configure_authored_scene(scene).unwrap();
+        assert!(engine.cinema.enabled && engine.room_profile.is_none());
+        assert!(matches!(
+            engine.cinema.reflection_mode,
+            cinema::ReflectionMode::Early
+        ));
+        assert!(engine.authored.enabled);
+        assert_eq!(engine.comparison_gain, cinema::db(-3.));
     }
     #[test]
     fn authored_room_adapts_to_more_speakers_and_invalid_recipe_fails_before_replacement() {

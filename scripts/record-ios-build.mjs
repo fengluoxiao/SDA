@@ -28,7 +28,8 @@ const stereoBassAlgorithm=renderer.match(/pub const STEREO_BASS_PRESERVATION\s*:
 if(!stereoBassAlgorithm)throw Error('Missing stereo front/bass algorithm');
 const programmeBalancePolicy=readFileSync(join(root,'crates/sda-native/src/balance.rs'),'utf8').match(/PROGRAMME_BALANCE_POLICY\s*:\s*&str\s*=\s*"([^"]+)"/);
 if(!programmeBalancePolicy)throw Error('Missing programme balance policy');
-const outputMakeup=renderer.match(/let db = if self\.program_enabled[^\n]*\{ ([\d.]+) \} else \{ 0\.0 \}/);
+// Match the ordinary-programme branch independently of authored-file overrides.
+const outputMakeup=renderer.match(/\bif\s+self\.program_enabled\s*&&\s*\(named_format\s*\|\|\s*self\.dolby_spatial_programme_seen\)\s*\{\s*([\d.]+)\s*\}/);
 if(!outputMakeup)throw Error('Missing programme output calibration');
 const finalMix=renderer.slice(renderer.indexOf('fn process_final_output('),renderer.indexOf('fn advance_output_envelopes('));
 const sharedFinalOutputProtection=!finalMix.includes('self.spatial_enhancement_enabled');

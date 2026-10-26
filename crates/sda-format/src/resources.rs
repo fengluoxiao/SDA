@@ -172,6 +172,14 @@ impl PreparedResources {
             .as_f64()
             .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
             .ok_or("Invalid authored HRTF wet weight")? as f32;
+        let cinema = &metadata.render["playbackSnapshot"]["cinema"];
+        if cinema["settings"]["enabled"] == true {
+            if let Some(id) = cinema["profileId"].as_str() {
+                if assets["room"]["id"].as_str() != Some(id) {
+                    return Err("Authored room response missing or mismatched".into());
+                }
+            }
+        }
         let room = if assets["room"].is_object() {
             let id = str_field(&assets["room"], "profile")?;
             let path = root.join("room.json");
@@ -291,7 +299,7 @@ impl PreparedResources {
         let recipe = serde_json::json!({"schema":"sda.render-metadata","version":1,"playbackSnapshot":{
           "schema":"sda.playback-snapshot","version":1,"hrtf":{"directObjectHrtf":snapshot["hrtf"]["directObjectHrtf"]},
           "native":{"directionalHrtf":snapshot["native"]["directionalHrtf"],"masterPreampDb":snapshot["native"]["masterPreampDb"]},
-          "cinema":{"settings":snapshot["cinema"]["settings"]},"nearField":snapshot["nearField"],"sourceExtent":snapshot["sourceExtent"],
+          "cinema":{"settings":snapshot["cinema"]["settings"],"profileId":snapshot["cinema"]["profileId"]},"nearField":snapshot["nearField"],"sourceExtent":snapshot["sourceExtent"],
           "equalizer":{"bands":snapshot["equalizer"]["bands"],"lowFrequencyDiagnostic":snapshot["equalizer"]["lowFrequencyDiagnostic"]},
           "monitoring":{"comparisonGainDb":snapshot["monitoring"]["comparisonGainDb"]},
           "routing":{"mutedSpeakers":snapshot["routing"]["mutedSpeakers"],"activeFocus":snapshot["routing"]["activeFocus"]}}});

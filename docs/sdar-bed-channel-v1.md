@@ -60,7 +60,12 @@ processing was baked would change the approved mix.
 
 Unbaked HRTF, room, EQ, monitoring, near-field and routing parameters run in the
 same shared Rust renderer on all platforms. Files carry their own resources;
-mobile does not substitute its built-in room/HRTF preset. Missing resources,
+mobile does not substitute its built-in room/HRTF preset. Export also accepts
+an active room/HRTF comparison: it records the acknowledged room settings,
+reflection stage, speaker calibration and comparison gain. Merely having an
+audition selection is not an export restriction. External simulated/measured
+rooms embed the complete selected response; intrinsic HRTF room effects use the
+embedded dry/wet kernels and do not require an external room profile. Missing resources,
 invalid values, unsupported schema versions/operations and future object or
 parameter automation are rejected explicitly. Real object authoring remains a
 future `SDAR Bed Channel With Objects` feature.

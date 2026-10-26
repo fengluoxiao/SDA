@@ -99,6 +99,7 @@ jobs:
             [[ "$changed" == 'scripts/record-ios-build.mjs' ]]
           fi
           node scripts/record-ios-build.mjs --check-inputs
+          node scripts/test-ios-output-calibration-provenance.mjs
       - name: Install dependencies and prepare resources
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted

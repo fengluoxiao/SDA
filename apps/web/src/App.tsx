@@ -2059,7 +2059,6 @@ export function App() {
   ];
 
   const captureExportRenderState = async ():Promise<Record<string,unknown>> => {
-    if(roomComparison!==null||roomAudition!==null)throw Error("请先结束临时房间/HRTF试听，再导出当前完整混音参数");
     const snapshot = {
       schema:"sda.playback-snapshot",version:1,capturedAt:new Date().toISOString(),
       outputMode:mode,layout:{selection:layoutId,effective:layoutId==="auto"?detectedLayout??"7.1.4":layoutId,speakers:outputSpeakers},
@@ -2076,6 +2075,7 @@ export function App() {
     };
     const api=window.sdaDesktop;
     const [native,cinema,device]=await Promise.all([api?.getNativeRendererStatus?.(),api?.getCinemaSettings?.(),api?.getOutputDevices?.()]);
+    if(!cinema||cinema.error)throw Error("读取当前房间参数失败："+(cinema?.error??"房间接口未就绪"));
     return JSON.parse(JSON.stringify({...snapshot,native,cinema,outputDevice:device?.status?{mode:device.status.mode,sampleRate:device.status.sampleRate,channels:device.status.channels,bufferMs:device.status.bufferMs,exclusive:device.status.requested.exclusive,remoteCompatible:device.status.requested.remoteCompatible,actualName:device.status.actualName}:null}));
   };
 

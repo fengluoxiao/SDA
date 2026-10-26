@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const recorder=readFileSync('scripts/record-ios-build.mjs','utf8');
+const match=recorder.match(/const outputMakeup=renderer\.match\((\/[^\n]+\/)\);/);assert(match,'calibration extractor');
+const pattern=new Function(`return ${match[1]}`)();
+const renderer=readFileSync('apps/native-renderer/src/lib.rs','utf8');
+assert.equal(Number(renderer.match(pattern)?.[1]),2.5);
+const alternate=renderer.replace(/else if self\.program_enabled && \(named_format \|\| self\.dolby_spatial_programme_seen\) \{ 2\.5 \}/,'else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.75 }');
+assert.equal(Number(alternate.match(pattern)?.[1]),2.75,'record the real ordinary calibration, not a hardcoded value or authored branch');
+assert.equal('let db = if self.authored.enabled { 7.25 } else { 0.0 };'.match(pattern),null);
+console.log('iOS provenance reads ordinary programme calibration independently of authored-file gain overrides.');
