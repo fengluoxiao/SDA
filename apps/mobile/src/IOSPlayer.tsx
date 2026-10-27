@@ -94,6 +94,8 @@ function ThemedPlayer(p: PlayerProps) {
     return () => subscription.remove();
   }, [settings]);
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
+  const [showAllObjects, setShowAllObjects] = useState(false);
+  const [visibleObjectCount, setVisibleObjectCount] = useState(0);
   const settingsScroll = useRef<ScrollView>(null);
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
@@ -181,7 +183,7 @@ function ThemedPlayer(p: PlayerProps) {
   ] : [
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
     ["年份", p.metadata.year || "暂未读取"], ["曲目", p.metadata.track || "暂未读取"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
-    ["编码", p.sourceCodec === "sdar" ? "SDA Renderer" : p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["当前可视对象数（非全曲总数）", String(p.objects.length)],
+    ["编码", p.sourceCodec === "sdar" ? "SDA Renderer" : p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["已声明对象数（当前轨迹）", String(p.objects.length)],
     ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / HRTFHQ"],
   ];
   const audioOptionsDisabled = p.sourceCodec === "sdar" || p.systemSpatial360RAActive || p.busy;
@@ -393,8 +395,8 @@ function ThemedPlayer(p: PlayerProps) {
         </ScrollView>
         <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, sideNavigationActive && !tabletSideNavigation && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: Math.max(0, SIDE_NAVIGATION_WIDTH + (sideNavigationRight ? iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) : 8 + iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)) - 18) }, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
           <View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>
-          <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings && layoutReady} />}</View>
-          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(p.objects.length + " 个对象", false, s.settingTitle)}{label("实时位置", true, s.small)}</View></View>
+          <View style={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2 && !settings && layoutReady} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} />}</View>
+          <View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects && p.soundingObjectIds !== undefined ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View></View>
           {label("单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint])}
         </View>
       </IOSSystemTabs>}</SafeAreaInsetsContext.Consumer>

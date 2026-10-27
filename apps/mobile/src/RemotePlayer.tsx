@@ -21,6 +21,7 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  soundingObjectIds?: readonly number[];
   authoredPlayback?:boolean;
   binauralEnabled?: boolean; setBinauralEnabled?(enabled: boolean): void;
   headTrackingEnabled: boolean; headTrackingStatus: string;
@@ -167,6 +168,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
     if (p.playbackPageRequest) { setPage(0); pager.current?.scrollTo({ x: 0, animated: false }); setSettings(false); }
   }, [p.playbackPageRequest]);
   const [sceneVisited, setSceneVisited] = useState(sceneSmoke);
+  const [showAllObjects, setShowAllObjects] = useState(false);
+  const [visibleObjectCount, setVisibleObjectCount] = useState(0);
   React.useEffect(() => { if (page === 2) setSceneVisited(true); }, [page]);
   const navigate = (index: number) => { setPage(index); pager.current?.scrollTo({ x: index * pageWidth, animated: true }); };
   const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
@@ -271,10 +274,10 @@ function LegacyRemotePlayer(p: PlayerProps) {
       </ScrollView>
       <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.card, hasNativeIOSChrome && { borderWidth: 0, borderRadius: 22, padding: 18 }, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
-          <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(`${p.objects.length} 个对象`, true, s.small)}</View>
+          <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(!showAllObjects && p.soundingObjectIds !== undefined ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : `${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
-          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2} onInteractionChange={sceneInteraction} />}</View>
-          {label("单指旋转 · 双指缩放", true, s.help)}
+          <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2} onInteractionChange={sceneInteraction} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} />}</View>
+          <View style={s.row}>{label("单指旋转 · 双指缩放", true, s.help)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View>
         </View>
       </ScrollView>
     </ScrollView>

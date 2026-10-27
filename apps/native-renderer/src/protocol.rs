@@ -769,6 +769,7 @@ fn handle_command(
             });
         }
         Command::Reset { origin } => {
+            telemetry.clear_object_activity();
             remote_audio::END_SAMPLE.store(u64::MAX, Ordering::Release);
             state.reset_session(origin);
             write_event(&Event::Ack {

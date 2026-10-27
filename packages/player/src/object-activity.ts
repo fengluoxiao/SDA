@@ -2,19 +2,25 @@ import type { VisualObject } from "./player.js";
 
 const HOLD_SEC = 0.10;
 const FADE_SEC = 0.25;
-interface ActivityState {
+export interface ActivityObject {
+  id: number;
+  pos: [number, number, number];
+  hasPos?: boolean;
+  sceneOpacity?: number;
+}
+interface ActivityState<T> {
   lastSound: number;
-  source?: VisualObject;
-  projected?: VisualObject;
+  source?: T;
+  projected?: T;
 }
 
 /** Display only: renderer-confirmed post-gain/post-mute signal activity.
  * Position/movement never gates an audible object. The animation clock keeps
  * fades running when playback is paused; audio and metadata stay untouched. */
-export class ObjectActivityFilter {
-  private states = new Map<number, ActivityState>();
+export class ObjectActivityFilter<T extends ActivityObject = VisualObject> {
+  private states = new Map<number, ActivityState<T>>();
   private lastTime = -Infinity;
-  private snapshot: VisualObject[] = [];
+  private snapshot: T[] = [];
 
   reset(): void {
     this.states.clear();
@@ -22,15 +28,15 @@ export class ObjectActivityFilter {
     this.snapshot = [];
   }
 
-  project(objects: readonly VisualObject[], soundingIds: ReadonlySet<number>, clockSec: number): VisualObject[] {
+  project(objects: readonly T[], soundingIds: ReadonlySet<number>, clockSec: number): T[] {
     if (!Number.isFinite(clockSec)) return this.snapshot;
     if (clockSec < this.lastTime) this.reset();
     this.lastTime = clockSec;
     const present = new Set<number>();
-    const visible: VisualObject[] = [];
+    const visible: T[] = [];
     for (const object of objects) {
       present.add(object.id);
-      if (!object.hasPos || !object.pos.every(Number.isFinite)) {
+      if (object.hasPos === false || !object.pos.every(Number.isFinite)) {
         this.states.delete(object.id);
         continue;
       }

@@ -945,6 +945,10 @@ pub struct ObjectActivitySnapshot {
     count: usize,
 }
 
+impl Default for ObjectActivitySnapshot {
+    fn default() -> Self { Self::empty(0) }
+}
+
 impl ObjectActivitySnapshot {
     fn empty(sample_pos: u64) -> Self {
         Self {
@@ -965,6 +969,9 @@ impl ObjectActivitySnapshot {
 
 #[derive(Default)]
 pub struct RuntimeTelemetry {
+    // Renderer worker publishes only DAC-consumed activity. Never accessed by
+    // the audio device callback; mobile UI polling clones at most MAX_SOURCES IDs.
+    object_activity: std::sync::Mutex<ObjectActivitySnapshot>,
     pub shutdown_requested: AtomicBool,
     pub output_device_mode: AtomicU64,
     pub output_device_xruns: AtomicU64,
@@ -1030,6 +1037,13 @@ pub struct OutputDeviceStatus {
     pub restarts: u64,
 }
 impl RuntimeTelemetry {
+    pub fn sounding_object_ids(&self) -> Vec<u32> {
+        if self.paused.load(Ordering::Acquire) || self.shutdown_requested.load(Ordering::Acquire) { return vec![]; }
+        self.object_activity.lock().expect("object activity lock").active_ids().to_vec()
+    }
+    pub fn clear_object_activity(&self) {
+        *self.object_activity.lock().expect("object activity lock") = ObjectActivitySnapshot::empty(0);
+    }
     pub fn output_device_status(&self)->OutputDeviceStatus {
         OutputDeviceStatus {
             backend:match self.output_device_mode.load(Ordering::Acquire){1=>"aaudio-write-diagnostic",2=>"aaudio-callback",3=>"aaudio-write-fallback",_=>"external"},
@@ -2130,7 +2144,7 @@ impl Engine {
         self.activity_snapshots.push_back(snapshot);
     }
 
-    fn emit_consumed_object_activity(&mut self, consumed_sample_pos: u64) {
+    fn emit_consumed_object_activity(&mut self, consumed_sample_pos: u64, telemetry: &RuntimeTelemetry) {
         while self
             .activity_snapshots
             .front()
@@ -2142,6 +2156,7 @@ impl Engine {
                     sample_pos: snapshot.sample_pos,
                     ids: snapshot.active_ids(),
                 });
+                *telemetry.object_activity.lock().expect("object activity lock") = snapshot;
                 self.last_emitted_activity = snapshot;
             }
         }
@@ -3738,6 +3753,7 @@ pub fn spawn_render_worker(
                 if engine.render_epoch != observed_epoch {
                     remote_sync::hold();
                     engine.clear_object_activity(engine.sample_pos);
+                    telemetry.clear_object_activity();
                     pending_fifo_flush = Some(fifo.clear_from_producer());
                     telemetry
                         .callback_output_enabled
@@ -3768,6 +3784,7 @@ pub fn spawn_render_worker(
                     telemetry
                         .callback_consumed_sample_pos
                         .load(Ordering::Acquire),
+                    &telemetry,
                 );
                 // Do not synthesize missing decoder batches while the output
                 // FIFO still contains earlier audio: doing so advances the codec
@@ -5587,6 +5604,17 @@ mod tests {
         assert_eq!(snapshot.sample_pos, 1);
         assert_eq!(snapshot.active_ids(), &[7]);
         assert_eq!(engine.last_emitted_activity.active_ids(), &[] as &[u32]);
+        let telemetry = RuntimeTelemetry::default();
+        engine.emit_consumed_object_activity(0, &telemetry);
+        assert!(telemetry.sounding_object_ids().is_empty(), "decoded-ahead activity must remain hidden");
+        engine.emit_consumed_object_activity(1, &telemetry);
+        assert_eq!(telemetry.sounding_object_ids(), vec![7], "stationary audible objects reach mobile telemetry");
+        telemetry.paused.store(true, Ordering::Release);
+        assert!(telemetry.sounding_object_ids().is_empty());
+        telemetry.paused.store(false, Ordering::Release);
+        assert_eq!(telemetry.sounding_object_ids(), vec![7]);
+        telemetry.clear_object_activity();
+        assert!(telemetry.sounding_object_ids().is_empty(), "seek/reset must not retain the old track's activity");
 
         engine.clear_object_activity(engine.sample_pos);
         assert!(engine.activity_snapshots.is_empty());

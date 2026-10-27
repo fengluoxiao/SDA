@@ -9,24 +9,53 @@ import { rotateScene } from "./scene-gesture";
 import { LAYOUTS } from "../../../packages/renderer/src/layouts";
 import { admToScenePosition, SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT, SCENE_WALL_HEIGHT, SCENE_WALL_MID_Y, smoothScenePosition, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
 
-export interface MobileObjectPoint { id: number; pos: [number, number, number]; gainDb: number }
+import {MobileObjectActivity, type MobileObjectPoint} from "./mobile-object-activity";
+export type {MobileObjectPoint} from "./mobile-object-activity";
 
-function ObjectPoint({ object }: { object: MobileObjectPoint }) {
-  const group = useRef<THREE.Group>(null);
+function ObjectPoint({ object, visibility }: { object: MobileObjectPoint; visibility: ReadonlyMap<number, number> }) {
+  const group = useRef<THREE.Group>(null), dot = useRef<THREE.MeshBasicMaterial>(null), halo = useRef<THREE.MeshBasicMaterial>(null);
   const target = useRef(new THREE.Vector3(...admToScenePosition(object.pos)));
   useFrame((_, dt) => {
     if (!group.current) return;
+    const opacity = visibility.get(object.id) ?? 0;
     target.current.set(...admToScenePosition(object.pos));
+    if (opacity > 0 && !group.current.visible) group.current.position.copy(target.current);
+    group.current.visible = opacity > 0;
+    if (dot.current) dot.current.opacity = opacity;
+    if (halo.current) halo.current.opacity = opacity * .18;
+    if (!group.current.visible) return;
     group.current.position.set(...smoothScenePosition(group.current.position.toArray() as [number, number, number], target.current.toArray() as [number, number, number], dt));
   });
   const color = useMemo(() => new THREE.Color().setHSL(0.55 - object.pos[2] * 0.25, 0.9, 0.6), [object.pos[2]]);
-  return <group ref={group} position={admToScenePosition(object.pos)}>
-    <mesh><sphereGeometry args={[0.09, 12, 12]} /><meshBasicMaterial color={color} transparent opacity={0.1} depthTest={false} depthWrite={false} /></mesh>
-    <mesh><sphereGeometry args={[0.06, 10, 10]} /><meshBasicMaterial color={color} transparent opacity={1} depthTest={false} depthWrite={false} /></mesh>
+  return <group ref={group} visible={false} position={admToScenePosition(object.pos)}>
+    <mesh><sphereGeometry args={[0.09, 12, 12]} /><meshBasicMaterial ref={halo} color={color} transparent opacity={0} depthTest={false} depthWrite={false} /></mesh>
+    <mesh><sphereGeometry args={[0.06, 10, 10]} /><meshBasicMaterial ref={dot} color={color} transparent opacity={0} depthTest={false} depthWrite={false} /></mesh>
   </group>;
 }
 
-function Scene({ objects, cameraInput, layout }: { layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
+interface ActivityProps {
+  soundingIds?: readonly number[];
+  paused?: boolean;
+  showAllObjects?: boolean;
+  streamTimeSec?: number;
+  sourceKey?: string;
+  onVisibleObjectCountChange?: (count: number) => void;
+}
+
+function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
+  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange }: ActivityProps & { layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
+  const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
+  const visibility = useMemo(() => new Map<number, number>(), []);
+  const previousCount = useRef(-1);
+  useFrame(() => {
+    const visible = activity.project(objects, soundingIds, performance.now() / 1000, streamTimeSec, paused, showAllObjects);
+    visibility.clear();
+    for (const object of visible) visibility.set(object.id, object.sceneOpacity ?? 1);
+    if (previousCount.current !== visible.length) {
+      previousCount.current = visible.length;
+      onVisibleObjectCountChange?.(visible.length);
+    }
+  }, -1);
   const camera = useThree((state) => state.camera);
   useFrame(() => {
     const spherical = new THREE.Spherical(cameraInput.distance, Math.PI / 2.9 + cameraInput.rotation.y, cameraInput.rotation.x);
@@ -50,7 +79,7 @@ function Scene({ objects, cameraInput, layout }: { layout: "2.0" | "7.1.4" | "36
       </group>;
     })}
     <Listener />
-    {objects.map((object) => <ObjectPoint key={object.id} object={object} />)}
+    {objects.map((object) => <ObjectPoint key={object.id} object={object} visibility={visibility} />)}
   </>;
 }
 
@@ -61,7 +90,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, onInteractionChange }: { active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
+export function MobileObjectScene({ objects, layout, active, onInteractionChange, ...activityProps }: ActivityProps & { active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void }) {
   // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
@@ -217,7 +246,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
         }
       };
     }}>
-      <Scene layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene {...activityProps} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>

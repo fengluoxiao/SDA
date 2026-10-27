@@ -10,6 +10,7 @@ import { RemotePlayer, type TrackMetadata, type QueueTrack } from "./src/RemoteP
 import { type MobileObjectPoint } from "./src/MobileObjectScene";
 
 interface PlaybackStatus {
+  soundingObjectIds?: number[];
   authoredPlayback?:boolean;
   binauralEnabled?: boolean; objectRendering?: boolean; listenerYawDegrees?: number;
   outputLayout: "2.0" | "7.1.4" | "360RA-13";
@@ -107,6 +108,7 @@ interface State {
   metadata: TrackMetadata;
   fifoFrames: number;
   objects: ObjectPoint[];
+  soundingObjectIds?: number[];
   hrtfStatus: string;
   headYaw: number;
   error: string | null;
@@ -156,7 +158,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     durationMs: 0,
     metadata: {},
     fifoFrames: 0,
-    objects: [],
+    objects: [], soundingObjectIds: undefined,
     hrtfStatus: "KU100 尚未加载",
     headYaw: 0,
     error: null,
@@ -211,7 +213,7 @@ export default class App extends React.Component<Record<string, never>, State> {
           if (event.command === "next") this.skipTrack(1);
           else if (event.command === "previous") this.skipTrack(-1);
           else if (event.command === "state") this.setState({ paused: event.paused === true });
-          else if (event.command === "stop") this.setState({ playing: false, paused: false, ended: false, positionMs: 0, objects: [] });
+          else if (event.command === "stop") this.setState({ playing: false, paused: false, ended: false, positionMs: 0, objects: [], soundingObjectIds: undefined });
         }));
       }
       const settings = JSON.parse(engine.renderingSettings());
@@ -476,7 +478,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     if (this.changingTrack || this.state.busy || !track || track.preparation) return;
     this.changingTrack = true;
     this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata,
-      durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [],
+      durationMs: track.metadata.durationMs ?? 0, busy: true, preparingAudio: false, playing: false, error: null, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [], soundingObjectIds: undefined,
       authoredPlayback:false,sourceCodec: "", alacUpmixActive: false, systemSpatial360RAActive: false, outputChannels: 2 });
     try {
       const engine = this.getEngine();
@@ -543,6 +545,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         authoredPlayback:value.authoredPlayback===true,sourceCodec: value.sourceCodec ?? "", alacUpmixActive: value.alacUpmixActive === true, outputChannels: value.outputChannels ?? 2,
         systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         layout: value.outputLayout ?? this.state.layout,
+        soundingObjectIds: feedDone ? [] : value.soundingObjectIds,
         objects: feedDone ? [] : Object.values(objects).filter((object) => object.hasPos && object.pos.every(Number.isFinite)),
         paused: value.paused ?? this.state.paused,
         playing: feedDone ? false : this.state.playing,
@@ -593,6 +596,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         outputChannels: value.outputChannels ?? 2, systemSpatial360RAActive: value.systemSpatial360RAActive === true,
         layout: value.outputLayout ?? previous.layout,
         headYaw: previous.headTrackingEnabled && Number.isFinite(value.listenerYawDegrees) ? value.listenerYawDegrees! : previous.headYaw,
+        soundingObjectIds: snapshot.feedDone ? [] : foreground ? value.soundingObjectIds : previous.soundingObjectIds,
         objects: snapshot.feedDone || changed && !foreground ? [] : foreground
           ? Object.values(snapshot.objects).filter(object => object.hasPos && object.pos.every(Number.isFinite)) : previous.objects,
         hrtfStatus: snapshot.hrtfStatus, renderingStatus: this.playbackDescription(value, snapshot.feedDone),
@@ -643,7 +647,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private stop = () => {
     try {
       this.engine?.stop();
-      this.setState({ authoredPlayback:false,sourceCodec: "", alacUpmixActive: false, outputChannels: 2, systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [] });
+      this.setState({ authoredPlayback:false,sourceCodec: "", alacUpmixActive: false, outputChannels: 2, systemSpatial360RAActive: false, playing: false, ended: false, paused: false, positionMs: 0, decodedMs: 0, fifoFrames: 0, objects: [], soundingObjectIds: undefined });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
     }

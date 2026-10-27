@@ -8,7 +8,7 @@ function harness(os){
  const js=ts.transpileModule(`class Harness {${methods.join('\n')}};module.exports=Harness`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
  new Function('Platform','setInterval','clearInterval','module',js)({OS:os},(fn,ms)=>{intervals.push(ms);return 1},()=>{},module);
  const p=new module.exports();p.foreground=false;p.changingTrack=false;p.state={playing:true,busy:false,queue:[],queueIndex:0,headTrackingEnabled:false,headYaw:0};p.updates=0;p.advances=0;
- p.setState=(value,callback)=>{Object.assign(p.state,value);p.updates++;callback?.()};p.advancePlaylist=()=>p.advances++;
+ p.playbackDescription=()=>"native";p.setState=(value,callback)=>{Object.assign(p.state,value);p.updates++;callback?.()};p.advancePlaylist=()=>p.advances++;
  return {p,intervals};
 }
 test('background playback never asks native code for scene JSON or rebuilds hidden UI',()=>{
@@ -27,4 +27,11 @@ test('foreground keeps live scene updates while background only paces playback c
  }
  const {p}=harness('android');p.foreground=true;let calls=0;p.engine={feedError:()=>null,feedDone:()=>false,status:()=>{calls++;return JSON.stringify({positionMs:1000,hrtfReady:true,binauralEnabled:true})},objects:()=>{calls++;return JSON.stringify({one:{hasPos:true,pos:[0,1,0]}})},hrtfStatus:()=> 'loaded'};
  p.pollStatus();assert.equal(calls,2);assert.equal(p.state.positionMs,1000);assert.equal(p.state.objects.length,1);
+});
+
+test('foreground preserves full object geometry and forwards native sounding IDs separately',()=>{
+ const {p}=harness('android');p.foreground=true;
+ const objects={fixed:{id:11,hasPos:true,pos:[0,1,0]},quiet:{id:12,hasPos:true,pos:[1,0,0]}};
+ p.engine={feedError:()=>null,feedDone:()=>false,status:()=>JSON.stringify({positionMs:1000,soundingObjectIds:[11]}),objects:()=>JSON.stringify(objects),hrtfStatus:()=>"ready"};
+ p.pollStatus();assert.deepEqual(p.state.soundingObjectIds,[11]);assert.equal(p.state.objects.length,2);
 });

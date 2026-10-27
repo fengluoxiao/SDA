@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),THREE=require('three'),{buildSync}=require('esbuild');
+const root=path.resolve(__dirname,'../../..'),src=ts.createSourceFile('scene.tsx',fs.readFileSync(path.join(root,'apps/mobile/src/MobileObjectScene.tsx'),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+const node=src.statements.find(s=>ts.isFunctionDeclaration(s)&&s.name?.text==='ObjectPoint');assert(node);
+const geom=buildSync({entryPoints:[path.join(root,'packages/renderer/src/scene-coordinates.ts')],bundle:true,platform:'node',format:'cjs',write:false}).outputFiles[0].text,moduleGeom={exports:{}};new Function('module','exports',geom)(moduleGeom,moduleGeom.exports);
+const refs=[],frames=[],React={createElement:(type,props,...children)=>({type,props,children})};
+const script=ts.transpileModule(node.getText(src)+';module.exports=ObjectPoint',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React}}).outputText,m={exports:{}};
+new Function('module','React','THREE','useRef','useMemo','useFrame','admToScenePosition','smoothScenePosition',script)(m,React,THREE,v=>{const r={current:v};refs.push(r);return r},f=>f(),f=>frames.push(f),moduleGeom.exports.admToScenePosition,moduleGeom.exports.smoothScenePosition);
+const object={id:11,pos:[0,1,0],gainDb:0},visibility=new Map([[11,1]]);m.exports({object,visibility});
+refs[0].current={visible:false,position:new THREE.Vector3()};refs[1].current={opacity:0};refs[2].current={opacity:0};
+frames[0](null,.016);assert.equal(refs[0].current.visible,true);assert.equal(refs[1].current.opacity,1,'fixed sounding object must be full bright');
+visibility.set(11,.5);frames[0](null,.016);assert.equal(refs[1].current.opacity,.5);assert.equal(refs[2].current.opacity,.09);
+visibility.clear();frames[0](null,.016);assert.equal(refs[0].current.visible,false);assert.equal(refs[1].current.opacity,0);
+object.pos=[1,0,.5];visibility.set(11,1);frames[0](null,.016);assert(refs[0].current.position.toArray().every((value,i)=>Math.abs(value-moduleGeom.exports.admToScenePosition(object.pos)[i])<1e-9),'reappearing audio uses the current position');
+console.log('PASS: actual mobile Three.js dot visibility and material fade, fixed source brightness and silent movement recovery');

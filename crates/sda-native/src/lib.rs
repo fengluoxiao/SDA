@@ -127,6 +127,7 @@ pub struct PlaybackStatus {
     pub renderer_revision: &'static str,
     pub spatial_balance_algorithm: &'static str,
     pub live_loudness_ducking: bool,
+    pub sounding_object_ids: Vec<u32>,
     /// Codec clock consumed by the audio output (samples @ config.sample_rate).
     pub consumed_sample_pos: u64,
     /// Codec clock of the newest decoded frame: hosts pace feeding so this
@@ -658,6 +659,7 @@ impl MobileEngine {
             renderer_revision: sda_native_renderer::BUILD_REVISION,
             spatial_balance_algorithm: sda_native_renderer::SPATIAL_BALANCE_ALGORITHM,
             live_loudness_ducking: false,
+            sounding_object_ids: self.pipeline.as_ref().map_or_else(Vec::new, |p|p.telemetry.sounding_object_ids()),
             consumed_sample_pos: consumed,
             decoded_sample_pos: self.decoded_sample_pos(),
             position_ms: consumed * 1000 / u64::from(self.config.sample_rate),
