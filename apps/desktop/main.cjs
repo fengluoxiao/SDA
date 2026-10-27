@@ -292,6 +292,7 @@ const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   workerPath:path.join(__dirname,"upmix-export-worker.cjs"),
   encoderPath:()=>require("./upmix-export.cjs").resolveEncoder(app.isPackaged?process.resourcesPath:__dirname),
   rendererPath:()=>bundledNativeRendererPath(),
+  authoredState:(owner,file)=>authoredPlayback.exportState(owner,file),
   captureAssets:snapshot=>require("./export-assets.cjs").captureExportAssets({snapshot,selectedHrtf:nativeRendererSelectedHrtf,hrtfRoot:path.join(path.dirname(bundledNativeRendererPath()),"hrtf-assets"),personalRoot:personalHrtfDirectory(),readRoom:readCinemaProfile,readHeadphone:id=>{
     if(id!==exclusiveHeadphoneId||!nativeRendererActiveHeadphoneFir)throw Error("耳机模拟切换尚未完成，请稍后导出");
     return {...nativeRendererActiveHeadphoneFir,manifest:{targetId:id,sourceId:readSettings().headphoneSimulationSource??"reference"}};
@@ -306,6 +307,7 @@ const stereoLoudness = require("./stereo-loudness.cjs").createStereoLoudness({
 const authoredPlayback = require("./authored-playback.cjs").createAuthoredPlayback({
   ipcMain,rendererPath:()=>bundledNativeRendererPath(),
   configureScene:scene=>nativeRendererCommandAck({type:"configureAuthoredScene",scene},"configureAuthoredScene",60000),
+  readRoom:id=>readCinemaProfile(id),
 });
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
   app,BrowserWindow,ipcMain,utilityProcess,isDev,dialog,nativeTheme,webAssetRoot:()=>webAssetRoot(),nativeExecutable:()=>bundledNativeRendererPath(),
@@ -1817,8 +1819,9 @@ function readCinemaProfile(id) {
   if (cinemaProfiles.roomId(bytes) !== id) throw new Error("房间档案完整性校验失败");
   return { filePath, profile: cinemaProfiles.validateRoom(JSON.parse(bytes.toString("utf8"))) };
 }
-ipcMain.handle("sda:cinema-settings", async () => {
+ipcMain.handle("sda:cinema-settings", async event => {
   try {
+    const authored=authoredPlayback.cinemaState(event.sender);if(authored)return authored;
     const stored = readSettings().cinema;
     const shared = nativeRendererSelectedHrtf === "hrtf" || nativeRendererSelectedHrtf === "hrtf-dense";
     const value = shared ? builtinRooms().upgrade(stored) : stored;
@@ -1831,7 +1834,7 @@ ipcMain.handle("sda:cinema-settings", async () => {
     return { settings: defaultCinemaSettings(), profileId: null, error: String(error) };
   }
 });
-ipcMain.handle("sda:cinema-rooms", () => roomInspection().list());
+ipcMain.handle("sda:cinema-rooms", async event=>{const rooms=await roomInspection().list(),embedded=authoredPlayback.embeddedRoom(event.sender);return embedded&&!rooms.some(r=>r.id===embedded.id)?[embedded,...rooms]:rooms;});
 ipcMain.handle("sda:cinema-import", async event => {
   const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
     title: "导入实测房间档案", filters: [{ name: "SDA room profile", extensions: ["json"] }], properties: ["openFile"],
@@ -1862,7 +1865,8 @@ ipcMain.handle("sda:cinema-export-report", async (event, id) => {
   fs.writeFileSync(result.filePath, JSON.stringify(summary, null, 2));
   return true;
 });
-ipcMain.handle("sda:native-renderer-cinema", async (_event, settings, profileId) => performanceMonitor.measure("room.apply_including_queue",profileId??"built-in",()=>exclusiveAudioUpdate(async () => {
+ipcMain.handle("sda:native-renderer-cinema", async (event, settings, profileId) => performanceMonitor.measure("room.apply_including_queue",profileId??"built-in",()=>exclusiveAudioUpdate(async () => {
+  if(authoredPlayback.mode(event.sender))throw Error("文件调优只能通过 WAV 母版编辑接口修改");
   const normalized = cinemaProfiles.validateSettings(settings);
   if (exclusiveHeadphoneId && (normalized.enabled || normalized.monitor.enabled || normalized.monitor.hardware?.enabled)) {
     throw new Error("请先关闭耳机模拟，再启用房间或监听处理");

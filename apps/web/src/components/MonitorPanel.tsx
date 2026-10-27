@@ -13,6 +13,7 @@ const output=():MonitorOutput=>({trimDb:0,delayMs:0,invert:false,muted:false});
 const hardwareDefaults=()=>({enabled:false,inputDb:0,dacBits:24,lineRms:2,gainDb:26,railV:28,currentA:7,loadOhms:8,outputOhms:0.05,bandwidthHz:60000});
 export default function MonitorPanel({layout,speakers,comparisonActive=false,onClose}:{onClose?:()=>void;layout:string;speakers:readonly VirtualSpeaker[];comparisonActive?:boolean;onExitComparison?:()=>Promise<void>}) {
   const [settings,setSettings]=useState(defaults),[saved,setSaved]=useState("");
+  const [readOnly,setReadOnly]=useState(false);
   const [busy,setBusy]=useState(true),[error,setError]=useState("");
   const [view,setView]=useState<"level"|"outputs"|"bass"|"hardware">("level");
   const hardware={...hardwareDefaults(),...settings.hardware};
@@ -20,10 +21,10 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false,onC
   const [preset,setPreset]=useState("");
   const [alignment,setAlignment]=useState<{context:string;name:string}|null>(null);
   useEffect(()=>{let live=true;void window.sdaDesktop?.getCinemaSettings?.().then(s=>{
-    if(live){const m=s.settings.monitor??defaults();setSettings(m);setSaved(JSON.stringify(m));if(s.error)setError(s.error);}
+    if(live){setReadOnly(s.authored===true&&s.editableMaster!==true);const m=s.settings.monitor??defaults();setSettings(m);setSaved(JSON.stringify(m));if(s.error)setError(s.error);}
   }).catch(e=>live&&setError(String(e))).finally(()=>live&&setBusy(false));return()=>{live=false;};},[]);
   const apply=async(next:MonitorSettings)=>{
-    if(busy)return;setBusy(true);setError("");
+    if(busy||readOnly)return;setBusy(true);setError("");
     try{
       const api=window.sdaDesktop,state=await api?.getCinemaSettings?.();
       if(alignment&&state&&alignment.context!==alignmentContext(state.settings,state.profileId,layout))throw new Error("房间或布局已变化，请重新生成通道对齐");
@@ -42,7 +43,7 @@ export default function MonitorPanel({layout,speakers,comparisonActive=false,onC
       setSettings(next);setAlignment({context:alignmentContext(state.settings,state.profileId,layout),name:room.name});setView("outputs");
     }catch(e){setError(String(e));}finally{setBusy(false);}
   };
-  const numeric=(key:"levelDb"|"dimDb"|"crossoverHz"|"bassDb",label:string,min:number,max:number,unit:string)=><label className="cinema-number"><span>{label}</span><input type="number" aria-label={label} value={settings[key]} min={min} max={max} step={key==="crossoverHz"?1:.5} disabled={busy} onChange={e=>{const n=e.currentTarget.valueAsNumber;if(Number.isFinite(n))setSettings(s=>({...s,[key]:Math.max(min,Math.min(max,n))}));}}/><small>{unit}</small></label>;
+  const numeric=(key:"levelDb"|"dimDb"|"crossoverHz"|"bassDb",label:string,min:number,max:number,unit:string)=><label className="cinema-number"><span>{label}</span><input type="number" aria-label={label} value={settings[key]} min={min} max={max} step={key==="crossoverHz"?1:.5} disabled={busy||readOnly} onChange={e=>{const n=e.currentTarget.valueAsNumber;if(Number.isFinite(n))setSettings(s=>({...s,[key]:Math.max(min,Math.min(max,n))}));}}/><small>{unit}</small></label>;
   const toggle=(key:"enabled"|"dim"|"muted"|"bassEnabled",label:string)=><label className="settings-switch"><span>{label}</span><input type="checkbox" role="switch" aria-label={label} checked={settings[key]} disabled={busy||(key==="bassEnabled"&&layout==="2.0")} onChange={e=>setSettings(s=>({...s,[key]:e.target.checked}))}/></label>;
   const changeOutput=(name:string,value:Partial<MonitorOutput>)=>setSettings(s=>({...s,outputs:{...s.outputs,[name]:{...output(),...s.outputs[name],...value}}}));
   return <section className="panel float-panel cinema-panel monitor-panel desktop-sheet" aria-label="监听处理器">

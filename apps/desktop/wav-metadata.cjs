@@ -46,7 +46,9 @@ function buildMetadataChunks(metadata,render) {
   const payload=Buffer.concat(frames),id3=chunk('id3 ',Buffer.concat([Buffer.from('ID3'),Buffer.from([4,0,0]),syncsafe(payload.length),payload]));
   const info=[];
   const fields={INAM:common.title,IART:common.artist,IPRD:common.album,ICRD:common.date??common.year,IGNR:common.genre?.join('; '),ITRK:number(common.track),ICOP:common.copyright};
-  for(const [id,value]of Object.entries(fields))if(value!==undefined&&value!==null&&value!=='')info.push(chunk(id,Buffer.concat([utf8(value),zero])));
+  // RIFF INFO has no reliably honored Unicode encoding. Keep its compatibility
+  // fields ASCII-only; ID3v2.4 carries complete UTF-8 text, including CJK.
+  for(const [id,value]of Object.entries(fields))if(value!==undefined&&value!==null&&value!==''&&/^[\x20-\x7e]*$/.test(String(value)))info.push(chunk(id,Buffer.concat([utf8(value),zero])));
   const charset=Buffer.alloc(8);charset.writeUInt16LE(65001,0);
   const bytes=Buffer.concat([...(info.length?[chunk('CSET',charset),chunk('LIST',Buffer.concat([Buffer.from('INFO'),...info]))]:[]),id3]);
   if(bytes.length>MAX_METADATA)throw Error('歌曲元数据超过 64 MiB，未写入目标文件');

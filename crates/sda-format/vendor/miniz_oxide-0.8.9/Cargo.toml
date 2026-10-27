@@ -1,0 +1,23 @@
+[package]
+name="miniz_oxide"
+version="0.8.9"
+edition="2021"
+license="MIT OR Zlib OR Apache-2.0"
+autobenches=false
+autotests=false
+[lib]
+path="src/lib.rs"
+[features]
+default=["with-alloc"]
+with-alloc=[]
+std=[]
+block-boundary=[]
+rustc-dep-of-std=[]
+simd=[]
+serde=[]
+[dependencies.adler2]
+path="../adler2-2.0.1"
+default-features=false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

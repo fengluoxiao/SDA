@@ -564,11 +564,12 @@ class SdaModule : Module() {
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
             val isContainer = displayName.substringAfterLast('.', "").lowercase() in setOf("m4a", "mp4")
+            val isWavName = displayName.substringAfterLast('.', "").equals("wav", ignoreCase = true)
             val isSdarName = displayName.substringAfterLast('.', "").equals("sdar", ignoreCase = true)
             // DocumentPicker normally supplies a local file. Reuse it rather
             // than copying the full song again just to probe its container.
             val localFile = if (uri.scheme == "file") uri.path?.let { java.io.File(it) }?.takeIf { it.isFile } else null
-            val ownsSourceCopy = (isMp3 || isContainer || isSdarName) && localFile == null
+            val ownsSourceCopy = (isMp3 || isContainer || isSdarName || isWavName) && localFile == null
             val mp3Cache = if (isMp3 || isContainer || isSdarName) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
             if (ownsSourceCopy && mp3Cache != null) {
                 try {
@@ -581,6 +582,7 @@ class SdaModule : Module() {
             }
             val isSdar = mp3Cache != null && SdaEngine.nativeIsSdar(mp3Cache.absolutePath)
             if(isSdarName && !isSdar){if(ownsSourceCopy)mp3Cache?.delete();error("无效或尚未支持的 SDAR 床层文件")}
+            if(isWavName && !isSdar){if(ownsSourceCopy)mp3Cache?.delete();error("WAV 文件缺少 SDA 母版渲染元数据")}
             val isAlac = !isSdar && isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
             val input = try {
                 if (isMp3 || isAlac || isSdar) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName, if (isContainer) mp3Cache else null)

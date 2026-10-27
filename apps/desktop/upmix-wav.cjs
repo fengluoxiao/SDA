@@ -3,7 +3,7 @@ const CHANNELS=12,RATE=48000,BITS=24,ALIGN=36,MASK=0x2d63f;
 const ORDER=[0,1,2,3,6,7,4,5,8,9,10,11];
 const LABELS=['FL','FR','FC','LFE','BL','BR','SL','SR','TFL','TFR','TBL','TBR'];
 function infoChunk(){
- const comment=Buffer.from('Channels: '+LABELS.join(' ')+'; SDA stereo upmix; -2 dB matrix calibration; no headphone or room rendering.\0','ascii');
+ const comment=Buffer.from('Channels: '+LABELS.join(' ')+'; SDA stereo upmix; -2 dB matrix calibration; dry channel bed; see embedded SDA metadata for authored HRTF and room rendering.\0','ascii');
  const software=Buffer.from('SDA\0','ascii');
  const sub=(name,data)=>{const b=Buffer.alloc(8+data.length+(data.length%2));b.write(name);b.writeUInt32LE(data.length,4);data.copy(b,8);return b;};
  const body=Buffer.concat([Buffer.from('INFO'),sub('ISFT',software),sub('ICMT',comment)]),chunk=Buffer.alloc(8+body.length);chunk.write('LIST');chunk.writeUInt32LE(body.length,4);body.copy(chunk,8);return chunk;

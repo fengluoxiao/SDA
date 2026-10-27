@@ -54,10 +54,15 @@ pub struct BedFile {
     generated: u64,
     delivered: u64,
     eof: bool,
+    authoring_master: bool,
 }
 impl BedFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         Self::open_internal(path.as_ref(), false)
+    }
+    /// Read any authored interchange container without depending on its suffix.
+    pub fn open_interchange(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_internal(path.as_ref(), true)
     }
     pub fn open_master_wave(path: impl AsRef<Path>) -> Result<Self, String> {
         Self::open_internal(path.as_ref(), true)
@@ -79,7 +84,7 @@ impl BedFile {
             bed.wave_tail = Vec::new();
             let rate = bed.head.sample_rate;
             let transport = Some(
-                serde_json::json!({"codec":"sdar-bed-channel","compression":crate::lossless::CODEC,"lossless":true,"sampleRate":rate,"container":if &header[..4]==b"SDAR"{"sdar"}else{"m4a"}}),
+                serde_json::json!({"codec":"sdar-bed-channel","compression":bed.head.codec,"lossless":bed.head.codec!=crate::lossless::compact::COMPACT,"sampleRate":rate,"container":bed.container}),
             );
             (Source::Lossless(bed), metadata, rate, transport)
         } else if &header[..4] == b"SDAR"
@@ -141,9 +146,17 @@ impl BedFile {
             generated: 0,
             delivered: 0,
             eof: false,
+            authoring_master: [b"RIFF".as_slice(), b"RF64".as_slice()].contains(&&header[..4]),
         })
     }
+    pub fn is_editable_master(&self) -> bool {
+        self.authoring_master
+    }
     pub fn is_sda(path: impl AsRef<Path>) -> bool {
+        let path = path.as_ref();
+        if crate::metadata::is_authored_wave(path) {
+            return true;
+        }
         let Ok(mut file) = File::open(path) else {
             return false;
         };

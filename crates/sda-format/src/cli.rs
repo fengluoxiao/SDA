@@ -32,7 +32,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-lossless-v1","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }
@@ -48,6 +48,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             std::path::Path::new(input),
             std::path::Path::new(args.get(2).ok_or("SDAR output required")?),
             rate,
+            args.get(4)
+                .map(|v| v.parse::<u32>())
+                .transpose()
+                .map_err(|e| e.to_string())?,
         )?;
         println!("{}", json!({"type":"done","head":head}));
         return Ok(());
@@ -60,7 +64,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("{}", json!({"type":"done"}));
         return Ok(());
     }
-    let allow_wave = args.iter().any(|s| s == "--allow-wave");
+    let allow_wave = command == "inspect" || args.iter().any(|s| s == "--allow-wave");
     let mut file = if allow_wave {
         BedFile::open_master_wave(input)?
     } else {
@@ -119,6 +123,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 break;
             }
         }
+        return Ok(());
+    }
+    if command == "inspect" {
+        println!(
+            "{}",
+            json!({"schema":"sda.interchange-inspection","version":1,"role":if file.is_editable_master(){"wav-master"}else{"delivery"},"sampleRate":file.input_rate,"decodedBits":24,"channels":file.metadata.render["scene"]["channels"],"source":file.metadata.source,"render":file.metadata.render,"transport":file.transport,"assets":file.metadata.assets.iter().map(|(sha,a)|json!({"sha256":sha,"bytes":a.data.len(),"mimeType":a.mime_type,"filename":a.filename})).collect::<Vec<_>>(),"policy":{"processing":"file-authored-v1","missingRequiredResource":"error","unsupportedRequiredFeature":"error"}})
+        );
         return Ok(());
     }
     if command == "info" {

@@ -175,16 +175,16 @@ function ThemedPlayer(p: PlayerProps) {
     setBlockMeasurements(previous => Math.abs((previous[layoutKey] || initialBlocks)[key] - value) < 0.5
       ? previous : { ...previous, [layoutKey]: { ...(previous[layoutKey] || initialBlocks), [key]: value } });
   };
-  const format = p.sourceCodec === "sdar" ? "SDAR Bed Channel" : p.sourceCodec === "av3a" ? "Audio Vivid" : p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|ac4|ac-4|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
+  const format = p.sourceCodec === "sdar" ? "SDA Renderer" : p.sourceCodec === "av3a" ? "Audio Vivid" : p.sourceCodec === "alac" ? "立体声" : p.layout === "360RA-13" || p.systemSpatial360RAActive ? "360 Reality Audio" : /atmos/i.test(p.renderingStatus) || /^(eac3|e-ac-3|ac4|ac-4|truehd)$/i.test(p.sourceCodec) ? "杜比全景声" : previewMetadata ? "杜比全景声" : "音频信息";
   const infoRows: [string, string][] = __DEV__ && previewMetadata ? [
     ["数据来源", "Expo Go 模拟数据 · 仅开发预览"], ["文件名", "Preview.m4a"], ["标题", "示例歌曲"], ["艺人", "示例艺人"], ["专辑", "示例专辑"], ["容器", "M4A"], ["编码", "E-AC-3 JOC"], ["采样率", "48,000 Hz（模拟）"], ["音频格式", "杜比全景声"],
   ] : [
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
     ["年份", p.metadata.year || "暂未读取"], ["曲目", p.metadata.track || "暂未读取"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
-    ["编码", p.sourceCodec === "sdar" ? "SDAR Bed Channel" : p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["当前可视对象数（非全曲总数）", String(p.objects.length)],
+    ["编码", p.sourceCodec === "sdar" ? "SDA Renderer" : p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["当前可视对象数（非全曲总数）", String(p.objects.length)],
     ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / HRTFHQ"],
   ];
-  const audioOptionsDisabled = p.systemSpatial360RAActive || p.busy;
+  const audioOptionsDisabled = p.sourceCodec === "sdar" || p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;

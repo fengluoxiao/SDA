@@ -65,6 +65,36 @@ impl Metadata {
         {
             return Err("Unsupported SDAR scene version".into());
         }
+        if !r["interchange"].is_null() {
+            let manifest = &r["interchange"];
+            if manifest["schema"] != "sda.interchange"
+                || manifest["version"] != 1
+                || manifest["unsupportedRequiredFeature"] != "error"
+            {
+                return Err("Unsupported SDA interchange contract".into());
+            }
+            if !manifest["rendererContract"].is_null()
+                && (manifest["rendererContract"]["id"] != "sda.authored-scene"
+                    || manifest["rendererContract"]["version"] != 1)
+            {
+                return Err("Unsupported required SDA renderer contract".into());
+            }
+            for feature in manifest["requiredFeatures"]
+                .as_array()
+                .ok_or("Missing SDA required features")?
+            {
+                if !feature.as_str().is_some_and(|v| {
+                    [
+                        "bed-scene-v1",
+                        "file-processing-v1",
+                        "embedded-render-assets-v1",
+                    ]
+                    .contains(&v)
+                }) {
+                    return Err(format!("Unsupported required SDA feature: {feature}"));
+                }
+            }
+        }
         for field in ["objects", "automation"] {
             if r["scene"][field].as_array().is_none_or(|v| !v.is_empty()) {
                 return Err(
@@ -331,7 +361,11 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
         if id == b"data" && length == 0xffffffff {
             length = ds64.ok_or("SDAR RF64 size missing")?;
         }
-        if at.checked_add(8 + length).is_none_or(|end| end > size) {
+        if at
+            .checked_add(8)
+            .and_then(|v| v.checked_add(length))
+            .is_none_or(|end| end > size)
+        {
             return Err("Truncated SDAR master chunk".into());
         }
         match id {
@@ -403,7 +437,7 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
     ))
 }
 pub fn track_metadata(path: impl AsRef<Path>) -> Result<serde_json::Value, String> {
-    let file = crate::BedFile::open(path)?;
+    let file = crate::BedFile::open_interchange(path)?;
     let common = &file.metadata.source["common"];
     let mut result = serde_json::json!({"title":common["title"],"artist":common["artist"],"album":common["album"],"albumArtist":common["albumartist"],"year":common["year"].as_i64().map(|year|year.to_string()),"date":common["date"],"durationMs":file.frames()as f64/48.,"sourceCodec":"sdar","authoredPlayback":true,"format":if file.transport.as_ref().is_some_and(|v|v["container"]!="sdar"){"SDA M4A"}else{"SDAR Bed Channel"}});
     if let Some(id) = common["picture"]
@@ -438,4 +472,78 @@ pub fn track_metadata(path: impl AsRef<Path>) -> Result<serde_json::Value, Strin
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod interchange_tests {
+    use super::*;
+    #[test]
+    fn unknown_required_processing_is_not_silently_substituted() {
+        let metadata = Metadata {
+            render: serde_json::json!({"schema":"sda.render-metadata","version":1,"scene":{"kind":"bed"},"interchange":{"schema":"sda.interchange","version":1,"requiredFeatures":["future-vst3-engine-v1"],"unsupportedRequiredFeature":"error"}}),
+            ..Default::default()
+        };
+        assert!(metadata
+            .validate()
+            .unwrap_err()
+            .contains("Unsupported required SDA feature"));
+    }
+}
+
+/// Fast content probe for authored WAV. It skips PCM and does not decode assets.
+pub fn is_authored_wave(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(h) = exact(&mut file, 0, 12) else {
+        return false;
+    };
+    if ![b"RIFF".as_slice(), b"RF64".as_slice()].contains(&&h[..4]) || &h[8..12] != b"WAVE" {
+        return false;
+    }
+    let Ok(size) = file.metadata().map(|m| m.len()) else {
+        return false;
+    };
+    let (mut at, mut ds64) = (12u64, None);
+    let mut chunks = 0;
+    while at + 8 <= size && chunks < 100000 {
+        chunks += 1;
+        let Ok(h) = exact(&mut file, at, 8) else {
+            return false;
+        };
+        let mut n = u32::from_le_bytes(h[4..8].try_into().unwrap()) as u64;
+        if &h[..4] == b"ds64" {
+            let Ok(b) = exact(&mut file, at + 8, 28) else {
+                return false;
+            };
+            ds64 = Some(u64::from_le_bytes(b[8..16].try_into().unwrap()));
+        }
+        if &h[..4] == b"data" && n == 0xffffffff {
+            let Some(length) = ds64 else { return false };
+            n = length;
+        }
+        if at
+            .checked_add(8)
+            .and_then(|v| v.checked_add(n))
+            .is_none_or(|v| v > size)
+        {
+            return false;
+        }
+        if &h[..4] == b"sdrm" {
+            if n > 8 * 1024 * 1024 {
+                return false;
+            }
+            let Ok(b) = exact(&mut file, at + 8, n as usize) else {
+                return false;
+            };
+            let Ok(v) = serde_json::from_slice::<Value>(&b) else {
+                return false;
+            };
+            return v["schema"] == "sda.render-metadata"
+                && v["version"] == 1
+                && v["scene"]["kind"] == "bed";
+        }
+        at += 8 + n + (n & 1);
+    }
+    false
 }

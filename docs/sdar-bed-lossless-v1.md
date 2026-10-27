@@ -1,6 +1,8 @@
+> Legacy lossless-v1 reference. Current exports and independent renderer integration are specified in [SDA interchange v1](sda-interchange-v1.md).
+
 # SDAR Bed Channel: SDA Bed Lossless v1
 
-New SDAR and private M4A exports use an independently specified PCM24 predictive
+The original lossless-v1 SDAR and private M4A exports used an independently specified PCM24 predictive
 codec, compression identifier `sda-bed-lossless-v1`.
 They do not contain AAC, MPEG Audio, or renamed PCM payloads. This initial
 implementation is lossless and variable bitrate. There is no target-bitrate

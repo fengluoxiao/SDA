@@ -1245,3 +1245,6 @@ mod av3a_native_tests;
 pub unsafe extern "C" fn sda_ios_sdar_metadata(path:*const c_char)->*mut c_char {
  guarded(||{let path=unsafe{text(path)?};if !sda_format::BedFile::is_sda(path){return Ok(Value::Null);}sda_format::metadata::track_metadata(path)})
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_is_sdar(path:*const c_char)->i32{std::panic::catch_unwind(||{let Ok(path)=(unsafe{text(path)})else{return 0};i32::from(sda_format::BedFile::is_sda(path))}).unwrap_or(0)}

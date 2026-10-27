@@ -9,6 +9,7 @@ char *sda_ios_feed(void *engine, const uint8_t *bytes, size_t length);
 void sda_ios_render(void *engine, float *left, float *right, size_t frames);
 void sda_ios_close(void *engine);
 char *sda_ios_sdar_metadata(const char *path);
+int32_t sda_ios_is_sdar(const char *path);
 void sda_ios_string_free(char *string);
 // Control/PCM calls must be serialized by the host; no realtime callback uses this handle.
 void *sda_ios_speakers_create(char **error);

@@ -125,6 +125,8 @@ export interface AuthoredPcmInput {
   summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"};
   read():Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
   close():Promise<unknown>;setLayout?(layout:string):Promise<unknown>;
+  setCinema?(settings:unknown,profileId:string|null):Promise<unknown>;
+  shouldResume?():boolean;
 }
 
 export interface PlayerCallbacks {
@@ -201,6 +203,7 @@ export type OutputBackend = "web-audio" | "native-sidecar";
 export interface SdaPlayerOptions {
   /** Known before init: file-owned mixing must not receive ordinary UI controls. */
   authoredSource?: boolean;
+  authoredMasterEditable?: boolean;
   /** Validated output FIFO setting to use when this player creates its first
    * AudioContext. Invalid values safely fall back to 100ms. */
   initialOutputLatencySeconds?: number;
@@ -443,12 +446,16 @@ export class SdaPlayer {
   private disposed = false;
   private authoredInput:AuthoredPcmInput|null=null;
   private authoredSourceExpected = false;
+  private authoredMasterEditable = false;
+  private authoredControlChain:Promise<unknown> = Promise.resolve();
+  get isEditableAuthoredMaster():boolean{return this.isAuthoredSource&&this.authoredMasterEditable;}
   get isAuthoredSource():boolean{return this.authoredSourceExpected === true || this.authoredInput != null;}
   get isLosslessAuthoredSource():boolean{return this.authoredInput?.lossless===true;}
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
     this.authoredSourceExpected = options.authoredSource === true;
+    this.authoredMasterEditable = options.authoredMasterEditable === true;
     this.headPoseOptions = options.headPose;
     this.headPoseStabilized=options.headPoseStabilized===true;
     this.nativeHeadTracker = new HeadPoseTracker({...options.headPose,fixedForward:true});
@@ -559,7 +566,7 @@ export class SdaPlayer {
   setLayout(layout: readonly VirtualSpeaker[], manual = true): void {
     if (!this.initArgs) return;
     if (manual) this.autoLayoutEnabled = false;
-    if(this.authoredInput){if(manual&&this.authoredInput.setLayout){const input=this.authoredInput;void(async()=>{const paused=this.pausedState;await this.pause();await input.setLayout!(layoutIdFor(layout));if(!this.disposed&&this.authoredInput===input&&!paused)await this.resume();})().catch(error=>this.cb.onError?.(String(error)));}this.initArgs.layout=layout;return;}
+    if(this.isAuthoredSource){if(manual&&this.authoredInput?.setLayout)void this.queueAuthoredEdit(input=>input.setLayout!(layoutIdFor(layout))).catch(error=>this.cb.onError?.(String(error)));this.initArgs.layout=layout;return;}
     this.initArgs.layout = layout;
     this.renderer?.setLayout(layout);
     if (this.outputBackend === "native-sidecar") {
@@ -1047,6 +1054,16 @@ export class SdaPlayer {
       await reader.cancel();
       reader.releaseLock();
     }
+  }
+
+  private queueAuthoredEdit(operation:(input:AuthoredPcmInput)=>Promise<unknown>):Promise<unknown>{
+    const input=this.authoredInput;if(!input)return Promise.reject(Error("请等待文件载入完成"));
+    const task=async()=>{if(this.disposed||this.authoredInput!==input)throw Error("文件会话已更换");const paused=this.pausedState;await this.pause();try{return await operation(input);}finally{if(!this.disposed&&this.authoredInput===input&&!paused&&(input.shouldResume?.()??true))await this.resume();}};
+    const result=this.authoredControlChain.then(task);this.authoredControlChain=result.catch(()=>{});return result;
+  }
+  async editAuthoredCinema(settings:unknown,profileId:string|null):Promise<boolean>{
+    if(!this.isEditableAuthoredMaster)throw Error("只有 WAV 母版允许调整房间");
+    await this.queueAuthoredEdit(async input=>{if(!input.setCinema)throw Error("请重启桌面版加载母版编辑接口");const accepted=await input.setCinema(settings,profileId);if(accepted!==true)throw Error("母版房间设置未被接受");});return true;
   }
 
   /** A source-owned stream: all programme/spatial decisions come from its file. */

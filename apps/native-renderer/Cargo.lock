@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -478,6 +482,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "ndk"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,6 +797,7 @@ name = "sda-format"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "miniz_oxide",
  "rubato",
  "serde",
  "serde_json",

@@ -1,0 +1,13 @@
+[package]
+name="adler2"
+version="2.0.1"
+edition="2021"
+license="0BSD OR MIT OR Apache-2.0"
+autobenches=false
+autotests=false
+[lib]
+path="src/lib.rs"
+[features]
+default=["std"]
+std=[]
+rustc-dep-of-std=[]

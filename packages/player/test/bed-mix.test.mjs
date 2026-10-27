@@ -83,3 +83,12 @@ protectedPlayer.authoredInput = null;
 protectedPlayer.syncSpeakerMutes(new Set(['FrontLeft']));
 assert.deepEqual(calls,[['speakers',['FrontLeft'],[]]],'ordinary playback still forwards monitoring controls');
 console.log('SDAR routing protection: pending/active files skip ordinary speaker, bed, object and LFE sync; ordinary playback remains controllable');
+
+const editable=Object.create(SdaPlayer.prototype),order=[];let resumeAllowed=true;
+Object.assign(editable,{authoredSourceExpected:true,authoredMasterEditable:true,disposed:false,pausedState:false,authoredControlChain:Promise.resolve(),authoredInput:{setCinema:async settings=>{order.push(settings.id);return true},shouldResume:()=>resumeAllowed},pause:async()=>{order.push('pause');editable.pausedState=true},resume:async()=>{order.push('resume');editable.pausedState=false}});
+await Promise.all([editable.editAuthoredCinema({id:'room-a'},null),editable.editAuthoredCinema({id:'room-b'},null)]);
+assert.deepEqual(order,['pause','room-a','resume','pause','room-b','resume'],'master edits serialize transport changes');
+order.length=0;resumeAllowed=false;await editable.editAuthoredCinema({id:'room-c'},null);assert.deepEqual(order,['pause','room-c'],'a user pause during reconfiguration is preserved');
+editable.authoredMasterEditable=false;await assert.rejects(()=>editable.editAuthoredCinema({},null),/只有 WAV 母版/);
+const opening=Object.create(SdaPlayer.prototype);Object.assign(opening,{authoredSourceExpected:true,authoredInput:null,initArgs:{},nativeRendererSink:{setLayout:()=>{throw Error('ordinary layout must not reset an opening file')}}});opening.setLayout([],true);
+console.log('WAV-only authoring serializes room edits, respects pause intent and protects pending file initialization');

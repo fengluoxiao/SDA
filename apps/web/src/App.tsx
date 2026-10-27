@@ -565,6 +565,7 @@ export function App() {
       source: PlaybackSource,
       sourceReference: StereoProgrammeReference | null = null,
       authoredSource = false,
+      authoredMasterEditable = false,
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
@@ -966,7 +967,7 @@ export function App() {
           }
         },
       }, {
-        authoredSource,
+        authoredSource,authoredMasterEditable,
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: !readBinauralHead().startsWith("personal-") && readDenseBinauralObjects(),
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
@@ -1498,7 +1499,7 @@ export function App() {
         }
         // Build privately first. A stale request never gets to replace or dispose
         // the active player published by a newer request.
-        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source, sourceReference, !!authored);
+        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source, sourceReference, !!authored, authored?.kind==="wav-master");
         if (!player || !isCurrent()) return;
         playerRef.current = player;
         setPlayerReady(player);
@@ -1528,7 +1529,7 @@ export function App() {
           const opened=await desktop.openAuthoredFile(localPath,["2.0","2.1"].includes(target)?"7.1.4":target);
           if(!isCurrent()||playerRef.current!==player){await desktop.closeAuthoredFile(opened.id);return;}
           await player.playAuthoredPcm({frames:opened.frames,inputRate:opened.inputRate,labels:opened.labels,lossless:opened.lossless,summary:opened.summary,coverArt:opened.coverArt,
-            read:()=>desktop.pullAuthoredFile!(opened.id),close:()=>desktop.closeAuthoredFile!(opened.id),setLayout:layout=>desktop.setAuthoredFileLayout!(opened.id,layout)});
+            read:()=>desktop.pullAuthoredFile!(opened.id),close:()=>desktop.closeAuthoredFile!(opened.id),setLayout:layout=>desktop.setAuthoredFileLayout!(opened.id,layout),shouldResume:()=>!pausedRef.current&&isCurrent(),setCinema:(settings,profileId)=>{if(!desktop.setAuthoredFileCinema)throw Error("请重启桌面版加载母版编辑接口");return desktop.setAuthoredFileCinema(opened.id,settings as CinemaSettings,profileId);}});
         } else if (isFlacFile(sourceName)) {
           await player.playDecodedPcm(await decodeFlac(source), "flac");
         } else if (source.kind === "file") {
@@ -1720,6 +1721,7 @@ export function App() {
   };
   const applyRoomPreset=async(roomId:string)=>{
     const api=window.sdaDesktop;
+    if(playerRef.current?.isAuthoredSource){if(!playerRef.current.isEditableAuthoredMaster)throw Error("只有 WAV 母版允许换房间");const current=await api?.getCinemaSettings?.();if(!current||!await api?.nativeRendererCinema?.(roomListeningSettings(current.settings),roomId))throw Error("母版房间未被接受");setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));return;}
     if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
     if(roomComparison!==null)await restoreRoomComparison();
     if(!(await api.getNativeRendererStatus?.())?.running)await api.startNativeRenderer?.();
@@ -1731,6 +1733,7 @@ export function App() {
     setRoomAudition(v=>({...v,profileId:roomId,stage:"full"}));
   };
   const applyRoomComparison=async(next:ComparisonMode,gainDb:number,roomId:string,stage:RoomAudition["stage"]="full",receiverProfile?:string)=>{
+    if(playerRef.current?.isAuthoredSource)throw Error("文件混音不使用普通源对照；WAV 母版可在房间与校准页面编辑");
     const api=window.sdaDesktop;if(!api?.getCinemaSettings)throw new Error("需要新版 Electron");
     if(!comparisonRestore.current)comparisonRestore.current={head:binauralHead,dense:denseBinauralObjects,calibrated:ku100Calibration,stereo:stereoRenderMode,cinema:await api.getCinemaSettings()};
     localStorage.setItem("sda-room-comparison-backup",JSON.stringify(comparisonRestore.current));
@@ -1960,6 +1963,8 @@ export function App() {
     const source = lastSourceRef.current;
     if (source) void play(source);
   }, [play]);
+
+  useEffect(()=>{const api=window.sdaDesktop;if(!api?.bindAuthoredRoomEditor||!playerReady?.isEditableAuthoredMaster)return;return api.bindAuthoredRoomEditor((settings,profileId)=>playerReady.editAuthoredCinema(settings,profileId));},[playerReady]);
 
   const openFile = useCallback(async () => {
     const desktop = window.sdaDesktop;

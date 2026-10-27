@@ -1,5 +1,6 @@
 /** Preload: expose the minimal file-access bridge to the web build. */
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+let authoredRoomEditor=null;
 let nativeBackdrop = process.argv.find(arg => arg.startsWith("--sda-native-backdrop="))?.split("=")[1] === "acrylic" ? "acrylic" : "none";
 ipcRenderer.on("sda:window-backdrop", (_event, material) => {
   nativeBackdrop = material === "acrylic" ? "acrylic" : "none";
@@ -112,6 +113,8 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   openAuthoredFile: (filePath,layout) => ipcRenderer.invoke("sda:open-authored-file",filePath,layout),
   pullAuthoredFile: id => ipcRenderer.invoke("sda:pull-authored-file",id,4096),
   closeAuthoredFile: id => ipcRenderer.invoke("sda:close-authored-file",id),
+  bindAuthoredRoomEditor: callback=>{authoredRoomEditor=callback;return ()=>{if(authoredRoomEditor===callback)authoredRoomEditor=null;}},
+  setAuthoredFileCinema:(id,settings,profileId)=>ipcRenderer.invoke("sda:authored-cinema",id,settings,profileId),
   setAuthoredFileLayout: (id,layout) => ipcRenderer.invoke("sda:layout-authored-file",id,layout),
   analyzeStereoLoudness: filePath => ipcRenderer.invoke("sda:stereo-loudness", filePath),
   cancelStereoLoudness: () => ipcRenderer.invoke("sda:stereo-loudness-cancel"),
@@ -121,7 +124,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   importCinemaRoom: () => ipcRenderer.invoke("sda:cinema-import"),
   deleteCinemaRoom: (id) => ipcRenderer.invoke("sda:cinema-delete", id),
   exportCinemaReport: (id) => ipcRenderer.invoke("sda:cinema-export-report", id),
-  nativeRendererCinema: (settings, profileId) => ipcRenderer.invoke("sda:native-renderer-cinema", settings, profileId),
+  nativeRendererCinema: async (settings,profileId)=>{const mode=await ipcRenderer.invoke("sda:authored-room-mode");if(mode){if(mode!=="wav-master")throw Error("只有 WAV 母版允许调整房间；SDAR / M4A 为交付文件");if(!authoredRoomEditor)throw Error("请等待母版载入完成");return authoredRoomEditor(settings,profileId);}return ipcRenderer.invoke("sda:native-renderer-cinema",settings,profileId);},
   roomLabStatus: () => ipcRenderer.invoke("sda:room-lab-status"),
   roomLabGenerate: (config) => ipcRenderer.invoke("sda:room-lab-generate", config),
   roomLabCancel: () => ipcRenderer.invoke("sda:room-lab-cancel"),

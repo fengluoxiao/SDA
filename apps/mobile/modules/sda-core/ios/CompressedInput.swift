@@ -51,6 +51,10 @@ final class CompressedInput {
    let profile = String(data:signature.suffix(4),encoding:.ascii)
    isSdar = (magic == "SDAR" && (profile == "BCH1" || profile == "BCH2")) || (atom == "ftyp" && profile == "sda1")
   }
+  if !isSdar && signature.count == 12 {
+   let magic=String(data:signature.prefix(4),encoding:.ascii)
+   if ["RIFF","RF64"].contains(magic ?? "") { isSdar = sda_ios_is_sdar(url.path) != 0 }
+  }
   if isSdar { nativeCodec="sdar"; return }
   if ext == "sdar" { throw SdaError.message("无效或尚未支持的 SDAR 床层文件") }
   isAv3a = ext == "av3a"
@@ -65,7 +69,7 @@ final class CompressedInput {
    }
   } else if ["m4a", "mp4"].contains(ext) {
    try reopenAfterInterruption()
-  } else { throw SdaError.message("支持 SDAR、SDA M4A、立体声 ALAC、E-AC-3/Atmos、MHAS、AV3A 和 MP3") }
+  } else { throw SdaError.message("支持 SDA WAV 母版、SDAR、SDA M4A、立体声 ALAC、E-AC-3/Atmos、MHAS、AV3A 和 MP3") }
  }
  // The Apple speaker route accepts the verified channel-based 7.1.4 profile.
  // Mix/HOA transport counts do not identify speaker layouts; keep their scene

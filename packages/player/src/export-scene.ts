@@ -32,15 +32,16 @@ export function exportRenderMetadata(snapshot:Record<string,unknown>|null|undefi
     };
   });
   return {schema:"sda.render-metadata",version:1,profile:"SDAR Bed Channel",
+    interchange:{schema:"sda.interchange",version:1,rendererContract:{id:"sda.authored-scene",version:1},requiredFeatures:["bed-scene-v1","file-processing-v1","embedded-render-assets-v1"],processingOrder:"source-processing-then-file-render",bakedProcessing:"baked",runtimeParameters:"playbackSnapshot",resources:"assets",unsupportedRequiredFeature:"error"},
     coordinateSystem:{spherical:"azimuth-positive-left; elevation-positive-up; distance-reference-ring",cartesian:"ADM: X-right, Y-front, Z-up"},
     scene:{kind:"bed",layout:"7.1.4",channels,objects:[],automation:[],durationSamples:stats.frames,sampleRate:48000},
     playbackSnapshot:snapshot??{available:false,reason:"export invoked without a playback snapshot"},
     output:{sampleRate:48000,channels:12,bitsPerSample:24,pcmFormat:"signed-little-endian",channelMask:0x2d63f,sourceSampleRate:stats.sourceSampleRate},
-    baked:{upmix:{algorithm:"native-mobile-stereo-matrix-v1",levelTrimDb:SDA_UPMIX_LEVEL_TRIM_DB},
+    baked:{upmix:{applied:true,algorithm:"native-mobile-stereo-matrix-v1",levelTrimDb:SDA_UPMIX_LEVEL_TRIM_DB},
       volumeBalance:{applied:true,enabled:stats.volumeBalanceEnabled,policy:"source-rate-full-track-reference-v1",targetLufs:-18,sourceLufs:stats.sourceLufs,programmeGainDb:stats.programmeGainDb,makeupDb:stats.programmeMakeupDb},
       spatialBalance:{applied:true,enabled:stats.spatialBalanceEnabled,algorithm:"directional-spectral-redistribution-v1",clarityShelf:{frequencyHz:4000,gainDb:stats.spatialBalanceEnabled?0.6:0}},
       peakProtection:{policy:"whole-file-linked-headroom-v1",ceilingDbtp:-1,headroomGainDb:stats.peakHeadroomGainDb,truePeakDbtp:stats.truePeakDbtp},dither:"TPDF PCM24"},
-    playbackPolicy:{authority:"file-authored",applyBakedProcessingAgain:false,overrideUserEnhancementPresets:true,unsupportedProcessing:"error",mobileDefaultLayout:"7.1.4",listenerSystemVolume:"user-controlled"},
+    playbackPolicy:{authority:"file-authored",applyBakedProcessingAgain:false,overrideUserEnhancementPresets:true,unsupportedProcessing:"error",mobileDefaultLayout:"7.1.4",listenerSystemVolume:"user-controlled",listenerHeadPose:"user-controlled"},
     assets,
     runtimeRecipe:{source:"playbackSnapshot",operations:["HRTF","headphone EQ","room simulation","monitor hardware","head tracking","speaker routing"],automationRecorded:false},
     rendererRevision:stats.rendererRevision??(snapshot?.native as {rendererRevision?:string}|undefined)?.rendererRevision??null,

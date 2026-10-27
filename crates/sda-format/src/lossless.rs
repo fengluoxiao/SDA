@@ -8,6 +8,12 @@ use std::{
     io::{Seek, Write},
     path::Path,
 };
+pub mod compact;
+pub mod linear;
+pub fn inflate_metadata(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(bytes, MAX_METADATA)
+        .map_err(|e| format!("Invalid compressed SDA metadata: {e:?}"))
+}
 pub const CODEC: &str = "sda-bed-lossless-v1";
 pub const MAGIC: &[u8; 13] = b"SDAR0002BCH2\n";
 pub const BLOCK: usize = 1024;
@@ -129,7 +135,7 @@ impl ReadBits<'_> {
         let mut q = 0u64;
         while !self.bit()? {
             q += 1;
-            if q > 4096 {
+            if q > 65536 {
                 return Err("SDAR residual quotient too large".into());
             }
         }
@@ -240,6 +246,9 @@ pub fn decode_packet(
         return Err("SDAR packet too large".into());
     }
     let b = unseal(b)?;
+    if b.starts_with(b"SBL3") || b.starts_with(b"SBC2") {
+        return linear::decode(&b, start, channels, frames);
+    }
     if b.len() < 16 + channels * 8
         || &b[..4] != b"SBL1"
         || u64::from_le_bytes(b[4..12].try_into().unwrap()) != start
@@ -332,6 +341,8 @@ pub struct Head {
     pub frames: u64,
     pub master_frames: u64,
     pub block_frames: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -410,6 +421,7 @@ pub struct LosslessFile {
     pub metadata: Metadata,
     pub wave_header: Vec<u8>,
     pub wave_tail: Vec<u8>,
+    pub container: String,
     pub at: u64,
     queue: Vec<std::collections::VecDeque<i32>>,
 }
@@ -423,8 +435,19 @@ impl LosslessFile {
         let head: Head = serde_json::from_slice(&unseal(&raw)?).map_err(|e| e.to_string())?;
         let (raw, at) = read_record(&mut file, at, b"WAVH", MAX_METADATA * 2)?;
         let header = unseal(&raw)?;
-        let (raw, audio_start) = read_record(&mut file, at, b"WAVT", MAX_METADATA * 2)?;
+        let compressed = exact(&mut file, at, 4)? == b"WVTZ";
+        let (raw, audio_start) = read_record(
+            &mut file,
+            at,
+            if compressed { b"WVTZ" } else { b"WAVT" },
+            MAX_METADATA * 2,
+        )?;
         let tail = unseal(&raw)?;
+        let tail = if compressed {
+            inflate_metadata(&tail)?
+        } else {
+            tail
+        };
         let size = file.metadata().map_err(|e| e.to_string())?.len();
         if size < 25 {
             return Err("Truncated SDAR index".into());
@@ -477,10 +500,13 @@ impl LosslessFile {
     ) -> Result<Self, String> {
         if head.schema != "sda.bed-file"
             || head.version != 2
-            || head.codec != CODEC
+            || ![CODEC, compact::LOSSLESS, compact::COMPACT].contains(&head.codec.as_str())
+            || (head.codec == compact::COMPACT
+                && (head.sample_rate != 48000
+                    || ![Some(768), Some(1024), Some(1536)].contains(&head.bitrate_kbps)))
             || head.profile != "SDAR Bed Channel"
             || head.bits != 24
-            || head.block_frames != BLOCK
+            || ![BLOCK, linear::FRAMES].contains(&head.block_frames)
             || ![44100, 48000, 96000].contains(&head.sample_rate)
             || head.channels != metadata.channels()
             || head.master_frames != metadata.master_frames()
@@ -488,14 +514,14 @@ impl LosslessFile {
                 != (head.master_frames as f64 * head.sample_rate as f64 / 48000.).round() as u64
             || head.frames == 0
             || entries.len() > 1_000_000
-            || entries.len() as u64 != head.frames.div_ceil(BLOCK as u64)
+            || entries.len() as u64 != head.frames.div_ceil(head.block_frames as u64)
         {
             return Err("Invalid SDA lossless configuration".into());
         }
         let size = file.metadata().map_err(|e| e.to_string())?.len();
         let mut end = 0;
         for (i, e) in entries.iter().enumerate() {
-            if e.sample != i as u64 * BLOCK as u64
+            if e.sample != i as u64 * head.block_frames as u64
                 || e.bytes == 0
                 || e.bytes > 2 * 1024 * 1024
                 || e.offset < end
@@ -517,6 +543,7 @@ impl LosslessFile {
             metadata,
             wave_header: vec![],
             wave_tail: vec![],
+            container: "sdar".into(),
             at: 0,
             queue,
         })
@@ -547,10 +574,20 @@ impl LosslessFile {
         let mut out = vec![Vec::with_capacity(n); self.head.channels];
         while out[0].len() < n {
             if self.queue[0].is_empty() {
-                let index = (self.at / BLOCK as u64) as usize;
+                let index = (self.at / self.head.block_frames as u64) as usize;
                 let e = &self.entries[index];
-                let count = (self.head.frames - e.sample).min(BLOCK as u64) as usize;
+                let count =
+                    (self.head.frames - e.sample).min(self.head.block_frames as u64) as usize;
                 let packet = exact(&mut self.file, e.offset, e.bytes)?;
+                let valid = match self.head.codec.as_str() {
+                    CODEC => packet.starts_with(b"SBL1"),
+                    compact::LOSSLESS => packet.starts_with(b"SBL3"),
+                    compact::COMPACT => packet.starts_with(b"SBC2"),
+                    _ => false,
+                };
+                if !valid {
+                    return Err("SDAR packet does not match declared compression".into());
+                }
                 let pcm = decode_packet(&packet, e.sample, self.head.channels, count)?;
                 let skip = (self.at - e.sample) as usize;
                 for (ch, data) in pcm.iter().enumerate() {
@@ -574,12 +611,22 @@ impl LosslessFile {
     }
 }
 
-pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
+pub fn encode(
+    input: &Path,
+    output: &Path,
+    rate: u32,
+    bitrate: Option<u32>,
+) -> Result<Head, String> {
     use rubato::{
         Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
     };
     if ![44100, 48000, 96000].contains(&rate) {
         return Err("Unsupported SDA sample rate".into());
+    }
+    if bitrate.is_some_and(|v| ![768, 1024, 1536].contains(&v))
+        || (bitrate.is_some() && rate != 48000)
+    {
+        return Err("SDAR compact delivery requires 48 kHz and 768/1024/1536 kbps".into());
     }
     let (mut source, format, metadata) = metadata::read_master(input, true)?;
     let size = source.metadata().map_err(|e| e.to_string())?.len();
@@ -600,14 +647,20 @@ pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
     let head = Head {
         schema: "sda.bed-file".into(),
         version: 2,
-        codec: CODEC.into(),
+        codec: if bitrate.is_some() {
+            compact::COMPACT
+        } else {
+            compact::LOSSLESS
+        }
+        .into(),
         profile: "SDAR Bed Channel".into(),
         sample_rate: rate,
         channels: format.channels,
         bits: 24,
         frames: (metadata.master_frames() as f64 * rate as f64 / 48000.).round() as u64,
         master_frames: metadata.master_frames(),
-        block_frames: BLOCK,
+        block_frames: linear::FRAMES,
+        bitrate_kbps: bitrate,
     };
     let mut file = OpenOptions::new()
         .write(true)
@@ -617,7 +670,11 @@ pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
     file.write_all(MAGIC).map_err(|e| e.to_string())?;
     write_record(&mut file, "HEAD", &seal(json_bytes(&head)?))?;
     write_record(&mut file, "WAVH", &seal(header))?;
-    write_record(&mut file, "WAVT", &seal(tail))?;
+    write_record(
+        &mut file,
+        "WVTZ",
+        &seal(miniz_oxide::deflate::compress_to_vec_zlib(&tail, 6)),
+    )?;
     let mut resampler = if rate != 48000 {
         Some(
             SincFixedIn::<f32>::new(
@@ -644,7 +701,7 @@ pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
     let (mut read_at, mut written) = (0u64, 0u64);
     let mut entries = vec![];
     while written < head.frames {
-        let n = (head.frames - written).min(BLOCK as u64) as usize;
+        let n = (head.frames - written).min(head.block_frames as u64) as usize;
         while queues[0].len() < n {
             let count = (head.master_frames - read_at).min(BLOCK as u64) as usize;
             if count == 0 && resampler.is_none() {
@@ -688,7 +745,7 @@ pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
             }
         }
         let pcm: Vec<Vec<i32>> = queues.iter_mut().map(|q| q.drain(..n).collect()).collect();
-        let packet = encode_packet(&pcm, written)?;
+        let packet = linear::encode(&pcm, written, bitrate, rate)?;
         let at = write_record(&mut file, "AUD2", &packet)?;
         entries.push(Entry {
             sample: written,
@@ -709,8 +766,19 @@ pub fn encode(input: &Path, output: &Path, rate: u32) -> Result<Head, String> {
     Ok(head)
 }
 pub fn restore(input: &Path, output: &Path) -> Result<(), String> {
-    let mut source = LosslessFile::open(input)?;
-    if source.head.sample_rate != 48000 || source.head.frames != source.head.master_frames {
+    let mut source = if exact(&mut File::open(input).map_err(|e| e.to_string())?, 0, 4)? == b"SDAR"
+    {
+        LosslessFile::open(input)?
+    } else {
+        crate::mp4::open_lossless(input)?.ok_or("Not a restorable SDAR master")?
+    };
+    if source.wave_header.is_empty() {
+        return Err("This delivery does not contain an original WAV master envelope".into());
+    }
+    if source.head.codec == compact::COMPACT
+        || source.head.sample_rate != 48000
+        || source.head.frames != source.head.master_frames
+    {
         return Err("Rate-converted delivery is not an original WAV master".into());
     }
     let mut out = OpenOptions::new()

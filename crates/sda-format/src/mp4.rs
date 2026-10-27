@@ -686,21 +686,35 @@ impl AacSource {
 
 /// New exports carry SDA predictive lossless packets. Legacy AAC is read separately.
 pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile>, String> {
-    use crate::lossless::{Entry, Head, LosslessFile, BLOCK, CODEC};
+    use crate::lossless::{Entry, Head, LosslessFile, CODEC};
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     let top = atoms(&mut file, 0, length)?;
+    for id in [b"sdaf", b"sdrm", b"sdid", b"sdiz"] {
+        if top.iter().filter(|a| &a.id == id).count() > 1 {
+            return Err("Duplicate SDA metadata authority".into());
+        }
+    }
+    if top.iter().any(|a| a.id == *b"sdid") && top.iter().any(|a| a.id == *b"sdiz") {
+        return Err("Conflicting SDA resource metadata".into());
+    }
     let Some(sf) = top.iter().find(|a| a.id == *b"sdaf") else {
         return Ok(None);
     };
     let transport: Value =
         serde_json::from_slice(&bytes(&mut file, sf)?).map_err(|e| e.to_string())?;
-    if transport["version"] != 3 {
+    if transport["version"] != 3 && transport["version"] != 4 {
         return Ok(None);
     }
     if transport["schema"] != "sda.delivery"
         || transport["codec"] != "sdar-bed-channel"
-        || transport["compression"] != CODEC
+        || ![
+            CODEC,
+            crate::lossless::compact::LOSSLESS,
+            crate::lossless::compact::COMPACT,
+        ]
+        .iter()
+        .any(|&c| transport["compression"] == c)
     {
         return Err("Unsupported SDA lossless transport".into());
     }
@@ -716,7 +730,37 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         .find(|a| a.id == *b"sdid")
         .map(|a| bytes(&mut file, a))
         .transpose()?;
-    let metadata = Metadata::parse(render, id3.as_deref())?;
+    let id3 = if let Some(b) = id3 {
+        Some(b)
+    } else if let Some(atom) = top.iter().find(|a| a.id == *b"sdiz") {
+        Some(crate::lossless::inflate_metadata(&bytes(&mut file, atom)?)?)
+    } else {
+        None
+    };
+    let wave_header = top
+        .iter()
+        .find(|a| a.id == *b"sdwh")
+        .map(|a| bytes(&mut file, a))
+        .transpose()?
+        .unwrap_or_default();
+    let wave_tail = top
+        .iter()
+        .find(|a| a.id == *b"sdwt")
+        .map(|a| bytes(&mut file, a).and_then(|v| crate::lossless::inflate_metadata(&v)))
+        .transpose()?
+        .unwrap_or_default();
+    let metadata = if !wave_header.is_empty() || !wave_tail.is_empty() {
+        if id3.is_some() || wave_header.is_empty() || wave_tail.is_empty() {
+            return Err("Conflicting SDAR master envelope".into());
+        }
+        let meta = crate::lossless::wave_metadata(&wave_header, &wave_tail)?;
+        if meta.render != render {
+            return Err("SDAR envelope rendering metadata mismatch".into());
+        }
+        meta
+    } else {
+        Metadata::parse(render, id3.as_deref())?
+    };
     let moov = top
         .iter()
         .find(|a| a.id == *b"moov")
@@ -762,14 +806,19 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     let config: Value = serde_json::from_slice(&child_bytes(&mut file, &entry, b"sdac")?)
         .map_err(|e| e.to_string())?;
     if config["schema"] != "sda.bed-codec"
-        || config["version"] != 2
+        || (config["version"] != 2 && config["version"] != 3)
         || config["codec"] != "sdar-bed-channel"
-        || config["compression"] != CODEC
-        || config["lossless"] != true
+        || config["compression"] != transport["compression"]
+        || config["lossless"] != (transport["compression"] != crate::lossless::compact::COMPACT)
     {
         return Err("Unsupported SDA predictive codec configuration".into());
     }
     let head: Head = serde_json::from_value(config["stream"].clone()).map_err(|e| e.to_string())?;
+    if config["compression"] != head.codec
+        || transport["lossless"] != (head.codec != crate::lossless::compact::COMPACT)
+    {
+        return Err("SDAR codec configuration mismatch".into());
+    }
     if transport["frames"].as_u64() != Some(head.frames)
         || transport["sampleRate"].as_u64() != Some(head.sample_rate as u64)
         || transport["masterFrames"].as_u64() != Some(head.master_frames)
@@ -792,7 +841,9 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         let n = count(&stts, 8 + i * 8)?;
         let duration = be32(&stts, 12 + i * 8)? as u64;
         for _ in 0..n {
-            if block >= sizes.len() || duration != (head.frames - sample).min(BLOCK as u64) {
+            if block >= sizes.len()
+                || duration != (head.frames - sample).min(head.block_frames as u64)
+            {
                 return Err("SDA packet timing mismatch".into());
             }
             sample += duration;
@@ -807,10 +858,17 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         .zip(sizes)
         .enumerate()
         .map(|(i, (offset, bytes))| Entry {
-            sample: i as u64 * BLOCK as u64,
+            sample: i as u64 * head.block_frames as u64,
             offset,
             bytes: bytes as usize,
         })
         .collect();
-    Ok(Some(LosslessFile::new(file, head, entries, metadata)?))
+    let mut source = LosslessFile::new(file, head, entries, metadata)?;
+    source.wave_header = wave_header;
+    source.wave_tail = wave_tail;
+    source.container = transport["container"].as_str().unwrap_or("m4a").to_string();
+    if !["sdar", "m4a"].contains(&source.container.as_str()) {
+        return Err("Unknown SDAR delivery container role".into());
+    }
+    Ok(Some(source))
 }

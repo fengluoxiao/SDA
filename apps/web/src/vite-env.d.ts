@@ -202,7 +202,7 @@ declare global {
       nativeRendererClearPose?: () => Promise<boolean>;
       nativeRendererHrtf?: (set: string, wetWeight: number) => Promise<boolean>;
       nativeRendererStereoMode?: (mode: "original" | "dry" | "room") => Promise<boolean>;
-      getCinemaSettings?: () => Promise<{settings: CinemaSettings; profileId: string | null; error?: string}>;
+      getCinemaSettings?: () => Promise<{authored?:boolean;editableMaster?:boolean;settings: CinemaSettings; profileId: string | null; error?: string}>;
       listCinemaRooms?: () => Promise<CinemaRoomSummary[]>;
       importCinemaRoom?: () => Promise<CinemaRoomSummary | null>;
       deleteCinemaRoom?: (id: string) => Promise<boolean>;
@@ -236,13 +236,15 @@ declare global {
       openAuthoredFile?: (path:string,layout:string) => Promise<{id:string;kind:string;lossless:boolean;layout:string;frames:number;sampleRate:number;inputRate:number;channels:number;labels:string[];render:Record<string,unknown>;summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"}}>;
       pullAuthoredFile?: (id:string) => Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
       closeAuthoredFile?: (id?:string) => Promise<boolean>;
+      bindAuthoredRoomEditor?: (callback:(settings:CinemaSettings,profileId:string|null)=>Promise<boolean>)=>(()=>void);
+      setAuthoredFileCinema?: (id:string,settings:CinemaSettings,profileId:string|null)=>Promise<boolean>;
       setAuthoredFileLayout?: (id:string,layout:string) => Promise<boolean>;
       analyzeStereoLoudness?: (filePath:string) => Promise<{codec:string;sampleRate:number;channels:number;integratedLufs:number|null;truePeakDbtp:number|null;blocks:number;frames:number;size:number;mtimeMs:number;policy:string}|null>;
       cancelStereoLoudness?: () => Promise<boolean>;
       onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;
-      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sampleRate?:number;bitrateKbps?:number;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
-      getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[];codecs?:string[]}>;
+      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sampleRate?:number;bitrateKbps?:number;lossless?:boolean;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
+      getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[];codecs?:string[];compressionModes?:string[]}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
       cancelUpmixExport?: () => Promise<boolean>;
       revealUpmixExport?: () => Promise<void>;

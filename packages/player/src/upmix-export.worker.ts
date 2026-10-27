@@ -15,7 +15,7 @@ const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
 const delivery=require("../../../apps/desktop/sda-delivery.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
 const {buildMetadataChunks,chunk:riffChunk}=require("../../../apps/desktop/wav-metadata.cjs");
-const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
+const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;lossless?:boolean;renderOverride?:{render:Record<string,any>;assets:{sha256:string;filename:string;data:Uint8Array}[]}|null;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
 const balancedPath=job.balancedPath??job.floatPath+".balanced";
 const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
 const cancelled=new Int32Array(job.cancel);
@@ -48,7 +48,7 @@ async function finishDelivery(master:string){
  const target=job.deliveryPath;if(!target)throw Error("导出临时路径缺失");
  progress("encode",.9,true);
  if(format==="sdar")await delivery.writeSdarMaster(master,target,{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
- else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{codec:job.codec,sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{codec:job.codec,sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps,lossless:job.lossless},{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
  else throw Error("不支持此导出格式");
  check();fs.renameSync(target,job.outputPath);
 }
@@ -61,7 +61,8 @@ async function run(){
    const master=delivery.readWaveMaster(job.inputPath);
    // The authored bed is already processed. Conversion never runs the upmixer,
    // loudness analysis or the current listening preset over it again.
-   if((job.format??"wav")==="wav"){
+   if(job.renderOverride){require("../../../apps/desktop/authored-master.cjs").rewriteWaveMaster(job.inputPath,job.stagingPath,job.renderOverride.render,job.renderOverride.assets,{check,progress:(v:number)=>progress("write",.9*v)});await finishDelivery(job.stagingPath);}
+   else if((job.format??"wav")==="wav"){
     const target=job.deliveryPath!;await delivery.writeWaveMaster(job.inputPath,target,{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
    }else {let input=job.inputPath;if(master.head){input=job.stagingPath;await delivery.writeWaveMaster(job.inputPath,input,{rendererPath:job.rendererPath,check});}await finishDelivery(input);}
    parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format!=="wav"?"SDA Bed Lossless v1":"PCM24",frames:master.frames,sampleRate:48000,channels:12,bits:24,

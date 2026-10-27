@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -95,6 +99,13 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+dependencies = [
+ "adler2",
+]
 
 [[package]]
 name = "num-complex"
@@ -190,6 +201,7 @@ name = "sda-format"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "miniz_oxide",
  "rubato",
  "serde",
  "serde_json",

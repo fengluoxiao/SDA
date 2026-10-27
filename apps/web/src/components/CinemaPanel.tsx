@@ -13,6 +13,8 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
   const [rooms,setRooms] = useState<CinemaRoomSummary[]>([]);
   const [saved,setSaved] = useState("");
   const [busy,setBusy] = useState(true);
+  const [readOnly,setReadOnly]=useState(false);
+  const locked=busy||readOnly;
   const [error,setError] = useState("");
   const [view,setView] = useState<"room"|"speakers"|"report">("room");
   const desktop = window.sdaDesktop;
@@ -25,6 +27,7 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
       if(!desktop?.getCinemaSettings || !desktop.listCinemaRooms) throw new Error("请重启 Electron 加载影院接口");
       const [state,list] = await Promise.all([desktop.getCinemaSettings(),desktop.listCinemaRooms()]);
       if(!active)return;
+      setReadOnly(state.authored===true&&state.editableMaster!==true);
       setSettings(state.settings);setProfileId(state.profileId);setRooms(list);
       setSaved(JSON.stringify({settings:state.settings,profileId:state.profileId}));
       if(state.error)setError(state.error);
@@ -38,7 +41,7 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
   };
   const number = (key: "directDb"|"earlyDb"|"lateDb"|"earlyMs"|"crossoverHz"|"bassDb", label:string,min:number,max:number,unit:string) =>
     <label className="cinema-number"><span>{label}</span><input aria-label={label} type="number" min={min} max={max} step={key.endsWith("Db")?0.5:1}
-      value={settings[key]} disabled={busy} onChange={e=>{const value=e.currentTarget.valueAsNumber;if(Number.isFinite(value))setSettings(s=>({...s,[key]:Math.max(min,Math.min(max,value))}));}}/><small>{unit}</small></label>;
+      value={settings[key]} disabled={locked} onChange={e=>{const value=e.currentTarget.valueAsNumber;if(Number.isFinite(value))setSettings(s=>({...s,[key]:Math.max(min,Math.min(max,value))}));}}/><small>{unit}</small></label>;
   const updateSpeaker = (name:string,key:keyof CinemaSpeakerCalibration,value:number)=>{
     if(!Number.isFinite(value))return;
     setSettings(s=>({...s,speakers:{...s.speakers,[name]:{...neutral(),...s.speakers[name],[key]:value}}}));
@@ -54,6 +57,7 @@ export default function CinemaPanel({ layout, speakers, onBack, onClose }: {onCl
     <div className="obj-head"><h2>房间校准 <span className="obj-count">{layout}</span></h2><button onClick={onBack}>返回房间</button>
       <label className="cinema-enable">启用 <input type="checkbox" role="switch" aria-label="启用房间校准" checked={settings.enabled} disabled={busy} onChange={e=>setSettings(s=>({...s,enabled:e.target.checked}))}/></label>
     </div>
+    {readOnly&&<p className="dim">交付文件按内置调优播放；只有 WAV 母版允许修改房间。</p>}
     <div className="speaker-group-tabs cinema-tabs" role="group" aria-label="影院页面">
       {([["room","房间"],["speakers","音箱校准"],["report","测量报告"]] as const).map(([id,label])=><button key={id} aria-pressed={view===id} onClick={()=>setView(id)}>{label}</button>)}
     </div>

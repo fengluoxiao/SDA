@@ -40,7 +40,7 @@ impl MobileEngine {
         {
             return Err("engine already has an active source".into());
         }
-        let mut file = BedFile::open(path)?;
+        let mut file = BedFile::open_interchange(path)?;
         let resources = if let Some(root) = temp_root {
             PreparedResources::new_in(&file.metadata, std::path::Path::new(root))?
         } else {

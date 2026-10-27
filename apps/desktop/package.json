@@ -65,10 +65,12 @@
       "wav-metadata.cjs",
       "export-assets.cjs",
       "authored-playback.cjs",
+      "authored-master.cjs",
       "sda-delivery.cjs",
       "upmix-export-worker.cjs",
       "sdar-mp4.cjs",
-      "sdar-lossless.cjs"
+      "sdar-lossless.cjs",
+      "sdar-public-tags.cjs"
     ],
     "asarUnpack": [
       "node_modules/h5wasm/**",
