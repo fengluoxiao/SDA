@@ -31,6 +31,7 @@ export default function UpmixExport({source,codec,stereo,volumeBalanceEnabled,sp
    <select aria-label="导出格式" value={format} onChange={e=>setFormat(e.target.value as Format)}>{(["wav","sdar","m4a"] as const).map(value=><option key={value} value={value} disabled={!formats.includes(value)}>{value==="sdar"&&objectMode?"SDAR Bed Channel With Objects":labels[value]}</option>)}</select>
    <p>{format==="m4a"?`${sampleRate/1000} kHz · 24-bit PCM 输入/输出 · ${lossless?"无损／自动可变码率":`SDAR 交付压缩 · ${bitrate} kbps 目标`}${objectMode?" · 独立对象":" · 5.1 基础"}` : objectMode?"48 kHz · 24-bit · 原始床声道与独立对象":"48 kHz · 24-bit · 12 声道"}</p>
    <p className="dim">{objectMode?"保留每条床声道、独立对象音频、精确时间轴、位置与移动参数。交付文件由 SDA Renderer 还原对象，移动端默认 7.1.4；WAV 母版保留标准 ADM。":format==="wav"?"桌面母版，保留无损床声道与完整渲染元数据。":format==="sdar"?"无损床层，可由电脑和移动端 SDA 播放。":"单一 SDAR Bed Channel 音轨，以 5.1 为基础并携带完整 SDA 上混声场；移动端默认 7.1.4，其他输出布局沿用 SDA 渲染器。采用 SDA 独立编码；交付模式控制音频码率，无损模式保留完整 PCM。"}</p>
+   {format==="m4a"&&!lossless&&<p className="dim">码率为目标值；为保留逐声道音质，复杂内容的实际码率可能更高。</p>}
    {format==="m4a"&&<button onClick={()=>setM4aDialog(true)}>编码、采样率与比特率…</button>}
    <p className="dim">封面、歌词、歌手、专辑、年份、逐声道方位与渲染资源一起保存在一个最终文件中。</p>
   </fieldset>

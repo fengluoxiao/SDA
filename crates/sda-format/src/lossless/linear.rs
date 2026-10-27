@@ -301,46 +301,52 @@ fn feed(pcm: &[Vec<i32>], i: usize, m: &Model) -> i64 {
     }
     (sum >> 23) as i64
 }
-fn make_packet(
+// Bound reconstructed error independently for every source lane. A target
+// bitrate is never permission to turn quiet stems into audible quantizer noise.
+fn compact_shift_limit(samples: &[i32]) -> u8 {
+    let rms = (samples.iter().map(|&v| (v as f64).powi(2)).sum::<f64>()
+        / samples.len().max(1) as f64)
+        .sqrt();
+    ((rms * 0.004).max(2.0).log2().floor() as u8).min(23)
+}
+
+type EncodedLane = (Vec<i32>, Vec<u8>, u8);
+fn encode_lane(
     pcm: &[Vec<i32>],
-    start: u64,
-    models: &[Model],
-    shift: u8,
+    ch: usize,
+    decoded: &[Vec<i32>],
+    m: &Model,
+    requested_shift: u8,
     lossless: bool,
-) -> Result<Vec<u8>, String> {
-    let n = pcm[0].len();
-    let mut header = Vec::from(if lossless {
-        b"SBL3".as_slice()
+) -> Result<EncodedLane, String> {
+    let n = pcm[ch].len();
+    let mut shift = if lossless {
+        0
     } else {
-        b"SBC2".as_slice()
-    });
-    header.extend(start.to_le_bytes());
-    header.extend((n as u16).to_le_bytes());
-    header.extend([pcm.len() as u8, 24]);
-    let mut decoded: Vec<Vec<i32>> = vec![];
-    let mut body = vec![];
-    for (ch, m) in models.iter().enumerate() {
-        let (mut original_cross, mut decoded_cross, mut history) = (vec![], vec![], vec![]);
+        requested_shift.min(compact_shift_limit(&pcm[ch]))
+    };
+    let signal = pcm[ch].iter().map(|&v| (v as f64).powi(2)).sum::<f64>();
+    loop {
+        let (mut cross_history, mut history) = (vec![], vec![]);
         let mut own = Vec::with_capacity(n);
-        let mut residual = vec![];
+        let mut residual = Vec::with_capacity(n);
+        let mut error_square = 0.;
         let step = 1i64 << shift;
         for i in 0..n {
             if lossless {
-                let pred = prediction(&decoded, &own, i, m);
-                let error = pcm[ch][i] as i64 - pred;
+                let pred = prediction(decoded, &own, i, m);
                 own.push(pcm[ch][i]);
-                residual.push(zig(error));
+                residual.push(zig(pcm[ch][i] as i64 - pred));
                 continue;
             }
-            let original = feed(pcm, i, m) + temporal(&original_cross, i, m)?;
-            let cross = feed(&decoded, i, m) + temporal(&decoded_cross, i, m)?;
-            if original.abs() > 1i64 << 40 || cross.abs() > 1i64 << 40 {
+            // Encoder and decoder must use identical reconstructed references.
+            let cross = feed(decoded, i, m) + temporal(&cross_history, i, m)?;
+            if cross.abs() > 1i64 << 40 {
                 return Err("SDAR cross predictor state exceeds limit".into());
             }
-            original_cross.push(original);
-            decoded_cross.push(cross);
+            cross_history.push(cross);
             let pred = temporal(&history, i, m)?;
-            let error = pcm[ch][i] as i64 - original - pred;
+            let error = pcm[ch][i] as i64 - cross - pred;
             let q = if error >= 0 {
                 (error + step / 2) / step
             } else {
@@ -348,27 +354,76 @@ fn make_packet(
             };
             let min = (-8388608i64 - cross - pred + step - 1).div_euclid(step);
             let max = (8388607i64 - cross - pred).div_euclid(step);
-            let q = q.clamp(min, max);
-            let value = pred + q * step;
+            let value = pred + q.clamp(min, max) * step;
             history.push(value);
-            own.push((cross + value) as i32);
-            residual.push(zig(q));
+            let sample = (cross + value) as i32;
+            error_square += (sample as f64 - pcm[ch][i] as f64).powi(2);
+            own.push(sample);
+            residual.push(zig(q.clamp(min, max)));
         }
-        decoded.push(own);
+        // Measured per-lane RMS protection, plus a two-PCM24-unit allowance
+        // for signals below the 24-bit floor. Shift also bounds isolated errors.
+        if !lossless && shift > 0 && error_square > (signal * 1e-6).max(4. * n as f64) {
+            shift -= 1;
+            continue;
+        }
         let mut data = entropy(&residual[..n.min(ORDER)]);
         if n > ORDER {
             data.extend(entropy(&residual[ORDER..]));
         }
-        header.extend([m.a, m.b, shift, 0, 0, 0, 0, 0]);
+        return Ok((own, data, shift));
+    }
+}
+fn assemble_packet(
+    start: u64,
+    n: usize,
+    models: &[Model],
+    lanes: &[(Vec<u8>, u8)],
+    lossless: bool,
+) -> Vec<u8> {
+    let mut header = Vec::from(if lossless {
+        b"SBL3".as_slice()
+    } else {
+        b"SBC2".as_slice()
+    });
+    header.extend(start.to_le_bytes());
+    header.extend((n as u16).to_le_bytes());
+    header.extend([models.len() as u8, 24]);
+    for (m, (data, shift)) in models.iter().zip(lanes) {
+        header.extend([m.a, m.b, *shift, 0, 0, 0, 0, 0]);
         for c in m.c {
-            header.extend(c.to_le_bytes())
+            header.extend(c.to_le_bytes());
         }
         header.extend((data.len() as u32).to_le_bytes());
-        body.extend(data);
     }
-    header.extend(body);
-    Ok(seal(header))
+    for (data, _) in lanes {
+        header.extend(data);
+    }
+    seal(header)
 }
+fn make_packet(
+    pcm: &[Vec<i32>],
+    start: u64,
+    models: &[Model],
+    shift: u8,
+    lossless: bool,
+) -> Result<Vec<u8>, String> {
+    let mut decoded = vec![];
+    let mut lanes = vec![];
+    for (ch, m) in models.iter().enumerate() {
+        let (own, data, actual) = encode_lane(pcm, ch, &decoded, m, shift, lossless)?;
+        decoded.push(own);
+        lanes.push((data, actual));
+    }
+    Ok(assemble_packet(
+        start,
+        pcm[0].len(),
+        models,
+        &lanes,
+        lossless,
+    ))
+}
+
 pub fn encode(
     pcm: &[Vec<i32>],
     start: u64,
@@ -386,12 +441,16 @@ pub fn encode(
         return Err("Invalid SDAR linear block".into());
     }
     let mut models = vec![];
+    let mut quality_decoded = vec![];
+    let mut quality_lanes = vec![];
     for ch in 0..pcm.len() {
         let mut candidates = vec![(255, 255)];
-        if pcm.len()>16 {
+        if pcm.len() > 16 {
             // Large authored scenes contain independent stems. Bound predictor
             // search instead of scanning every prior object for every packet.
-            if ch>0 {candidates.push(((ch-1)as u8,255));}
+            if ch > 0 {
+                candidates.push(((ch - 1) as u8, 255));
+            }
         } else if ch > 0 {
             let best = (0..ch)
                 .max_by(|&a, &b| {
@@ -410,43 +469,81 @@ pub fn encode(
                 .unwrap();
             candidates.push((best as u8, 255));
         }
-        if ch > 1 && pcm.len()<=16 {
+        if ch > 1 && pcm.len() <= 16 {
             candidates.push((0, 1))
         }
-        let mut best = None;
+        let mut best: Option<(usize, Model, Option<EncodedLane>)> = None;
         for (a, b) in candidates {
             let m = fit(pcm, ch, a, b, bitrate.is_some());
-            let values: Vec<u64> = (0..n)
-                .map(|i| zig(pcm[ch][i] as i64 - prediction(pcm, &pcm[ch], i, &m)))
-                .collect();
-            let cost = entropy(&values[..n.min(ORDER)]).len()
-                + if n > ORDER {
-                    entropy(&values[ORDER..]).len()
-                } else {
-                    0
-                };
-            if best.as_ref().is_none_or(|(c, _)| cost < *c) {
-                best = Some((cost, m));
+            let encoded = if bitrate.is_some() {
+                match encode_lane(
+                    pcm,
+                    ch,
+                    &quality_decoded,
+                    &m,
+                    compact_shift_limit(&pcm[ch]),
+                    false,
+                ) {
+                    Ok(lane) => Some(lane),
+                    Err(_) => continue,
+                }
+            } else {
+                None
+            };
+            let cost = if let Some((_, data, _)) = &encoded {
+                data.len()
+            } else {
+                let values: Vec<u64> = (0..n)
+                    .map(|i| zig(pcm[ch][i] as i64 - prediction(pcm, &pcm[ch], i, &m)))
+                    .collect();
+                entropy(&values[..n.min(ORDER)]).len()
+                    + if n > ORDER {
+                        entropy(&values[ORDER..]).len()
+                    } else {
+                        0
+                    }
+            };
+            if best.as_ref().is_none_or(|(old, _, _)| cost < *old) {
+                best = Some((cost, m, encoded));
             }
         }
-        models.push(best.unwrap().1);
-    }
-    let first = make_packet(pcm, start, &models, 0, bitrate.is_none())?;
-    let Some(kbps) = bitrate else {
-        return Ok(first);
-    };
-    let budget = ((kbps as u64 * 1000 * n as u64 / (rate as u64 * 8)) as usize)
-        .max(16 + DESC * pcm.len() + pcm.len() * 32 + 128);
-    if first.len() <= budget {
-        return Ok(first);
-    }
-    for shift in 1..=23 {
-        let packet = make_packet(pcm, start, &models, shift, false)?;
-        if packet.len() <= budget {
-            return Ok(packet);
+        let (_, m, lane) = best.ok_or("No safe SDA linear predictor")?;
+        models.push(m);
+        if let Some((own, data, shift)) = lane {
+            quality_decoded.push(own);
+            quality_lanes.push((data, shift));
         }
     }
-    Err("SDAR compact packet exceeds budget".into())
+    let Some(kbps) = bitrate else {
+        return make_packet(pcm, start, &models, 0, true);
+    };
+
+    let budget = ((kbps as u64 * 1000 * n as u64 / (rate as u64 * 8)) as usize)
+        .max(16 + DESC * pcm.len() + pcm.len() * 32 + 128);
+    // Select predictors by actual closed-loop coding cost at the quality
+    // floor. This avoids reference models whose apparent compression relies
+    // on amplifying quantization error in another channel.
+    let mut best = assemble_packet(start, n, &models, &quality_lanes, false);
+    if best.len() > budget {
+        return Ok(best);
+    }
+    let mut low = 0;
+    let mut high = quality_lanes
+        .iter()
+        .map(|(_, shift)| *shift)
+        .max()
+        .unwrap_or(0);
+    while low < high {
+        let mid = (low + high) / 2;
+        match make_packet(pcm, start, &models, mid, false) {
+            Ok(packet) if packet.len() <= budget => {
+                high = mid;
+                best = packet;
+            }
+            _ => low = mid + 1,
+        }
+    }
+    Ok(best)
 }
 pub fn decode(b: &[u8], start: u64, channels: usize, n: usize) -> Result<Vec<Vec<i32>>, String> {
     if b.len() < 16 + DESC * channels
@@ -546,6 +643,69 @@ pub fn decode(b: &[u8], start: u64, channels: usize, n: usize) -> Result<Vec<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lossy_reference_quantization_cannot_amplify_into_other_channels() {
+        let n = FRAMES;
+        let pcm = vec![
+            (0..n)
+                .map(|i| ((i as i32 * 17) % 32768 - 16384) * 10)
+                .collect(),
+            (0..n).map(|i| ((i as i32 * 31) % 97 - 48) * 2).collect(),
+        ];
+        let first = Model {
+            a: 255,
+            b: 255,
+            c: [0; D],
+        };
+        let mut second = Model {
+            a: 0,
+            b: 255,
+            c: [0; D],
+        };
+        second.c[0] = (0.95 * Q as f64) as i32;
+        second.c[ORDER] = (64 * Q) as i32;
+        let shift = 14;
+        let packet = make_packet(&pcm, 0, &[first, second], shift, false).unwrap();
+        let decoded = decode(&unseal(&packet).unwrap(), 0, 2, n).unwrap();
+        for ch in 0..2 {
+            for i in 0..n {
+                assert!(
+                    (decoded[ch][i] as i64 - pcm[ch][i] as i64).abs()
+                        <= 1i64 << shift.min(compact_shift_limit(&pcm[ch])),
+                    "channel {ch} sample {i}: cross prediction amplified quantization noise"
+                );
+            }
+        }
+    }
+    #[test]
+    fn compact_quality_floor_protects_quiet_independent_lanes() {
+        let pcm: Vec<Vec<i32>> = (0..24)
+            .map(|ch| {
+                (0..FRAMES)
+                    .map(|i| {
+                        let amplitude = if ch % 3 == 0 { 300000 } else { 3000 };
+                        ((i as f64 * (ch + 1) as f64 * 0.017).sin() * amplitude as f64) as i32
+                    })
+                    .collect()
+            })
+            .collect();
+        let packet = encode(&pcm, 0, Some(768), 48000).unwrap();
+        let decoded = decode(&unseal(&packet).unwrap(), 0, pcm.len(), FRAMES).unwrap();
+        for ch in 0..pcm.len() {
+            let signal = pcm[ch].iter().map(|&v| (v as f64).powi(2)).sum::<f64>();
+            let noise = decoded[ch]
+                .iter()
+                .zip(&pcm[ch])
+                .map(|(&y, &x)| (y as f64 - x as f64).powi(2))
+                .sum::<f64>();
+            assert!(noise <= (signal * 1e-6).max(4. * FRAMES as f64));
+            let bound = 1i64 << compact_shift_limit(&pcm[ch]);
+            assert!(decoded[ch]
+                .iter()
+                .zip(&pcm[ch])
+                .all(|(&y, &x)| (y as i64 - x as i64).abs() <= bound));
+        }
+    }
     #[test]
     fn roundtrip() {
         for n in [1, 17, 1024, 4096] {
