@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {Worker} = require('node:worker_threads');
-const {SUPPORTED_RATES, SUPPORTED_BITRATES, readWaveMaster} = require('./sda-delivery.cjs');
+const {SUPPORTED_RATES, SUPPORTED_BITRATES, OBJECT_BITRATES, readWaveMaster} = require('./sda-delivery.cjs');
 function sameFile(a,b) {
   if(path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase())return true;
   try {const x=fs.statSync(a),y=fs.statSync(b);return x.dev===y.dev&&x.ino===y.ino;}catch{return false;}
@@ -24,7 +24,7 @@ function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePa
     try{fs.unlinkSync(file);}catch{}
   }};
   const cancel=()=>{if(!job||job.selecting)return false;Atomics.store(job.cancel,0,1);emit({...last,state:'cancelling'});const current=job;current.timeout??=setTimeout(()=>current.worker.terminate(),5000);return true;};
-  ipcMain.handle('sda:upmix-export-capabilities',()=>{const ready=singleTrackReady();return ({version:2,sourceMetadata:1,renderMetadata:1,authoredAssets:!!captureAssets,formats:['wav',...(ready?['sdar','m4a']:[])],codecs:ready?['sdar-bed-channel']:[],sampleRates:[...SUPPORTED_RATES],bitratesKbps:[...SUPPORTED_BITRATES],bitrateMode:'selectable',compressionModes:['compact','lossless']});});
+  ipcMain.handle('sda:upmix-export-capabilities',()=>{const ready=singleTrackReady();return ({version:2,sourceMetadata:1,renderMetadata:1,authoredAssets:!!captureAssets,formats:['wav',...(ready?['sdar','m4a']:[])],codecs:ready?['sdar-bed-channel','sdar-bed-channel-with-objects']:[],objectSceneVersion:1,objectBitratesKbps:[...OBJECT_BITRATES],sampleRates:[...SUPPORTED_RATES],bitratesKbps:[...SUPPORTED_BITRATES],bitrateMode:'selectable',compressionModes:['compact','lossless']});});
   ipcMain.handle('sda:upmix-export-status',()=>last);
   ipcMain.handle('sda:upmix-export-cancel',event=>job?.owner===event.sender?cancel():false);
   ipcMain.handle('sda:upmix-export-reveal',()=>{if(last.state==='done'&&last.outputPath)shell.showItemInFolder(last.outputPath);});
@@ -33,10 +33,9 @@ function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePa
     if(typeof inputPath!=='string'||!path.isAbsolute(inputPath)||!fs.statSync(inputPath).isFile())throw Error('请选择本地音频');
     if(!options||typeof options!=='object')throw Error('导出设置无效');
     const format=options.format??'wav';
-    if(format==='m4a'&&options.codec!=='sdar-bed-channel')throw Error('请选择 SDAR Bed Channel 编码');if(!['wav','sdar','m4a'].includes(format))throw Error('导出格式无效');
-    if(format==='m4a'&&!SUPPORTED_RATES.has(options.sampleRate))throw Error('M4A 采样率不受支持');if(format==='m4a'&&options.lossless!==true&&(options.sampleRate!==48000||!SUPPORTED_BITRATES.has(options.bitrateKbps??1536)))throw Error('SDAR 交付编码需要 48 kHz 和 768/1024/1536 kbps');if(options.lossless!==undefined&&typeof options.lossless!=='boolean')throw Error('压缩设置无效');
+    if(format==='m4a'&&!['sdar-bed-channel','sdar-bed-channel-with-objects'].includes(options.codec))throw Error('请选择 SDAR Bed Channel 编码');if(!['wav','sdar','m4a'].includes(format))throw Error('导出格式无效');
+    if(format==='m4a'&&!SUPPORTED_RATES.has(options.sampleRate))throw Error('M4A 采样率不受支持');if(format==='m4a'&&options.lossless!==true&&(options.sampleRate!==48000||!(options.codec==='sdar-bed-channel-with-objects'?OBJECT_BITRATES:SUPPORTED_BITRATES).has(options.bitrateKbps??(options.codec==='sdar-bed-channel-with-objects'?12288:1536))))throw Error('SDAR 交付编码需要 48 kHz 和 768/1024/1536 kbps');if(options.lossless!==undefined&&typeof options.lossless!=='boolean')throw Error('压缩设置无效');
     if(format!=='wav'&&!singleTrackReady())throw Error('请更新并重启支持单音轨 SDAR Bed Channel 的原生渲染器');
-    if(format==='m4a'&&!encoder())throw Error('SDA AAC 编码器未安装，请重新构建桌面版');
     const kind=require('./authored-playback.cjs').probeAuthoredFile(inputPath);
     if(kind?.kind==='m4a'||kind?.master===false)throw Error('请使用原始 WAV / SDAR 母版进行转换，M4A 为交付文件');
     const sourceMaster=!!kind;
@@ -52,7 +51,7 @@ function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePa
       const renderOverride=sourceMaster?authoredState?.(owner,inputPath):null;
       const renderAssets=renderSnapshot&&captureAssets?await captureAssets(renderSnapshot):null;
       if(sourceMaster){const m=readWaveMaster(inputPath);settings.volumeBalanceEnabled=m.render.baked.volumeBalance.enabled;settings.spatialBalanceEnabled=m.render.baked.spatialBalance.enabled;}
-      const description=format==='m4a'?'SDAR Bed Channel · 单音轨 / 5.1 基础':format==='sdar'?'SDAR Bed Channel · 无损':'7.1.4 WAV 母版 · 48 kHz / 24-bit';
+      const description=options.codec==='sdar-bed-channel-with-objects'?'SDA Bed Channel With Objects · '+(format==='wav'?'WAV 母版':'单音轨'):format==='m4a'?'SDAR Bed Channel · 单音轨 / 5.1 基础':format==='sdar'?'SDAR Bed Channel · 无损':'7.1.4 WAV 母版 · 48 kHz / 24-bit';
       const selected=await dialog.showSaveDialog(BrowserWindow.fromWebContents(owner),{title:'导出 '+description,defaultPath:path.join(path.dirname(inputPath),path.parse(inputPath).name+'.SDA-7.1.4.'+format),filters:[{name:description,extensions:[format]}],properties:['showOverwriteConfirmation','createDirectory']});
       if(selected.canceled||!selected.filePath||owner.isDestroyed()){job=null;return {cancelled:true};}
       const outputPath=path.extname(selected.filePath)?selected.filePath:selected.filePath+'.'+format;

@@ -283,6 +283,7 @@ impl PreparedResources {
             .unwrap()
             .iter()
             .enumerate()
+            .filter(|(_,ch)|ch["kind"]=="bed"&&ch["sourceMapping"]["kind"]!="adm-direct-speaker-role")
             .map(|(i, ch)| serde_json::json!({"id":format!("bed:{i}"),"position":ch["cartesian"],"gainDb":ch["gainDb"]}))
             .collect::<Vec<_>>();
         let muted = r["scene"]["channels"]
@@ -294,7 +295,7 @@ impl PreparedResources {
                 source_mutes
                     .iter()
                     .any(|v| *v == ch["sourceId"])
-                    .then(|| format!("bed:{i}"))
+                    .then(|| if ch["kind"]=="object" {format!("obj:{}",ch["objectId"].as_u64().unwrap())}else{format!("bed:{i}")})
             })
             .collect::<Vec<_>>();
         let volume = &r["baked"]["volumeBalance"];
@@ -309,7 +310,7 @@ impl PreparedResources {
           "monitoring":{"comparisonGainDb":snapshot["monitoring"]["comparisonGainDb"]},
           "routing":{"mutedSpeakers":snapshot["routing"]["mutedSpeakers"],"activeFocus":snapshot["routing"]["activeFocus"]}}});
         let scene = serde_json::json!({"version":1,"layout":layout,"render":recipe,"resources":{"root":self.root,"hrtf":self.hrtf,"hrtfWet":self.hrtf_wet,"room":self.room,"headphone":self.headphone},
-   "processing":{"enabled":true,"version":1,"programmeHandled":volume["applied"].as_bool().ok_or("Missing authored volume decision")? || !volume["enabled"].as_bool().ok_or("Missing authored volume enable flag")?,"sourceSpatialHandled":spatial["applied"].as_bool().ok_or("Missing authored spatial decision")? || !spatial["enabled"].as_bool().ok_or("Missing authored spatial enable flag")?,"spatialPresentation":spatial["enabled"].as_bool().ok_or("SDAR spatial processing decision missing")?,"stereoSource":true,"programmeGainDb":volume["programmeGainDb"],"makeupDb":volume["makeupDb"],"bedPositions":positions,"mutedSources":muted}});
+   "processing":{"enabled":true,"version":1,"programmeHandled":volume["applied"].as_bool().ok_or("Missing authored volume decision")? || !volume["enabled"].as_bool().ok_or("Missing authored volume enable flag")?,"sourceSpatialHandled":spatial["applied"].as_bool().ok_or("Missing authored spatial decision")? || !spatial["enabled"].as_bool().ok_or("Missing authored spatial enable flag")?,"spatialPresentation":spatial["enabled"].as_bool().ok_or("SDAR spatial processing decision missing")?,"stereoSource":r["scene"]["kind"]=="bed","programmeGainDb":volume["programmeGainDb"],"makeupDb":volume["makeupDb"],"bedPositions":positions,"mutedSources":muted}});
         if serde_json::to_vec(&serde_json::json!({"type":"configureAuthoredScene","scene":scene}))
             .map_err(|e| e.to_string())?
             .len()

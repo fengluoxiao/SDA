@@ -93,12 +93,16 @@ impl MobileEngine {
             .sdar_source
             .as_mut()
             .ok_or("SDAR decoder unavailable")?;
+        let source_start=source.file.position();
         let channels = source.file.read(max_frames.clamp(1, 4096))?;
         let count = channels[0].len();
         let done = source.file.finished();
         let labels = source.file.metadata.renderer_labels();
+        let mut events:Vec<ObjectEvent>=source.file.objects.events(source_start,count).into_iter().map(|event|serde_json::from_value(serde_json::to_value(event).unwrap()).map_err(|e|e.to_string())).collect::<Result<_,_>>()?;
+        let object_channels=source.file.objects.channels.iter().map(|object|sda_core::ObjectChannelDecl{id:object.id,channel:object.channel}).collect();
         if count > 0 {
             let start = self.decoded_sample_pos();
+            for event in &mut events {event.sample_pos=start+event.sample_pos.saturating_sub(source_start);}
             if self.announced_codec.as_deref() != Some("sdar") {
                 if let Some(pipeline) = &self.pipeline {
                     pipeline
@@ -120,9 +124,9 @@ impl MobileEngine {
                 sample_pos: start,
                 channels,
                 labels: labels.clone(),
-                raw_bed_labels: labels,
-                events: vec![],
-                object_channels: vec![],
+                raw_bed_labels: labels.into_iter().filter(|label|!label.starts_with("Obj_")).collect(),
+                events,
+                object_channels,
                 program_loudness: None,
                 ramp_duration: 0,
             };
@@ -179,4 +183,31 @@ impl MobileEngine {
         self.apply_authored_scene(scene)?;
         Ok(())
     }
+}
+
+#[cfg(test)]mod tests {
+ use super::*;
+ #[test]
+ #[ignore="requires generated object export fixtures; set SDA_OBJECT_FIXTURE_DIR"]
+ fn object_interchange_preserves_mobile_pcm_routes_and_seek_clock(){
+  let root=std::env::var("SDA_OBJECT_FIXTURE_DIR").expect("SDA_OBJECT_FIXTURE_DIR");
+  for name in ["master.wav","objects.sdar","objects.m4a"]{
+   let path=std::path::Path::new(&root).join(name);
+   assert!(BedFile::is_sda(&path),"authored content probe must route {name} through the SDA scene decoder");
+   let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+   assert_eq!(engine.open_sdar(path.to_str().unwrap(),None).unwrap(),48000);
+   assert!(!engine.balance.enabled);assert!(!engine.stereo_bed_mode);
+   let (count,done)=engine.pull_sdar(4096).unwrap();assert_eq!(count,4096);assert!(!done);
+   let mut frames=engine.take_pending_frames();assert_eq!(frames.len(),1);let frame=frames.remove(0);
+   assert_eq!(frame.channels.len(),66);assert_eq!(frame.object_channels.len(),64);assert_eq!(frame.events.len(),64);
+   assert_eq!(frame.events[0].size,[0.4,0.2,0.3]);assert_eq!(frame.events[0].diffuse,0.1);
+   let mut router=frame_router::FrameRouter::default();let commands=router.route(frame).unwrap();
+   let render_command::RenderCommand::PcmFrame{entries,events,..}=commands.last().unwrap() else{panic!("missing object PCM frame")};
+   assert_eq!(entries[0].0,"bed:0");assert_eq!(entries[1].0,"obj:1");assert_eq!(entries[19].0,"bed:19");assert_eq!(events.len(),64);
+   engine.seek_sdar(150).unwrap();engine.pull_sdar(733).unwrap();let frames=engine.take_pending_frames();assert_eq!(frames[0].sample_pos,0);
+   let recovered=frames[0].events.iter().filter(|e|e.id==1).collect::<Vec<_>>();assert_eq!(recovered.len(),2);
+   assert_eq!(recovered[0].sample_pos,0);assert!(recovered[0].pos[0].abs()<1e-12);assert_eq!(recovered[1].ramp_duration,2400);
+   assert_eq!(recovered[1].sample_pos,0);
+  }
+ }
 }

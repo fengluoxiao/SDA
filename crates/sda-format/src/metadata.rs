@@ -61,7 +61,7 @@ impl Metadata {
     }
     pub fn validate(&self) -> Result<(), String> {
         let r = &self.render;
-        if r["schema"] != "sda.render-metadata" || r["version"] != 1 || r["scene"]["kind"] != "bed"
+        if r["schema"] != "sda.render-metadata" || r["version"] != 1 || !["bed", "bed-objects"].iter().any(|kind|r["scene"]["kind"]==*kind)
         {
             return Err("Unsupported SDAR scene version".into());
         }
@@ -86,6 +86,8 @@ impl Metadata {
                 if !feature.as_str().is_some_and(|v| {
                     [
                         "bed-scene-v1",
+                        "object-scene-v1",
+                        "sample-clock-object-automation-v1",
                         "file-processing-v1",
                         "embedded-render-assets-v1",
                     ]
@@ -95,7 +97,7 @@ impl Metadata {
                 }
             }
         }
-        for field in ["objects", "automation"] {
+        for field in if r["scene"]["kind"]=="bed" {vec!["objects", "automation"]}else{vec![]} {
             if r["scene"][field].as_array().is_none_or(|v| !v.is_empty()) {
                 return Err(
                     "SDAR Bed Channel With Objects is not supported by this version".into(),
@@ -105,20 +107,22 @@ impl Metadata {
         let channels = r["scene"]["channels"]
             .as_array()
             .ok_or("Missing SDAR channels")?;
-        if ![6, 12, 16].contains(&channels.len()) {
+        if if r["scene"]["kind"]=="bed" {![6,12,16].contains(&channels.len())}else{!(1..=128).contains(&channels.len())} {
             return Err("Unsupported SDAR bed layout".into());
         }
         let mut ids = std::collections::BTreeSet::new();
         let mut names = std::collections::BTreeSet::new();
         for (i, ch) in channels.iter().enumerate() {
             if ch["pcmChannel"].as_u64() != Some(i as u64 + 1)
-                || ch["kind"] != "bed"
+                || !["bed","object"].iter().any(|kind|ch["kind"]==*kind)
+                || r["scene"]["kind"]=="bed" && ch["kind"]!="bed"
                 || !ch["id"]
                     .as_str()
                     .is_some_and(|id| !id.is_empty() && ids.insert(id.to_string()))
             {
                 return Err("Invalid SDAR channel identity/order".into());
             }
+            if ch["kind"]=="object" {continue;}
             let name = ch["name"].as_str().ok_or("SDAR channel role missing")?;
             if ![
                 "FrontLeft",
@@ -152,7 +156,7 @@ impl Metadata {
                 }
             }
         }
-        for channel in channels {
+        for channel in channels.iter().filter(|ch|ch["kind"]=="bed") {
             let coordinates = channel["cartesian"]
                 .as_array()
                 .filter(|v| v.len() == 3)
@@ -222,8 +226,15 @@ impl Metadata {
         {
             return Err("Missing authored SDAR playback policy".into());
         }
+        if r["scene"]["kind"]=="bed-objects" {
+            let features=r["interchange"]["requiredFeatures"].as_array().ok_or("Object scene requires an interchange feature contract")?;
+            if ["object-scene-v1","sample-clock-object-automation-v1"].iter().any(|name|!features.iter().any(|value|value==*name)) {return Err("Missing required SDA object features".into());}
+            let _=crate::objects::ObjectTimeline::parse(self)?;
+        }
         Ok(())
     }
+    pub fn codec_id(&self)-> &str {if self.render["scene"]["kind"]=="bed-objects" {"sdar-bed-channel-with-objects"}else{"sdar-bed-channel"}}
+    pub fn profile(&self)-> &str {if self.render["scene"]["kind"]=="bed-objects" {"SDAR Bed Channel With Objects"}else{"SDAR Bed Channel"}}
     pub fn channels(&self) -> usize {
         self.render["scene"]["channels"].as_array().unwrap().len()
     }
@@ -253,7 +264,7 @@ impl Metadata {
     }
     pub fn summary(&self) -> Value {
         let common = &self.source["common"];
-        serde_json::json!({"title":common["title"],"artist":common["artist"],"album":common["album"],"albumArtist":common["albumartist"],"date":common["date"],"year":common["year"],"track":common["track"],"disc":common["disk"],"lyrics":self.source["lyrics"],"profile":"SDAR Bed Channel","channels":self.channels(),"durationSamples":self.master_frames(),"sampleRate":48000})
+        serde_json::json!({"title":common["title"],"artist":common["artist"],"album":common["album"],"albumArtist":common["albumartist"],"date":common["date"],"year":common["year"],"track":common["track"],"disc":common["disk"],"lyrics":self.source["lyrics"],"profile":self.profile(),"channels":self.channels(),"durationSamples":self.master_frames(),"sampleRate":48000})
     }
 }
 fn syncsafe(b: &[u8]) -> Result<usize, String> {
@@ -387,7 +398,7 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
                 let rate = u32::from_le_bytes(b[4..8].try_into().unwrap());
                 let bits = u16at(14);
                 if ![1, 0xfffe].contains(&encoding)
-                    || ![6, 12, 16].contains(&channels)
+                    || !(1..=128).contains(&channels)
                     || bits != 24
                     || rate != 48000
                     || u16at(12) as usize != channels * 3
@@ -541,7 +552,7 @@ pub fn is_authored_wave(path: &Path) -> bool {
             };
             return v["schema"] == "sda.render-metadata"
                 && v["version"] == 1
-                && v["scene"]["kind"] == "bed";
+                && ["bed","bed-objects"].iter().any(|kind|v["scene"]["kind"]==*kind);
         }
         at += 8 + n + (n & 1);
     }

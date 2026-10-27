@@ -503,8 +503,8 @@ impl LosslessFile {
             || ![CODEC, compact::LOSSLESS, compact::COMPACT].contains(&head.codec.as_str())
             || (head.codec == compact::COMPACT
                 && (head.sample_rate != 48000
-                    || ![Some(768), Some(1024), Some(1536)].contains(&head.bitrate_kbps)))
-            || head.profile != "SDAR Bed Channel"
+                    || !head.bitrate_kbps.is_some_and(|v|valid_bitrate(v,metadata.render["scene"]["kind"]=="bed-objects"))))
+            || head.profile != metadata.profile()
             || head.bits != 24
             || ![BLOCK, linear::FRAMES].contains(&head.block_frames)
             || ![44100, 48000, 96000].contains(&head.sample_rate)
@@ -623,12 +623,12 @@ pub fn encode(
     if ![44100, 48000, 96000].contains(&rate) {
         return Err("Unsupported SDA sample rate".into());
     }
-    if bitrate.is_some_and(|v| ![768, 1024, 1536].contains(&v))
+    let (mut source, format, metadata) = metadata::read_master(input, true)?;
+    if bitrate.is_some_and(|v| !valid_bitrate(v,metadata.render["scene"]["kind"]=="bed-objects"))
         || (bitrate.is_some() && rate != 48000)
     {
         return Err("SDAR compact delivery requires 48 kHz and 768/1024/1536 kbps".into());
     }
-    let (mut source, format, metadata) = metadata::read_master(input, true)?;
     let size = source.metadata().map_err(|e| e.to_string())?.len();
     let mut header = metadata::metadata_bytes(&mut source, 0, format.offset)?;
     if &header[..4] == b"SDAR" {
@@ -653,7 +653,7 @@ pub fn encode(
             compact::LOSSLESS
         }
         .into(),
-        profile: "SDAR Bed Channel".into(),
+        profile: metadata.profile().into(),
         sample_rate: rate,
         channels: format.channels,
         bits: 24,
@@ -851,3 +851,5 @@ mod tests {
         assert_eq!(unseal(&seal(all.clone())).unwrap(), all);
     }
 }
+
+pub fn valid_bitrate(v:u32,objects:bool)->bool{if objects{[3072,6144,12288,24576].contains(&v)}else{[768,1024,1536].contains(&v)}}

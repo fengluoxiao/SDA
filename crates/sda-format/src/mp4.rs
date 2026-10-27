@@ -707,7 +707,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         return Ok(None);
     }
     if transport["schema"] != "sda.delivery"
-        || transport["codec"] != "sdar-bed-channel"
+        || !["sdar-bed-channel","sdar-bed-channel-with-objects"].iter().any(|v|transport["codec"]==*v)
         || ![
             CODEC,
             crate::lossless::compact::LOSSLESS,
@@ -761,6 +761,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     } else {
         Metadata::parse(render, id3.as_deref())?
     };
+    if transport["codec"]!=metadata.codec_id()||transport["profile"]!=metadata.profile(){return Err("SDA scene profile mismatch".into());}
     let moov = top
         .iter()
         .find(|a| a.id == *b"moov")
@@ -782,7 +783,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     let tkhd = child_bytes(&mut file, trak, b"tkhd")?;
     let id = be32(&tkhd, if tkhd[0] == 1 { 20 } else { 12 })?;
     if transport["tracks"][0]["trackId"].as_u64() != Some(id as u64)
-        || transport["tracks"][0]["codec"] != "sdar-bed-channel"
+        || transport["tracks"][0]["codec"] != metadata.codec_id()
         || transport["tracks"][0]["channels"]
             != serde_json::json!((0..metadata.channels()).collect::<Vec<_>>())
     {
@@ -807,7 +808,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         .map_err(|e| e.to_string())?;
     if config["schema"] != "sda.bed-codec"
         || (config["version"] != 2 && config["version"] != 3)
-        || config["codec"] != "sdar-bed-channel"
+        || config["codec"] != metadata.codec_id()
         || config["compression"] != transport["compression"]
         || config["lossless"] != (transport["compression"] != crate::lossless::compact::COMPACT)
     {

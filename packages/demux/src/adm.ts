@@ -27,6 +27,7 @@ export interface AdmMetadata {
   objectChannels: { id: number; channel: number }[];
   events: AdmObjectEvent[];
   title?: string;
+  tracks?: {channel:number;uid:string;trackRef:string;packRef:string;channelFormatId:string;name:string;type:string;position?:[number,number,number]}[];
   warnings?: string[];
 }
 
@@ -387,7 +388,7 @@ function resolveAdm(document: Document, chna: Uint8Array, sampleRate: number, ch
     for (const child of refs(object, "audioObjectIDRef")) visit(child, context, nextPath);
   };
   for (const id of rootObjects) visit(id, { start: 0, end: programmeEnd, gainDb: 0, offsets: [] }, new Set());
-  const result: AdmMetadata = { labels: [], rawBedLabels: [], objectChannels: [], events: [], title: programme?.getAttribute("audioProgrammeName") || undefined };
+  const result: AdmMetadata = { labels: [], rawBedLabels: [], objectChannels: [], events: [], tracks: [], title: programme?.getAttribute("audioProgrammeName") || undefined };
   const warnings: string[] = [];
   const assignments = parseChna(chna, channelCount);
   for (const assignment of assignments) {
@@ -422,10 +423,12 @@ function resolveAdm(document: Document, chna: Uint8Array, sampleRate: number, ch
     const blocks = children(channel, "audioBlockFormat");
     if (!consume && !blocks.length) fail(`audioChannelFormat ${channelId} has no blocks`);
     const context = ownership.get(assignment.uid) ?? (objects.size === 0 ? { start: 0, end: programmeEnd, gainDb: 0, offsets: [] } : fail(`PCM track ${assignment.uid} is outside the selected programme`));
+    result.tracks!.push({...assignment,channelFormatId:channelId!,name:channel.getAttribute("audioChannelFormatName")||assignment.uid,type:type??"unknown"});
     if (consume) { consume(channel, type, assignment.channel, context); continue; }
     if (type === "DirectSpeakers") {
       if (context.start !== 0 || context.gainDb !== 0 || context.offsets.length) fail("timed or adjusted DirectSpeakers audioObjects are unsupported");
       const label = bedLabel(channel, blocks);
+      result.tracks!.at(-1)!.position=objectPosition(blocks[0]!,context).pos;
       result.labels.push(label);
       if (!result.rawBedLabels.includes(label)) result.rawBedLabels.push(label);
     } else if (type === "Objects") {
@@ -469,6 +472,7 @@ export async function parseAdmMetadataStream(source: () => AsyncIterable<Uint8Ar
       if (!bed.length) fail(`audioChannelFormat ${channel.getAttribute("audioChannelFormatID")} has no blocks`);
       if (context.start !== 0 || context.gainDb !== 0 || context.offsets.length) fail("timed or adjusted DirectSpeakers audioObjects are unsupported");
       const label = bedLabel(channel, bed);
+      result.tracks!.find(track=>track.channel===id)!.position=objectPosition(bed[0]!,context).pos;
       result.labels.push(label);
       if (!result.rawBedLabels.includes(label)) result.rawBedLabels.push(label);
     } else {

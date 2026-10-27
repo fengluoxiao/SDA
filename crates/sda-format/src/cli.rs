@@ -32,7 +32,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"objectSceneVersion":1,"maxSourceChannels":128,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }
@@ -95,9 +95,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     let start = file.position();
                     let pcm = file.read(max)?;
                     let count = pcm[0].len();
+                    let events=file.objects.events(start,count);
                     message(
                         &mut output,
-                        json!({"type":"frame","start":start,"frames":count,"sampleRate":48000,"channels":file.metadata.channels(),"eof":file.finished()}),
+                        json!({"objectChannels":file.objects.channels,"events":events,"type":"frame","start":start,"frames":count,"sampleRate":48000,"channels":file.metadata.channels(),"eof":file.finished()}),
                         &interleaved(&pcm),
                     )
                 }

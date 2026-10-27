@@ -11,11 +11,12 @@ import {Mp3Decoder,sniffMp3} from "./mp3-decoder";
 import {TruePeakMeter,LoudnessMeter,masterBalanceGainDb} from "./bs1770";
 import {readSourceMetadata} from "./source-metadata";
 import {exportRenderMetadata,admBedMetadata} from "./export-scene";
+import {exportAdmMaster} from "./export-adm";
 const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
 const delivery=require("../../../apps/desktop/sda-delivery.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
 const {buildMetadataChunks,chunk:riffChunk}=require("../../../apps/desktop/wav-metadata.cjs");
-const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;lossless?:boolean;renderOverride?:{render:Record<string,any>;assets:{sha256:string;filename:string;data:Uint8Array}[]}|null;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
+const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel"|"sdar-bed-channel-with-objects";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;lossless?:boolean;renderOverride?:{render:Record<string,any>;assets:{sha256:string;filename:string;data:Uint8Array}[]}|null;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
 const balancedPath=job.balancedPath??job.floatPath+".balanced";
 const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
 const cancelled=new Int32Array(job.cancel);
@@ -65,7 +66,7 @@ async function run(){
    else if((job.format??"wav")==="wav"){
     const target=job.deliveryPath!;await delivery.writeWaveMaster(job.inputPath,target,{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
    }else {let input=job.inputPath;if(master.head){input=job.stagingPath;await delivery.writeWaveMaster(job.inputPath,input,{rendererPath:job.rendererPath,check});}await finishDelivery(input);}
-   parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format!=="wav"?"SDA Bed Lossless v1":"PCM24",frames:master.frames,sampleRate:48000,channels:12,bits:24,
+   parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:(job.format??"wav")!=="wav"?master.render.profile:"PCM24",profile:master.render.profile,objects:master.render.scene.objects.length,bedChannels:master.render.scene.channels.filter((c:any)=>c.kind==="bed").length,frames:master.frames,sampleRate:48000,channels:master.render.scene.channels.length,bits:24,
     volumeBalanceEnabled:master.render.baked.volumeBalance.enabled,spatialBalanceEnabled:master.render.baked.spatialBalance.enabled,
     sourceLufs:master.render.baked.volumeBalance.sourceLufs,programmeGainDb:master.render.baked.volumeBalance.programmeGainDb,
     truePeakDbtp:master.render.baked.peakProtection.truePeakDbtp,convertedMaster:true});
@@ -75,6 +76,7 @@ async function run(){
  try{
   if(!job.analysisOnly&&sameFile(job.inputPath,job.outputPath))throw Error("导出文件不能覆盖源音频");
   input=fs.openSync(job.inputPath,"r");const initial=fs.fstatSync(input);
+  if(!job.analysisOnly){const objects=await exportAdmMaster(job,check,progress);if(objects){await finishDelivery(job.stagingPath);parentPort!.postMessage({type:"done",...objects,format:job.format??"wav",sampleRate:48000,bits:24,encoding:(job.format??"wav")==="wav"?"PCM24":objects.profile});return;}}
   if(!job.analysisOnly)progress("metadata",0,true);
   const sourceMetadata=job.analysisOnly?null:await readSourceMetadata(job.inputPath,check);
   const renderAssets=job.renderAssets?Object.fromEntries(Object.entries(job.renderAssets).filter(([key])=>key!=="blobs")):null;

@@ -9,3 +9,5 @@ pub use resources::PreparedResources;
 pub mod cli;
 
 pub mod lossless;
+
+pub mod objects;

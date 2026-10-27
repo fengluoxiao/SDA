@@ -123,7 +123,7 @@ export type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
 export interface AuthoredPcmInput {
   frames:number;inputRate:number;labels:string[];lossless:boolean;
   summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"};
-  read():Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
+  read():Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];events?:DecodedFrameData["events"];objectChannels?:DecodedFrameData["objectChannels"];eof:boolean}>;
   close():Promise<unknown>;setLayout?(layout:string):Promise<unknown>;
   setCinema?(settings:unknown,profileId:string|null):Promise<unknown>;
   shouldResume?():boolean;
@@ -1077,7 +1077,7 @@ export class SdaPlayer {
     this.visualTimer??=setInterval(()=>this.emitVisual(),1000/30);const epoch=this.decodeEpoch;
     try{while(!this.disposed&&epoch===this.decodeEpoch&&this.authoredInput===input){const next=await input.read();if(this.disposed||epoch!==this.decodeEpoch||this.authoredInput!==input)return;
       if(next.sampleRate!==48000||next.channels.length!==input.labels.length||next.channels.some(ch=>ch.length!==(next.channels[0]?.length??0)))throw Error("Invalid SDAR PCM topology");
-      if(next.channels[0]?.length)this.handleFrame({codec:"sdar",sampleRate:48000,samplePos:next.samplePos,channels:next.channels,labels:[...input.labels],rawBedLabels:[...input.labels],events:[],objectChannels:[],programLoudness:null,rampDuration:0});
+      if(next.channels[0]?.length)this.handleFrame({codec:"sdar",sampleRate:48000,samplePos:next.samplePos,channels:next.channels,labels:[...input.labels],rawBedLabels:input.labels.filter(label=>!label.startsWith("Obj_")),events:next.events??[],objectChannels:next.objectChannels??[],programLoudness:null,rampDuration:0});
       if(next.eof||!next.channels[0]?.length)break;await this.pace(epoch);
     }
     if(this.disposed||epoch!==this.decodeEpoch)return;this.ended=true;void this.nativeRendererSink?.endAt?.(input.frames);this.pumpPcm();this.startPlaybackIfReady(true);this.checkEnded();

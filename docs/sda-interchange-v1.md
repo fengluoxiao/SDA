@@ -158,3 +158,40 @@ claim Bed Channel With Objects for an empty or unsupported object scene.
 The format crate, scene interface and reference renderer can move to a separate
 repository without changing existing files. Application UI/storage paths are
 not part of this contract.
+
+
+## Object scene extension (object-scene-v1)
+
+`SDAR Bed Channel With Objects` uses `scene.kind = "bed-objects"` and the genuine private codec profile `sdar-bed-channel-with-objects`. The render-metadata and delivery envelopes remain version 1 / version 4 respectively; the required features **object-scene-v1** and **sample-clock-object-automation-v1** are mandatory. A bed-only reader must reject this profile. The same independent predictive PCM coder carries 1–128 lanes. These lanes are source stems, not device output channels. There is exactly one physical ISO-BMFF audio track; its channel map covers every bed and object PCM lane. The object profile declares the real coded lane count, rather than describing the scene as a six-channel downmix.
+
+### Scene identity and time
+
+`scene.channels` lists all PCM lanes in their original order, with one-based `pcmChannel`, stable ID, `kind` (bed/object), track UID, original ADM channel/track/pack format IDs and original display name. Beds have named speaker roles. Object lanes also carry a numeric `objectId` and a `sourceId` of `obj:<id>`. `scene.objects` explicitly maps each stable object ID to its separate PCM lane. The original ADM names do not become routing IDs.
+
+`scene.automation` points to a SHA-256-addressed embedded resource:
+
+```json
+{"schema":"sda.object-timeline","version":1,"encoding":"zlib-json","asset":"<sha256-of-compressed-resource>","eventCount":105928,"sampleRate":48000}
+```
+
+The zlib payload is UTF-8 JSON with `schema: sda.object-timeline`, `version: 1`, `sampleRate: 48000`, `durationSamples`, `coordinateSystem`, `interpolation` and `events`. Each event contains an exact integer `samplePos`, stable numeric `id`, `hasPos`, ADM Cartesian `pos`, `gainDb`, `size` (width/depth/height), `diffuse`, `anchor`, nullable metric `distanceM`, `distanceInfinite`, nullable `screenFactor`/`depthFactor`, and integer `rampDuration`. Derived `position` gives azimuth/elevation/reference distance for inspection; it never invents physical metres. ADM Cartesian X is right, Y front and Z up; azimuth is positive left. Ordinary zero-radius points have elevation zero in the derived inspection data. Original ADM coordinates and their declarations remain in the preserved XML.
+
+An event's target ramp starts **at** `samplePos`; a zero ramp is an immediate step. Position, extent and diffusion interpolate linearly, as in the renderer; scalar gain interpolates in linear amplitude. A subsequent event interrupts the previous ramp. Every object has an initial state at sample zero, including a silent initial event when its active interval begins later. End/gap mute events preserve active intervals. Production timecode in audioProgramme.start is not added to PCM sample positions. Original decimal timestamps, block durations and interpolation declarations are additionally retained in the source ADM.
+
+`BedFile.objects.events(start, frames)` returns only the current interval's events and reconstructs the interrupted ramp after any discontinuity. Recovery emits an immediate current-state event, followed at the same sample by a target event with the exact remaining ramp. Events with equal sample/ID keep their original order. Mobile rebases these reconstructed events to its reset decoder clock; desktop uses the source PCM clock. A seeking SDK consumer must reset the renderer origin to the returned source start before submitting the recovery frame, so its immediate current-state event is applied before the remaining target ramp. Never derive this timeline from the UI visualization refresh rate.
+
+For imported ADM DirectSpeakers, `sourceMapping.kind = adm-direct-speaker-role` preserves the original speaker-role routing across output layouts. Its original raw Cartesian geometry remains in the channel metadata. These beds do not become moving objects or receive an additional spherical reinterpretation of the ADM room cube. Dynamic objects keep their original position events. Output layout changes (including mobile's default 7.1.4 and desktop 9.1.6) route the retained scene at playback, rather than selecting a pre-rendered audio variant.
+
+### Provenance, resources and file roles
+
+WAV masters retain standard original axml/chna/dbmd chunks and the original PCM bytes. `render.provenance.originalMetadata` additionally references exact zlib-compressed axml/chna/dbmd/bext/iXML payloads where present, with raw SHA-256 and raw byte length. These source resources also travel in M4A and SDAR, together with the normalized timeline, tags and portable HRTF/room/headphone assets. Missing required timeline/resources, invalid mappings and unsupported object semantics are errors.
+
+Delivery object data lives inside private SDA metadata/resources and actual SDA coded packets. Ordinary AAC/MPEG decoders do not decode the scene; an SDA-capable renderer must interpret its declared contract. This is format-level interoperability, **not encryption or DRM**. Standard public song tags/artwork/lyrics remain available to generic inspectors. WAV masters expose standard ADM for other compatible tools. SDAR/M4A delivery files remain read-only; only desktop WAV masters support room/tuning reauthoring, with unchanged object PCM and automation. Mobile uses file-authored rendering and skips local balance/upmix presets.
+
+Import transfers the original master mix at unity and records HRTF/room/monitoring settings; it does not upmix or rebake programme/spatial balance. The renderer still applies its final output protection. Original Dolby dbmd is preserved as provenance, not presented as Dolby decoding/licensing or a promise of Dolby binaural-render equivalence.
+
+Object M4A defaults to lossless coding to preserve the complete independent stems. Explicit compact export supports aggregate 3072/6144/12288/24576 kbps at 48 kHz. These are whole-scene rates, not per-object rates, and are not claims of Dolby codec quality or perceptual equivalence. Existing bed rates remain unchanged. Predictive model search is bounded for large source counts; packets preserve their own reconstruction model and remain independently seekable.
+
+Current import support follows the shared ADM parser: normalized Cartesian extents and point spherical objects; unsupported interactive/alternative programmes, nonzero spherical extents, channel-lock/divergence/screen-lock features, and delivery zoneExclusion/horizontalOnly requirements fail explicitly. The versioned contract can add such features later without silently dropping source metadata.
+
+Regression: `SDA_FORMAT_CODEC=<sdar-codec> node apps/desktop/test/object-export.test.cjs` verifies interleaved bed/object mapping over 66 lanes, exact PCM24 and ADM master restoration, object extent/diffuse/gain, mid-ramp seek, Unicode source tags, one-track SDAR/M4A and explicit bitrate/profile validation. Shared mobile route verification uses the generated fixture directory: set `SDA_OBJECT_FIXTURE_DIR`, then run the ignored `object_interchange_preserves_mobile_pcm_routes_and_seek_clock` native test explicitly.

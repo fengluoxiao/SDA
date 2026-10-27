@@ -55,6 +55,7 @@ pub struct BedFile {
     delivered: u64,
     eof: bool,
     authoring_master: bool,
+    pub objects:crate::objects::ObjectTimeline,
 }
 impl BedFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
@@ -84,7 +85,7 @@ impl BedFile {
             bed.wave_tail = Vec::new();
             let rate = bed.head.sample_rate;
             let transport = Some(
-                serde_json::json!({"codec":"sdar-bed-channel","compression":bed.head.codec,"lossless":bed.head.codec!=crate::lossless::compact::COMPACT,"sampleRate":rate,"container":bed.container}),
+                serde_json::json!({"codec":metadata.codec_id(),"compression":bed.head.codec,"lossless":bed.head.codec!=crate::lossless::compact::COMPACT,"sampleRate":rate,"container":bed.container}),
             );
             (Source::Lossless(bed), metadata, rate, transport)
         } else if &header[..4] == b"SDAR"
@@ -135,7 +136,9 @@ impl BedFile {
         if std::env::var_os("SDA_FORMAT_DEBUG").is_some() {
             eprintln!("SDAR SRC rate={input_rate} delay={delay}");
         }
+        let objects=crate::objects::ObjectTimeline::parse(&metadata)?;
         Ok(Self {
+            objects,
             source,
             metadata,
             input_rate,

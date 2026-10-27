@@ -378,7 +378,7 @@ pub fn encode(
     let n = pcm.first().map_or(0, Vec::len);
     if n == 0
         || n > FRAMES
-        || ![6, 12, 16].contains(&pcm.len())
+        || !(1..=128).contains(&pcm.len())
         || pcm
             .iter()
             .any(|c| c.len() != n || c.iter().any(|v| !(-8388608..=8388607).contains(v)))
@@ -388,7 +388,11 @@ pub fn encode(
     let mut models = vec![];
     for ch in 0..pcm.len() {
         let mut candidates = vec![(255, 255)];
-        if ch > 0 {
+        if pcm.len()>16 {
+            // Large authored scenes contain independent stems. Bound predictor
+            // search instead of scanning every prior object for every packet.
+            if ch>0 {candidates.push(((ch-1)as u8,255));}
+        } else if ch > 0 {
             let best = (0..ch)
                 .max_by(|&a, &b| {
                     let score = |r: usize| {
@@ -406,7 +410,7 @@ pub fn encode(
                 .unwrap();
             candidates.push((best as u8, 255));
         }
-        if ch > 1 {
+        if ch > 1 && pcm.len()<=16 {
             candidates.push((0, 1))
         }
         let mut best = None;
@@ -453,7 +457,7 @@ pub fn decode(b: &[u8], start: u64, channels: usize, n: usize) -> Result<Vec<Vec
         || b[15] != 24
         || n == 0
         || n > FRAMES
-        || ![6, 12, 16].contains(&channels)
+        || !(1..=128).contains(&channels)
     {
         return Err("Invalid SDAR linear header".into());
     }

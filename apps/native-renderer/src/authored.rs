@@ -37,8 +37,8 @@ impl Processing {
             return Err("unsupported authored processing parameters".into());
         }
         if self.muted_sources.iter().any(|id| {
-            !id.strip_prefix("bed:")
-                .is_some_and(|id| id.parse::<usize>().is_ok_and(|n| n < MAX_SOURCES))
+            !id.strip_prefix("bed:").is_some_and(|id|id.parse::<usize>().is_ok_and(|n|n<MAX_SOURCES))
+                && !id.strip_prefix("obj:").is_some_and(|id|id.parse::<u32>().is_ok())
         }) {
             return Err("invalid authored source mute".into());
         }

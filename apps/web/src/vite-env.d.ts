@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 export interface UpmixExportStatus {
-  format?:"wav"|"sdar"|"m4a";convertedMaster?:boolean;id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
+  format?:"wav"|"sdar"|"m4a";profile?:string;objects?:number;bedChannels?:number;objectEvents?:number;convertedMaster?:boolean;id?:string;state:"idle"|"running"|"cancelling"|"cancelled"|"done"|"error";
   stage?:string;progress?:number;inputName?:string;outputPath?:string;error?:string;
   volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;programmeGainDb?:number;programmeMakeupDb?:number;sourceLufs?:number|null;balancePolicy?:string;spatialAlgorithm?:string|null;
   frames?:number;sampleRate?:number;channels?:number;bits?:number;gainDb?:number;truePeakDbtp?:number|null;
@@ -232,9 +232,9 @@ declare global {
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       localFilePath?: (file:File) => string;
-      probeAuthoredFile?: (path:string) => Promise<{kind:"sdar"|"m4a"|"wav-master";lossless:boolean;master?:boolean}|null>;
+      probeAuthoredFile?: (path:string) => Promise<{kind:"sdar"|"m4a"|"wav-master";lossless:boolean;master?:boolean;profile?:string;objects?:number;channels?:number}|null>;
       openAuthoredFile?: (path:string,layout:string) => Promise<{id:string;kind:string;lossless:boolean;layout:string;frames:number;sampleRate:number;inputRate:number;channels:number;labels:string[];render:Record<string,unknown>;summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"}}>;
-      pullAuthoredFile?: (id:string) => Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
+      pullAuthoredFile?: (id:string) => Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];events?:import("@sda/core").DecodedFrameData["events"];objectChannels?:import("@sda/core").DecodedFrameData["objectChannels"];eof:boolean}>;
       closeAuthoredFile?: (id?:string) => Promise<boolean>;
       bindAuthoredRoomEditor?: (callback:(settings:CinemaSettings,profileId:string|null)=>Promise<boolean>)=>(()=>void);
       setAuthoredFileCinema?: (id:string,settings:CinemaSettings,profileId:string|null)=>Promise<boolean>;
@@ -243,7 +243,7 @@ declare global {
       cancelStereoLoudness?: () => Promise<boolean>;
       onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;
-      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sampleRate?:number;bitrateKbps?:number;lossless?:boolean;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
+      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel"|"sdar-bed-channel-with-objects";sampleRate?:number;bitrateKbps?:number;lossless?:boolean;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
       getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[];codecs?:string[];compressionModes?:string[]}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
       cancelUpmixExport?: () => Promise<boolean>;
