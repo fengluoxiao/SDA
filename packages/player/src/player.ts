@@ -53,6 +53,10 @@ export interface VisualObject {
   anchor: "room" | "screen" | "speaker";
   distanceM: number | null;
   distanceInfinite: boolean;
+  /** Source event timing for authored scene visualization; never audio routing. */
+  visualTiming?: { timeSec: number; rampSec: number };
+  /** Display-only projection. The authoritative object inventory never uses it. */
+  sceneOpacity?: number;
 }
 
 /** Standard FLAC/WAVE channel order for decoded discrete PCM. A decoded
@@ -2447,7 +2451,7 @@ export class SdaPlayer {
       this.pendingVisualEvents[this.pendingVisualCursor]!.samplePos <= playedSample
     ) {
       const event = this.pendingVisualEvents[this.pendingVisualCursor++]!;
-      this.objects.set(event.id, visualObjectFromEvent(event));
+      this.objects.set(event.id, visualObjectFromEvent(event, this.isAuthoredSource ? this.sampleRate : undefined));
       changed = true;
     }
     if (this.pendingVisualCursor >= 256 && this.pendingVisualCursor * 2 >= this.pendingVisualEvents.length) {

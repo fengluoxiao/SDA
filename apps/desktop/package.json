@@ -70,6 +70,7 @@
       "upmix-export-worker.cjs",
       "sdar-mp4.cjs",
       "sdar-lossless.cjs",
+      "sdar-wave-archive.cjs",
       "sdar-public-tags.cjs"
     ],
     "asarUnpack": [

@@ -350,6 +350,7 @@ pub struct PcmSource {
     pub channels: usize,
     pub rate: u32,
     pub bits: u16,
+    pub id3_range: Option<(u64, u64)>,
 }
 pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Metadata), String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
@@ -364,6 +365,7 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
         return Err("Not an SDAR bed master".into());
     }
     let (mut format, mut data, mut render, mut id3, mut ds64) = (None, None, None, None, None);
+    let mut id3_range = None;
     let mut at = 12;
     while at + 8 <= size {
         let h = exact(&mut file, at, 8)?;
@@ -418,7 +420,10 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
                         .map_err(|e| e.to_string())?,
                 );
             }
-            b"id3 " => id3 = Some(metadata_bytes(&mut file, at + 8, length)?),
+            b"id3 " => {
+                id3 = Some(metadata_bytes(&mut file, at + 8, length)?);
+                id3_range = Some((at + 8, length));
+            },
             _ => {}
         }
         at += 8 + length + (length & 1);
@@ -443,6 +448,7 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
             channels,
             rate,
             bits,
+            id3_range,
         },
         metadata,
     ))

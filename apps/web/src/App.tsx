@@ -2,7 +2,7 @@ import UpmixExport from "./components/UpmixExport";
 import { readObjectRendering, enableObjectRenderingDefaults } from "./object-rendering-preference";
 import sharedRenderProfile from "../../mobile/ios-experiments/active.json";
 import {migrateSharedHrtf, playbackHrtfSet, SHARED_HRTF_PROFILE} from "./shared-hrtf-profile";
-import {LiveObjectView, createObjectViewStore} from "./components/LiveObjectView";
+import {LiveObjectView, LiveObjectCount, createObjectViewStore} from "./components/LiveObjectView";
 import {formatAutoLayout, resolveAutoLayout, uses360RaLowerLayer} from "./auto-layout";
 import {GlassRefraction} from "./components/GlassRefraction";
 import SheetHeading from "./components/SheetHeading";
@@ -513,6 +513,7 @@ export function App() {
     setPlaybackMode(mode);
     try { localStorage.setItem(PLAYBACK_MODE_KEY, mode); } catch { /* Playback still works if storage is unavailable. */ }
   }, []);
+  const [showStaticObjects, setShowStaticObjects] = useState(false);
   const [showObjectNames,setShowObjectNames]=useState(()=>{try{return localStorage.getItem("sda-object-names")==="true";}catch{return false;}});
   const [miniPlaylistOpen,setMiniPlaylistOpen]=useState(false);
   useEffect(()=>{if(floatPanel==="playlist")setMiniPlaylistOpen(false);},[floatPanel]);
@@ -921,7 +922,7 @@ export function App() {
           const now = performance.now();
           if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
-            liveObjectView.publish(objs, sounding);
+            liveObjectView.publish(objs, sounding, t, createdPlayer?.isAuthoredSource ?? false);
             if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
               lastDiagnosticUpdateRef.current = t;
               setObjects(objs);
@@ -2481,8 +2482,8 @@ export function App() {
       <main>
         <section className="view">
         {balanceAnalysisProgress !== null && <p role="status" className="settings-disabled" style={{position:"absolute",top:58,left:24,zIndex:4,pointerEvents:"none"}}>正在分析整曲响度 · {Math.round(balanceAnalysisProgress * 100)}%</p>}
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<LiveObjectView store={liveObjectView} spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
-          <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> {diagnosticObjects.length} 对象</small></div>
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<LiveObjectView store={liveObjectView} showStaticObjects={showStaticObjects} spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+          <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> <LiveObjectCount store={liveObjectView} showStaticObjects={showStaticObjects}/></small></div>
           <MiniPlayer
             track={track}
             position={position}
@@ -2720,7 +2721,7 @@ export function App() {
           </div>
         )}
         {floatPanel === "objects" && (
-          <ObjectPanel showObjectNames={showObjectNames} onShowObjectNames={enabled=>{setShowObjectNames(enabled);try{localStorage.setItem("sda-object-names",String(enabled));}catch{}}} onClose={()=>setFloatPanel(null)}
+          <ObjectPanel showStaticObjects={showStaticObjects} onShowStaticObjects={track?.codec === "sdar" ? setShowStaticObjects : undefined} showObjectNames={showObjectNames} onShowObjectNames={enabled=>{setShowObjectNames(enabled);try{localStorage.setItem("sda-object-names",String(enabled));}catch{}}} onClose={()=>setFloatPanel(null)}
             className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}

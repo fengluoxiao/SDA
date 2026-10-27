@@ -5,6 +5,8 @@ import type { BinauralRenderMetadata, VisualObject } from "@sda/player";
 
 interface ObjectPanelProps {
   onClose?:()=>void;
+  showStaticObjects?: boolean;
+  onShowStaticObjects?: (enabled: boolean) => void;
   showObjectNames?:boolean;
   onShowObjectNames?:(enabled:boolean)=>void;
   objects: readonly VisualObject[];
@@ -26,6 +28,8 @@ const formatDistance = (object: VisualObject): string | null => {
 };
 
 export const ObjectPanel = memo(function ObjectPanel({
+  showStaticObjects,
+  onShowStaticObjects,
   showObjectNames,
   onShowObjectNames,
   objects,
@@ -41,6 +45,7 @@ export const ObjectPanel = memo(function ObjectPanel({
   return (
     <div className={`panel obj-panel object-browser desktop-sheet${className ? ` ${className}` : ""}`} aria-label="音频对象">
       <SheetHeading title="音频对象" detail={`${objects.length} 个对象`} onClose={onClose}/>
+      {onShowStaticObjects && <label className="settings-switch" title="仅影响声场显示，固定对象仍正常发声；关闭时只显示正在移动及淡出的对象"><span>SDAR 显示全部对象</span><input type="checkbox" role="switch" checked={!!showStaticObjects} onChange={e => onShowStaticObjects(e.target.checked)}/></label>}
       {onShowObjectNames&&<label className="settings-switch"><span>3D 视图显示对象名称</span><input type="checkbox" role="switch" checked={!!showObjectNames} onChange={e=>onShowObjectNames(e.target.checked)}/></label>}
       <div className="obj-head desktop-sheet-utility">
         {soloIds.size > 0 && (

@@ -41,7 +41,7 @@ export function withoutPendingObjectEvents(
   return events.slice(cursor).filter((event) => event.id !== id);
 }
 
-export function visualObjectFromEvent(event: ObjectEvent): VisualObject {
+export function visualObjectFromEvent(event: ObjectEvent, sampleRate?: number): VisualObject {
   return {
     id: event.id,
     pos: event.pos,
@@ -51,6 +51,10 @@ export function visualObjectFromEvent(event: ObjectEvent): VisualObject {
     anchor: event.anchor,
     distanceM: event.distanceM,
     distanceInfinite: event.distanceInfinite,
+    ...(sampleRate && sampleRate > 0 ? { visualTiming: {
+      timeSec: event.samplePos / sampleRate,
+      rampSec: Math.max(0, event.rampDuration || 0) / sampleRate,
+    } } : {}),
   };
 }
 

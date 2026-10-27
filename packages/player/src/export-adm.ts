@@ -1,8 +1,7 @@
 /** Preserve independent ADM PCM lanes and sample-clock automation; never render a bed downmix. */
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { deflateSync, createDeflate } from "node:zlib";
-import { Readable } from "node:stream";
+import { deflateSync } from "node:zlib";
 import { readBwfMetadata } from "@sda/demux";
 import { exportRenderMetadata } from "./export-scene";
 import { readSourceMetadata } from "./source-metadata";
@@ -67,8 +66,7 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         // A separate compressed resource keeps the executable recipe small, even for 100k+ control blocks.
         const originalMetadata: {
             id: string;
-            asset: string;
-            encoding: string;
+            storage: "master-envelope";
             sha256: string;
             bytes: number;
         }[] = [];
@@ -78,23 +76,15 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
             if (id === "data" && n === 0xffffffff)
                 n = bwf.dataSize;
             if (["axml", "chna", "dbmd", "bext", "iXML"].includes(id)) {
-                if (n > 64 * 1024 * 1024)
-                    throw Error("原始 ADM 元数据附件超过 64 MiB");
+                // Original chunks already survive in the WAV and SDAR archive.
+                // Do not duplicate arbitrary-size ADM XML inside playback ID3.
                 const hash = createHash("sha256"), offset = at + 8;
-                const stream = Readable.from((async function* () { for (let k = 0; k < n;) {
-                    const b = await read(offset + k, Math.min(65536, n - k));
-                    hash.update(b);
-                    yield b;
-                    k += b.length;
-                } })());
-                const compressed: Buffer[] = [];
-                const deflate = createDeflate();
-                stream.on("error", error => deflate.destroy(error));
-                stream.pipe(deflate);
-                for await (const b of deflate)
-                    compressed.push(Buffer.from(b));
-                const asset = add(Buffer.concat(compressed), `original-${id}.bin.zlib`, "application/vnd.sda.adm+zlib");
-                originalMetadata.push({ id, asset, encoding: "zlib", sha256: hash.digest("hex"), bytes: n });
+                for (let k = 0; k < n;) {
+                    const bytes = await read(offset + k, Math.min(65536, n - k));
+                    hash.update(bytes);
+                    k += bytes.length;
+                }
+                originalMetadata.push({ id, storage: "master-envelope", sha256: hash.digest("hex"), bytes: n });
             }
             at += 8 + n + (n & 1);
         }

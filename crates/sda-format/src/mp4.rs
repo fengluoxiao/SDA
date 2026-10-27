@@ -737,18 +737,23 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     } else {
         None
     };
-    let wave_header = top
-        .iter()
-        .find(|a| a.id == *b"sdwh")
-        .map(|a| bytes(&mut file, a))
-        .transpose()?
-        .unwrap_or_default();
-    let wave_tail = top
-        .iter()
-        .find(|a| a.id == *b"sdwt")
-        .map(|a| bytes(&mut file, a).and_then(|v| crate::lossless::inflate_metadata(&v)))
-        .transpose()?
-        .unwrap_or_default();
+    let mut wave_archive = None;
+    let chunked_archive = transport["masterEnvelope"]["format"] == "chunked-zlib-v1";
+    if chunked_archive {
+        if transport["container"] != "sdar" || transport["lossless"] != true {return Err("Invalid SDA archive transport".into());}
+        let atom = top.iter().find(|a|a.id == *b"sdwe").ok_or("Missing SDA WAV archive")?;
+        let archive = crate::lossless::scan_wave_archive(&mut file, atom.body, Some(atom.end))?;
+        if archive.end != atom.end {return Err("Invalid SDA WAV archive boundary".into());}
+        wave_archive = Some(archive);
+    }
+    let wave_header = if chunked_archive {vec![]}else{top
+        .iter().find(|a| a.id == *b"sdwh")
+        .map(|a| crate::metadata::metadata_bytes(&mut file, a.body, a.end - a.body))
+        .transpose()?.unwrap_or_default()};
+    let wave_tail = if chunked_archive {vec![]}else{top
+        .iter().find(|a| a.id == *b"sdwt")
+        .map(|a| crate::metadata::metadata_bytes(&mut file, a.body, a.end - a.body).and_then(|v|crate::lossless::inflate_metadata(&v)))
+        .transpose()?.unwrap_or_default()};
     let metadata = if !wave_header.is_empty() || !wave_tail.is_empty() {
         if id3.is_some() || wave_header.is_empty() || wave_tail.is_empty() {
             return Err("Conflicting SDAR master envelope".into());
@@ -867,6 +872,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     let mut source = LosslessFile::new(file, head, entries, metadata)?;
     source.wave_header = wave_header;
     source.wave_tail = wave_tail;
+    source.wave_archive = wave_archive;
     source.container = transport["container"].as_str().unwrap_or("m4a").to_string();
     if !["sdar", "m4a"].contains(&source.container.as_str()) {
         return Err("Unknown SDAR delivery container role".into());

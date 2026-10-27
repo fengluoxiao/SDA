@@ -343,6 +343,8 @@ pub struct Head {
     pub block_frames: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave_envelope: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -380,6 +382,63 @@ fn read_record(
     let data = exact(file, at + 21, n)?;
     Ok((data, at + 21 + n as u64))
 }
+const WAVE_CHUNK: usize = 1024 * 1024;
+const WAVE_RECORD_LIMIT: usize = WAVE_CHUNK * 2 + 65536;
+#[derive(Clone, Copy)]
+pub struct WaveArchive { pub start: u64, pub end: u64 }
+pub fn scan_wave_archive(file: &mut File, start: u64, bound: Option<u64>) -> Result<WaveArchive, String> {
+    let size = bound.unwrap_or(file.metadata().map_err(|e|e.to_string())?.len());
+    let mut at = start;
+    let mut header = false;
+    let mut tail = false;
+    loop {
+        if at.checked_add(21).is_none_or(|end|end>size) {return Err("Truncated SDA WAV archive".into());}
+        let h = exact(file,at,21)?;
+        if h[20] != 10 {return Err("Invalid SDA WAV archive record".into());}
+        let n = u64::from_str_radix(std::str::from_utf8(&h[4..20]).map_err(|_|"Invalid archive length")?,16).map_err(|_|"Invalid archive length")?;
+        let end = at.checked_add(21).and_then(|v|v.checked_add(n)).filter(|&v|v<=size).ok_or("SDA WAV archive exceeds file")?;
+        match &h[..4] {
+            b"WVHC" if !tail && n >= 4 && n <= WAVE_RECORD_LIMIT as u64 => header = true,
+            b"WVTC" if header && n >= 4 && n <= WAVE_RECORD_LIMIT as u64 => tail = true,
+            b"WVEN" if header && n == 0 => return Ok(WaveArchive {start, end}),
+            _ => return Err("Invalid SDA WAV archive order/size".into()),
+        }
+        at = end;
+    }
+}
+fn write_wave_archive(out: &mut File, source: &mut File, offset: u64, bytes: u64, size: u64) -> Result<(),String> {
+    for (tag,start,end) in [("WVHC",0,offset),("WVTC",offset+bytes,size)] {
+        let mut at = start;
+        while at < end {
+            let n = (end-at).min(WAVE_CHUNK as u64) as usize;
+            let mut block = exact(source,at,n)?;
+            if at == 0 && block.get(..4) == Some(b"SDAR") {
+                block[..4].copy_from_slice(if size-8 > u32::MAX as u64 {b"RF64"}else{b"RIFF"});
+                block[8..12].copy_from_slice(b"WAVE");
+            }
+            write_record(out,tag,&seal(miniz_oxide::deflate::compress_to_vec_zlib(&block,6)))?;
+            at += n as u64;
+        }
+    }
+    write_record(out,"WVEN",&[])?;
+    Ok(())
+}
+fn restore_wave_archive(source: &mut File, archive: WaveArchive, phase: &[u8;4], out: &mut File) -> Result<(),String> {
+    let mut at=archive.start;
+    while at < archive.end {
+        let h=exact(source,at,21)?;
+        let tag: [u8;4] = h[..4].try_into().unwrap();
+        let n = usize::from_str_radix(std::str::from_utf8(&h[4..20]).map_err(|_|"Invalid archive length")?,16).map_err(|_|"Invalid archive length")?;
+        if &tag == phase {
+            let (raw,_) = read_record(source,at,&tag,WAVE_RECORD_LIMIT)?;
+            let block = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&unseal(&raw)?,WAVE_CHUNK).map_err(|e|format!("Invalid SDA WAV archive chunk: {e:?}"))?;
+            if block.is_empty(){return Err("Empty SDA WAV archive chunk".into());}
+            out.write_all(&block).map_err(|e|e.to_string())?;
+        }
+        at += 21+n as u64;
+    }
+    Ok(())
+}
 pub fn wave_metadata(header: &[u8], tail: &[u8]) -> Result<Metadata, String> {
     if header.len() < 20
         || ![b"RIFF".as_slice(), b"RF64".as_slice()].contains(&&header[..4])
@@ -400,6 +459,9 @@ pub fn wave_metadata(header: &[u8], tail: &[u8]) -> Result<Metadata, String> {
                 .and_then(|a| a.checked_add(n))
                 .filter(|&a| a <= bytes.len())
                 .ok_or("Invalid preserved WAV metadata")?;
+            if (tag == b"sdrm" || tag == b"id3 ") && n > MAX_METADATA {
+                return Err("SDAR metadata is too large".into());
+            }
             match tag {
                 b"sdrm" => {
                     render = Some(
@@ -421,6 +483,7 @@ pub struct LosslessFile {
     pub metadata: Metadata,
     pub wave_header: Vec<u8>,
     pub wave_tail: Vec<u8>,
+    pub wave_archive: Option<WaveArchive>,
     pub container: String,
     pub at: u64,
     queue: Vec<std::collections::VecDeque<i32>>,
@@ -433,20 +496,36 @@ impl LosslessFile {
         }
         let (raw, at) = read_record(&mut file, 13, b"HEAD", 16384)?;
         let head: Head = serde_json::from_slice(&unseal(&raw)?).map_err(|e| e.to_string())?;
-        let (raw, at) = read_record(&mut file, at, b"WAVH", MAX_METADATA * 2)?;
-        let header = unseal(&raw)?;
-        let compressed = exact(&mut file, at, 4)? == b"WVTZ";
-        let (raw, audio_start) = read_record(
-            &mut file,
-            at,
-            if compressed { b"WVTZ" } else { b"WAVT" },
-            MAX_METADATA * 2,
-        )?;
-        let tail = unseal(&raw)?;
-        let tail = if compressed {
-            inflate_metadata(&tail)?
+        let (header, tail, metadata, wave_archive, audio_start) = if let Some(version) = &head.wave_envelope {
+            if version != "chunked-zlib-v1" { return Err("Unsupported SDA WAV envelope version".into()); }
+            let (raw, at) = read_record(&mut file, at, b"RNDM", MAX_METADATA * 2 + 8)?;
+            let render_bytes = unseal(&raw)?;
+            if render_bytes.len() > MAX_METADATA {return Err("SDAR metadata is too large".into());}
+            let render = serde_json::from_slice(&render_bytes).map_err(|e|e.to_string())?;
+            let (raw, at) = read_record(&mut file, at, b"ID3 ", MAX_METADATA * 2 + 8)?;
+            let id3 = unseal(&raw)?;
+            if id3.len() > MAX_METADATA { return Err("SDAR metadata is too large".into()); }
+            let metadata = Metadata::parse(render, if id3.is_empty(){None}else{Some(&id3)})?;
+            let archive = scan_wave_archive(&mut file, at, None)?;
+            (vec![], vec![], metadata, Some(archive), archive.end)
         } else {
-            tail
+            let (raw, at) = read_record(&mut file, at, b"WAVH", MAX_METADATA * 2)?;
+            let header = unseal(&raw)?;
+            let compressed = exact(&mut file, at, 4)? == b"WVTZ";
+            let (raw, audio_start) = read_record(
+                &mut file,
+                at,
+                if compressed { b"WVTZ" } else { b"WAVT" },
+                MAX_METADATA * 2,
+            )?;
+            let tail = unseal(&raw)?;
+            let tail = if compressed {
+                inflate_metadata(&tail)?
+            } else {
+                tail
+            };
+            let metadata = wave_metadata(&header, &tail)?;
+            (header, tail, metadata, None, audio_start)
         };
         let size = file.metadata().map_err(|e| e.to_string())?.len();
         if size < 25 {
@@ -467,7 +546,6 @@ impl LosslessFile {
         }
         let entries: Vec<Entry> =
             serde_json::from_slice(&unseal(&raw)?).map_err(|e| e.to_string())?;
-        let metadata = wave_metadata(&header, &tail)?;
         let mut source = Self::new(file, head, entries, metadata)?;
         let mut next = audio_start;
         for e in &source.entries {
@@ -490,6 +568,7 @@ impl LosslessFile {
         }
         source.wave_header = header;
         source.wave_tail = tail;
+        source.wave_archive = wave_archive;
         Ok(source)
     }
     pub fn new(
@@ -543,6 +622,7 @@ impl LosslessFile {
             metadata,
             wave_header: vec![],
             wave_tail: vec![],
+            wave_archive: None,
             container: "sdar".into(),
             at: 0,
             queue,
@@ -630,20 +710,6 @@ pub fn encode(
         return Err("SDAR compact delivery requires 48 kHz and 768/1024/1536 kbps".into());
     }
     let size = source.metadata().map_err(|e| e.to_string())?.len();
-    let mut header = metadata::metadata_bytes(&mut source, 0, format.offset)?;
-    if &header[..4] == b"SDAR" {
-        header[..4].copy_from_slice(if size - 8 > u32::MAX as u64 {
-            b"RF64"
-        } else {
-            b"RIFF"
-        });
-        header[8..12].copy_from_slice(b"WAVE");
-    }
-    let tail = metadata::metadata_bytes(
-        &mut source,
-        format.offset + format.bytes,
-        size - format.offset - format.bytes,
-    )?;
     let head = Head {
         schema: "sda.bed-file".into(),
         version: 2,
@@ -661,6 +727,7 @@ pub fn encode(
         master_frames: metadata.master_frames(),
         block_frames: linear::FRAMES,
         bitrate_kbps: bitrate,
+        wave_envelope: Some("chunked-zlib-v1".into()),
     };
     let mut file = OpenOptions::new()
         .write(true)
@@ -669,12 +736,13 @@ pub fn encode(
         .map_err(|e| e.to_string())?;
     file.write_all(MAGIC).map_err(|e| e.to_string())?;
     write_record(&mut file, "HEAD", &seal(json_bytes(&head)?))?;
-    write_record(&mut file, "WAVH", &seal(header))?;
-    write_record(
-        &mut file,
-        "WVTZ",
-        &seal(miniz_oxide::deflate::compress_to_vec_zlib(&tail, 6)),
-    )?;
+    write_record(&mut file, "RNDM", &seal(json_bytes(&metadata.render)?))?;
+    let id3 = match format.id3_range {
+        Some((offset, bytes)) => metadata::metadata_bytes(&mut source, offset, bytes)?,
+        None => vec![],
+    };
+    write_record(&mut file, "ID3 ", &seal(id3))?;
+    write_wave_archive(&mut file, &mut source, format.offset, format.bytes, size)?;
     let mut resampler = if rate != 48000 {
         Some(
             SincFixedIn::<f32>::new(
@@ -772,7 +840,7 @@ pub fn restore(input: &Path, output: &Path) -> Result<(), String> {
     } else {
         crate::mp4::open_lossless(input)?.ok_or("Not a restorable SDAR master")?
     };
-    if source.wave_header.is_empty() {
+    if source.wave_header.is_empty() && source.wave_archive.is_none() {
         return Err("This delivery does not contain an original WAV master envelope".into());
     }
     if source.head.codec == compact::COMPACT
@@ -786,8 +854,9 @@ pub fn restore(input: &Path, output: &Path) -> Result<(), String> {
         .create_new(true)
         .open(output)
         .map_err(|e| e.to_string())?;
-    out.write_all(&source.wave_header)
-        .map_err(|e| e.to_string())?;
+    if let Some(archive) = source.wave_archive {
+        restore_wave_archive(&mut source.file, archive, b"WVHC", &mut out)?;
+    } else { out.write_all(&source.wave_header).map_err(|e| e.to_string())?; }
     while source.at < source.head.frames {
         let pcm = source.read_int(4096)?;
         let mut bytes = Vec::with_capacity(pcm[0].len() * pcm.len() * 3);
@@ -798,8 +867,9 @@ pub fn restore(input: &Path, output: &Path) -> Result<(), String> {
         }
         out.write_all(&bytes).map_err(|e| e.to_string())?;
     }
-    out.write_all(&source.wave_tail)
-        .map_err(|e| e.to_string())?;
+    if let Some(archive) = source.wave_archive {
+        restore_wave_archive(&mut source.file, archive, b"WVTC", &mut out)?;
+    } else { out.write_all(&source.wave_tail).map_err(|e| e.to_string())?; }
     out.sync_all().map_err(|e| e.to_string())
 }
 #[cfg(test)]

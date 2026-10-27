@@ -164,7 +164,7 @@ const SpeakerRing = memo(function SpeakerRing({ layout, focusedSpeakers, onSpeak
 
 /** 听者：仿纽曼 KU 100 人头麦 —— 光滑无五官的蛋形头、两侧硅胶耳廓、
  *  平直颈部切口 + 话筒立杆。耳廓中心对齐 y=0（ADM 耳位）。 */
-function ObjectName({id,theme}:{id:number;theme:Theme}) {
+function ObjectName({id,theme,opacity=1}:{id:number;theme:Theme;opacity?:number}) {
   const texture=useMemo(()=>{
     const canvas=document.createElement("canvas");canvas.width=256;canvas.height=64;
     const ctx=canvas.getContext("2d")!;
@@ -176,7 +176,7 @@ function ObjectName({id,theme}:{id:number;theme:Theme}) {
     const value=new THREE.CanvasTexture(canvas);value.colorSpace=THREE.SRGBColorSpace;return value;
   },[id,theme]);
   useEffect(()=>()=>texture.dispose(),[texture]);
-  return <sprite position={[0,.18,0]} scale={[.64,.16,1]} renderOrder={13}><spriteMaterial map={texture} transparent depthTest={false} depthWrite={false} toneMapped={false}/></sprite>;
+  return <sprite position={[0,.18,0]} scale={[.64,.16,1]} renderOrder={13}><spriteMaterial map={texture} transparent opacity={opacity} depthTest={false} depthWrite={false} toneMapped={false}/></sprite>;
 }
 
 const ObjectDot = memo(function ObjectDot({
@@ -218,22 +218,23 @@ const ObjectDot = memo(function ObjectDot({
   // ADM size[0]（宽度 0..1）→ 半透明扩散光晕半径
   const spread = Math.min(1, Math.max(0, obj.size?.[0] ?? 0));
   // Keep declared positions visible without presenting silent stems as active sources.
+  const visibility = obj.sceneOpacity ?? 1;
   const dotOpacity = muted ? (theme === "light" ? 0.2 : 0.08) : sounding === false ? 0.12 : 1;
   return (
     <group ref={ref} position={initialPosition} renderOrder={10}>
-      {showName&&<ObjectName id={obj.id} theme={theme}/>}
+      {showName&&<ObjectName id={obj.id} theme={theme} opacity={visibility}/>}
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
-        <meshBasicMaterial color={color} transparent opacity={muted ? 0.01 : sounding ? 0.18 : sounding === false ? 0.015 : 0.1} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={visibility * (muted ? 0.01 : sounding ? 0.18 : sounding === false ? 0.015 : 0.1)} depthTest={false} depthWrite={false} />
       </mesh>
       {theme === "light" && <mesh renderOrder={11}>
         <sphereGeometry args={[0.069, 12, 12]} />
-        <meshBasicMaterial color="#173d40" transparent opacity={muted ? 0.15 : sounding === false ? 0.12 : 0.9} toneMapped={false} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color="#173d40" transparent opacity={visibility * (muted ? 0.15 : sounding === false ? 0.12 : 0.9)} toneMapped={false} depthTest={false} depthWrite={false} />
       </mesh>}
       <mesh renderOrder={12}>
         <sphereGeometry args={[0.06, 10, 10]} />
-        <meshBasicMaterial color={color} transparent opacity={dotOpacity} toneMapped={theme !== "light"} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={visibility * dotOpacity} toneMapped={theme !== "light"} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -243,6 +244,7 @@ const ObjectDot = memo(function ObjectDot({
   return prev.showName === next.showName && prev.muted === next.muted
     && prev.theme === next.theme
     && prev.sounding === next.sounding
+    && a.sceneOpacity === b.sceneOpacity
     && a.id === b.id
     && a.pos[0] === b.pos[0]
     && a.pos[1] === b.pos[1]

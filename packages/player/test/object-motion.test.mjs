@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import {ObjectMotionFilter} from "../src/object-motion.ts";
+import {visualObjectFromEvent} from "../src/control.ts";
+const point = (id, x = 0, time = 0, ramp = 0) => ({id, pos:[x,0,0], hasPos:true,
+  size:[0,0,0], gainDb:0, anchor:"room", distanceM:null, distanceInfinite:false,
+  visualTiming:{timeSec:time,rampSec:ramp}});
+const filter = new ObjectMotionFilter();
+const fixed = point(1), initial = point(2);
+const source = [fixed, initial];
+assert.deepEqual(filter.project(source, 0), [], "initial placement is not movement");
+assert.deepEqual(filter.project([fixed, {...initial,gainDb:-6,size:[1,1,1]}], .1), [], "gain/extent changes are not movement");
+const moved = point(2, .5, .2, .2);
+filter.project([fixed,moved], .2);
+const visible = filter.project([fixed,moved], .3);
+assert.equal(visible.length, 1);assert.equal(visible[0].id, 2);assert.equal(visible[0].sceneOpacity, 1);
+assert.equal(moved.sceneOpacity, undefined, "never mutate authoritative metadata");
+assert.strictEqual(filter.project([fixed,moved], .3), visible, "paused clocks do not fade/rebuild the scene");
+assert.equal(filter.project([fixed,moved], .5)[0].sceneOpacity, 1, "honor original ramp duration");
+const faded=filter.project([fixed,moved], .8);assert(faded[0].sceneOpacity>0 && faded[0].sceneOpacity<1);
+assert.deepEqual(filter.project([fixed,moved], 1.1), [], "stopped objects expire");
+assert.deepEqual(filter.project([fixed,point(2, -.7, 0)], .05), [], "seek is not movement");
+assert.deepEqual(filter.project([fixed,point(2, .9, 9)], 9), [], "forward discontinuity is not movement");
+filter.reset();filter.project([point(1)],0);
+for (let i=1;i<=3;i++) filter.project([point(1,i*.0008,i*.1)],i*.1);
+assert.equal(filter.project([point(1,.0024,.3)],.4).length,1,"slow motion accumulates past jitter threshold");
+assert.deepEqual(filter.project([], .4), []);
+assert.deepEqual(filter.project([point(1,1,.4)], .4), [], "redeclared object starts without an old trail");
+filter.project([{...point(1,1),hasPos:false}], .5);
+assert.deepEqual(filter.project([point(1,0,.6)], .6), [], "unknown position does not fly from origin");
+const event={...point(3),samplePos:48000,rampDuration:2400,screenFactor:null,depthFactor:null};
+assert.deepEqual(visualObjectFromEvent(event,48000).visualTiming,{timeSec:1,rampSec:.05});
+assert.equal(visualObjectFromEvent(event).visualTiming,undefined,"ordinary codec display unchanged");
+console.log("PASS: motion visibility, source ramps, initial placement, gain-only/static/jitter, paused clock, fade, seeks and source identity");

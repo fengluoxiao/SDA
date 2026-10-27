@@ -37,7 +37,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"objectSceneVersion":1,"maxSourceChannels":128,"pcmLayouts":["interleaved-f32le","planar-f32le"],"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"objectSceneVersion":1,"maxSourceChannels":128,"waveEnvelopes":["legacy","chunked-zlib-v1"],"pcmLayouts":["interleaved-f32le","planar-f32le"],"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }
