@@ -594,17 +594,7 @@ impl MobileEngine {
                     return Err(format!("Native {} Hz output requires sample-clock conversion for {} {} Hz", self.config.sample_rate, frame.codec, frame.sample_rate));
                 }
                 sample_pos = frame.sample_pos + frame.channels.first().map_or(0, |pcm| pcm.len()) as u64;
-                {
-                    let mut timeline = self.object_events.lock().expect("object events lock");
-                    advance_object_snapshot(&mut timeline,&mut self.active_objects.lock().expect("active objects lock"),consumed_sample_pos);
-                    let available = OBJECT_EVENT_CAPACITY.saturating_sub(timeline.len());
-                    if frame.events.len() > available {
-                        return Err(format!(
-                            "object metadata timeline full (capacity {OBJECT_EVENT_CAPACITY}); feed was rejected before enqueuing this frame"
-                        ));
-                    }
-                    if self.config.object_rendering { timeline.extend(frame.events.iter().cloned()); }
-                }
+                self.queue_object_visual_events(&frame.events, consumed_sample_pos)?;
                 pending.push_back(self.balance.measure(frame, reference));
                 frames_pushed += 1;
             }
@@ -893,6 +883,18 @@ impl MobileEngine {
             .commands
             .push(render_command::RenderCommand::Command(Command::Pause { paused }))
             .map_err(|_| "command queue full")?;
+        Ok(())
+    }
+
+    /// All decoder paths must publish their original events to the same bounded
+    /// presentation-clock timeline, independently of the audio frame router.
+    fn queue_object_visual_events(&self, events: &[ObjectEvent], consumed_sample_pos: u64) -> EngineResult<()> {
+        let mut timeline = self.object_events.lock().expect("object events lock");
+        advance_object_snapshot(&mut timeline, &mut self.active_objects.lock().expect("active objects lock"), consumed_sample_pos);
+        if events.len() > OBJECT_EVENT_CAPACITY.saturating_sub(timeline.len()) {
+            return Err(format!("object metadata timeline full (capacity {OBJECT_EVENT_CAPACITY}); feed was rejected before enqueuing this frame"));
+        }
+        if self.config.object_rendering { timeline.extend(events.iter().cloned()); }
         Ok(())
     }
 

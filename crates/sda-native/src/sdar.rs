@@ -103,6 +103,7 @@ impl MobileEngine {
         if count > 0 {
             let start = self.decoded_sample_pos();
             for event in &mut events {event.sample_pos=start+event.sample_pos.saturating_sub(source_start);}
+            self.queue_object_visual_events(&events, self.playback_status().consumed_sample_pos)?;
             if self.announced_codec.as_deref() != Some("sdar") {
                 if let Some(pipeline) = &self.pipeline {
                     pipeline
@@ -198,16 +199,44 @@ impl MobileEngine {
    assert_eq!(engine.open_sdar(path.to_str().unwrap(),None).unwrap(),48000);
    assert!(!engine.balance.enabled);assert!(!engine.stereo_bed_mode);
    let (count,done)=engine.pull_sdar(4096).unwrap();assert_eq!(count,4096);assert!(!done);
+   let visible=engine.object_snapshot();
+   assert_eq!(visible.len(),64,"{name}: decoded SDAR objects must reach the mobile UI snapshot");
+   assert!(visible.values().all(|event|event.has_pos&&event.sample_pos==0));
    let mut frames=engine.take_pending_frames();assert_eq!(frames.len(),1);let frame=frames.remove(0);
    assert_eq!(frame.channels.len(),66);assert_eq!(frame.object_channels.len(),64);assert_eq!(frame.events.len(),64);
    assert_eq!(frame.events[0].size,[0.4,0.2,0.3]);assert_eq!(frame.events[0].diffuse,0.1);
    let mut router=frame_router::FrameRouter::default();let commands=router.route(frame).unwrap();
    let render_command::RenderCommand::PcmFrame{entries,events,..}=commands.last().unwrap() else{panic!("missing object PCM frame")};
    assert_eq!(entries[0].0,"bed:0");assert_eq!(entries[1].0,"obj:1");assert_eq!(entries[19].0,"bed:19");assert_eq!(events.len(),64);
-   engine.seek_sdar(150).unwrap();engine.pull_sdar(733).unwrap();let frames=engine.take_pending_frames();assert_eq!(frames[0].sample_pos,0);
+   // Decoding ahead must queue future movement without moving the UI early.
+   engine.pull_sdar(4096).unwrap();engine.take_pending_frames();
+   assert!(engine.object_snapshot().values().all(|event|event.pos[0]==-1.0));
+   engine.pipeline=Some(RenderPipeline {
+    fifo:Arc::new(stereo_fifo::StereoFifo::new(sda_native_renderer::STEREO_FIFO_CAPACITY_FRAMES)),
+    commands:Arc::new(render_command::RenderCommandQueue::new(256)),
+    telemetry:Arc::new(RuntimeTelemetry::default()),
+   });
+   engine.pipeline.as_ref().unwrap().telemetry.callback_consumed_sample_pos.store(4800,std::sync::atomic::Ordering::Release);
+   let moved=engine.object_snapshot();assert_eq!(moved.len(),64);
+   assert!(moved.values().all(|event|event.sample_pos==4800&&event.pos[0]==1.0),"{name}: show movement only when presented");
+   engine.pipeline=None;
+   engine.seek_sdar(150).unwrap();assert!(engine.object_snapshot().is_empty(),"seek must retire the old snapshot");
+   engine.pull_sdar(733).unwrap();let frames=engine.take_pending_frames();assert_eq!(frames[0].sample_pos,0);
+   let recovered_visual=engine.object_snapshot();assert_eq!(recovered_visual.len(),64,"{name}: seek recovery must restore visible objects");
+   assert!(recovered_visual.values().all(|event|event.sample_pos==0));
    let recovered=frames[0].events.iter().filter(|e|e.id==1).collect::<Vec<_>>();assert_eq!(recovered.len(),2);
    assert_eq!(recovered[0].sample_pos,0);assert!(recovered[0].pos[0].abs()<1e-12);assert_eq!(recovered[1].ramp_duration,2400);
    assert_eq!(recovered[1].sample_pos,0);
+  }
+  if let Ok(paths)=std::env::var("SDA_REAL_OBJECT_FILES") {
+   for path in paths.split(';').filter(|path|!path.is_empty()) {
+    let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+    engine.open_sdar(path,None).unwrap();
+    let declared=engine.sdar_source.as_ref().unwrap().file.objects.channels.len();assert!(declared>0);
+    engine.pull_sdar(4096).unwrap();
+    assert_eq!(engine.object_snapshot().len(),declared,"real exported file: {path}");
+    println!("Mobile visual snapshot: {declared} authored objects from {path}");
+   }
   }
  }
 }
