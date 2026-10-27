@@ -189,7 +189,7 @@ const ObjectDot = memo(function ObjectDot({
   showName?:boolean;
   obj: VisualObject;
   muted: boolean;
-  sounding: boolean;
+  sounding: boolean | undefined;
   theme: Theme;
 }) {
   const ref = useRef<THREE.Group>(null);
@@ -217,19 +217,19 @@ const ObjectDot = memo(function ObjectDot({
   );
   // ADM size[0]（宽度 0..1）→ 半透明扩散光晕半径
   const spread = Math.min(1, Math.max(0, obj.size?.[0] ?? 0));
-  // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
-  const dotOpacity = muted ? (theme === "light" ? 0.35 : 0.18) : 1;
+  // Keep declared positions visible without presenting silent stems as active sources.
+  const dotOpacity = muted ? (theme === "light" ? 0.2 : 0.08) : sounding === false ? 0.12 : 1;
   return (
     <group ref={ref} position={initialPosition} renderOrder={10}>
       {showName&&<ObjectName id={obj.id} theme={theme}/>}
       {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
       <mesh renderOrder={10}>
         <sphereGeometry args={[(0.09 + spread * 0.3) * (sounding ? 1.12 : 1), 12, 12]} />
-        <meshBasicMaterial color={color} transparent opacity={muted ? 0.03 : sounding ? 0.18 : 0.1} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={muted ? 0.01 : sounding ? 0.18 : sounding === false ? 0.015 : 0.1} depthTest={false} depthWrite={false} />
       </mesh>
       {theme === "light" && <mesh renderOrder={11}>
         <sphereGeometry args={[0.069, 12, 12]} />
-        <meshBasicMaterial color="#173d40" transparent opacity={muted ? 0.3 : 0.9} toneMapped={false} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color="#173d40" transparent opacity={muted ? 0.15 : sounding === false ? 0.12 : 0.9} toneMapped={false} depthTest={false} depthWrite={false} />
       </mesh>}
       <mesh renderOrder={12}>
         <sphereGeometry args={[0.06, 10, 10]} />
@@ -346,7 +346,7 @@ export function ObjectView({
         <SpeakerRing interactive={!mobile} layout={layout} focusedSpeakers={focusedSpeakers} onSpeakerFocus={immersive?undefined:onSpeakerFocus} hiddenSpeakerNames={hiddenSpeakerNames} />
         {!immersive && <Listener />}
         {objects.map((o) => (
-          <ObjectDot showName={showObjectNames} key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={!(mutedIds?.has(o.id) ?? false) && (soundingIds?.has(o.id) ?? false)} />
+          <ObjectDot showName={showObjectNames} key={o.id} obj={o} theme={theme} muted={mutedIds?.has(o.id) ?? false} sounding={mutedIds?.has(o.id) ? false : soundingIds?.has(o.id)} />
         ))}
         {!immersive && !spherical && <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />}
         {/* 听者半身像的光照 */}
