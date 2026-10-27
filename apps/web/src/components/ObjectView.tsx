@@ -96,7 +96,7 @@ function FlatObjectView({
               className={`flat-object${muted ? " muted" : ""}${sounding ? " sounding" : ""}`}
               key={object.id}
               title={`对象 #${object.id}`}
-              style={{ left: `${clampPercent(object.pos[0])}%`, top: `${clampPercent(-object.pos[1])}%`, opacity: (object.sceneOpacity ?? 1) * (muted ? 0.2 : soundingIds !== undefined && !sounding ? 0.12 : 1) }}
+              style={{ left: `${clampPercent(object.pos[0])}%`, top: `${clampPercent(-object.pos[1])}%`, opacity: (object.sceneOpacity ?? 1) * (muted ? 0.2 : object.sceneOpacity === undefined && soundingIds !== undefined && !sounding ? 0.12 : 1) }}
             >
               <b>#{object.id}</b>
               {object.pos[2] > 0.15 && <i>↑</i>}

@@ -513,7 +513,7 @@ export function App() {
     setPlaybackMode(mode);
     try { localStorage.setItem(PLAYBACK_MODE_KEY, mode); } catch { /* Playback still works if storage is unavailable. */ }
   }, []);
-  const [showStaticObjects, setShowStaticObjects] = useState(false);
+  const [showAllObjects, setShowAllObjects] = useState(false);
   const [showObjectNames,setShowObjectNames]=useState(()=>{try{return localStorage.getItem("sda-object-names")==="true";}catch{return false;}});
   const [miniPlaylistOpen,setMiniPlaylistOpen]=useState(false);
   useEffect(()=>{if(floatPanel==="playlist")setMiniPlaylistOpen(false);},[floatPanel]);
@@ -922,7 +922,7 @@ export function App() {
           const now = performance.now();
           if (!playingRef.current || pausedRef.current || t === 0 || now - lastVisualUiUpdateRef.current >= 30) {
             lastVisualUiUpdateRef.current = now;
-            liveObjectView.publish(objs, sounding, t, createdPlayer?.isAuthoredSource ?? false);
+            liveObjectView.publish(objs, sounding, t);
             if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
               lastDiagnosticUpdateRef.current = t;
               setObjects(objs);
@@ -2482,8 +2482,8 @@ export function App() {
       <main>
         <section className="view">
         {balanceAnalysisProgress !== null && <p role="status" className="settings-disabled" style={{position:"absolute",top:58,left:24,zIndex:4,pointerEvents:"none"}}>正在分析整曲响度 · {Math.round(balanceAnalysisProgress * 100)}%</p>}
-{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<LiveObjectView store={liveObjectView} showStaticObjects={showStaticObjects} spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
-          <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> <LiveObjectCount store={liveObjectView} showStaticObjects={showStaticObjects}/></small></div>
+{roomVisual&&!hrtfTestVisual?<Suspense fallback={<div className="flat-view">加载中</div>}><RoomRayView visual={roomVisual} onSelect={speaker=>setRoomVisual(v=>v?{...v,speaker}:null)}/></Suspense>:<LiveObjectView store={liveObjectView} showAllObjects={showAllObjects} spherical={(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? ""))} showObjectNames={showObjectNames} testVisual={hrtfTestVisual} immersive={immersiveView} layout={outputSpeakers} theme={theme} mutedIds={effectiveMutedIds} focusedSpeakers={activeSpeakerFocus} onSpeakerFocus={speakerFocusLocked ? undefined : toggleSpeakerFocus} hiddenSpeakerNames={effectiveSpeakerMutes} />}
+          <div className="scene-heading"><span>{(["mpegh", "mha1", "mhm1"].includes(track?.codec ?? "")) ? "360° 球形声场" : "空间声场"}</span><small>{layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} <i /> <LiveObjectCount store={liveObjectView} showAllObjects={showAllObjects}/></small></div>
           <MiniPlayer
             track={track}
             position={position}
@@ -2721,7 +2721,7 @@ export function App() {
           </div>
         )}
         {floatPanel === "objects" && (
-          <ObjectPanel showStaticObjects={showStaticObjects} onShowStaticObjects={track?.codec === "sdar" ? setShowStaticObjects : undefined} showObjectNames={showObjectNames} onShowObjectNames={enabled=>{setShowObjectNames(enabled);try{localStorage.setItem("sda-object-names",String(enabled));}catch{}}} onClose={()=>setFloatPanel(null)}
+          <ObjectPanel showAllObjects={showAllObjects} onShowAllObjects={objects.length > 0 ? setShowAllObjects : undefined} showObjectNames={showObjectNames} onShowObjectNames={enabled=>{setShowObjectNames(enabled);try{localStorage.setItem("sda-object-names",String(enabled));}catch{}}} onClose={()=>setFloatPanel(null)}
             className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}

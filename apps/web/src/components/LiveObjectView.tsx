@@ -1,37 +1,40 @@
 import {memo, useSyncExternalStore, type ComponentProps} from "react";
-import {ObjectMotionFilter, type VisualObject} from "@sda/player";
+import {ObjectActivityFilter, type VisualObject} from "@sda/player";
 import {ObjectView} from "./ObjectView";
 
 export function createObjectViewStore() {
-  const motion = new ObjectMotionFilter();
-  let snapshot = {objects: [] as VisualObject[], motionObjects: [] as VisualObject[],
-    soundingIds: new Set<number>() as ReadonlySet<number>, authored: false};
+  const activity = new ObjectActivityFilter();
+  let lastStreamTime = -Infinity;
+  let snapshot = {objects: [] as VisualObject[], activeObjects: [] as VisualObject[],
+    soundingIds: new Set<number>() as ReadonlySet<number>};
   const listeners = new Set<() => void>();
   return {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    publish(objects: VisualObject[], soundingIds: ReadonlySet<number>, timeSec = 0, authored = false) {
-      if (!authored || snapshot.authored !== authored || objects.length === 0) motion.reset();
-      const motionObjects = authored ? motion.project(objects, timeSec) : objects;
+    publish(objects: VisualObject[], soundingIds: ReadonlySet<number>, streamTimeSec = 0,
+        clockSec = performance.now() / 1000) {
+      if (objects.length === 0 || streamTimeSec < lastStreamTime || streamTimeSec - lastStreamTime > 0.5) activity.reset();
+      lastStreamTime = streamTimeSec;
+      const activeObjects = activity.project(objects, soundingIds, clockSec);
       if (snapshot.objects === objects && snapshot.soundingIds === soundingIds
-          && snapshot.motionObjects === motionObjects && snapshot.authored === authored) return;
-      snapshot = {objects, motionObjects, soundingIds, authored};
+          && snapshot.activeObjects === activeObjects) return;
+      snapshot = {objects, activeObjects, soundingIds};
       listeners.forEach(listener => listener());
     },
   };
 }
 
 type Store = ReturnType<typeof createObjectViewStore>;
-// Keep movement and fade updates inside the scene, without rebuilding settings.
-export const LiveObjectView = memo(function LiveObjectView({store, showStaticObjects = false, ...props}:
-  Omit<ComponentProps<typeof ObjectView>, "objects" | "soundingIds"> & {store: Store; showStaticObjects?: boolean}) {
+// Keep activity/fade updates inside the scene, without rebuilding settings.
+export const LiveObjectView = memo(function LiveObjectView({store, showAllObjects = false, ...props}:
+  Omit<ComponentProps<typeof ObjectView>, "objects" | "soundingIds"> & {store: Store; showAllObjects?: boolean}) {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
-  return <ObjectView {...props} objects={showStaticObjects ? snapshot.objects : snapshot.motionObjects} soundingIds={snapshot.soundingIds}/>;
+  return <ObjectView {...props} objects={showAllObjects ? snapshot.objects : snapshot.activeObjects} soundingIds={snapshot.soundingIds}/>;
 });
 
-export function LiveObjectCount({store, showStaticObjects = false}: {store: Store; showStaticObjects?: boolean}) {
+export function LiveObjectCount({store, showAllObjects = false}: {store: Store; showAllObjects?: boolean}) {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
-  return <>{snapshot.authored && !showStaticObjects
-    ? `${snapshot.motionObjects.length} 显示 / ${snapshot.objects.length} 对象`
+  return <>{snapshot.objects.length && !showAllObjects
+    ? `${snapshot.activeObjects.length} 显示 / ${snapshot.objects.length} 对象`
     : `${snapshot.objects.length} 对象`}</>;
 }
