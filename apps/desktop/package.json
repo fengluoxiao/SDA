@@ -65,6 +65,7 @@
       "wav-metadata.cjs",
       "export-assets.cjs",
       "authored-playback.cjs",
+      "decoder-frames.cjs",
       "authored-master.cjs",
       "sda-delivery.cjs",
       "upmix-export-worker.cjs",
