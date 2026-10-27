@@ -371,6 +371,11 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     programEnabled: telemetry.programEnabled,
     programGainDb: telemetry.programGainDb,
     programmeOutputMakeupDb: telemetry.programmeOutputMakeupDb,
+    outputSampleRate: telemetry.outputSampleRate,
+    fifoFramesAvailable: telemetry.fifoFramesAvailable,
+    callbackFifoUnderrunFrames: telemetry.callbackFifoUnderrunFrames,
+    sourceUnderrunSamples: telemetry.underrunSamples,
+    paused: telemetry.paused,
     remoteSynchronized:telemetry.remoteSynchronized===true,
     remoteSyncWaiting:telemetry.remoteSyncWaiting===true,
   };
@@ -654,7 +659,7 @@ function consumeNativeRendererOutput(chunk) {
         const ownership = message.outputActive ? "native output" : "静音预热";
         setNativeRendererStatus(
           true,
-          `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} underrun · ${hrtf} · ${ownership}`,
+          `sample ${message.samplePos} · ${message.activeSources} source · ${message.underrunSamples} source underrun · ${message.callbackFifoUnderrunFrames ?? 0} output underrun · ${hrtf} · ${ownership}`,
           Boolean(message.referenceMix),
           { ...message, samplePos: Number(message.samplePos), outputActive: message.outputActive === true, hrtfReady: message.hrtfReady === true },
         );

@@ -195,3 +195,10 @@ Object M4A defaults to lossless coding to preserve the complete independent stem
 Current import support follows the shared ADM parser: normalized Cartesian extents and point spherical objects; unsupported interactive/alternative programmes, nonzero spherical extents, channel-lock/divergence/screen-lock features, and delivery zoneExclusion/horizontalOnly requirements fail explicitly. The versioned contract can add such features later without silently dropping source metadata.
 
 Regression: `SDA_FORMAT_CODEC=<sdar-codec> node apps/desktop/test/object-export.test.cjs` verifies interleaved bed/object mapping over 66 lanes, exact PCM24 and ADM master restoration, object extent/diffuse/gain, mid-ramp seek, Unicode source tags, one-track SDAR/M4A and explicit bitrate/profile validation. Shared mobile route verification uses the generated fixture directory: set `SDA_OBJECT_FIXTURE_DIR`, then run the ignored `object_interchange_preserves_mobile_pcm_routes_and_seek_clock` native test explicitly.
+
+
+### Real-time PCM transport
+
+The `serve` SDK protocol defaults to `interleaved-f32le` for compatibility. `--planar` negotiates `planar-f32le` in both ready/frame `pcmLayout`: all samples of source lane 0, then lane 1, etc., each little-endian Float32. Channel identities, event clocks, frame counts and the 48 kHz timeline are unchanged. Desktop uses this layout to pass bounded typed-array views over one exact-sized message buffer rather than unpack every sample in the UI/main process. Unknown layouts and mid-session layout changes are errors; an older SDK without this field retains its interleaved path. This affects transient PCM transport, not file coding or authored audio.
+
+Render buffering uses source workload (32+ object lanes, or 64+ total lanes with objects), independently of the container/codec name. Existing remote synchronization and tracked-iOS reserve limits retain their policies. Buffer recovery keeps all queued samples on the DAC clock; no playback-rate or sample-skipping catch-up is introduced.

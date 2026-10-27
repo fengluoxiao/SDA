@@ -124,6 +124,11 @@ declare global {
     programEnabled?: boolean;
     programGainDb?: number;
     programmeOutputMakeupDb?: number;
+    outputSampleRate?: number;
+    fifoFramesAvailable?: number;
+    callbackFifoUnderrunFrames?: number;
+    sourceUnderrunSamples?: number;
+    paused?: boolean;
   }
 
   interface NativeRendererObjectActivity {

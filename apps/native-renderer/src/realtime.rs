@@ -68,6 +68,12 @@ pub(super) fn promote_current_thread() {
     }
 }
 
+// Reserve is determined by the work being rendered, including authored scenes.
+// Keep this separate from ADM's optional automatic HRTF-path selection.
+pub(super) fn dense_object_scene(total_sources:usize,object_sources:usize)->bool {
+    object_sources>=32 || (object_sources>0 && total_sources>=64)
+}
+
 pub(super) fn render_buffer_scale(synchronized: bool, dense: bool) -> usize {
     buffer_scale_for_platform(cfg!(target_os = "ios"), synchronized, dense)
 }
@@ -86,6 +92,14 @@ pub(super) fn render_reserve(ios: bool, tracking: bool, synchronized: bool, norm
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authored_and_decoded_object_scenes_share_workload_reserve(){
+        assert!(super::dense_object_scene(66,56));
+        assert!(super::dense_object_scene(32,32));
+        assert!(super::dense_object_scene(128,16));
+        assert!(!super::dense_object_scene(12,0));
+        assert!(!super::dense_object_scene(16,4));
+    }
     #[test]
     fn tracked_ios_reserve_does_not_change_other_outputs() {
         use super::render_reserve;

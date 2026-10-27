@@ -27,12 +27,17 @@ fn interleaved(pcm: &[Vec<f32>]) -> Vec<u8> {
     }
     bytes
 }
+fn planar(pcm:&[Vec<f32>])->Vec<u8>{
+    let mut bytes=Vec::with_capacity(pcm.first().map_or(0,Vec::len)*pcm.len()*4);
+    for channel in pcm {for value in channel {bytes.extend_from_slice(&value.to_le_bytes());}}
+    bytes
+}
 pub fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("--version");
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"objectSceneVersion":1,"maxSourceChannels":128,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-compact-v1","losslessCodec":"sda-bed-lossless-v2","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"objectSceneVersion":1,"maxSourceChannels":128,"pcmLayouts":["interleaved-f32le","planar-f32le"],"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }
@@ -77,9 +82,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .and_then(|i| args.get(i + 1))
             .map(String::as_str)
             .unwrap_or("7.1.4");
+        let use_planar=args.iter().any(|arg|arg=="--planar");
+        let pcm_layout=if use_planar {"planar-f32le"}else{"interleaved-f32le"};
         let resources = PreparedResources::new(&file.metadata)?;
         let scene = resources.renderer_scene(&file.metadata, layout)?;
-        let ready = json!({"type":"ready","protocol":1,"sampleRate":48000,"inputRate":file.input_rate,"channels":file.metadata.channels(),"frames":file.frames(),"labels":file.metadata.renderer_labels(),"summary":file.metadata.summary(),"render":file.metadata.render,"nativeScene":scene,"resources":resources});
+        let ready = json!({"type":"ready","protocol":1,"pcmLayout":pcm_layout,"sampleRate":48000,"inputRate":file.input_rate,"channels":file.metadata.channels(),"frames":file.frames(),"labels":file.metadata.renderer_labels(),"summary":file.metadata.summary(),"render":file.metadata.render,"nativeScene":scene,"resources":resources});
         file.metadata.assets.clear();
         let mut output = std::io::BufWriter::new(std::io::stdout().lock());
         message(&mut output, ready, &[])?;
@@ -98,8 +105,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     let events=file.objects.events(start,count);
                     message(
                         &mut output,
-                        json!({"objectChannels":file.objects.channels,"events":events,"type":"frame","start":start,"frames":count,"sampleRate":48000,"channels":file.metadata.channels(),"eof":file.finished()}),
-                        &interleaved(&pcm),
+                        json!({"pcmLayout":pcm_layout,"objectChannels":file.objects.channels,"events":events,"type":"frame","start":start,"frames":count,"sampleRate":48000,"channels":file.metadata.channels(),"eof":file.finished()}),
+                        &if use_planar {planar(&pcm)}else{interleaved(&pcm)},
                     )
                 }
                 Some("seek") => {

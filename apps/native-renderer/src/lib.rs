@@ -3785,7 +3785,7 @@ pub fn spawn_render_worker(
                 // Dense ADM runs close to the CPU deadline. A larger rendered
                 // reserve absorbs scheduler/remote-video bursts without changing
                 // source clocks, filters or the DAC-driven presentation clock.
-                let buffer_scale = realtime::render_buffer_scale(synchronized, engine.is_high_density_adm());
+                let buffer_scale = realtime::render_buffer_scale(synchronized, realtime::dense_object_scene(engine.sources.len(),engine.sources.values().filter(|source|source.kind==SourceKind::Object).count()));
                 // Keep decoded PCM ahead, but do not bake old head orientation
                 // into more than a short reserve of final KU100 stereo audio.
                 let (local_target, start_frames) = realtime::render_reserve(
