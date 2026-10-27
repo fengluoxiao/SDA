@@ -49,7 +49,7 @@ impl MobileEngine {
         let value = resources.renderer_scene(&file.metadata, "7.1.4")?;
         let scene: sda_native_renderer::authored::Scene =
             serde_json::from_value(value).map_err(|e| e.to_string())?;
-        let info = serde_json::json!({"summary":file.metadata.summary(),"inputRate":file.input_rate,"format":if file.transport.is_some(){"SDA M4A"}else{"SDAR Bed Channel"},"frames":file.frames(),"covers":resources.covers,"lyrics":resources.lyrics});
+        let info = serde_json::json!({"summary":file.metadata.summary(),"inputRate":file.input_rate,"format":if file.transport.as_ref().is_some_and(|v|v["container"]!="sdar"){"SDA M4A"}else{"SDAR Bed Channel"},"frames":file.frames(),"covers":resources.covers,"lyrics":resources.lyrics});
         self.apply_authored_scene(scene.clone())?;
         self.config.layout = "7.1.4".into();
         self.config.hrtf_wet_weight = scene.resources.hrtf_wet;
