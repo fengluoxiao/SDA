@@ -25,6 +25,25 @@ pub struct ObjectEvent {
     #[serde(default)]
     pub horizontal_only: bool,
 }
+/// Same coordinate domains as the native/JavaScript ADM speaker-zone contract.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+enum Zone {
+    Cartesian { min: [f64; 3], max: [f64; 3] },
+    Polar { min: [f64; 2], max: [f64; 2] },
+}
+fn valid_zone(value: &serde_json::Value) -> bool {
+    match serde_json::from_value::<Zone>(value.clone()) {
+        Ok(Zone::Cartesian { min, max }) => (0..3).all(|i|
+            min[i].is_finite() && max[i].is_finite() && min[i] >= -1.0 && max[i] <= 1.0 && min[i] <= max[i]),
+        // Azimuth may wrap across the rear seam; elevation must stay ordered.
+        Ok(Zone::Polar { min, max }) => min.iter().chain(&max).all(|v|v.is_finite())
+            && min[0].abs() <= 180.0 && max[0].abs() <= 180.0
+            && min[1] >= -90.0 && max[1] <= 90.0 && min[1] <= max[1],
+        Err(_) => false,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ObjectChannel {
     pub id: u32,
@@ -117,6 +136,11 @@ impl ObjectTimeline {
         {
             return Err("Conflicting object timeline".into());
         }
+        if timeline.events.iter().any(|event|event.horizontal_only || !event.zone_exclusion.is_empty())
+            && !metadata.render["interchange"]["requiredFeatures"].as_array().is_some_and(|features|
+                features.iter().any(|feature|feature == "object-spatial-constraints-v1")) {
+            return Err("Missing required SDA object spatial constraints feature".into());
+        }
         let mut previous = None;
         let mut present = BTreeSet::new();
         for e in &timeline.events {
@@ -132,8 +156,7 @@ impl ObjectTimeline {
                 || !e.diffuse.is_finite()
                 || !(0.0..=1.0).contains(&e.diffuse)
                 || e.anchor != "room"
-                || !e.zone_exclusion.is_empty()
-                || e.horizontal_only
+                || e.zone_exclusion.iter().any(|zone|!valid_zone(zone))
                 || e.distance_m.is_some_and(|v| !v.is_finite() || v < 0.0)
                 || [e.screen_factor, e.depth_factor]
                     .iter()
@@ -245,6 +268,44 @@ mod tests {
             ramp_duration: ramp,
             zone_exclusion: vec![],
             horizontal_only: false,
+        }
+    }
+    fn metadata_with_events(events: &[ObjectEvent]) -> Metadata {
+        let raw=serde_json::to_vec(&serde_json::json!({"schema":"sda.object-timeline","version":1,"sampleRate":48000,"durationSamples":1000,"events":events})).unwrap();
+        let data=miniz_oxide::deflate::compress_to_vec_zlib(&raw,6);
+        let id=crate::metadata::hash(&data);
+        let mut metadata=Metadata::default();
+        metadata.assets.insert(id.clone(),crate::metadata::Asset{data,mime_type:"application/vnd.sda.object-timeline+zlib".into(),filename:"timeline.zlib".into()});
+        metadata.render=serde_json::json!({"interchange":{"requiredFeatures":["object-spatial-constraints-v1"]},"scene":{"kind":"bed-objects","durationSamples":1000,"channels":[{"kind":"object","objectId":7,"name":"Obj_7","sourceId":"obj:7"}],"objects":[{"id":7,"pcmChannel":1,"sourceId":"obj:7"}],"automation":{"schema":"sda.object-timeline","version":1,"encoding":"zlib-json","sampleRate":48000,"eventCount":events.len(),"asset":id}}});
+        metadata
+    }
+    #[test]
+    fn spatial_constraints_survive_validation_and_mid_ramp_seek() {
+        let mut first=event(0,-1.0,0);
+        first.zone_exclusion=vec![serde_json::json!({"type":"cartesian","min":[-1,-1,-1],"max":[1,1,-0.4995]})];
+        let mut next=event(100,1.0,100);next.horizontal_only=true;
+        next.zone_exclusion=vec![serde_json::json!({"type":"polar","min":[150,-90],"max":[-150,90]})];
+        let metadata=metadata_with_events(&[first.clone(),next.clone()]);
+        let mut timeline=ObjectTimeline::parse(&metadata).unwrap();
+        assert_eq!(timeline.events(0,32)[0].zone_exclusion,first.zone_exclusion);
+        let recovered=timeline.events(150,16);assert_eq!(recovered.len(),2);
+        assert!(recovered.iter().all(|event|event.horizontal_only&&event.zone_exclusion==next.zone_exclusion));
+        let mut missing=metadata.clone();missing.render["interchange"]["requiredFeatures"]=serde_json::json!([]);
+        assert!(ObjectTimeline::parse(&missing).unwrap_err().contains("spatial constraints"));
+    }
+    #[test]
+    fn spatial_constraints_reject_invalid_bounds_types_and_dimensions() {
+        for zone in [
+            serde_json::json!({"type":"cartesian","min":[-2,-1,-1],"max":[1,1,1]}),
+            serde_json::json!({"type":"cartesian","min":[1,0,0],"max":[-1,1,1]}),
+            serde_json::json!({"type":"cartesian","min":[-1,-1],"max":[1,1]}),
+            serde_json::json!({"type":"polar","min":[0,90],"max":[180,-90]}),
+            serde_json::json!({"type":"polar","min":[0,-91],"max":[180,90]}),
+            serde_json::json!({"type":"cartesian","min":[null,-1,-1],"max":[1,1,1]}),
+            serde_json::json!({"type":"future-zone","min":[0,0],"max":[1,1]}),
+        ] {
+            let mut e=event(0,0.,0);e.zone_exclusion=vec![zone];
+            assert!(ObjectTimeline::parse(&metadata_with_events(&[e])).is_err());
         }
     }
     #[test]

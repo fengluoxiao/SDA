@@ -16,6 +16,7 @@ fn same_target(a: &ObjectEvent, b: &ObjectEvent) -> bool {
         && a.size == b.size && a.diffuse == b.diffuse && a.anchor == b.anchor && a.distance_m == b.distance_m
         && a.distance_infinite == b.distance_infinite && a.screen_factor == b.screen_factor
         && a.depth_factor == b.depth_factor
+        && a.horizontal_only == b.horizontal_only && a.zone_exclusion == b.zone_exclusion
 }
 
 impl FrameRouter {
@@ -132,6 +133,19 @@ mod tests {
     }
 
     #[test]
+    fn authored_constraints_reach_renderer_and_constraint_only_updates_are_not_coalesced() {
+        let mut router=FrameRouter::default();
+        for (at,horizontal,limit) in [(0,true,-0.5),(192,true,-0.25),(384,false,-0.25)] {
+            let mut e=event(at);e.horizontal_only=horizontal;
+            e.zone_exclusion=vec![serde_json::json!({"type":"cartesian","min":[-1,-1,-1],"max":[1,1,limit]})];
+            let expected:NativeObjectEvent=serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+            let mut f=frame(at,&["Obj_42"],&[]);f.events=vec![e];
+            let commands=router.route(f).unwrap();
+            let RenderCommand::PcmFrame {events,..}=commands.last().unwrap() else {panic!()};
+            assert_eq!(events,&vec![expected],"constraints were dropped/merged at {at}");
+        }
+    }
+    #[test]
     fn all_object_codecs_keep_128_source_lanes_and_reject_129() {
         for codec in ["ac4","eac3","mpegh","av3a"] {
             let labels=(0..128).map(|i|format!("Obj_{}",1000+i)).collect::<Vec<_>>();
@@ -158,7 +172,7 @@ mod tests {
             program_loudness: None, ramp_duration: 0 }
     }
     fn event(at: u64) -> ObjectEvent {
-        ObjectEvent { diffuse: 0.0, id: 42, sample_pos: at, has_pos: true, pos: [0.0,1.0,0.0],
+        ObjectEvent { zone_exclusion: vec![], horizontal_only: false, diffuse: 0.0, id: 42, sample_pos: at, has_pos: true, pos: [0.0,1.0,0.0],
             gain_db: 0.0, size: [0.0;3], anchor: "room".into(), distance_m: None,
             distance_infinite: false, screen_factor: None, depth_factor: None, ramp_duration: 128 }
     }

@@ -223,7 +223,7 @@ mod tests {
         }
         if at == 0 {
             for o in &f.object_channels {
-                f.events.push(ObjectEvent {
+                f.events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                     id: o.id,
                     sample_pos: 0,
                     has_pos: true,
@@ -332,7 +332,7 @@ mod shared_tests {
                     raw_bed_labels: vec![],
                     object_channels: vec![crate::ObjectChannelDecl { id: 42, channel: 0 }],
                     events: if block == 0 {
-                        vec![ObjectEvent {
+                        vec![ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                             id: 42,
                             sample_pos: 0,
                             has_pos: true,
@@ -373,7 +373,7 @@ mod sparse_tests {
         let mut complete = SceneMeter::new();
         for block in 0..150u64 {
             let at = block * 1024;
-            let event = ObjectEvent {
+            let event = ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                 id: 42,
                 sample_pos: at,
                 has_pos: true,

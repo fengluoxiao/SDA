@@ -88,6 +88,7 @@ impl Metadata {
                         "bed-scene-v1",
                         "object-scene-v1",
                         "sample-clock-object-automation-v1",
+                        "object-spatial-constraints-v1",
                         "file-processing-v1",
                         "embedded-render-assets-v1",
                     ]

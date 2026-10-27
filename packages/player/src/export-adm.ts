@@ -50,8 +50,6 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         if (bwf.format.sampleRate !== 48000 || bwf.format.bits !== 24 || ![1, 65534].includes(bwf.format.encoding) || bwf.format.channels > 128)
             throw Error("ADM 对象母版需要 48 kHz / PCM24，最多 128 个独立信号");
         const frames = bwf.dataSize / bwf.format.blockAlign;
-        if (adm.events.some(e => (e.zoneExclusion?.length ?? 0) > 0 || e.horizontalOnly))
-            throw Error("此版本的 SDA 对象交付不支持 zoneExclusion / horizontalOnly，不能忽略这些必需参数");
         const source = await readSourceMetadata(job.inputPath, check);
         if (!source.common.title) {
             source.common.title = adm.title ?? "SDA Object Master";
@@ -94,6 +92,8 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         const render: any = exportRenderMetadata(job.renderSnapshot, { frames, sourceSampleRate: 48000, sourceLufs: null, programmeGainDb: 0, programmeMakeupDb: 0, volumeBalanceEnabled: false, spatialBalanceEnabled: false, peakHeadroomGainDb: 0, truePeakDbtp: null }, assets);
         render.profile = "SDAR Bed Channel With Objects";
         render.interchange.requiredFeatures.push("object-scene-v1", "sample-clock-object-automation-v1");
+        if (adm.events.some(event => event.horizontalOnly || event.zoneExclusion?.length))
+            render.interchange.requiredFeatures.push("object-spatial-constraints-v1");
         render.scene.kind = "bed-objects";
         render.scene.layout = "ADM";
         render.scene.channels = adm.labels.map((label, i) => { const track = adm.tracks!.find(t => t.channel === i)!, object = adm.objectChannels.find(o => o.channel === i); const pos = track.position ?? [0, 0, 0]; if (!object && !roles[label])

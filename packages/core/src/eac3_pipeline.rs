@@ -512,7 +512,7 @@ fn extract_events(
                 }
                 .to_string();
 
-                events.push(ObjectEvent {
+                events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                     diffuse: 0.0,
                     id,
                     sample_pos: base_sample_pos + sample_offset,

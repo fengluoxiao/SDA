@@ -50,6 +50,11 @@ pub struct ObjectEvent {
     pub anchor: String,
     /// MPEG-H diffuse energy fraction, independent of object extent.
     pub diffuse: f64,
+    /// Authored ADM speaker-exclusion regions; preserve them through native routing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zone_exclusion: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub horizontal_only: bool,
     /// Finite codec object distance in metres; None means not transmitted.
     pub distance_m: Option<f64>,
     /// Codec explicitly marked this object as infinitely distant.
@@ -58,6 +63,8 @@ pub struct ObjectEvent {
     pub depth_factor: Option<f64>,
     pub ramp_duration: u32,
 }
+
+fn is_false(value: &bool) -> bool { !*value }
 
 /// Sparse object-id ↔ PCM-channel declaration (emitted only when it changes).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -539,7 +546,7 @@ mod tests {
     #[test]
     fn compatibility_resume_preserves_position_across_gain_only_updates() {
         let mut decoder=StreamingDecoder::new("eac3").unwrap();
-        let target=ObjectEvent { id:42,sample_pos:0,has_pos:true,pos:[-0.7,0.7,0.2],gain_db:0.0,size:[0.0;3],anchor:"room".into(),diffuse:0.0,distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:0 };
+        let target=ObjectEvent { zone_exclusion: vec![], horizontal_only: false, id:42,sample_pos:0,has_pos:true,pos:[-0.7,0.7,0.2],gain_db:0.0,size:[0.0;3],anchor:"room".into(),diffuse:0.0,distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:0 };
         for index in 0..3 {
             let events=if index==0 { vec![target.clone()] } else if index==1 { let mut gain=target.clone();gain.has_pos=false;gain.pos=[0.0;3];gain.gain_db=-6.0;gain.sample_pos=16;vec![gain] } else { vec![] };
             decoder.queue.push_back(FrameData { reference_loudness: None, compatibility_bed:Some(CompatibilityBed {channels:vec![vec![0.2;16],vec![0.3;16]],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:index*16,channels:vec![vec![0.5;16]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events,object_channels:vec![],program_loudness:None,ramp_duration:0 });
@@ -556,7 +563,7 @@ mod tests {
     /// this exact shape.
     #[test]
     fn object_event_json_contract_is_camel_case() {
-        let event = ObjectEvent {
+        let event = ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
             diffuse: 0.0,
             id: 10,
             sample_pos: 1536,

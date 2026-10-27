@@ -180,7 +180,7 @@ fn event(
         Some(ObjectExtent::Cartesian { x, y, z }) => [f64::from(x), f64::from(y), f64::from(z)],
         _ => [0.0; 3],
     };
-    ObjectEvent {
+    ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
         diffuse: 0.0,
         id,
         sample_pos,

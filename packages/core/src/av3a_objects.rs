@@ -442,7 +442,7 @@ impl ObjectScene {
                     frame.labels.push(format!("Obj_{id}"));
                     if route.last.as_ref() != Some(target) {
                         let initial = route.last.as_ref().is_none_or(|t| t.muted);
-                        frame.events.push(ObjectEvent {
+                        frame.events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                             id,
                             sample_pos: at,
                             has_pos: !target.muted,

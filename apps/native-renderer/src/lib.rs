@@ -638,9 +638,8 @@ pub struct NativeObjectEvent {
 }
 
 impl NativeObjectEvent {
-    /// Build from the sda-core decoder contract (mobile feed path). Codec
-    /// zone-exclusion metadata is not carried across this boundary; hosts
-    /// needing it should extend this constructor deliberately.
+    /// Convenience builder for unconstrained decoder/test events. Authored
+    /// constraints use the complete serialized event contract in FrameRouter.
     #[allow(clippy::too_many_arguments)]
     pub fn from_decoder_contract(
         id: u32,

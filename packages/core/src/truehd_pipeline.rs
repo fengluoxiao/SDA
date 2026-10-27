@@ -359,7 +359,7 @@ fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Ex
         .to_string();
 
         objects.push((id, i));
-        events.push(ObjectEvent {
+        events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                     diffuse: 0.0,
             id,
             sample_pos,

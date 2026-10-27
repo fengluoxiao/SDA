@@ -143,7 +143,7 @@ impl MpeghDecoder {
             }
             let az = row[2] as f64 * std::f64::consts::PI / 180.0;
             let el = row[3] as f64 * std::f64::consts::PI / 180.0;
-            events.push(ObjectEvent {
+            events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                 id: row[0] as u32, sample_pos: at + row[1] as u64, has_pos: true,
                 pos: [-az.sin()*el.cos(), az.cos()*el.cos(), el.sin()],
                 gain_db: 20.0*(row[5] as f64).max(1e-10).log10(),

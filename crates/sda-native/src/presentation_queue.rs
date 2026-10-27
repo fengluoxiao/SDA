@@ -121,7 +121,7 @@ mod tests {
             channels: vec![vec![0.25; 8]],
             labels: vec!["Obj_7".into()],
             raw_bed_labels: vec![],
-            events: vec![sda_core::ObjectEvent {
+            events: vec![sda_core::ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                 id: 7,
                 sample_pos: at,
                 has_pos: true,

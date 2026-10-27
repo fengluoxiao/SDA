@@ -174,7 +174,7 @@ fn render_hd(
                 .and_then(|m| m.source(feed))
                 .map(|s| s.role)
             {
-                events.push(ObjectEvent {
+                events.push(ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
             diffuse: 0.0,
                     id,
                     sample_pos,

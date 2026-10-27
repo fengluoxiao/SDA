@@ -219,7 +219,7 @@ fn render_source_scene(enabled: bool, toggle: bool, objects: bool, codec: &'stat
                             });
                             if start == 0 {
                                 let (az, el) = (dirs[ch].0.to_radians(), dirs[ch].1.to_radians());
-                                frame.events.push(sda_core::ObjectEvent {
+                                frame.events.push(sda_core::ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                                     id,
                                     sample_pos: 0,
                                     has_pos: true,
@@ -243,7 +243,7 @@ fn render_source_scene(enabled: bool, toggle: bool, objects: bool, codec: &'stat
                         frame.labels=(0..total).map(|i|format!("Obj_{}",1000+i)).collect();
                         frame.object_channels=(0..total).map(|i|sda_core::ObjectChannelDecl{id:1000+i as u32,channel:i as u32}).collect();
                         frame.raw_bed_labels.clear();frame.events.clear();
-                        if start==0 { for lane in 0..total {frame.events.push(sda_core::ObjectEvent {
+                        if start==0 { for lane in 0..total {frame.events.push(sda_core::ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
                             id:1000+lane as u32,sample_pos:0,has_pos:true,pos:[0.0,1.0,0.0],gain_db:0.0,size:[0.0;3],diffuse:0.0,
                             anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:1,
                         });} }

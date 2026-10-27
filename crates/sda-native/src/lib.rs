@@ -1748,7 +1748,7 @@ mod tests {
     /// T1.10: object snapshots coalesce to one per 66 ms window.
     #[test]
     fn object_snapshot_waits_for_presentation_clock_and_evicts_consumed_events() {
-        let object = ObjectEvent {
+        let object = ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
             diffuse: 0.0,
             id: 7,
             sample_pos: 480,
@@ -1779,7 +1779,7 @@ mod tests {
 
     #[test]
     fn object_snapshot_capacity_rejects_instead_of_dropping_future_events() {
-        let event = ObjectEvent {
+        let event = ObjectEvent { zone_exclusion: vec![], horizontal_only: false,
             diffuse: 0.0,
             id: 1, sample_pos: 1, has_pos: true, pos: [0.0; 3], gain_db: 0.0,
             size: [0.0; 3], anchor: "room".into(), distance_m: None,
@@ -1852,7 +1852,7 @@ mod tests {
         let mut engine=MobileEngine::new(EngineConfig{binaural_enabled:false,direct_object_hrtf:true,directional_hrtf:true,..EngineConfig::default()},None).unwrap();
         engine.load_hrtf(concat!(env!("CARGO_MANIFEST_DIR"),"/../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json")).unwrap();
         engine.start(Arc::new(MobileTestOutput)).unwrap();
-        let event=ObjectEvent{diffuse:0.,id:42,sample_pos:0,has_pos:true,pos:[0.7,-0.7,0.3],gain_db:0.,size:[0.;3],anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:128};
+        let event=ObjectEvent{ zone_exclusion: vec![], horizontal_only: false,diffuse:0.,id:42,sample_pos:0,has_pos:true,pos:[0.7,-0.7,0.3],gain_db:0.,size:[0.;3],anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:128};
         engine.object_events.lock().unwrap().push_back(event.clone());
         let frame=FrameData{reference_loudness: None, compatibility_bed:Some(sda_core::CompatibilityBed{channels:vec![vec![0.001;32768];2],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.0001;32768]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events:vec![event],object_channels:vec![sda_core::ObjectChannelDecl{id:42,channel:0}],program_loudness:None,ramp_duration:128};
         engine.pending.lock().unwrap().push_back(engine.balance.measure(frame,None));
