@@ -46,3 +46,40 @@ assert.deepEqual(focus, []);
 assert.equal(player.focusedSpeakers.size, 0);
 assert.deepEqual(speakerNames, ["LFE"]);
 console.log("speaker monitor: durable native selection and clear passed");
+
+// File-owned routing is protected from the first init, not just after PCM arrives.
+const protectedPlayer = Object.create(SdaPlayer.prototype);
+const calls = [];
+Object.assign(protectedPlayer, {
+  authoredSourceExpected: true, authoredInput: null,
+  cb: {onError: message => {throw Error(message);}},
+  knownBedLabels: ['L','R','LFE'], objectChannels: new Map([[1,{}]]),
+  nativeRendererSink: {
+    setMuted: (...args) => calls.push(['mute',...args]),
+    setLfeMuted: (...args) => calls.push(['lfe',...args]),
+    setSpeakerMutes: (...args) => calls.push(['speakers',...args]),
+  },
+  renderer: {
+    setSourceMuted: (...args) => calls.push(['web-mute',...args]),
+    setLfeMuted: (...args) => calls.push(['web-lfe',...args]),
+  },
+});
+function ordinaryRoutingSync(){
+  protectedPlayer.syncSpeakerMutes(new Set(),new Set());
+  protectedPlayer.syncSpeakerMutes(new Set(['FrontLeft']),new Set(['FrontRight']));
+  protectedPlayer.syncBedMix(new Set(['L']),new Set(['R']));
+  protectedPlayer.applyBedMute('bed:0','L',48000);
+  protectedPlayer.setLfeMuted(true);
+  protectedPlayer.setObjectMuted(1,true);
+  protectedPlayer.syncObjectMutes(new Set([1]));
+}
+ordinaryRoutingSync();
+assert.deepEqual(calls,[], 'preparing SDAR cannot queue ordinary routing controls');
+protectedPlayer.authoredSourceExpected = false;
+protectedPlayer.authoredInput = {};
+ordinaryRoutingSync();
+assert.deepEqual(calls,[], 'active SDAR cannot overwrite file routing on layout/state sync');
+protectedPlayer.authoredInput = null;
+protectedPlayer.syncSpeakerMutes(new Set(['FrontLeft']));
+assert.deepEqual(calls,[['speakers',['FrontLeft'],[]]],'ordinary playback still forwards monitoring controls');
+console.log('SDAR routing protection: pending/active files skip ordinary speaker, bed, object and LFE sync; ordinary playback remains controllable');

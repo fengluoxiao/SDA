@@ -564,6 +564,7 @@ export function App() {
       playbackPlaylistRevision: number,
       source: PlaybackSource,
       sourceReference: StereoProgrammeReference | null = null,
+      authoredSource = false,
     ) => {
       // Assigned right after construction; worker callbacks fire later (async).
       let createdPlayer: SdaPlayer | null = null;
@@ -965,6 +966,7 @@ export function App() {
           }
         },
       }, {
+        authoredSource,
         initialOutputLatencySeconds: outputLatencySecondsRef.current,
         denseBinauralObjects: !readBinauralHead().startsWith("personal-") && readDenseBinauralObjects(),
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
@@ -1496,7 +1498,7 @@ export function App() {
         }
         // Build privately first. A stale request never gets to replace or dispose
         // the active player published by a newer request.
-        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source, sourceReference);
+        const player = await createPlayer(mode, layoutId, isCurrent, playbackPlaylistRevision, source, sourceReference, !!authored);
         if (!player || !isCurrent()) return;
         playerRef.current = player;
         setPlayerReady(player);

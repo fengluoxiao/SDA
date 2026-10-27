@@ -199,6 +199,8 @@ export interface NativeRendererSink {
 export type OutputBackend = "web-audio" | "native-sidecar";
 
 export interface SdaPlayerOptions {
+  /** Known before init: file-owned mixing must not receive ordinary UI controls. */
+  authoredSource?: boolean;
   /** Validated output FIFO setting to use when this player creates its first
    * AudioContext. Invalid values safely fall back to 100ms. */
   initialOutputLatencySeconds?: number;
@@ -440,11 +442,13 @@ export class SdaPlayer {
   private pendingWorkerPushes = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   private disposed = false;
   private authoredInput:AuthoredPcmInput|null=null;
-  get isAuthoredSource():boolean{return this.authoredInput!==null;}
+  private authoredSourceExpected = false;
+  get isAuthoredSource():boolean{return this.authoredSourceExpected === true || this.authoredInput != null;}
   get isLosslessAuthoredSource():boolean{return this.authoredInput?.lossless===true;}
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
+    this.authoredSourceExpected = options.authoredSource === true;
     this.headPoseOptions = options.headPose;
     this.headPoseStabilized=options.headPoseStabilized===true;
     this.nativeHeadTracker = new HeadPoseTracker({...options.headPose,fixedForward:true});
@@ -573,7 +577,7 @@ export class SdaPlayer {
 
   /** 恢复按当前码流信息自动选择布局。 */
   setAutoLayout(): void {
-    if(this.authoredInput)return;
+    if(this.isAuthoredSource)return;
     const resolver = this.initArgs?.layoutResolver;
     if (!resolver) return;
     this.autoLayoutEnabled = true;
@@ -721,7 +725,7 @@ export class SdaPlayer {
 
   /** 设置最终双耳耳机补偿。profile 必须来自 renderer 注册的真实测量曲线。 */
   setHeadphoneCompensation(profileId: string | null): void {
-    if(this.authoredInput)return;
+    if(this.isAuthoredSource)return;
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
     }
@@ -743,7 +747,7 @@ export class SdaPlayer {
 
   /** 设置最终双耳的低、中、高三段 EQ，不改变空间化或耳机补偿 FIR。 */
   setBinauralEqBands(bands: BinauralEqBands): void {
-    if(this.authoredInput)return;
+    if(this.isAuthoredSource)return;
     this.binauralEqBands = bands;
     this.renderer?.setBinauralEqBands(bands);
     try {
@@ -765,7 +769,7 @@ export class SdaPlayer {
 
   /** 切换最终双耳低频诊断，不改变 HRTF、LFE 或物理多声道输出。 */
   setBinauralLowFrequencyDiagnostic(mode: BinauralLowFrequencyDiagnostic): void {
-    if(this.authoredInput)return;
+    if(this.isAuthoredSource)return;
     this.binauralLowFrequencyDiagnosticMode = mode;
     this.renderer?.setBinauralLowFrequencyDiagnostic(mode);
     try {
@@ -789,6 +793,7 @@ export class SdaPlayer {
    * solo 由 UI 层用“mute 其他全部”组合实现）。对象尚未声明时只记录状态，
    * 声源声明到达/renderer 重建时自动应用。 */
   setObjectMuted(objectId: number, muted: boolean): void {
+    if (this.isAuthoredSource) return;
     if (muted) this.mutedObjects.add(objectId);
     else this.mutedObjects.delete(objectId);
     if (!this.objectChannels.has(objectId)) return;
@@ -809,6 +814,7 @@ export class SdaPlayer {
   /** 原子同步整组对象静音状态，避免 React state、首帧声明和 renderer
    * 初始化之间的时序竞争。未声明对象只保存在 mutedObjects，等声明到达时应用。 */
   syncObjectMutes(mutedIds: ReadonlySet<number>): void {
+    if (this.isAuthoredSource) return;
     this.mutedObjects = new Set(mutedIds);
     for (const id of this.objectChannels.keys()) {
       const sourceId = `obj:${id}`;
@@ -825,6 +831,7 @@ export class SdaPlayer {
   }
 
   syncSpeakerMutes(names: ReadonlySet<string>, focus: ReadonlySet<string> = new Set()): void {
+    if (this.isAuthoredSource) return;
     this.mutedSpeakers = focus.size > 0 ? new Set() : new Set(names);
     this.focusedSpeakers = new Set(focus);
     if (!this.nativeRendererSink?.setSpeakerMutes) {
@@ -838,6 +845,7 @@ export class SdaPlayer {
   }
 
   syncBedMix(muted: ReadonlySet<string>, solo: ReadonlySet<string>): void {
+    if (this.isAuthoredSource) return;
     this.mutedBedLabels = new Set(muted);
     this.soloBedLabels = new Set(solo);
     this.knownBedLabels.forEach((label, channel) => {
@@ -846,6 +854,7 @@ export class SdaPlayer {
   }
 
   private applyBedMute(id: string, label: string, atSample?: number): void {
+    if (this.isAuthoredSource) return;
     const muted = this.mutedBedLabels.has(label)
       || (this.soloBedLabels.size > 0 && !this.soloBedLabels.has(label));
     this.renderer?.setSourceMuted(id, muted);
@@ -861,6 +870,7 @@ export class SdaPlayer {
 
   /** 静音/恢复独立 LFE 床声道；状态会跨 renderer 重建保留。 */
   setLfeMuted(muted: boolean): void {
+    if (this.isAuthoredSource) return;
     this.lfeMuted = muted;
     this.renderer?.setLfeMuted(muted);
     try {
