@@ -175,6 +175,13 @@ pub(super) fn warm_banks(
     Ok(())
 }
 
+// A pair of long room filters can cost more than many short HRTFs. Keep
+// small dry scenes inline, but share independent long-tail work before the
+// next audio deadline. Silent histories do not justify a pool handoff.
+fn parallel_finish_workload(active_sources: usize, partitions: usize) -> bool {
+    active_sources >= 16 || (active_sources >= 2 && partitions >= 32)
+}
+
 pub(super) fn finish_sources<'a>(
     sources: impl Iterator<Item = &'a mut DirectSource>,
     set: &mut NativeHrtfSet,
@@ -312,9 +319,16 @@ pub(super) fn finish_sources<'a>(
         source.finish_block();
     };
     let worker_count = worker_count_for_sources(sources.len());
+    let (active_sources, partitions) = sources.iter()
+        .filter(|source| source.needs_processing())
+        .fold((0, 0), |(count, parts), source| {
+            (count + 1, parts + source.convolver.spectral_shape().0)
+        });
     if (cfg!(target_os = "ios") || crate::realtime::android_audio_policy()) {
         crate::audio_executor::run(&mut sources, |source| -> Result<(), String> { finish(source); Ok(()) })?;
-    } else if let Some(pool) = workers().filter(|_| sources.len() >= 16 && worker_count > 1) {
+    } else if let Some(pool) = workers().filter(|_| {
+        worker_count > 1 && parallel_finish_workload(active_sources, partitions)
+    }) {
         // Independent histories stay with their sources; summation order in
         // the engine is unchanged. Join before publishing the next PCM block.
         let chunk = sources.len().div_ceil(worker_count);
@@ -356,6 +370,72 @@ pub(super) struct DirectSource {
 mod tests {
     use super::*;
     use crate::bus_renderer;
+
+    #[test]
+    fn long_room_work_is_shared_without_dispatching_small_or_silent_scenes() {
+        assert!(!parallel_finish_workload(0, 128));
+        assert!(!parallel_finish_workload(1, 128));
+        assert!(!parallel_finish_workload(2, 4));
+        assert!(!parallel_finish_workload(2, 31));
+        assert!(parallel_finish_workload(2, 32));
+        assert!(parallel_finish_workload(16, 16));
+    }
+
+    #[test]
+    fn two_long_room_sources_match_serial_during_motion_and_tail_drain() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/public/hrtf/hrtf-set.json");
+        let mut set = NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver = vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        let speakers = vbap::speakers(solver.layout()).iter().map(|s| {
+            let mut left = vec![0.0; 32768];
+            let mut right = left.clone();
+            left[128] = 0.5;
+            right[135] = 0.3;
+            let mut room_left = left.clone();
+            let mut room_right = right.clone();
+            room_left[24000] = 0.1;
+            room_right[24007] = 0.05;
+            crate::cinema::RoomSpeaker {
+                name: s.name.into(), azimuth: s.azimuth, elevation: s.elevation,
+                onset_sample: 128, direct_left: left, direct_right: right,
+                room_left, room_right,
+            }
+        }).collect();
+        set.configure_cinema(crate::cinema::Settings { enabled: true, ..Default::default() },
+            Some(Arc::new(crate::cinema::RoomProfile {
+                version: 1, name: "Long room scheduling regression".into(),
+                source: "Synthetic test".into(), layout: "7.1.4".into(),
+                license: "Test".into(), measurement: "dummy-head".into(), simulation: None,
+                sample_rate: 48000, speakers,
+            })));
+        let mut actual: Vec<_> = (0..2).map(|_| DirectSource::new(&set, 0.04).unwrap()).collect();
+        let mut expected: Vec<_> = (0..2).map(|_| DirectSource::new(&set, 0.04).unwrap()).collect();
+        let mut late_tail = false;
+        for block in 0..70 {
+            for (id, (a, b)) in actual.iter_mut().zip(&mut expected).enumerate() {
+                let phase = (block + id) as f32 * 0.03;
+                let gains = bus_renderer::route(&solver, [phase.cos()*0.7, phase.sin()*0.7, 0.4], None, 0.3);
+                let amounts = [if block < 8 {0.0} else {0.5}; vbap::MAX_BUS_COUNT];
+                a.schedule_focus(solver.layout(), 0.04, gains, amounts);
+                b.update_focus(&mut set, &solver, 0.04, gains, amounts).unwrap();
+                let input = std::array::from_fn(|i| if block < 8 || block == 45 {
+                    ((block * DEFAULT_PARTITION + i + id) as f32 * 0.17).sin() * 0.01
+                } else { 0.0 });
+                a.input = input; b.input = input; b.finish_block();
+            }
+            if block == 0 {
+                assert!(parallel_finish_workload(actual.len(), actual.iter().map(|s| s.convolver.spectral_shape().0).sum()));
+            }
+            finish_sources(actual.iter_mut(), &mut set, &solver, 0.04).unwrap();
+            for (a, b) in actual.iter().zip(&expected) {
+                assert_eq!(a.left, b.left, "left block={block}");
+                assert_eq!(a.right, b.right, "right block={block}");
+                if (23..32).contains(&block) && a.left.iter().any(|v| v.abs() > 1e-6) { late_tail = true; }
+            }
+        }
+        assert!(late_tail, "late room tail must remain audible");
+    }
 
     #[test]
     fn near_field_corrects_direct_but_preserves_room_reflections() {
