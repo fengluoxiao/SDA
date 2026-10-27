@@ -82,7 +82,7 @@ export const MiniPlayer = memo(function MiniPlayer({
   onVolume,
 }: MiniPlayerProps) {
   if (!track) return null;
-  const codecLabel = track.codec === "sdar" ? "SDAR Bed Channel" : track.codec === "av3a" ? "Audio Vivid" : track.codec;
+  const codecLabel = track.codec === "sdar" ? ((track.objectChannels ?? 0) > 0 ? "SDAR Bed Channel With Objects" : "SDAR Bed Channel") : track.codec === "av3a" ? "Audio Vivid" : track.codec;
   const progress = duration > 0 ? Math.min(1, position / duration) : 0;
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>

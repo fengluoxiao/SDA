@@ -2522,7 +2522,7 @@ export function App() {
             {track ? (
               <dl>
                 <dt>编码</dt>
-                <dd>{track.codec==="sdar"?"SDAR Bed Channel":track.codec}</dd>
+                <dd>{track.codec==="sdar"?((track.objectChannels??0)>0?"SDAR Bed Channel With Objects":"SDAR Bed Channel"):track.codec}</dd>
                 <dt>采样率</dt>
                 <dd>{track.sampleRate} Hz</dd>
                 <dt>原始声道</dt>
@@ -2588,7 +2588,7 @@ export function App() {
               <dt>容器</dt>
               <dd>{track.container.toUpperCase()}</dd>
               <dt>编码</dt>
-              <dd>{track.codec==="sdar"?"SDAR Bed Channel":track.codec}</dd>
+              <dd>{track.codec==="sdar"?((track.objectChannels??0)>0?"SDAR Bed Channel With Objects":"SDAR Bed Channel"):track.codec}</dd>
               <dt>采样率</dt>
               <dd>{track.sampleRate.toLocaleString()} Hz</dd>
               <dt>声道</dt>
