@@ -405,7 +405,7 @@ pub fn read_master(path: &Path, allow_wave: bool) -> Result<(File, PcmSource, Me
 pub fn track_metadata(path: impl AsRef<Path>) -> Result<serde_json::Value, String> {
     let file = crate::BedFile::open(path)?;
     let common = &file.metadata.source["common"];
-    let mut result = serde_json::json!({"title":common["title"],"artist":common["artist"],"album":common["album"],"albumArtist":common["albumartist"],"year":common["year"].as_i64().map(|year|year.to_string()),"date":common["date"],"durationMs":file.frames()as f64/48.,"sourceCodec":"sdar","authoredPlayback":true,"format":if file.transport.is_some(){"SDA M4A"}else{"SDAR Bed Channel"}});
+    let mut result = serde_json::json!({"title":common["title"],"artist":common["artist"],"album":common["album"],"albumArtist":common["albumartist"],"year":common["year"].as_i64().map(|year|year.to_string()),"date":common["date"],"durationMs":file.frames()as f64/48.,"sourceCodec":"sdar","authoredPlayback":true,"format":if file.transport.as_ref().is_some_and(|v|v["container"]!="sdar"){"SDA M4A"}else{"SDAR Bed Channel"}});
     if let Some(id) = common["picture"]
         .as_array()
         .and_then(|v| v.first())

@@ -13,6 +13,7 @@ enum Source {
         at: u64,
     },
     Aac(AacSource),
+    Lossless(crate::lossless::LosslessFile),
 }
 impl Source {
     fn read(&mut self, max: usize) -> Result<Vec<Vec<f32>>, String> {
@@ -38,6 +39,7 @@ impl Source {
                 Ok(out)
             }
             Self::Aac(aac) => aac.read(max),
+            Self::Lossless(bed) => bed.read(max),
         }
     }
 }
@@ -63,7 +65,24 @@ impl BedFile {
     fn open_internal(path: &Path, allow_wave: bool) -> Result<Self, String> {
         let mut probe = File::open(path).map_err(|e| e.to_string())?;
         let header = exact(&mut probe, 0, 12)?;
-        let (source, metadata, input_rate, transport) = if &header[..4] == b"SDAR"
+        let lossless = if &header[..4] == b"SDAR" && &header[8..12] == b"BCH2" {
+            Some(crate::lossless::LosslessFile::open(path)?)
+        } else if &header[4..8] == b"ftyp" {
+            crate::mp4::open_lossless(path)?
+        } else {
+            None
+        };
+        let (source, metadata, input_rate, transport) = if let Some(mut bed) = lossless {
+            let metadata = std::mem::take(&mut bed.metadata);
+            // Preserved master bytes are only needed by restore-master, not playback.
+            bed.wave_header = Vec::new();
+            bed.wave_tail = Vec::new();
+            let rate = bed.head.sample_rate;
+            let transport = Some(
+                serde_json::json!({"codec":"sdar-bed-channel","compression":crate::lossless::CODEC,"lossless":true,"sampleRate":rate,"container":if &header[..4]==b"SDAR"{"sdar"}else{"m4a"}}),
+            );
+            (Source::Lossless(bed), metadata, rate, transport)
+        } else if &header[..4] == b"SDAR"
             || allow_wave && [b"RIFF".as_slice(), b"RF64".as_slice()].contains(&&header[..4])
         {
             let (file, format, metadata) = metadata::read_master(path, allow_wave)?;
@@ -131,7 +150,7 @@ impl BedFile {
         let Ok(h) = exact(&mut file, 0, 12) else {
             return false;
         };
-        (&h[..4] == b"SDAR" && &h[8..12] == b"BCH1")
+        (&h[..4] == b"SDAR" && [b"BCH1".as_slice(), b"BCH2".as_slice()].contains(&&h[8..12]))
             || (&h[4..8] == b"ftyp" && &h[8..12] == b"sda1")
     }
     pub fn seek(&mut self, target: u64) -> Result<(), String> {
@@ -142,6 +161,7 @@ impl BedFile {
                 target
             }
             Source::Aac(aac) => aac.seek_base(target)?,
+            Source::Lossless(bed) => bed.seek_base(target)?,
         };
         if let Some(resampler) = &mut self.resampler {
             resampler.reset();

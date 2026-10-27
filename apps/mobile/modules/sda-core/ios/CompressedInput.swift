@@ -49,7 +49,7 @@ final class CompressedInput {
    let magic = String(data:signature.prefix(4),encoding:.ascii)
    let atom = String(data:signature.subdata(in:4..<8),encoding:.ascii)
    let profile = String(data:signature.suffix(4),encoding:.ascii)
-   isSdar = (magic == "SDAR" && profile == "BCH1") || (atom == "ftyp" && profile == "sda1")
+   isSdar = (magic == "SDAR" && (profile == "BCH1" || profile == "BCH2")) || (atom == "ftyp" && profile == "sda1")
   }
   if isSdar { nativeCodec="sdar"; return }
   if ext == "sdar" { throw SdaError.message("无效或尚未支持的 SDAR 床层文件") }

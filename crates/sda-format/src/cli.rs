@@ -32,11 +32,34 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sda-bed-lossless-v1","legacyBedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }
     let input = args.get(1).ok_or("SDAR input file required")?;
+    if command == "encode-bed" {
+        let rate = args
+            .get(3)
+            .map(|s| s.parse::<u32>())
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(48000);
+        let head = crate::lossless::encode(
+            std::path::Path::new(input),
+            std::path::Path::new(args.get(2).ok_or("SDAR output required")?),
+            rate,
+        )?;
+        println!("{}", json!({"type":"done","head":head}));
+        return Ok(());
+    }
+    if command == "restore-master" {
+        crate::lossless::restore(
+            std::path::Path::new(input),
+            std::path::Path::new(args.get(2).ok_or("WAV output required")?),
+        )?;
+        println!("{}", json!({"type":"done"}));
+        return Ok(());
+    }
     let allow_wave = args.iter().any(|s| s == "--allow-wave");
     let mut file = if allow_wave {
         BedFile::open_master_wave(input)?

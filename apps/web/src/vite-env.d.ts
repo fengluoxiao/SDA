@@ -232,7 +232,7 @@ declare global {
       onHeadTrackingPose?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       onHeadTrackingRecenter?: (callback: (pose: HeadTrackingPose) => void) => () => void;
       localFilePath?: (file:File) => string;
-      probeAuthoredFile?: (path:string) => Promise<{kind:"sdar"|"m4a"|"wav-master";lossless:boolean}|null>;
+      probeAuthoredFile?: (path:string) => Promise<{kind:"sdar"|"m4a"|"wav-master";lossless:boolean;master?:boolean}|null>;
       openAuthoredFile?: (path:string,layout:string) => Promise<{id:string;kind:string;lossless:boolean;layout:string;frames:number;sampleRate:number;inputRate:number;channels:number;labels:string[];render:Record<string,unknown>;summary:{title?:string;artist?:string;album?:string};coverArt?:{bytes:Uint8Array;mimeType:"image/jpeg"|"image/png"}}>;
       pullAuthoredFile?: (id:string) => Promise<{samplePos:number;sampleRate:number;channels:Float32Array[];eof:boolean}>;
       closeAuthoredFile?: (id?:string) => Promise<boolean>;

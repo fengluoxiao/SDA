@@ -17,14 +17,14 @@ function resolveEncoder(resourceRoot) {
 function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePath,rendererPath,captureAssets,encoderPath}) {
   let job=null,last={state:'idle'};
   const encoder=()=>typeof encoderPath==='function'?encoderPath():encoderPath;
-  const singleTrackReady=()=>{try{const file=typeof rendererPath==='function'?rendererPath():rendererPath;return !!file&&fs.readFileSync(file).includes(Buffer.from('sdar-bed-channel-v2'));}catch{return false;}};
+  const singleTrackReady=()=>{try{const file=typeof rendererPath==='function'?rendererPath():rendererPath;return !!file&&fs.readFileSync(file).includes(Buffer.from('sda-bed-lossless-v1'));}catch{return false;}};
   const emit=state=>{last=state;if(job?.owner&&!job.owner.isDestroyed())job.owner.send('sda:upmix-export-status',state);};
-  const clean=current=>{for(const file of [current.floatPath,current.stagingPath,current.balancedPath,current.deliveryPath,current.deliveryPath&&current.deliveryPath+'.aac-components.tmp']) {
+  const clean=current=>{for(const file of [current.floatPath,current.stagingPath,current.balancedPath,current.deliveryPath,current.deliveryPath&&current.deliveryPath+'.bed-codec.tmp']) {
     if(!file||!current.outputPath||path.dirname(file)!==path.dirname(current.outputPath))continue;
     try{fs.unlinkSync(file);}catch{}
   }};
   const cancel=()=>{if(!job||job.selecting)return false;Atomics.store(job.cancel,0,1);emit({...last,state:'cancelling'});const current=job;current.timeout??=setTimeout(()=>current.worker.terminate(),5000);return true;};
-  ipcMain.handle('sda:upmix-export-capabilities',()=>{const ready=singleTrackReady();return ({version:2,sourceMetadata:1,renderMetadata:1,authoredAssets:!!captureAssets,formats:['wav','sdar',...(encoder()&&ready?['m4a']:[])],codecs:ready?['sdar-bed-channel']:[],sampleRates:[...SUPPORTED_RATES],bitratesKbps:[...SUPPORTED_BITRATES]});});
+  ipcMain.handle('sda:upmix-export-capabilities',()=>{const ready=singleTrackReady();return ({version:2,sourceMetadata:1,renderMetadata:1,authoredAssets:!!captureAssets,formats:['wav',...(ready?['sdar','m4a']:[])],codecs:ready?['sdar-bed-channel']:[],sampleRates:[...SUPPORTED_RATES],bitratesKbps:[],bitrateMode:'lossless-vbr'});});
   ipcMain.handle('sda:upmix-export-status',()=>last);
   ipcMain.handle('sda:upmix-export-cancel',event=>job?.owner===event.sender?cancel():false);
   ipcMain.handle('sda:upmix-export-reveal',()=>{if(last.state==='done'&&last.outputPath)shell.showItemInFolder(last.outputPath);});
@@ -34,11 +34,11 @@ function createUpmixExport({ipcMain,dialog,BrowserWindow,shell,workerPath,corePa
     if(!options||typeof options!=='object')throw Error('导出设置无效');
     const format=options.format??'wav';
     if(format==='m4a'&&options.codec!=='sdar-bed-channel')throw Error('请选择 SDAR Bed Channel 编码');if(!['wav','sdar','m4a'].includes(format))throw Error('导出格式无效');
-    if(format==='m4a'&&(!SUPPORTED_RATES.has(options.sampleRate)||!SUPPORTED_BITRATES.has(options.bitrateKbps)))throw Error('M4A 采样率或比特率不受支持');
-    if(format==='m4a'&&!singleTrackReady())throw Error('请更新并重启支持单音轨 SDAR Bed Channel 的原生渲染器');
+    if(format==='m4a'&&!SUPPORTED_RATES.has(options.sampleRate))throw Error('M4A 采样率不受支持');if(options.bitrateKbps!==undefined)throw Error('SDA 无损编码使用自动可变码率');
+    if(format!=='wav'&&!singleTrackReady())throw Error('请更新并重启支持单音轨 SDAR Bed Channel 的原生渲染器');
     if(format==='m4a'&&!encoder())throw Error('SDA AAC 编码器未安装，请重新构建桌面版');
     const kind=require('./authored-playback.cjs').probeAuthoredFile(inputPath);
-    if(kind?.kind==='m4a')throw Error('有损 M4A 不能转换成无损母版，请使用原始 WAV / SDAR');
+    if(kind?.kind==='m4a')throw Error('请使用原始 WAV / SDAR 母版进行转换，M4A 为交付文件');
     const sourceMaster=!!kind;
     const settings={volumeBalanceEnabled:options.volumeBalanceEnabled??false,spatialBalanceEnabled:options.spatialBalanceEnabled??false};
     if(Object.values(settings).some(value=>typeof value!=='boolean'))throw Error('平衡开关必须是布尔值');

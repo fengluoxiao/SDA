@@ -1,3 +1,5 @@
+> Legacy format reference. New exports use [SDA Bed Lossless v1](sdar-bed-lossless-v1.md). BCH1 PCM and the AAC transports below are retained for reading old files only.
+
 # SDAR Bed Channel — authored metadata v1 / M4A transport v2
 
 SDAR playback is file-authored on desktop, iOS and Android. A player preset must

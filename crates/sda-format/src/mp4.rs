@@ -683,3 +683,134 @@ impl AacSource {
         Ok(out)
     }
 }
+
+/// New exports carry SDA predictive lossless packets. Legacy AAC is read separately.
+pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile>, String> {
+    use crate::lossless::{Entry, Head, LosslessFile, BLOCK, CODEC};
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let length = file.metadata().map_err(|e| e.to_string())?.len();
+    let top = atoms(&mut file, 0, length)?;
+    let Some(sf) = top.iter().find(|a| a.id == *b"sdaf") else {
+        return Ok(None);
+    };
+    let transport: Value =
+        serde_json::from_slice(&bytes(&mut file, sf)?).map_err(|e| e.to_string())?;
+    if transport["version"] != 3 {
+        return Ok(None);
+    }
+    if transport["schema"] != "sda.delivery"
+        || transport["codec"] != "sdar-bed-channel"
+        || transport["compression"] != CODEC
+    {
+        return Err("Unsupported SDA lossless transport".into());
+    }
+    let render: Value = serde_json::from_slice(&bytes(
+        &mut file,
+        top.iter()
+            .find(|a| a.id == *b"sdrm")
+            .ok_or("Missing SDA render metadata")?,
+    )?)
+    .map_err(|e| e.to_string())?;
+    let id3 = top
+        .iter()
+        .find(|a| a.id == *b"sdid")
+        .map(|a| bytes(&mut file, a))
+        .transpose()?;
+    let metadata = Metadata::parse(render, id3.as_deref())?;
+    let moov = top
+        .iter()
+        .find(|a| a.id == *b"moov")
+        .ok_or("Missing SDA movie")?;
+    let mdats = top.iter().filter(|a| a.id == *b"mdat").collect::<Vec<_>>();
+    let tracks = atoms(&mut file, moov.body, moov.end)?
+        .into_iter()
+        .filter(|a| a.id == *b"trak")
+        .collect::<Vec<_>>();
+    if tracks.len() != 1 || transport["tracks"].as_array().is_none_or(|v| v.len() != 1) {
+        return Err("SDA lossless requires exactly one track".into());
+    }
+    let trak = &tracks[0];
+    let mdia = child(&mut file, trak, b"mdia")?;
+    let hdlr = child_bytes(&mut file, &mdia, b"hdlr")?;
+    if hdlr.get(8..12) != Some(b"soun") {
+        return Err("SDA track is not audio".into());
+    }
+    let tkhd = child_bytes(&mut file, trak, b"tkhd")?;
+    let id = be32(&tkhd, if tkhd[0] == 1 { 20 } else { 12 })?;
+    if transport["tracks"][0]["trackId"].as_u64() != Some(id as u64)
+        || transport["tracks"][0]["codec"] != "sdar-bed-channel"
+        || transport["tracks"][0]["channels"]
+            != serde_json::json!((0..metadata.channels()).collect::<Vec<_>>())
+    {
+        return Err("SDA track channel identity mismatch".into());
+    }
+    let minf = child(&mut file, &mdia, b"minf")?;
+    let stbl = child(&mut file, &minf, b"stbl")?;
+    let stsd = child(&mut file, &stbl, b"stsd")?;
+    let h = exact(&mut file, stsd.body, 16)?;
+    if be32(&h, 4)? != 1 || &h[12..16] != b"sdar" {
+        return Err("Missing actual SDA codec sample entry".into());
+    }
+    let entry = Atom {
+        id: *b"sdar",
+        body: stsd.body + 44,
+        end: stsd.body + 8 + be32(&h, 8)? as u64,
+    };
+    if entry.body > entry.end || entry.end != stsd.end {
+        return Err("Invalid SDA sample entry".into());
+    }
+    let config: Value = serde_json::from_slice(&child_bytes(&mut file, &entry, b"sdac")?)
+        .map_err(|e| e.to_string())?;
+    if config["schema"] != "sda.bed-codec"
+        || config["version"] != 2
+        || config["codec"] != "sdar-bed-channel"
+        || config["compression"] != CODEC
+        || config["lossless"] != true
+    {
+        return Err("Unsupported SDA predictive codec configuration".into());
+    }
+    let head: Head = serde_json::from_value(config["stream"].clone()).map_err(|e| e.to_string())?;
+    if transport["frames"].as_u64() != Some(head.frames)
+        || transport["sampleRate"].as_u64() != Some(head.sample_rate as u64)
+        || transport["masterFrames"].as_u64() != Some(head.master_frames)
+    {
+        return Err("SDA lossless duration mismatch".into());
+    }
+    let mdhd = child_bytes(&mut file, &mdia, b"mdhd")?;
+    if be32(&mdhd, if mdhd[0] == 1 { 20 } else { 12 })? != head.sample_rate {
+        return Err("SDA timescale mismatch".into());
+    }
+    let (offsets, sizes, trim) =
+        sample_table(&mut file, trak, &mdia, &stbl, &mdats, head.sample_rate)?;
+    if trim != 0 || optional(&mut file, trak, b"edts")?.is_some() {
+        return Err("SDA independent packets do not use priming edits".into());
+    }
+    let stts = child_bytes(&mut file, &stbl, b"stts")?;
+    let mut sample = 0;
+    let mut block = 0;
+    for i in 0..count(&stts, 4)? {
+        let n = count(&stts, 8 + i * 8)?;
+        let duration = be32(&stts, 12 + i * 8)? as u64;
+        for _ in 0..n {
+            if block >= sizes.len() || duration != (head.frames - sample).min(BLOCK as u64) {
+                return Err("SDA packet timing mismatch".into());
+            }
+            sample += duration;
+            block += 1;
+        }
+    }
+    if sample != head.frames || block != sizes.len() {
+        return Err("SDA incomplete packet timing".into());
+    }
+    let entries = offsets
+        .into_iter()
+        .zip(sizes)
+        .enumerate()
+        .map(|(i, (offset, bytes))| Entry {
+            sample: i as u64 * BLOCK as u64,
+            offset,
+            bytes: bytes as usize,
+        })
+        .collect();
+    Ok(Some(LosslessFile::new(file, head, entries, metadata)?))
+}

@@ -47,8 +47,8 @@ async function finishDelivery(master:string){
  if(format==="wav"){fs.renameSync(master,job.outputPath);return;}
  const target=job.deliveryPath;if(!target)throw Error("导出临时路径缺失");
  progress("encode",.9,true);
- if(format==="sdar")delivery.writeSdarMaster(master,target,{check,progress:(v:number)=>progress("encode",.9+.1*v)});
- else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{codec:job.codec,sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{ffmpegPath:job.ffmpegPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ if(format==="sdar")await delivery.writeSdarMaster(master,target,{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{codec:job.codec,sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
  else throw Error("不支持此导出格式");
  check();fs.renameSync(target,job.outputPath);
 }
@@ -62,9 +62,9 @@ async function run(){
    // The authored bed is already processed. Conversion never runs the upmixer,
    // loudness analysis or the current listening preset over it again.
    if((job.format??"wav")==="wav"){
-    const target=job.deliveryPath!;delivery.writeWaveMaster(job.inputPath,target,{check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
-   }else await finishDelivery(job.inputPath);
-   parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format==="m4a"?"SDAR Bed Channel":"PCM24",frames:master.frames,sampleRate:48000,channels:12,bits:24,
+    const target=job.deliveryPath!;await delivery.writeWaveMaster(job.inputPath,target,{rendererPath:job.rendererPath,check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
+   }else {let input=job.inputPath;if(master.head){input=job.stagingPath;await delivery.writeWaveMaster(job.inputPath,input,{rendererPath:job.rendererPath,check});}await finishDelivery(input);}
+   parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format!=="wav"?"SDA Bed Lossless v1":"PCM24",frames:master.frames,sampleRate:48000,channels:12,bits:24,
     volumeBalanceEnabled:master.render.baked.volumeBalance.enabled,spatialBalanceEnabled:master.render.baked.spatialBalance.enabled,
     sourceLufs:master.render.baked.volumeBalance.sourceLufs,programmeGainDb:master.render.baked.volumeBalance.programmeGainDb,
     truePeakDbtp:master.render.baked.peakProtection.truePeakDbtp,convertedMaster:true});

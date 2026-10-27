@@ -3,7 +3,7 @@ name = "sda-format"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "SDAR authored bed metadata, lossless masters and private AAC M4A delivery"
+description = "SDAR authored beds, SDA Bed Lossless encoding and private M4A delivery"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
