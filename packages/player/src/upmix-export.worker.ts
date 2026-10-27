@@ -15,7 +15,7 @@ const {sameFile}=require("../../../apps/desktop/upmix-export.cjs");
 const delivery=require("../../../apps/desktop/sda-delivery.cjs");
 const wav=require("../../../apps/desktop/upmix-wav.cjs");
 const {buildMetadataChunks,chunk:riffChunk}=require("../../../apps/desktop/wav-metadata.cjs");
-const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
+const job=workerData as {inputPath:string;outputPath:string;floatPath:string;stagingPath:string;corePath:string;cancel:SharedArrayBuffer;rendererPath?:string;balancedPath?:string;volumeBalanceEnabled?:boolean;spatialBalanceEnabled?:boolean;analysisOnly?:boolean;format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sourceMaster?:boolean;deliveryPath?:string;masterPath?:string;ffmpegPath?:string;sampleRate?:number;bitrateKbps?:number;renderSnapshot?:Record<string,unknown>|null;renderAssets?:{schema:string;version:number;blobs:{sha256:string;data:Uint8Array;mimeType:string;filename:string;kind:string}[];[key:string]:unknown}|null};
 const balancedPath=job.balancedPath??job.floatPath+".balanced";
 const volumeBalance=job.volumeBalanceEnabled===true,spatialBalance=job.spatialBalanceEnabled===true;
 const cancelled=new Int32Array(job.cancel);
@@ -48,7 +48,7 @@ async function finishDelivery(master:string){
  const target=job.deliveryPath;if(!target)throw Error("导出临时路径缺失");
  progress("encode",.9,true);
  if(format==="sdar")delivery.writeSdarMaster(master,target,{check,progress:(v:number)=>progress("encode",.9+.1*v)});
- else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{ffmpegPath:job.ffmpegPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
+ else if(format==="m4a")await delivery.encodeSdaM4a(master,target,{codec:job.codec,sampleRate:job.sampleRate,bitrateKbps:job.bitrateKbps},{ffmpegPath:job.ffmpegPath,check,progress:(v:number)=>progress("encode",.9+.1*v)});
  else throw Error("不支持此导出格式");
  check();fs.renameSync(target,job.outputPath);
 }
@@ -64,7 +64,7 @@ async function run(){
    if((job.format??"wav")==="wav"){
     const target=job.deliveryPath!;delivery.writeWaveMaster(job.inputPath,target,{check,progress:(v:number)=>progress("write",v)});check();fs.renameSync(target,job.outputPath);
    }else await finishDelivery(job.inputPath);
-   parentPort!.postMessage({type:"done",format:job.format??"wav",frames:master.frames,sampleRate:48000,channels:12,bits:24,
+   parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format==="m4a"?"SDAR Bed Channel":"PCM24",frames:master.frames,sampleRate:48000,channels:12,bits:24,
     volumeBalanceEnabled:master.render.baked.volumeBalance.enabled,spatialBalanceEnabled:master.render.baked.spatialBalance.enabled,
     sourceLufs:master.render.baked.volumeBalance.sourceLufs,programmeGainDb:master.render.baked.volumeBalance.programmeGainDb,
     truePeakDbtp:master.render.baked.peakProtection.truePeakDbtp,convertedMaster:true});
@@ -169,7 +169,7 @@ async function run(){
   if(metadataBytes.length>64*1024*1024)throw Error("歌曲与渲染元数据超过 64 MiB，未替换目标文件");
   check();writeAll(output,metadataBytes);writeAll(output,wav.header(BigInt(samples),metadataBytes.length),0);
   fs.fsyncSync(output);fs.closeSync(output);output=undefined;check();await finishDelivery(job.stagingPath);
-  parentPort!.postMessage({type:"done",format:job.format??"wav",metadata:{...finalMetadata.summary,renderSchemaVersion:1,bedChannels:12,objects:0},frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"source-rate-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
+  parentPort!.postMessage({type:"done",format:job.format??"wav",encoding:job.format==="m4a"?"SDAR Bed Channel":"PCM24",metadata:{...finalMetadata.summary,renderSchemaVersion:1,bedChannels:12,objects:0},frames:samples,sampleRate:48000,channels:12,bits:24,gainDb:20*Math.log10(gain),truePeakDbtp:Number.isFinite(peak)?peak:null,codec,labels:wav.LABELS,volumeBalanceEnabled:volumeBalance,spatialBalanceEnabled:spatialBalance,programmeGainDb:programmeDb,programmeMakeupDb:makeupDb,sourceLufs:sourceMeasurement.integratedLufs,balancePolicy:"source-rate-full-track-reference-v1",spatialAlgorithm:spatialBalance?"directional-spectral-redistribution-v1":null});
  }finally{
   decoder?.free();resampler.current?.destroy();for(const fd of [input,spool,output,processed])if(fd!==undefined)try{fs.closeSync(fd);}catch{}
   if(!job.analysisOnly)for(const file of [job.floatPath,job.stagingPath,balancedPath,job.deliveryPath,job.masterPath])if(file)try{fs.unlinkSync(file);}catch{}

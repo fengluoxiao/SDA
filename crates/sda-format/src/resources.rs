@@ -261,7 +261,12 @@ impl PreparedResources {
 }
 impl PreparedResources {
     pub fn renderer_scene(&self, metadata: &Metadata, layout: &str) -> Result<Value, String> {
-        if !["5.1", "7.1.4", "9.1.6"].contains(&layout) {
+        if ![
+            "5.1", "5.1.2", "5.1.4", "7.1", "7.1.2", "7.1.4", "9.1", "9.1.2", "9.1.4", "9.1.6",
+            "11.1.8", "22.2", "360RA-13",
+        ]
+        .contains(&layout)
+        {
             return Err("Unsupported SDAR output layout".into());
         }
         let r = &metadata.render;

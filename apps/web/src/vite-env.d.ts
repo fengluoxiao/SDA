@@ -241,8 +241,8 @@ declare global {
       cancelStereoLoudness?: () => Promise<boolean>;
       onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;
-      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";sampleRate?:number;bitrateKbps?:number;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
-      getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[]}>;
+      exportUpmixWav?: (inputPath:string, options:{format?:"wav"|"sdar"|"m4a";codec?:"sdar-bed-channel";sampleRate?:number;bitrateKbps?:number;volumeBalanceEnabled:boolean;spatialBalanceEnabled:boolean;renderSnapshot?:Record<string,unknown>}) => Promise<{id?:string;cancelled?:boolean}>;
+      getExportCapabilities?: () => Promise<{version:number;sourceMetadata:number;renderMetadata:number;authoredAssets:boolean;formats:string[];codecs?:string[]}>;
       getUpmixExportStatus?: () => Promise<UpmixExportStatus>;
       cancelUpmixExport?: () => Promise<boolean>;
       revealUpmixExport?: () => Promise<void>;

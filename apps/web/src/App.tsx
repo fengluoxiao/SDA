@@ -1523,7 +1523,7 @@ export function App() {
         if (pausedRef.current) void player.pause();
         if(authored&&localPath&&desktop?.openAuthoredFile&&desktop.pullAuthoredFile&&desktop.closeAuthoredFile){
           const target=layoutIdRef.current==="auto"?"7.1.4":layoutIdRef.current;
-          const opened=await desktop.openAuthoredFile(localPath,["5.1","7.1.4","9.1.6"].includes(target)?target:"7.1.4");
+          const opened=await desktop.openAuthoredFile(localPath,["2.0","2.1"].includes(target)?"7.1.4":target);
           if(!isCurrent()||playerRef.current!==player){await desktop.closeAuthoredFile(opened.id);return;}
           await player.playAuthoredPcm({frames:opened.frames,inputRate:opened.inputRate,labels:opened.labels,lossless:opened.lossless,summary:opened.summary,coverArt:opened.coverArt,
             read:()=>desktop.pullAuthoredFile!(opened.id),close:()=>desktop.closeAuthoredFile!(opened.id),setLayout:layout=>desktop.setAuthoredFileLayout!(opened.id,layout)});
@@ -2515,7 +2515,7 @@ export function App() {
             {track ? (
               <dl>
                 <dt>编码</dt>
-                <dd>{track.codec}</dd>
+                <dd>{track.codec==="sdar"?"SDAR Bed Channel":track.codec}</dd>
                 <dt>采样率</dt>
                 <dd>{track.sampleRate} Hz</dd>
                 <dt>原始声道</dt>
@@ -2581,7 +2581,7 @@ export function App() {
               <dt>容器</dt>
               <dd>{track.container.toUpperCase()}</dd>
               <dt>编码</dt>
-              <dd>{track.codec}</dd>
+              <dd>{track.codec==="sdar"?"SDAR Bed Channel":track.codec}</dd>
               <dt>采样率</dt>
               <dd>{track.sampleRate.toLocaleString()} Hz</dd>
               <dt>声道</dt>

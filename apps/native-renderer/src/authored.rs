@@ -592,6 +592,127 @@ mod scene_tests {
         );
     }
     #[test]
+    fn exported_upmix_matches_live_renderer_across_output_layouts() {
+        let fixture = fixture();
+        let labels = [
+            "FrontLeft",
+            "FrontRight",
+            "Center",
+            "LFE",
+            "SurroundLeft",
+            "SurroundRight",
+            "RearLeft",
+            "RearRight",
+            "TopFrontLeft",
+            "TopFrontRight",
+            "TopRearLeft",
+            "TopRearRight",
+        ];
+        let order = [0usize, 1, 2, 3, 6, 7, 4, 5, 8, 9, 10, 11];
+        let frames = 16384;
+        let mut raw = vec![vec![0f32; frames]; 12];
+        let trim = 10f32.powf(-2. / 20.);
+        for i in 0..frames {
+            let wave = |hz: f32| (std::f32::consts::TAU * hz * i as f32 / 48000.).sin();
+            let l = 0.02 * wave(997.) + 0.006 * wave(80.) + 0.005 * wave(530.);
+            let r = 0.015 * wave(701.) + 0.006 * wave(80.) - 0.005 * wave(530.);
+            let side = (l - r) * 0.5;
+            let values = [
+                l * 0.8,
+                r * 0.8,
+                (l + r) * 0.25,
+                (l + r) * 0.125,
+                side * 0.34,
+                -side * 0.34,
+                side * 0.2,
+                -side * 0.2,
+                side * 0.14,
+                -side * 0.14,
+                side * 0.1,
+                -side * 0.1,
+            ];
+            for ch in 0..12 {
+                raw[ch][i] = values[ch] * trim;
+            }
+        }
+        for volume in [false, true] {
+            let programme_db = if volume { -6. } else { 0. };
+            let makeup_db = if volume { 2.5 } else { 0. };
+            for spatial in [false, true] {
+                let mut processor =
+                    crate::bed_export::BedProcessor::new(programme_db, makeup_db, spatial).unwrap();
+                let mut baked = vec![vec![0.; frames]; 12];
+                for i in 0..frames {
+                    let out = processor
+                        .process(std::array::from_fn(|ch| raw[ch][i]))
+                        .unwrap();
+                    for ch in 0..12 {
+                        baked[ch][i] = out[ch];
+                    }
+                }
+                for layout in ["5.1", "7.1.2", "7.1.4", "9.1.6", "11.1.8", "22.2"] {
+                    let mut scene = fixture.scene.clone();
+                    scene.layout = layout.into();
+                    scene.processing.spatial_presentation = spatial;
+                    scene.processing.programme_gain_db = programme_db;
+                    scene.processing.makeup_db = makeup_db;
+                    scene.processing.bed_positions.clear();
+                    let mut live = Engine::new(48000, 2);
+                    live.configure_authored_scene(scene.clone()).unwrap();
+                    live.authored = Processing::default();
+                    live.set_program_codec("alac".into());
+                    live.program_enabled = volume;
+                    live.set_spatial_enhancement(spatial).unwrap();
+                    live.set_program_target(cinema::db(programme_db), true);
+                    let mut authored = Engine::new(48000, 2);
+                    authored.configure_authored_scene(scene).unwrap();
+                    for (e, is_file) in [(&mut live, false), (&mut authored, true)] {
+                        for ch in 0..12 {
+                            let original = if is_file { order[ch] } else { ch };
+                            let label = labels[original];
+                            let mut source = Source {
+                                kind: SourceKind::Bed,
+                                bed_label: Some(label.into()),
+                                gain: 1.,
+                                target_gain: 1.,
+                                availability: 1.,
+                                availability_target: 1.,
+                                ..Default::default()
+                            };
+                            source.samples.write(
+                                0,
+                                0,
+                                if is_file {
+                                    &baked[original]
+                                } else {
+                                    &raw[original]
+                                },
+                            );
+                            Engine::set_source_route(&mut source, bed_route(label, &e.vbap), 0);
+                            e.sources.insert(format!("bed:{ch}"), source);
+                        }
+                        e.output_active = true;
+                        e.paused = false;
+                    }
+                    let mut expected = vec![0.; frames * 2];
+                    let mut actual = expected.clone();
+                    live.render_into(&mut expected, 2);
+                    authored.render_into(&mut actual, 2);
+                    let maximum = expected
+                        .iter()
+                        .zip(&actual)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0f32, f32::max);
+                    assert!(
+                    maximum < 2e-5,
+                    "layout={layout} spatial={spatial} volume={volume} max difference={maximum}"
+                );
+                    assert!(actual.iter().any(|v| v.abs() > 1e-6));
+                }
+            }
+        }
+    }
+    #[test]
     fn intrinsic_hrtf_room_can_be_authored_without_an_external_profile() {
         let fixture = fixture();
         let mut scene = fixture.scene.clone();

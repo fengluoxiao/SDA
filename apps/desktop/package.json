@@ -66,7 +66,8 @@
       "export-assets.cjs",
       "authored-playback.cjs",
       "sda-delivery.cjs",
-      "upmix-export-worker.cjs"
+      "upmix-export-worker.cjs",
+      "sdar-mp4.cjs"
     ],
     "asarUnpack": [
       "node_modules/h5wasm/**",

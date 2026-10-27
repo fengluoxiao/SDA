@@ -32,7 +32,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "--version" {
         println!(
             "{}",
-            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
+            json!({"format":"SDAR Bed Channel","protocol":1,"faad":"2.11.4","bedCodec":"sdar-bed-channel-v2","codecName":"SDAR Bed Channel","audioTracks":1,"notice":"Code from FAAD2 is copyright (c) Nero AG, www.nero.com"})
         );
         return Ok(());
     }

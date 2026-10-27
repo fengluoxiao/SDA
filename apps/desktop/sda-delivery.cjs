@@ -19,18 +19,25 @@ function patchPrivateTracks(file,master,options){const fd=fs.openSync(file,'r+')
  const manifest={schema:'sda.delivery',version:1,profile:'SDAR Bed Channel',codec:'aac-lc',baseLayout:'5.1',bedLayout:'7.1.4',mobileDefaultLayout:'7.1.4',compatibleRenderLayouts:['7.1.4','9.1.6'],sampleRate:options.sampleRate,frames:Math.round(master.frames*options.sampleRate/48000),masterFrames:master.frames,bitrateKbps:options.bitrateKbps,tracks};
  const tail=Buffer.concat([box('sdaf',Buffer.from(JSON.stringify(manifest))),box('sdrm',Buffer.from(JSON.stringify(master.render))),...(master.id3?[box('sdid',master.id3)]:[])]);fs.writeSync(fd,tail,0,tail.length,total);fs.fsyncSync(fd);return manifest;
  }finally{fs.closeSync(fd);}}
-async function encodeSdaM4a(inputPath,outputPath,options,{ffmpegPath,check,progress}){
+async function encodeAacComponents(inputPath,outputPath,options,{ffmpegPath,check,progress}){
  if(!SUPPORTED_RATES.has(options.sampleRate)||!SUPPORTED_BITRATES.has(options.bitrateKbps))throw Error('M4A 采样率或比特率不受支持');if(!ffmpegPath||!fs.existsSync(ffmpegPath))throw Error('SDA AAC 编码器尚未安装，请重新构建桌面版');const master=readWaveMaster(inputPath);
  // Every original bed signal survives in one AAC track. The 5.1 base does not
  // replace the back/height stems needed for 7.1.4 or higher renderer layouts.
  const graph='[0:a:0]asplit=4[a][b][c][d];[a]pan=5.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c6|c5=c7[base];[b]pan=stereo|c0=c4|c1=c5[back];[c]pan=stereo|c0=c8|c1=c9[topf];[d]pan=stereo|c0=c10|c1=c11[topb]';
  const portion=options.bitrateKbps/8,args=['-nostdin','-hide_banner','-loglevel','error','-f','s24le','-ar','48000','-ac','12','-skip_initial_bytes',String(master.data.offset),'-i',inputPath,'-t',String(master.frames/48000),'-filter_complex',graph,'-map','[base]','-map','[back]','-map','[topf]','-map','[topb]','-map_metadata','-1','-c:a','aac','-profile:a','aac_low','-ar',String(options.sampleRate),'-b:a:0',String(portion*5)+'k','-b:a:1',String(portion)+'k','-b:a:2',String(portion)+'k','-b:a:3',String(portion)+'k','-use_editlist','1','-progress','pipe:1','-f','mp4',outputPath];
  await new Promise((resolve,reject)=>{const child=spawn(ffmpegPath,args,{windowsHide:true,stdio:['ignore','pipe','pipe']});let error='',pending='',cancelled=false;const timer=setInterval(()=>{try{check();}catch{cancelled=true;child.kill();}},50);child.stdout.on('data',b=>{pending+=b.toString();let n;while((n=pending.indexOf('\n'))>=0){const line=pending.slice(0,n);pending=pending.slice(n+1);if(line.startsWith('out_time_us=')){const seconds=Number(line.slice(12))/1e6;if(Number.isFinite(seconds))progress?.(Math.min(1,seconds/(master.frames/48000)));}}});child.stderr.on('data',b=>{error=(error+b.toString()).slice(-4000);});child.on('error',e=>{clearInterval(timer);reject(e);});child.on('close',code=>{clearInterval(timer);if(cancelled)reject(Error('EXPORT_CANCELLED'));else if(code)reject(Error(error||'SDA AAC 编码失败'));else resolve();});});
- check();return patchPrivateTracks(outputPath,master,options);
+ check();return master;
+}
+async function encodeSdaM4a(inputPath,outputPath,options,callbacks){
+ const {CODEC,repackSdarBedM4a}=require('./sdar-mp4.cjs');
+ if(options.codec!==undefined&&options.codec!==CODEC)throw Error('不支持此 SDAR 编码配置');
+ const components=outputPath+'.aac-components.tmp';
+ try{const master=await encodeAacComponents(inputPath,components,options,{...callbacks,progress:v=>callbacks.progress?.(v*.85)});return repackSdarBedM4a(components,outputPath,master,options,{...callbacks,progress:v=>callbacks.progress?.(.85+.15*v)});}
+ finally{try{fs.unlinkSync(components);}catch{}}
 }
 function writeSdarMaster(inputPath,outputPath,{check,progress}){const master=readWaveMaster(inputPath),input=fs.openSync(inputPath,'r'),output=fs.openSync(outputPath,'wx');try{const buffer=Buffer.allocUnsafe(1024*1024);let at=0;while(at<master.size){check();const count=fs.readSync(input,buffer,0,Math.min(buffer.length,master.size-at),at);if(!count)throw Error('母版复制提前结束');let written=0;while(written<count)written+=fs.writeSync(output,buffer,written,count-written);at+=count;progress?.(at/master.size);}fs.writeSync(output,Buffer.from('SDAR'),0,4,0);fs.writeSync(output,Buffer.from('BCH1'),0,4,8);fs.fsyncSync(output);return {schema:'sda.master',version:1,profile:'SDAR Bed Channel',frames:master.frames,sampleRate:48000,channels:12,bits:24};}finally{fs.closeSync(input);fs.closeSync(output);}}
 function writeWaveMaster(inputPath,outputPath,callbacks){
  const info=writeSdarMaster(inputPath,outputPath,callbacks),fd=fs.openSync(outputPath,'r+');
  try{const large=fs.fstatSync(fd).size-8>0xffffffff;fs.writeSync(fd,Buffer.from(large?'RF64':'RIFF'),0,4,0);fs.writeSync(fd,Buffer.from('WAVE'),0,4,8);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}return info;
 }
-module.exports={writeWaveMaster,SUPPORTED_RATES,SUPPORTED_BITRATES,readWaveMaster,scanBoxes,encodeSdaM4a,writeSdarMaster,patchPrivateTracks};
+module.exports={writeWaveMaster,SUPPORTED_RATES,SUPPORTED_BITRATES,readWaveMaster,scanBoxes,encodeSdaM4a,encodeAacComponents,writeSdarMaster,patchPrivateTracks};

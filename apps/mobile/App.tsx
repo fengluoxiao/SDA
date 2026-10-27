@@ -561,7 +561,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   private playbackDescription(value: Partial<PlaybackStatus>, feedDone: boolean): string {
-    if(value.authoredPlayback)return `SDAR · ${value.outputLayout??"7.1.4"} · 文件混音参数${value.roomEnabled?" · 房间仿真":""}`;
+    if(value.authoredPlayback)return `SDAR Bed Channel · ${value.outputLayout??"7.1.4"} · 文件混音参数${value.roomEnabled?" · 房间仿真":""}`;
     return value.systemSpatial360RAActive ? `${value.sourceCodec === "alac" ? `ALAC 立体声 → ${value.alacUpmixActive ? "7.1.4 上混" : "2.0"}` : value.sourceCodec === "av3a" ? "Audio Vivid → 7.1.4" : "360RA → 7.1.4"} · 苹果系统输出 · KU100 已旁路` : value.binauralEnabled === false ? "直接下混 · HRTF 已关闭" : value.objectRendering === false ? "床声道兼容 · HRTF" : feedDone ? "KU100 · 等待播放" : !value.hrtfReady ? "KU100 · 等待引擎加载"
           : `KU100${value.hrtfDirections === 128 ? " 高解析" : ""} · ${value.hrtfDirections} 方向 · ${value.directionalHrtf ? "实际方向" : value.directObjectHrtf || value.nearFieldEnabled ? "逐对象" : "虚拟扬声器"} · 纯直达 · ${value.objectConvolverCount ?? 0} 个独立卷积`;
   }

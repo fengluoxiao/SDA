@@ -1,4 +1,4 @@
-# SDAR Bed Channel v1
+# SDAR Bed Channel — authored metadata v1 / M4A transport v2
 
 SDAR playback is file-authored on desktop, iOS and Android. A player preset must
 not replace an authored mix. Normal system/listening volume, the output device
@@ -11,23 +11,37 @@ One export action produces one final file, selected in the desktop export panel:
 - WAV master: 48 kHz, PCM24, twelve discrete bed channels. Desktop only.
 - `.sdar`: the same lossless master PCM, metadata and resources in the SDA bed
   envelope (`SDAR` / `BCH1`). Plays through the shared desktop/mobile engine.
-- SDA `.m4a`: AAC-LC with a 5.1 base and three two-channel extension tracks. The
-  back and height signals remain separate. Default mobile rendering is 7.1.4;
-  9.1.6 uses the same SDA speaker routing as playback, rather than inventing
-  additional discrete source channels. The export dialog selects 44.1, 48 or
-  96 kHz and a total target bitrate of 256–1536 kbps.
+- SDA `.m4a`: **one physical audio track and one audio ID**, using the
+  `SDAR Bed Channel` codec profile. A 5.1 base and the complete twelve-channel
+  upmix bed live inside this single synchronized coded stream. It does not ask
+  the player to infer missing signals from an ordinary six-channel downmix.
+  Default mobile rendering is 7.1.4; other SDA layouts, including 9.1.6,
+  11.1.8 and 22.2, use the existing renderer routing and the file's parameters.
+  The export dialog explicitly selects the SDAR Bed Channel profile, 44.1/48/96
+  kHz and a total target bitrate of 256–1536 kbps.
 
-Canonical master order is `FL FR FC LFE BL BR SL SR TFL TFR TBL TBR`. The M4A
-5.1 track maps master indices `[0,1,2,3,6,7]`; extension tracks map `[4,5]`,
-`[8,9]` and `[10,11]`. The target bitrate is apportioned 5:1:1:1. Actual AAC
-bitrate/peak can differ from the target and lossless master; the native final
-output peak guard still applies during listening.
+Canonical master order is `FL FR FC LFE BL BR SL SR TFL TFR TBL TBR`. Internally,
+AAC-LC compresses synchronized components mapped to `[0,1,2,3,6,7]`, `[4,5]`,
+`[8,9]` and `[10,11]`, apportioned 5:1:1:1 of the total target bitrate. These are
+components of one SDAR codec access unit, not independent MP4 tracks. Each unit
+contains `SBP1`, component count/reserved bytes, four big-endian u32 lengths and
+the corresponding component data. This retains the original bed signals and
+channel identities for the same renderer at larger output layouts. AAC is lossy;
+this is not a sample-exact claim relative to the PCM master. Final native output
+protection remains active.
 
-SDA M4A uses the `sda1` brand, `sdaA` audio sample entries and `sdac` AAC decoder
-configuration boxes. `sdaf`, `sdrm` and `sdid` carry delivery identity, render
-metadata and the original metadata/assets respectively. This is a private SDA
-format requiring its parser, not encryption or DRM. Giving a generic AAC file
-an `.sdar` extension does not make it a supported authoring file.
+New M4A files use the `sda1` brand, a single `sdar` sample entry, the full handler
+name `SDAR Bed Channel`, and a versioned `sdac` codec configuration. `sdaf` v2
+identifies `sdar-bed-channel`; `sdrm`/`sdid` retain rendering and original metadata
+and resources. Third-party inspectors may display the `sdar` FourCC until they
+implement recognition; writing a friendly name cannot register a new format
+with those tools. This is a private SDA format, not encryption/DRM.
+
+The shared reader still accepts legacy `sda.delivery` v1 files with four `sdaA`
+audio tracks. New exports always use v2. Tests verify that repacking identical
+AAC components from legacy tracks into one track changes no decoded sample.
+Current SDA decoder builds are required for new v2 files; the export capability
+check prevents pairing the new writer with an old bundled native reader.
 
 Existing SDA WAV/SDAR masters can be converted without decoding/upmixing or
 applying the current player settings again. Conversion preserves the original
@@ -110,7 +124,11 @@ Meaningful regression coverage includes:
 - Sample-exact SDAR PCM and unchanged original masters after conversion.
 - All twelve AAC channels and duration at 44.1/48/96 kHz, including 5.1 identity.
 - Stream/pull, backwards/forwards/end seeks, AAC/SRC phase and resource teardown.
-- Ordinary-player rejection of the private M4A codec/config identities.
+- One physical audio track/ID, explicit codec selection, and ordinary-player
+  rejection of the private M4A codec/config identities.
+- Live-versus-authored upmix rendering at 5.1, 7.1.2, 7.1.4, 9.1.6, 11.1.8
+  and 22.2, with programme and spatial balance both on/off (max error < 2e-5
+  in the controlled float-PCM fixture; separate AAC channel/clock checks).
 - WAV original metadata, cover, exact lyrics, ADM/chna and render-schema roundtrip.
 - Shared-engine scenes with embedded room, EQ/FIR, per-channel parameters,
   file gain authority, layout adaptation and missing-resource rejection.

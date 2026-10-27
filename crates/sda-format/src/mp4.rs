@@ -139,6 +139,126 @@ fn asc_from_esds(b: &[u8]) -> Result<Vec<u8>, String> {
     }
     Err("AAC configuration missing".into())
 }
+fn sample_table(
+    file: &mut File,
+    trak: &Atom,
+    mdia: &Atom,
+    stbl: &Atom,
+    mdats: &[&Atom],
+    sample_rate: u32,
+) -> Result<(Vec<u64>, Vec<u32>, u64), String> {
+    let mdhd = child_bytes(file, mdia, b"mdhd")?;
+    let timescale = be32(&mdhd, if mdhd[0] == 1 { 20 } else { 12 })?;
+    if timescale == 0 {
+        return Err("SDA M4A timescale is zero".into());
+    }
+    let stsz = child_bytes(file, stbl, b"stsz")?;
+    let default = be32(&stsz, 4)?;
+    let sample_count = count(&stsz, 8)?;
+    let mut sizes = Vec::with_capacity(sample_count);
+    for i in 0..sample_count {
+        let size = if default != 0 {
+            default
+        } else {
+            be32(&stsz, 12 + i * 4)?
+        };
+        if size == 0 || size > 1024 * 1024 {
+            return Err("Invalid SDA AAC packet length".into());
+        }
+        sizes.push(size);
+    }
+    let stsc = child_bytes(file, stbl, b"stsc")?;
+    let mappings = (0..count(&stsc, 4)?)
+        .map(|i| {
+            Ok((
+                be32(&stsc, 8 + i * 12)?,
+                be32(&stsc, 12 + i * 12)?,
+                be32(&stsc, 16 + i * 12)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if mappings.first().map(|v| v.0) != Some(1)
+        || mappings.windows(2).any(|w| w[1].0 <= w[0].0)
+        || mappings.iter().any(|v| v.1 == 0 || v.2 != 1)
+    {
+        return Err("Invalid SDA MP4 sample-to-chunk map".into());
+    }
+    let wide = optional(file, stbl, b"co64")?;
+    let chunk_atom = if let Some(a) = wide.clone() {
+        a
+    } else {
+        child(file, stbl, b"stco")?
+    };
+    let chunks = bytes(file, &chunk_atom)?;
+    let mut offsets = Vec::with_capacity(sample_count);
+    let mut run = 0;
+    for c in 0..count(&chunks, 4)? {
+        let number = c as u32 + 1;
+        while run + 1 < mappings.len() && mappings[run + 1].0 <= number {
+            run += 1;
+        }
+        let mut offset = if wide.is_some() {
+            be64(&chunks, 8 + c * 8)?
+        } else {
+            be32(&chunks, 8 + c * 4)? as u64
+        };
+        for _ in 0..mappings[run].1 {
+            let i = offsets.len();
+            if i >= sample_count {
+                return Err("Extra SDA AAC samples".into());
+            }
+            let size = sizes[i] as u64;
+            if !mdats.iter().any(|m| {
+                offset >= m.body && offset.checked_add(size).is_some_and(|end| end <= m.end)
+            }) {
+                return Err("SDA AAC packet is outside media data".into());
+            }
+            offsets.push(offset);
+            offset += size;
+        }
+    }
+    if offsets.len() != sample_count {
+        return Err("Missing SDA AAC samples".into());
+    }
+    let stts = child_bytes(file, stbl, b"stts")?;
+    let mut durations = Vec::with_capacity(sample_count);
+    for i in 0..count(&stts, 4)? {
+        let n = count(&stts, 8 + i * 8)?;
+        let duration = be32(&stts, 12 + i * 8)?;
+        if durations.len() + n > sample_count || duration == 0 {
+            return Err("Invalid SDA AAC time table".into());
+        }
+        durations.extend(std::iter::repeat_n(duration, n));
+    }
+    if durations.len() != sample_count {
+        return Err("Missing SDA AAC timing".into());
+    }
+    let mut trim = 0u64;
+    if let Some(edts) = optional(file, trak, b"edts")? {
+        let elst = child_bytes(file, &edts, b"elst")?;
+        let entries = count(&elst, 4)?;
+        if entries > 2 {
+            return Err("Unsupported SDA AAC edit list".into());
+        }
+        for i in 0..entries {
+            let at = 8 + i * if elst[0] == 1 { 20 } else { 12 };
+            let media = if elst[0] == 1 {
+                be64(&elst, at + 8)? as i64
+            } else {
+                be32(&elst, at + 4)? as i32 as i64
+            };
+            if media >= 0 {
+                trim = ((media as u128 * sample_rate as u128) / timescale as u128) as u64;
+                break;
+            }
+        }
+    }
+    if trim > 4096 {
+        return Err("Unsupported SDA AAC priming edit".into());
+    }
+
+    Ok((offsets, sizes, trim))
+}
 struct Track {
     decoder: AacDecoder,
     offsets: Vec<u64>,
@@ -236,8 +356,8 @@ impl AacSource {
             .transpose()?;
         let metadata = Metadata::parse(render, id3.as_deref())?;
         if transport["schema"] != "sda.delivery"
-            || transport["version"] != 1
-            || transport["codec"] != "aac-lc"
+            || !((transport["version"] == 1 && transport["codec"] == "aac-lc")
+                || (transport["version"] == 2 && transport["codec"] == "sdar-bed-channel"))
             || transport["mobileDefaultLayout"] != "7.1.4"
         {
             return Err("Unsupported SDA M4A transport version".into());
@@ -256,6 +376,9 @@ impl AacSource {
             ) > 1
         {
             return Err("SDA M4A duration metadata mismatch".into());
+        }
+        if transport["version"] == 2 {
+            return Self::open_packed(file, top, transport, metadata, sample_rate, frames);
         }
         let moov = top
             .iter()
@@ -332,113 +455,8 @@ impl AacSource {
             if decoder.sample_rate != sample_rate || decoder.channels != map.len() {
                 return Err("SDA AAC channel/rate declaration mismatch".into());
             }
-            let stsz = child_bytes(&mut file, &stbl, b"stsz")?;
-            let default = be32(&stsz, 4)?;
-            let sample_count = count(&stsz, 8)?;
-            let mut sizes = Vec::with_capacity(sample_count);
-            for i in 0..sample_count {
-                let size = if default != 0 {
-                    default
-                } else {
-                    be32(&stsz, 12 + i * 4)?
-                };
-                if size == 0 || size > 1024 * 1024 {
-                    return Err("Invalid SDA AAC packet length".into());
-                }
-                sizes.push(size);
-            }
-            let stsc = child_bytes(&mut file, &stbl, b"stsc")?;
-            let mappings = (0..count(&stsc, 4)?)
-                .map(|i| {
-                    Ok((
-                        be32(&stsc, 8 + i * 12)?,
-                        be32(&stsc, 12 + i * 12)?,
-                        be32(&stsc, 16 + i * 12)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            if mappings.first().map(|v| v.0) != Some(1)
-                || mappings.windows(2).any(|w| w[1].0 <= w[0].0)
-                || mappings.iter().any(|v| v.1 == 0 || v.2 != 1)
-            {
-                return Err("Invalid SDA MP4 sample-to-chunk map".into());
-            }
-            let wide = optional(&mut file, &stbl, b"co64")?;
-            let chunk_atom = if let Some(a) = wide.clone() {
-                a
-            } else {
-                child(&mut file, &stbl, b"stco")?
-            };
-            let chunks = bytes(&mut file, &chunk_atom)?;
-            let mut offsets = Vec::with_capacity(sample_count);
-            let mut run = 0;
-            for c in 0..count(&chunks, 4)? {
-                let number = c as u32 + 1;
-                while run + 1 < mappings.len() && mappings[run + 1].0 <= number {
-                    run += 1;
-                }
-                let mut offset = if wide.is_some() {
-                    be64(&chunks, 8 + c * 8)?
-                } else {
-                    be32(&chunks, 8 + c * 4)? as u64
-                };
-                for _ in 0..mappings[run].1 {
-                    let i = offsets.len();
-                    if i >= sample_count {
-                        return Err("Extra SDA AAC samples".into());
-                    }
-                    let size = sizes[i] as u64;
-                    if !mdats.iter().any(|m| {
-                        offset >= m.body && offset.checked_add(size).is_some_and(|end| end <= m.end)
-                    }) {
-                        return Err("SDA AAC packet is outside media data".into());
-                    }
-                    offsets.push(offset);
-                    offset += size;
-                }
-            }
-            if offsets.len() != sample_count {
-                return Err("Missing SDA AAC samples".into());
-            }
-            let stts = child_bytes(&mut file, &stbl, b"stts")?;
-            let mut durations = Vec::with_capacity(sample_count);
-            for i in 0..count(&stts, 4)? {
-                let n = count(&stts, 8 + i * 8)?;
-                let duration = be32(&stts, 12 + i * 8)?;
-                if durations.len() + n > sample_count || duration == 0 {
-                    return Err("Invalid SDA AAC time table".into());
-                }
-                durations.extend(std::iter::repeat_n(duration, n));
-            }
-            if durations.len() != sample_count {
-                return Err("Missing SDA AAC timing".into());
-            }
-            let mut trim = 0u64;
-            if let Some(edts) = optional(&mut file, &trak, b"edts")? {
-                let elst = child_bytes(&mut file, &edts, b"elst")?;
-                let entries = count(&elst, 4)?;
-                if entries > 2 {
-                    return Err("Unsupported SDA AAC edit list".into());
-                }
-                for i in 0..entries {
-                    let at = 8 + i * if elst[0] == 1 { 20 } else { 12 };
-                    let media = if elst[0] == 1 {
-                        be64(&elst, at + 8)? as i64
-                    } else {
-                        be32(&elst, at + 4)? as i32 as i64
-                    };
-                    if media >= 0 {
-                        trim = ((media as u128 * sample_rate as u128) / timescale as u128) as u64;
-                        break;
-                    }
-                }
-            }
-            if trim > 4096 {
-                return Err("Unsupported SDA AAC priming edit".into());
-            }
-            if std::env::var_os("SDA_FORMAT_DEBUG").is_some() {
-                eprintln!("SDAR AAC track={id} rate={sample_rate} timescale={timescale} trim={trim} first_duration={}",durations[0]);
-            }
+            let (offsets, sizes, trim) =
+                sample_table(&mut file, &trak, &mdia, &stbl, &mdats, sample_rate)?;
             tracks.push(Track {
                 decoder,
                 offsets,
@@ -452,6 +470,155 @@ impl AacSource {
         }
         if assigned.len() != 12 {
             return Err("SDA M4A bed extension is incomplete".into());
+        }
+        Ok(Self {
+            file,
+            tracks,
+            metadata,
+            transport,
+            sample_rate,
+            frames,
+            at: 0,
+        })
+    }
+    fn open_packed(
+        mut file: File,
+        top: Vec<Atom>,
+        transport: Value,
+        metadata: Metadata,
+        sample_rate: u32,
+        frames: u64,
+    ) -> Result<Self, String> {
+        let moov = top
+            .iter()
+            .find(|a| a.id == *b"moov")
+            .ok_or("SDAR moov missing")?;
+        let mdats = top.iter().filter(|a| a.id == *b"mdat").collect::<Vec<_>>();
+        let mut audio = vec![];
+        for trak in atoms(&mut file, moov.body, moov.end)?
+            .into_iter()
+            .filter(|a| a.id == *b"trak")
+        {
+            let mdia = child(&mut file, &trak, b"mdia")?;
+            let h = child(&mut file, &mdia, b"hdlr")?;
+            if exact(&mut file, h.body + 8, 4)? == b"soun" {
+                audio.push((trak, mdia));
+            }
+        }
+        let declared = transport["tracks"]
+            .as_array()
+            .ok_or("SDAR logical track missing")?;
+        if audio.len() != 1 || declared.len() != 1 || metadata.channels() != 12 {
+            return Err("SDAR Bed Channel requires exactly one audio track".into());
+        }
+        let (trak, mdia) = audio.remove(0);
+        let tkhd = child_bytes(&mut file, &trak, b"tkhd")?;
+        let id = be32(&tkhd, if tkhd[0] == 1 { 20 } else { 12 })?;
+        if declared[0]["trackId"].as_u64() != Some(u64::from(id))
+            || declared[0]["codec"] != "sdar-bed-channel"
+            || declared[0]["channels"] != serde_json::json!((0..12).collect::<Vec<_>>())
+        {
+            return Err("SDAR logical track identity mismatch".into());
+        }
+        let minf = child(&mut file, &mdia, b"minf")?;
+        let stbl = child(&mut file, &minf, b"stbl")?;
+        let stsd = child(&mut file, &stbl, b"stsd")?;
+        let header = exact(&mut file, stsd.body, 16)?;
+        if be32(&header, 4)? != 1 || &header[12..16] != b"sdar" {
+            return Err("SDAR Bed Channel sample entry missing".into());
+        }
+        let size = u64::from(be32(&header, 8)?);
+        let entry = Atom {
+            id: *b"sdar",
+            body: stsd.body + 8 + 36,
+            end: stsd.body + 8 + size,
+        };
+        if entry.end > stsd.end || entry.body > entry.end {
+            return Err("Invalid SDAR codec entry".into());
+        }
+        let raw = child_bytes(&mut file, &entry, b"sdac")?;
+        if raw.len() > 16384 {
+            return Err("SDAR codec configuration too large".into());
+        }
+        let config: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        if config["schema"] != "sda.bed-codec"
+            || config["version"] != 1
+            || config["codec"] != "sdar-bed-channel"
+            || config["componentCodec"] != "aac-lc"
+            || config["baseChannels"] != 6
+            || config["bedChannels"] != 12
+            || config["frameSamples"] != 1024
+            || config["packetSignature"] != "SBP1"
+        {
+            return Err("Unsupported SDAR bed codec configuration".into());
+        }
+        let groups = config["components"]
+            .as_array()
+            .ok_or("SDAR bed components missing")?;
+        if groups.len() != 4 {
+            return Err("Incomplete SDAR bed codec components".into());
+        }
+        let maps = [vec![0, 1, 2, 3, 6, 7], vec![4, 5], vec![8, 9], vec![10, 11]];
+        let (offsets, sizes, trim) =
+            sample_table(&mut file, &trak, &mdia, &stbl, &mdats, sample_rate)?;
+        let mut component_offsets = [vec![], vec![], vec![], vec![]];
+        let mut component_sizes = [vec![], vec![], vec![], vec![]];
+        for (&offset, &size) in offsets.iter().zip(&sizes) {
+            if size < 24 {
+                return Err("Truncated SDAR bed access unit".into());
+            }
+            let header = exact(&mut file, offset, 24)?;
+            if &header[..4] != b"SBP1" || header[4] != 4 || header[5..8] != [0, 0, 0] {
+                return Err("Invalid SDAR bed access unit".into());
+            }
+            let mut at = 24u64;
+            for slot in 0..4 {
+                let n = be32(&header, 8 + slot * 4)?;
+                if n == 0 || n > 1024 * 1024 {
+                    return Err("Invalid SDAR component packet".into());
+                }
+                component_offsets[slot].push(offset + at);
+                component_sizes[slot].push(n);
+                at += u64::from(n);
+            }
+            if at != u64::from(size) {
+                return Err("SDAR access unit length mismatch".into());
+            }
+        }
+        let mut tracks = vec![];
+        for (slot, group) in groups.iter().enumerate() {
+            if group["slot"].as_u64() != Some(slot as u64)
+                || group["channels"] != serde_json::json!(maps[slot])
+            {
+                return Err("Invalid SDAR bed component mapping".into());
+            }
+            let asc = group["decoderConfig"]
+                .as_array()
+                .filter(|a| (2..=64).contains(&a.len()))
+                .ok_or("Invalid SDAR AAC configuration")?
+                .iter()
+                .map(|v| {
+                    v.as_u64()
+                        .filter(|n| *n <= 255)
+                        .map(|n| n as u8)
+                        .ok_or("Invalid AAC configuration byte")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let decoder = AacDecoder::new(&asc)?;
+            let map = maps[slot].clone();
+            if decoder.sample_rate != sample_rate || decoder.channels != map.len() {
+                return Err("SDAR component rate/channel mismatch".into());
+            }
+            tracks.push(Track {
+                decoder,
+                offsets: std::mem::take(&mut component_offsets[slot]),
+                sizes: std::mem::take(&mut component_sizes[slot]),
+                next: 0,
+                trim,
+                initial_trim: trim,
+                map: map.clone(),
+                queue: (0..map.len()).map(|_| VecDeque::new()).collect(),
+            });
         }
         Ok(Self {
             file,
