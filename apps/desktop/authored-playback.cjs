@@ -16,9 +16,12 @@ function decodePcmFrame(header,payload){
  if(!Number.isInteger(channels)||channels<1||channels>128||!Number.isInteger(frames)||frames<0||frames>4096||payload.length!==channels*frames*4)throw Error('SDAR PCM 数据范围错误');
  if(header.pcmLayout&& !['planar-f32le','interleaved-f32le'].includes(header.pcmLayout))throw Error('不支持此 SDA PCM 排列');
  if(header.pcmLayout==='planar-f32le'&&os.endianness()==='LE'){
-  // Give the IPC message its own exact-sized buffer; never expose Node's pooled bytes.
-  const data=payload.buffer.slice(payload.byteOffset,payload.byteOffset+payload.byteLength);
-  return Array.from({length:channels},(_,ch)=>new Float32Array(data,ch*frames*4,frames));
+  // Electron contextBridge copies typed-array backing stores separately.
+  // Exact-sized per-lane buffers avoid multiplying a whole scene by its lane count.
+  return Array.from({length:channels},(_,ch)=>{
+   const bytes=new Uint8Array(payload.buffer,payload.byteOffset+ch*frames*4,frames*4).slice();
+   return new Float32Array(bytes.buffer);
+  });
  }
  return Array.from({length:channels},(_,ch)=>Float32Array.from({length:frames},(_,i)=>payload.readFloatLE((header.pcmLayout==='planar-f32le'?ch*frames+i:i*channels+ch)*4)));
 }
