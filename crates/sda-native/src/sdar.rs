@@ -29,6 +29,8 @@ impl MobileEngine {
                 .ok_or("renderer unavailable")?
                 .configure_authored_scene(scene)?;
         }
+        // Scene setup restores authored HRTF, then the listener's monitor choice.
+        self.set_binaural_enabled(self.config.binaural_enabled)?;
         Ok(())
     }
     pub fn open_sdar(&mut self, path: &str, temp_root: Option<&str>) -> EngineResult<u32> {
@@ -53,7 +55,6 @@ impl MobileEngine {
         self.apply_authored_scene(scene.clone())?;
         self.config.layout = "7.1.4".into();
         self.config.hrtf_wet_weight = scene.resources.hrtf_wet;
-        self.config.binaural_enabled = true;
         self.config.direct_object_hrtf = scene.render["playbackSnapshot"]["hrtf"]
             ["directObjectHrtf"]
             .as_bool()
@@ -198,6 +199,11 @@ impl MobileEngine {
    let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
    assert_eq!(engine.open_sdar(path.to_str().unwrap(),None).unwrap(),48000);
    assert!(!engine.balance.enabled);assert!(!engine.stereo_bed_mode);
+   let saved=engine.sdar_source.as_ref().unwrap().scene.render.clone();
+   engine.set_binaural_enabled(false).unwrap();assert!(!engine.config.binaural_enabled);
+   engine.seek_sdar(0).unwrap();assert!(!engine.config.binaural_enabled,"seek retains head Off");
+   engine.set_binaural_enabled(true).unwrap();assert!(engine.config.binaural_enabled);
+   assert_eq!(engine.sdar_source.as_ref().unwrap().scene.render,saved,"monitoring never edits file parameters");
    let (count,done)=engine.pull_sdar(4096).unwrap();assert_eq!(count,4096);assert!(!done);
    let visible=engine.object_snapshot();
    assert_eq!(visible.len(),64,"{name}: decoded SDAR objects must reach the mobile UI snapshot");

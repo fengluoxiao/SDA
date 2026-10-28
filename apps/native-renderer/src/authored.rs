@@ -65,6 +65,7 @@ impl Engine {
         settings.validate()?;
         self.authored = Processing::default();
         if !settings.enabled {
+            self.source_occlusion_enabled = true;
             self.refresh_stereo_bass();
             return Ok(());
         }
@@ -374,6 +375,13 @@ impl Engine {
         {
             return Err("authored room response missing".into());
         }
+        let interaction = &snapshot["sourceOcclusion"];
+        let source_occlusion = if interaction.is_null() { true } else {
+            if interaction["algorithm"] != "source-bearing-8deg-v1" {
+                return Err("unsupported source occlusion algorithm".into());
+            }
+            interaction["enabled"].as_bool().ok_or("source occlusion enabled must be boolean")?
+        };
         let near: near_field::Settings = serde_json::from_value(snapshot["nearField"].clone())
             .map_err(|e| format!("authored near-field settings: {e}"))?;
         if !near.valid() {
@@ -438,6 +446,7 @@ impl Engine {
         );
         self.configure_near_field(near)?;
         self.source_extent = extent;
+        self.source_occlusion_enabled = source_occlusion;
         self.binaural_eq = eq;
         self.headphone = headphone;
         self.master_preamp
@@ -547,6 +556,23 @@ mod scene_tests {
         e.render_into(&mut output, 2);
         output
     }
+    #[test]
+    fn authored_source_occlusion_is_portable_and_monitor_bypass_remains_available() {
+        let mut f=fixture();
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]=json!({"enabled":false,"algorithm":"source-bearing-8deg-v1"});
+        let mut e=Engine::new(48000,2);e.configure_authored_scene(f.scene.clone()).unwrap();
+        assert!(!e.source_occlusion_enabled);
+        let recipe=e.authored.clone();let clock=e.sample_pos;
+        let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
+        protocol::apply_render_command(&mut e,render_command::RenderCommand::Command(Command::SetBinauralEnabled{enabled:false}),&fifo,&telemetry);
+        assert!(!e.binaural_enabled,"authored monitor Off must be accepted");assert_eq!(e.sample_pos,clock);
+        assert_eq!(e.authored.enabled,recipe.enabled);
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]["enabled"]=json!(true);
+        e.configure_authored_scene(f.scene.clone()).unwrap();assert!(e.source_occlusion_enabled);
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]["algorithm"]=json!("unknown");
+        assert!(e.configure_authored_scene(f.scene.clone()).is_err());
+    }
+
     #[test]
     fn full_authored_scene_replaces_user_preset_and_retains_room_eq_and_gain() {
         let fixture = fixture();

@@ -38,7 +38,7 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     let _perf = crate::performance::span("native.command", command_name(&command), 1);
-    if state.authored.enabled && matches!(command_name(&command),"setHrtf"|"setCinema"|"setNearField"|"setSourceExtent"|"setObjectHrtf"|"setObjectRendering"|"setDirectionalHrtf"|"setBinauralEnabled"|"setStereoMode"|"setBinauralEq"|"clearHeadphoneCompensation"|"setMasterPreamp"|"setSpatialLayerGain"|"setComparisonGain"|"setSpeakerMutes"|"setMuted"|"setGain"|"setLfeMuted") {
+    if state.authored.enabled && matches!(command_name(&command),"setHrtf"|"setCinema"|"setNearField"|"setSourceExtent"|"setObjectHrtf"|"setObjectRendering"|"setDirectionalHrtf"|"setStereoMode"|"setBinauralEq"|"clearHeadphoneCompensation"|"setMasterPreamp"|"setSpatialLayerGain"|"setComparisonGain"|"setSpeakerMutes"|"setMuted"|"setGain"|"setLfeMuted") {
         write_event(&Event::Ack{command:command_name(&command),accepted:false,detail:Some("rendering is controlled by the current SDAR file")});return true;
     }
     match command {

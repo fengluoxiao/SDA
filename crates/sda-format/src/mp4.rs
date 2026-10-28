@@ -5,6 +5,7 @@ use crate::{
 use serde_json::Value;
 use std::{collections::VecDeque, fs::File, path::Path};
 const MAX_SAMPLES: usize = 1_000_000;
+fn is_sdar_entry(id: &[u8]) -> bool { id == b"SDAR" || id == b"sdar" }
 #[derive(Clone, Debug)]
 struct Atom {
     id: [u8; 4],
@@ -524,7 +525,7 @@ impl AacSource {
         let stbl = child(&mut file, &minf, b"stbl")?;
         let stsd = child(&mut file, &stbl, b"stsd")?;
         let header = exact(&mut file, stsd.body, 16)?;
-        if be32(&header, 4)? != 1 || &header[12..16] != b"sdar" {
+        if be32(&header, 4)? != 1 || !is_sdar_entry(&header[12..16]) {
             return Err("SDAR Bed Channel sample entry missing".into());
         }
         let size = u64::from(be32(&header, 8)?);
@@ -798,7 +799,7 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
     let stbl = child(&mut file, &minf, b"stbl")?;
     let stsd = child(&mut file, &stbl, b"stsd")?;
     let h = exact(&mut file, stsd.body, 16)?;
-    if be32(&h, 4)? != 1 || &h[12..16] != b"sdar" {
+    if be32(&h, 4)? != 1 || !is_sdar_entry(&h[12..16]) {
         return Err("Missing actual SDA codec sample entry".into());
     }
     let entry = Atom {
@@ -818,6 +819,15 @@ pub fn open_lossless(path: &Path) -> Result<Option<crate::lossless::LosslessFile
         || config["lossless"] != (transport["compression"] != crate::lossless::compact::COMPACT)
     {
         return Err("Unsupported SDA predictive codec configuration".into());
+    }
+    let format = if metadata.codec_id() == "sdar-bed-channel-with-objects" {
+        "SDAR Bed Channel with Objects"
+    } else { "SDAR Bed Channel" };
+    for identity in [&config, &transport] {
+        if (!identity["codecId"].is_null() && identity["codecId"] != "SDAR")
+            || (!identity["format"].is_null() && identity["format"] != format) {
+            return Err("SDA codec ID/format identity mismatch".into());
+        }
     }
     let head: Head = serde_json::from_value(config["stream"].clone()).map_err(|e| e.to_string())?;
     if config["compression"] != head.codec

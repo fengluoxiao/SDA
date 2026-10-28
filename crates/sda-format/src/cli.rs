@@ -136,14 +136,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if command == "inspect" {
         println!(
             "{}",
-            json!({"schema":"sda.interchange-inspection","version":1,"role":if file.is_editable_master(){"wav-master"}else{"delivery"},"sampleRate":file.input_rate,"decodedBits":24,"channels":file.metadata.render["scene"]["channels"],"source":file.metadata.source,"render":file.metadata.render,"transport":file.transport,"assets":file.metadata.assets.iter().map(|(sha,a)|json!({"sha256":sha,"bytes":a.data.len(),"mimeType":a.mime_type,"filename":a.filename})).collect::<Vec<_>>(),"policy":{"processing":"file-authored-v1","missingRequiredResource":"error","unsupportedRequiredFeature":"error"}})
+            json!({"format":if file.is_editable_master(){"PCM"}else{file.metadata.format_name()},"codecId":if file.is_editable_master(){serde_json::Value::Null}else{json!("SDAR")},"schema":"sda.interchange-inspection","version":1,"role":if file.is_editable_master(){"wav-master"}else{"delivery"},"sampleRate":file.input_rate,"decodedBits":24,"channels":file.metadata.render["scene"]["channels"],"source":file.metadata.source,"render":file.metadata.render,"transport":file.transport,"assets":file.metadata.assets.iter().map(|(sha,a)|json!({"sha256":sha,"bytes":a.data.len(),"mimeType":a.mime_type,"filename":a.filename})).collect::<Vec<_>>(),"policy":{"processing":"file-authored-v1","missingRequiredResource":"error","unsupportedRequiredFeature":"error"}})
         );
         return Ok(());
     }
     if command == "info" {
         println!(
             "{}",
-            json!({"summary":file.metadata.summary(),"render":file.metadata.render,"transport":file.transport,"inputRate":file.input_rate,"assets":file.metadata.assets.len()})
+            json!({"format":if file.is_editable_master(){"PCM"}else{file.metadata.format_name()},"codecId":if file.is_editable_master(){serde_json::Value::Null}else{json!("SDAR")},"summary":file.metadata.summary(),"render":file.metadata.render,"transport":file.transport,"inputRate":file.input_rate,"assets":file.metadata.assets.len()})
         );
         return Ok(());
     }

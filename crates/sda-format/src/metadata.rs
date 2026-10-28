@@ -89,6 +89,7 @@ impl Metadata {
                         "object-scene-v1",
                         "sample-clock-object-automation-v1",
                         "object-spatial-constraints-v1",
+                        "source-occlusion-v1",
                         "file-processing-v1",
                         "embedded-render-assets-v1",
                     ]
@@ -235,6 +236,7 @@ impl Metadata {
         Ok(())
     }
     pub fn codec_id(&self)-> &str {if self.render["scene"]["kind"]=="bed-objects" {"sdar-bed-channel-with-objects"}else{"sdar-bed-channel"}}
+    pub fn format_name(&self)-> &str {if self.render["scene"]["kind"]=="bed-objects" {"SDAR Bed Channel with Objects"}else{"SDAR Bed Channel"}}
     pub fn profile(&self)-> &str {if self.render["scene"]["kind"]=="bed-objects" {"SDAR Bed Channel With Objects"}else{"SDAR Bed Channel"}}
     pub fn channels(&self) -> usize {
         self.render["scene"]["channels"].as_array().unwrap().len()

@@ -1,17 +1,22 @@
-//! Low-level shadow filter and legacy position-only heuristic.
-//! Audio-object coordinates alone do not describe physical obstacles. Playback
-//! bypasses these heuristics: another emitter is not occlusion metadata.
+//! Default perceptual source-bearing shadow model, shared by desktop/mobile.
+//! An artistic emitter interaction heuristic, not physical obstacle metadata.
 
 /// One-pole low shelf per ear. `1.0` = bypass; smaller = more shadow.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Shadow {
     state: [f32; 2],
+    openness: [f32; 2],
+}
+
+impl Default for Shadow {
+    fn default() -> Self { Self { state: [0.0; 2], openness: [1.0; 2] } }
 }
 
 impl Shadow {
     pub fn is_bypassed(&self, amount: [f32; 2]) -> bool {
         amount[0] >= 1.0 - 1e-3
             && amount[1] >= 1.0 - 1e-3
+            && self.openness.iter().all(|open| *open >= 1.0 - 1e-3)
             && self.state.iter().all(|s| s.abs() < 1e-20)
     }
 
@@ -20,7 +25,10 @@ impl Shadow {
     /// the occlusion depth plus a proportional direct-level trim.
     pub fn process(&mut self, input: [f32; 2], amount: [f32; 2]) -> [f32; 2] {
         std::array::from_fn(|ear| {
-            let open = amount[ear].clamp(0.0, 1.0);
+            let target = amount[ear].clamp(0.0, 1.0);
+            self.openness[ear] += (target - self.openness[ear]) / 960.0;
+            if (target - self.openness[ear]).abs() < 1e-4 { self.openness[ear] = target; }
+            let open = self.openness[ear];
             if open >= 0.999 {
                 self.state[ear] += (input[ear] - self.state[ear]) * 0.087557;
                 if self.state[ear].abs() < 1e-20 {
@@ -99,7 +107,7 @@ pub fn ear_openness_prepared(
     position: &[f32; 3],
     position_relative: &[f32; 3],
     all_positions: &[[f32; 3]],
-    all_relative: &[[f32; 3]],
+    _all_relative: &[[f32; 3]],
     self_index: usize,
 ) -> [f32; 2] {
     let norm = position.iter().map(|a| a * a).sum::<f32>().sqrt();
@@ -181,6 +189,22 @@ mod tests {
         assert_eq!(sideways, [1.0; 2]);
         // No occluders at all = fully open.
         assert_eq!(ear_openness([0.0, 1.0, 0.0], None, &[]), [1.0; 2]);
+    }
+
+    #[test]
+    fn shadow_transitions_are_mirrored_smooth_and_preserve_dc_bass() {
+        let mut a=Shadow::default();let mut b=Shadow::default();
+        let mut previous=[0.1_f32;2];let mut max_step=0.0_f32;
+        for i in 0..24000 {
+            let target=if i<12000 {[0.6,1.0]}else{[1.0;2]};
+            let left=a.process([0.1;2],target);
+            let right=b.process([0.1;2],[target[1],target[0]]);
+            assert_eq!(left,[right[1],right[0]]);
+            max_step=max_step.max((left[0]-previous[0]).abs());previous=left;
+        }
+        assert!(max_step<0.0001,"abrupt shading step {max_step}");
+        assert!((previous[0]-0.1).abs()<1e-6,"DC/bass must not be removed");
+        assert_eq!(a.openness,[1.0;2]);
     }
 
     #[test]

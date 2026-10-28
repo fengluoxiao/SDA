@@ -803,7 +803,7 @@ impl MobileEngine {
     }
 
     pub fn set_binaural_enabled(&mut self, enabled: bool) -> EngineResult<()> {
-        if self.sdar_source.is_some(){return Ok(());}
+        // Monitor bypass is reversible; it never edits the source's render recipe.
         if let Some(pipeline) = &self.pipeline {
             pipeline.commands.push(render_command::RenderCommand::Command(Command::SetBinauralEnabled { enabled }))
                 .map_err(|_| "command queue full".to_string())?;

@@ -204,3 +204,38 @@ The `serve` SDK protocol defaults to `interleaved-f32le` for compatibility. `--p
 Render buffering uses source workload (32+ object lanes, or 64+ total lanes with objects), independently of the container/codec name. Existing remote synchronization and tracked-iOS reserve limits retain their policies. Buffer recovery keeps all queued samples on the DAC clock; no playback-rate or sample-skipping catch-up is introduced.
 
 Electron contextBridge does not preserve the efficient shared backing-store representation across exposed API boundaries: a per-lane view of a complete scene buffer can copy the complete scene for each lane. Each returned lane therefore owns exactly `frames * 4` bytes with zero byte offset; the sum of backing-store sizes equals the PCM payload size.
+
+## Format identity and source interaction
+
+New SDAR and M4A deliveries use the actual, case-sensitive AudioSampleEntry
+FourCC `SDAR`. Readers retain the legacy lowercase `sdar` alias. The `sdac`
+codec configuration and `sdaf` transport independently declare `codecId: SDAR`
+and `format: SDAR Bed Channel` or `format: SDAR Bed Channel with Objects`.
+These fields are validated against the scene type, independently of track or
+song titles. Third-party inspectors need SDAR-aware parsing to show the long
+format name; generic FourCC fallback cannot infer our two profiles from a title.
+Older SDA readers need updating before opening the new uppercase entry.
+
+The shared renderer defaults source-to-source occlusion on. This is a perceptual
+interaction heuristic based on authored normalized coordinates, not a claim
+that emitters are physical obstacles. Sounding, unmuted, unsuspended non-LFE
+objects can shade objects on the same bearing (within 8 degrees) when clearly
+nearer (less than 0.6 of the rear object's radius and less than 0.7 scene units).
+The far ear is shaded; centered objects shade both ears equally. Silent source
+placeholders cannot cast shadows. All supported objects participate, including
+scenes larger than 64 objects. Per-ear amounts settle over approximately 20 ms;
+the diffraction filter preserves DC/low-frequency gain.
+
+`playbackSnapshot.sourceOcclusion` carries `enabled` and the versioned algorithm
+`source-bearing-8deg-v1`. New masters require `source-occlusion-v1`, so a reader
+must reject this feature if it cannot reproduce it. An explicit authored false
+is respected; absent legacy fields use the requested current default (on).
+Desktop, iOS and Android execute the same native code. Head/monitor Off bypasses
+HRTF, automatic physical near-field and source-interaction output without
+editing the file recipe or resetting the codec clock. Re-enabling restores the
+same scene; source seek preserves the listener's Off choice on mobile.
+
+Automatic finite-distance near-field correction already consumes explicit
+`distanceM` with the manual near-field switch off. Normalized coordinates alone
+do not become invented physical metres. This mechanism stays separate from the
+legacy manual proximity-mapping option and from source-to-source occlusion.

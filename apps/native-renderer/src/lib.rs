@@ -1201,6 +1201,7 @@ pub struct Engine {
     compatible_pcm: Option<compatible_pcm::CompatiblePcm>,
     source_extent: source_extent::Settings,
     near_field: near_field::Settings,
+    source_occlusion_enabled: bool,
     /// User preference for continuous directional object rendering. The
     /// effective flag below is gated by the active program codec.
     directional_hrtf_requested: bool,
@@ -1351,6 +1352,7 @@ impl Engine {
             compatible_pcm: None,
             source_extent: Default::default(),
             near_field: Default::default(),
+            source_occlusion_enabled: true,
             directional_hrtf_requested: false,
             directional_hrtf: false,
             program_codec: None,
@@ -1429,7 +1431,7 @@ impl Engine {
     }
 
     pub fn set_binaural_enabled(&mut self, enabled: bool) {
-        if self.authored.enabled {return;}
+        // Listener monitoring is separate from immutable authored parameters.
         if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
         self.binaural_enabled = enabled;
         if !self.output_active || self.paused {
@@ -1795,13 +1797,26 @@ impl Engine {
         Some(source.position.map(|axis| axis * units / norm))
     }
 
-    /// Audio-object positions describe emitters, not solid obstacles. No
-    /// geometry/material/occlusion metadata reaches this engine, so another
-    /// audible source must not change this source's spectrum or ear balance.
-    /// Reset inactive sources too, so stale shadows cannot survive transitions.
-    fn update_occlusion(&mut self, _head_pose: Option<[f32; 4]>) {
-        for source in self.sources.values_mut() {
-            source.occlusion_targets = [1.0; 2];
+    /// Perceptual source-to-source shadowing. This is an explicitly selected
+    /// renderer heuristic, not physical obstacle metadata. Only sounding objects
+    /// participate; key-based writeback keeps sparse/dense scenes identical.
+    fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
+        for source in self.sources.values_mut() { source.occlusion_targets = [1.0; 2]; }
+        if !self.binaural_enabled || self.bed_compatibility || !self.source_occlusion_enabled { return; }
+        let active: Vec<_> = self.sources.iter().filter(|(_, source)| {
+            source.kind == SourceKind::Object && !source.muted && !source.suspended
+                && source.lfe_target == 0.0 && source.gain.abs() >= OBJECT_ACTIVITY_THRESHOLD
+                && source.position.iter().all(|axis| axis.is_finite())
+                && source.samples.has_signal_within(self.sample_pos,
+                    convolution::DEFAULT_PARTITION, OBJECT_ACTIVITY_THRESHOLD)
+        }).map(|(id, source)| (id.clone(), source.position)).collect();
+        let positions: Vec<_> = active.iter().map(|(_, position)| *position).collect();
+        let relative: Vec<_> = positions.iter().map(|position|
+            spatial::head_relative_adm(*position, head_pose)).collect();
+        for (index, (id, _)) in active.iter().enumerate() {
+            let openness = occlusion::ear_openness_prepared(&positions[index], &relative[index],
+                &positions, &relative, index);
+            self.sources.get_mut(id).expect("retained source key").occlusion_targets = openness;
         }
     }
 
@@ -4342,7 +4357,7 @@ mod tests {
     }
 
     #[test]
-    fn neither_silent_nor_audible_emitters_cast_occlusion() {
+    fn only_sounding_emitters_cast_default_occlusion_and_head_off_bypasses_it() {
         let source = |position, pcm: Vec<f32>| {
             let mut source = Source {
                 kind: SourceKind::Object,
@@ -4378,9 +4393,18 @@ mod tests {
         engine.update_occlusion(None);
         let openness = engine.sources["far"].occlusion_targets;
         assert!(
-            openness == [1.0; 2],
-            "an active emitter is not an obstacle: {openness:?}"
+            openness[0] < 1.0 && openness[1] == 1.0,
+            "active front emitter must shade the far ear: {openness:?}"
         );
+        engine.set_binaural_enabled(false);
+        engine.update_occlusion(None);
+        assert!(engine.sources.values().all(|source| source.occlusion_targets == [1.0; 2]));
+        engine.set_binaural_enabled(true);
+        engine.update_occlusion(None);
+        assert_eq!(engine.sources["far"].occlusion_targets, openness);
+        engine.sources.get_mut("silent-near").unwrap().muted = true;
+        engine.update_occlusion(None);
+        assert_eq!(engine.sources["far"].occlusion_targets, [1.0; 2]);
     }
 
     #[test]
@@ -4428,10 +4452,55 @@ mod tests {
         );
         let openness = engine.sources["middle-far-harmony"].occlusion_targets;
         assert!(
-            openness == [1.0; 2],
-            "harmony must not be shaded by another emitter: {openness:?}"
+            openness[0] < 1.0 && openness[0] == openness[1],
+            "front harmony must be shaded equally in both ears: {openness:?}"
         );
-        assert!(engine.sources.values().all(|source| source.occlusion_targets == [1.0; 2]));
+        assert!(engine.sources.iter().filter(|(id,_)| id.starts_with("a-silent"))
+            .all(|(_,source)| source.occlusion_targets == [1.0; 2]));
+    }
+
+    #[test]
+    fn source_occlusion_handles_dense_scenes_and_mirrors_without_an_ear_bias() {
+        let block = convolution::DEFAULT_PARTITION;
+        let mut engine = Engine::new(48000, 2);
+        for id in 0..108_u32 {
+            let mut source = Source { kind: SourceKind::Object, object_id: Some(id),
+                position: [0.0, -1.0, 0.0], gain: 1.0, target_gain: 1.0,
+                availability: 1.0, availability_target: 1.0, ..Source::default() };
+            source.samples.write(0,0,&vec![0.01;block]);
+            engine.sources.insert(format!("obj:{id}"),source);
+        }
+        for sign in [-1.0,1.0] {
+            engine.sources.get_mut("obj:106").unwrap().position=[sign,0.0,0.0];
+            engine.sources.get_mut("obj:107").unwrap().position=[sign*0.25,0.0,0.0];
+            engine.update_occlusion(None);
+            let open=engine.sources["obj:106"].occlusion_targets;
+            let far=if sign<0.0 {1} else {0};
+            assert!(open[far]<0.99);assert_eq!(open[1-far],1.0);
+            assert_eq!(engine.sources["obj:107"].occlusion_targets,[1.0;2]);
+        }
+        engine.source_occlusion_enabled=false;engine.update_occlusion(None);
+        assert!(engine.sources.values().all(|s|s.occlusion_targets==[1.0;2]));
+        engine.configure_authored_processing(Default::default()).unwrap();
+        assert!(engine.source_occlusion_enabled,"ordinary playback restores the requested default");
+    }
+
+    #[test]
+    fn automatic_physical_near_field_does_not_need_the_legacy_manual_switch() {
+        let mut engine=calibrated_engine();engine.set_directional_hrtf(true);engine.paused=false;
+        assert!(!engine.near_field.enabled);
+        let mut source=Source {kind:SourceKind::Object, object_id:Some(9),position:[0.7,0.7,0.0],
+            distance_m:Some(0.25),gain:1.0,target_gain:1.0,availability:1.0,
+            availability_target:1.0,..Source::default()};
+        source.samples.write(0,0,&vec![0.01;8192]);engine.sources.insert("obj:9".into(),source);
+        engine.route_source_now("obj:9",0).unwrap();
+        engine.render_into(&mut vec![0.0;8192],2);
+        assert!(engine.sources["obj:9"].near_target.iter().any(|v|(*v-1.0).abs()>0.05));
+        engine.set_binaural_enabled(false);engine.render_into(&mut vec![0.0;4096],2);
+        assert_eq!(engine.binaural_mix,0.0,"head off removes all HRTF/proximity output");
+        assert_eq!(engine.sources["obj:9"].occlusion_targets,[1.0;2]);
+        engine.set_binaural_enabled(true);engine.render_into(&mut vec![0.0;4096],2);
+        assert_eq!(engine.binaural_mix,1.0);
     }
 
     #[test]
