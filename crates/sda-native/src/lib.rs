@@ -115,6 +115,7 @@ pub struct DecodeStatus {
 pub struct PlaybackStatus {
     pub output_device: Option<sda_native_renderer::OutputDeviceStatus>,
     pub callback_missing_frames: u64,
+    pub output_callbacks: u64,
     pub render_blocks: u64,
     pub render_max_micros: u64,
     pub render_total_micros: u64,
@@ -647,6 +648,7 @@ impl MobileEngine {
         PlaybackStatus {
             output_device: self.pipeline.as_ref().map(|p| p.telemetry.output_device_status()),
             callback_missing_frames: self.pipeline.as_ref().map_or(0,|p| p.telemetry.callback_missing_frames()),
+            output_callbacks: self.pipeline.as_ref().map_or(0,|p|p.telemetry.callback_count.load(std::sync::atomic::Ordering::Relaxed)),
             render_blocks: self.pipeline.as_ref().map_or(0,|p| p.telemetry.render_timing().0),
             render_max_micros: self.pipeline.as_ref().map_or(0,|p| p.telemetry.render_timing().2),
             render_total_micros: self.pipeline.as_ref().map_or(0,|p| p.telemetry.render_timing().1),

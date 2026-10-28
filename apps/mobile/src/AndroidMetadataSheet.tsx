@@ -6,6 +6,9 @@ import { androidMaterialTheme } from "./android-material-theme";
 const compose: typeof import("@expo/ui/jetpack-compose") | null = Platform.OS === "android" && (globalThis as any).expo?.modules?.ExpoUI
   ? require("@expo/ui/jetpack-compose") : null;
 
+const composeModifiers: typeof import("@expo/ui/jetpack-compose/modifiers") | null = compose
+  ? require("@expo/ui/jetpack-compose/modifiers") : null;
+
 export function AndroidMetadataSheet({ open, onChange, children, theme }: {
   open: boolean; onChange(value: boolean): void; children: React.ReactNode; theme: "light" | "dark";
 }) {
@@ -25,7 +28,11 @@ export function AndroidMetadataSheet({ open, onChange, children, theme }: {
   return open ? <compose.Host style={{ position: "absolute", width: 1, height: 1 }} colorScheme={theme} seedColor={appTheme.accent}>
     <compose.ModalBottomSheet ref={sheet} onDismissRequest={() => onChange(false)} containerColor={c.bg}
       skipPartiallyExpanded={false} showDragHandle>
-      <compose.RNHostView matchContents><View style={{ height: Math.max(180, height - 100) }}>{content}</View></compose.RNHostView>
+      {/* Let Compose measure the sheet width, then pass those bounds to Yoga.
+          Content-sized hosting leaves an intrinsic-width column and an empty right strip. */}
+      <compose.Box modifiers={[composeModifiers!.fillMaxWidth(), composeModifiers!.height(Math.max(180, height - 100))]}>
+        <compose.RNHostView><View style={{ flex: 1 }}>{content}</View></compose.RNHostView>
+      </compose.Box>
     </compose.ModalBottomSheet>
   </compose.Host> : null;
 }

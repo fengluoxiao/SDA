@@ -80,6 +80,7 @@ final class SdaPlayer {
  var inBackground = false
  var backgroundTransitions = 0
  var recoveringOutput = false
+ var outputWatchdog = OutputCallbackWatchdog()
  var preparationLease: PlaybackPreparationLease?
  var preparationSerial = 0
  var playbackEvents: [[String:Any]] = []
@@ -268,19 +269,9 @@ final class SdaPlayer {
   do {
    // Bundled kernels already contain the approved -6 dB cues.
    if spatialCueDb() != -6 { try saveSpatialCueDb(spatialCueDb()) }
-   let engine = AVAudioEngine()
-   let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
-   let node = AVAudioSourceNode(format: format) { _, _, frames, list -> OSStatus in
-    let buffers = UnsafeMutableAudioBufferListPointer(list)
-    guard buffers.count == 2, let l = buffers[0].mData, let r = buffers[1].mData else { return kAudio_ParamError }
-    sda_ios_render(h, l.assumingMemoryBound(to: Float.self), r.assumingMemoryBound(to: Float.self), Int(frames))
-    return noErr
-   }
-   engine.attach(node); engine.connect(node, to: engine.mainMixerNode, format: format)
-   audio = engine; source = node
-   engine.prepare()
-   if sessionReady { try engine.start() }
-   else { isPaused = true; finishPreparation() }
+   outputWatchdog.reset()
+   try buildNativeOutput(h, start:sessionReady)
+   if !sessionReady { isPaused = true; finishPreparation() }
    _ = try command("near", ["enabled":s["nearField"]!,"scale":s["metresPerUnit"]!])
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
    _ = try command("volume", ["volume":1.0])
@@ -298,8 +289,30 @@ final class SdaPlayer {
    }
   } catch { stopNative(); throw error }
  }
+ // Replace only the Apple output graph. Keep the native decoder, FIFO,
+ // pending object metadata and consumed-sample clock intact.
+ func buildNativeOutput(_ h: UnsafeMutableRawPointer, start: Bool) throws {
+  if let previous = audio {
+   previous.stop()
+   if let source { previous.detach(source) }
+  }
+  audio = nil; source = nil
+  let engine = AVAudioEngine()
+  let format = AVAudioFormat(standardFormatWithSampleRate:48000,channels:2)!
+  let node = AVAudioSourceNode(format:format) { _, _, frames, list -> OSStatus in
+   let buffers = UnsafeMutableAudioBufferListPointer(list)
+   guard buffers.count == 2, let l = buffers[0].mData, let r = buffers[1].mData else { return kAudio_ParamError }
+   sda_ios_render(h,l.assumingMemoryBound(to:Float.self),r.assumingMemoryBound(to:Float.self),Int(frames))
+   return noErr
+  }
+  engine.attach(node); engine.connect(node,to:engine.mainMixerNode,format:format)
+  audio = engine; source = node
+  engine.prepare()
+  if start { try engine.start() }
+ }
  func setPaused(_ paused: Bool) throws -> Bool {
   guard hasPlayback, paused || !done else { return false }
+  outputWatchdog.reset()
   if paused {
    sessionActivationPending = false
    finishPreparation()
@@ -384,19 +397,30 @@ final class SdaPlayer {
   let url = FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("sda-playback-diagnostics.json")
   if let text = try? json(playbackEvents) { try? Data(text.utf8).write(to:url,options:.atomic) }
  }
- func recoverOutputIfNeeded(_ reason: String) throws {
+ func recoverOutputIfNeeded(_ reason: String, status: [String:Any]? = nil) throws {
   if sessionActivationPending && hasPlayback && !done && !sessionInterrupted {
    _ = try setPaused(false)
    return
   }
-  guard hasPlayback, !isPaused, !done, !sessionInterrupted, !recoveringOutput else { return }
+  guard hasPlayback, !isPaused, !done, !sessionInterrupted, !recoveringOutput else {
+   outputWatchdog.reset(); return
+  }
   recoveringOutput = true; defer { recoveringOutput = false }
-  if let audio, !audio.isRunning {
-   guard try activatePlaybackSession() else {
-    _ = try command("pause", ["paused":true]); audio.pause(); isPaused = true
-    return
+  if let audio, let handle {
+   let snapshot = try status ?? (command("status") as? [String:Any] ?? [:])
+   let callbacks = (snapshot["outputCallbacks"] as? NSNumber)?.uint64Value ?? 0
+   let stalled = outputWatchdog.stalled(now:ProcessInfo.processInfo.systemUptime,
+    callbacks:callbacks,expectedRunning:audio.isRunning)
+   if !audio.isRunning || stalled {
+    guard try activatePlaybackSession() else {
+     _ = try command("pause", ["paused":true]); audio.pause(); isPaused = true
+     outputWatchdog.reset(); return
+    }
+    if stalled { try buildNativeOutput(handle,start:true) }
+    else { try audio.start() }
+    outputWatchdog.reset()
+    recordPlaybackEvent(stalled ? "callbackStallRecovery" : "engineRestart",detail:reason)
    }
-   try audio.start(); recordPlaybackEvent("engineRestart",detail:reason)
   }
   if let system = systemSpatial { try system.pump() }
   startHeadTracking()
@@ -600,13 +624,13 @@ final class SdaPlayer {
       // synchronizer stopped; resume can then submit already decoded PCM.
       if systemSpatial?.needsStartupWork != true { return true }
      }
-     try recoverOutputIfNeeded("decode")
      let status = try command("status") as! [String:Any]
+     try recoverOutputIfNeeded("decode",status:status)
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      if consumed > 0 { finishPreparation() }
      if consumed != lastClock { lastClock = consumed; lastProgress = Date() }
-     if decoded > 0 && status["preparingAudio"] as? Bool != true && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
+     if decoded > 0 && status["preparingAudio"] as? Bool != true && Date().timeIntervalSince(lastProgress) > 15 { throw SdaError.message("iOS 音频输出停止消耗数据: decoded=\(decoded), consumed=\(consumed), callbacks=\(status["outputCallbacks"] ?? 0), fifo=\(status["fifoFrames"] ?? 0), engineRunning=\(audio?.isRunning == true), system=\(systemMode)") }
      if Date().timeIntervalSince(lastInfo) > 1 {
       // Advance metadata even while React polling is suspended. Keep future
       // events, coalesce consumed events to the current object snapshot.

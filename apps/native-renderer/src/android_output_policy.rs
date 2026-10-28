@@ -66,3 +66,44 @@ mod tests {
         assert_eq!(p.observe_xruns(1), Some(960));
     }
 }
+
+/// Detect a stopped hardware callback, not silence or a DSP underrun. The
+/// AAudio stream is started even while the renderer is filling its reserve.
+#[derive(Default)]
+pub(crate) struct CallbackWatchdog {
+    last: Option<(u64, u64)>,
+    seen_callback: bool,
+}
+impl CallbackWatchdog {
+    pub fn stalled(&mut self, now_ms:u64, callbacks:u64, expected_running:bool)->bool {
+        let Some((count,changed))=self.last else {
+            self.last=Some((callbacks,now_ms));self.seen_callback=callbacks>0;return false;
+        };
+        if callbacks!=count {self.seen_callback=true;self.last=Some((callbacks,now_ms));return false;}
+        if !expected_running {self.last=Some((callbacks,now_ms));return false;}
+        now_ms.saturating_sub(changed)>=if self.seen_callback {2000}else{5000}
+    }
+}
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+    #[test]
+    fn callback_stop_is_detected_before_the_host_fatal_deadline() {
+        let mut w=CallbackWatchdog::default();assert!(!w.stalled(0,10,true));
+        assert!(!w.stalled(1999,10,true));assert!(w.stalled(2000,10,true));
+        assert!(!w.stalled(2001,11,true));assert!(!w.stalled(4000,11,true));
+    }
+    #[test]
+    fn startup_has_grace_and_pause_resume_restarts_the_deadline() {
+        let mut w=CallbackWatchdog::default();assert!(!w.stalled(0,0,true));
+        assert!(!w.stalled(4999,0,true));assert!(w.stalled(5000,0,true));
+        assert!(!w.stalled(5001,1,true));
+        for now in (6000..30000).step_by(500){assert!(!w.stalled(now,1,false));}
+        assert!(!w.stalled(30000,1,true));assert!(w.stalled(32000,1,true));
+    }
+    #[test]
+    fn running_callbacks_never_reconnect_due_to_silent_or_missing_pcm() {
+        let mut w=CallbackWatchdog::default();
+        for tick in 0..2000 {assert!(!w.stalled(tick*50,tick,true));}
+    }
+}

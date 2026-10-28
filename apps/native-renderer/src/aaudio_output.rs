@@ -13,6 +13,8 @@ use super::{AudioOutput, RuntimeTelemetry, render_command, stereo_fifo};
 
 const SAMPLE_RATE: i32 = 48_000;
 const CHANNELS: usize = 2;
+const CALLBACK_STALLED:i32 = -1_000_001;
+const WRITE_STALLED:i32 = -1_000_002;
 const DISCONNECTED: i32 = -899; // AAUDIO_ERROR_DISCONNECTED, all supported API levels.
 const WRITE_TIMEOUT_NS: i64 = 200_000_000;
 
@@ -92,6 +94,7 @@ struct CallbackContext {
     fifo: OnceLock<Arc<stereo_fifo::StereoFifo>>,
     telemetry: OnceLock<Arc<RuntimeTelemetry>>,
     error: AtomicI32,
+    callbacks: std::sync::atomic::AtomicU64,
     ready: std::sync::atomic::AtomicBool,
 }
 struct PreparedStream {
@@ -101,9 +104,26 @@ struct PreparedStream {
     burst: usize,
     callback_mode: bool,
 }
+impl Drop for PreparedStream {
+    fn drop(&mut self) {
+        self.callback.ready.store(false,Ordering::Release);
+        unsafe { aaudio::AAudioStream_requestStop(self.stream.0); }
+        // Older drivers may deliver a final callback after requestStop. Keep
+        // callback userdata alive until the stream has quiesced, then close it.
+        for _ in 0..5 {
+            let state=unsafe{aaudio::AAudioStream_getState(self.stream.0)};
+            if state==aaudio::AAUDIO_STREAM_STATE_STOPPED as i32
+                || state==aaudio::AAUDIO_STREAM_STATE_DISCONNECTED as i32
+                || state==aaudio::AAUDIO_STREAM_STATE_CLOSED as i32 {break;}
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 unsafe extern "C" fn data_callback(_stream:*mut aaudio::AAudioStream,user:*mut std::ffi::c_void,audio:*mut std::ffi::c_void,frames:i32)->i32 {
     if user.is_null()||audio.is_null()||frames<=0 {return aaudio::AAUDIO_CALLBACK_RESULT_STOP as i32;}
     let context=unsafe{&*user.cast::<CallbackContext>()};
+    context.callbacks.fetch_add(1,Ordering::Relaxed);
     let out=unsafe{std::slice::from_raw_parts_mut(audio.cast::<f32>(),frames as usize*CHANNELS)};
     if let (Some(fifo),Some(telemetry))=(context.fifo.get(),context.telemetry.get()) {
         if telemetry.shutdown_requested.load(Ordering::Acquire) {out.fill(0.);return aaudio::AAUDIO_CALLBACK_RESULT_STOP as i32;}
@@ -239,10 +259,13 @@ impl AudioOutput for AAudioWriterSink {
             };
             match result {
                 Ok(()) => break,
-                Err(DISCONNECTED) => {
+                Err(error @ (DISCONNECTED | CALLBACK_STALLED | WRITE_STALLED)) => {
                     telemetry.output_device_recovering.store(true,Ordering::Release);
                     // Close only this device, on this worker, never in an AAudio callback.
-                    let callback_mode=prepared.callback_mode;
+                    // A silently dead callback can recur on the same route.
+                    // The existing blocking backend keeps exact f32/48k PCM.
+                    let callback_mode=prepared.callback_mode && error!=CALLBACK_STALLED;
+                    android_log(&format!("output recovery reason={error} next_callback_mode={callback_mode}"));
                     drop(prepared);
                     xrun_base=telemetry.output_device_xruns.load(Ordering::Relaxed);
                     if started.elapsed()>=Duration::from_secs(1) {failures=0;}
@@ -258,7 +281,7 @@ impl AudioOutput for AAudioWriterSink {
                     }
                     let Some(stream)=replacement else {
                         if !telemetry.shutdown_requested.load(Ordering::Acquire) {
-                            telemetry.output_device_error.store(DISCONNECTED,Ordering::Release);
+                            telemetry.output_device_error.store(error,Ordering::Release);
                             android_log("AAudio output reconnect exhausted");
                         }
                         telemetry.output_device_recovering.store(false,Ordering::Release);
@@ -306,9 +329,19 @@ fn monitor_callback_stream(prepared:&PreparedStream,telemetry:&Arc<RuntimeTeleme
     telemetry.output_device_buffer_frames.store(current as u64,Ordering::Relaxed);
     telemetry.output_device_performance_mode.store(unsafe{aaudio::AAudioStream_getPerformanceMode(stream)},Ordering::Relaxed);
     let mut last_report=Instant::now();
+    let observed=Instant::now();let mut watchdog=crate::android_output_policy::CallbackWatchdog::default();
     while !telemetry.shutdown_requested.load(Ordering::Acquire){
         let error=prepared.callback.error.load(Ordering::Acquire);
         if error<0 {return Err(error);}
+        if watchdog.stalled(observed.elapsed().as_millis() as u64,
+            prepared.callback.callbacks.load(Ordering::Relaxed),!telemetry.paused.load(Ordering::Acquire)) {
+            telemetry.output_device_recovering.store(true,Ordering::Release);
+            android_log(&format!("AAudio callback stalled state={} callbacks={} fifo={} consumed={}",
+                unsafe{aaudio::AAudioStream_getState(stream)},prepared.callback.callbacks.load(Ordering::Relaxed),
+                prepared.callback.fifo.get().map_or(0,|f|f.available_read()),
+                telemetry.callback_consumed_sample_pos.load(Ordering::Acquire)));
+            return Err(CALLBACK_STALLED);
+        }
         let xruns=unsafe{aaudio::AAudioStream_getXRunCount(stream)};
         if xruns>=0 {telemetry.output_device_xruns_supported.store(true,Ordering::Relaxed);telemetry.output_device_xruns.store(xrun_base+xruns as u64,Ordering::Relaxed);}
         if let Some(request)=policy.observe_xruns(xruns){
@@ -356,6 +389,7 @@ fn writer_loop(
             if let Some(capture) = &mut capture {capture.push(total_audio,&pending.block[..pending.popped*CHANNELS]);}
         }
         let started = Instant::now();
+        let mut last_write=Instant::now();
         while pending.offset < pending.block.len()/CHANNELS {
             if telemetry.shutdown_requested.load(Ordering::Acquire) {return Ok(());}
             if fifo.apply_flush_from_consumer() {break;}
@@ -371,11 +405,13 @@ fn writer_loop(
                 return Err(if written<0 {written}else{-1});
             }
             if written == 0 {
-                if started.elapsed() > Duration::from_secs(2) {
-                    return Err(-1);
+                if last_write.elapsed() > Duration::from_secs(2) {
+                    telemetry.output_device_recovering.store(true,Ordering::Release);
+                    return Err(WRITE_STALLED);
                 }
                 continue;
             }
+            last_write=Instant::now();
             let written = written as usize;
             partial_writes += u64::from(written < requested);
             let consumed = pending.popped.saturating_sub(pending.offset).min(written);

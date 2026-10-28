@@ -60,6 +60,8 @@ jobs:
         run: |
           mkdir -p ios-artifacts
           python3 scripts/select-ios-sdk.py '${{ matrix.sdk }}'
+      - name: Verify output callback recovery policy
+        run: python3 scripts/test-ios-output-watchdog.py
       - name: Record build tools
         id: xcode
         run: |

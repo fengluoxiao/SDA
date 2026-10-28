@@ -677,7 +677,7 @@ class SdaModule : Module() {
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
                             val fifoFrames = state.optInt("fifoFrames", 0)
-                            if (paused || state.optJSONObject("outputDevice")?.optBoolean("recovering", false) == true) {
+                            if (paused || state.optBoolean("paused", false) || state.optJSONObject("outputDevice")?.optBoolean("recovering", false) == true) {
                                 lastProgressNs = System.nanoTime()
                                 Thread.sleep(20)
                                 continue
@@ -691,7 +691,9 @@ class SdaModule : Module() {
                                 lastProgressNs = System.nanoTime()
                             }
                             check(decoded == 0L || System.nanoTime() - lastProgressNs < 15_000_000_000L) {
-                                "Audio consumption stalled (decoded=$decoded consumed=$consumed)"
+                                "Audio consumption stalled (decoded=$decoded consumed=$consumed fifo=$fifoFrames " +
+                                    "callbacks=${state.optLong("outputCallbacks")} renderBlocks=${state.optLong("renderBlocks")} " +
+                                    "backend=${state.optJSONObject("outputDevice")?.optString("backend")})"
                             }
                             if (!preparingBalance && (decoded - consumed > maxLead || fifoFrames > maxLead)) {
                                 Thread.sleep(20)
