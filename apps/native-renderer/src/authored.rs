@@ -430,6 +430,7 @@ impl Engine {
         let mutes = string_list(&snapshot["routing"]["mutedSpeakers"])?;
         let focus = string_list(&snapshot["routing"]["activeFocus"])?;
         let epoch = self.render_epoch;
+        let monitor = (self.binaural_enabled, self.binaural_mix, self.plain_warmup);
         self.authored = Processing::default();
         self.layout = layout;
         self.vbap = vbap::VbapSolver::with_layout(layout);
@@ -456,6 +457,9 @@ impl Engine {
         self.set_speaker_monitor(mutes, focus);
         self.stereo_mode = StereoMode::Room;
         self.configure_authored_processing(scene.processing)?;
+        self.set_binaural_enabled(monitor.0);
+        self.binaural_mix = monitor.1;
+        self.plain_warmup = monitor.2;
         self.render_epoch = epoch;
         Ok(())
     }
@@ -569,6 +573,8 @@ mod scene_tests {
         assert_eq!(e.authored.enabled,recipe.enabled);
         f.scene.render["playbackSnapshot"]["sourceOcclusion"]["enabled"]=json!(true);
         e.configure_authored_scene(f.scene.clone()).unwrap();assert!(e.source_occlusion_enabled);
+        assert!(!e.binaural_enabled,"scene/layout replacement must retain head Off");
+        assert_eq!(e.binaural_mix,0.0);assert_eq!(e.plain_warmup,0);
         f.scene.render["playbackSnapshot"]["sourceOcclusion"]["algorithm"]=json!("unknown");
         assert!(e.configure_authored_scene(f.scene.clone()).is_err());
     }
