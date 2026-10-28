@@ -239,3 +239,26 @@ Automatic finite-distance near-field correction already consumes explicit
 `distanceM` with the manual near-field switch off. Normalized coordinates alone
 do not become invented physical metres. This mechanism stays separate from the
 legacy manual proximity-mapping option and from source-to-source occlusion.
+
+## ADM programme balance without source re-rendering
+
+Raw ADM scenes use a fresh, neutral 7.1.4 speaker reference before K-weighting.
+The reference sums object waveforms with their sample-clock gain/position ramps;
+it never treats independent object stems as loudspeaker channels. Bed aliases
+and 7.1.2 overhead pairs map into the same reference; LFE has zero loudness
+weight. `fixed-714-scene-startup-v1` freezes the first 57 usable measurement
+windows, with the existing seven-second startup limit and short-file fallback.
+No measurement or rendered audio is reused from an earlier file/session.
+
+ADM joins the shared immersive +2.5 dB output calibration when volume balance is
+on. Its protective programme normalization is nonpositive and remains separate
+from that calibration and the linked final peak guard.
+
+An ADM-to-SDA scene transfer preserves every PCM24 source sample. Consequently
+`baked.volumeBalance.applied` and `baked.spatialBalance.applied` are false, while
+`enabled` retains the requested export controls. The measured programme gain,
+makeup and reference policy are carried in the file; the renderer applies them
+once. Existing actually baked masters still use applied=true and bypass the
+corresponding runtime operation. A raw scene must never be mislabeled as already
+balanced merely because its output is an authored delivery. File-owned HRTF,
+room and headphone resources remain unchanged by this transfer.

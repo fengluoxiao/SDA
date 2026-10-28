@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {AdmProgrammeReference} from '../src/adm-programme.ts';
+function event(id,pos,gainDb=0,samplePos=0,rampDuration=0){return {id,pos,gainDb,samplePos,rampDuration,hasPos:true,size:[0,0,0],anchor:'room',distanceM:null,distanceInfinite:false,screenFactor:null,depthFactor:null};}
+const tone=(at,n,gain=.02)=>Float32Array.from({length:n},(_,i)=>gain*Math.sin((at+i)*Math.PI*2*997/48000));
+function frame(at,channels,labels,events=[],objects=[]){return {codec:'adm',sampleRate:48000,samplePos:at,channels,labels,rawBedLabels:labels.filter(l=>!l.startsWith('Obj_')),events,objectChannels:objects,programLoudness:null,rampDuration:0};}
+const input=tone(0,48000),opposite=Float32Array.from(input,v=>-v),copy=input.slice();
+const cancelled=new AdmProgrammeReference(48000);cancelled.measure(frame(0,[input,opposite],['Obj_1','Obj_2'],[event(1,[0,1,0]),event(2,[0,1,0])],[{id:1,channel:0},{id:2,channel:1}]));assert.equal(cancelled.measurement.integratedLufs,null,'correlated objects must sum before K-weighting');assert.deepEqual(input,copy,'reference analysis never edits source PCM');
+const lfe=new AdmProgrammeReference(48000);lfe.measure(frame(0,[input],['LFE']));assert.equal(lfe.measurement.integratedLufs,null,'LFE excluded from programme loudness');
+const bed=new AdmProgrammeReference(48000),object=new AdmProgrammeReference(48000);bed.measure(frame(0,[input],['FrontLeft']));object.measure(frame(0,[input],['Obj_9'],[event(9,[-.5,Math.sqrt(.75),0])],[{id:9,channel:0}]));assert(Math.abs(bed.measurement.integratedLufs-object.measurement.integratedLufs)<1e-5,'bed aliases and equivalent objects use the same speaker reference');
+const freeze=new AdmProgrammeReference(48000);for(let at=0;!freeze.settled;at+=4096)freeze.measure(frame(at,[tone(at,4096)],['FrontLeft']));const before=freeze.measurement,decision=freeze.decision();freeze.measure(frame(400000,[tone(400000,48000,.9)],['FrontLeft']));assert.deepEqual(freeze.measurement,before);assert.deepEqual(freeze.decision(),decision,'later loud passages cannot retarget the initial reference');
+const silent=new AdmProgrammeReference(48000);for(let at=0;!silent.settled;at+=4096)silent.measure(frame(at,[new Float32Array(4096)],['FrontLeft']));assert.equal(silent.decision().gainDb,null,'silent startup times out without fabricated loudness');
+console.log('PASS ADM neutral reference: phase correlation, bed mapping, LFE exclusion, untouched PCM, fixed startup and silent timeout');

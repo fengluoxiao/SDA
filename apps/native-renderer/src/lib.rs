@@ -1546,7 +1546,7 @@ impl Engine {
     // switch. Stereo and named immersive formats share the same final output calibration. Dolby
     // E-AC-3/TrueHD additionally require declared spatial programme metadata.
     fn refresh_programme_output_makeup(&mut self, immediate: bool) {
-        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4" | "alac" | "mp3" | "mp3-stereo-bed"));
+        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4" | "adm" | "alac" | "mp3" | "mp3-stereo-bed"));
         let dolby_codec = matches!(self.program_codec.as_deref(), Some("eac3" | "truehd" | "mlpa"));
         self.dolby_spatial_programme_seen = dolby_codec && (self.dolby_spatial_programme_seen || self.sources.values().any(|source| source.kind == SourceKind::Object
                 || source.bed_label.as_deref().is_some_and(|label| matches!(label,

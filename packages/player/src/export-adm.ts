@@ -1,3 +1,4 @@
+import { AdmProgrammeReference, ADM_REFERENCE_POLICY } from "./adm-programme";
 /** Preserve independent ADM PCM lanes and sample-clock automation; never render a bed downmix. */
 import fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -50,6 +51,25 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         if (bwf.format.sampleRate !== 48000 || bwf.format.bits !== 24 || ![1, 65534].includes(bwf.format.encoding) || bwf.format.channels > 128)
             throw Error("ADM 对象母版需要 48 kHz / PCM24，最多 128 个独立信号");
         const frames = bwf.dataSize / bwf.format.blockAlign;
+        const volumeBalance=job.volumeBalanceEnabled ?? job.renderSnapshot?.balance?.volume ?? false;
+        const spatialBalance=job.spatialBalanceEnabled ?? job.renderSnapshot?.balance?.spatial ?? false;
+        const reference=new AdmProgrammeReference(48000);let measuredFrames=0;
+        if(volumeBalance){
+            let eventIndex=0;
+            while(measuredFrames<frames&&!reference.settled){
+                check();const count=Math.min(4096,frames-measuredFrames);
+                const bytes=await read(bwf.dataOffset+measuredFrames*bwf.format.blockAlign,count*bwf.format.blockAlign);
+                const channels=Array.from({length:bwf.format.channels},()=>new Float32Array(count));
+                for(let i=0;i<count;i++)for(let ch=0;ch<channels.length;ch++)channels[ch]![i]=bytes.readIntLE((i*channels.length+ch)*3,3)/8388608;
+                const events=[];while(eventIndex<adm.events.length&&adm.events[eventIndex]!.samplePos<measuredFrames+count)events.push(adm.events[eventIndex++]!);
+                reference.measure({codec:"adm",sampleRate:48000,samplePos:measuredFrames,channels,labels:adm.labels,rawBedLabels:adm.rawBedLabels,objectChannels:adm.objectChannels,events,programLoudness:null,rampDuration:0});
+                measuredFrames+=count;progress("measure",Math.min(1,measuredFrames/Math.min(frames,48000*7)));
+            }
+        }
+        const measurement=reference.measurement,decision=reference.decision(measuredFrames>=frames);
+        const programmeGainDb=volumeBalance?(decision.gainDb??0):0;
+        const programmeMakeupDb=volumeBalance?2.5:0;
+
         const source = await readSourceMetadata(job.inputPath, check);
         if (!source.common.title) {
             source.common.title = adm.title ?? "SDA Object Master";
@@ -89,7 +109,7 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         const events = adm.events.map(event => ({ ...event, position: spherical(event.pos), distanceUnit: "reference-ring" }));
         const timeline = Buffer.from(JSON.stringify({ schema: "sda.object-timeline", version: 1, sampleRate: 48000, durationSamples: frames, coordinateSystem: "ADM: X-right, Y-front, Z-up", interpolation: "forward-linear-from-event-sample", events }));
         const timelineAsset = add(deflateSync(timeline), "object-timeline.json.zlib", "application/vnd.sda.object-timeline+zlib");
-        const render: any = exportRenderMetadata(job.renderSnapshot, { frames, sourceSampleRate: 48000, sourceLufs: null, programmeGainDb: 0, programmeMakeupDb: 0, volumeBalanceEnabled: false, spatialBalanceEnabled: false, peakHeadroomGainDb: 0, truePeakDbtp: null }, assets);
+        const render: any = exportRenderMetadata(job.renderSnapshot, { frames, sourceSampleRate: 48000, sourceLufs: volumeBalance?measurement.integratedLufs:null, programmeGainDb, programmeMakeupDb, volumeBalanceEnabled:volumeBalance, spatialBalanceEnabled:spatialBalance, peakHeadroomGainDb: 0, truePeakDbtp: null }, assets);
         render.profile = "SDAR Bed Channel With Objects";
         render.interchange.requiredFeatures.push("object-scene-v1", "sample-clock-object-automation-v1");
         if (adm.events.some(event => event.horizontalOnly || event.zoneExclusion?.length))
@@ -103,6 +123,12 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         render.output.channels = bwf.format.channels;
         render.output.channelMask = 0;
         render.baked.upmix = { applied: false, algorithm: "none" };
+        // Scene transfer leaves every source PCM sample intact. Store the chosen
+        // programme/spatial recipe for one runtime application, never claim it baked.
+        render.baked.volumeBalance.applied=false;
+        render.baked.volumeBalance.policy=ADM_REFERENCE_POLICY;
+        render.baked.volumeBalance.reference={layout:"7.1.4",blocks:measurement.blocks,measuredFrames,truePeakDbtp:measurement.truePeakDbtp??null,requiredBlocks:57,maxStartupSeconds:7};
+        render.baked.spatialBalance.applied=false;
         render.baked.peakProtection = { policy: "source-master-preserved", headroomGainDb: 0, truePeakDbtp: null, finalOutputProtection: "renderer" };
         render.baked.dither = "source PCM24 preserved";
         render.runtimeRecipe.automationRecorded = true;

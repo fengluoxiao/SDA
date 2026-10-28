@@ -306,7 +306,8 @@ impl PreparedResources {
           "schema":"sda.playback-snapshot","version":1,"hrtf":{"directObjectHrtf":snapshot["hrtf"]["directObjectHrtf"]},
           "native":{"directionalHrtf":snapshot["native"]["directionalHrtf"],"masterPreampDb":snapshot["native"]["masterPreampDb"]},
           "cinema":{"settings":snapshot["cinema"]["settings"],"profileId":snapshot["cinema"]["profileId"]},"nearField":snapshot["nearField"],"sourceExtent":snapshot["sourceExtent"],
-          "equalizer":{"bands":snapshot["equalizer"]["bands"],"lowFrequencyDiagnostic":snapshot["equalizer"]["lowFrequencyDiagnostic"]},
+          "sourceOcclusion":snapshot["sourceOcclusion"],
+            "equalizer":{"bands":snapshot["equalizer"]["bands"],"lowFrequencyDiagnostic":snapshot["equalizer"]["lowFrequencyDiagnostic"]},
           "monitoring":{"comparisonGainDb":snapshot["monitoring"]["comparisonGainDb"]},
           "routing":{"mutedSpeakers":snapshot["routing"]["mutedSpeakers"],"activeFocus":snapshot["routing"]["activeFocus"]}}});
         let scene = serde_json::json!({"version":1,"layout":layout,"render":recipe,"resources":{"root":self.root,"hrtf":self.hrtf,"hrtfWet":self.hrtf_wet,"room":self.room,"headphone":self.headphone},

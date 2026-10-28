@@ -14,7 +14,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
             quiet.set_master_preamp_db(-6.).unwrap();
             quiet.program_enabled = true;
             quiet.set_program_target(0.5, true);
-            let calibration = if ["mpegh","av3a","ac4","alac","mp3","mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
+            let calibration = if ["mpegh","av3a","ac4","adm","alac","mp3","mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
             let ratio = 0.25 * 10f32.powf(-6. / 20.) * 0.5 * calibration;
             for i in 0..96000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
@@ -54,6 +54,8 @@ fn quiet_output_keeps_programme_gain_without_unneeded_attenuation() {
 fn real_output_peak_guard_covers_manual_makeup_in_every_switch_state() {
     for spatial in [false, true] {
         let mut e = Engine::new(48000, 2);
+        e.set_program_codec("adm".into());e.program_enabled=true;e.set_program_target(1.0,true);
+        assert_eq!(e.programme_output_makeup.target_db(),2.5);
         e.set_spatial_enhancement(spatial).unwrap();
         e.set_master_preamp_db(12.).unwrap();
         for i in 0..96000 {
@@ -159,7 +161,7 @@ fn programme_makeup_obeys_format_volume_and_metadata_policy() {
                     e.program_enabled = volume;
                     e.set_program_target(0.5, true);
                     declare_makeup_source(&mut e, object, label);
-                    let eligible = volume && (["mpegh","av3a","ac4","alac","mp3","mp3-stereo-bed"].contains(&codec)
+                    let eligible = volume && (["mpegh","av3a","ac4","adm","alac","mp3","mp3-stereo-bed"].contains(&codec)
                         || (["eac3", "truehd", "mlpa"].contains(&codec) && (object || label == "Tfl")));
                     assert_eq!(e.programme_output_makeup.target_db(), if eligible { 2.5 } else { 0.0 },
                         "{codec} volume={volume} spatial={spatial} object={object} label={label}");
@@ -186,7 +188,7 @@ fn programme_makeup_is_linked_and_leaves_unselected_codecs_bit_identical() {
             declare_makeup_source(&mut new, true, "");
             // Reference bypasses only the selected format calibration.
             old.programme_output_makeup = Default::default();
-            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4", "alac", "mp3", "mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
+            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4", "adm", "alac", "mp3", "mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
             for i in 0..24000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
                 let a = old.process_final_output([x, -0.4 * x]);
@@ -240,6 +242,8 @@ fn atmos_makeup_ramps_on_live_toggle_and_cannot_leak_into_the_next_programme() {
     assert_eq!(e.programme_output_makeup.target_db(), 2.5, "stereo retains the shared calibration");
     assert!(!e.dolby_spatial_programme_seen);
     e.set_program_codec("adm".into());
+    assert_eq!(e.programme_output_makeup.target_db(), 2.5,"ADM retains the shared immersive calibration");
+    e.set_program_codec("future-object-format".into());
     assert_eq!(e.programme_output_makeup.target_db(), 0.0);
     e.reset_session(0);
     assert_eq!(e.programme_output_makeup.gain(), 1.0);
@@ -448,6 +452,32 @@ fn stereo_and_immersive_formats_share_peak_protection_at_full_output() {
         let reference=render("alac",balance,binaural);
         for codec in ["mp3","mp3-stereo-bed","eac3","truehd","mlpa","mpegh","av3a","ac4"] {
             assert_eq!(render(codec,balance,binaural),reference,"final peak protection differs for {codec}");
+        }
+    }}
+}
+
+#[test]
+fn adm_file_metadata_and_baked_programme_gain_match_live_exactly_once() {
+    for db in [0.0_f32,-6.0] { for spatial in [false,true] {
+        let mut live=Engine::new(48000,2);live.set_spatial_enhancement(spatial).unwrap();
+        live.set_program_codec("adm".into());live.program_enabled=true;
+        live.set_program_target(cinema::db(db),true);
+        let mut owned=Engine::new(48000,2);
+        owned.configure_authored_processing(authored::Processing {enabled:true,version:1,programme_handled:false,
+            source_spatial_handled:false,spatial_presentation:spatial,programme_gain_db:db,makeup_db:2.5,
+            ..Default::default()}).unwrap();
+        let mut baked=Engine::new(48000,2);
+        baked.configure_authored_processing(authored::Processing {enabled:true,version:1,programme_handled:true,
+            source_spatial_handled:true,spatial_presentation:spatial,programme_gain_db:db,makeup_db:2.5,
+            ..Default::default()}).unwrap();
+        assert_eq!(owned.programme_output_makeup.target_db(),2.5);
+        assert_eq!(baked.programme_output_makeup.target_db(),0.0);
+        for i in 0..24000 {
+            let x=(i as f32*0.13).sin()*0.003;let input=[x,-0.4*x];
+            let a=live.process_final_output(input);let b=owned.process_final_output(input);
+            let c=baked.process_final_output(input.map(|v|v*cinema::db(db+2.5)));
+            for ear in 0..2 {assert!((a[ear]-b[ear]).abs()<3e-7,"metadata gain mismatch");
+                assert!((a[ear]-c[ear]).abs()<3e-7,"already baked gain applied twice");}
         }
     }}
 }

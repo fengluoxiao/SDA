@@ -1,3 +1,4 @@
+import { AdmProgrammeReference } from "./adm-programme";
 import {PerformanceSink} from "./performance-sink";
 const perf=new PerformanceSink("decoder");
 import {DecoderDiagnostics} from './decoder-diagnostics';
@@ -39,6 +40,7 @@ let bwfMetadata: BwfMetadata | undefined;
 let decoderConfigurationError: string | null = null;
 let loudnessMeter: LoudnessMeter | null = null;
 let loudnessPostCounter = 0;
+let admReference: AdmProgrammeReference | null = null;
 let decodedReferenceLoudness: DecodedFrameData["referenceLoudness"];
 const lastObjectTargets = new Map<number, ObjectEvent>();
 let frameBatcher = new FrameBatcher(postFrame);
@@ -73,6 +75,10 @@ function measureMpeghReference(channels:Float32Array[],sampleRate:number):void {
 }
 
 function postFrame(frame: DecodedFrameData): void {
+  if(frame.codec==="adm"){
+    admReference??=new AdmProgrammeReference(frame.sampleRate);
+    frame.referenceLoudness=admReference.measure(frame);
+  }
   if (frame.referenceLoudness) {decodedReferenceLoudness=frame.referenceLoudness;frame.loudness=frame.referenceLoudness;}
   if(!frame.referenceLoudness && frame.codec === "mpegh" && loudnessMeter && ++loudnessPostCounter % 8 === 0) frame.loudness=loudnessMeter.integrated();
   // BS.1770-4 measurement for content without codec loudness metadata (e.g.
@@ -186,6 +192,7 @@ async function handleMessage(e: MessageEvent,received:number): Promise<void> {
       loudnessMeter = null;
       loudnessPostCounter = 0;
       decodedReferenceLoudness = undefined;
+      admReference = null;
       // Keep the existing immediate decoder for raw and legacy MP4 streams.
       // ALAC replaces it in onTrack before MP4Box starts delivering packets,
       // because only the discovered track carries its required codec cookie.
