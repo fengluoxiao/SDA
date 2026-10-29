@@ -6,6 +6,12 @@ on:
         description: Draft release tag
         required: true
         type: string
+      platform:
+        description: Installer platforms to verify
+        required: true
+        type: choice
+        default: both
+        options: [both, windows, macos]
       source_ref:
         description: Exact application source commit used by the installer build
         required: true
@@ -25,23 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: Windows
-            arch: x64
-            runner: windows-2022
-            ext: exe
-          - platform: Windows
-            arch: arm64
-            runner: windows-2022
-            ext: exe
-          - platform: macOS
-            arch: x64
-            runner: macos-26-intel
-            ext: dmg
-          - platform: macOS
-            arch: arm64
-            runner: macos-26
-            ext: dmg
+        include: ${{ fromJSON(inputs.platform == 'windows' && '[{"platform":"Windows","arch":"x64","runner":"windows-2022","ext":"exe"},{"platform":"Windows","arch":"arm64","runner":"windows-2022","ext":"exe"}]' || inputs.platform == 'macos' && '[{"platform":"macOS","arch":"x64","runner":"macos-26-intel","ext":"dmg"},{"platform":"macOS","arch":"arm64","runner":"macos-26","ext":"dmg"}]' || '[{"platform":"Windows","arch":"x64","runner":"windows-2022","ext":"exe"},{"platform":"Windows","arch":"arm64","runner":"windows-2022","ext":"exe"},{"platform":"macOS","arch":"x64","runner":"macos-26-intel","ext":"dmg"},{"platform":"macOS","arch":"arm64","runner":"macos-26","ext":"dmg"}]') }}
     defaults:
       run:
         shell: bash

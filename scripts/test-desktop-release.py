@@ -16,10 +16,12 @@ class DesktopArchitectureTests(unittest.TestCase):
    self.assertEqual(module.architectures(data),{arch})
  def test_repo_relative_entrypoint_is_valid(self):
   import json
-  pkg=json.loads((Path(__file__).resolve().parents[1]/'apps/desktop/package.json').read_text())
+  pkg=json.loads((Path(__file__).resolve().parents[1]/'apps/desktop/package.json').read_text(encoding='utf-8'))
   module.validate_package_metadata(pkg,pkg['version'])
   module.validate_package_metadata({'version':pkg['version'],'main':'main.cjs'},pkg['version'])
   with self.assertRaises(AssertionError):module.validate_package_metadata({'version':pkg['version'],'main':'other.cjs'},pkg['version'])
+ def test_unicode_package_entrypoint(self):
+  module.validate_package_metadata({'version':'0.9.3','main':'./main.cjs','description':'房间与头部运动'},'0.9.3')
  def test_invalid_executable_is_rejected(self):
   with self.assertRaises(ValueError):module.architectures(b'not an executable')
 if __name__=='__main__':unittest.main()

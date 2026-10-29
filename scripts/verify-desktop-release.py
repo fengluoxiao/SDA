@@ -43,7 +43,7 @@ def verify_payload(app, platform, arch, commit, version):
     for role,path in roles.items():
         with path.open('rb') as f: data=f.read(65536)
         assert arch in architectures(data), f'{role}: wrong architecture {architectures(data)}, expected {arch}'
-    info=json.loads((resources/'native-renderer/build-info.json').read_text())
+    info=json.loads((resources/'native-renderer/build-info.json').read_text(encoding='utf-8'))
     assert info['sourceCommit']==commit,'Wrong native renderer source'
     assert info['sha256']==sha(roles['renderer']) and info['roomReferenceSha256']==sha(roles['room'])
     binary=roles['renderer'].read_bytes()
@@ -70,7 +70,7 @@ def inspect_container(installer, platform, arch, commit, version):
         finally: subprocess.run(['hdiutil','detach',mounts[0]],check=True,stdout=subprocess.DEVNULL)
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--platform',choices=['Windows','macOS'],required=True);p.add_argument('--arch',choices=['x64','arm64'],required=True);p.add_argument('--app-dir',type=Path);p.add_argument('--installer',type=Path,required=True);p.add_argument('--evidence-dir',type=Path,default=Path('desktop-artifacts'));p.add_argument('--verify-container',action='store_true');p.add_argument('--from-installer',action='store_true');a=p.parse_args()
-    root=Path(os.environ.get('GITHUB_WORKSPACE',Path(__file__).resolve().parents[1]));version=json.loads((root/'apps/desktop/package.json').read_text())['version'];commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+    root=Path(os.environ.get('GITHUB_WORKSPACE',Path(__file__).resolve().parents[1]));version=json.loads((root/'apps/desktop/package.json').read_text(encoding='utf-8'))['version'];commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
     assert a.installer.name==f'SDA-{version}-{a.platform}-{a.arch}'+('.exe' if a.platform=='Windows' else '.dmg')
     if a.from_installer:files=inspect_container(a.installer.resolve(),a.platform,a.arch,commit,version)
     else:
