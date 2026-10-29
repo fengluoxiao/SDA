@@ -11,7 +11,7 @@ export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows:
   const c = androidMaterialTheme(appTheme.id, dark);
   return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={sheet ? ["bottom"] : ["top", "bottom", "left", "right"]}>
     {!sheet && <StatusBar translucent backgroundColor="transparent" barStyle={dark ? "light-content" : "dark-content"} />}
-    <View style={s.header}>{!hasAndroidChrome && <View style={s.back}><AndroidGlassSettingsButton back onPress={onClose} /></View>}
+    <View style={[s.header, sheet && s.sheetHeader]}>{!hasAndroidChrome && <View style={s.back}><AndroidGlassSettingsButton back onPress={onClose} /></View>}
       <Text accessibilityRole="header" style={[s.title, { color: c.ink, flex: 1 }]}>歌曲元数据</Text>{hasAndroidChrome && <AndroidGlassAction title="完成" dark={dark} accent={c.primary} onPress={onClose} />}</View>
     <ScrollView contentContainerStyle={s.content}>
       <Text style={[s.section, { color: c.primary }]}>文件与播放</Text>
@@ -24,6 +24,7 @@ export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows:
 }
 const s = StyleSheet.create({
   header: { height: 64, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8 },
+  sheetHeader: { height: 56 },
   back: { width: 48, height: 48, alignItems: "center", justifyContent: "center" }, title: { fontSize: 22, lineHeight: 28 },
   content: { paddingTop: 20, paddingBottom: 32 }, section: { fontSize: 14, lineHeight: 20, fontWeight: "500", paddingHorizontal: 24, marginBottom: 8 },
   row: { minHeight: 72, paddingVertical: 12, paddingHorizontal: 24, gap: 4 }, label: { fontSize: 14, lineHeight: 20 }, value: { fontSize: 16, lineHeight: 24 },

@@ -28,6 +28,11 @@ export function AndroidMetadataSheet({ open, onChange, children, theme }: {
   return open ? <compose.Host style={{ position: "absolute", width: 1, height: 1 }} colorScheme={theme} seedColor={appTheme.accent}>
     <compose.ModalBottomSheet ref={sheet} onDismissRequest={() => onChange(false)} containerColor={c.bg}
       skipPartiallyExpanded={false} showDragHandle>
+      <compose.ModalBottomSheet.DragHandle>
+        <compose.Box contentAlignment="center" modifiers={[composeModifiers!.fillMaxWidth(), composeModifiers!.height(28)]}>
+          <compose.Box modifiers={[composeModifiers!.size(32, 4), composeModifiers!.clip({ type: "roundedCorner", radius: 2 }), composeModifiers!.background(c.muted)]} />
+        </compose.Box>
+      </compose.ModalBottomSheet.DragHandle>
       {/* Let Compose measure the sheet width, then pass those bounds to Yoga.
           Content-sized hosting leaves an intrinsic-width column and an empty right strip. */}
       <compose.Box modifiers={[composeModifiers!.fillMaxWidth(), composeModifiers!.height(Math.max(180, height - 100))]}>
