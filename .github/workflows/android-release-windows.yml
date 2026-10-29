@@ -2,6 +2,10 @@ name: Android official release (Windows)
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Optional immutable app source commit
+        required: false
+        type: string
       release_tag:
         description: Optional existing draft release tag to upload packages to
         required: false
@@ -29,6 +33,7 @@ jobs:
         run: git config --global core.longpaths true
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           submodules: recursive
       - uses: pnpm/action-setup@v4
         with:

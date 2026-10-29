@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {readFileSync,createReadStream} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {findDraftRelease} from './upload-mobile-release.mjs';
+const tag=process.env.SDA_RELEASE_TAG;assert(tag,'Release tag required');
+const version=JSON.parse(readFileSync('apps/desktop/package.json','utf8')).version;
+assert.equal(tag,'v'+version);
+const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const [platform,arch]=process.argv.slice(2);assert(['Windows','macOS'].includes(platform));assert(['x64','arm64'].includes(arch));const record=JSON.parse(readFileSync(`desktop-artifacts/${platform}-${arch}-verification.json`,'utf8'));
+assert.equal(record.platform,platform);assert.equal(record.architecture,arch);assert.equal(record.sourceCommit,commit);assert.equal(record.appVersion,version);assert(record.installerContentsVerified);
+const name=record.artifact.name;assert.equal(name,`SDA-${version}-${platform}-${arch}.${platform==='Windows'?'exe':'dmg'}`);
+const token=process.env.GH_TOKEN;assert(token);const base='https://api.github.com/repos/'+process.env.GITHUB_REPOSITORY;
+const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
+const api=async(route,options={})=>{const r=await fetch(route,{...options,headers:{...headers,...options.headers}});if(!r.ok)throw Error('Release API '+r.status);return r.status===204?null:r.json();};
+const release=await findDraftRelease(api,base,tag);assert.equal(release.target_commitish,commit);
+const old=release.assets.find(a=>a.name===name);if(old)await api(base+'/releases/assets/'+old.id,{method:'DELETE'});
+const response=await fetch(release.upload_url.replace(/\{.*$/,'')+'?name='+encodeURIComponent(name),{method:'POST',headers:{...headers,'Content-Type':'application/octet-stream','Content-Length':String(record.artifact.bytes)},body:createReadStream('apps/desktop/dist/'+name),duplex:'half'});
+if(!response.ok)throw Error('Installer upload '+response.status);const uploaded=await response.json();assert.equal(uploaded.digest,'sha256:'+record.artifact.sha256);console.log('Uploaded verified installer',name);

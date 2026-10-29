@@ -17,9 +17,18 @@ for(const name of ['SDA_ANDROID_RELEASE_STORE_FILE','SDA_ANDROID_RELEASE_STORE_P
 const workflow=parse(readFileSync('.github/workflows/release.yml','utf8'));
 assert(workflow.on.workflow_dispatch);assert.equal(workflow.on.push,undefined,'publishing a mobile tag must not build desktop packages');
 assert.deepEqual(workflow.on.workflow_dispatch.inputs.platform.options,['both','windows','macos']);
-for(const name of ['build-windows','build-macos']){assert(workflow.jobs[name].if.includes('inputs.platform'));const checkout=workflow.jobs[name].steps.find(step=>step.uses?.startsWith('actions/checkout@'));assert.equal(checkout.with.ref,'$'+'{{ inputs.tag }}');}
-const publish=workflow.jobs['publish-release'];assert(publish.if.includes('always()'));assert(publish.if.includes('failure'));
-const upload=publish.steps.find(step=>step.uses?.startsWith('softprops/action-gh-release@'));assert.equal(upload.with.tag_name,'$'+'{{ inputs.tag }}');assert.equal(upload.with.generate_release_notes,false);
+for(const name of ['build-windows','build-macos']){assert(workflow.jobs[name].if.includes('inputs.platform'));const checkout=workflow.jobs[name].steps.find(step=>step.uses?.startsWith('actions/checkout@'));assert.equal(checkout.with.ref,'$'+'{{ inputs.source_ref || inputs.tag }}');}
+assert(workflow.jobs['build-web']);
+for(const [name,platform] of [['build-windows','Windows'],['build-macos','macOS']]){
+ const job=workflow.jobs[name];assert.equal(job.needs,'build-web');
+ assert.deepEqual(job.strategy.matrix.include.map(m=>m.arch),['x64','arm64']);
+ assert(job.steps.some(step=>step.run?.includes('scripts/upload-desktop-release.mjs '+platform)));
+}
+assert(!readFileSync('.github/workflows/release.yml','utf8').includes('-universal'));
+const desktop=json('apps/desktop/package.json').build;
+assert.equal(desktop.win.artifactName,'SDA-${version}-Windows-${arch}.${ext}');
+assert.equal(desktop.mac.artifactName,'SDA-${version}-macOS-${arch}.${ext}');
+assert(readFileSync('scripts/upload-mobile-release.mjs','utf8').includes('for(const name of [filename])'),'Release assets must exclude internal build manifests');
 const android=parse(readFileSync('.github/workflows/android-release-windows.yml','utf8'));
 assert(android.on.workflow_dispatch === null || android.on.workflow_dispatch);assert.equal(android.on.push,undefined);
 assert.equal(android.jobs.android['runs-on'],'windows-2022');

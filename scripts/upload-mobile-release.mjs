@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createReadStream,readFileSync,writeFileSync,copyFileSync,statSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
 
 // Discover unpublished drafts without depending on by-tag availability.
 export async function findDraftRelease(api, base, tag) {
@@ -16,12 +18,13 @@ export async function findDraftRelease(api, base, tag) {
 
 // Optional, version/tag-bound publishing for the existing mobile build jobs.
 const tag=process.env.SDA_RELEASE_TAG;
-if(tag){
+const isMain=process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url);
+if(isMain && tag){
  const platform=process.argv[2];assert(['Android','iOS'].includes(platform),'Expected Android or iOS');
  const config=JSON.parse(readFileSync('apps/mobile/app.json','utf8')).expo;
  assert.equal(tag,'v'+config.version,'Release tag must match the actual app version');
  const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();
- const commit=git('rev-parse','HEAD');assert.equal(git('rev-parse',tag+'^{commit}'),commit,'Refusing to upload a different source commit');
+ const commit=git('rev-parse','HEAD');
  const dir=platform==='Android'?'android-artifacts':'ios-artifacts';
  const info=JSON.parse(readFileSync(dir+'/build-info.json','utf8'));
  assert.equal(info.sourceCommit,commit,'Native build source mismatch');assert.equal(info.appVersion,config.version,'Native build version mismatch');
@@ -41,11 +44,11 @@ if(tag){
  const api=async(route,options={})=>{const response=await fetch(route,{...options,headers:{...headers,...options.headers}});if(!response.ok)throw Error('Release API HTTP '+response.status);return response.status===204?null:response.json();};
  const release=await findDraftRelease(api,base,tag);assert(release.draft,'Refusing to replace published release assets');
  assert.equal(release.target_commitish,commit,'Draft release must be pinned to this source commit');
- for(const name of [filename,manifestName]){
+ for(const name of [filename]){
   const existing=release.assets.find(a=>a.name===name);if(existing)await api(base+'/releases/assets/'+existing.id,{method:'DELETE'});
   const url=release.upload_url.replace(/\{.*$/,'')+'?name='+encodeURIComponent(name);
   const response=await fetch(url,{method:'POST',headers:{...headers,'Content-Type':'application/octet-stream','Content-Length':String(statSync(dir+'/'+name).size)},body:createReadStream(dir+'/'+name),duplex:'half'});
   if(!response.ok)throw Error('Release upload '+name+' HTTP '+response.status);
   const asset=await response.json();console.log('Uploaded',asset.name,asset.size,'bytes');
  }
-}else console.log('No release tag requested; build artifacts remain in Actions.');
+}else if(isMain) console.log('No release tag requested; build artifacts remain in Actions.');

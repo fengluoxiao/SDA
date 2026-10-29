@@ -1,6 +1,6 @@
 {
   "name": "@sda/desktop",
-  "version": "0.9.26",
+  "version": "0.9.3",
   "private": true,
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
@@ -91,7 +91,7 @@
     "win": {
       "icon": "assets/icon.ico",
       "target": "nsis",
-      "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
+      "artifactName": "SDA-${version}-Windows-${arch}.${ext}",
       "signAndEditExecutable": true,
       "extraResources": [
         {
@@ -126,7 +126,7 @@
     "mac": {
       "icon": "assets/icon.png",
       "target": "dmg",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "artifactName": "SDA-${version}-macOS-${arch}.${ext}",
       "extraResources": [
         {
           "from": "head-tracking-helper",
@@ -144,7 +144,11 @@
           "from": "licenses",
           "to": "licenses"
         }
-      ]
+      ],
+      "extendInfo": {
+        "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向。",
+        "NSLocalNetworkUsageDescription": "SDA 使用本地网络连接遥控设备和共享播放。"
+      }
     },
     "beforePack": "./stage-web.cjs"
   },

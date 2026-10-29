@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/..").Path
 Set-Location $root
+$env:SDA_SOURCE_COMMIT = (git rev-parse HEAD).Trim()
 $out = "$root/android-artifacts"
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME

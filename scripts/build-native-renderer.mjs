@@ -13,6 +13,8 @@ const exeSuffix = isWindows ? ".exe" : "";
 const exeName = `sda-native-renderer${exeSuffix}`;
 const targetName = `SdaNativeRenderer${exeSuffix}`;
 const targetTriple=process.env.SDA_NATIVE_TARGET;
+process.env.MACINDECODE_AC4_SPEC_DIR ??= join(root,'tmp','MacinDecode-AC4-Core','spec');
+process.env.SDA_SOURCE_COMMIT ??= execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 
 await new Promise((resolveRun, reject) => {
   const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", "--bin", "sda-native-renderer", "--example", "room_hrtf", ...(targetTriple?["--target",targetTriple]:[])], {

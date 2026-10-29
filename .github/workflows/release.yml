@@ -1,170 +1,256 @@
-name: release
-
+name: Desktop release installers
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build desktop assets for
+        description: Existing app source and draft release tag
         required: true
+        type: string
+      source_ref:
+        description: Optional immutable app source commit
+        required: false
         type: string
       platform:
         description: Desktop platforms to build
         required: true
         type: choice
         default: both
-        options:
-          - both
-          - windows
-          - macos
-
+        options: [both, windows, macos]
 permissions:
   contents: write
-
+concurrency:
+  group: desktop-release-${{ inputs.tag }}-${{ inputs.platform }}
+  cancel-in-progress: false
 jobs:
-  build-windows:
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'windows' }}
-    name: Windows NSIS installers
-    runs-on: windows-latest
+  build-web:
+    name: Shared desktop web and decoder assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.source_ref || inputs.tag }}
           submodules: recursive
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-
+          version: '9.15.9'
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24'
           cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: '1.98.0'
           targets: wasm32-unknown-unknown
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/core
-
-      - name: Install wasm-bindgen-cli (must match Cargo.lock)
-        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare decoder build inputs and WASM modules
-        uses: ./.github/actions/prepare-decoders
-
-      - name: Prepare ASIO build dependencies
-        uses: ./.github/actions/prepare-asio
-
-      - name: Fetch Windows native dependencies
-        run: |
-          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
-
-      - name: Build Windows helper and native renderer
-        run: |
-          node scripts/build-head-tracking-helper.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/build-native-renderer.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/stage-head-tracking-driver.mjs
-
-      - name: Build web
-        run: pnpm --filter @sda/web build
-
-      - name: Package Electron (NSIS)
-        run: pnpm --filter @sda/desktop exec electron-builder --win nsis --x64 --arm64 --publish never '-c.win.artifactName=SDA Setup ${version}-universal.${ext}'
+          key: desktop-wasm-v1
+      - name: Install pinned wasm-bindgen tool
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
-      - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasm-bindgen"
+          gh release download 0.2.127 --repo wasm-bindgen/wasm-bindgen --pattern 'wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz' --dir "$RUNNER_TEMP/wasm-bindgen"
+          echo "61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a  $RUNNER_TEMP/wasm-bindgen/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/wasm-bindgen/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP/wasm-bindgen"
+          echo "$RUNNER_TEMP/wasm-bindgen/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - uses: ./.github/actions/prepare-decoders
+      - name: Build shared web resources
+        run: pnpm --filter @sda/web build
+      - uses: actions/upload-artifact@v4
         with:
-          name: windows-installers
-          path: apps/desktop/dist/*.exe
+          name: desktop-web
+          path: |
+            apps/web/dist/
+            apps/desktop/remote-web/
+            apps/desktop/performance-framing.cjs
+            packages/core/pkg-node/
           if-no-files-found: error
-
-  build-macos:
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'macos' }}
-    name: macOS DMG (${{ matrix.arch }})
-    runs-on: macos-latest
+  build-windows:
+    if: ${{ inputs.platform == 'both' || inputs.platform == 'windows' }}
+    needs: build-web
+    name: Windows ${{ matrix.arch }} installer
+    runs-on: windows-2022
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, arm64]
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            msvc: amd64
+            folder: win-unpacked
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            msvc: amd64_arm64
+            folder: win-arm64-unpacked
+    env:
+      SDA_NATIVE_TARGET: ${{ matrix.target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/desktop-native
+      CARGO_INCREMENTAL: '0'
+      RUST_MIN_STACK: '16777216'
+      RUSTFLAGS: '-C target-feature=+crt-static'
+      CARGO_BUILD_JOBS: '3'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || inputs.tag }}
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+          targets: ${{ matrix.target }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/native-renderer -> ../../desktop-native
+            apps/head-tracking-helper -> ../../desktop-native
+          key: desktop-windows-${{ matrix.arch }}-v1
+          cache-on-failure: true
+      - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-web
+          path: .
+      - uses: ./.github/actions/prepare-asio
+      - name: Build target-native desktop components
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:SDA_SOURCE_COMMIT = (git rev-parse HEAD).Trim()
+          node scripts/prepare-ac4.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-head-tracking-helper.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-native-renderer.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ matrix.arch }}' -eq 'x64') { node scripts/stage-head-tracking-driver.mjs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+      - name: Package architecture-specific installer
+        shell: pwsh
+        run: |
+          node scripts/prepare-desktop-release.mjs Windows ${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --filter @sda/desktop exec electron-builder --config release-config.json --win nsis --${{ matrix.arch }} --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify actual installer payload
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          python scripts/verify-desktop-release.py --platform Windows --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }} --installer "apps/desktop/dist/SDA-$version-Windows-${{ matrix.arch }}.exe" --verify-container
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload verified installer to draft release
+        env:
+          SDA_RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/upload-desktop-release.mjs Windows ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-Windows-${{ matrix.arch }}-${{ github.run_number }}
+          path: |
+            apps/desktop/dist/*.exe
+            desktop-artifacts/
+          if-no-files-found: warn
+  build-macos:
+    if: ${{ inputs.platform == 'both' || inputs.platform == 'macos' }}
+    needs: build-web
+    name: macOS ${{ matrix.arch }} installer
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-26-intel
+            target: x86_64-apple-darwin
+            folder: mac
+          - arch: arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+            folder: mac-arm64
+    env:
+      SDA_NATIVE_TARGET: ${{ matrix.target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/desktop-native
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.source_ref || inputs.tag }}
           submodules: recursive
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
-
+          version: '9.15.9'
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24'
           cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
-          targets: wasm32-unknown-unknown
-
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: packages/core
-
-      - name: Install wasm-bindgen-cli (must match Cargo.lock)
-        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare decoder build inputs and WASM modules
-        uses: ./.github/actions/prepare-decoders
-
-      - name: Build web + package Electron (unsigned DMG)
+          workspaces: |
+            apps/native-renderer -> ../../desktop-native
+            apps/head-tracking-helper -> ../../desktop-native
+          key: desktop-macos-${{ matrix.arch }}-v1
+          cache-on-failure: true
+      - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-web
+          path: .
+      - name: Build native components and package DMG
         run: |
-          if [ '${{ matrix.arch }}' = 'arm64' ]; then export SDA_NATIVE_TARGET=aarch64-apple-darwin; else export SDA_NATIVE_TARGET=x86_64-apple-darwin; fi
-          rustup target add "$SDA_NATIVE_TARGET"
-          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
+          export SDA_SOURCE_COMMIT="$(git rev-parse HEAD)"
+          node scripts/prepare-ac4.mjs
           cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
           node scripts/build-head-tracking-helper.mjs
           node scripts/build-native-renderer.mjs
-          pnpm --filter @sda/web build
-          pnpm --filter @sda/desktop exec electron-builder --mac dmg --${{ matrix.arch }} --publish never
-
-      - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
+          node scripts/prepare-desktop-release.mjs macOS ${{ matrix.arch }}
+          pnpm --filter @sda/desktop exec electron-builder --config release-config.json --mac dmg --${{ matrix.arch }} --publish never
+      - name: Verify mounted DMG payload
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          python3 scripts/verify-desktop-release.py --platform macOS --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }}/SDA.app --installer "apps/desktop/dist/SDA-$version-macOS-${{ matrix.arch }}.dmg" --verify-container
+      - name: Upload verified installer to draft release
+        env:
+          SDA_RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/upload-desktop-release.mjs macOS ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: macos-dmg-${{ matrix.arch }}
-          path: apps/desktop/dist/*.dmg
-          if-no-files-found: error
-
-  publish-release:
-    if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
-    name: Publish release assets
-    needs: [build-windows, build-macos]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Upload requested desktop assets to the existing GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            release-assets/*.exe
-            release-assets/*.dmg
-          fail_on_unmatched_files: false
-          generate_release_notes: false
+          name: SDA-macOS-${{ matrix.arch }}-${{ github.run_number }}
+          path: |
+            apps/desktop/dist/*.dmg
+            desktop-artifacts/
+          if-no-files-found: warn
