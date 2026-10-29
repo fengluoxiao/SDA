@@ -9,7 +9,7 @@ assert.match(app.version,/^\d+\.\d+\.\d+$/);
 for(const file of ['package.json','apps/desktop/package.json','apps/mobile/package.json'])assert.equal(json(file).version,app.version,file+' version must match the release');
 assert(Number.isInteger(Number(app.ios.buildNumber)) && Number(app.ios.buildNumber)>1);
 const androidVersion=app.extra?.androidReleaseVersion??app.version;
-assert.match(androidVersion,/^\d+\.\d+\.\d+[A-Za-z]?$/);
+assert.match(androidVersion,/^\d+\.\d+\.\d+(?:[A-Za-z]\d*)?$/);
 if(app.extra?.androidReleaseVersion)assert(androidVersion.startsWith(app.version),'clear the Android-only suffix override when advancing the base app version');
 assert(Number.isInteger(app.android.versionCode)&&app.android.versionCode>1);
 const gradle=readFileSync('apps/mobile/android/app/build.gradle','utf8');

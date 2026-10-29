@@ -54,7 +54,7 @@
         "monochromeImage": "./assets/monochrome-icon.png",
         "backgroundColor": "#202223"
       },
-      "versionCode": 930
+      "versionCode": 931
     },
     "plugins": [
       "./plugins/with-ios-deployment"
@@ -67,7 +67,7 @@
       "backgroundColor": "#FFFFFF"
     },
     "extra": {
-      "androidReleaseVersion": "0.9.3A"
+      "androidReleaseVersion": "0.9.3A2"
     }
   }
 }

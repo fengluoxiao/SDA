@@ -1,0 +1,13 @@
+# Exercise the production file decoder without linking the renderer or an audio device.
+[package]
+name = "sda-alac-file-regression"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../../crates/sda-native/src/mp3.rs"
+
+[dependencies]
+rubato = "=0.16.2"
+symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "alac", "isomp4"] }

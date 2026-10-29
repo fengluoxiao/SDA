@@ -38,6 +38,7 @@ pub struct Mp3FileDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
+    codec_name: &'static str,
     input_rate: u32,
     channels: usize,
     resampler: Option<SincFixedIn<f32>>,
@@ -64,30 +65,40 @@ impl Mp3FileDecoder {
     }
 
     fn open_format(path: impl AsRef<Path>, alac: bool) -> Result<Self, String> {
-        let file = File::open(path.as_ref()).map_err(|e| format!("open MP3: {e}"))?;
+        let codec_name = if alac { "ALAC" } else { "MP3" };
+        let file = File::open(path.as_ref()).map_err(|e| format!("open {codec_name}: {e}"))?;
         let stream = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new();
         hint.with_extension(if alac { "m4a" } else { "mp3" });
         let probed = symphonia::default::get_probe()
             .format(&hint, stream, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
-            .map_err(|e| format!("probe MP3: {e}"))?;
+            .map_err(|e| format!("probe {codec_name}: {e}"))?;
         let mut format = probed.format;
         let track = format.tracks().iter()
             .find(|track| if alac { track.codec_params.codec == CODEC_TYPE_ALAC } else { track.codec_params.codec != CODEC_TYPE_NULL })
-            .ok_or_else(|| "MP3 contains no supported audio track".to_string())?;
+            .ok_or_else(|| format!("{codec_name} contains no supported audio track"))?;
         let track_id = track.id;
-        let input_rate = track.codec_params.sample_rate.ok_or_else(|| "MP3 sample rate is missing".to_string())?;
-        if input_rate == 0 { return Err("MP3 sample rate must be non-zero".into()); }
-        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .map_err(|e| format!("create {codec_name} decoder: {e}"))?;
+        // ALAC's validated magic cookie defines the decoded PCM format. MP4
+        // sample entries can carry a placeholder rate (e.g. 1 for 96 kHz ALAC)
+        // and may omit channels. The initialized ALAC buffer already has the
+        // cookie's real signal specification, before the first packet is read.
+        let (input_rate, channels) = if alac {
+            let spec = decoder.last_decoded().spec().to_owned();
+            (spec.rate, spec.channels.count())
+        } else {
+            (track.codec_params.sample_rate.ok_or_else(|| format!("{codec_name} sample rate is missing"))?,
+             track.codec_params.channels.map(|c| c.count()).unwrap_or(2))
+        };
+        if input_rate == 0 { return Err(format!("{codec_name} sample rate must be non-zero")); }
         if alac && channels != 2 { return Err(format!("ALAC upmix requires stereo input, got {channels} channels")); }
-        if !(1..=2).contains(&channels) { return Err(format!("MP3 bed must be mono or stereo, got {channels} channels")); }
+        if !(1..=2).contains(&channels) { return Err(format!("{codec_name} bed must be mono or stereo, got {channels} channels")); }
         let input_frames = track.codec_params.n_frames;
         let expected_output_frames = input_frames.map(|frames| {
             (u128::from(frames) * u128::from(OUTPUT_RATE) / u128::from(input_rate)) as u64
         });
-        let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
-            .map_err(|e| format!("create MP3 decoder: {e}"))?;
         let resampler = if input_rate == OUTPUT_RATE { None } else {
             Some(SincFixedIn::<f32>::new(
                 f64::from(OUTPUT_RATE) / f64::from(input_rate),
@@ -101,11 +112,14 @@ impl Mp3FileDecoder {
                 },
                 RESAMPLE_CHUNK,
                 2,
-            ).map_err(|e| format!("create MP3 resampler: {e}"))?)
+            ).map_err(|e| format!("create {codec_name} resampler: {e}"))?)
         };
-        let output_delay_remaining = resampler.as_ref().map_or(0, Resampler::output_delay);
+        // SincFixedIn uses look-ahead: its first output is already aligned
+        // to the beginning of this file. Its reported processing latency is
+        // not leading silence to remove from the decoded programme.
+        let output_delay_remaining = 0;
         Ok(Self {
-            format, decoder, track_id, input_rate, channels, resampler,
+            format, decoder, track_id, codec_name, input_rate, channels, resampler,
             input: [Vec::new(), Vec::new()], decoded_pending: VecDeque::new(), output: VecDeque::new(),
             finished: false, resampler_flushed: false, total_output_frames: 0, total_input_frames: 0, output_delay_remaining,
             expected_output_frames,
@@ -137,14 +151,18 @@ impl Mp3FileDecoder {
                     let left: Vec<f32> = self.input[0].drain(..needed).collect();
                     let right: Vec<f32> = self.input[1].drain(..needed).collect();
                     let converted = resampler.process(&[left, right], None)
-                        .map_err(|e| format!("resample MP3: {e}"))?;
+                        .map_err(|e| format!("resample {}: {e}", self.codec_name))?;
                     append_resampled(&mut self.output, &converted[0], &converted[1], &mut self.output_delay_remaining);
                     continue;
                 }
                 if self.finished && !self.resampler_flushed {
                     let tail = [self.input[0].as_slice(), self.input[1].as_slice()];
-                    let converted = resampler.process_partial(Some(&tail), None)
-                        .map_err(|e| format!("flush MP3 resampler: {e}"))?;
+                    // An empty slice marks a channel inactive in Rubato. At an
+                    // exact block boundary, None instead flushes both channels
+                    // with zero padding and preserves the remaining filter tail.
+                    let input = if tail[0].is_empty() { None } else { Some(&tail[..]) };
+                    let converted = resampler.process_partial(input, None)
+                        .map_err(|e| format!("flush {} resampler: {e}", self.codec_name))?;
                     self.input[0].clear();
                     self.input[1].clear();
                     append_resampled(&mut self.output, &converted[0], &converted[1], &mut self.output_delay_remaining);
@@ -193,7 +211,8 @@ impl Mp3FileDecoder {
                 Err(error) => return Err(format!("decode MP3 packet: {error}")),
             };
             if decoded.spec().rate != self.input_rate || decoded.spec().channels.count() != self.channels {
-                return Err("MP3 stream changed sample rate or channel count mid-file".into());
+                return Err(format!("{} stream changed sample rate or channel count mid-file (expected {} Hz/{} channels, got {} Hz/{} channels)",
+                    self.codec_name, self.input_rate, self.channels, decoded.spec().rate, decoded.spec().channels.count()));
             }
             let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
             samples.copy_interleaved_ref(decoded);
@@ -215,6 +234,101 @@ impl Mp3FileDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AlacFixture(std::path::PathBuf);
+
+    impl AlacFixture {
+        fn new(name: &str, data: &[u8]) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("sda-alac-{}-{id}-{name}", std::process::id()));
+            std::fs::write(&path, data).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for AlacFixture {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+
+    fn check_file_fixture(name: &str, bytes: &[u8], rate: u32, input_frames: u64) {
+        let file = AlacFixture::new(name, bytes);
+        let mut decoder = if name.ends_with(".mp3") {
+            Mp3FileDecoder::open(&file.0).unwrap()
+        } else {
+            Mp3FileDecoder::open_alac(&file.0).unwrap()
+        };
+        assert_eq!(decoder.input_rate(), rate, "must use the actual encoded sample rate");
+        let mut output = Vec::new();
+        let mut reads = 0;
+        while !decoder.is_finished() {
+            let limit = [317, 4096, 1024, 8192][reads % 4];
+            let block = decoder.read_interleaved(limit).unwrap();
+            assert!(block.len() <= limit * 2 && block.len() % 2 == 0);
+            assert!(block.iter().all(|sample| sample.is_finite()));
+            assert!(!block.is_empty() || decoder.is_finished(), "decoder must advance");
+            output.extend(block);
+            reads += 1;
+        }
+        let frames = input_frames * u64::from(OUTPUT_RATE) / u64::from(rate);
+        assert_eq!(output.len() as u64, frames * 2, "resampling must preserve duration including the partial tail");
+        assert_eq!(decoder.output_frames(), frames);
+        assert_eq!(decoder.eof_output_frames, Some(frames));
+        if frames <= 200 { return; }
+        for channel in 0..2 {
+            let amplitude = if channel == 0 { 0.25 } else { 0.125 };
+            let frequency = if channel == 0 { 440.0 } else { 880.0 };
+            let mut squared_error = 0.0;
+            for frame in 100..frames as usize - 100 {
+                let expected = amplitude * (2.0 * std::f64::consts::PI * frequency * frame as f64 / f64::from(OUTPUT_RATE)).sin();
+                squared_error += (f64::from(output[frame * 2 + channel]) - expected).powi(2);
+            }
+            let rms_error = (squared_error / (frames - 200) as f64).sqrt();
+            assert!(rms_error < 0.01, "{name}, channel {channel}: wrong rate, channel order or gain ({rms_error})");
+        }
+    }
+
+    #[test]
+    fn alac_cookie_format_controls_rate_and_resampling_with_placeholder_sample_entries() {
+        for (name, bytes, rate) in [
+            ("44100.m4a", include_bytes!("../tests/fixtures/alac/tone-44100-2ch.m4a").as_slice(), 44_100),
+            ("48000.m4a", include_bytes!("../tests/fixtures/alac/tone-48000-2ch.m4a").as_slice(), 48_000),
+            ("88200-entry1.m4a", include_bytes!("../tests/fixtures/alac/tone-88200-2ch-entry1.m4a").as_slice(), 88_200),
+            ("96000-entry1.m4a", include_bytes!("../tests/fixtures/alac/tone-96000-2ch-entry1.m4a").as_slice(), 96_000),
+            ("96000-entry44100.m4a", include_bytes!("../tests/fixtures/alac/tone-96000-2ch-entry44100.m4a").as_slice(), 96_000),
+            ("192000-entry1.m4a", include_bytes!("../tests/fixtures/alac/tone-192000-2ch-entry1.m4a").as_slice(), 192_000),
+        ] {
+            check_file_fixture(name, bytes, rate, u64::from(rate / 8 + 317));
+        }
+    }
+
+    #[test]
+    fn alac_resampler_flushes_exact_block_boundaries_and_very_short_files() {
+        check_file_fixture("exact.m4a", include_bytes!("../tests/fixtures/alac/tone-96000-2ch-entry1-exact.m4a"), 96_000, 12_288);
+        check_file_fixture("short.m4a", include_bytes!("../tests/fixtures/alac/tone-96000-2ch-entry1-short.m4a"), 96_000, 32);
+    }
+
+    #[test]
+    fn mp3_file_remains_gapless_with_the_shared_resampler() {
+        check_file_fixture("gapless.mp3", include_bytes!("../tests/fixtures/alac/tone-44100-2ch.mp3"), 44_100, 5_829);
+    }
+
+    #[test]
+    fn alac_stereo_validation_uses_real_cookie_channels() {
+        let file = AlacFixture::new("mono.m4a", include_bytes!("../tests/fixtures/alac/tone-44100-1ch.m4a"));
+        let error = Mp3FileDecoder::open_alac(&file.0).err().expect("mono must not be accepted as stereo");
+        assert_eq!(error, "ALAC upmix requires stereo input, got 1 channels");
+    }
+
+    #[test]
+    fn alac_still_rejects_unexpected_decoded_format_changes_with_correct_codec_name() {
+        let file = AlacFixture::new("format-check.m4a", include_bytes!("../tests/fixtures/alac/tone-96000-2ch-entry1.m4a"));
+        let mut decoder = Mp3FileDecoder::open_alac(&file.0).unwrap();
+        decoder.input_rate += 1;
+        let error = decoder.read_interleaved(4096).unwrap_err();
+        assert!(error.starts_with("ALAC stream changed sample rate or channel count mid-file"));
+        assert!(error.contains("expected 96001 Hz/2 channels, got 96000 Hz/2 channels"));
+    }
 
     #[test]
     #[ignore = "set SDA_ALAC_TEST_FILE to a local stereo ALAC fixture"]
