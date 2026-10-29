@@ -3,6 +3,17 @@ import {createHash} from 'node:crypto';
 import {createReadStream,readFileSync,writeFileSync,copyFileSync,statSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 
+// Discover unpublished drafts without depending on by-tag availability.
+export async function findDraftRelease(api, base, tag) {
+ for(let page=1;page<=10;page++){
+  const releases=await api(base+'/releases?per_page=100&page='+page);
+  const draft=releases.find(release=>release.tag_name===tag && release.draft);
+  if(draft)return draft;
+  if(releases.length<100)break;
+ }
+ throw Error('Requested draft release not found: '+tag);
+}
+
 // Optional, version/tag-bound publishing for the existing mobile build jobs.
 const tag=process.env.SDA_RELEASE_TAG;
 if(tag){
@@ -28,7 +39,7 @@ if(tag){
  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
  const base='https://api.github.com/repos/'+repository;
  const api=async(route,options={})=>{const response=await fetch(route,{...options,headers:{...headers,...options.headers}});if(!response.ok)throw Error('Release API HTTP '+response.status);return response.status===204?null:response.json();};
- const release=await api(base+'/releases/tags/'+tag);assert(release.draft,'Refusing to replace published release assets');
+ const release=await findDraftRelease(api,base,tag);assert(release.draft,'Refusing to replace published release assets');
  assert.equal(release.target_commitish,commit,'Draft release must be pinned to this source commit');
  for(const name of [filename,manifestName]){
   const existing=release.assets.find(a=>a.name===name);if(existing)await api(base+'/releases/assets/'+existing.id,{method:'DELETE'});

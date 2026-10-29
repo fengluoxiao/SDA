@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+const saved=process.env.SDA_RELEASE_TAG;delete process.env.SDA_RELEASE_TAG;
+const {findDraftRelease}=await import('./upload-mobile-release.mjs');
+if(saved!==undefined)process.env.SDA_RELEASE_TAG=saved;
+const draft={id:42,tag_name:'v0.9.26',draft:true};
+let calls=[];
+assert.equal(await findDraftRelease(async route=>{calls.push(route);return [{id:1,tag_name:'v0.9.25',draft:false},draft]},'https://api.github.com/repos/example/project','v0.9.26'),draft);
+assert.deepEqual(calls,['https://api.github.com/repos/example/project/releases?per_page=100&page=1']);
+await assert.rejects(findDraftRelease(async()=>[{...draft,draft:false}],'base','v0.9.26'),/draft release not found/);
+calls=[];
+assert.equal(await findDraftRelease(async route=>{calls.push(route);return calls.length===1?Array.from({length:100},(_,id)=>({id,tag_name:'old-'+id,draft:false})):[draft]},'base','v0.9.26'),draft);
+assert.equal(calls.length,2);
+assert(calls[1].endsWith('page=2'));
+console.log('Draft release lookup: unpublished tag discovery, published-release refusal and pagination passed.');
