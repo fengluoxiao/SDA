@@ -6,6 +6,8 @@ import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 
+const metadataStart = { x: 0, y: 0 };
+
 export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows: [string, string][]; dark: boolean; onClose(): void; sheet?: boolean }) {
   const appTheme = useAppTheme();
   const c = androidMaterialTheme(appTheme.id, dark);
@@ -13,7 +15,7 @@ export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows:
     {!sheet && <StatusBar translucent backgroundColor="transparent" barStyle={dark ? "light-content" : "dark-content"} />}
     <View style={[s.header, sheet && s.sheetHeader]}>{!hasAndroidChrome && <View style={s.back}><AndroidGlassSettingsButton back onPress={onClose} /></View>}
       <Text accessibilityRole="header" style={[s.title, sheet && s.sheetTitle, { color: c.ink, flex: 1 }]}>歌曲元数据</Text>{hasAndroidChrome && <AndroidGlassAction title="完成" dark={dark} accent={c.primary} onPress={onClose} />}</View>
-    <ScrollView contentContainerStyle={s.content}>
+    <ScrollView style={{ flex: 1 }} nestedScrollEnabled contentOffset={metadataStart} contentContainerStyle={s.content}>
       <Text style={[s.section, sheet && s.sheetInset, { color: c.primary }]}>文件与播放</Text>
       {rows.map(([name, value]) => <View key={name} style={[s.row, sheet && s.sheetInset]}>
         <Text style={[s.label, { color: c.muted }]}>{name}</Text>
@@ -23,7 +25,7 @@ export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows:
   </SafeAreaView>;
 }
 const s = StyleSheet.create({
-  header: { height: 64, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8 },
+  header: { height: 64, flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8 },
   sheetHeader: { height: 56, paddingHorizontal: 20 },
   sheetTitle: { fontSize: 20, fontWeight: "600" },
   sheetInset: { paddingHorizontal: 20 },

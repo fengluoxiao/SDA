@@ -22,21 +22,22 @@ const isMain=process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.
 if(isMain && tag){
  const platform=process.argv[2];assert(['Android','iOS'].includes(platform),'Expected Android or iOS');
  const config=JSON.parse(readFileSync('apps/mobile/app.json','utf8')).expo;
- assert.equal(tag,'v'+config.version,'Release tag must match the actual app version');
+ const releaseVersion=platform==='Android'?(config.extra?.androidReleaseVersion??config.version):config.version;
+ assert.equal(tag,'v'+releaseVersion,'Release tag must match the actual app version');
  const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();
  const commit=git('rev-parse','HEAD');
  const dir=platform==='Android'?'android-artifacts':'ios-artifacts';
  const info=JSON.parse(readFileSync(dir+'/build-info.json','utf8'));
- assert.equal(info.sourceCommit,commit,'Native build source mismatch');assert.equal(info.appVersion,config.version,'Native build version mismatch');
- const filename=`SDA-${config.version}-${platform==='Android'?'Android-universal.apk':'iOS-arm64-unsigned.ipa'}`;
+ assert.equal(info.sourceCommit,commit,'Native build source mismatch');assert.equal(info.appVersion,releaseVersion,'Native build version mismatch');
+ const filename=`SDA-${releaseVersion}-${platform==='Android'?'Android-universal.apk':'iOS-arm64-unsigned.ipa'}`;
  if(platform==='iOS')copyFileSync(dir+'/SDA-unsigned-ios16.4-arm64.ipa',dir+'/'+filename);
  const hash=async file=>{const h=createHash('sha256');for await(const b of createReadStream(file))h.update(b);return h.digest('hex');};
  const binary=dir+'/'+filename;const checksum=await hash(binary);
- const manifest={schema:'sda.mobile-release',version:1,appVersion:config.version,buildNumber:Number(config.android.versionCode),sourceCommit:commit,platform,
+ const manifest={schema:'sda.mobile-release',version:1,appVersion:releaseVersion,buildNumber:Number(platform==='Android'?config.android.versionCode:config.ios.buildNumber),sourceCommit:commit,platform,
   workflowRunId:process.env.GITHUB_RUN_ID,workflowRunAttempt:process.env.GITHUB_RUN_ATTEMPT,
   artifact:{name:filename,bytes:statSync(binary).size,sha256:checksum},signing:platform==='iOS'?'unsigned-requires-user-signing':'official-release-key',
   physicalDeviceVerifiedForThisPackage:false,buildInfo:info};
- const manifestName=`SDA-${config.version}-${platform}-manifest.json`;writeFileSync(dir+'/'+manifestName,JSON.stringify(manifest,null,2)+'\n');
+ const manifestName=`SDA-${releaseVersion}-${platform}-manifest.json`;writeFileSync(dir+'/'+manifestName,JSON.stringify(manifest,null,2)+'\n');
  const token=process.env.GH_TOKEN;assert(token,'GH_TOKEN required for requested release upload');
  const repository=process.env.GITHUB_REPOSITORY;assert(repository,'GITHUB_REPOSITORY required');
  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};

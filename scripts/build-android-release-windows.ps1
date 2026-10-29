@@ -42,7 +42,8 @@ try {
   & ./gradlew.bat :app:assembleRelease --no-daemon --stacktrace --max-workers=2 --console=plain '-PsdaOfficialRelease=true' '-PreactNativeArchitectures=arm64-v8a,x86_64' '-PsdaVendorAudio=false' '-PsdaVendorAudioLegacyOnly=false' "-Porg.gradle.java.installations.paths=$env:JAVA_HOME" '-Pkotlin.incremental=false' '-Pkotlin.compiler.execution.strategy=in-process' '-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m' *> "$out/gradle.log"
   if ($LASTEXITCODE -ne 0) { Get-Content "$out/gradle.log" -Tail 70; throw 'Gradle release build failed' }
  } finally { Pop-Location }
- $version = (Get-Content apps/mobile/app.json -Raw | ConvertFrom-Json).expo.version
+ $releaseConfig = (Get-Content apps/mobile/app.json -Raw | ConvertFrom-Json).expo
+ $version = if ($releaseConfig.extra.androidReleaseVersion) { $releaseConfig.extra.androidReleaseVersion } else { $releaseConfig.version }
  $apk = "$out/SDA-$version-Android-universal.apk"
  Copy-Item -LiteralPath apps/mobile/android/app/build/outputs/apk/release/app-release.apk -Destination $apk
  & "$env:ANDROID_HOME/build-tools/36.0.0/apksigner.bat" verify --verbose --print-certs $apk > "$out/signature.txt"

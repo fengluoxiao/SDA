@@ -27,6 +27,7 @@ def git(*args): return subprocess.check_output(['git', *args], cwd=ROOT, encodin
 def main():
     OUT.mkdir(exist_ok=True)
     config = json.loads((ROOT / 'apps/mobile/app.json').read_text(encoding='utf-8'))['expo']
+    version = config.get('extra', {}).get('androidReleaseVersion', config['version'])
     sha = git('rev-parse', 'HEAD')
     assert sha == os.environ.get('SDA_SOURCE_COMMIT', os.environ.get('GITHUB_SHA', sha))
     renderer = (ROOT / 'apps/native-renderer/src/lib.rs').read_text(encoding='utf-8')
@@ -41,7 +42,7 @@ def main():
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
         prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'packages/core/', 'packages/player/', 'scripts/')
         extensions = ('.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml')
-        info = {'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': config['version'], 'androidVersionCode': config['android']['versionCode'],
+        info = {'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
                 'stereoProgrammeMakeupDb': 2.5, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
                 'officialAndroidRelease': True, 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,
@@ -57,12 +58,12 @@ def main():
         (OUT / 'build-info.json').write_text(text, encoding='utf-8')
         print('Recorded exact commit, native ABIs, GPU shader, UI and balance source hashes')
     elif sys.argv[1] == 'verify':
-        apk = OUT / f"SDA-{config['version']}-Android-universal.apk"
+        apk = OUT / f"SDA-{version}-Android-universal.apk"
         signature = (OUT / 'signature.txt').read_text(encoding='utf-8-sig')
         certificates = re.findall(r'certificate SHA-256 digest: *([0-9a-f]+)', signature, re.I)
         assert certificates and set(value.lower() for value in certificates) == {CERT}, 'Official signing certificate mismatch'
         badging = (OUT / 'badging.txt').read_text(encoding='utf-8-sig')
-        assert "name='app.sda.mobile'" in badging and f"versionName='{config['version']}'" in badging
+        assert "name='app.sda.mobile'" in badging and f"versionName='{version}'" in badging
         assert f"versionCode='{config['android']['versionCode']}'" in badging
         with zipfile.ZipFile(apk) as archive:
             assert archive.testzip() is None
@@ -82,7 +83,7 @@ def main():
             for marker in ['mock://', 'ci-stereo-tones.m4a', 'ci-360ra.mhas']:
                 assert marker.encode() not in js and marker.encode('utf-16-le') not in js, marker
             assert not any(name.startswith('assets/sda-npu/') or name.endswith('/libvulkan.so') for name in archive.namelist())
-        result = {'version': config['version'], 'versionCode': config['android']['versionCode'], 'sourceCommit': sha,
+        result = {'version': version, 'versionCode': config['android']['versionCode'], 'sourceCommit': sha,
                   'file': apk.name, 'sha256': digest(apk.read_bytes()), 'bytes': apk.stat().st_size, 'ABIs': sorted(ABIS),
                   'officialSignatureVerified': True, 'signingCertificateSha256': CERT, 'zipAlignment16KiBVerified': True,
                   'nativeAllocatedSectionsVerified': True, 'allNativeElfAlignment16KiBVerified': True, 'buildHost': info['buildHost'], 'physicalDeviceVerified': False}
