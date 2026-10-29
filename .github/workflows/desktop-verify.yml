@@ -1,0 +1,98 @@
+name: Verify and publish existing desktop installers
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag
+        required: true
+        type: string
+      source_ref:
+        description: Exact application source commit used by the installer build
+        required: true
+        type: string
+      source_run:
+        description: Desktop build run containing the original installers
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+jobs:
+  verify:
+    name: Verify ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            arch: x64
+            runner: windows-2022
+            ext: exe
+          - platform: Windows
+            arch: arm64
+            runner: windows-2022
+            ext: exe
+          - platform: macOS
+            arch: x64
+            runner: macos-26-intel
+            ext: dmg
+          - platform: macOS
+            arch: arm64
+            runner: macos-26
+            ext: dmg
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Stage exact packaging verifier revision
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('node:fs/promises'),path=require('node:path');
+            const tools=path.join(process.env.RUNNER_TEMP,'sda-release-tools');
+            await fs.mkdir(tools,{recursive:true});
+            for(const name of ['verify-desktop-release.py','upload-desktop-release.mjs','upload-mobile-release.mjs']){
+              const result=await github.rest.repos.getContent({...context.repo,path:'scripts/'+name,ref:process.env.GITHUB_WORKFLOW_SHA});
+              if(result.data.type!=='file')throw Error('Expected packaging source file');
+              await fs.writeFile(path.join(tools,name),Buffer.from(result.data.content,'base64'));
+            }
+            core.exportVariable('SDA_RELEASE_TOOLS',tools);
+      - name: Download original architecture installer
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          pattern: SDA-${{ matrix.platform }}-${{ matrix.arch }}-*
+          path: recovered
+          merge-multiple: true
+      - name: Verify original installer contents
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          name="SDA-$version-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.ext }}"
+          installer="$(find recovered -type f -name "$name" -print -quit)"
+          test -n "$installer"
+          mkdir -p apps/desktop/dist
+          cp "$installer" "apps/desktop/dist/$name"
+          python "$SDA_RELEASE_TOOLS/verify-desktop-release.py" --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --installer "apps/desktop/dist/$name" --from-installer
+      - name: Upload verified installer
+        env:
+          SDA_RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: node "$SDA_RELEASE_TOOLS/upload-desktop-release.mjs" ${{ matrix.platform }} ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-Verification-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_number }}
+          path: desktop-artifacts/
+          if-no-files-found: warn

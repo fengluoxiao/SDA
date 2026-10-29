@@ -30,6 +30,8 @@ def asar_package(path):
         sizes=struct.unpack('<4I',f.read(16)); assert sizes[0]==4 and sizes[3]<64*1024*1024
         header=json.loads(f.read(sizes[3])); item=header['files']['package.json'];assert not item.get('unpacked')
         f.seek(8+sizes[1]+int(item['offset']));return json.loads(f.read(item['size']))
+def validate_package_metadata(pkg, version):
+    assert pkg['version']==version and Path(pkg.get('main','')).as_posix()=='main.cjs'
 def verify_payload(app, platform, arch, commit, version):
     resources=app/'resources' if platform=='Windows' else app/'Contents/Resources'
     suffix='.exe' if platform=='Windows' else ''
@@ -46,13 +48,13 @@ def verify_payload(app, platform, arch, commit, version):
     assert info['sha256']==sha(roles['renderer']) and info['roomReferenceSha256']==sha(roles['room'])
     binary=roles['renderer'].read_bytes()
     for marker in [commit.encode(),b'bedExportReady',b'SDAR Bed Channel with Objects']:assert marker in binary,marker
-    pkg=asar_package(resources/'app.asar');assert pkg['version']==version and pkg['main']=='main.cjs'
+    pkg=asar_package(resources/'app.asar');validate_package_metadata(pkg,version)
     if platform=='macOS':
         p=plistlib.loads((app/'Contents/Info.plist').read_bytes());assert p['CFBundleShortVersionString']==version
     if platform=='Windows' and arch=='arm64':assert not (resources/'head-tracking-driver').exists(),'x64 kernel driver in ARM64 package'
     roles['asar']=resources/'app.asar'
     return {role:{'path':path.relative_to(app).as_posix(),'sha256':sha(path)} for role,path in roles.items()}
-def verify_container(installer, app, platform, arch, commit, version, expected):
+def inspect_container(installer, platform, arch, commit, version):
     if platform=='Windows':
         with tempfile.TemporaryDirectory(prefix='sda-release-inspect-') as name:
             base=Path(name).resolve();assert base.is_relative_to(Path(tempfile.gettempdir()).resolve())
@@ -60,19 +62,21 @@ def verify_container(installer, app, platform, arch, commit, version, expected):
             archives=list((base/'outer').rglob('app-*.7z'));assert len(archives)==1,'Expected one architecture per installer'
             subprocess.run(['7z','x','-y',str(archives[0]),'-o'+str(base/'inner')],check=True,stdout=subprocess.DEVNULL)
             mains=list((base/'inner').rglob('SDA.exe'));assert len(mains)==1
-            actual=verify_payload(mains[0].parent,platform,arch,commit,version)
-            assert actual==expected,'Installer payload differs from verified application'
+            return verify_payload(mains[0].parent,platform,arch,commit,version)
     else:
         reply=subprocess.check_output(['hdiutil','attach','-nobrowse','-readonly','-plist',str(installer)])
         mounts=[x['mount-point'] for x in plistlib.loads(reply)['system-entities'] if x.get('mount-point')];assert len(mounts)==1
-        try: assert verify_payload(Path(mounts[0])/'SDA.app',platform,arch,commit,version)==expected
+        try: return verify_payload(Path(mounts[0])/'SDA.app',platform,arch,commit,version)
         finally: subprocess.run(['hdiutil','detach',mounts[0]],check=True,stdout=subprocess.DEVNULL)
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--platform',choices=['Windows','macOS'],required=True);p.add_argument('--arch',choices=['x64','arm64'],required=True);p.add_argument('--app-dir',type=Path,required=True);p.add_argument('--installer',type=Path,required=True);p.add_argument('--evidence-dir',type=Path,default=Path('desktop-artifacts'));p.add_argument('--verify-container',action='store_true');a=p.parse_args()
-    root=Path(__file__).resolve().parents[1];version=json.loads((root/'apps/desktop/package.json').read_text())['version'];commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--platform',choices=['Windows','macOS'],required=True);p.add_argument('--arch',choices=['x64','arm64'],required=True);p.add_argument('--app-dir',type=Path);p.add_argument('--installer',type=Path,required=True);p.add_argument('--evidence-dir',type=Path,default=Path('desktop-artifacts'));p.add_argument('--verify-container',action='store_true');p.add_argument('--from-installer',action='store_true');a=p.parse_args()
+    root=Path(os.environ.get('GITHUB_WORKSPACE',Path(__file__).resolve().parents[1]));version=json.loads((root/'apps/desktop/package.json').read_text())['version'];commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
     assert a.installer.name==f'SDA-{version}-{a.platform}-{a.arch}'+('.exe' if a.platform=='Windows' else '.dmg')
-    files=verify_payload(a.app_dir.resolve(),a.platform,a.arch,commit,version)
-    if a.verify_container:verify_container(a.installer.resolve(),a.app_dir.resolve(),a.platform,a.arch,commit,version,files)
-    record={'schema':'sda.desktop-release','version':1,'appVersion':version,'sourceCommit':commit,'platform':a.platform,'architecture':a.arch,'artifact':{'name':a.installer.name,'bytes':a.installer.stat().st_size,'sha256':sha(a.installer)},'verifiedPayload':files,'installerContentsVerified':a.verify_container,'physicalDeviceVerified':False,'signed':False}
+    if a.from_installer:files=inspect_container(a.installer.resolve(),a.platform,a.arch,commit,version)
+    else:
+        assert a.app_dir,'--app-dir required unless inspecting an existing installer'
+        files=verify_payload(a.app_dir.resolve(),a.platform,a.arch,commit,version)
+        if a.verify_container:assert inspect_container(a.installer.resolve(),a.platform,a.arch,commit,version)==files,'Installer payload differs from verified application'
+    record={'schema':'sda.desktop-release','version':1,'appVersion':version,'sourceCommit':commit,'platform':a.platform,'architecture':a.arch,'artifact':{'name':a.installer.name,'bytes':a.installer.stat().st_size,'sha256':sha(a.installer)},'verifiedPayload':files,'installerContentsVerified':a.verify_container or a.from_installer,'packagingVerifierCommit':os.environ.get('GITHUB_WORKFLOW_SHA'),'physicalDeviceVerified':False,'signed':False}
     a.evidence_dir.mkdir(parents=True,exist_ok=True);(a.evidence_dir/f'{a.platform}-{a.arch}-verification.json').write_text(json.dumps(record,indent=2)+'\n');print(json.dumps(record))
 if __name__=='__main__':main()

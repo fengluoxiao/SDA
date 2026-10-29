@@ -14,6 +14,12 @@ class DesktopArchitectureTests(unittest.TestCase):
   for cpu,arch in [(0x1000007,'x64'),(0x100000c,'arm64')]:
    data=bytearray(32);data[:4]=bytes([0xcf,0xfa,0xed,0xfe]);struct.pack_into('<I',data,4,cpu)
    self.assertEqual(module.architectures(data),{arch})
+ def test_repo_relative_entrypoint_is_valid(self):
+  import json
+  pkg=json.loads((Path(__file__).resolve().parents[1]/'apps/desktop/package.json').read_text())
+  module.validate_package_metadata(pkg,pkg['version'])
+  module.validate_package_metadata({'version':pkg['version'],'main':'main.cjs'},pkg['version'])
+  with self.assertRaises(AssertionError):module.validate_package_metadata({'version':pkg['version'],'main':'other.cjs'},pkg['version'])
  def test_invalid_executable_is_rejected(self):
   with self.assertRaises(ValueError):module.architectures(b'not an executable')
 if __name__=='__main__':unittest.main()
