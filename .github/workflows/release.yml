@@ -10,6 +10,10 @@ on:
         description: Optional immutable app source commit
         required: false
         type: string
+      web_source_run:
+        description: Optional successful shared-web build run for the same app source
+        required: false
+        type: string
       platform:
         description: Desktop platforms to build
         required: true
@@ -18,11 +22,13 @@ on:
         options: [both, windows, macos]
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: desktop-release-${{ inputs.tag }}-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
   build-web:
+    if: ${{ inputs.web_source_run == '' }}
     name: Shared desktop web and decoder assets
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -69,7 +75,7 @@ jobs:
             packages/core/pkg-node/
           if-no-files-found: error
   build-windows:
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'windows' }}
+    if: ${{ always() && (needs.build-web.result == 'success' || inputs.web_source_run != '') && (inputs.platform == 'both' || inputs.platform == 'windows') }}
     needs: build-web
     name: Windows ${{ matrix.arch }} installer
     runs-on: windows-2022
@@ -95,7 +101,9 @@ jobs:
       CARGO_BUILD_JOBS: '3'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - run: git config --global core.longpaths true
+      - run: |
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || inputs.tag }}
@@ -125,10 +133,31 @@ jobs:
           key: desktop-windows-${{ matrix.arch }}-v1
           cache-on-failure: true
       - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - name: Stage pinned packaging tools
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');
+            const source=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+            const previous=context.payload.inputs.web_source_run;
+            if(previous){
+              const run=await github.rest.actions.getWorkflowRun({...context.repo,run_id:Number(previous)});
+              if(run.data.head_sha!==source)throw Error('Shared web artifacts must match the application source');
+              const jobs=await github.rest.actions.listJobsForWorkflowRun({...context.repo,run_id:Number(previous)});
+              if(!jobs.data.jobs.some(j=>j.name==='Shared desktop web and decoder assets'&&j.conclusion==='success'))throw Error('Shared decoder build did not pass');
+            }
+            const tools=path.join(process.env.RUNNER_TEMP,'sda-packaging-tools');await fs.mkdir(tools,{recursive:true});
+            for(const name of ['prepare-desktop-release.mjs','verify-desktop-release.py','upload-desktop-release.mjs','upload-mobile-release.mjs']){
+              const result=await github.rest.repos.getContent({...context.repo,path:'scripts/'+name,ref:process.env.GITHUB_WORKFLOW_SHA});
+              await fs.writeFile(path.join(tools,name),Buffer.from(result.data.content,'base64'));
+            }
+            core.exportVariable('SDA_RELEASE_TOOLS',tools);
       - uses: actions/download-artifact@v4
         with:
           name: desktop-web
           path: .
+          run-id: ${{ inputs.web_source_run || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/prepare-asio
       - name: Build target-native desktop components
         shell: pwsh
@@ -149,7 +178,7 @@ jobs:
       - name: Package architecture-specific installer
         shell: pwsh
         run: |
-          node scripts/prepare-desktop-release.mjs Windows ${{ matrix.arch }}
+          node "$env:SDA_RELEASE_TOOLS/prepare-desktop-release.mjs" Windows ${{ matrix.arch }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --filter @sda/desktop exec electron-builder --config release-config.json --win nsis --${{ matrix.arch }} --publish never
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -157,13 +186,13 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
-          python scripts/verify-desktop-release.py --platform Windows --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }} --installer "apps/desktop/dist/SDA-$version-Windows-${{ matrix.arch }}.exe" --verify-container
+          python "$env:SDA_RELEASE_TOOLS/verify-desktop-release.py" --platform Windows --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }} --installer "apps/desktop/dist/SDA-$version-Windows-${{ matrix.arch }}.exe" --verify-container
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload verified installer to draft release
         env:
           SDA_RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/upload-desktop-release.mjs Windows ${{ matrix.arch }}
+        run: node "$env:SDA_RELEASE_TOOLS/upload-desktop-release.mjs" Windows ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -173,7 +202,7 @@ jobs:
             desktop-artifacts/
           if-no-files-found: warn
   build-macos:
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'macos' }}
+    if: ${{ always() && (needs.build-web.result == 'success' || inputs.web_source_run != '') && (inputs.platform == 'both' || inputs.platform == 'macos') }}
     needs: build-web
     name: macOS ${{ matrix.arch }} installer
     runs-on: ${{ matrix.runner }}
@@ -223,10 +252,31 @@ jobs:
           key: desktop-macos-${{ matrix.arch }}-v1
           cache-on-failure: true
       - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - name: Stage pinned packaging tools
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');
+            const source=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+            const previous=context.payload.inputs.web_source_run;
+            if(previous){
+              const run=await github.rest.actions.getWorkflowRun({...context.repo,run_id:Number(previous)});
+              if(run.data.head_sha!==source)throw Error('Shared web artifacts must match the application source');
+              const jobs=await github.rest.actions.listJobsForWorkflowRun({...context.repo,run_id:Number(previous)});
+              if(!jobs.data.jobs.some(j=>j.name==='Shared desktop web and decoder assets'&&j.conclusion==='success'))throw Error('Shared decoder build did not pass');
+            }
+            const tools=path.join(process.env.RUNNER_TEMP,'sda-packaging-tools');await fs.mkdir(tools,{recursive:true});
+            for(const name of ['prepare-desktop-release.mjs','verify-desktop-release.py','upload-desktop-release.mjs','upload-mobile-release.mjs']){
+              const result=await github.rest.repos.getContent({...context.repo,path:'scripts/'+name,ref:process.env.GITHUB_WORKFLOW_SHA});
+              await fs.writeFile(path.join(tools,name),Buffer.from(result.data.content,'base64'));
+            }
+            core.exportVariable('SDA_RELEASE_TOOLS',tools);
       - uses: actions/download-artifact@v4
         with:
           name: desktop-web
           path: .
+          run-id: ${{ inputs.web_source_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Build native components and package DMG
         run: |
           export SDA_SOURCE_COMMIT="$(git rev-parse HEAD)"
@@ -235,17 +285,17 @@ jobs:
           cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
           node scripts/build-head-tracking-helper.mjs
           node scripts/build-native-renderer.mjs
-          node scripts/prepare-desktop-release.mjs macOS ${{ matrix.arch }}
+          node "$SDA_RELEASE_TOOLS/prepare-desktop-release.mjs" macOS ${{ matrix.arch }}
           pnpm --filter @sda/desktop exec electron-builder --config release-config.json --mac dmg --${{ matrix.arch }} --publish never
       - name: Verify mounted DMG payload
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
-          python3 scripts/verify-desktop-release.py --platform macOS --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }}/SDA.app --installer "apps/desktop/dist/SDA-$version-macOS-${{ matrix.arch }}.dmg" --verify-container
+          python3 "$SDA_RELEASE_TOOLS/verify-desktop-release.py" --platform macOS --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }}/SDA.app --installer "apps/desktop/dist/SDA-$version-macOS-${{ matrix.arch }}.dmg" --verify-container
       - name: Upload verified installer to draft release
         env:
           SDA_RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/upload-desktop-release.mjs macOS ${{ matrix.arch }}
+        run: node "$SDA_RELEASE_TOOLS/upload-desktop-release.mjs" macOS ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

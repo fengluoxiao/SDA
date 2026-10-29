@@ -6,3 +6,6 @@ apps/mobile/assets/hrtf-restored/**/*.txt text eol=lf
 
 assets/hrtf/**/*.json text eol=lf
 assets/hrtf/**/*.f32 binary
+
+# Signed catalog package bytes must not change with checkout line endings.
+apps/head-tracking-driver/package/* -text

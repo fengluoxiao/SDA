@@ -22,7 +22,7 @@ assert(workflow.jobs['build-web']);
 for(const [name,platform] of [['build-windows','Windows'],['build-macos','macOS']]){
  const job=workflow.jobs[name];assert.equal(job.needs,'build-web');
  assert.deepEqual(job.strategy.matrix.include.map(m=>m.arch),['x64','arm64']);
- assert(job.steps.some(step=>step.run?.includes('scripts/upload-desktop-release.mjs '+platform)));
+ assert(job.steps.some(step=>step.run?.includes('upload-desktop-release.mjs') && step.run.endsWith(platform+' $'+'{{ matrix.arch }}')));
 }
 assert(!readFileSync('.github/workflows/release.yml','utf8').includes('-universal'));
 const desktop=json('apps/desktop/package.json').build;
