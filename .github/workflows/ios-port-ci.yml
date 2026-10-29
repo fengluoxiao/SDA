@@ -2,6 +2,10 @@ name: iOS device package
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: Optional existing draft release tag to upload packages to
+        required: false
+        type: string
       source_ref:
         description: Optional pinned runtime source to package with this workflow
         required: false
@@ -27,7 +31,7 @@ on:
       - 'vendor/macindecode-ac4-decode/**'
       - 'pnpm-lock.yaml'
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: ios-port-${{ github.ref }}
   cancel-in-progress: true
@@ -146,6 +150,12 @@ jobs:
           zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
           cd ../..
           printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; no automated test or simulator run. Requires signing for installation.\n' > ios-artifacts/README.txt
+      - name: Upload versioned package to requested draft release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          SDA_RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/upload-mobile-release.mjs iOS
       - name: Record compilation timings
         if: always()
         run: python3 scripts/summarize-ios-build-timings.py ios-artifacts

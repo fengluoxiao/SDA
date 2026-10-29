@@ -97,7 +97,7 @@ Unicode encoding; CJK text must not be put there and allowed to override ID3.
 ADM axml/chna preserve standardized bed identities/positions.
 
 Both new SDAR and M4A use brand sda1, one physical audio track/ID and sample
-entry sdar. Standard udta/meta/ilst contains Unicode title, artist, album,
+entry SDAR (the lowercase sdar entry remains readable for legacy files). Standard udta/meta/ilst contains Unicode title, artist, album,
 year, track/disc, covr artwork, lyrics and source comments. Private metadata
 retains exact original lyric bytes/timestamps/encodings and source tags.
 Generic tools can inspect these standard tags without an SDA audio decoder.
@@ -192,7 +192,7 @@ Import transfers the original master mix at unity and records HRTF/room/monitori
 
 Object M4A defaults to lossless coding to preserve the complete independent stems. Explicit compact export supports aggregate 3072/6144/12288/24576 kbps at 48 kHz. These are whole-scene rates, not per-object rates, and are not claims of Dolby codec quality or perceptual equivalence. Existing bed rates remain unchanged. Predictive model search is bounded for large source counts; packets preserve their own reconstruction model and remain independently seekable.
 
-Current import support follows the shared ADM parser: normalized Cartesian extents and point spherical objects; unsupported interactive/alternative programmes, nonzero spherical extents, channel-lock/divergence/screen-lock features, and delivery zoneExclusion/horizontalOnly requirements fail explicitly. The versioned contract can add such features later without silently dropping source metadata.
+Current import support follows the shared ADM parser: normalized Cartesian extents and point spherical objects; unsupported interactive/alternative programmes, nonzero spherical extents, channel-lock/divergence/screen-lock features fail explicitly. Versioned zoneExclusion/horizontalOnly support is specified in sdar-object-constraints.md. The versioned contract can add such features later without silently dropping source metadata.
 
 Regression: `SDA_FORMAT_CODEC=<sdar-codec> node apps/desktop/test/object-export.test.cjs` verifies interleaved bed/object mapping over 66 lanes, exact PCM24 and ADM master restoration, object extent/diffuse/gain, mid-ramp seek, Unicode source tags, one-track SDAR/M4A and explicit bitrate/profile validation. Shared mobile route verification uses the generated fixture directory: set `SDA_OBJECT_FIXTURE_DIR`, then run the ignored `object_interchange_preserves_mobile_pcm_routes_and_seek_clock` native test explicitly.
 

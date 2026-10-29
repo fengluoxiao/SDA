@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
+import {spawnSync} from 'node:child_process';
 const require=createRequire(import.meta.url),{parse}=require('yaml');
 const json=path=>JSON.parse(readFileSync(path,'utf8'));
 const app=json('apps/mobile/app.json').expo;
@@ -26,3 +27,15 @@ const build=android.jobs.android.steps.find(step=>step.name==='Build and verify 
 assert.equal(build.run,'./scripts/build-android-release-windows.ps1');
 for(const name of ['SDA_ANDROID_KEYSTORE_BASE64','SDA_ANDROID_RELEASE_STORE_PASSWORD','SDA_ANDROID_RELEASE_KEY_ALIAS','SDA_ANDROID_RELEASE_KEY_PASSWORD']) assert.equal(build.env[name],String.fromCharCode(36)+'{{ secrets.'+name+' }}');
 console.log('Mobile release version, build numbers, private signing guard, Windows Android and manual-only desktop publishing checks passed.');
+
+for(const target of [android,parse(readFileSync('.github/workflows/ios-port-ci.yml','utf8'))]){
+ assert(target.on.workflow_dispatch.inputs.release_tag);
+ assert.equal(target.permissions.contents,'write');
+ const publish=Object.values(target.jobs).flatMap(job=>job.steps??[]).find(step=>step.name==='Upload versioned package to requested draft release');
+ assert(publish?.if.includes('inputs.release_tag'));
+ assert(publish.run.includes('scripts/upload-mobile-release.mjs'));
+}
+const rejected=spawnSync(process.execPath,['scripts/upload-mobile-release.mjs','Android'],{encoding:'utf8',env:{...process.env,SDA_RELEASE_TAG:'v0.0.0',GH_TOKEN:''}});
+assert.notEqual(rejected.status,0);
+assert(rejected.stderr.includes('Release tag must match the actual app version'),'wrong-version packages must fail before contacting GitHub');
+console.log('Release upload is optional, tag-bound and rejects incorrect versions before network access.');
