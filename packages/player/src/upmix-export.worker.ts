@@ -139,7 +139,8 @@ async function run(){
   if(job.analysisOnly){
    parentPort!.postMessage({type:"measurement",protocol:1,codec,sampleRate:inputRate,channels:2,frames:Math.round(samples*48000/inputRate),sourceFrames:samples,measurementSampleRate:inputRate,blocks:sourceMeasurement.blocks,integratedLufs:sourceMeasurement.integratedLufs,truePeakDbtp:Number.isFinite(sourceTruePeak)?sourceTruePeak:null,policy:"source-rate-full-track-reference-v1",size:initial.size,mtimeMs:initial.mtimeMs});return;
   }
-  const makeupDb=volumeBalance?2.5:0;
+  // Stereo upmix exports use the same unity makeup as live stereo playback.
+  const makeupDb=0;
   const disk=fs.statfsSync(path.dirname(job.outputPath));if(disk.bavail*disk.bsize<samples*((volumeBalance||spatialBalance)?84:36)+wav.HEADER_BYTES+(metadata?.bytes.length??0))throw Error("目标磁盘剩余空间不足以完成平衡渲染和 WAV 输出");
   let audio=spool,inputPeak:number;
   if(volumeBalance||spatialBalance){

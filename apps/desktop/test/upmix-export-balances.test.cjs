@@ -20,10 +20,10 @@ function amplitude(data,ch,hz){let re=0,im=0;for(let i=96000;i<144000;i++){const
  execFileSync(ffmpeg,['-hide_banner','-loglevel','error','-f','lavfi','-i',`aevalsrc=(${mid})+(${side})|(${mid})-(${side}):s=48000:d=3`,'-c:a','pcm_f32le',input]);
  const outputs=[];
  for(const [name,v,s]of [['off',false,false],['volume',true,false],['spatial',false,true],['both',true,true]]){
-  const job=await run(input,name,v,s);assert.equal(job.result.type,'done',JSON.stringify(job.result));assert.equal(job.result.frames,144000);assert.equal(job.result.volumeBalanceEnabled,v);assert.equal(job.result.spatialBalanceEnabled,s);assert(job.result.truePeakDbtp<=-1);if(v){assert(job.result.programmeGainDb<0);assert.equal(job.result.programmeMakeupDb,2.5);assert(Math.abs(job.result.programmeGainDb-(-18-job.result.sourceLufs))<1e-9);}outputs.push({...job,data:pcm(job.output)});
+  const job=await run(input,name,v,s);assert.equal(job.result.type,'done',JSON.stringify(job.result));assert.equal(job.result.frames,144000);assert.equal(job.result.volumeBalanceEnabled,v);assert.equal(job.result.spatialBalanceEnabled,s);assert(job.result.truePeakDbtp<=-1);assert.equal(job.result.programmeMakeupDb,0);if(v){assert(job.result.programmeGainDb<0);assert(Math.abs(job.result.programmeGainDb-(-18-job.result.sourceLufs))<1e-9);}outputs.push({...job,data:pcm(job.output)});
  }
  const [off,volume,spatial,both]=outputs;assert.equal(volume.result.programmeGainDb,both.result.programmeGainDb);
- const ratio=10**((volume.result.programmeGainDb+2.5+volume.result.gainDb-off.result.gainDb)/20);
+ const ratio=10**((volume.result.programmeGainDb+volume.result.gainDb-off.result.gainDb)/20);
  for(let i=1009;i<144000;i+=1009)for(let ch=0;ch<12;ch++)assert(Math.abs(volume.data.at(i,ch)-off.data.at(i,ch)*ratio)<5/8388608,'volume balance must be one linked gain from sample zero');
  const db=(a,b)=>20*Math.log10(a/b);
  console.log('Measured spatial differences dB:',{rearDetail:db(amplitude(spatial.data,4,3000),amplitude(off.data,4,3000)),rearBass:db(amplitude(spatial.data,4,80),amplitude(off.data,4,80)),center:db(amplitude(spatial.data,2,500),amplitude(off.data,2,500))});

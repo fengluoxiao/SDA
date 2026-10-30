@@ -8,4 +8,6 @@ assert.equal(Number(renderer.match(pattern)?.[1]),2.5);
 const alternate=renderer.replace(/else if self\.program_enabled && \(named_format \|\| self\.dolby_spatial_programme_seen\) \{ 2\.5 \}/,'else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.75 }');
 assert.equal(Number(alternate.match(pattern)?.[1]),2.75,'record the real ordinary calibration, not a hardcoded value or authored branch');
 assert.equal('let db = if self.authored.enabled { 7.25 } else { 0.0 };'.match(pattern),null);
-console.log('iOS provenance reads ordinary programme calibration independently of authored-file gain overrides.');
+assert.match(recorder,/stereoProgrammeMakeupDb:0[,}]/,'iOS must record zero extra stereo makeup');
+assert.match(readFileSync('scripts/record-android-release.py','utf8'),/'stereoProgrammeMakeupDb': 0[,}]/,'Android must record zero extra stereo makeup');
+console.log('Provenance records immersive calibration separately from unity stereo makeup and authored overrides.');

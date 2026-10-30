@@ -1184,10 +1184,10 @@ mod alac_tests {
         }
         for upmix in [false,true] {
             let bypass=render(false,upmix,true,false,false); let balanced=render(true,upmix,true,false,false);
-            let gain=10f32.powf((-6.0+2.5)/20.0);
+            let gain=10f32.powf(-6.0/20.0);
             assert!(bypass.iter().any(|v|v.abs()>1e-5));
             for (a,b) in bypass.iter().zip(&balanced).skip(8192) {
-                assert!((a*gain-b).abs()<2e-6,"expected linked -3.5 dB including stereo makeup: upmix={upmix}, bypass={a}, balanced={b}");
+                assert!((a*gain-b).abs()<2e-6,"expected linked -6 dB without extra stereo makeup: upmix={upmix}, bypass={a}, balanced={b}");
             }
         }
         // Real output must attenuate a cold, short ALAC stream before six
@@ -1204,7 +1204,7 @@ mod alac_tests {
         let baseline=energy_slice(&stable,48000,96000);
         let off=energy_slice(&switched,144000,180000);
         let on=energy_slice(&switched,288000,360000);
-        assert!((off/baseline-10f64.powf(3.5/10.0)).abs()<0.05,"toggle off did not restore unity: {}",off/baseline);
+        assert!((off/baseline-10f64.powf(6.0/10.0)).abs()<0.05,"toggle off did not restore unity: {}",off/baseline);
         assert!((on/baseline-1.0).abs()<0.02,"toggle on did not restore balance: {}",on/baseline);
         // Same native handle and continuously increasing PCM timestamps, dry ->
         // wet -> dry. Settled regions must match the corresponding static path.

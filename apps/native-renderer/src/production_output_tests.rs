@@ -14,7 +14,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
             quiet.set_master_preamp_db(-6.).unwrap();
             quiet.program_enabled = true;
             quiet.set_program_target(0.5, true);
-            let calibration = if ["mpegh","av3a","ac4","adm","alac","mp3","mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
+            let calibration = if ["mpegh","av3a","ac4","adm"].contains(&codec) { 10f32.powf(2.5/20.) } else { 1.0 };
             let ratio = 0.25 * 10f32.powf(-6. / 20.) * 0.5 * calibration;
             for i in 0..96000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
@@ -161,7 +161,7 @@ fn programme_makeup_obeys_format_volume_and_metadata_policy() {
                     e.program_enabled = volume;
                     e.set_program_target(0.5, true);
                     declare_makeup_source(&mut e, object, label);
-                    let eligible = volume && (["mpegh","av3a","ac4","adm","alac","mp3","mp3-stereo-bed"].contains(&codec)
+                    let eligible = volume && (["mpegh","av3a","ac4","adm"].contains(&codec)
                         || (["eac3", "truehd", "mlpa"].contains(&codec) && (object || label == "Tfl")));
                     assert_eq!(e.programme_output_makeup.target_db(), if eligible { 2.5 } else { 0.0 },
                         "{codec} volume={volume} spatial={spatial} object={object} label={label}");
@@ -188,7 +188,7 @@ fn programme_makeup_is_linked_and_leaves_unselected_codecs_bit_identical() {
             declare_makeup_source(&mut new, true, "");
             // Reference bypasses only the selected format calibration.
             old.programme_output_makeup = Default::default();
-            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4", "adm", "alac", "mp3", "mp3-stereo-bed"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
+            let expected = if ["eac3", "truehd", "mlpa", "mpegh", "av3a", "ac4", "adm"].contains(&codec) { 10f32.powf(2.5 / 20.) } else { 1.0 };
             for i in 0..24000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
                 let a = old.process_final_output([x, -0.4 * x]);
@@ -239,7 +239,7 @@ fn atmos_makeup_ramps_on_live_toggle_and_cannot_leak_into_the_next_programme() {
     e.refresh_programme_output_makeup(true);
     assert_eq!(e.programme_output_makeup.target_db(), 2.5, "silent object intervals retain programme identity");
     e.set_program_codec("alac".into());
-    assert_eq!(e.programme_output_makeup.target_db(), 2.5, "stereo retains the shared calibration");
+    assert_eq!(e.programme_output_makeup.target_db(), 0.0, "stereo must not inherit immersive calibration");
     assert!(!e.dolby_spatial_programme_seen);
     e.set_program_codec("adm".into());
     assert_eq!(e.programme_output_makeup.target_db(), 2.5,"ADM retains the shared immersive calibration");
@@ -343,7 +343,7 @@ fn programme_makeup_survives_supported_format_switches_and_clears_for_unselected
     e.set_program_target(0.5,true);
     declare_makeup_source(&mut e,true,"");
     e.output_active=true;e.paused=false;
-    for codec in ["mpegh","av3a","ac4","truehd","mlpa","eac3","alac","mp3","mp3-stereo-bed"] {
+    for codec in ["mpegh","av3a","ac4","truehd","mlpa","eac3"] {
         let previous=e.programme_output_makeup.gain();
         e.set_program_codec(codec.into());
         assert_eq!(e.programme_output_makeup.target_db(),2.5,"{codec}");
@@ -351,11 +351,18 @@ fn programme_makeup_survives_supported_format_switches_and_clears_for_unselected
         assert_eq!(e.sources.len(),1);
         assert_eq!(e.program_gain,0.5);
     }
-    e.set_program_codec("pcm".into());
-    assert_eq!(e.programme_output_makeup.target_db(),0.0);
-    for _ in 0..960 {e.advance_output_envelopes();}
-    assert_eq!(e.programme_output_makeup.gain(),1.0);
-    assert!(e.spatial_enhancement_enabled);
+    for codec in ["alac", "mp3", "mp3-stereo-bed", "pcm"] {
+        e.set_program_codec("mpegh".into());
+        for _ in 0..960 { e.advance_output_envelopes(); }
+        let before = e.programme_output_makeup.gain();
+        e.set_program_codec(codec.into());
+        assert_eq!(e.programme_output_makeup.target_db(),0.0,"{codec}");
+        assert_eq!(e.programme_output_makeup.gain(),before,"switching to stereo must ramp without a jump");
+        for _ in 0..960 { e.advance_output_envelopes(); }
+        assert_eq!(e.programme_output_makeup.gain(),1.0,"{codec}");
+        assert_eq!(e.program_gain,0.5,"reference loudness balance must survive the codec switch");
+        assert!(e.spatial_enhancement_enabled);
+    }
 }
 
 #[test]
@@ -435,7 +442,7 @@ fn stereo_and_immersive_formats_share_peak_protection_at_full_output() {
         e.set_binaural_enabled(binaural);e.set_spatial_enhancement(binaural).unwrap();
         e.set_program_codec(codec.into());declare_makeup_source(&mut e,true,"");
         e.program_enabled=balance;e.set_program_target(1.,true);e.set_output_volume(1.,true);
-        assert_eq!(e.programme_output_makeup.target_db(),if balance {2.5} else {0.});
+        assert_eq!(e.programme_output_makeup.target_db(),if balance && !["alac", "mp3", "mp3-stereo-bed"].contains(&codec) {2.5} else {0.});
         let ceiling=10f32.powf(true_peak_guard::CEILING_DB as f32/20.);
         let output:Vec<_>=(0..24000).map(|i| {
             let x=if i%3000<8 {2.5} else {(i as f32*0.51).sin()*1.2+(i as f32*0.013).sin()*0.2};
@@ -449,9 +456,14 @@ fn stereo_and_immersive_formats_share_peak_protection_at_full_output() {
         output
     }
     for balance in [false,true] {for binaural in [false,true] {
-        let reference=render("alac",balance,binaural);
+        let stereo=render("alac",balance,binaural);
+        let immersive=render("eac3",balance,binaural);
         for codec in ["mp3","mp3-stereo-bed","eac3","truehd","mlpa","mpegh","av3a","ac4"] {
-            assert_eq!(render(codec,balance,binaural),reference,"final peak protection differs for {codec}");
+            // Every format must obey the same ceiling; PCM equality applies
+            // within formats using the same extra programme calibration.
+            let expected=if balance && !["mp3", "mp3-stereo-bed"].contains(&codec) {&immersive} else {&stereo};
+            let actual=render(codec,balance,binaural);
+            assert!(actual.iter().zip(expected).all(|(a,b)|a==b),"final peak protection differs for {codec}");
         }
     }}
 }
