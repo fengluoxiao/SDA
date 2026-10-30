@@ -24,6 +24,17 @@ final class SdaPlayer {
  var hasPlayback: Bool { handle != nil || systemSpatial != nil }
  var audio: AVAudioEngine?
  var source: AVAudioSourceNode?
+ private struct StereoSourceIdentity: Equatable {
+  let path: String; let bytes: UInt64; let modified: Date
+ }
+ private var preparedStereoReferences: [String:(StereoSourceIdentity,String)] = [:]
+ var stereoImportGeneration = 0
+ private func stereoSourceIdentity(_ path: String) throws -> StereoSourceIdentity {
+  let attrs = try FileManager.default.attributesOfItem(atPath:path)
+  return StereoSourceIdentity(path:URL(fileURLWithPath:path).standardizedFileURL.path,
+   bytes:(attrs[.size] as? NSNumber)?.uint64Value ?? 0, modified:attrs[.modificationDate] as? Date ?? .distantPast)
+ }
+ func clearPreparedStereoReferences() { stereoImportGeneration += 1; preparedStereoReferences.removeAll() }
  var playbackQueue: [[String:Any]] = []
  var playbackMode = "sequence"
  var playbackYaw: Double = 0
@@ -603,31 +614,55 @@ final class SdaPlayer {
    return true
   }
  }
- // A feeder-owned, fresh full-source pass; no PCM is queued or persisted here.
- func prepareNativeStereoReference(path: String?, alac: Bool, token: Int) throws -> Bool {
-  guard let path else { return locked { generation == token } }
-  guard locked({ generation == token && hasPlayback && systemSpatial == nil }) else { return false }
+ // Measurements belong to this import session only; never persist loudness results.
+ func prepareStereoTrack(_ uri: String, _ name: String, _ hash: String) throws {
+  guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
+  guard hash.range(of:"^[0-9a-f]{64}$",options:.regularExpression) != nil else { throw SdaError.message("文件标识无效") }
+  let ext = (name as NSString).pathExtension.lowercased()
+  guard ["mp3","m4a","mp4"].contains(ext) else { return }
+  let input = try CompressedInput(url:url,name:name)
+  guard !input.isSdar && (input.isAlac || ext == "mp3") else { return }
+  let identity = try stereoSourceIdentity(url.path)
+  let importToken = locked { stereoImportGeneration }
+  guard let measurement = try measureNativeStereoReference(path:url.path,alac:input.isAlac,valid:{
+   self.locked { self.stereoImportGeneration == importToken }
+  }) else { throw SdaError.message("立体声分析已取消") }
+  guard try stereoSourceIdentity(url.path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
+  locked { if stereoImportGeneration == importToken { preparedStereoReferences[hash] = (identity,measurement) } }
+ }
+ private func measureNativeStereoReference(path: String, alac: Bool, valid: () -> Bool) throws -> String? {
+  guard valid() else { return nil }
   var error: UnsafeMutablePointer<CChar>?
   guard let reference = sda_ios_stereo_reference_create(path, alac, &error) else {
    _ = try decodeReply(error); throw SdaError.message("立体声响度分析初始化失败")
   }
   defer { sda_ios_stereo_reference_close(reference) }
-  while true {
-   guard locked({ generation == token && hasPlayback && systemSpatial == nil }) else { return false }
-   let completed: [String:Any]? = try autoreleasepool {
+  while valid() {
+   let completed: String? = try autoreleasepool {
     guard let step = try decodeReply(sda_ios_stereo_reference_step(reference)) as? [String:Any] else {
      throw SdaError.message("立体声响度分析结果无效")
     }
     if step["done"] as? Bool != true { return nil }
     guard let measurement = step["measurement"] as? [String:Any] else { throw SdaError.message("立体声整曲响度参考缺失") }
-    return measurement
+    return try json(measurement)
    }
-   guard let measurement = completed else { continue }
-   return try locked {
-    guard generation == token && hasPlayback && systemSpatial == nil else { return false }
-    _ = try command("measured", ["json":try json(measurement)])
-    return true
-   }
+   if let completed { return completed }
+  }
+  return nil
+ }
+ func prepareNativeStereoReference(path: String?, alac: Bool, token: Int, hash: String) throws -> Bool {
+  guard let path else { return locked { generation == token } }
+  let identity = try stereoSourceIdentity(path)
+  let valid = { self.locked { self.generation == token && self.hasPlayback && self.systemSpatial == nil } }
+  guard valid() else { return false }
+  let ready = locked { preparedStereoReferences[hash].flatMap { $0.0 == identity ? $0.1 : nil } }
+  guard let measurement = try ready ?? measureNativeStereoReference(path:path,alac:alac,valid:valid) else { return false }
+  guard try stereoSourceIdentity(path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
+  return try locked {
+   guard generation == token && hasPlayback && systemSpatial == nil else { return false }
+   preparedStereoReferences[hash] = (identity,measurement)
+   _ = try command("measured", ["json":measurement])
+   return true
   }
  }
  func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?, stereoReferencePath: String? = nil) {
@@ -639,7 +674,7 @@ final class SdaPlayer {
   do {
    let systemMode = locked { systemSpatial != nil && generation == token }
    if systemMode { if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return }; lastProgress = Date() }
-   else { if !(try prepareNativeStereoReference(path:stereoReferencePath,alac:input.isAlac,token:token)) { return }; lastProgress = Date() }
+   else { if !(try prepareNativeStereoReference(path:stereoReferencePath,alac:input.isAlac,token:token,hash:hash)) { return }; lastProgress = Date() }
    while true {
     // A long-lived GCD loop must drain Cocoa temporaries per iteration.
     let keepFeeding = try autoreleasepool { () throws -> Bool in

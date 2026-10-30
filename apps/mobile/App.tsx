@@ -47,6 +47,10 @@ interface SdaEngineModule extends MpeghMp4Host {
   playbackSnapshot?(includeObjects: boolean): string;
   contentHash(uri: string): Promise<string>;
   preparePlayback?(displayName: string): Promise<void>;
+  prepareStereoTrack?(uri: string, displayName: string, contentHash: string): Promise<boolean>;
+  retainQueueTrack?(uri: string, displayName: string, contentHash: string): Promise<string>;
+  playbackQueueSnapshot?(): string;
+  skipPlayback?(direction: number): boolean;
   discardPickerCopy?(uri: string): Promise<boolean>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
@@ -207,6 +211,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
     try {
       const engine = this.getEngine();
+      this.restoreNativeQueue(engine);
       if (Platform.OS === "android" && engine.addListener) {
         this.lifecycleSubscriptions.push(engine.addListener("onMediaCommand", event => {
           if (event.hash !== this.state.queue[this.state.queueIndex]?.contentHash) return;
@@ -411,7 +416,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         const metadata = JSON.parse(await this.getEngine().metadata(asset.uri)) as TrackMetadata;
         if (metadata.coverUri) void primeArtworkColor(metadata.coverUri, metadata.artworkColor).catch(() => {});
         patch({ metadata });
-        const track = { contentHash, uri: asset.uri, name: asset.name, metadata };
+        const track: QueueTrack = { contentHash, uri: asset.uri, name: asset.name, metadata };
         // Both platforms finish compressed-track preparation before displaying ready.
         const prepared = await this.prepareTrack(track, p => progress(.12 + p.fraction * .86, p.stage));
         if (Platform.OS === "android") {
@@ -422,6 +427,16 @@ export default class App extends React.Component<Record<string, never>, State> {
             track.metadata = { ...track.metadata, durationMs: prepared.durationMs || track.metadata.durationMs };
             await prepared.adopt?.();
           }
+        }
+        if (Platform.OS === "android") {
+          const playbackName = prepared?.name ?? track.name;
+          const retained = await this.getEngine().retainQueueTrack?.(track.uri, playbackName, contentHash);
+          if (retained) { track.uri = retained; if (prepared) prepared.uri = retained; }
+          track.playbackName = playbackName;
+        }
+        if (!track.metadata.authoredPlayback) {
+          progress(.985, "分析整曲响度");
+          await this.getEngine().prepareStereoTrack?.(prepared?.uri ?? track.uri, prepared?.name ?? track.name, contentHash);
         }
         progress(.99, "完成准备");
         await new Promise<void>(resolve => this.setState(state => {
@@ -446,10 +461,24 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
+  private restoreNativeQueue = (engine: SdaEngineModule) => {
+    if (!engine.playbackQueueSnapshot || this.state.queue.length) return;
+    const saved = JSON.parse(engine.playbackQueueSnapshot()) as { queue: { hash: string; uri: string; name: string; originalName?: string; metadata: TrackMetadata }[]; currentHash: string; mode: PlaybackMode };
+    if (!saved.queue?.length) return;
+    const queue: QueueTrack[] = saved.queue.map(row => ({ contentHash: row.hash, uri: row.uri,
+      name: row.originalName || row.name, playbackName: row.name, metadata: row.metadata ?? {} }));
+    const queueIndex = Math.max(0, queue.findIndex(row => row.contentHash === saved.currentHash));
+    const track = queue[queueIndex]!;
+    const playback = engine.playbackSnapshot ? JSON.parse(engine.playbackSnapshot(false)) as IOSPlaybackSnapshot : null;
+    this.setState({ queue, queueIndex, playbackMode: saved.mode, selectedUri: track.uri, fileName: track.name,
+      metadata: track.metadata, durationMs: track.metadata.durationMs ?? 0, playing: playback?.hasPlayback === true,
+      ended: playback?.feedDone === true }, () => { if (playback?.hasPlayback || playback?.feedDone) { this.restartStatusPolling(); this.pollStatus(); } });
+  };
+
   // Prepared compressed tracks are queue-owned. Android adopts the raw track instead of retaining a second picker copy.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
   private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
-    if(track.metadata.authoredPlayback)return null;
+    if(track.metadata.authoredPlayback || track.playbackName)return null;
     if (!this.preparedTracks.has(track.contentHash)) {
       this.preparedTracks.set(track.contentHash, await prepare360RaMp4(this.getEngine(), track.uri, track.name, onProgress));
     }
@@ -458,13 +487,14 @@ export default class App extends React.Component<Record<string, never>, State> {
   private syncNativeQueue = () => {
     this.engine?.configurePlaybackQueue?.(JSON.stringify(this.state.queue.filter(track => !track.preparation).map(track => {
       const prepared = this.preparedTracks.get(track.contentHash);
-      return { hash: track.contentHash, uri: prepared?.uri ?? track.uri, name: prepared?.name ?? track.name,
+      return { hash: track.contentHash, uri: prepared?.uri ?? track.uri, name: prepared?.name ?? track.playbackName ?? track.name, originalName: track.name,
         metadata: { ...track.metadata, durationMs: prepared?.durationMs || track.metadata.durationMs } };
     })), this.state.playbackMode);
   };
   private setPlaybackMode = (playbackMode: PlaybackMode) => this.setState({ playbackMode }, this.syncNativeQueue);
 
   private skipTrack = (direction: 1 | -1) => {
+    if (this.engine?.skipPlayback && this.state.playing) { this.engine.skipPlayback(direction); return; }
     const items = this.state.queue.filter(track => !track.preparation).map(track => ({ id: track.contentHash }));
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = adjacentPlaylistItemId(items, currentId, direction);
@@ -487,7 +517,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       const imported = await this.prepareTrack(track);
       this.syncNativeQueue();
       // playUri owns stop/start atomically; do not stop audio before asynchronous preparation.
-      await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.name, this.state.headYaw, track.contentHash);
+      await engine.playUri(imported?.uri ?? track.uri, imported?.name ?? track.playbackName ?? track.name, this.state.headYaw, track.contentHash);
       engine.setNowPlayingMetadata?.(track.contentHash, JSON.stringify({ ...track.metadata, durationMs: imported?.durationMs || track.metadata.durationMs }));
       if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
       const settings = JSON.parse(engine.renderingSettings());
@@ -513,8 +543,8 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
 
       const engine = this.engine;
-      if (!engine || (!this.state.playing && !(Platform.OS === "ios" && this.state.ended)) || this.state.busy || this.changingTrack) return;
-      if (Platform.OS === "ios" && engine.playbackSnapshot) {
+      if (!engine || (!this.state.playing && !(engine.playbackSnapshot && this.state.ended)) || this.state.busy || this.changingTrack) return;
+      if (engine.playbackSnapshot) {
         this.pollIOSPlayback(engine);
         return;
       }
@@ -605,8 +635,8 @@ export default class App extends React.Component<Record<string, never>, State> {
   }
 
   private advancePlaylist() {
-    // Native EOF owns iOS advancement even when JS is suspended. Never advance twice.
-    if (Platform.OS === "ios" && this.engine?.configurePlaybackQueue) return;
+    // Both native players own EOF while JS is suspended. Never advance twice.
+    if (this.engine?.configurePlaybackQueue && (Platform.OS === "ios" || this.engine.playbackSnapshot)) return;
     const items = this.state.queue.filter(track => !track.preparation).map(track => ({ id: track.contentHash }));
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = nextPlaylistItemId(items, currentId, this.state.playbackMode);

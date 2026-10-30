@@ -38,7 +38,7 @@ assert.equal(ios.app.state.durationMs,42000);assert.equal(ios.app.state.metadata
 let duplicates=0;ios.app.selectTrack=()=>{duplicates++;};ios.app.advancePlaylist();assert.equal(duplicates,0);
 const android=fixture('android');
 await android.app.selectTrack(0);await android.app.selectTrack(0);
-assert.deepEqual(android.counts(),{preparations:2,releases:2,stops:0,plays:2});
-assert.equal(android.configured(),undefined);
+assert.deepEqual(android.counts(),{preparations:1,releases:0,stops:0,plays:2});
+assert.equal(android.configured().queue[0].uri,'file:///a.m4a.mhas');
 console.log('Native queue bridge: cached preparation, owned lifetime, no pre-stop, foreground reconciliation, repeat mode, no duplicate EOF, Android lifetime passed');
 

@@ -18,6 +18,7 @@ export interface TrackMetadata {
 }
 export interface QueueTrack {
   contentHash: string; uri: string; name: string; metadata: TrackMetadata;
+  playbackName?: string;
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {

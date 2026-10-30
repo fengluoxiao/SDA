@@ -32,7 +32,7 @@ public final class SdaModule: Module {
    }
    #endif
   }
-  OnDestroy { player.locked { player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
+  OnDestroy { player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
@@ -103,6 +103,10 @@ public final class SdaModule: Module {
    let asset = AVURLAsset(url:u); var result: [String:Any] = ["durationMs":player.mediaDuration(u)]
    for item in asset.commonMetadata { if item.commonKey == .commonKeyTitle { result["title"] = item.stringValue }; if item.commonKey == .commonKeyArtist { result["artist"] = item.stringValue }; if item.commonKey == .commonKeyAlbumName { result["album"] = item.stringValue }; if item.commonKey == .commonKeyArtwork, let data = item.dataValue { result["coverUri"] = "data:image/jpeg;base64,"+data.base64EncodedString(); if let color = ArtworkColor.bottomBand(data) { result["artworkColor"] = color } } }
    return try player.json(result)
+  }
+  AsyncFunction("prepareStereoTrack") { (uri:String,name:String,hash:String) in
+   try player.prepareStereoTrack(uri,name,hash)
+   return true
   }
   AsyncFunction("contentHash") { (uri:String) in
    guard let u = URL(string:uri) else { throw SdaError.message("文件地址无效") }; let scoped=u.startAccessingSecurityScopedResource();defer { if scoped { u.stopAccessingSecurityScopedResource() } }

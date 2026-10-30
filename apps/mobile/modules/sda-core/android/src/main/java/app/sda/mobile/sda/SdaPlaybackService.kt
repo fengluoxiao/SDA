@@ -84,7 +84,8 @@ object PlaybackKeepAlive {
         failure = ""
         PlaybackAudioFocus.begin(context, token)
         try {
-            context.applicationContext.startForegroundService(Intent(context, SdaPlaybackService::class.java))
+            if (serviceRunning) SdaPlaybackService.refresh()
+            else context.applicationContext.startForegroundService(Intent(context, SdaPlaybackService::class.java))
         } catch (error: RuntimeException) {
             failure = error.javaClass.simpleName
             Log.w("SdaPlayback", "Cannot start background playback lease: $failure")
