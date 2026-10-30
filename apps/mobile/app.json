@@ -2,7 +2,7 @@
   "expo": {
     "name": "SDA",
     "slug": "sda",
-    "version": "0.9.3",
+    "version": "0.9.35",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#0c101c",
@@ -44,7 +44,7 @@
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",
-      "buildNumber": "935"
+      "buildNumber": "936"
     },
     "android": {
       "package": "app.sda.mobile",
@@ -54,7 +54,7 @@
         "monochromeImage": "./assets/monochrome-icon.png",
         "backgroundColor": "#202223"
       },
-      "versionCode": 935
+      "versionCode": 936
     },
     "plugins": [
       "./plugins/with-ios-deployment"
@@ -67,7 +67,7 @@
       "backgroundColor": "#FFFFFF"
     },
     "extra": {
-      "androidReleaseVersion": "0.9.3A2"
+      "androidReleaseVersion": "0.9.35"
     }
   }
 }
