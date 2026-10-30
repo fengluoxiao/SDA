@@ -8,7 +8,7 @@ pub struct BedProcessor {
 }
 impl BedProcessor {
     pub fn new(programme_db:f32,makeup_db:f32,spatial:bool)->Result<Self,String>{
-        if !programme_db.is_finite()||!(-60.0..=0.0).contains(&programme_db)||!matches!(makeup_db,0.0|2.5){return Err("invalid offline programme gain".into());}
+        if !programme_db.is_finite()||!(-60.0..=0.0).contains(&programme_db)||!matches!(makeup_db,0.0|1.8|2.5){return Err("invalid offline programme gain".into());}
         let mut control=auxiliary_balance::AuxiliaryBalance::directional_detail(48000);control.set_enabled(spatial,true,0);
         let shelf=dsp::Biquad::highshelf(48000,4000.,std::f32::consts::FRAC_1_SQRT_2,0.6)?;
         Ok(Self{sources:std::array::from_fn(|i|Source{kind:SourceKind::Bed,bed_label:Some(LABELS[i].into()),..Source::default()}),solver:vbap::VbapSolver::new(),control,shelf:[shelf;12],at:0,spatial,programme:10f32.powf(programme_db/20.),output:10f32.powf((programme_db+makeup_db)/20.)})
@@ -59,8 +59,17 @@ mod tests {
     use super::*;
     #[test]
     fn disabled_spatial_is_exact_and_programme_gain_is_linked(){
-        let mut dry=BedProcessor::new(0.,0.,false).unwrap();let mut gain=BedProcessor::new(-6.,2.5,false).unwrap();
-        for i in 0..12000 {let input=std::array::from_fn(|ch|((i+ch*5)as f32*0.13).sin()*0.2);assert_eq!(dry.process(input).unwrap(),input);let actual=gain.process(input).unwrap();for ch in 0..12 {assert_eq!(actual[ch],input[ch]*10f32.powf(-3.5/20.));}}
+        let mut dry=BedProcessor::new(0.,0.,false).unwrap();
+        let makeups=[0.0_f32,1.8,2.5]; // Unity stereo, current immersive and legacy authored calibration.
+        let mut gains=makeups.map(|db|BedProcessor::new(-6.,db,false).unwrap());
+        for i in 0..12000 {
+            let input=std::array::from_fn(|ch|((i+ch*5)as f32*0.13).sin()*0.2);
+            assert_eq!(dry.process(input).unwrap(),input);
+            for (gain,makeup) in gains.iter_mut().zip(makeups) {
+                let actual=gain.process(input).unwrap();
+                for ch in 0..12 {assert_eq!(actual[ch],input[ch]*10f32.powf((-6.+makeup)/20.));}
+            }
+        }
     }
     #[test]
     fn directional_source_kernel_protects_front_and_lfe_and_enhances_rear_detail(){

@@ -2368,7 +2368,7 @@ export function App() {
                   onChange={(event) => changeAlacStereoUpmix(event.target.checked)} />
               </label>
             </fieldset>}
-            <p className="dim">固定节目增益采用 −18 LUFS 监听参考；开启时使用 +2.5 dB 输出补偿。峰值保护始终工作，上混另保留 −2 dB 校准。</p>
+            <p className="dim">固定节目增益采用 −18 LUFS 监听参考；指定空间格式开启时使用 +1.8 dB 输出补偿，立体声及上混不叠加该补偿。峰值保护始终工作，上混另保留 −2 dB 校准。</p>
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"||track?.codec==="sdar"}>

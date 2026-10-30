@@ -68,7 +68,7 @@ export async function exportAdmMaster(job: any, check: () => void, progress: (st
         }
         const measurement=reference.measurement,decision=reference.decision(measuredFrames>=frames);
         const programmeGainDb=volumeBalance?(decision.gainDb??0):0;
-        const programmeMakeupDb=volumeBalance?2.5:0;
+        const programmeMakeupDb=volumeBalance?1.8:0;
 
         const source = await readSourceMetadata(job.inputPath, check);
         if (!source.common.title) {

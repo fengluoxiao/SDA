@@ -37,13 +37,15 @@ def main():
     policy_match = re.search(r'PROGRAMME_BALANCE_POLICY\s*:\s*&str\s*=\s*"([^"]+)"', (ROOT / 'crates/sda-native/src/balance.rs').read_text(encoding='utf-8'))
     assert policy_match, 'Missing programme balance policy'
     policy = policy_match.group(1)
+    makeup_match = re.search(r'\bif\s+self\.program_enabled\s*&&\s*\(named_format\s*\|\|\s*self\.dolby_spatial_programme_seen\)\s*\{\s*([\d.]+)\s*\}', renderer)
+    assert makeup_match, 'Missing immersive programme calibration'
     if sys.argv[1] == 'stage':
         shader = (ROOT / 'apps/native-renderer/src/vulkan_resident.spv').read_bytes()
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
         prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'packages/core/', 'packages/player/', 'scripts/')
         extensions = ('.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml')
         info = {'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
-                'stereoProgrammeMakeupDb': 0, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
+                'programmeOutputMakeupDb': float(makeup_match.group(1)), 'stereoProgrammeMakeupDb': 0, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
                 'officialAndroidRelease': True, 'dolbyDownmixTrims': True, 'downmixTrimLayoutPolicy': 'surround-height-tier-v1', 'decoderSubmoduleCommit': git('-C', str(ROOT / 'harletty-bridge'), 'rev-parse', 'HEAD'), 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,
                 'sourceHashes': {name: digest((ROOT / name).read_bytes()) for name in files if name and name.startswith(prefixes) and name.endswith(extensions)},

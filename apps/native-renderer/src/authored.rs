@@ -669,7 +669,7 @@ mod scene_tests {
         }
         for volume in [false, true] {
             let programme_db = if volume { -6. } else { 0. };
-            let makeup_db = if volume { 2.5 } else { 0. };
+            let makeup_db = 0.0; // Ordinary stereo upmix has no extra programme makeup.
             for spatial in [false, true] {
                 let mut processor =
                     crate::bed_export::BedProcessor::new(programme_db, makeup_db, spatial).unwrap();
