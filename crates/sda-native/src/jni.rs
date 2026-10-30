@@ -536,3 +536,32 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSdarMetadata(mu
  let result=(||->Result<String,String>{let path:String=env.get_string(&path).map_err(|e|e.to_string())?.into();if !sda_format::BedFile::is_sda(&path){return Ok("null".into());}Ok(sda_format::metadata::track_metadata(path)?.to_string())})();
  let text=match result{Ok(text)=>text,Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
+
+// File analysis is owned by the feeder and stays outside the playback mutex.
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReferenceCreate(mut env: JNIEnv, _class: JClass, path: JString, alac: jni::sys::jboolean) -> jlong {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        crate::stereo_reference::FreshStereoReference::open(path, alac != 0)
+    })).unwrap_or_else(|_| Err("stereo reference initialization failed".into()));
+    match result {
+        Ok(reference) => Box::into_raw(Box::new(reference)) as jlong,
+        Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); 0 }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReferenceStep(mut env: JNIEnv, _class: JClass, reference: jlong) -> jni::sys::jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
+        if reference == 0 { return Err("stereo reference unavailable".into()); }
+        let reference = unsafe { &mut *(reference as *mut crate::stereo_reference::FreshStereoReference) };
+        serde_json::to_string(&reference.step(65536)?).map_err(|e| e.to_string())
+    })).unwrap_or_else(|_| Err("stereo reference analysis failed".into()));
+    match result {
+        Ok(json) => env.new_string(json).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReferenceClose(_env: JNIEnv, _class: JClass, reference: jlong) {
+    if reference != 0 { drop(unsafe { Box::from_raw(reference as *mut crate::stereo_reference::FreshStereoReference) }); }
+}

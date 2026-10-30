@@ -608,7 +608,7 @@ class SdaModule : Module() {
                     }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
                     check(balanceError.isEmpty()) { balanceError }
-                    if (!isAv3a && !isSdar) loudnessCache.getString(cacheKey, null)?.let { cached ->
+                    if (!isAlac && !isMp3 && !isAv3a && !isSdar) loudnessCache.getString(cacheKey, null)?.let { cached ->
                         // A damaged/stale cache is a miss, never a playback failure.
                         val valid = runCatching {
                             val m = JSONObject(cached)
@@ -659,6 +659,28 @@ class SdaModule : Module() {
                 try {
                     try { android.os.Process.setThreadPriority(-4) } catch (_: SecurityException) { }
                     audioCpuPolicy = JSONObject(SdaEngine.nativePrepareDecoderThread())
+
+                    // A fresh full-source reference precedes any stereo PCM. The
+                    // analysis handle belongs only to this worker and closes on skip/stop.
+                    if (!isSdar && (isAlac || isMp3)) {
+                        val path = mp3Cache?.absolutePath ?: error("立体声分析输入缺失")
+                        val reference = SdaEngine.nativeStereoReferenceCreate(path, isAlac)
+                        check(reference != 0L) { "立体声响度分析初始化失败" }
+                        try {
+                            while (true) {
+                                if (stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)) return@Thread
+                                val step = JSONObject(SdaEngine.nativeStereoReferenceStep(reference))
+                                if (!step.getBoolean("done")) continue
+                                val measurement = step.getJSONObject("measurement").toString()
+                                synchronized(nativeLock) {
+                                    if (stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)) return@Thread
+                                    val error = SdaEngine.nativeSetMeasuredLoudness(ptr, measurement)
+                                    check(error.isEmpty()) { error }
+                                }
+                                break
+                            }
+                        } finally { SdaEngine.nativeStereoReferenceClose(reference) }
+                    }
 
                     input.use { stream ->
                         val buffer = ByteArray(4 * 1024)
@@ -729,7 +751,7 @@ class SdaModule : Module() {
                                     // Match Windows: save only successfully flushed full
                                     // decodes, not a stopped intro or a failed feed.
                                     val measurement = SdaEngine.nativeCompleteLoudness(ptr)
-                                    if (!isAv3a && !isSdar && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
+                                    if (!isAlac && !isMp3 && !isAv3a && !isSdar && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
                                 }
                             }
                             while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
@@ -764,15 +786,18 @@ class SdaModule : Module() {
                 } catch (error: InterruptedException) {
                     Thread.currentThread().interrupt()
                 } catch (error: Throwable) {
-                    recordFailure(error)
-                    feedError = error.message ?: error.toString()
                     synchronized(nativeLock) {
-                        if (generation == workerGeneration && handle == ptr) {
-                            SdaEngine.nativeClose(ptr)
-                            handle = 0L
+                        // A cancelled analysis must not publish an old failure to the next source.
+                        if (generation == workerGeneration && backgroundSession == playbackSession) {
+                            recordFailure(error)
+                            feedError = error.message ?: error.toString()
+                            if (handle == ptr) {
+                                SdaEngine.nativeClose(ptr)
+                                handle = 0L
+                            }
+                            feedDone = true
                         }
                     }
-                    feedDone = true
                 } finally {
                     if (feedDone && feedError == null && !stopped) PlaybackKeepAlive.finish(context, playbackSession)
                     else PlaybackKeepAlive.end(context, playbackSession)

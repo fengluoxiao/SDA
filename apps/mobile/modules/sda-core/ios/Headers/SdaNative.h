@@ -11,6 +11,10 @@ void sda_ios_close(void *engine);
 char *sda_ios_sdar_metadata(const char *path);
 int32_t sda_ios_is_sdar(const char *path);
 void sda_ios_string_free(char *string);
+// Fresh complete stereo reference. Serialized feeder calls; never an audio callback.
+void *sda_ios_stereo_reference_create(const char *path, bool alac, char **error);
+char *sda_ios_stereo_reference_step(void *reference);
+void sda_ios_stereo_reference_close(void *reference);
 // Control/PCM calls must be serialized by the host; no realtime callback uses this handle.
 void *sda_ios_speakers_create(char **error);
 void *sda_ios_av3a_speakers_create(char **error);

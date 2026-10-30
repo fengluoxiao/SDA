@@ -52,6 +52,7 @@ pub struct VolumeBalance {
     post_counter: usize,
     cached: Option<Measurement>,
     settled: bool,
+    fresh_complete: bool,
     pub gain_db: f64,
     completed: bool,
     early_alac_balance: bool,
@@ -69,7 +70,7 @@ impl VolumeBalance {
         };
     }
     pub fn set_cached(&mut self, cached: Measurement) {
-        if self.decoded_reference.is_some() || self.settled {return;}
+        if self.fresh_complete || self.decoded_reference.is_some() || self.settled {return;}
         self.cached = if cached.blocks >= MIN_BLOCKS
             && cached.integrated_lufs.is_some_and(|v| v.is_finite())
         {
@@ -78,6 +79,18 @@ impl VolumeBalance {
             None
         };
         self.settled = false;
+    }
+    pub fn reference_policy(&self) -> &'static str {
+        if self.fresh_complete { crate::stereo_reference::POLICY } else { PROGRAMME_BALANCE_POLICY }
+    }
+    pub fn set_fresh_complete(&mut self, measurement: Measurement) -> Result<(), String> {
+        if self.settled || self.meter.is_some() || self.decoded_reference.is_some() {
+            return Err("complete stereo reference must be selected before source PCM".into());
+        }
+        self.cached = Some(measurement);
+        self.fresh_complete = true;
+        self.startup_reference = None;
+        Ok(())
     }
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
         self.mpegh_reference = frame.codec == "mpegh";
@@ -126,7 +139,7 @@ impl VolumeBalance {
         let m = self.cached.clone().or_else(|| self.startup_reference.clone()).or_else(|| self.decoded_reference.clone()).or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
         // A frozen reference has already passed its route-specific threshold,
         // including the existing Apple ALAC early-start opt-in.
-        if !ended && m.blocks < MIN_BLOCKS && self.startup_reference.is_none() { return None; }
+        if !ended && m.blocks < MIN_BLOCKS && self.startup_reference.is_none() && !self.fresh_complete { return None; }
         let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
         self.gain_db = master_gain(lufs, if self.mpegh_reference { None } else { m.true_peak_dbtp });
         self.settled = true;
@@ -159,7 +172,7 @@ impl VolumeBalance {
         let measurement = self.cached.as_ref()
             .or(self.startup_reference.as_ref())
             .or(frame.measurement.as_ref());
-        if let Some(m) = measurement.filter(|m| m.blocks >= required_blocks) {
+        if let Some(m) = measurement.filter(|m| self.fresh_complete || m.blocks >= required_blocks) {
             if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
                 self.gain_db = master_gain(lufs,
                     if f.codec != "mpegh" && (stereo || referenced) { m.true_peak_dbtp } else { None });
@@ -618,4 +631,30 @@ mod fixed_programme_tests {
         next.route(&pending("alac",0,MIN_BLOCKS,-30.));assert_eq!(next.gain_db,expected);
     }
 
+}
+
+#[cfg(test)]
+mod fresh_complete_tests {
+    use super::*;
+    #[test]
+    fn complete_short_reference_is_used_from_origin_and_survives_late_intro_data() {
+        let mut balance=VolumeBalance { enabled:true,..Default::default() };
+        balance.enable_alac_startup();
+        balance.set_fresh_complete(Measurement { integrated_lufs:Some(-8.),blocks:3,true_peak_dbtp:Some(-1.) }).unwrap();
+        assert!(balance.startup_measurement_ready());
+        let Command::SetProgramGain {gain,at}=balance.prime_av3a_startup(0,false).unwrap() else {panic!()};
+        assert_eq!(at,Some(0));assert!((20.*f64::from(gain).log10()+10.).abs()<1e-5);
+        assert_eq!(balance.reference_policy(),crate::stereo_reference::POLICY);
+        balance.set_cached(Measurement {integrated_lufs:Some(-30.),blocks:100,true_peak_dbtp:Some(-20.)});
+        assert_eq!(balance.gain_db,-10.);
+        assert!(balance.set_fresh_complete(Measurement::default()).is_err(),"a playing source must not be retargeted");
+        balance.reset();assert_eq!(balance.reference_policy(),PROGRAMME_BALANCE_POLICY);assert!(!balance.startup_measurement_ready());
+    }
+    #[test]
+    fn partial_and_complete_references_keep_distinct_short_track_rules() {
+        let measurement=Measurement {integrated_lufs:Some(-9.),blocks:2,true_peak_dbtp:Some(-1.)};
+        let mut legacy=VolumeBalance {enabled:true,..Default::default()};legacy.set_cached(measurement.clone());assert!(!legacy.startup_measurement_ready());
+        let mut fresh=VolumeBalance {enabled:true,..Default::default()};fresh.set_fresh_complete(measurement).unwrap();
+        assert!(fresh.prime_av3a_startup(0,false).is_some());assert_eq!(fresh.gain_db,-9.);
+    }
 }

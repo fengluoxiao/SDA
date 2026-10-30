@@ -557,14 +557,14 @@ final class SdaPlayer {
     // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
     nativeLoudnessPrefix = input.isAlac ? "sda.loudness.alac.stereo.v1." : (ext == "mhas" ? "sda.loudness.mpegh.prelimit.v1." : "sda.loudness.")
     let loudnessKey = (systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix) + hash
-    if !input.isAv3a, !input.isSdar, !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
+    if !input.isAlac, ext != "mp3", !input.isAv3a, !input.isSdar, !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
     // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
     let analysisInput: CompressedInput?
     if systemSpatial?.requiresBalancePreanalysis == true { analysisInput = try CompressedInput(url:url,name:name) } else { analysisInput = nil }
     let token = generation
     if !sessionActivationPending { beginPreparation(token) }
     recordPlaybackEvent("play"); updateNowPlaying()
-    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, analysisInput:analysisInput) }
+    feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, analysisInput:analysisInput, stereoReferencePath:(!input.isSdar && (input.isAlac || ext == "mp3")) ? url.path : nil) }
     return try json(["layout":layout,"authoredPlayback":input.isSdar])
    } catch { stopNative(); throw error }
   }
@@ -599,11 +599,38 @@ final class SdaPlayer {
    guard generation == token, let system = systemSpatial else { return false }
    let measurement = try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
    try system.restartAfterMeasurement(measurement,decodeReply:decodeReply)
-   if !hash.isEmpty { prefs.set(measurement,forKey:system.loudnessPrefix+hash) }
+   if !analysis.isAlac, !hash.isEmpty { prefs.set(measurement,forKey:system.loudnessPrefix+hash) }
    return true
   }
  }
- func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?) {
+ // A feeder-owned, fresh full-source pass; no PCM is queued or persisted here.
+ func prepareNativeStereoReference(path: String?, alac: Bool, token: Int) throws -> Bool {
+  guard let path else { return locked { generation == token } }
+  guard locked({ generation == token && hasPlayback && systemSpatial == nil }) else { return false }
+  var error: UnsafeMutablePointer<CChar>?
+  guard let reference = sda_ios_stereo_reference_create(path, alac, &error) else {
+   _ = try decodeReply(error); throw SdaError.message("立体声响度分析初始化失败")
+  }
+  defer { sda_ios_stereo_reference_close(reference) }
+  while true {
+   guard locked({ generation == token && hasPlayback && systemSpatial == nil }) else { return false }
+   let completed: [String:Any]? = try autoreleasepool {
+    guard let step = try decodeReply(sda_ios_stereo_reference_step(reference)) as? [String:Any] else {
+     throw SdaError.message("立体声响度分析结果无效")
+    }
+    if step["done"] as? Bool != true { return nil }
+    guard let measurement = step["measurement"] as? [String:Any] else { throw SdaError.message("立体声整曲响度参考缺失") }
+    return measurement
+   }
+   guard let measurement = completed else { continue }
+   return try locked {
+    guard generation == token && hasPlayback && systemSpatial == nil else { return false }
+    _ = try command("measured", ["json":try json(measurement)])
+    return true
+   }
+  }
+ }
+ func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?, stereoReferencePath: String? = nil) {
   var finished = false
   var endDrain = PlaybackEndDrain()
   var lastClock: UInt64 = 0
@@ -612,6 +639,7 @@ final class SdaPlayer {
   do {
    let systemMode = locked { systemSpatial != nil && generation == token }
    if systemMode { if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return }; lastProgress = Date() }
+   else { if !(try prepareNativeStereoReference(path:stereoReferencePath,alac:input.isAlac,token:token)) { return }; lastProgress = Date() }
    while true {
     // A long-lived GCD loop must drain Cocoa temporaries per iteration.
     let keepFeeding = try autoreleasepool { () throws -> Bool in
@@ -682,7 +710,7 @@ final class SdaPlayer {
      if eof {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
-      if !input.isAv3a, !input.isSdar, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
+      if !input.isAlac, !mp3, !input.isAv3a, !input.isSdar, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
       let finalStatus = try command("status") as! [String:Any]
       guard let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 else {
        throw SdaError.message("已读完音轨，但没有解码出任何音频")

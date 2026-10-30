@@ -40,6 +40,7 @@ mod protocol;
 mod headphone_orientation;
 pub mod mpegh;
 pub mod balance;
+pub mod stereo_reference;
 mod alac_pcm;
 mod sdar;
 
@@ -679,7 +680,7 @@ impl MobileEngine {
             object_convolver_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.object_convolver_count.load(std::sync::atomic::Ordering::Acquire)),
             continuous_object_count: self.pipeline.as_ref().map_or(0, |p| p.telemetry.continuous_object_count.load(std::sync::atomic::Ordering::Acquire)),
             near_field_enabled: self.pipeline.as_ref().is_some_and(|p| p.telemetry.near_field_enabled.load(std::sync::atomic::Ordering::Acquire)),
-            programme_balance_policy: balance::PROGRAMME_BALANCE_POLICY,
+            programme_balance_policy: self.balance.reference_policy(),
             volume_balance_enabled: self.balance.enabled,
             volume_balance_eligible: self.balance.eligible,
             preparing_audio: self.balance.enabled && pending_len > 0
@@ -741,8 +742,16 @@ impl MobileEngine {
     }
     pub fn set_measured_loudness(&mut self, json: &str) -> EngineResult<()> {
         if self.sdar_source.is_some(){return Ok(());}
-        let measurement: balance::Measurement=serde_json::from_str(json).map_err(|e|e.to_string())?;
-        self.balance.set_cached(measurement);
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if value.get("policy").and_then(serde_json::Value::as_str) == Some(stereo_reference::POLICY) {
+            let reference: stereo_reference::CompleteReference = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            reference.validate()?;
+            if self.decoded_sample_pos() != 0 { return Err("complete stereo reference must precede playback PCM".into()); }
+            self.balance.set_fresh_complete(reference.measurement)?;
+        } else {
+            let measurement: balance::Measurement = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            self.balance.set_cached(measurement);
+        }
         Ok(())
     }
     pub fn complete_loudness_json(&self) -> String {

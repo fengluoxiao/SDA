@@ -1248,3 +1248,55 @@ pub unsafe extern "C" fn sda_ios_sdar_metadata(path:*const c_char)->*mut c_char 
 
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_is_sdar(path:*const c_char)->i32{std::panic::catch_unwind(||{let Ok(path)=(unsafe{text(path)})else{return 0};i32::from(sda_format::BedFile::is_sda(path))}).unwrap_or(0)}
+
+// The feeder owns the analysis handle; no callback/engine lock is needed.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_stereo_reference_create(path: *const c_char, alac: bool, error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::stereo_reference::FreshStereoReference::open(unsafe { text(path)? }, alac)
+    })).unwrap_or_else(|_| Err("stereo reference initialization failed".into()));
+    match result {
+        Ok(reference) => Box::into_raw(Box::new(reference)).cast(),
+        Err(message) => { if !error.is_null() { unsafe { *error = reply(Err(message)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_stereo_reference_step(p: *mut std::ffi::c_void) -> *mut c_char {
+    guarded(|| {
+        let reference = unsafe { p.cast::<crate::stereo_reference::FreshStereoReference>().as_mut() }.ok_or("stereo reference unavailable")?;
+        serde_json::to_value(reference.step(65536)?).map_err(|e| e.to_string())
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_stereo_reference_close(p: *mut std::ffi::c_void) {
+    if !p.is_null() { drop(unsafe { Box::from_raw(p.cast::<crate::stereo_reference::FreshStereoReference>()) }); }
+}
+
+#[cfg(test)]
+mod fresh_reference_bridge_tests {
+    use super::*;
+    fn decode(p:*mut c_char)->Value {
+        let result:Value=serde_json::from_str(unsafe {CStr::from_ptr(p)}.to_str().unwrap()).unwrap();
+        unsafe {sda_ios_string_free(p)};assert_eq!(result["ok"],true,"{result}");result["value"].clone()
+    }
+    #[test]
+    fn fresh_reference_bridge_accepts_complete_short_source_before_pcm() {
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/loudness/short-48000.m4a");
+        let path=CString::new(path.to_str().unwrap()).unwrap();let mut error=std::ptr::null_mut();
+        let reference=unsafe {sda_ios_stereo_reference_create(path.as_ptr(),true,&mut error)};
+        if reference.is_null() {panic!("create failed: {}",decode(error));}
+        let measured=loop {
+            let step=decode(unsafe {sda_ios_stereo_reference_step(reference)});
+            if step["done"]==true {break step["measurement"].clone();}
+            assert!(step.get("measurement").is_none());
+        };
+        unsafe {sda_ios_stereo_reference_close(reference)};
+        assert!(measured["blocks"].as_u64().unwrap()<crate::balance::MIN_BLOCKS as u64);
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        engine.set_measured_loudness(&measured.to_string()).unwrap();
+        assert_eq!(engine.balance.reference_policy(),crate::stereo_reference::POLICY);
+        engine.balance.enabled=true;assert!(engine.balance.prime_av3a_startup(0,false).is_some());assert!(engine.balance.gain_db < -5.);
+        let mut partial=measured;partial["complete"]=json!(false);
+        let mut other=MobileEngine::new(EngineConfig::default(),None).unwrap();assert!(other.set_measured_loudness(&partial.to_string()).is_err());
+    }
+}
