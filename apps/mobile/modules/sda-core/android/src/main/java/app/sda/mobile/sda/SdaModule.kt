@@ -220,12 +220,16 @@ class SdaModule : Module() {
             activeInput = null
             val worker = feedThread
             worker?.interrupt()
-            if (worker != null) {
-                worker.join(2_000)
-                check(!worker.isAlive) { "Timed out stopping audio feed thread; native handle retained" }
+            try {
+                if (worker != null) {
+                    worker.join(2_000)
+                    check(!worker.isAlive) { "Timed out stopping audio feed thread; native handle retained" }
+                }
+                feedThread = null
+            } finally {
+                // A timed-out/cancelled handoff must not retain the old service lease.
+                preservePlaybackLease = false
             }
-            feedThread = null
-            preservePlaybackLease = false
         }
     }
 
@@ -966,7 +970,7 @@ class SdaModule : Module() {
 
         OnDestroy {
             destroyed = true
-            playbackCommands.shutdownNow()
+            playbackCommands.shutdownNow().forEach { (it as? java.util.concurrent.Future<*>)?.cancel(true) }
             stereoReferences.clear()
             audioPolicyMonitor?.shutdownNow(); audioPolicyMonitor = null
             diagnostics?.configure(false) { JSONObject() }
