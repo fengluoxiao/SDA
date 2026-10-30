@@ -40,6 +40,7 @@ pub struct Context<'a> {
     pub(crate) spatial_layer: crate::spatial_layer::Settings,
     pub(crate) auxiliary_gains: &'a [f32; convolution::DEFAULT_PARTITION],
     pub(crate) temporal: crate::temporal_detail::Control<'a>,
+    pub(crate) downmix_trims: &'a crate::dolby_trim_render::Timeline,
 }
 #[derive(Clone, Copy, Default)]
 pub struct Frame {
@@ -199,9 +200,9 @@ fn mix_source(
         // Metadata follows the codec clock even when a source is
         // suspended; its next audible sample must use the current state.
         if source.kind == SourceKind::Object {
-            let mut changed = false;
+            let mut changed = crate::dolby_trim_render::update_warp(ctx.downmix_trims,source,at);
             if let Some(event) = take_due(&mut source.spatial_events, at) {
-                changed = Engine::start_source_motion(source, event);
+                changed |= Engine::start_source_motion(source, event);
             }
             // Preserve the authored motion resolution independently of
             // the FFT partition used by long room/headphone filters.
@@ -235,7 +236,7 @@ fn mix_source(
                         buses: if ctx.extent.enabled {
                             source_extent::route(
                                 &vbap,
-                                source.position,
+                                source.render_position(),
                                 head_pose,
                                 source.extent,
                                 source.horizontal_only,
@@ -245,7 +246,7 @@ fn mix_source(
                         } else {
                             bus_renderer::route_zoned(
                                 &vbap,
-                                source.position,
+                                source.render_position(),
                                 head_pose,
                                 source.spread,
                                 source.diffuse,
@@ -338,6 +339,7 @@ fn mix_source(
             * source.gain
             * Engine::distance_gain(source)
             * if source.muted { 0.0 } else { 1.0 };
+        sample *= crate::dolby_trim_render::source_gain(ctx.downmix_trims, source, ctx.layout, at);
         sample *= ctx.spatial_layer.source_gain(source, at);
         sample = crate::auxiliary_balance::process_source_detail(source, sample, at,
             ctx.auxiliary_gains[block_index], &mut buffer.frames[block_index].auxiliary_reference,
@@ -383,7 +385,7 @@ fn mix_source(
                 if block_index == 0 {
                     source.diffuse_route = bus_renderer::route_zoned(
                         &vbap,
-                        source.position,
+                        source.render_position(),
                         head_pose,
                         0.0,
                         1.0,
@@ -408,7 +410,7 @@ fn mix_source(
         // clocks, filters and envelopes running, but avoid zero bus work.
         let bus_sample = sample * ROOM_SPEAKER_REFERENCE_GAIN * (1.0 - mix);
         if block_index == 0 {
-            let mut position = source.position;
+            let mut position = [source.position[0],source.position[1]*source.dolby_y_scale,source.position[2]];
             if source.horizontal_only {
                 position[2] = 0.0;
             }
@@ -458,14 +460,14 @@ fn mix_source(
                 ..ctx.near_field
             };
             source.near_target = if ctx.near_active {
-                crate::near_field::gains(source.position, head_pose, near_settings)
+                crate::near_field::gains(source.render_position(), head_pose, near_settings)
             } else if let Some(position) = Engine::physical_near_position(source, near_settings) {
                 crate::near_field::gains(position, head_pose, near_settings)
             } else {
                 [1.0; 2]
             };
         }
-        let cue_gain = source.motion_cues.next(source.position, at, ctx.sample_rate, ctx.bundled_cues);
+        let cue_gain = source.motion_cues.next([source.position[0],source.position[1]*source.dolby_y_scale,source.position[2]], at, ctx.sample_rate, ctx.bundled_cues);
         let input = sample * ROOM_SPEAKER_REFERENCE_GAIN * mix;
         let continuous = source.continuous.as_mut().unwrap();
         if block_index == 0 {

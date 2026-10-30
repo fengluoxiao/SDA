@@ -8,6 +8,7 @@ export class AlacResampler {
   private inputSamples = 0;
   private outputSamples = 0;
   private events: ObjectEvent[] = [];
+  private downmixTrims: import("@sda/core").DownmixTrimUpdate[] = [];
 
   constructor(private readonly targetRate: number) {}
 
@@ -40,6 +41,7 @@ export class AlacResampler {
     const samples = frame.channels[0]?.length ?? 0;
     if (!count || frame.channels.some(channel => channel.length !== samples)) throw new Error("Invalid PCM channel lengths");
     const ratio = this.targetRate / frame.sampleRate;
+    for (const update of frame.downmixTrims ?? []) this.downmixTrims.push({ ...update, samplePos: Math.round(update.samplePos * ratio) });
     for (const event of frame.events) {
       const samplePos = Math.round(event.samplePos * ratio);
       this.events.push({ ...event, samplePos, rampDuration: Math.round((event.samplePos + event.rampDuration) * ratio) - samplePos });
@@ -73,6 +75,7 @@ export class AlacResampler {
     this.inputSamples = 0;
     this.outputSamples = 0;
     this.events = [];
+    this.downmixTrims = [];
   }
 
   private output(pcm: Float32Array): DecodedFrameData | null {
@@ -87,6 +90,8 @@ export class AlacResampler {
     // SRC retains lookahead. Only release events once their corresponding PCM
     // exists, including events carried by the final flushed samples.
     const end = this.outputSamples + samples;
+    const readyTrims = this.downmixTrims.filter(update => update.samplePos < end);
+    this.downmixTrims = this.downmixTrims.filter(update => update.samplePos >= end);
     const readyEvents = this.events.filter(event => event.samplePos < end);
     this.events = this.events.filter(event => event.samplePos >= end);
     const frame = {
@@ -95,6 +100,7 @@ export class AlacResampler {
       samplePos: this.outputSamples,
       channels,
       events: readyEvents,
+      downmixTrims: readyTrims,
       rampDuration: Math.round(this.template.rampDuration * this.targetRate / this.template.sampleRate),
     };
     this.outputSamples += samples;

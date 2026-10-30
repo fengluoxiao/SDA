@@ -23,6 +23,8 @@ on:
       - 'scripts/prepare-mpegh.mjs'
       - 'scripts/prepare-ac4.mjs'
       - 'crates/sda-native/**'
+      - 'crates/sda-render-metadata/**'
+      - 'vendor/truehd/**'
       - 'apps/native-renderer/**'
       - 'packages/core/**'
       - 'packages/demux/**'

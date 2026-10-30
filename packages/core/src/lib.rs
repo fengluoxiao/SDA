@@ -8,6 +8,7 @@
 //! ADM cartesian `[x, y, z]` (x+ = right, y+ = front, z+ = up), `sample_pos`
 //! is absolute on the codec sample clock, `ramp_duration` is in samples.
 
+pub mod dolby_trim;
 use std::collections::VecDeque;
 
 #[cfg(feature = "wasm")]
@@ -100,6 +101,7 @@ pub const MAX_DECODED_SOURCE_CHANNELS: usize = 128;
 
 /// Decoded frame handed to JavaScript.
 pub struct FrameData {
+    pub downmix_trims: Vec<dolby_trim::TrimUpdate>,
     /// BS.1770 measurement of a neutral decoded programme reference, before HRTF/user processing.
     pub reference_loudness: Option<loudness::ReferenceLoudness>,
     pub compatibility_bed: Option<CompatibilityBed>,
@@ -135,6 +137,7 @@ impl CompatibilityBed {
 }
 impl FrameData {
     pub fn validate_source_count(&self) -> Result<(), String> {
+        if self.downmix_trims.len() > 128 || self.downmix_trims.iter().any(|u| !u.trims.valid()) { return Err("invalid Dolby trim metadata".into()); }
         if self.channels.len() > MAX_DECODED_SOURCE_CHANNELS {
             return Err(format!("decoded source count {} exceeds {MAX_DECODED_SOURCE_CHANNELS}", self.channels.len()));
         }
@@ -146,6 +149,7 @@ impl FrameData {
         self.labels = bed.labels;
         self.raw_bed_labels = self.labels.clone();
         self.events.clear();
+        self.downmix_trims.clear();
         self.object_channels.clear();
         self.ramp_duration = 0;
         true
@@ -215,6 +219,11 @@ impl DecodedFrame {
     #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = eventsJson))]
     pub fn events_json(&self) -> String {
         serde_json::to_string(&self.data.events).unwrap_or_default()
+    }
+
+    #[cfg_attr(feature = "wasm", wasm_bindgen(getter, js_name = downmixTrimsJson))]
+    pub fn downmix_trims_json(&self) -> String {
+        serde_json::to_string(&self.data.downmix_trims).unwrap_or_else(|_| "[]".into())
     }
 
     /// Sparse: empty when the object↔channel mapping didn't change.
@@ -549,7 +558,7 @@ mod tests {
         let target=ObjectEvent { zone_exclusion: vec![], horizontal_only: false, id:42,sample_pos:0,has_pos:true,pos:[-0.7,0.7,0.2],gain_db:0.0,size:[0.0;3],anchor:"room".into(),diffuse:0.0,distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:0 };
         for index in 0..3 {
             let events=if index==0 { vec![target.clone()] } else if index==1 { let mut gain=target.clone();gain.has_pos=false;gain.pos=[0.0;3];gain.gain_db=-6.0;gain.sample_pos=16;vec![gain] } else { vec![] };
-            decoder.queue.push_back(FrameData { reference_loudness: None, compatibility_bed:Some(CompatibilityBed {channels:vec![vec![0.2;16],vec![0.3;16]],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:index*16,channels:vec![vec![0.5;16]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events,object_channels:vec![],program_loudness:None,ramp_duration:0 });
+            decoder.queue.push_back(FrameData { downmix_trims: vec![], reference_loudness: None, compatibility_bed:Some(CompatibilityBed {channels:vec![vec![0.2;16],vec![0.3;16]],labels:vec!["L".into(),"R".into()]}),codec:"eac3",sample_rate:48000,sample_pos:index*16,channels:vec![vec![0.5;16]],labels:vec!["Obj_42".into()],raw_bed_labels:vec![],events,object_channels:vec![],program_loudness:None,ramp_duration:0 });
         }
         decoder.next_frame().unwrap();decoder.set_object_rendering(false);decoder.next_frame().unwrap();
         decoder.set_object_rendering(true);let resumed=decoder.next_frame().unwrap();

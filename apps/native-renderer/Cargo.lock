@@ -815,9 +815,17 @@ dependencies = [
  "rayon",
  "rustfft",
  "sda-format",
+ "sda-render-metadata",
  "serde",
  "serde_json",
  "windows",
+]
+
+[[package]]
+name = "sda-render-metadata"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

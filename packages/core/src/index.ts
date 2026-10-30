@@ -68,7 +68,20 @@ export interface FrameLoudness {
   blocks: number;
 }
 
+export interface DolbyTrimConfiguration {
+  mode: 0 | 1 | 2;
+  centreDb: number | null; surroundDb: number | null; heightDb: number | null;
+  topBottomY: number | null; listenerY: number | null;
+}
+export interface DolbyTrims {
+  warpMode: 0 | 1; globalMode: 0 | 1 | 2;
+  configurations: DolbyTrimConfiguration[];
+  disabledObjects: number[]; disabledBeds: string[];
+}
+export interface DownmixTrimUpdate { samplePos: number; trims: DolbyTrims }
+
 export interface DecodedFrameData {
+  downmixTrims?: DownmixTrimUpdate[];
   codec: string;
   sampleRate: number;
   samplePos: number;
@@ -164,6 +177,7 @@ export class SdaDecoder {
     }
     const data: DecodedFrameData = {
       codec: frame.codec,
+      downmixTrims: JSON.parse((frame as unknown as {downmixTrimsJson?: string}).downmixTrimsJson ?? "[]") as DownmixTrimUpdate[],
       sampleRate: frame.sampleRate,
       samplePos: frame.samplePos,
       channels,

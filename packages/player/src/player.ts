@@ -166,6 +166,7 @@ export interface NativeRendererSourceDeclaration {
 /** Optional mirror transport to the native Rust sidecar. The player continues
  * feeding Web Audio until a later native-output mode explicitly takes ownership. */
 export interface NativeRendererSink {
+  setDownmixTrims?(updates: readonly import("@sda/core").DownmixTrimUpdate[]): void | Promise<void>;
   /** Resolves only after the sidecar has created or rebound the source route. */
   addSource(source: NativeRendererSourceDeclaration): void | Promise<void>;
   removeSource(id: string, atSample: number): void | Promise<void>;
@@ -2351,6 +2352,10 @@ export class SdaPlayer {
         const submit = async () => {
           if(!current())return;
           let result;
+          if (frame.downmixTrims?.length) {
+            if (!this.nativeRendererSink!.setDownmixTrims) throw new Error("请重启 Electron 以加载 Dolby downmix trim 接口");
+            await this.nativeRendererSink!.setDownmixTrims(frame.downmixTrims);
+          }
           if (this.nativeRendererSink!.frameWithEvents) {
             result = await this.nativeRendererSink!.frameWithEvents(frame.samplePos, entries, events, sourceDeclarations);
           } else {

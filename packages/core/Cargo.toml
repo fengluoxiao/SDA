@@ -15,13 +15,14 @@ default = ["wasm"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys"]
 
 [dependencies]
+sda-render-metadata = { path = "../../crates/sda-render-metadata" }
 avs3a = { path = "../../vendor/avs3a" }
 rubato = "0.16.2"
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-truehd = "0.6.3"
+truehd = { version = "0.6.3", path = "../../vendor/truehd" }
 eac3 = { version = "0.7.3", path = "../../harletty-bridge/eac3" }
 dca = { git = "https://github.com/harletty/harletty-bridge.git", rev = "802367f8d36aff550c132118a573693fe50a5256" }
 alac = { version = "0.5.0", default-features = false }

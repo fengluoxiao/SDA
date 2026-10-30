@@ -688,6 +688,11 @@ export function App() {
               if (!ownsNativeSession()) return;
               await enqueueNative(`setProgramEnabled=${enabled}`, () => desktop.nativeRendererProgramEnabled?.(enabled));
             },
+            setDownmixTrims: async (updates) => {
+              if (!ownsNativeSession()) return;
+              if (!desktop.nativeRendererDownmixTrims) throw new Error("请重启 Electron 以加载 Dolby downmix trim 接口");
+              await enqueueNative("setDownmixTrims", () => desktop.nativeRendererDownmixTrims!(updates));
+            },
             setProgramGainDb: async (gainDb, atSample) => {
               if (!ownsNativeSession()) return;
               const gain = gainDb === null || !Number.isFinite(gainDb)

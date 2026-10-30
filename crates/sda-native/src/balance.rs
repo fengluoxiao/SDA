@@ -350,7 +350,7 @@ mod tests {
     }
 
     fn frame(codec: &'static str, at: u64) -> FrameData {
-        FrameData { reference_loudness: None, compatibility_bed: None,
+        FrameData { downmix_trims: vec![], reference_loudness: None, compatibility_bed: None,
             codec,
             sample_rate: 48000,
             sample_pos: at,
@@ -559,7 +559,7 @@ mod tests {
 mod fixed_programme_tests {
     use super::*;
     fn pending(codec: &'static str, at:u64, blocks:usize, lufs:f64) -> PendingFrame {
-        let f=FrameData { reference_loudness:None,compatibility_bed:None,codec,sample_rate:48000,sample_pos:at,
+        let f=FrameData { downmix_trims: vec![], reference_loudness:None,compatibility_bed:None,codec,sample_rate:48000,sample_pos:at,
             channels:vec![vec![0.;1024];2],labels:vec!["L".into(),"R".into()],raw_bed_labels:vec!["L".into(),"R".into()],
             object_channels:vec![],events:vec![],program_loudness:None,ramp_duration:0 };
         PendingFrame {frame:f,measurement:Some(Measurement{integrated_lufs:Some(lufs),blocks,true_peak_dbtp:Some(-2.)})}

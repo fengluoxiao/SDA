@@ -133,7 +133,7 @@ pub(crate) fn process_source_detail(
     {
         let initial = source.auxiliary_route_at == u64::MAX;
         source.auxiliary_route = if source.kind == SourceKind::Object {
-            Route::position(source.position)
+            Route::position(source.render_position())
         } else {
             Route::bed(source, solver)
         };

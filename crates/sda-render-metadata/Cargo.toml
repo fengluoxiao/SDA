@@ -1,0 +1,12 @@
+[package]
+name = "sda-render-metadata"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Portable file-owned rendering metadata shared by SDA decoders and renderers"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"

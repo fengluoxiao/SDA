@@ -54,6 +54,10 @@ impl FrameRouter {
             return Err("PCM channel labels do not match channels".into());
         }
         let mut commands = Vec::new();
+        if !frame.downmix_trims.is_empty() {
+            let updates = frame.downmix_trims;
+            commands.push(RenderCommand::Command(Command::SetDownmixTrims { updates }));
+        }
         // A sparse declaration replaces the mapping; all-bed frames retire it.
         if !mapping.is_empty() || !has_objects {
             for id in self.objects.keys().filter(|id| !mapping.contains_key(id)) {
@@ -165,7 +169,7 @@ mod tests {
     }
 
     fn frame(at: u64, labels: &[&str], mapping: &[(u32, u32)]) -> FrameData {
-        FrameData { reference_loudness: None, compatibility_bed: None, codec: "eac3", sample_rate: 48000, sample_pos: at,
+        FrameData { downmix_trims: vec![], reference_loudness: None, compatibility_bed: None, codec: "eac3", sample_rate: 48000, sample_pos: at,
             channels: labels.iter().enumerate().map(|(i,_)| vec![i as f32 + 1.0; 16]).collect(),
             labels: labels.iter().map(|s| s.to_string()).collect(), raw_bed_labels: vec![],
             events: vec![], object_channels: mapping.iter().map(|&(id,channel)| ObjectChannelDecl {id,channel}).collect(),
@@ -265,6 +269,16 @@ mod tests {
             assert_eq!(entries[0].0,"obj:42");assert_eq!(events.len(),count);
             assert!(!commands.iter().any(|c|matches!(c,RenderCommand::Command(Command::RemoveSource{..}))));
         }
+    }
+
+    #[test]
+    fn dolby_trim_metadata_reaches_shared_renderer_before_pcm_without_coalescing_object_gain() {
+        let mut r=FrameRouter::default();let mut f=frame(100,&["Obj_42"],&[(42,0)]);
+        f.downmix_trims=vec![sda_core::dolby_trim::TrimUpdate{sample_pos:107,trims:sda_core::dolby_trim::DolbyTrims{global_mode:1,disabled_objects:vec![42],..Default::default()}}];
+        let commands=r.route(f).unwrap();
+        let RenderCommand::Command(Command::SetDownmixTrims{updates})=&commands[0] else {panic!("trim must precede PCM");};
+        assert_eq!(updates[0].sample_pos,107);assert_eq!(updates[0].trims.disabled_objects,vec![42]);
+        let RenderCommand::PcmFrame{entries,..}=commands.last().unwrap() else {panic!()};assert_eq!(entries[0].0,"obj:42");
     }
 
 }

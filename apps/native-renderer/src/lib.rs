@@ -93,6 +93,8 @@ mod output_dynamics;
 mod auxiliary_balance;
 mod temporal_detail;
 mod directional_detail;
+pub use sda_render_metadata as dolby_trim;
+mod dolby_trim_render;
 #[cfg(test)]
 mod temporal_detail_integration_tests;
 #[cfg(test)]
@@ -157,6 +159,7 @@ pub enum SpeakerFocus {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Command {
+    SetDownmixTrims { updates: Vec<dolby_trim::TrimUpdate> },
     SetPerformance {
         enabled: bool,
         path: Option<String>,
@@ -823,6 +826,8 @@ pub struct Source {
     auxiliary_weight: f32,
     temporal_detail: temporal_detail::SourceState,
     directional_detail: directional_detail::SourceState,
+    dolby_trim: dolby_trim_render::SourceTrim,
+    dolby_y_scale: f32,
     spatial_layer_gain: f32,
     spatial_layer_target: f32,
     spatial_layer_bed_weight: f32,
@@ -868,6 +873,11 @@ pub struct Source {
     occlusion_targets: [f32; 2],
 }
 
+impl Source {
+    fn render_position(&self) -> [f32;3] {
+        [self.position[0], self.position[1]*self.dolby_y_scale, self.position[2]]
+    }
+}
 impl Default for Source {
     fn default() -> Self {
         Self {
@@ -896,6 +906,8 @@ impl Default for Source {
             auxiliary_weight: 0.0,
             temporal_detail: Default::default(),
             directional_detail: Default::default(),
+            dolby_trim: Default::default(),
+            dolby_y_scale: 1.0,
             spatial_layer_gain: 1.0,
             spatial_layer_target: 1.0,
             spatial_layer_bed_weight: 0.0,
@@ -1162,6 +1174,7 @@ pub struct RenderStageMicros {
 pub struct Engine {
     front_common: front_common::FrontCommon,
     spatial_balance: spatial_balance::SpatialBalance,
+    downmix_trims: dolby_trim_render::Timeline,
     fast_activity: Vec<ObjectActivitySnapshot>,
     fast_mix_buffers: Vec<object_mixer::Buffer>,
     fast_mix_controls: Vec<object_mixer::Controls>,
@@ -1318,6 +1331,7 @@ impl Engine {
             profile_ms: [0.0; 7],
             front_common: Default::default(),
             spatial_balance: Default::default(),
+            downmix_trims: Default::default(),
             fast_activity: Vec::new(),
             fast_mix_buffers: Vec::new(),
             fast_mix_controls: Vec::with_capacity(convolution::DEFAULT_PARTITION),
@@ -1576,7 +1590,7 @@ impl Engine {
             && source.position.iter().all(|axis| axis.is_finite())
             // A small deadband prevents an object hovering at the top ring
             // from repeatedly switching paths due to metadata quantization.
-            && spatial::adm_to_spherical(source.position).elevation > layout_ceiling + 0.5
+            && spatial::adm_to_spherical(source.render_position()).elevation > layout_ceiling + 0.5
     }
 
     fn apply_hrtf_presentation_defaults(&mut self, set: &hrtf::NativeHrtfSet) -> Result<(), String> {
@@ -1784,8 +1798,8 @@ impl Engine {
         if !distance.is_finite() || distance <= 0.0 || !settings.valid() {
             return None;
         }
-        let norm = source
-            .position
+        let position = source.render_position();
+        let norm = position
             .iter()
             .map(|axis| axis * axis)
             .sum::<f32>()
@@ -1794,7 +1808,7 @@ impl Engine {
             return None;
         }
         let units = distance / settings.metres_per_unit;
-        Some(source.position.map(|axis| axis * units / norm))
+        Some(position.map(|axis| axis * units / norm))
     }
 
     /// Perceptual source-to-source shadowing. This is an explicitly selected
@@ -1809,7 +1823,7 @@ impl Engine {
                 && source.position.iter().all(|axis| axis.is_finite())
                 && source.samples.has_signal_within(self.sample_pos,
                     convolution::DEFAULT_PARTITION, OBJECT_ACTIVITY_THRESHOLD)
-        }).map(|(id, source)| (id.clone(), source.position)).collect();
+        }).map(|(id, source)| (id.clone(), source.render_position())).collect();
         let positions: Vec<_> = active.iter().map(|(_, position)| *position).collect();
         let relative: Vec<_> = positions.iter().map(|position|
             spatial::head_relative_adm(*position, head_pose)).collect();
@@ -1821,12 +1835,13 @@ impl Engine {
     }
 
     fn route_source_now(&mut self, id: &str, ramp: u32) -> Result<(), String> {
+        if let Some(source)=self.sources.get_mut(id) {dolby_trim_render::update_warp(&self.downmix_trims,source,self.sample_pos);}
         let (position, spread, extent, diffuse, horizontal_only, zones, kind) = self
             .sources
             .get(id)
             .map(|source| {
                 (
-                    source.position,
+                    source.render_position(),
                     source.spread,
                     source.extent,
                     source.diffuse,
@@ -1925,9 +1940,10 @@ impl Engine {
         };
         let samples = samples.min(motion.ramp).max(1);
         let fraction = samples as f32 / motion.ramp as f32;
-        let position = std::array::from_fn(|axis| {
+        let position: [f32;3] = std::array::from_fn(|axis| {
             source.position[axis] + (motion.position[axis] - source.position[axis]) * fraction
         });
+        let position = [position[0],position[1]*source.dolby_y_scale,position[2]];
         let spread = source.spread + (motion.spread - source.spread) * fraction;
         let diffuse = source.diffuse + (motion.diffuse - source.diffuse) * fraction;
         // Re-pan points along the Cartesian trajectory, not just its endpoints.
@@ -2177,6 +2193,7 @@ impl Engine {
     }
 
     fn reset_session(&mut self, origin: u64) {
+        self.downmix_trims = Default::default();
         self.authored=Default::default();
         performance::reset();
         self.master_preamp.settle();
@@ -2578,6 +2595,7 @@ impl Engine {
             spatial_layer: self.spatial_layer,
             auxiliary_gains: &self.auxiliary_balance.gains,
             temporal: self.auxiliary_balance.temporal_control(),
+            downmix_trims: &self.downmix_trims,
         };
         let mut sources: Vec<_> = self.sources.values_mut().filter(|s| eligible(s)).collect();
         for source in &mut sources {
@@ -2678,6 +2696,7 @@ impl Engine {
                 let _ = self.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
             }
         }
+        self.downmix_trims.prune(self.sample_pos);
         self.spatial_layer.refresh_beds(&mut self.sources, &self.vbap);
         auxiliary_balance::refresh_beds(&mut self.sources, &self.vbap);
         let auxiliary_enabled = self.binaural_enabled && self.spatial_enhancement_enabled && !self.authored.source_spatial_handled
@@ -2725,6 +2744,7 @@ impl Engine {
                 let (_, label) = source.bed_events.pop_first().expect("checked event");
                 let route = bed_route_custom(&label, &self.vbap, self.head_pose, source.authored_bed_position);
                 source.bed_label = Some(label);
+                source.dolby_trim = Default::default();
                 Self::set_source_route(source, route, 0);
             }
         }
@@ -2913,6 +2933,7 @@ impl Engine {
                 if let Some(label) = source.bed_events.remove(&at) {
                     let route = bed_route_custom(&label, &vbap, head_pose, source.authored_bed_position);
                     source.bed_label = Some(label);
+                source.dolby_trim = Default::default();
                     source.auxiliary_route_at = u64::MAX;
                     Self::set_source_route(source, route, 0);
                 }
@@ -2930,9 +2951,9 @@ impl Engine {
                 // Metadata follows the codec clock even when a source is
                 // suspended; its next audible sample must use the current state.
                 if source.kind == SourceKind::Object {
-                    let mut changed = false;
+                    let mut changed = dolby_trim_render::update_warp(&self.downmix_trims,source,at);
                     if let Some(event) = source.spatial_events.remove(&at) {
-                        changed = Self::start_source_motion(source, event);
+                        changed |= Self::start_source_motion(source, event);
                         if changed {
                             // A moving object can cross the layout ceiling after
                             // this render block starts. Evaluate its new metadata
@@ -2988,7 +3009,7 @@ impl Engine {
                                 buses: if self.source_extent.enabled {
                                     source_extent::route(
                                         &vbap,
-                                        source.position,
+                                        source.render_position(),
                                         head_pose,
                                         source.extent,
                                         source.horizontal_only,
@@ -2998,7 +3019,7 @@ impl Engine {
                                 } else {
                                     bus_renderer::route_zoned(
                                         &vbap,
-                                        source.position,
+                                        source.render_position(),
                                         head_pose,
                                         source.spread,
                                         source.diffuse,
@@ -3109,6 +3130,7 @@ impl Engine {
                     * source.gain
                     * Self::distance_gain(source)
                     * if source.muted { 0.0 } else { 1.0 };
+                sample *= dolby_trim_render::source_gain(&self.downmix_trims, source, self.layout, at);
                 sample *= self.spatial_layer.source_gain(source, at);
                 sample = auxiliary_balance::process_source_detail(source, sample, at,
                     self.auxiliary_balance.gains[block_index], &mut self.auxiliary_reference[block_index],
@@ -3173,7 +3195,7 @@ impl Engine {
                         if block_index == 0 {
                             source.diffuse_route = bus_renderer::route_zoned(
                                 &vbap,
-                                source.position,
+                                source.render_position(),
                                 head_pose,
                                 0.0,
                                 1.0,
@@ -3240,7 +3262,7 @@ impl Engine {
                         // Exclusion zones retain their authored speaker routing.
                         if let Some(continuous) = &mut source.continuous {
                             let direction = {
-                                let mut position = source.position;
+                                let mut position = [source.position[0],source.position[1]*source.dolby_y_scale,source.position[2]];
                                 if source.horizontal_only {
                                     position[2] = 0.0;
                                 }
@@ -3296,7 +3318,7 @@ impl Engine {
                             ..self.near_field
                         };
                         source.near_target = if near_active {
-                            near_field::gains(source.position, head_pose, near_settings)
+                            near_field::gains(source.render_position(), head_pose, near_settings)
                         } else if let Some(position) =
                             Self::physical_near_position(source, near_settings)
                         {
@@ -3314,7 +3336,7 @@ impl Engine {
                         direct.input[block_index] = object_sample * (1.0 - source.continuous_mix);
                     }
                     if let Some(continuous) = &mut source.continuous {
-                        let cue_gain = source.motion_cues.next(source.position, at, self.output_sample_rate,
+                        let cue_gain = source.motion_cues.next([source.position[0],source.position[1]*source.dolby_y_scale,source.position[2]], at, self.output_sample_rate,
                             self.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()));
                         if block_index == 0 {
                             continuous.occlusion_targets = source.occlusion_targets;

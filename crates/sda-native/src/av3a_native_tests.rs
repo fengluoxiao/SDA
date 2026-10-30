@@ -174,7 +174,7 @@ fn render_source_scene(enabled: bool, toggle: bool, objects: bool, codec: &'stat
                                 .collect()
                         })
                         .collect();
-                    let mut frame = sda_core::FrameData {
+                    let mut frame = sda_core::FrameData { downmix_trims: vec![],
                         reference_loudness: None,
                         compatibility_bed: None,
                         codec,

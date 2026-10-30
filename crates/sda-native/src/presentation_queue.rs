@@ -110,7 +110,7 @@ impl PresentationQueue {
 mod tests {
     use super::*;
     fn frame(at: u64, reference: Vec<f32>) -> FrameData {
-        FrameData {
+        FrameData { downmix_trims: vec![],
             reference_loudness: None, compatibility_bed: Some(sda_core::CompatibilityBed {
                 channels: vec![reference.clone(), reference],
                 labels: vec!["L".into(), "R".into()],

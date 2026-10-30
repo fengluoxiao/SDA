@@ -31,3 +31,12 @@ assert.equal(output[4].samplePos, 1120);
 batcher.flush();
 assert.equal(output[5].programLoudness.gainDb, -6);
 console.log("frame batching preserves PCM, timestamps, declarations, gaps and gain boundaries");
+
+const trimOutput=[];const trimBatcher=new FrameBatcher(f=>trimOutput.push(f));
+const trims={warpMode:0,globalMode:1,configurations:[],disabledObjects:[10],disabledBeds:[]};
+for(let i=0;i<24;i++)trimBatcher.push(frame(i*40,{downmixTrims:[{samplePos:7,trims}]}));
+assert.equal(trimOutput[0].downmixTrims.length,1);assert.equal(trimOutput[0].downmixTrims[0].samplePos,7);
+const changed={...trims,globalMode:0};
+trimBatcher.push(frame(960,{downmixTrims:[{samplePos:7,trims},{samplePos:999,trims:changed}]}));trimBatcher.flush();
+assert.deepEqual(trimOutput[1].downmixTrims.map(u=>u.samplePos),[7,999]);
+console.log("Dolby trim batching retains inherited state and timed updates without duplicating snapshots");

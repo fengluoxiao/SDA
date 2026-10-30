@@ -34,7 +34,8 @@ fn main() {
                 if frame.sample_pos < start { continue; }
                 frame.sample_pos -= start;
                 for event in &mut frame.events { event.sample_pos = event.sample_pos.saturating_sub(start); }
-                serde_json::to_writer(&mut output, &serde_json::json!({"start":frame.sample_pos,"labels":frame.labels,"channels":frame.channels,"events":frame.events,"objectChannels":frame.object_channels})).unwrap();
+                for update in &mut frame.downmix_trims {update.sample_pos=update.sample_pos.saturating_sub(start);}
+                serde_json::to_writer(&mut output, &serde_json::json!({"start":frame.sample_pos,"labels":frame.labels,"channels":frame.channels,"downmixTrims":frame.downmix_trims,"events":frame.events,"objectChannels":frame.object_channels})).unwrap();
                 writeln!(output).unwrap();
                 if end >= start + limit { eprintln!("window origin={start} frames={}", end-start); return; }
             }
@@ -123,6 +124,8 @@ fn desktop_feeder(args: &[String], limit: u64) {
             // Decode ObjectEvent through explicit fields because core exposes
             // serialization only. Keep this adapter diagnostic-only.
             let events = value["events"].as_array().unwrap().iter().map(|e| sda_core::ObjectEvent {
+                zone_exclusion: serde_json::from_value(e.get("zoneExclusion").cloned().unwrap_or_else(||serde_json::json!([]))).unwrap(),
+                horizontal_only: e["horizontalOnly"].as_bool().unwrap_or(false),
                 diffuse: e["diffuse"].as_f64().unwrap_or(0.0),
                 id: e["id"].as_u64().unwrap() as u32, sample_pos: e["samplePos"].as_u64().unwrap(),
                 has_pos: e["hasPos"].as_bool().unwrap(), pos: serde_json::from_value(e["pos"].clone()).unwrap(),
@@ -132,6 +135,8 @@ fn desktop_feeder(args: &[String], limit: u64) {
                 depth_factor: e["depthFactor"].as_f64(), ramp_duration: e["rampDuration"].as_u64().unwrap_or(128) as u32,
             }).collect();
             replay_frames.push_back(sda_core::FrameData {
+                downmix_trims: serde_json::from_value(value.get("downmixTrims").cloned().unwrap_or_else(||serde_json::json!([]))).unwrap(),
+                compatibility_bed: None,
                 reference_loudness: None, codec: "eac3", sample_rate: 48000, sample_pos: value["start"].as_u64().unwrap(),
                 channels: serde_json::from_value(value["channels"].clone()).unwrap(),
                 labels: serde_json::from_value(value["labels"].clone()).unwrap(),
@@ -147,6 +152,7 @@ fn desktop_feeder(args: &[String], limit: u64) {
         assert!(decoder.drain_errors().is_empty());
         while let Some(frame) = if replay { replay_frames.pop_front() } else { decoder.next_frame() } {
             assert_eq!(frame.sample_rate, 48000);
+            if !frame.downmix_trims.is_empty() {push(RenderCommand::Command(Command::SetDownmixTrims{updates:frame.downmix_trims}));}
             let mut mapping: HashMap<usize, u32> = frame.object_channels.iter().map(|d| (d.channel as usize, d.id)).collect();
             if mapping.is_empty() {
                 for (ch, label) in frame.labels.iter().enumerate() {

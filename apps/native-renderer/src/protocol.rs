@@ -42,6 +42,10 @@ fn handle_command(
         write_event(&Event::Ack{command:command_name(&command),accepted:false,detail:Some("rendering is controlled by the current SDAR file")});return true;
     }
     match command {
+        Command::SetDownmixTrims { updates } => {
+            let result = state.downmix_trims.queue(updates);
+            write_event(&Event::Ack {command:"setDownmixTrims", accepted:result.is_ok(), detail:result.as_ref().err().map(String::as_str)});
+        }
         Command::SetPerformance { enabled, path } => {
             let result = crate::performance::configure(enabled, path);
             write_event(&Event::Ack {
@@ -166,6 +170,7 @@ fn handle_command(
                 }
                 source.bed_label =
                     (!is_object).then(|| bed_label.unwrap_or_else(|| "Bed_0".into()));
+                source.dolby_trim = Default::default();
                 // Grace window: a brand-new source must survive the render
                 // gate until its first PCM block proves activity, otherwise
                 // object sources start muted forever (activity only renews
@@ -1494,6 +1499,7 @@ fn read_frame(
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::SetDownmixTrims { .. } => "setDownmixTrims",
         Command::Hello { .. } => "hello",
         Command::Configure { .. } => "configure",
         Command::AddSource { .. } => "addSource",

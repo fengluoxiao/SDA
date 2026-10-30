@@ -83,6 +83,8 @@ pub struct TruehdPipeline {
     spatial_labels: Option<Vec<String>>,
     dialogue_norms: Option<TruehdDialogueNorms>,
     program_loudness: Option<ProgramLoudnessMetadata>,
+    last_trims: Option<crate::dolby_trim::DolbyTrims>,
+    last_trim_time: u64,
 }
 
 impl TruehdPipeline {
@@ -98,6 +100,8 @@ impl TruehdPipeline {
             spatial_labels: None,
             dialogue_norms: None,
             program_loudness: None,
+            last_trims: None,
+            last_trim_time: 0,
         }
     }
 
@@ -160,7 +164,12 @@ impl Pipeline for TruehdPipeline {
                     continue;
                 }
             };
-            let compatibility = presentations[2].take();
+            // The decoder resolves unavailable presentations into the highest
+            // real slot (which can be 0 or 1 for non-Atmos TrueHD). Do not
+            // discard its PCM merely because slots 2 and 3 are empty.
+            let compatibility = presentations[2].take()
+                .or_else(|| presentations[1].take())
+                .or_else(|| presentations[0].take());
             let Some(decoded) = presentations[PRESENTATION].take().or_else(|| compatibility.clone()) else { continue; };
             let compatibility_bed = compatibility.filter(|bed| bed.channel_count <= 8 && bed.channel_labels.len() >= bed.channel_count && bed.sample_length == decoded.sample_length)
                 .map(|bed| crate::CompatibilityBed {
@@ -212,10 +221,23 @@ impl Pipeline for TruehdPipeline {
                 self.declared = None;
                 self.spatial_labels = None;
             }
+            let mut downmix_trims = self.last_trims.as_ref().map(|trims|crate::dolby_trim::TrimUpdate{sample_pos:self.last_trim_time,trims:trims.clone()}).into_iter().collect::<Vec<_>>();
+            for oamd in &decoded.oamd {
+                if let Some(trims)=trim_from_oamd(oamd) {
+                    if self.last_trims.as_ref()!=Some(&trims) {
+                        self.last_trim_time=sample_pos+oamd.evo_sample_offset;
+                        self.last_trims=Some(trims.clone());
+                        downmix_trims.push(crate::dolby_trim::TrimUpdate{sample_pos:self.last_trim_time,trims});
+                    }
+                }
+            }
             let mut events = Vec::new();
             let mut declarations = Vec::new();
             let mut unsupported_oamd = false;
+            let mut object_metadata_present = false;
             for oamd in &decoded.oamd {
+                if oamd.object_element.is_none() {continue;}
+                object_metadata_present = true;
                 let extracted = extract_events(oamd, sample_pos + oamd.evo_sample_offset);
                 if !extracted.supported {
                     unsupported_oamd = true;
@@ -238,14 +260,14 @@ impl Pipeline for TruehdPipeline {
                 &mut self.spatial_labels,
                 &labels,
                 &declarations,
-                !decoded.oamd.is_empty(),
+                object_metadata_present,
                 !unsupported_oamd,
             );
             if let Some(spatial_labels) = &self.spatial_labels {
                 labels = spatial_labels.clone();
             }
             events.sort_by_key(|event| event.sample_pos);
-            let object_channels = if decoded.oamd.is_empty() {
+            let object_channels = if !object_metadata_present {
                 Vec::new()
             } else {
                 self.sparse_declare(declarations)
@@ -259,7 +281,7 @@ impl Pipeline for TruehdPipeline {
                 .map(|b| b.ramp_duration as u32)
                 .unwrap_or(0);
 
-            out.push_back(FrameData { reference_loudness:None, compatibility_bed,
+            out.push_back(FrameData { downmix_trims, reference_loudness:None, compatibility_bed,
                 codec: "truehd",
                 sample_rate: decoded.sampling_frequency,
                 sample_pos,
@@ -280,6 +302,28 @@ impl Pipeline for TruehdPipeline {
     fn reset(&mut self) {
         *self = Self::new();
     }
+}
+
+fn trim_from_oamd(oamd: &ObjectAudioMetadataPayload) -> Option<crate::dolby_trim::DolbyTrims> {
+    use crate::dolby_trim::{DolbyTrims, TrimConfiguration};
+    let raw = oamd.trim_element.as_ref()?;
+    let mut trims = DolbyTrims {
+        warp_mode:raw.warp_mode, global_mode:raw.global_trim_mode,
+        configurations:raw.trims.iter().map(|slot| {
+            let Some(c) = slot else {return TrimConfiguration::default();};
+            TrimConfiguration {mode:if c.b_default_trim {0} else if c.b_disable_trim {1} else {2},
+                centre_db:c.trim_centre.map(|v|v as f32),surround_db:c.trim_surround.map(|v|v as f32),
+                height_db:c.trim_height.map(|v|v as f32),top_bottom_y:c.bal3d_y_tb.map(|v|v as f32),
+                listener_y:c.bal3d_y_lis.map(|v|v as f32)}
+        }).collect(),..Default::default()
+    };
+    let beds = oamd.program_assignment.bed_assignment.iter().flat_map(|b| b.to_index_vec()).collect::<Vec<_>>();
+    for (index, disabled) in raw.b_disable_trim.iter().enumerate().filter(|_|raw.b_disable_trim_per_obj) {
+        if !disabled {continue;}
+        if let Some(channel) = beds.get(index) {trims.disabled_beds.push(format!("{:?}", truehd::structs::oamd::SpeakerLabels::from_u8(*channel as u8).unwrap_or(truehd::structs::oamd::SpeakerLabels::L)));}
+        else {trims.disabled_objects.push((10 + index - beds.len()) as u32);}
+    }
+    trims.valid().then_some(trims)
 }
 
 /// Port of `bridge/src/metadata.rs::extract_events` (TrueHD OAMD).
@@ -440,4 +484,13 @@ mod tests {
         update_spatial_labels(&mut spatial, &labels, &declarations, true, true);
         assert_eq!(spatial.unwrap(), vec!["L", "Obj_12"]);
     }
+    #[test]
+    fn dolby_truehd_trim_mapping_retains_modes_and_object_gain_is_separate() {
+        let mut payload=truehd::structs::oamd::ObjectAudioMetadataPayload::default();
+        payload.trim_element=Some(truehd::structs::oamd::TrimElement{global_trim_mode:2,..Default::default()});
+        payload.trim_element.as_mut().unwrap().trims[8]=Some(truehd::structs::oamd::Trim{b_default_trim:false,trim_height:Some(-6.),..Default::default()});
+        let trim=super::trim_from_oamd(&payload).unwrap();assert_eq!(trim.configurations.len(),9);
+        assert_eq!(trim.configuration(2,2).unwrap().height_db,Some(-6.));assert_eq!(trim.configurations[0].mode,0);
+    }
+
 }

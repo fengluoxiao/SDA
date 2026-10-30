@@ -261,7 +261,7 @@ impl Av3aPipeline {
             channel.drain(..skip);
             channel.truncate(count);
         }
-        let mut decoded = FrameData {
+        let mut decoded = FrameData { downmix_trims: vec![],
             reference_loudness: None,
             compatibility_bed: None,
             codec: "av3a",

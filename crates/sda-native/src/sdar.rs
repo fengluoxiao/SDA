@@ -118,7 +118,7 @@ impl MobileEngine {
                 }
                 self.announced_codec = Some("sdar".into());
             }
-            let frame = FrameData {
+            let frame = FrameData { downmix_trims: vec![],
                 reference_loudness: None,
                 compatibility_bed: None,
                 codec: "sdar",

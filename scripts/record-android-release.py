@@ -40,18 +40,18 @@ def main():
     if sys.argv[1] == 'stage':
         shader = (ROOT / 'apps/native-renderer/src/vulkan_resident.spv').read_bytes()
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
-        prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'packages/core/', 'packages/player/', 'scripts/')
+        prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'packages/core/', 'packages/player/', 'scripts/')
         extensions = ('.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml')
         info = {'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
                 'stereoProgrammeMakeupDb': 2.5, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
-                'officialAndroidRelease': True, 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
+                'officialAndroidRelease': True, 'dolbyDownmixTrims': True, 'downmixTrimLayoutPolicy': 'surround-height-tier-v1', 'decoderSubmoduleCommit': git('-C', str(ROOT / 'harletty-bridge'), 'rev-parse', 'HEAD'), 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,
                 'sourceHashes': {name: digest((ROOT / name).read_bytes()) for name in files if name and name.startswith(prefixes) and name.endswith(extensions)},
                 'vulkanShaderSha256': digest(shader), 'nativeLibraries': {}}
         for abi, machine in ABIS.items():
             data = (ROOT / f'apps/mobile/android/app/src/main/jniLibs/{abi}/libsda_native.so').read_bytes()
             assert struct.unpack_from('<H', data, 18)[0] == machine
-            for marker in [sha.encode(), algorithm.encode(), policy.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', shader]: assert marker in data, abi
+            for marker in [sha.encode(), algorithm.encode(), policy.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', b'setDownmixTrims', shader]: assert marker in data, abi
             info['nativeLibraries'][abi] = {'sha256': digest(data), 'allocatedSectionHashes': allocated_hashes(data)}
         text = json.dumps(info, indent=2) + chr(10)
         (ROOT / 'apps/mobile/android/app/src/main/assets/sda-build-info.json').write_text(text, encoding='utf-8')

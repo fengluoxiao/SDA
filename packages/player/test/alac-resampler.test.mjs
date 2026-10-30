@@ -41,6 +41,10 @@ assert.ok(Math.max(...small[0].map((x,i)=>Math.abs(x-large[0][i])))<1e-6,"packet
 const ultrasonic=await convert(96000,96000,4096,30000);
 assert.ok(rms(ultrasonic[0].slice(1024,-1024))<1e-4,"downsampling must reject ultrasonic aliasing");
 await convert(44100,17,7);
+const trimConverter=new AlacResampler(48000),trimOutput=[];
+for(let at=0;at<4410;at+=441){const f=frame([new Float32Array(441),new Float32Array(441)],at,44100);f.downmixTrims=at===0?[{samplePos:441,trims:{warpMode:0,globalMode:1,configurations:[],disabledObjects:[10],disabledBeds:[]}}]:[];const r=await trimConverter.push(f);if(r)trimOutput.push(r);}
+const trimTail=trimConverter.finish();if(trimTail)trimOutput.push(trimTail);
+assert.deepEqual(trimOutput.flatMap(f=>f.downmixTrims??[]).map(u=>u.samplePos),[480],"trim clock must follow PCM resampling including SRC lookahead");
 const same=frame([new Float32Array([.1,.2])],0,48000);
 const bypass=new AlacResampler(48000);
 assert.equal(await bypass.push(same),same);

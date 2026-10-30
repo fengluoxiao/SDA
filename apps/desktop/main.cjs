@@ -1657,6 +1657,10 @@ ipcMain.handle("sda:native-renderer-program-enabled", async (_event, enabled) =>
   writeStartupLog(`setProgramEnabled=${enabled} ACK -> ${accepted}`);
   return accepted;
 });
+ipcMain.handle("sda:native-renderer-downmix-trims", async (_event, updates) => {
+  if (!Array.isArray(updates) || updates.length > 128 || updates.some(u => !Number.isSafeInteger(u?.samplePos) || u.samplePos < 0 || !u.trims)) return false;
+  return nativeRendererCommandAck({ type: "setDownmixTrims", updates }, "setDownmixTrims");
+});
 ipcMain.handle("sda:native-renderer-program-gain", async (_event, gain, atSample) => {
   if (!Number.isFinite(gain)) return false;
   if (atSample !== undefined && (!Number.isSafeInteger(atSample) || atSample < 0)) return false;

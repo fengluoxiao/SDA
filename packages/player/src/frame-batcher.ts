@@ -44,6 +44,6 @@ export class FrameBatcher {
       }
       return pcm;
     });
-    this.emit({ ...first, channels, events: frames.flatMap(frame => frame.events) });
+    this.emit({ ...first, channels, downmixTrims: frames.flatMap(frame => frame.downmixTrims ?? []).filter((update, index, all) => index === 0 || update.samplePos !== all[index - 1]!.samplePos || JSON.stringify(update.trims) !== JSON.stringify(all[index - 1]!.trims)), events: frames.flatMap(frame => frame.events) });
   }
 }

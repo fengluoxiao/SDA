@@ -92,8 +92,8 @@ fn source_gain_with_geometry(s:&mut Source,db:f32,main_restore_db:f32,rear_db:f3
     if s.lfe_gain>0.0 || s.lfe_target>0.0 {s.spatial_layer_gain=1.0;s.spatial_layer_target=1.0;return 1.0;}
     if db==0.0 && main_restore_db==0.0 && rear_db==0.0 && s.spatial_layer_gain==1.0 {return 1.0;}
     if at.is_multiple_of(128) {
-        let w=if s.kind==SourceKind::Object {weight_for(s.position,geometry)} else {s.spatial_layer_bed_weight};
-        let rear=if s.kind==SourceKind::Object {rear_weight(s.position)} else {s.spatial_layer_rear_bed_weight};
+        let w=if s.kind==SourceKind::Object {weight_for(s.render_position(),geometry)} else {s.spatial_layer_bed_weight};
+        let rear=if s.kind==SourceKind::Object {rear_weight(s.render_position())} else {s.spatial_layer_rear_bed_weight};
         s.spatial_layer_target=10.0f32.powf((db*w-main_restore_db*(1.0-w)+rear_db*rear)/20.0);
     }
     s.spatial_layer_gain+=(s.spatial_layer_target-s.spatial_layer_gain).clamp(-slew,slew);

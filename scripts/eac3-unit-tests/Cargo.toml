@@ -1,0 +1,12 @@
+# Test the exact decoder library outside the upstream bridge/plugin workspace.
+[package]
+name = "sda-eac3-unit-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[lib]
+path = "../../harletty-bridge/eac3/src/lib.rs"
+[dependencies]
+log = "0.4"
+rustfft = "6.4"
+thiserror = "2.0"

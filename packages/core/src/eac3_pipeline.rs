@@ -23,6 +23,8 @@ pub struct Eac3Pipeline {
     declared: Option<Vec<ObjectChannelDecl>>,
     last_joc_layout: Option<JocPresentationLayout>,
     reference: crate::loudness::SpeakerReference,
+    last_trims: Option<crate::dolby_trim::DolbyTrims>,
+    last_trim_time: u64,
 }
 
 impl Eac3Pipeline {
@@ -37,6 +39,8 @@ impl Eac3Pipeline {
             declared: None,
             last_joc_layout: None,
             reference: Default::default(),
+            last_trims: None,
+            last_trim_time: 0,
         }
     }
 
@@ -175,6 +179,16 @@ impl Eac3Pipeline {
         self.total_samples += pcm.samples_per_channel() as u64;
 
         let processing_latency = pcm.processing_latency_samples() as u64;
+        let mut downmix_trims = self.last_trims.as_ref().map(|trims|crate::dolby_trim::TrimUpdate{sample_pos:self.last_trim_time,trims:trims.clone()}).into_iter().collect::<Vec<_>>();
+        for (oamd, offset) in &pcm.oamd_payloads {
+            if let Some(trims)=trim_from_oamd(oamd) {
+                if self.last_trims.as_ref()!=Some(&trims) {
+                    self.last_trim_time=sample_pos+u64::from(offset.unwrap_or(0))+processing_latency;
+                    self.last_trims=Some(trims.clone());
+                    downmix_trims.push(crate::dolby_trim::TrimUpdate{sample_pos:self.last_trim_time,trims});
+                }
+            }
+        }
         let core = pcm.core;
         let compatibility_bed = Some(crate::CompatibilityBed::from_frame(bed_frame(
             "eac3", core.clone(), Vec::new(), Vec::new(), Some(loudness.clone()), sample_pos, &[],
@@ -223,7 +237,7 @@ impl Eac3Pipeline {
             }
             let object_channels =
                 self.sparse_declare(dynamic_object_declarations(&slot_layout.slots, joc_channel_base));
-            return FrameData { reference_loudness:None, compatibility_bed,
+            return FrameData { downmix_trims, reference_loudness:None, compatibility_bed,
                 codec: "eac3",
                 sample_rate: core.sample_rate,
                 sample_pos,
@@ -272,7 +286,7 @@ impl Eac3Pipeline {
 
         let declarations = dynamic_object_declarations(&slot_layout.slots, joc_channel_base);
         let object_channels = self.sparse_declare(declarations);
-        FrameData { reference_loudness:None, compatibility_bed,
+        FrameData { downmix_trims, reference_loudness:None, compatibility_bed,
             codec: "eac3",
             sample_rate: core.sample_rate,
             sample_pos,
@@ -439,6 +453,28 @@ fn dynamic_object_declarations(
         .collect()
 }
 
+fn trim_from_oamd(oamd: &OamdPayload) -> Option<crate::dolby_trim::DolbyTrims> {
+    use crate::dolby_trim::{DolbyTrims, TrimConfiguration};
+    let raw = oamd.trim.as_ref()?;
+    let mut trims = DolbyTrims {
+        warp_mode: raw.warp_mode, global_mode: raw.global_mode,
+        configurations: raw.configurations.iter().map(|c| TrimConfiguration {
+            mode:c.mode, centre_db:c.centre_db, surround_db:c.surround_db,
+            height_db:c.height_db, top_bottom_y:c.top_bottom_y, listener_y:c.listener_y,
+        }).collect(), ..Default::default()
+    };
+    let beds = oamd.bed_assignment.iter().flatten().collect::<Vec<_>>();
+    for (index, disabled) in raw.disabled_objects.iter().enumerate() {
+        if !disabled { continue; }
+        if index < oamd.bed_or_isf_objects {
+            if let Some(label) = beds.get(index) { trims.disabled_beds.push(format!("{label:?}")); }
+        } else {
+            trims.disabled_objects.push((10 + index - oamd.bed_or_isf_objects) as u32);
+        }
+    }
+    trims.valid().then_some(trims)
+}
+
 fn object_gain_db(gain: Option<f32>, inactive: bool) -> i8 {
     if inactive {
         return i8::MIN;
@@ -560,7 +596,7 @@ fn bed_frame(
         channels.push(lfe);
         labels.push("LFE".to_string());
     }
-    FrameData { reference_loudness: None, compatibility_bed: None,
+    FrameData { downmix_trims: vec![], reference_loudness: None, compatibility_bed: None,
         codec,
         sample_rate: core.sample_rate,
         sample_pos,
@@ -580,7 +616,7 @@ mod tests {
 
     #[test]
     fn object_programme_uses_compatible_speaker_reference_and_keeps_plain_stereo_policy() {
-        let mut f=FrameData{reference_loudness:None,compatibility_bed:None,codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.;1024];2],labels:vec!["FrontLeft".into(),"FrontRight".into()],raw_bed_labels:vec![],object_channels:vec![],events:vec![],program_loudness:None,ramp_duration:0};
+        let mut f=FrameData{ downmix_trims: vec![],reference_loudness:None,compatibility_bed:None,codec:"eac3",sample_rate:48000,sample_pos:0,channels:vec![vec![0.;1024];2],labels:vec!["FrontLeft".into(),"FrontRight".into()],raw_bed_labels:vec![],object_channels:vec![],events:vec![],program_loudness:None,ramp_duration:0};
         let mut pipeline=Eac3Pipeline::new();pipeline.measure_reference(&mut f);assert!(f.reference_loudness.is_none());
         f.compatibility_bed=Some(crate::CompatibilityBed{channels:f.channels.clone(),labels:f.labels.clone()});
         f.channels=vec![vec![1.;1024]];f.labels=vec!["Obj_42".into()];f.object_channels=vec![ObjectChannelDecl{id:42,channel:0}];
@@ -596,6 +632,7 @@ mod tests {
 
     fn oamd(bed: Vec<BedChannel>, dynamic_objects: usize) -> OamdPayload {
         OamdPayload {
+            trim: None,
             version: 0,
             object_count: bed.len() + dynamic_objects,
             alternate_object_present: false,
@@ -750,4 +787,12 @@ mod tests {
         isf.object_count = 4;
         assert_eq!(joc_slot_layout(&isf, 4), None);
     }
+    #[test]
+    fn dolby_trim_disable_flags_use_actual_dynamic_ids_after_bed_prefix() {
+        let mut payload=oamd(vec![BedChannel::Center,BedChannel::LowFrequencyEffects],2);
+        payload.trim=Some(eac3::OamdTrimElement{global_mode:1,disabled_objects:vec![true,false,true,false],..Default::default()});
+        let trim=trim_from_oamd(&payload).unwrap();assert_eq!(trim.disabled_objects,vec![10]);assert_eq!(trim.disabled_beds,vec!["Center"]);
+        assert_eq!(trim.global_mode,1);
+    }
+
 }

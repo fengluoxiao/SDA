@@ -200,6 +200,7 @@ declare global {
       nativeRendererSpeakerMutes?: (names: string[], focus?: string[]) => Promise<boolean>;
       nativeRendererVolume?: (volume: number) => Promise<boolean>;
       nativeRendererProgramEnabled?: (enabled: boolean) => Promise<boolean>;
+      nativeRendererDownmixTrims?: (updates: readonly import("@sda/core").DownmixTrimUpdate[]) => Promise<boolean>;
       nativeRendererProgramGain?: (gain: number, atSample?: number) => Promise<boolean>;
       nativeRendererBinauralEq?: (bands: { low: number; mid: number; high: number }, lowCut: boolean) => Promise<boolean>;
       nativeRendererHeadphoneProfile?: (id: string | null, source?: string) => Promise<boolean>;

@@ -201,7 +201,7 @@ mod tests {
         let tone: Vec<f32> = (0..1024)
             .map(|i| scale * (2. * std::f32::consts::PI * 997. * (at + i) as f32 / 48000.).sin())
             .collect();
-        let mut f = FrameData {
+        let mut f = FrameData { downmix_trims: vec![],
             reference_loudness: None,
             compatibility_bed: None,
             codec: "av3a",
@@ -321,7 +321,7 @@ mod shared_tests {
                 let input: Vec<f32> = (0..1024)
                     .map(|i| 0.3 * (std::f32::consts::TAU * 997. * (at + i) as f32 / 48000.).sin())
                     .collect();
-                let frame = FrameData {
+                let frame = FrameData { downmix_trims: vec![],
                     reference_loudness: None,
                     compatibility_bed: None,
                     codec,
@@ -391,7 +391,7 @@ mod sparse_tests {
             let pcm: Vec<_> = (0..1024)
                 .map(|i| 0.2 * (std::f32::consts::TAU * 997. * (at + i) as f32 / 48000.).sin())
                 .collect();
-            let mut frame = FrameData {
+            let mut frame = FrameData { downmix_trims: vec![],
                 reference_loudness: None,
                 compatibility_bed: None,
                 codec: "ac4",

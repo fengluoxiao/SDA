@@ -168,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             audit.frame(FrameData {
+                downmix_trims: serde_json::from_value(row.get("downmixTrims").cloned().unwrap_or_else(||serde_json::json!([])))?,
                 reference_loudness: None,
                 compatibility_bed: None,
                 codec,
@@ -205,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     meta,
                     "{}",
                     serde_json::json!({"start":f.sample_pos,"samples":f.channels[0].len(),"labels":f.labels,
-     "events":f.events,"objectChannels":f.object_channels,"rawBedLabels":f.raw_bed_labels})
+     "downmixTrims":f.downmix_trims,"events":f.events,"objectChannels":f.object_channels,"rawBedLabels":f.raw_bed_labels})
                 )?;
                 audit.frame(f);
             }
