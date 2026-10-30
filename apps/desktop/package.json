@@ -1,6 +1,6 @@
 {
   "name": "@sda/desktop",
-  "version": "0.9.35",
+  "version": "0.9.36",
   "private": true,
   "description": "SDA desktop — Electron shell around the web build",
   "main": "./main.cjs",
