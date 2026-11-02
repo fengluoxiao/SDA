@@ -1,0 +1,42 @@
+name: Replay verified iOS simulator application
+on:
+  push:
+    branches: [fix/mobile-instant-seek-storage-20261102]
+    paths: ['.github/workflows/ios-simulator-replay.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  replay:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SDA_CI_SAMPLE_AV3A: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Download and verify the already inspected application
+        run: |
+          set -o pipefail
+          mkdir -p replay-artifacts
+          python3 scripts/test-ios-chrome-contract.py
+          python3 scripts/select-ios-sdk.py 26
+          git fetch --depth=1 origin df223e5aee3071877980a1b6dfb487eefe1cfd43
+          gh api repos/fengluoxiao/SDA/actions/runs/41522638180 > replay-run.json
+          gh run download 41522638180 --repo fengluoxiao/SDA --dir replay-input
+          appzip=$(find replay-input -name SDA-simulator-app.zip -print -quit)
+          python3 scripts/verify-ios-simulator-replay.py replay-run.json "$appzip" replay-artifacts/source-equivalence.json
+          ditto -x -k "$appzip" replay-app
+      - name: Run every independent UI and background scenario
+        run: |
+          set -o pipefail
+          python3 scripts/test-ios-simulator.py replay-app/SDA.app replay-artifacts 2>&1 | tee replay-artifacts/simulator-test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-simulator-replay-${{ github.run_number }}
+          path: replay-artifacts/
+          retention-days: 14

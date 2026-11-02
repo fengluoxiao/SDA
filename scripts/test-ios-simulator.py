@@ -2,6 +2,7 @@
 import json,os,pathlib,re,subprocess,sys,time
 from verify_mobile_ios_assets import verify_mobile_ios_assets
 from ios_simulator_fixtures import stage
+from ios_chrome_contract import ready as chrome_ready
 app=pathlib.Path(sys.argv[1]).resolve();out=pathlib.Path(sys.argv[2]).resolve()
 out.mkdir(parents=True,exist_ok=True)
 (out/"fixture-staging.json").write_text(json.dumps(stage(app),indent=2))
@@ -17,6 +18,8 @@ types=json.loads(run('xcrun','simctl','list','devicetypes','-j').stdout)['device
 phones=[t for t in types if t['name'].startswith('iPhone')]
 phones.sort(key=lambda t:(int(re.search(r'iPhone (\d+)',t['name']).group(1)) if re.search(r'iPhone (\d+)',t['name']) else 0,t['name']),reverse=True)
 udid=None
+sampler=None
+sample_log=None
 attempts=[]
 for phone in phones:
  created=run('xcrun','simctl','create','SDA-CI',phone['identifier'],runtime['identifier'],check=False)
@@ -40,6 +43,11 @@ try:
  launch=run('xcrun','simctl','launch','--stdout='+str(out/'app.stdout'),'--stderr='+str(out/'app.stderr'),udid,'app.sda.mobile')
  (out/'launch.txt').write_text(launch.stdout)
  pid=launch.stdout.strip().split(':')[-1].strip()
+ if os.environ.get('SDA_CI_SAMPLE_AV3A')=='1':
+  try:
+   sample_log=(out/'native-sample-status.txt').open('w')
+   sampler=subprocess.Popen(['sample',pid,'40','10','-file',str(out/'native-av3a-sample.txt')],stdout=sample_log,stderr=subprocess.STDOUT)
+  except OSError as error:(out/'native-sample-status.txt').write_text(str(error))
  container=pathlib.Path(run('xcrun','simctl','get_app_container',udid,'app.sda.mobile','data').stdout.strip())
  report=container/'Documents/sda-ci-smoke.json'
  deadline=time.monotonic()+90
@@ -109,25 +117,7 @@ try:
   while time.monotonic()<deadline:
    if report.is_file():
     data=json.loads(report.read_text())
-    classes=[v['class'] for v in data.get('nativeViews',[])]
-    hosting=any('Hosting' in c for c in classes)
-    tabs=any('TabBar' in c for c in classes)
-    form=any('CollectionView' in c or 'TableView' in c for c in classes)
-    navigation=any('NavigationBar' in c for c in classes)
-    ready=hosting and (form and navigation if stage.startswith('settings') else tabs)
-    if stage.startswith('settings'):
-     # SwiftUI owns the bar's default appearance; don't pin private material details.
-     ready=ready and any(bar.get('title') == '设置' for bar in data.get('navigationBars',[]))
-     ready=ready and any(v.get('text') == '设置' and v.get('alpha',0) > 0 for v in data.get('nativeViews',[]))
-     if stage in ('settings','settings-dark'):
-      # The user requested only the centered inline title, never a large title.
-      titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and 0<v.get('height',0)<=30]
-      rows=[v for v in data.get('nativeViews',[]) if v.get('class') == 'ListCollectionViewCell' and v.get('y',-1)>=0 and v.get('width',0)>100]
-      large_titles=[v for v in data.get('nativeViews',[]) if v.get('text') == '设置' and v.get('alpha',0)>0 and v.get('y',-1)>=0 and v.get('height',0)>30]
-      ready=ready and bool(titles) and not large_titles and bool(rows) and min(v['y'] for v in rows)>=max(v['y']+v['height'] for v in titles)-1
-    if stage == 'player':ready=ready and any(v.get('label') == '音量滑块' for v in data.get('nativeViews',[]))
-    if stage == 'mini-player':
-     ready=ready and any('TabsBottomAccessory' in c for c in classes) and any(v.get('label') == '展开正在播放' for v in data.get('nativeViews',[]))
+    ready=chrome_ready(data,stage)
     if ready:break
    time.sleep(1)
   else:
@@ -139,46 +129,66 @@ try:
   (out/('chrome-'+stage+'.json')).write_text(json.dumps(data,indent=2))
   return data
  chrome_report('scene')
+ scenario_errors=[]
  for stage in ['player','library','mini-player','settings','settings-spatial','settings-room','settings-dark']:
-  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
-  os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
-  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
-  os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
-  (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
-  launch=run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),
-             '--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
-  (out/('chrome-'+stage+'-launch.txt')).write_text(launch.stdout+launch.stderr)
-  chrome_report(stage)
-  time.sleep(3)
-  run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
-  if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','light')
+  try:
+   run('xcrun','simctl','terminate',udid,'app.sda.mobile',check=False)
+   os.environ.pop('SIMCTL_CHILD_SDA_IOS_SCENE_SMOKE',None)
+   if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','dark')
+   os.environ['SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE']=stage
+   (container/'Documents/sda-ci-chrome.json').unlink(missing_ok=True)
+   launch=run('xcrun','simctl','launch','--stdout='+str(out/('chrome-'+stage+'.stdout')),
+              '--stderr='+str(out/('chrome-'+stage+'.stderr')),udid,'app.sda.mobile')
+   (out/('chrome-'+stage+'-launch.txt')).write_text(launch.stdout+launch.stderr)
+   chrome_report(stage)
+   time.sleep(3)
+   run('xcrun','simctl','io',udid,'screenshot',str(out/('chrome-'+stage+'.png')))
+   if stage == 'settings-dark':run('xcrun','simctl','ui',udid,'appearance','light')
+  except Exception as error:
+   scenario_errors.append({'stage':stage,'error':str(error)})
+   (out/'scenario-errors.json').write_text(json.dumps(scenario_errors,indent=2))
+  finally:
+   if stage=='settings-dark':run('xcrun','simctl','ui',udid,'appearance','light',check=False)
  # Move the running process genuinely into the background by opening Settings.
  # This proves native decode/output is independent of the suspended JS timer.
  # It does NOT simulate physical protected-data locking or Bluetooth behavior.
  for mode in ['native','system']:
-  run('xcrun','simctl','terminate',udid,'app.sda.mobile')
-  os.environ.pop('SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE',None)
-  os.environ['SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE']=mode
-  ready=container/'Documents/sda-ci-background-ready.json'
-  background=container/'Documents/sda-ci-background.json'
-  ready.unlink(missing_ok=True);background.unlink(missing_ok=True)
-  run('xcrun','simctl','launch',udid,'app.sda.mobile')
-  deadline=time.monotonic()+70
-  while not ready.is_file() and not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
-  if not ready.is_file():raise RuntimeError('Background playback did not start: '+(background.read_text() if background.is_file() else mode))
-  run('xcrun','simctl','launch',udid,'com.apple.Preferences')
-  while not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
-  if not background.is_file():raise RuntimeError('Background playback report timed out: '+mode)
-  proof=json.loads(background.read_text())
-  (out/('background-'+mode+'.json')).write_text(json.dumps(proof,indent=2))
-  if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionPolicyVerified') is not True or (proof.get('simulatorFileProtectionAvailable') is not False and proof.get('ownedCopyProtectionVerified') is not True) or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000 or proof.get('nativeNextTrackVerified') is not True or proof.get('nativeRepeatOneVerified') is not True:
-   raise RuntimeError('Native background audio failed: '+str(proof))
-  run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
-  os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
+  try:
+   run('xcrun','simctl','terminate',udid,'app.sda.mobile',check=False)
+   os.environ.pop('SIMCTL_CHILD_SDA_IOS_CHROME_SMOKE',None)
+   os.environ['SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE']=mode
+   ready=container/'Documents/sda-ci-background-ready.json'
+   background=container/'Documents/sda-ci-background.json'
+   ready.unlink(missing_ok=True);background.unlink(missing_ok=True)
+   run('xcrun','simctl','launch',udid,'app.sda.mobile')
+   deadline=time.monotonic()+70
+   while not ready.is_file() and not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+   if not ready.is_file():raise RuntimeError('Background playback did not start: '+(background.read_text() if background.is_file() else mode))
+   run('xcrun','simctl','launch',udid,'com.apple.Preferences')
+   while not background.is_file() and time.monotonic()<deadline:time.sleep(.25)
+   if not background.is_file():raise RuntimeError('Background playback report timed out: '+mode)
+   proof=json.loads(background.read_text())
+   (out/('background-'+mode+'.json')).write_text(json.dumps(proof,indent=2))
+   if proof.get('ok') is not True or proof.get('backgroundNotificationObserved') is not True or proof.get('preparationAssertionReleased') is not True or proof.get('ownedCopyProtectionPolicyVerified') is not True or (proof.get('simulatorFileProtectionAvailable') is not False and proof.get('ownedCopyProtectionVerified') is not True) or proof.get('unlinkedAnalysisInputVerified') is not True or proof.get('backgroundEnd',0)-proof.get('backgroundStart',0)<8*48000 or proof.get('nativeNextTrackVerified') is not True or proof.get('nativeRepeatOneVerified') is not True:
+    raise RuntimeError('Native background audio failed: '+str(proof))
+   run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
+   os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
+  except Exception as error:
+   scenario_errors.append({'stage':'background-'+mode,'error':str(error)})
+   (out/'scenario-errors.json').write_text(json.dumps(scenario_errors,indent=2))
+  finally:
+   run('xcrun','simctl','terminate',udid,'com.apple.Preferences',check=False)
+   os.environ.pop('SIMCTL_CHILD_SDA_IOS_BACKGROUND_SMOKE',None)
  # Validate the real mobile-only bundle, including hashes and absence of room assets.
  verify_mobile_ios_assets(app)
+ if scenario_errors:raise RuntimeError('UI/background scenarios failed: '+json.dumps(scenario_errors,ensure_ascii=False))
  (out/'smoke.txt').write_text('Release app launched. Compressed E-AC-3 MP4 -> Rust/KU100 -> AVAudioEngine consumed playback; live preset clock and pause/resume checks passed. 360RA MPEG-H -> 12-channel 7.1.4 -> Apple sample-buffer renderer clock/drain/pause/toggle checks passed. KU100 resources present. No real-device spatial listening validation.\n')
 finally:
+ if sampler is not None:
+  if sampler.poll() is None:sampler.terminate()
+  try:sampler.wait(timeout=5)
+  except subprocess.TimeoutExpired:sampler.kill();sampler.wait()
+ if sample_log is not None:sample_log.close()
  log=run('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "SDA"',check=False)
  (out/'simulator.log').write_text(log.stdout+log.stderr)
  run('xcrun','simctl','shutdown',udid,check=False)
