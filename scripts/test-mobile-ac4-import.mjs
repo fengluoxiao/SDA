@@ -31,14 +31,14 @@ function hostFor(input, failWrite = false) {
     get finished() { return finished; },
     async beginMp4Import() { return JSON.stringify({ token: 't', size: input.length }); },
     async readMp4Import(token, offset, count) {
-      assert.equal(token, 't'); assert(count <= 256 * 1024);
+      assert.equal(token, 't'); assert(count <= 1024 * 1024);
       return input.subarray(offset, offset + count).toString('base64');
     },
     async appendMp4Import(token, data) {
       assert.equal(token, 't');
       if (failWrite) throw new Error('write failed');
       const bytes = Buffer.from(data, 'base64');
-      assert(bytes.length <= 256 * 1024);
+      assert(bytes.length <= 1024 * 1024);
       output.push(bytes);
     },
     async finishMp4Import() { finished++; return 'file://normalized.mhas'; },
@@ -48,7 +48,7 @@ function hostFor(input, failWrite = false) {
 
 // A container's AC-4 payloads lack sync headers. Validate the independently
 // specified Annex G wire format, including crossing native write boundaries.
-const payloads = [1, 127, 65534, 65535, 300000].map((size, i) => Buffer.alloc(size, i + 1));
+const payloads = [1, 127, 65534, 65535, 1300000].map((size, i) => Buffer.alloc(size, i + 1));
 const input = fixture('ac-4', payloads);
 const host = hostFor(input);
 const progress = [];

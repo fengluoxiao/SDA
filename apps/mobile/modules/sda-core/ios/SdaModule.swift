@@ -37,7 +37,7 @@ public final class SdaModule: Module {
    }
    #endif
   }
-  OnDestroy { player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for pair in player.imports.values { try? FileManager.default.removeItem(at:pair.1) }; player.imports.removeAll() } }
+  OnDestroy { player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for session in player.imports.values { session.discard() }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
@@ -96,6 +96,7 @@ public final class SdaModule: Module {
    try PlaybackStorage.save(queue,mode:mode)
    player.uncommittedRetained.subtract(queue.compactMap { $0["uri"] as? String })
    player.playbackQueue=queue; player.playbackMode=mode
+   player.retainProgrammeReferences()
   } }
   Function("playbackQueueSnapshot") { try player.locked { try player.json(["queue":player.playbackQueue,"mode":player.playbackMode,"currentHash":player.prefs.string(forKey:"sda.queue.selected") ?? ""]) } }
   AsyncFunction("retainQueueTrack") { (uri:String,name:String,hash:String) in
@@ -136,22 +137,21 @@ public final class SdaModule: Module {
    while let data=try file.read(upToCount:256*1024), !data.isEmpty { hash.update(data:data) }
    return hash.finalize().map { String(format:"%02x",$0) }.joined()
   }
+  Function("mp4ImportChunkBytes") { 1024*1024 }
   AsyncFunction("beginMp4Import") { (uri:String) in try player.locked {
    guard let u=URL(string:uri),u.isFileURL else { throw SdaError.message("文件地址无效") }
    let token=UUID().uuidString;let out=FileManager.default.temporaryDirectory.appendingPathComponent("sda-import-"+token+".mhas")
-   FileManager.default.createFile(atPath:out.path,contents:Data());player.imports[token]=(u,out)
-   let size=(try FileManager.default.attributesOfItem(atPath:u.path)[.size] as? NSNumber)?.int64Value ?? 0
-   return try player.json(["token":token,"size":size])
+   let session=try Mp4ImportSession(source:u,output:out);player.imports[token]=session
+   return try player.json(["token":token,"size":session.size])
   } }
   AsyncFunction("readMp4Import") { (token:String,offset:Double,count:Int) in try player.locked {
-   guard let pair=player.imports[token], offset.isFinite && offset >= 0 && count > 0 && count <= 256*1024 else { throw SdaError.message("导入参数无效") }
-   let f=try FileHandle(forReadingFrom:pair.0);defer { try? f.close() };try f.seek(toOffset:UInt64(offset));return try f.read(upToCount:count)?.base64EncodedString() ?? ""
+   guard let session=player.imports[token] else {throw SdaError.message("导入任务不存在")}
+   return try session.read(offset:offset,count:count)
   } }
   AsyncFunction("appendMp4Import") { (token:String,bytes:String) in try player.locked {
-   guard let pair=player.imports[token],let data=Data(base64Encoded:bytes),data.count <= 256*1024 else { throw SdaError.message("导入参数无效") }
-   let f=try FileHandle(forWritingTo:pair.1);defer { try? f.close() };try f.seekToEnd();try f.write(contentsOf:data)
+   guard let session=player.imports[token] else {throw SdaError.message("导入任务不存在")};try session.append(bytes)
   } }
-  AsyncFunction("finishMp4Import") { (token:String) in try player.locked { guard let pair=player.imports[token] else { throw SdaError.message("导入任务不存在") };return pair.1.absoluteString } }
-  AsyncFunction("discardMp4Import") { (token:String) in player.locked { if let pair=player.imports.removeValue(forKey:token) { try? FileManager.default.removeItem(at:pair.1) } } }
+  AsyncFunction("finishMp4Import") { (token:String) in try player.locked {guard let session=player.imports[token] else {throw SdaError.message("导入任务不存在")};return try session.finish()} }
+  AsyncFunction("discardMp4Import") { (token:String) in player.locked {player.imports.removeValue(forKey:token)?.discard()} }
  }
 }

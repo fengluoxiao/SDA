@@ -10,7 +10,7 @@ import java.util.UUID
 
 /** Bounded file I/O only. The shared Windows Mp4Demuxer owns all MP4 parsing. */
 class MpeghImport {
-    private data class Session(val source: File, val ownsSource: Boolean, val output: File, var writer: java.io.OutputStream?, var finished: Boolean = false)
+    private data class Session(val source: File, val ownsSource: Boolean, val output: File, val reader:RandomAccessFile, var writer: java.io.OutputStream?, var finished: Boolean = false)
     private val sessions = mutableMapOf<String, Session>()
     private var cleaned = false
     companion object {
@@ -47,7 +47,9 @@ class MpeghImport {
             }
             output = File.createTempFile("sda-360ra-${android.os.Process.myPid()}-", ".mhas", context.cacheDir)
             val token = UUID.randomUUID().toString()
-            sessions[token] = Session(source, ownsSource, output, output.outputStream().buffered(256 * 1024))
+            val reader=RandomAccessFile(source,"r")
+            try { sessions[token] = Session(source, ownsSource, output, reader, output.outputStream().buffered(1024 * 1024)) }
+            catch(error:Throwable){reader.close();throw error}
             return JSONObject().put("token", token).put("size", source.length()).toString()
         } catch (error: Throwable) {
             if (ownsSource) source.delete()
@@ -56,17 +58,15 @@ class MpeghImport {
     }
     @Synchronized fun read(token: String, offset: Double, count: Int): String {
         require(offset.isFinite() && offset >= 0 && offset == offset.toLong().toDouble())
-        require(count in 1..262144)
+        require(count in 1..1048576)
         val session = sessions[token] ?: error("媒体导入会话已关闭")
-        RandomAccessFile(session.source, "r").use { file ->
-            file.seek(offset.toLong())
-            val bytes = ByteArray(count)
-            val n = file.read(bytes)
-            return if (n <= 0) "" else Base64.encodeToString(bytes, 0, n, Base64.NO_WRAP)
-        }
+        val file=session.reader
+        if(file.filePointer!=offset.toLong())file.seek(offset.toLong())
+        val bytes=ByteArray(count);val n=file.read(bytes)
+        return if(n<=0)"" else Base64.encodeToString(bytes,0,n,Base64.NO_WRAP)
     }
     @Synchronized fun append(token: String, base64: String) {
-        require(base64.length <= 349528) { "导入数据块过大" }
+        require(base64.length <= 1398104) { "导入数据块过大" }
         val session = sessions[token] ?: error("媒体导入会话已关闭")
         check(!session.finished) { "音轨已经完成准备" }
         (session.writer ?: error("音轨写入已关闭")).write(Base64.decode(base64, Base64.NO_WRAP))
@@ -74,7 +74,7 @@ class MpeghImport {
     @Synchronized fun finish(token: String): String {
         val session = sessions[token] ?: error("媒体导入会话已关闭")
         session.writer?.close()
-        session.writer = null
+        session.writer = null;session.reader.close()
         session.finished = true
         if (session.ownsSource) session.source.delete()
         require(session.output.length() > 0) { "360RA 音轨没有音频帧" }
@@ -87,7 +87,7 @@ class MpeghImport {
     }
     @Synchronized fun discard(token: String) {
         sessions.remove(token)?.let { session ->
-            try { session.writer?.close() } finally { if (session.ownsSource) session.source.delete(); session.output.delete() }
+            try { session.writer?.close() } finally { try { session.reader.close() } finally { if (session.ownsSource) session.source.delete(); session.output.delete() } }
         }
     }
     @Synchronized fun close() { sessions.keys.toList().forEach { discard(it) } }

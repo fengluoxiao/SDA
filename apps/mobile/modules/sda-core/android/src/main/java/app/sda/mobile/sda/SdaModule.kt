@@ -339,6 +339,7 @@ class SdaModule : Module() {
             check(prefs.edit().putString("rows", rows.toString()).putString("mode", mode).commit()) { "无法保存播放队列，请检查设备存储空间" }
         }
         playbackQueue.configure(tracks, mode)
+        stereoReferences.retain(tracks.map { it.hash }.toSet() + backgroundHash)
         PlaybackKeepAlive.configureQueue(text)
         if (persist) uncommittedRetained.removeAll(tracks.mapNotNull { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalPath } }.toSet())
     }
@@ -525,15 +526,15 @@ class SdaModule : Module() {
                     try { android.os.Process.setThreadPriority(-4) } catch (_: SecurityException) { }
                     audioCpuPolicy = JSONObject(SdaEngine.nativePrepareDecoderThread())
 
-                    // Imported sources have a fresh, memory-only reference already.
+                    // Loaded queue sources retain only scalar programme parameters.
                     // Restored/changed files still take a complete fallback measurement.
                     if (!isSdar && (isAlac || isMp3 || isAv3a)) {
                         val file = mp3Cache ?: error("立体声分析输入缺失")
                         // This is the current loaded track's live programme setting, not
-                        // a stored analysis lookup. Keep it while this source remains loaded,
+                        // a persistent analysis lookup. Keep it while this source remains loaded,
                         // including seeking after EOF; clear it on a different source.
                         val active = playingProgramme?.takeIf { it.hash == contentHash && it.path == file.canonicalPath && it.bytes == file.length() && it.modified == file.lastModified() }
-                        val measurement = active?.measurement ?: stereoReferences.take(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a, keepPending = false) {
+                        val measurement = active?.measurement ?: stereoReferences.forSource(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a, keepPending = true) {
                             stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)
                         }
                         synchronized(nativeLock) {
@@ -972,6 +973,7 @@ class SdaModule : Module() {
             }
         }
 
+        Function("mp4ImportChunkBytes") { 1024*1024 }
         AsyncFunction("beginMp4Import") { uri: String ->
             mpeghImport.begin(appContext.reactContext ?: error("no react context"), Uri.parse(uri))
         }

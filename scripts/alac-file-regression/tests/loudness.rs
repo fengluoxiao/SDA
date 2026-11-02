@@ -1,0 +1,2 @@
+#[path="../../../packages/core/src/loudness.rs"] mod loudness;
+#[test]fn exact_programme_fixture_after_meter_optimization(){let pcm:Vec<Vec<f32>>=(0..12).map(|c|(0..1024).map(|i|((i as f32*(0.01+c as f32*0.003)).sin())*0.12).collect()).collect();let mut m=loudness::LoudnessMeter::speakers_7_1_4();for _ in 0..120*48000/1024{m.push(&pcm);}let result=m.integrated();assert_eq!(result.blocks,1197);assert_eq!(result.integrated_lufs.unwrap(),-11.691495792398575);assert_eq!(result.true_peak_dbtp.unwrap(),-18.40854193247332);}

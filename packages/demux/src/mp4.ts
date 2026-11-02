@@ -231,6 +231,8 @@ export class Mp4Demuxer {
   private wantedTimescale = 0;
   /** MP4Box keeps sample payloads until this cursor is released. */
   private deliveredSamples = 0;
+  private wantedSamples = 0;
+  get extractionComplete(): boolean { return this.wantedSamples > 0 && this.deliveredSamples >= this.wantedSamples; }
   private cb: Mp4DemuxerCallbacks;
 
   constructor(cb: Mp4DemuxerCallbacks = {}) {
@@ -269,6 +271,7 @@ export class Mp4Demuxer {
           this.wantedCodec = track.codec;
           const mp4Track = this.file.getTrackById?.(track.trackId) as { mdia?: { mdhd?: { timescale?: number } } } | undefined;
           this.wantedTimescale = mp4Track?.mdia?.mdhd?.timescale ?? track.sampleRate;
+          this.wantedSamples = this.file.moov?.mvex ? 0 : (this.file.getTrackById?.(track.trackId) as {samples?: unknown[]})?.samples?.length ?? 0;
           this.file.setExtractionOptions(track.trackId, null, { nbSamples: MP4_EXTRACTION_BATCH_SAMPLES });
           this.file.start();
         }
@@ -301,11 +304,12 @@ export class Mp4Demuxer {
     );
   }
 
-  push(chunk: Uint8Array, fileStart = this.offset): void {
+  push(chunk: Uint8Array, fileStart = this.offset): number | undefined {
     const buf = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer & { fileStart: number };
     buf.fileStart = fileStart;
     this.offset = Math.max(this.offset, fileStart + chunk.byteLength);
-    this.file.appendBuffer(buf);
+    const next = this.file.appendBuffer(buf);
+    return Number.isSafeInteger(next) && next >= 0 ? next : undefined;
   }
 
   flush(): void {

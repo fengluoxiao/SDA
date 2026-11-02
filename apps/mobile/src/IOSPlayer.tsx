@@ -99,12 +99,17 @@ function ThemedPlayer(p: PlayerProps) {
   const settingsScroll = useRef<ScrollView>(null);
   const progressWidth = useRef(1);
   const progressStart = useRef(0);
+  const progressScale = useRef(new Animated.Value(1)).current;
+  const animateProgress = React.useCallback((active: boolean) => {
+    Animated.spring(progressScale,{toValue:active?1.75:1,speed:28,bounciness:0,useNativeDriver:true}).start();
+  },[progressScale]);
   const progressGesture = React.useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => !!p.seekTo && p.durationMs > 0 && !!p.selectedUri && !p.busy,
-    onPanResponderGrant: event => { progressStart.current = event.nativeEvent.locationX; },
+    onPanResponderGrant: event => { progressStart.current = event.nativeEvent.locationX; animateProgress(true); },
     onPanResponderTerminationRequest: () => false,
-    onPanResponderRelease: (_, gesture) => p.seekTo?.(Math.max(0, Math.min(1, (progressStart.current + gesture.dx) / progressWidth.current)) * p.durationMs),
-  }), [p.seekTo, p.durationMs, p.selectedUri, p.busy]);
+    onPanResponderRelease: (_, gesture) => { animateProgress(false);p.seekTo?.(Math.max(0, Math.min(1, (progressStart.current + gesture.dx) / progressWidth.current)) * p.durationMs); },
+    onPanResponderTerminate: () => animateProgress(false),
+  }), [p.seekTo, p.durationMs, p.selectedUri, p.busy, animateProgress]);
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
   const isLight = systemTheme !== "dark";
@@ -353,7 +358,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>
-            <Animated.View ref={sharedMini.progressRef} collapsable={false} onLayout={event => { progressWidth.current=Math.max(1,event.nativeEvent.layout.width);sharedMini.capture(); }} {...progressGesture.panHandlers} hitSlop={{top:14,bottom:14,left:0,right:0}} accessibilityRole="adjustable" accessibilityLabel="播放进度，点击或拖动定位" accessibilityActions={[{name:"increment"},{name:"decrement"}]} onAccessibilityAction={event => p.seekTo?.(Math.max(0, Math.min(p.durationMs-1, p.positionMs+(event.nativeEvent.actionName === "increment" ? 5000 : -5000))))} accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line, opacity: sharedMini.mainOpacity }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></Animated.View>
+            <Animated.View ref={sharedMini.progressRef} collapsable={false} onLayout={event => { progressWidth.current=Math.max(1,event.nativeEvent.layout.width);sharedMini.capture(); }} {...progressGesture.panHandlers} hitSlop={{top:14,bottom:14,left:0,right:0}} accessibilityRole="adjustable" accessibilityLabel="播放进度，点击或拖动定位" accessibilityActions={[{name:"increment"},{name:"decrement"}]} onAccessibilityAction={event => p.seekTo?.(Math.max(0, Math.min(p.durationMs-1, p.positionMs+(event.nativeEvent.actionName === "increment" ? 5000 : -5000))))} accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line, opacity: sharedMini.mainOpacity, transform:[{scaleY:progressScale}] }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></Animated.View>
             <View style={np.times}><Animated.Text ref={sharedMini.timeRef} onLayout={sharedMini.capture} style={[np.time, { color: pc.muted, opacity: sharedMini.mainOpacity }]}>{time(p.positionMs)}</Animated.Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
           </View>
           <View style={[np.transport, { marginTop: transportMargin }]}>

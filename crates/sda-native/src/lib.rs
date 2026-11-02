@@ -192,8 +192,10 @@ fn advance_object_snapshot(events:&mut VecDeque<ObjectEvent>,active:&mut ObjectS
         let event = events.pop_front().expect("front checked");
         if event.has_pos {
             active.insert(event.id, event);
-        } else {
-            active.remove(&event.id);
+        } else if let Some(previous)=active.get_mut(&event.id) {
+            previous.gain_db=event.gain_db;
+            previous.sample_pos=event.sample_pos;
+            previous.ramp_duration=event.ramp_duration;
         }
     }
 }
@@ -1815,6 +1817,17 @@ mod tests {
     }
 
     /// T1.10: object snapshots coalesce to one per 66 ms window.
+    #[test]
+    fn object_snapshot_keeps_position_for_gain_only_updates_after_seek() {
+        let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();
+        let positioned=ObjectEvent{zone_exclusion:vec![],horizontal_only:false,diffuse:0.,id:42,sample_pos:960000,has_pos:true,pos:[0.6,-0.4,0.2],gain_db:0.,size:[0.;3],anchor:"room".into(),distance_m:None,distance_infinite:false,screen_factor:None,depth_factor:None,ramp_duration:0};
+        let mut gain=positioned.clone();gain.has_pos=false;gain.pos=[0.;3];gain.gain_db=-6.;gain.sample_pos+=1536;
+        let mut timeline=VecDeque::from([positioned.clone(),gain.clone()]);let mut active=ObjectSnapshot::new();
+        advance_object_snapshot(&mut timeline,&mut active,gain.sample_pos);
+        assert_eq!(active[&42].pos,positioned.pos);assert_eq!(active[&42].gain_db,-6.);assert!(active[&42].has_pos);
+        engine.begin_seek(960000,966144);assert!(engine.object_snapshot().is_empty());
+        engine.object_events.lock().unwrap().push_back(gain);assert!(engine.object_snapshot().is_empty(),"gain-only updates must not invent an unknown position");
+    }
     #[test]
     fn object_snapshot_waits_for_presentation_clock_and_evicts_consumed_events() {
         let object = ObjectEvent { zone_exclusion: vec![], horizontal_only: false,

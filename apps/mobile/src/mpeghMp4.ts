@@ -3,6 +3,7 @@ import { mhasPacket } from "../../../packages/core/src/mhas";
 import { fromByteArray, toByteArray } from "base64-js";
 
 export interface MpeghMp4Host {
+  mp4ImportChunkBytes?(): number;
   beginMp4Import(uri: string): Promise<string>;
   readMp4Import(token: string, offset: number, count: number): Promise<string>;
   appendMp4Import(token: string, bytes: string): Promise<void>;
@@ -10,12 +11,14 @@ export interface MpeghMp4Host {
   discardMp4Import(token: string): Promise<void>;
   adoptMp4Import?(token: string): Promise<void>;
 }
-const CHUNK = 256 * 1024;
+const MAX_CHUNK = 1024 * 1024;
 export interface ImportProgress { fraction: number; stage: string }
 /** Use Windows's actual MP4 parser and AV3A/AC-4/MPEG-H packet writers; the mobile host
  * only reads/writes bounded file chunks. Decoding remains entirely native. */
 export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string, onProgress?: (progress: ImportProgress) => void) {
   if (!/\.(?:m4a|mp4)$/i.test(name)) return null;
+  const requestedChunk=host.mp4ImportChunkBytes?.() ?? 256*1024;
+  const CHUNK=Number.isSafeInteger(requestedChunk)?Math.max(64*1024,Math.min(MAX_CHUNK,requestedChunk)):256*1024;
   onProgress?.({ fraction: 0, stage: "读取容器" });
   const { token, size } = JSON.parse(await host.beginMp4Import(uri)) as { token: string; size: number };
   let selected = false, otherCodec = false, raw = false, ac4 = false, av3a = false, durationMs = 0, failure: string | undefined;
@@ -60,13 +63,21 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
     if (failure) throw new Error(`MP4 解析失败：${failure}`);
   };
   try {
-    for (let offset = 0; offset < size; offset += CHUNK) {
+    let offset=0,readBytes=0,lastProgress=0;let fraction=0,lastStage="";
+    const visits=new Map<number,number>();
+    while (offset < size && !demuxer.extractionComplete) {
+      const visit=(visits.get(offset)??0)+1;visits.set(offset,visit);
+      if(visit>3)throw new Error("MP4 提取位置没有推进");
       const bytes = toByteArray(await host.readMp4Import(token, offset, CHUNK));
       if (!bytes.length) throw new Error("MP4 文件读取提前结束");
-      demuxer.push(bytes, offset);
+      readBytes+=bytes.length;
+      const next=demuxer.push(bytes, offset);
       if (otherCodec) { await host.discardMp4Import(token); return null; }
       await writePackets();
-      onProgress?.({ fraction: .95 * Math.min(1, (offset + bytes.length) / size), stage: av3a ? "提取 Audio Vivid 音轨" : ac4 ? "提取 AC-4 音轨" : selected ? "提取 360 Reality Audio 音轨" : "解析音轨" });
+      const now=Date.now();fraction=Math.max(fraction,.95*Math.min(1,readBytes/size));
+      const stage=av3a?"提取 Audio Vivid 音轨":ac4?"提取 AC-4 音轨":selected?"提取 360 Reality Audio 音轨":"解析音轨";
+      if(now-lastProgress>=80||stage!==lastStage){onProgress?.({fraction,stage});lastProgress=now;lastStage=stage;}
+      offset=next!==undefined&&next!==offset&&next<size?next:offset+bytes.length;
     }
     demuxer.flush();
     await writePackets();

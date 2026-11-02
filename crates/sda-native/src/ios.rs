@@ -1334,6 +1334,37 @@ mod fresh_reference_bridge_tests {
   assert_eq!(reply["ok"],true,"{reply}");reply["value"].clone()
  }
  unsafe fn command(h:*mut std::ffi::c_void,op:&str,args:Value)->Value{let op=CString::new(op).unwrap();let args=CString::new(args.to_string()).unwrap();unsafe{value(sda_ios_command(h,op.as_ptr(),args.as_ptr()))}}
+ #[test] fn prepared_av3a_restarts_reach_actual_output_across_track_switches(){
+  let (Ok(vivid),Ok(atmos),Ok(hrtf))=(std::env::var("SDA_AV3A_SEEK_FILE"),std::env::var("SDA_ATMOS_SEEK_FILE"),std::env::var("SDA_SEEK_HRTF"))else{return;};
+  // Analyse once, then reuse only the scalar programme parameters, just as a
+  // retained queue source does. No rendered PCM is kept between tracks.
+  let mut reference=crate::av3a_reference::open(&vivid).unwrap();
+  let measured=loop{let step=reference.step(65536).unwrap();if step.done{break serde_json::to_string(&step.measurement.unwrap()).unwrap();}};
+  drop(reference);
+  for (index,codec) in ["eac3","av3a","eac3","av3a"].iter().enumerate(){
+   let config=CString::new(json!({"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","sourceCodec":codec,"directObjectHrtf":true,"directionalHrtf":true,"objectRendering":true}).to_string()).unwrap();
+   let path=CString::new(hrtf.clone()).unwrap();let mut error=std::ptr::null_mut();let h=unsafe{sda_ios_create(config.as_ptr(),path.as_ptr(),&mut error)};
+   assert!(!h.is_null(),"create {codec} failed");
+   struct Close(*mut std::ffi::c_void);impl Drop for Close{fn drop(&mut self){unsafe{sda_ios_close(self.0)}}}let _close=Close(h);
+   unsafe{
+    command(h,"openIndexed",json!({"path":if *codec=="av3a"{&vivid}else{&atmos},"codec":codec}));
+    command(h,"balance",json!({"enabled":true}));
+    if *codec=="av3a"{command(h,"measured",json!({"json":measured}));}
+    command(h,"pause",json!({"paused":false}));
+   }
+   let start=Instant::now();let mut left=[0f32;512];let mut right=[0f32;512];let mut audible=false;
+   while start.elapsed()<Duration::from_secs(5){
+    let status=unsafe{command(h,"status",json!({}))};
+    let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
+    if status["preparingAudio"]==true || decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
+    unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};
+    if left.iter().chain(&right).any(|v|v.abs()>1e-6){audible=true;break;}
+    std::thread::sleep(Duration::from_millis(1));
+   }
+   assert!(audible,"switch {index} to {codec} produced no sound");
+   eprintln!("Actual track switch {index} to {codec}: {:?}",start.elapsed());
+  }
+ }
  #[test] fn indexed_seek_reaches_actual_output_callback_without_old_audio(){
   let Ok(file)=std::env::var("SDA_ATMOS_SEEK_FILE")else{return;};let Ok(hrtf)=std::env::var("SDA_SEEK_HRTF")else{return;};
   let config=CString::new(r#"{"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","sourceCodec":"eac3","directObjectHrtf":true,"directionalHrtf":true,"objectRendering":true}"#).unwrap();let hrtf=CString::new(hrtf).unwrap();let mut error=std::ptr::null_mut();let h=unsafe{sda_ios_create(config.as_ptr(),hrtf.as_ptr(),&mut error)};
@@ -1348,7 +1379,7 @@ mod fresh_reference_bridge_tests {
     let status=unsafe{command(h,"status",json!({}))};let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
     if decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
     unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};
-    if left.iter().chain(&right).any(|v|v.abs()>1e-5){let status=unsafe{command(h,"status",json!({}))};let consumed=status["consumedSamplePos"].as_u64().unwrap();assert!(consumed>=target*48&&consumed<=target*48+2048,"old or preroll audio reached callback: {consumed} at {target}");audible=true;break;}
+    if left.iter().chain(&right).any(|v|v.abs()>1e-5){let status=unsafe{command(h,"status",json!({}))};let consumed=status["consumedSamplePos"].as_u64().unwrap();assert!(consumed>=target*48&&consumed<=target*48+2048,"old or preroll audio reached callback: {consumed} at {target}");let objects=unsafe{command(h,"objects",json!({}))};assert!(!objects.as_object().unwrap().is_empty(),"positioned objects must recover after seeking to {target}");audible=true;break;}
     std::thread::sleep(Duration::from_millis(1));
    }
    eprintln!("Actual native callback seek {target} ms: {:?}",started.elapsed());assert!(audible,"no actual audible callback after seek");

@@ -62,12 +62,22 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/test-ios-storage.py 2>&1 | tee reader-artifacts/storage-report.txt
+      - name: Check bounded native MP4 import I/O
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -o pipefail
+          python3 scripts/test-ios-import-io.py 2>&1 | tee reader-artifacts/import-io-report.txt
+      - name: Check loaded programme state across queue switches
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -o pipefail
+          python3 scripts/test-ios-programme-state.py 2>&1 | tee reader-artifacts/programme-report.txt
       - name: Typecheck iOS 16.4 playback host
         if: ${{ always() && !cancelled() }}
         run: |
           set -o pipefail
           root=apps/mobile/modules/sda-core/ios
-          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$root/SdaBridge.h" "$root/SdaPlayer.swift" "$root/HeadphoneTracking.swift" "$root/RemoteDiagnostics.swift" "$root/DiagnosticSnapshotCache.swift" "$root/PlaybackLifecycle.swift" "$root/PlaybackEndDrain.swift" "$root/PlaybackStorage.swift" "$root/OutputCallbackWatchdog.swift" "$root/ArtworkColor.swift" "$root/CompressedInput.swift" "$root/IndexedCompressedInput.swift" "$root/SystemSpatial360.swift" "$root/SystemAudioBufferPolicy.swift" "$root/Phase360Prototype.swift" 2>&1 | tee reader-artifacts/ios-typecheck.txt
+          xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$root/SdaBridge.h" "$root/SdaPlayer.swift" "$root/HeadphoneTracking.swift" "$root/RemoteDiagnostics.swift" "$root/DiagnosticSnapshotCache.swift" "$root/PlaybackLifecycle.swift" "$root/PlaybackEndDrain.swift" "$root/PlaybackStorage.swift" "$root/Mp4ImportSession.swift" "$root/OutputCallbackWatchdog.swift" "$root/ArtworkColor.swift" "$root/CompressedInput.swift" "$root/IndexedCompressedInput.swift" "$root/SystemSpatial360.swift" "$root/SystemAudioBufferPolicy.swift" "$root/Phase360Prototype.swift" 2>&1 | tee reader-artifacts/ios-typecheck.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

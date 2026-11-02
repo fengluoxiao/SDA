@@ -26,14 +26,19 @@ final class SdaPlayer {
  private struct StereoSourceIdentity: Equatable {
   let path: String; let bytes: UInt64; let modified: Date
  }
- private var pendingStereoReferences: [String:(StereoSourceIdentity,String)] = [:]
+ private var loadedProgrammeReferences: [String:(StereoSourceIdentity,String)] = [:]
  var stereoImportGeneration = 0
  private func stereoSourceIdentity(_ path: String) throws -> StereoSourceIdentity {
   let attrs = try FileManager.default.attributesOfItem(atPath:path)
   return StereoSourceIdentity(path:URL(fileURLWithPath:path).standardizedFileURL.path,
    bytes:(attrs[.size] as? NSNumber)?.uint64Value ?? 0, modified:attrs[.modificationDate] as? Date ?? .distantPast)
  }
- func clearPreparedStereoReferences() { stereoImportGeneration += 1; pendingStereoReferences.removeAll() }
+ // Queue changes release parameters for sources no longer loaded; no audio is retained.
+ func retainProgrammeReferences() {
+  let hashes=Set(playbackQueue.compactMap { $0["hash"] as? String }).union([trackHash])
+  loadedProgrammeReferences=loadedProgrammeReferences.filter { hashes.contains($0.key) }
+ }
+ func clearPreparedStereoReferences() { stereoImportGeneration += 1; loadedProgrammeReferences.removeAll() }
  var uncommittedRetained: Set<String> = []
  var playbackQueue: [[String:Any]] = []
  var playbackMode = "sequence"
@@ -62,7 +67,7 @@ final class SdaPlayer {
  var compressedInputDiagnostic: [String:Any] = [:]
  var hrtfState = "空间渲染 · 等待播放加载"
  var layout = "7.1.4"
- var imports: [String: (URL, URL)] = [:]
+ var imports: [String: Mp4ImportSession] = [:]
  var observers: [NSObjectProtocol] = []
  var remoteTargets: [(MPRemoteCommand, Any)] = []
  var title = "SDA"
@@ -623,7 +628,7 @@ final class SdaPlayer {
    return true
   }
  }
- // Measurements belong to this import session only; never persist loudness results.
+ // Scalar programme settings belong to loaded sources in this app session; never persist them.
  func prepareStereoTrack(_ uri: String, _ name: String, _ hash: String) throws {
   guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
   guard hash.range(of:"^[0-9a-f]{64}$",options:.regularExpression) != nil else { throw SdaError.message("文件标识无效") }
@@ -632,12 +637,13 @@ final class SdaPlayer {
   let input = try CompressedInput(url:url,name:name)
   guard !input.isSdar && (input.isAlac || ext == "mp3" || input.isAv3a) else { return }
   let identity = try stereoSourceIdentity(url.path)
+  if locked({ loadedProgrammeReferences[hash]?.0 == identity }) { return }
   let importToken = locked { stereoImportGeneration }
   guard let measurement = try measureNativeStereoReference(path:url.path,alac:input.isAlac,av3a:input.isAv3a,valid:{
    self.locked { self.stereoImportGeneration == importToken }
   }) else { throw SdaError.message("立体声分析已取消") }
   guard try stereoSourceIdentity(url.path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
-  locked { if stereoImportGeneration == importToken { pendingStereoReferences[hash] = (identity,measurement) } }
+  locked { if stereoImportGeneration == importToken { loadedProgrammeReferences[hash] = (identity,measurement) } }
  }
  private func measureNativeStereoReference(path: String, alac: Bool, av3a: Bool, valid: () -> Bool) throws -> String? {
   guard valid() else { return nil }
@@ -664,11 +670,12 @@ final class SdaPlayer {
   let identity = try stereoSourceIdentity(path)
   let valid = { self.locked { self.generation == token && self.hasPlayback && (self.systemSpatial == nil || av3a) } }
   guard valid() else { return false }
-  let ready = locked { pendingStereoReferences.removeValue(forKey:hash).flatMap { $0.0 == identity ? $0.1 : nil } }
+  let ready = locked { loadedProgrammeReferences[hash].flatMap { $0.0 == identity ? $0.1 : nil } }
   guard let measurement = try ready ?? measureNativeStereoReference(path:path,alac:alac,av3a:av3a,valid:valid) else { return false }
   guard try stereoSourceIdentity(path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
   return try locked {
    guard generation == token && hasPlayback else { return false }
+   loadedProgrammeReferences[hash] = (identity,measurement)
    if let system = systemSpatial {
     guard av3a else { return false }
     // AV3A's decoded speaker reference is shared with the Apple speaker route.

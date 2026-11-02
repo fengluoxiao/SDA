@@ -66,8 +66,10 @@ pub struct LoudnessMeter {
     hop: usize,
     energy: Vec<f64>,
     history: Vec<Vec<f32>>,
+    history_length: usize,
     write: usize,
     phases: Vec<Vec<(usize, f64)>>,
+    peak_bound: f64,
     peak: f64,
 }
 impl LoudnessMeter {
@@ -112,9 +114,11 @@ impl LoudnessMeter {
             fill: 0,
             hop: (rate as f64 * 0.1).round() as usize,
             energy: vec![],
-            history: (0..weights.len()).map(|_| vec![0.0; delay]).collect(),
+            history: (0..weights.len()).map(|_| vec![0.0; delay * 2]).collect(),
+            history_length: delay,
             weights,
             write: 0,
+            peak_bound: phases.iter().map(|phase|phase.iter().map(|(_,c)|c.abs()).sum::<f64>()).fold(0.,f64::max)*(1.+1e-12),
             phases,
             peak: 0.0,
         }
@@ -124,21 +128,28 @@ impl LoudnessMeter {
             for ch in 0..self.weights.len() {
                 let x = channels[ch][i];
                 self.history[ch][self.write] = x;
+                self.history[ch][self.write + self.history_length] = x;
+                // The FIR L1 norm bounds every possible inter-sample peak in
+                // this window. Quiet channels/windows cannot change an already
+                // larger peak; skip their dot products without approximating it.
+                let window_peak=self.history[ch][self.write+1..self.write+self.history_length+1].iter().map(|x|f64::from(x.abs())).fold(0.,f64::max);
+                if window_peak*self.peak_bound>self.peak {
                 for phase in &self.phases {
                     let y: f64 = phase
                         .iter()
                         .map(|(offset, c)| {
-                            self.history[ch][(self.write + self.history[ch].len() - offset)
-                                % self.history[ch].len()] as f64
+                            self.history[ch][self.write + self.history_length - offset] as f64
                                 * c
                         })
                         .sum();
                     self.peak = self.peak.max(y.abs());
                 }
+                }
                 let y = self.filters[ch][0].process(x);
                 self.block[ch][self.fill] = self.filters[ch][1].process(y);
             }
-            self.write = (self.write + 1) % self.history[0].len();
+            self.write += 1;
+            if self.write == self.history_length { self.write = 0; }
             self.fill += 1;
             if self.fill == self.block[0].len() {
                 let n = self.fill;
@@ -159,37 +170,19 @@ impl LoudnessMeter {
         }
     }
     pub fn integrated(&self) -> ReferenceLoudness {
-        let absolute: Vec<_> = self
-            .energy
-            .iter()
-            .copied()
-            .filter(|e| *e > 0.0 && 10.0 * e.log10() > -69.309)
-            .collect();
-        let peak = if self.peak > 0.0 {
-            Some(20.0 * self.peak.log10())
-        } else {
-            None
-        };
-        if absolute.is_empty() {
-            return ReferenceLoudness {
-                true_peak_dbtp: peak,
-                ..Default::default()
-            };
-        }
-        let mean = absolute.iter().sum::<f64>() / absolute.len() as f64;
-        let gate = -0.691 + 10.0 * mean.log10() - 10.0;
-        let relative: Vec<_> = absolute
-            .iter()
-            .copied()
-            .filter(|e| -0.691 + 10.0 * e.log10() > gate)
-            .collect();
-        ReferenceLoudness {
-            integrated_lufs: Some(
-                -0.691 + 10.0 * (relative.iter().sum::<f64>() / relative.len() as f64).log10(),
-            ),
-            blocks: absolute.len(),
-            true_peak_dbtp: peak,
-        }
+        // Energy-domain gates avoid two log/allocate passes over programme
+        // history for every decoded frame. Preserve the original comparison at
+        // floating-point gate boundaries instead of changing the gate policy.
+        let absolute_gate=10f64.powf(-69.309/10.);
+        let absolute=|e:f64| e>0. && if (e/absolute_gate-1.).abs()<1e-10 {10.*e.log10()>-69.309}else{e>absolute_gate};
+        let mut sum=0.;let mut blocks=0usize;
+        for &e in &self.energy {if absolute(e){sum+=e;blocks+=1;}}
+        let peak=if self.peak>0.{Some(20.*self.peak.log10())}else{None};
+        if blocks==0{return ReferenceLoudness{true_peak_dbtp:peak,..Default::default()};}
+        let mean=sum/blocks as f64;let gate_energy=mean*0.1;
+        let gate=-0.691+10.*mean.log10()-10.;let mut gated=0.;let mut count=0usize;
+        for &e in &self.energy {if absolute(e) && if (e/gate_energy-1.).abs()<1e-10 {-0.691+10.*e.log10()>gate}else{e>gate_energy}{gated+=e;count+=1;}}
+        ReferenceLoudness{integrated_lufs:Some(-0.691+10.*(gated/count as f64).log10()),blocks,true_peak_dbtp:peak}
     }
 }
 

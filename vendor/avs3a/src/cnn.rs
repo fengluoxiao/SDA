@@ -358,9 +358,8 @@ fn convolve_transpose_stride_one(layer: &CnnLayer, input: &[f32], output: &mut [
         let mut dimension = 0;
         while dimension < dimensions {
             if dimension >= padding_begin && dimension + 8 <= interior_end {
-                let values = reformed_sum_wide(dot_len, |index| {
-                    let input_channel = index / kernel_size;
-                    let column_tap = index % kernel_size;
+                let mut input_channel=0;let mut column_tap=0;
+                let values = reformed_sum_wide(dot_len, |_| {
                     let source_position = dimension + column_tap - padding_begin;
                     let model_tap = kernel_size - column_tap - 1;
                     let kernel_index = (model_tap * output_channels + output_channel)
@@ -372,7 +371,9 @@ fn convolve_transpose_stride_one(layer: &CnnLayer, input: &[f32], output: &mut [
                             .try_into()
                             .expect("wide CNN input is an eight-value interior block"),
                     );
-                    features * f32x8::splat(kernel[kernel_index])
+                    let value=features * f32x8::splat(kernel[kernel_index]);
+                    column_tap+=1;if column_tap==kernel_size{column_tap=0;input_channel+=1;}
+                    value
                 });
                 let output_index = dimension + output_channel * dimensions;
                 output[output_index..output_index + 8].copy_from_slice(&values.to_array());
@@ -497,9 +498,8 @@ fn convolve_transpose_stride_two_wide(
     let odd_kernel_size = kernel_size.div_ceil(2);
     let even_kernel_size = (kernel_size - 1) / 2;
 
-    let odd = reformed_sum_wide(odd_kernel_size * input_channels, |index| {
-        let input_channel = index / odd_kernel_size;
-        let tap = index % odd_kernel_size;
+    let mut input_channel=0;let mut tap=0;
+    let odd = reformed_sum_wide(odd_kernel_size * input_channels, |_| {
         let source_position = dimension + tap - 1;
         let model_tap = kernel_size - 2 * tap - 1;
         let kernel_index =
@@ -510,12 +510,13 @@ fn convolve_transpose_stride_two_wide(
                 .try_into()
                 .expect("wide CNN input is an eight-value interior block"),
         );
-        features * f32x8::splat(kernel[kernel_index])
+        let value=features * f32x8::splat(kernel[kernel_index]);
+        tap+=1;if tap==odd_kernel_size{tap=0;input_channel+=1;}
+        value
     });
 
-    let even = reformed_sum_wide(even_kernel_size * input_channels, |index| {
-        let input_channel = index / even_kernel_size;
-        let tap = index % even_kernel_size;
+    let mut input_channel=0;let mut tap=0;
+    let even = reformed_sum_wide(even_kernel_size * input_channels, |_| {
         let source_position = if kernel_size == 3 {
             dimension
         } else {
@@ -530,7 +531,9 @@ fn convolve_transpose_stride_two_wide(
                 .try_into()
                 .expect("wide CNN input is an eight-value interior block"),
         );
-        features * f32x8::splat(kernel[kernel_index])
+        let value=features * f32x8::splat(kernel[kernel_index]);
+        tap+=1;if tap==even_kernel_size{tap=0;input_channel+=1;}
+        value
     });
 
     let odd = odd.to_array();
