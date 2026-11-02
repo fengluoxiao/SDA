@@ -190,7 +190,7 @@ impl LoudnessMeter {
 /// uses its separately reconstructed objects. Role weights follow labels, not
 /// the number/order of object channels.
 #[derive(Default)]
-pub(crate) struct SpeakerReference {
+pub struct SpeakerReference {
     labels: Vec<String>,
     rate: u32,
     meter: Option<LoudnessMeter>,

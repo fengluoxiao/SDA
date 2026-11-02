@@ -381,7 +381,7 @@ assert.match(homePages, /onPress=\{p.previous\}/);
 assert.match(homePages, /onPress=\{p.next\}/);
 assert.match(homePages, /播放进度，点击或拖动定位/);
 assert.match(homePages, /progressGesture\.panHandlers/);
-assert.match(ui, /onPanResponderRelease:[^\n]*p\.seekTo/);
+assert.match(ui, /useProgressScrubber\(/);
 assert.match(homePages, /onAccessibilityAction=/);
 console.log('Existing playback tab checks passed: page background, reference layout, original navigation, no new screen/modal');
 

@@ -1,3 +1,4 @@
+import { useProgressScrubber } from "./use-progress-scrubber";
 import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
@@ -97,19 +98,7 @@ function ThemedPlayer(p: PlayerProps) {
   const [showAllObjects, setShowAllObjects] = useState(false);
   const [visibleObjectCount, setVisibleObjectCount] = useState(0);
   const settingsScroll = useRef<ScrollView>(null);
-  const progressWidth = useRef(1);
-  const progressStart = useRef(0);
-  const progressScale = useRef(new Animated.Value(1)).current;
-  const animateProgress = React.useCallback((active: boolean) => {
-    Animated.spring(progressScale,{toValue:active?1.75:1,speed:28,bounciness:0,useNativeDriver:true}).start();
-  },[progressScale]);
-  const progressGesture = React.useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => !!p.seekTo && p.durationMs > 0 && !!p.selectedUri && !p.busy,
-    onPanResponderGrant: event => { progressStart.current = event.nativeEvent.locationX; animateProgress(true); },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderRelease: (_, gesture) => { animateProgress(false);p.seekTo?.(Math.max(0, Math.min(1, (progressStart.current + gesture.dx) / progressWidth.current)) * p.durationMs); },
-    onPanResponderTerminate: () => animateProgress(false),
-  }), [p.seekTo, p.durationMs, p.selectedUri, p.busy, animateProgress]);
+  const progressGesture = useProgressScrubber({ sourceKey: p.selectedUri, durationMs: p.durationMs, positionMs: p.positionMs, disabled: p.busy || p.preparingAudio === true, seekTo: p.seekTo });
   const volumeWidth = useRef(1);
   const volumeOrigin = useRef(0);
   const isLight = systemTheme !== "dark";
@@ -139,7 +128,7 @@ function ThemedPlayer(p: PlayerProps) {
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听");
   const engineUnavailable = p.error?.includes("SdaEngine native module is not registered") === true;
-  const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
+  const progress = progressGesture.progress;
   const layoutKey = landscapePlayer ? "landscape" : "portrait";
   // Page geometry belongs to the library, not to the currently selected tab.
   const nativeLibraryHeaderActive = hasNativePageHeader && hasUIKitIOSTabs;
@@ -358,8 +347,8 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <View style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>
-            <Animated.View ref={sharedMini.progressRef} collapsable={false} onLayout={event => { progressWidth.current=Math.max(1,event.nativeEvent.layout.width);sharedMini.capture(); }} {...progressGesture.panHandlers} hitSlop={{top:14,bottom:14,left:0,right:0}} accessibilityRole="adjustable" accessibilityLabel="播放进度，点击或拖动定位" accessibilityActions={[{name:"increment"},{name:"decrement"}]} onAccessibilityAction={event => p.seekTo?.(Math.max(0, Math.min(p.durationMs-1, p.positionMs+(event.nativeEvent.actionName === "increment" ? 5000 : -5000))))} accessibilityValue={{ text: `${time(p.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line, opacity: sharedMini.mainOpacity, transform:[{scaleY:progressScale}] }]}><View style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></Animated.View>
-            <View style={np.times}><Animated.Text ref={sharedMini.timeRef} onLayout={sharedMini.capture} style={[np.time, { color: pc.muted, opacity: sharedMini.mainOpacity }]}>{time(p.positionMs)}</Animated.Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(p.durationMs - p.positionMs)}` : "−–:––"}</Text></View>
+            <Animated.View ref={sharedMini.progressRef} collapsable={false} onLayout={event => { progressGesture.onLayout(event);sharedMini.capture(); }} {...progressGesture.panHandlers} hitSlop={{top:14,bottom:14,left:0,right:0}} accessibilityRole="adjustable" accessibilityLabel="播放进度，点击或拖动定位" accessibilityHint="按住并拖动预览时间，松手跳转" accessibilityActions={[{name:"increment"},{name:"decrement"}]} onAccessibilityAction={event => p.seekTo?.(Math.max(0, Math.min(p.durationMs-1, p.positionMs+(event.nativeEvent.actionName === "increment" ? 5000 : -5000))))} accessibilityValue={{ text: `${time(progressGesture.positionMs)} / ${p.durationMs > 0 ? time(p.durationMs) : "未知时长"}` }} style={[np.track, { backgroundColor: pc.line, opacity: sharedMini.mainOpacity, transform:[{scaleY:progressGesture.scale}] }]}><View pointerEvents="none" style={[np.fill, { backgroundColor: pc.muted, width: `${progress * 100}%` }]} /></Animated.View>
+            <View style={np.times}><Animated.Text ref={sharedMini.timeRef} onLayout={sharedMini.capture} style={[np.time, { color: pc.muted, opacity: sharedMini.mainOpacity }]}>{time(progressGesture.positionMs)}</Animated.Text><Pressable accessibilityRole="button" accessibilityLabel={format + "，查看歌曲元数据"} onPress={() => setMetadataOpen(true)} hitSlop={10} style={{ minHeight: 32, justifyContent: "center", paddingHorizontal: 8 }}><Text style={[np.format, { color: pc.muted }]}>{format}</Text></Pressable><Text style={[np.time, { color: pc.muted }]}>{p.durationMs > 0 ? `−${time(Math.max(0, p.durationMs - progressGesture.positionMs))}` : "−–:––"}</Text></View>
           </View>
           <View style={[np.transport, { marginTop: transportMargin }]}>
             <Pressable accessibilityRole="button" accessibilityLabel="上一曲" accessibilityState={{ disabled: p.busy || !p.queue.length }} disabled={p.busy || !p.queue.length} onPress={p.previous} style={({ pressed }) => [np.transportTouch, landscapePlayer && np.landscapeTransportTouch, compactLandscape && np.compactTransportTouch, { opacity: p.busy || !p.queue.length ? .3 : pressed ? .55 : 1 }]}><IOSSkipSymbol direction="previous" color={pc.ink} size={30} /></Pressable>

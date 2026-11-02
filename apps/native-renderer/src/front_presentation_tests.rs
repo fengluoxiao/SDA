@@ -22,8 +22,8 @@ fn assert_accepted(e: &Engine, enabled: bool) {
     assert_eq!(e.front_common.enabled, enabled);
     assert!(e.front_common.grouped);
     assert_eq!(e.front_common.presence_db(), 3.);
-    assert_eq!(e.spatial_preamp.target_db(), if enabled { 2. } else { 0. });
-    assert_eq!(e.spatial_layer.db, if enabled { 4. } else { 0. });
+    assert_eq!(e.spatial_preamp.target_db(), 0.);
+    assert_eq!(e.spatial_layer.db, 0.);
     assert_eq!(e.spatial_layer.rear_db, 0.);
 }
 #[test]

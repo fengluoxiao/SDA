@@ -108,15 +108,12 @@ fn amplitude(pcm: &[f32], hz: f64) -> f64 {
     energy.sqrt()
 }
 #[test]
-fn delayed_spatial_detail_is_audible_without_changing_foreground_or_bass() {
+fn directional_policy_keeps_legacy_temporal_lift_bypassed_without_changing_signal() {
     for volume in [false, true] {
         let off = scene(true, volume, true, false, 997);
         let on = scene(true, volume, true, true, 997);
-        assert!(
-            on.extra > 0.1,
-            "no real detail enhancement was applied: {}",
-            on.extra
-        );
+        assert_eq!(on.extra,0.0,"the directional policy must not revive legacy temporal gain");
+        assert_eq!(off.extra,0.0);
         let echo = 20. * (amplitude(&on.pcm, 3500.) / amplitude(&off.pcm, 3500.)).log10();
         for hz in [100., 1000.] {
             let difference = 20. * (amplitude(&on.pcm, hz) / amplitude(&off.pcm, hz)).log10();
@@ -125,11 +122,9 @@ fn delayed_spatial_detail_is_audible_without_changing_foreground_or_bass() {
                 "foreground changed at {hz} Hz: {difference}"
             );
         }
-        assert!(
-            echo > 0.1,
-            "delayed component did not gain audibility: {echo}"
-        );
-        assert!(on.extra <= 3.011);
+        assert!(echo.abs()<0.1,"a diagnostic-only temporal toggle changed the directional signal: {echo}");
+        let error=on.pcm.iter().zip(&off.pcm).map(|(a,b)|(a-b).abs()).fold(0f32,f32::max);
+        assert!(error<1e-7,"legacy lift bypass changed the actual PCM: {error}");
     }
 }
 #[test]

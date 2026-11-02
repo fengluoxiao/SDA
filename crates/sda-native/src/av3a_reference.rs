@@ -13,22 +13,57 @@ pub fn open_with_hrtf(path:impl AsRef<Path>,hrtf:impl AsRef<Path>)->Result<Fresh
     FreshStereoReference::from_programme(path,"av3a",Box::new(reference))
 }
 
-/// Bounded source-only AV3A scan: the decoder supplies a role-weighted bed or
-/// neutral scene reference. Neither raw object sums nor the listening HRTF are metered.
+/// Complete analysis with a bounded two-frame handoff: decoding and metering
+/// run concurrently without retaining any programme PCM or calculated disk data.
 struct Av3aReference {
-    input: std::io::BufReader<fs::File>,
-    decoder: sda_core::StreamingDecoder,
+    receiver: Option<std::sync::mpsc::Receiver<Result<Option<sda_core::FrameData>, String>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     native_frames: u64,
-    sample_rate:u32,
+    sample_rate: u32,
     latest: Measurement,
-    flushed: bool,
-    renderer:Option<crate::av3a_reference_renderer::CanonicalReference>,
+    speakers: sda_core::loudness::SpeakerReference,
+    finished: bool,
+    renderer: Option<crate::av3a_reference_renderer::CanonicalReference>,
 }
 impl Av3aReference {
     fn open(path: &Path) -> Result<Self, String> {
-        Ok(Self { input: std::io::BufReader::new(fs::File::open(path).map_err(|e|e.to_string())?),
-            decoder: sda_core::StreamingDecoder::av3a_source_reference(), native_frames: 0, sample_rate:48000,
-            latest: Measurement::default(), flushed: false,renderer:None })
+        // Open before spawning so an invalid input fails synchronously.
+        let input = fs::File::open(path).map_err(|e| e.to_string())?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+        let worker = std::thread::Builder::new().name("sda-vivid-reference".into())
+            .stack_size(4 * 1024 * 1024).spawn(move || {
+                let result = decode_reference(input, &sender);
+                // Dropping the receiver cancels a blocked send. No detached job
+                // can outlive its reference owner, including on source changes.
+                let _ = sender.send(result.map(|()| None));
+            }).map_err(|e| e.to_string())?;
+        Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0,
+            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), finished: false, renderer: None })
+    }
+}
+fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<Option<sda_core::FrameData>,String>>) -> Result<(),String> {
+    use std::io::Read;
+    let mut input = std::io::BufReader::new(input);
+    let mut decoder = sda_core::StreamingDecoder::av3a_pipelined_source_reference();
+    let mut flushed = false;
+    loop {
+        let errors = decoder.drain_errors();
+        if !errors.is_empty() { return Err(format!("Audio Vivid reference decode failed: {}", errors.join("; "))); }
+        if let Some(frame) = decoder.next_frame() {
+            if sender.send(Ok(Some(frame))).is_err() { return Ok(()); }
+        } else if flushed { return Ok(()); }
+        else {
+            let mut bytes = [0u8;4096];
+            let n = input.read(&mut bytes).map_err(|e|e.to_string())?;
+            if n == 0 { decoder.flush(); flushed = true; }
+            else { decoder.push(&bytes[..n])?; }
+        }
+    }
+}
+impl Drop for Av3aReference {
+    fn drop(&mut self) {
+        drop(self.receiver.take());
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
     }
 }
 impl ProgrammeReference for Av3aReference {
@@ -38,30 +73,28 @@ impl ProgrammeReference for Av3aReference {
     fn measurement(&self) -> Measurement { self.latest.clone() }
     fn rendered_reference(&self)->Option<crate::stereo_reference::RenderedReference>{self.renderer.as_ref().and_then(|r|r.measurement())}
     fn step(&mut self, budget: usize) -> Result<bool, String> {
-        use std::io::Read;
+        if self.finished { return Ok(true); }
         let end = self.frames().saturating_add(budget as u64);
         loop {
-            let errors = self.decoder.drain_errors();
-            if !errors.is_empty() { return Err(format!("Audio Vivid reference decode failed: {}", errors.join("; "))); }
-            if let Some(frame) = self.decoder.next_frame() {
-                if self.native_frames==0 && frame.sample_rate>0 {self.sample_rate=frame.sample_rate;}
-                if frame.sample_rate == 0 || frame.sample_rate != self.sample_rate || frame.sample_pos != self.native_frames
-                    || frame.channels.is_empty() || frame.channels.iter().flatten().any(|x|!x.is_finite()) {
-                    return Err("invalid Audio Vivid reference timeline or samples".into());
+            match self.receiver.as_ref().ok_or("Audio Vivid reference was closed")?.recv().map_err(|_|"Audio Vivid reference worker stopped unexpectedly")?? {
+                Some(frame) => {
+                    if self.native_frames==0 && frame.sample_rate>0 {self.sample_rate=frame.sample_rate;}
+                    if frame.sample_rate == 0 || frame.sample_rate != self.sample_rate || frame.sample_pos != self.native_frames
+                        || frame.channels.is_empty() || frame.channels.iter().flatten().any(|x|!x.is_finite()) {
+                        return Err("invalid Audio Vivid reference timeline or samples".into());
+                    }
+                    if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
+                    self.latest = frame.reference_loudness.or_else(|| self.speakers.measure(&frame.channels, &frame.labels, frame.sample_rate))
+                        .ok_or("Audio Vivid programme reference unavailable")?;
+                    self.native_frames += frame.channels[0].len() as u64;
+                    if self.frames() >= end { return Ok(false); }
                 }
-                if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
-                self.latest = frame.reference_loudness.ok_or("Audio Vivid programme reference unavailable")?;
-                self.native_frames += frame.channels[0].len() as u64;
-                if self.frames() >= end { return Ok(false); }
-            } else if self.flushed {
-                if self.native_frames == 0 { return Err("no Audio Vivid reference samples".into()); }
-                if let Some(renderer)=&mut self.renderer{renderer.finish()?;}
-                return Ok(true);
-            } else {
-                let mut bytes = [0u8;4096];
-                let n = self.input.read(&mut bytes).map_err(|e|e.to_string())?;
-                if n == 0 { self.decoder.flush(); self.flushed = true; }
-                else { self.decoder.push(&bytes[..n])?; }
+                None => {
+                    if self.native_frames == 0 { return Err("no Audio Vivid reference samples".into()); }
+                    if let Some(renderer)=&mut self.renderer{renderer.finish()?;}
+                    self.finished = true;
+                    return Ok(true);
+                }
             }
         }
     }
@@ -88,4 +121,37 @@ mod tests {
         assert_eq!(repeated.frames,result.frames,"completed scans do not decode again");
         drop(reference);fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn pipelined_reference_matches_serial_source_meter_and_joins_on_cancel() {
+        let bytes=include_bytes!("../../../packages/core/tests/fixtures/av3a-7-1-4-three-frames.av3a").repeat(96);
+        let path=std::env::temp_dir().join(format!("sda-pipelined-reference-{}-{}.av3a",std::process::id(),SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::write(&path,&bytes).unwrap();
+        let mut decoder=sda_core::StreamingDecoder::av3a_source_reference();
+        let mut serial=None;let mut frames=0;
+        for chunk in bytes.chunks(4096) {
+            decoder.push(chunk).unwrap();
+            while let Some(frame)=decoder.next_frame(){frames+=frame.channels[0].len() as u64;serial=frame.reference_loudness;}
+            assert!(decoder.drain_errors().is_empty());
+        }
+        decoder.flush();while let Some(frame)=decoder.next_frame(){frames+=frame.channels[0].len() as u64;serial=frame.reference_loudness;}
+        let serial=serial.unwrap();let mut parallel=Av3aReference::open(&path).unwrap();
+        while !parallel.step(4096).unwrap() {}
+        let actual=parallel.measurement();
+        assert_eq!(parallel.native_frames,frames);assert_eq!(actual.blocks,serial.blocks);
+        assert_eq!(actual.integrated_lufs,serial.integrated_lufs);
+        assert_eq!(actual.true_peak_dbtp,serial.true_peak_dbtp);
+        drop(parallel);
+        // Stop with the producer still decoding/backpressured, repeatedly. Drop
+        // must release the receiver and join, rather than leak a blocked worker.
+        for _ in 0..8 {let mut reference=Av3aReference::open(&path).unwrap();assert!(!reference.step(1).unwrap());drop(reference);}
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn pipelined_reference_reports_empty_input_and_closes_its_worker() {
+        let path=std::env::temp_dir().join(format!("sda-empty-reference-{}-{}.av3a",std::process::id(),SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::write(&path,[]).unwrap();let mut reference=Av3aReference::open(&path).unwrap();
+        assert!(reference.step(4096).unwrap_err().contains("no Audio Vivid reference samples"));
+        drop(reference);fs::remove_file(path).unwrap();
+    }
+
 }

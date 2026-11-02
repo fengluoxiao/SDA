@@ -4553,6 +4553,7 @@ mod tests {
         let render = |direct: bool, hardware_enabled: bool, gains: &[f32]| {
             let mut engine = calibrated_engine();
             engine.cinema.enabled = false;
+            engine.cinema.monitor.enabled = true;
             engine.cinema.monitor.hardware.enabled = hardware_enabled;
             engine.cinema.monitor.hardware.input_db = 0.0;
             engine.cinema.monitor.hardware.rail_v = 1.0;

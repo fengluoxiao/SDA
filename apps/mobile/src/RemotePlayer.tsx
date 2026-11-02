@@ -1,3 +1,4 @@
+import { useProgressScrubber } from "./use-progress-scrubber";
 import { hasAndroidChrome } from "./AndroidChrome";
 import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
 import { AppThemeProvider, CHARACTER_THEMES, useAppTheme } from "./app-theme";
@@ -174,7 +175,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
   const [visibleObjectCount, setVisibleObjectCount] = useState(0);
   React.useEffect(() => { if (page === 2) setSceneVisited(true); }, [page]);
   const navigate = (index: number) => { setPage(index); pager.current?.scrollTo({ x: index * pageWidth, animated: true }); };
-  const progress = p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0;
+  const progressGesture = useProgressScrubber({ sourceKey: p.selectedUri, durationMs: p.durationMs, positionMs: p.positionMs, disabled: p.busy || p.preparingAudio === true, seekTo: p.seekTo });
+  const progress = progressGesture.progress;
   const title = p.metadata.title || p.fileName || "等待选择歌曲";
   const artist = p.metadata.artist || p.metadata.albumArtist;
   const playback = p.busy ? "正在准备音频…" : p.playing ? p.paused ? "已暂停" : "正在播放" : p.ended ? "播放结束" : p.selectedUri ? "准备就绪" : "选择文件，开始聆听";
@@ -194,7 +196,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
     </View>
     <ScrollView ref={pager} horizontal pagingEnabled snapToInterval={pageWidth} snapToAlignment="start"
       decelerationRate="fast" disableIntervalMomentum bounces={false} overScrollMode="never"
-      scrollEnabled={!adjustingVolume && !interactingScene} showsHorizontalScrollIndicator={false}
+      scrollEnabled={!adjustingVolume && !interactingScene && !progressGesture.isScrubbing} showsHorizontalScrollIndicator={false}
       onMomentumScrollEnd={event => setPage(Math.max(0, Math.min(2, Math.round(event.nativeEvent.contentOffset.x / pageWidth))))}
       onLayout={event => {
         const layoutWidth = event.nativeEvent.layout.width;
@@ -202,7 +204,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
         pagerLayoutWidth.current = layoutWidth;
         pager.current?.scrollTo({ x: page * pageWidth, animated: false });
       }}>
-      <ScrollView ref={playerScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView ref={playerScroll} scrollEnabled={!adjustingVolume && !interactingScene && !progressGesture.isScrubbing} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.player, { width: coverSize, alignSelf: "center" }]}>
           <View style={[s.art, { height: coverSize, width: coverSize, alignSelf: "center", backgroundColor: c.panel }]}>
             {p.metadata.coverUri ? <Image source={{ uri: p.metadata.coverUri }} accessibilityLabel={`${p.metadata.album || title} 封面`}
@@ -217,13 +219,15 @@ function LegacyRemotePlayer(p: PlayerProps) {
               {artist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听")}
             </Text>
           </View>
-          <View accessibilityRole="adjustable" accessibilityLabel="播放进度，点击定位"
-            onTouchEnd={event => { const x=event.nativeEvent.locationX; if (!p.busy && p.durationMs > 0) event.currentTarget.measure((_x, _y, width) => p.seekTo?.(Math.max(0, Math.min(1, x / Math.max(1,width))) * p.durationMs)); }}
-            accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.positionMs, p.durationMs), text: `${time(p.positionMs)} / ${time(p.durationMs)}` } : { text: "总时长未知" }}
-            style={[s.progress, { backgroundColor: c.line }]}>
-            <View style={{ height: 5, borderRadius: 8, width: `${progress * 100}%`, backgroundColor: c.accent }} />
-          </View>
-          <View style={[s.row, { marginTop: 9, marginBottom: 12 }]}>{label(time(p.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
+          <Animated.View accessibilityRole="adjustable" accessibilityLabel="播放进度，点击或拖动定位" accessibilityHint="按住并拖动预览时间，松手跳转"
+            {...progressGesture.panHandlers} onLayout={progressGesture.onLayout} hitSlop={{ top: 14, bottom: 14, left: 0, right: 0 }}
+            accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+            onAccessibilityAction={event => { if (!p.busy && !p.preparingAudio && p.durationMs > 0) p.seekTo?.(Math.max(0, Math.min(p.durationMs - 1, p.positionMs + (event.nativeEvent.actionName === "increment" ? 5000 : -5000)))); }}
+            accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(progressGesture.positionMs, p.durationMs), text: `${time(progressGesture.positionMs)} / ${time(p.durationMs)}` } : { text: "总时长未知" }}
+            style={[s.progress, { backgroundColor: c.line, transform: [{ scaleY: progressGesture.scale }] }]}>
+            <View pointerEvents="none" style={{ height: 5, borderRadius: 8, width: `${progress * 100}%`, backgroundColor: c.accent }} />
+          </Animated.View>
+          <View style={[s.row, { marginTop: 9, marginBottom: 12 }]}>{label(time(progressGesture.positionMs), true, s.small)}{label(p.durationMs > 0 ? time(p.durationMs) : "--:--", true, s.small)}</View>
           <View style={[s.transport, { gap: Math.max(0, Math.min(44, (coverSize - 244) / 2)) }]}>
             {hasNativeIOSChrome ? <IOSIconButton symbol="backward.end.fill" label="上一曲" disabled={p.busy || !p.queue.length} onPress={p.previous} /> : <Pressable accessibilityRole="button" accessibilityLabel="上一曲" disabled={p.busy || !p.queue.length} onPress={p.previous} style={[s.headerAction, { opacity: p.busy || !p.queue.length ? .3 : 1 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}><View style={{ width: 3, height: 23, borderRadius: 1, backgroundColor: c.ink }} /><View style={{ width: 0, height: 0, borderTopWidth: 12, borderBottomWidth: 12, borderRightWidth: 19, borderTopColor: "transparent", borderBottomColor: "transparent", borderRightColor: c.ink }} /></View>
@@ -275,7 +279,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           {label(`可多选文件加入列表。当前：${PLAYBACK_MODE_LABELS[p.playbackMode]}。`, true, s.help)}
         </View>
       </ScrollView>
-      <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <ScrollView ref={sceneScroll} scrollEnabled={!adjustingVolume && !interactingScene && !progressGesture.isScrubbing} style={{ width: pageWidth }} contentContainerStyle={{ paddingBottom: 6 }}>
         <View style={[s.card, hasNativeIOSChrome && { borderWidth: 0, borderRadius: 22, padding: 18 }, { minHeight: cardHeight, backgroundColor: c.panel, borderColor: c.line }]}>
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(!showAllObjects && p.soundingObjectIds !== undefined ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : `${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}

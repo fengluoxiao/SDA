@@ -940,13 +940,17 @@ final class SdaPlayer {
   while let packet = try baseline.next() { expected.append(packet) }
   let resumed = try CompressedInput(url:url,name:"ci-stereo-tones.m4a")
   var actual = Data()
-  for _ in 0..<3 { if let packet = try resumed.next() { actual.append(packet) } }
+  // AVFoundation can batch many packets into one sample buffer. Reading to
+  // EOF first would already adopt the verified index and make reopen a no-op.
+  if let packet = try resumed.next() { actual.append(packet) }
+  guard resumed.diagnosticState["backend"] as? String == "avassetreader" else { throw SdaError.message("恢复测试未进入 Apple 压缩读取路径") }
   try resumed.reopenAfterInterruption()
   while let packet = try resumed.next() { actual.append(packet) }
   guard actual == expected, !actual.isEmpty else { throw SdaError.message("压缩音轨恢复丢包或重复") }
   let indexed=try CompressedInput(url:url,name:"ci-stereo-tones.m4a")
   var recovered=Data()
-  for _ in 0..<3 { if let packet=try indexed.next() { recovered.append(packet) } }
+  if let packet=try indexed.next() { recovered.append(packet) }
+  guard indexed.diagnosticState["backend"] as? String == "avassetreader" else { throw SdaError.message("索引恢复测试已提前切换后端") }
   guard try indexed.recoverInvalidSampleCursor() else { throw SdaError.message("索引恢复不可用") }
   while let packet=try indexed.next() { recovered.append(packet) }
   guard recovered == expected else { throw SdaError.message("索引恢复丢包或重复") }

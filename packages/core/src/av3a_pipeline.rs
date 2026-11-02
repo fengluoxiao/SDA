@@ -86,6 +86,7 @@ fn mix_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
 
 pub struct Av3aPipeline {
     native_reference: bool,
+    defer_speaker_reference: bool,
     output_rate: u32,
     parser: FrameStream,
     decoder: Option<BuiltinDecoder>,
@@ -111,7 +112,7 @@ pub struct Av3aPipeline {
 impl Av3aPipeline {
     pub fn new() -> Self {
         Self {
-            native_reference:false, output_rate:OUTPUT_RATE,
+            native_reference:false, defer_speaker_reference:false, output_rate:OUTPUT_RATE,
             parser: FrameStream::new(),
             decoder: None,
             resampler: None,
@@ -136,6 +137,11 @@ impl Av3aPipeline {
     /// still uses the 48 kHz path; an analysis pass needs no 12-channel SRC.
     pub fn new_source_reference() -> Self {
         let mut pipeline=Self::new();pipeline.native_reference=true;pipeline
+    }
+    /// A bounded producer/consumer analysis pass meters speaker PCM on its
+    /// consuming thread. Object-scene references keep their original path.
+    pub fn new_pipelined_source_reference() -> Self {
+        let mut pipeline=Self::new_source_reference();pipeline.defer_speaker_reference=true;pipeline
     }
     fn configure(&mut self, h: &avs3a::FrameHeader) -> Result<(), String> {
         if h.samples_per_channel as usize != FRAME_SAMPLES {
@@ -315,7 +321,7 @@ impl Av3aPipeline {
                     .measure(&decoded),
             );
         }
-        if self.objects.is_none() {
+        if self.objects.is_none() && !self.defer_speaker_reference {
             decoded.reference_loudness = self.speaker_reference.measure(
                 &decoded.channels, &decoded.labels, decoded.sample_rate);
         }
@@ -385,8 +391,8 @@ impl Pipeline for Av3aPipeline {
         if let Some(scene) = &mut scene {
             scene.reset_dynamic();
         }
-        let native_reference=self.native_reference;
-        *self = Self::new();self.native_reference=native_reference;
+        let native_reference=self.native_reference;let deferred=self.defer_speaker_reference;
+        *self = Self::new();self.native_reference=native_reference;self.defer_speaker_reference=deferred;
         self.objects = scene;
     }
 }

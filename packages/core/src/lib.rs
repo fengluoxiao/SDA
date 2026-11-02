@@ -299,6 +299,14 @@ impl StreamingDecoder {
             restore_object_mapping:false,object_targets:Default::default()}
     }
 
+    /// Source-rate PCM for a bounded parallel analysis pass. Speaker metering
+    /// belongs to the receiver; this decoder never changes the playback path.
+    pub fn av3a_pipelined_source_reference() -> Self {
+        Self {pipeline:Box::new(av3a_pipeline::Av3aPipeline::new_pipelined_source_reference()),sniff:None,
+            queue:VecDeque::new(),errors:Vec::new(),object_rendering:true,
+            restore_object_mapping:false,object_targets:Default::default()}
+    }
+
     /// Construct a decoder whose container codec requires initialization bytes.
     /// Currently this is used by ALAC MP4 tracks and expects the full `alac` atom.
     pub fn with_config(codec: &str, config: &[u8]) -> Result<StreamingDecoder, String> {

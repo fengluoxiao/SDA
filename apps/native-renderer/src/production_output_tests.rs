@@ -14,7 +14,7 @@ fn generic_output_preserves_manual_and_program_volume_for_every_codec() {
             quiet.set_master_preamp_db(-6.).unwrap();
             quiet.program_enabled = true;
             quiet.set_program_target(0.5, true);
-            let calibration = if ["mpegh","av3a","ac4","adm"].contains(&codec) { 10f32.powf(1.8/20.) } else { 1.0 };
+            let calibration = if ["mpegh","ac4","adm"].contains(&codec) { 10f32.powf(1.8/20.) } else { 1.0 };
             let ratio = 0.25 * 10f32.powf(-6. / 20.) * 0.5 * calibration;
             for i in 0..96000 {
                 let x = (i as f32 * 0.13).sin() * 0.003;
@@ -92,11 +92,13 @@ fn transport_reset_discards_auxiliary_meter_envelopes_and_peak_history() {
         }
         old.process_final_output([2., -2.]);
     }
-    assert!(old.auxiliary_balance.maximum_attenuation_db > 3.);
+    let virgin=Engine::new(48000,2).auxiliary_balance.levels();
+    assert_ne!(old.auxiliary_balance.levels(),virgin,"fixture must populate real input meter history before reset");
     old.reset_session(96000);
     let mut fresh = Engine::new(48000, 2);
     fresh.set_spatial_enhancement(true).unwrap();
     assert_eq!(old.auxiliary_balance.maximum_attenuation_db, 0.);
+    assert_eq!(old.auxiliary_balance.levels(),fresh.auxiliary_balance.levels());
     assert!(
         old.auxiliary_reference
             .iter()
@@ -120,16 +122,17 @@ fn loud_processed_output_uses_the_shared_guard_for_both_volume_states() {
             e.set_program_codec(codec.into());
             e.program_enabled = volume;
             e.set_program_target(if volume { 0.25 } else { 1. }, true);
+            let mut peak=0f32;
             for i in 0..48000 * 6 {
-                let x = (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin() * 0.7;
+                let x = (i as f32 * std::f32::consts::TAU * 1000. / 48000.).sin() * 4.0;
                 let y = e.process_final_output([x, -x * 0.7]);
                 assert!((y[1] + y[0] * 0.7).abs() < 2e-7);
+                assert!(y.iter().all(|v|v.is_finite()&&v.abs()<=0.8711));peak=peak.max(y[0].abs());
             }
             assert!(e.output_dynamics.enabled());
-            assert!(
-                e.output_dynamics.maximum_attenuation_db > 2.,
-                "guard bypassed for {codec}/{volume}"
-            );
+            assert!(peak>0.2,"peak protection must not mute {codec}/{volume}");
+            assert_eq!(e.output_dynamics.gain_db(),0.0);
+            assert_eq!(e.output_dynamics.maximum_attenuation_db,0.0,"final protection must not ride programme loudness");
             e.set_spatial_enhancement(false).unwrap();
             for _ in 0..48000 {
                 e.process_final_output([0.001, -0.0007]);
@@ -161,7 +164,7 @@ fn programme_makeup_obeys_format_volume_and_metadata_policy() {
                     e.program_enabled = volume;
                     e.set_program_target(0.5, true);
                     declare_makeup_source(&mut e, object, label);
-                    let eligible = volume && (["mpegh","av3a","ac4","adm"].contains(&codec)
+                    let eligible = volume && (["mpegh","ac4","adm"].contains(&codec) || codec=="av3a" && object
                         || (["eac3", "truehd", "mlpa"].contains(&codec) && (object || label == "Tfl")));
                     assert_eq!(e.programme_output_makeup.target_db(), if eligible { 1.8 } else { 0.0 },
                         "{codec} volume={volume} spatial={spatial} object={object} label={label}");
@@ -291,7 +294,7 @@ fn spatial_toggle_keeps_the_same_loudness_reference_and_envelope() {
         let b=switched.process_final_output([x,-x*0.7]);
         assert_eq!(a,b);
     }
-    assert!(reference.output_dynamics.gain_db() < -5.);
+    assert_eq!(reference.output_dynamics.gain_db(),0.0,"fixed programme normalization has no final LUFS rider");
     for enabled in [false,true,false] {
         let before=switched.output_dynamics.gain_db();
         switched.set_spatial_enhancement(enabled).unwrap();
@@ -414,7 +417,7 @@ fn programme_gain_handoff_keeps_protected_output_continuous_for_spatial_formats(
                 if i >= 48000 * 7 { reference += f64::from(y[0]).powi(2); }
             }
             reference /= 48000.;
-            assert!(e.output_dynamics.gain_db() < -6.);
+            assert_eq!(e.output_dynamics.gain_db(),0.0);
             e.set_program_target(0.5, false);
             let mut worst = 0f64;
             for window in 0..40 {
@@ -429,7 +432,8 @@ fn programme_gain_handoff_keeps_protected_output_continuous_for_spatial_formats(
                 }
                 worst = worst.min(10.*(power/4800./reference).log10());
             }
-            assert!(worst > -0.2,"{codec}, spatial={spatial}: normalization stacked another {worst} dB cut");
+            assert!((worst-20f64*0.5f64.log10()).abs()<0.05,"{codec}, spatial={spatial}: a 0.5 programme target must produce exactly one -6.02 dB change, got {worst}");
+            assert_eq!(e.output_dynamics.maximum_attenuation_db,0.0);
         }
     }
 }

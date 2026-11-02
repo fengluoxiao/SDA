@@ -3034,6 +3034,7 @@ mod tests {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../web/public/hrtf/hrtf-set.json");
             let mut e = crate::Engine::new(48000, 2);
+            e.cinema.monitor.enabled = hardware;
             e.cinema.monitor.hardware.enabled = hardware;
             e.cinema.monitor.hardware.rail_v = 1.0;
             e.directional_hrtf = true;
