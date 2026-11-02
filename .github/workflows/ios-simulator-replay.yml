@@ -11,9 +11,13 @@ jobs:
   replay:
     runs-on: macos-26
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        neural_threads: ['default', '1']
     env:
       GH_TOKEN: ${{ github.token }}
-      SDA_CI_SAMPLE_AV3A: '1'
+      SDA_CI_SAMPLE_AV3A: '0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,10 +37,11 @@ jobs:
       - name: Run every independent UI and background scenario
         run: |
           set -o pipefail
+          if [[ '${{ matrix.neural_threads }}' == '1' ]]; then export SIMCTL_CHILD_RAYON_NUM_THREADS=1; else unset SIMCTL_CHILD_RAYON_NUM_THREADS; fi
           python3 scripts/test-ios-simulator.py replay-app/SDA.app replay-artifacts 2>&1 | tee replay-artifacts/simulator-test.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: SDA-simulator-replay-${{ github.run_number }}
+          name: SDA-simulator-replay-${{ github.run_number }}-${{ matrix.neural_threads }}
           path: replay-artifacts/
           retention-days: 14
