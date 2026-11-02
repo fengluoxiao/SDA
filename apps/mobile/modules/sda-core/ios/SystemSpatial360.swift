@@ -174,10 +174,9 @@ final class SystemSpatial360 {
  func objects(_ decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> Any {
   try decodeReply(sda_ios_speakers_objects(decoder,consumed))
  }
- // Audio Vivid estimates only the PCM passing through playback; no replay pass.
- // Never rewind a playback input which has already supplied a paused preroll.
- // In that case retain the same decoder and finish its bounded live measurement.
- var requiresBalancePreanalysis: Bool { sourceCodec != "av3a" && !decodedInputStarted }
+ // Select the complete programme reference before any audible PCM. The
+ // separate analysis reader never rewinds a playback reader or its preroll.
+ var requiresBalancePreanalysis: Bool { !decodedInputStarted }
  var waitingForBalance: Bool {
   !started && balanceEnabled && !measurementReady &&
    (requiresBalancePreanalysis || (!inputFinished && queued < 7*48000))

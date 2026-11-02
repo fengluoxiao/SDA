@@ -418,8 +418,8 @@ class SdaModule : Module() {
             // DocumentPicker normally supplies a local file. Reuse it rather
             // than copying the full song again just to probe its container.
             val localFile = if (uri.scheme == "file") uri.path?.let { java.io.File(it) }?.takeIf { it.isFile } else null
-            val ownsSourceCopy = (isMp3 || isContainer || isSdarName || isWavName) && localFile == null
-            val mp3Cache = if (isMp3 || isContainer || isSdarName) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
+            val ownsSourceCopy = (isMp3 || isContainer || isSdarName || isWavName || isAv3a) && localFile == null
+            val mp3Cache = if (isMp3 || isContainer || isSdarName || isAv3a) localFile ?: java.io.File.createTempFile("sda-seekable-", if (isAv3a) ".av3a" else if (isMp3) ".mp3" else ".m4a", context.cacheDir) else null
             if (ownsSourceCopy && mp3Cache != null) {
                 try {
                     val source = context.contentResolver.openInputStream(uri) ?: error("无法打开所选音频文件")
@@ -512,9 +512,9 @@ class SdaModule : Module() {
 
                     // Imported sources have a fresh, memory-only reference already.
                     // Restored/changed files still take a complete fallback measurement.
-                    if (!isSdar && (isAlac || isMp3)) {
+                    if (!isSdar && (isAlac || isMp3 || isAv3a)) {
                         val file = mp3Cache ?: error("立体声分析输入缺失")
-                        val measurement = stereoReferences.ready(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac) {
+                        val measurement = stereoReferences.ready(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a) {
                             stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)
                         }
                         synchronized(nativeLock) {
@@ -711,11 +711,11 @@ class SdaModule : Module() {
         AsyncFunction("prepareStereoTrack") { uri: String, name: String, hash: String ->
             require(hash.matches(Regex("[0-9a-f]{64}")))
             val ext = name.substringAfterLast('.', "").lowercase()
-            if (ext in setOf("mp3", "m4a", "mp4")) {
+            if (ext in setOf("mp3", "m4a", "mp4", "av3a")) {
                 val file = Uri.parse(uri).path?.let { java.io.File(it) } ?: error("请选择本地文件")
                 if (!SdaEngine.nativeIsSdar(file.absolutePath)) {
                     val alac = ext != "mp3" && SdaEngine.nativeIsAlac(file.absolutePath)
-                    if (alac || ext == "mp3") stereoReferences.prepare(file, hash, alac) { destroyed || Thread.currentThread().isInterrupted }
+                    if (alac || ext == "mp3" || ext == "av3a") stereoReferences.prepare(file, hash, alac, ext == "av3a") { destroyed || Thread.currentThread().isInterrupted }
                 }
             }
             true

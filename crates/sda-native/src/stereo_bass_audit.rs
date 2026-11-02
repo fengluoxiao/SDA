@@ -299,7 +299,9 @@ fn native_upmix_output_loudness_matches_same_programme_atmos() {
             .as_f64()
             .unwrap()
     };
-    let reference = lufs("atmos");
+    // Compare the source-reference alignment separately from the approved
+    // immersive-only +1.8 dB makeup (ordinary stereo/upmix retain 0 dB).
+    let reference = lufs("atmos") - 1.8;
     assert!(
         (lufs("stereo") - reference).abs() < 1.,
         "ordinary stereo and Atmos level diverged"

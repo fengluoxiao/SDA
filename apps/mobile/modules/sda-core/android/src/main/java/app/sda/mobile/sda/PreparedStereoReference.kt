@@ -12,10 +12,10 @@ internal class PreparedStereoReference {
     private fun source(file: File) = Source(file.canonicalPath, file.length(), file.lastModified())
     @Synchronized fun ready(file: File, hash: String): String? = entries[hash]?.takeIf { it.source == source(file) }?.measurement
     @Synchronized fun clear() = entries.clear()
-    fun prepare(file: File, hash: String, alac: Boolean, cancelled: () -> Boolean): String {
+    fun prepare(file: File, hash: String, alac: Boolean, av3a: Boolean = false, cancelled: () -> Boolean): String {
         val identity = source(file)
         check(!cancelled()) { "立体声分析已取消" }
-        val reference = SdaEngine.nativeStereoReferenceCreate(file.absolutePath, alac)
+        val reference = if (av3a) SdaEngine.nativeAv3aReferenceCreate(file.absolutePath) else SdaEngine.nativeStereoReferenceCreate(file.absolutePath, alac)
         check(reference != 0L) { "立体声响度分析初始化失败" }
         try {
             while (true) {

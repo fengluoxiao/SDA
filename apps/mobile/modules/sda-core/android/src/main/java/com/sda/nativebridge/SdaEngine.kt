@@ -39,6 +39,7 @@ object SdaEngine {
     external fun nativeSetVolumeBalance(ptr: Long, enabled: Boolean): String
     external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
     external fun nativeStereoReferenceCreate(path: String, alac: Boolean): Long
+    external fun nativeAv3aReferenceCreate(path: String): Long
     external fun nativeStereoReferenceStep(reference: Long): String
     external fun nativeStereoReferenceClose(reference: Long)
     external fun nativeCompleteLoudness(ptr: Long): String

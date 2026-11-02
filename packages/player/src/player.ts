@@ -416,6 +416,7 @@ export class SdaPlayer {
   private balancedLoudnessBlocks = 0;
   /** Prepared measurement for the current playback, cleared on source reset. */
   private cachedMeasuredLufs: number | null = null;
+  private completeProgrammeReference = false;
   private cachedMeasuredTruePeakDbtp: number | null = null;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
    *  UI 固定"近"，mid/far 暂不从界面暴露。 */
@@ -1267,6 +1268,7 @@ export class SdaPlayer {
     this.stereoStartupEligible = false;
     this.mpeghReference = false;
     this.cachedMeasuredLufs = null;
+    this.completeProgrammeReference = false;
     this.cachedMeasuredTruePeakDbtp = null;
     this.renderer?.setProgramLoudnessGainDb(null);
     this.ended = false;
@@ -1390,8 +1392,9 @@ export class SdaPlayer {
 
   /** Fresh BS.1770-4 reference prepared for this playback only.
    *  It applies from sample zero and is reset with the source. */
-  setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null): void {
+  setMeasuredLoudness(integratedLufs: number | null, truePeakDbtp: number | null = null, completeProgramme = false): void {
     if (this.mpeghMeasurement || this.decodedProgrammeReference || this.measuredLoudnessSettled) return;
+    this.completeProgrammeReference = completeProgramme && typeof integratedLufs === "number" && Number.isFinite(integratedLufs);
     this.cachedMeasuredTruePeakDbtp = truePeakDbtp;
     this.cachedMeasuredLufs = typeof integratedLufs === "number" && Number.isFinite(integratedLufs)
       ? integratedLufs
@@ -2066,8 +2069,12 @@ export class SdaPlayer {
     // the generated bed, never be calculated separately per copied channel.
     const stereoMaster = isStereoMasterFrame(frame);
     if (frame.referenceLoudness && !this.decodedProgrammeReference) {
-      this.decodedProgrammeReference=true;this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;
-      if (!this.measuredLoudnessSettled) this.startupMeasuredLoudness=null;
+      this.decodedProgrammeReference=true;
+      // A complete import measurement outranks the decoder's partial intro.
+      if (!(frame.codec === "av3a" && this.completeProgrammeReference)) {
+        this.cachedMeasuredLufs=null;this.cachedMeasuredTruePeakDbtp=null;
+        if (!this.measuredLoudnessSettled) this.startupMeasuredLoudness=null;
+      }
     }
     this.mpeghReference = frame.codec === "mpegh";
     this.stereoStartupEligible = this.mpeghReference || stereoMaster || frame.referenceLoudness != null;

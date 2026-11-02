@@ -4,8 +4,8 @@ const { Worker } = require('node:worker_threads');
 const POLICIES = new Set(['offline-full-track-reference-v1', 'source-rate-full-track-reference-v1']);
 
 function validMeasurement(value) {
-  return POLICIES.has(value?.policy) && (value.protocol === undefined || value.protocol === 1) && ['alac', 'mp3', 'pcm'].includes(value.codec)
-    && value.channels === 2 && Number.isFinite(value.sampleRate) && value.sampleRate > 0
+  return POLICIES.has(value?.policy) && (value.protocol === undefined || value.protocol === 1) && ['alac', 'mp3', 'pcm', 'av3a'].includes(value.codec)
+    && (value.codec === 'av3a' ? value.complete === true && Number.isSafeInteger(value.channels) && value.channels > 0 : value.channels === 2) && Number.isFinite(value.sampleRate) && value.sampleRate > 0
     && Number.isSafeInteger(value.frames) && value.frames > 0
     && Number.isSafeInteger(value.blocks) && value.blocks >= 0
     && (value.integratedLufs === null || Number.isFinite(value.integratedLufs))
@@ -27,7 +27,7 @@ function createStereoLoudness({ ipcMain, workerPath, corePath }) {
     const owner = event.sender;
     cancel(owner);
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw Error('音频路径无效');
-    if (!/\.(m4a|mp4|mp3|wav)$/i.test(filePath)) return null;
+    if (!/\.(m4a|mp4|mp3|wav|av3a)$/i.test(filePath)) return null;
     const absolute = fs.realpathSync(filePath), stat = fs.statSync(absolute);
     if (!stat.isFile()) throw Error('音频路径不是文件');
     const shared = new SharedArrayBuffer(4);

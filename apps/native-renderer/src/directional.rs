@@ -303,7 +303,7 @@ mod dominant_measurement_tests {
     }
 }
 
-fn equivalent_direction(a: Direction, b: Direction) -> bool {
+pub(crate) fn equivalent_direction(a: Direction, b: Direction) -> bool {
     if a.diffuse != b.diffuse
         || a.horizontal_only != b.horizontal_only
         || a.head != b.head
@@ -328,7 +328,7 @@ fn equivalent_direction(a: Direction, b: Direction) -> bool {
     dot >= CONTINUOUS_DIRECTION_DEADBAND_COS
 }
 
-fn equivalent_route(current: &Route, next: &Route) -> bool {
+pub(crate) fn equivalent_route(current: &Route, next: &Route) -> bool {
     current.1 == next.1
         && current.3 == next.3
         && current

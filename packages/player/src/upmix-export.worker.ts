@@ -4,7 +4,7 @@ import path from "node:path";
 import {spawn} from "node:child_process";
 import {parentPort,workerData} from "node:worker_threads";
 import {createDemuxer,sniffContainer,readBwfMetadata,type DemuxedAudioPacket} from "@sda/demux";
-import type {DecodedFrameData} from "@sda/core";
+import type {DecodedFrameData,FrameLoudness} from "@sda/core";
 import {AlacStereoUpmixer} from "./alac-stereo-upmix";
 import {AlacResampler} from "./alac-resampler";
 import {Mp3Decoder,sniffMp3} from "./mp3-decoder";
@@ -27,6 +27,8 @@ function progress(stage:string,value:number,force=false){const now=Date.now();if
 function frameData(frame:any):DecodedFrameData {
  const channels=Array.from({length:frame.channelCount},(_,i)=>frame.channel(i) as Float32Array);
  const data={codec:frame.codec,sampleRate:frame.sampleRate,samplePos:frame.samplePos,channels,labels:frame.labels,rawBedLabels:frame.rawBedLabels,events:JSON.parse(frame.eventsJson),objectChannels:JSON.parse(frame.objectChannelsJson),programLoudness:null,rampDuration:0};
+ const reference=(frame as {referenceLoudnessJson?:string}).referenceLoudnessJson;
+ if(reference)(data as DecodedFrameData).referenceLoudness=JSON.parse(reference)??undefined;
  frame.free();return data;
 }
 async function renderBalances(programmeDb:number,makeupDb:number):Promise<void>{
@@ -84,7 +86,8 @@ async function run(){
   const metadata=sourceMetadata?buildMetadataChunks(sourceMetadata):null;
   if(!job.analysisOnly)spool=fs.openSync(job.floatPath,"wx+");const mixer=new AlacStereoUpmixer(true),meter=new TruePeakMeter(48000,12);
   const source={meter:null as LoudnessMeter|null};
-  let samples=0,inputClock=0,inputRate=0,codec="";
+  let samples=0,inputClock=0,inputRate=0,codec="",sourceTrackRate=0,av3aChannels=0;
+  let av3aReference:FrameLoudness|null=null;
   function store(frame:DecodedFrameData){
    check();
    const wet=mixer.liveSda(frame,true);if(wet.channels.length!==12)throw Error("仅支持 ALAC、MP3 或 WAV 的普通双声道音频");
@@ -95,6 +98,14 @@ async function run(){
    writeAll(spool!,bytes);samples+=count;
   }
   async function accept(frame:DecodedFrameData){
+   check();
+   if(job.analysisOnly&&frame.codec==="av3a"){
+    if(frame.samplePos!==inputClock||(inputRate&&inputRate!==frame.sampleRate)||!frame.channels.length
+       ||frame.channels.some(channel=>channel.some(value=>!Number.isFinite(value))))throw Error("Audio Vivid 分析音频时间轴或采样无效");
+    if(!frame.referenceLoudness)throw Error("Audio Vivid 整曲节目参考缺失，请更新解码器");
+    inputRate=frame.sampleRate;codec=frame.codec;av3aChannels=frame.channels.length;
+    inputClock+=frame.channels[0]!.length;samples+=frame.channels[0]!.length;av3aReference=frame.referenceLoudness;return;
+   }
    if(!["alac","mp3","pcm"].includes(frame.codec)||frame.channels.length!==2||frame.events.length||frame.objectChannels.length)throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"导出需要普通立体声输入，不能使用已有多声道或对象音轨");
    if(frame.samplePos!==inputClock||(inputRate&&inputRate!==frame.sampleRate))throw Error("输入音频格式或时间轴发生变化");
    inputRate=frame.sampleRate;codec=frame.codec;inputClock+=frame.channels[0]!.length;
@@ -118,13 +129,14 @@ async function run(){
    const at=position;position+=count;let chunk=new Uint8Array(bytes.buffer,bytes.byteOffset,count),start=at;
    if(!demuxer){
     if(prefix.length){chunk=Buffer.concat([prefix,chunk]);start=0;prefix=Buffer.alloc(0);}
-    const kind=sniffContainer(chunk),mp3=kind==="raw"?sniffMp3(chunk):null;
+    const kind=sniffContainer(chunk),rawAv3a=job.analysisOnly&&kind==="raw"&&/\.av3a$/i.test(job.inputPath),mp3=kind==="raw"&&!rawAv3a?sniffMp3(chunk):null;
     if(mp3==="need-more"||chunk.length<16){prefix=Buffer.from(chunk);continue;}
-    if(mp3==="mp3"){codec="mp3";decoder=await Mp3Decoder.create(()=>{});}
+    if(rawAv3a){codec="av3a";decoder=new (require(job.corePath).SdaDecoder)("av3a");}
+    else if(mp3==="mp3"){codec="mp3";decoder=await Mp3Decoder.create(()=>{});}
     else if(kind!=="mp4"&&kind!=="bwf")throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"当前 WAV 导出支持 ALAC、MP3 和普通立体声 WAV");
     const metadata=kind==="bwf"?await readBwfMetadata(async(start,length)=>{const bytes=Buffer.alloc(length);let done=0;while(done<length){const n=fs.readSync(input!,bytes,done,length-done,start+done);if(!n)throw Error("WAV 元数据不完整");done+=n;}return bytes;},initial.size):undefined;
     demuxer=createDemuxer(kind,{
-     onTrack(track){if(track.channels!==2)throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"请选择双声道音频");if(track.codec==="alac"){if(!track.decoderConfig)throw Error("ALAC 缺少解码配置");const core=require(job.corePath);decoder=core.SdaDecoder.withConfig("alac",track.decoderConfig);}else if(track.codec!=="pcm")throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"该输入编码暂不支持上混导出");},
+     onTrack(track){if(job.analysisOnly&&track.codec==="av3a"){sourceTrackRate=track.sampleRate;decoder=new (require(job.corePath).SdaDecoder)("av3a");return;}if(track.channels!==2)throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"请选择双声道音频");if(track.codec==="alac"){if(!track.decoderConfig)throw Error("ALAC 缺少解码配置");const core=require(job.corePath);decoder=core.SdaDecoder.withConfig("alac",track.decoderConfig);}else if(track.codec!=="pcm")throw Error(job.analysisOnly?"STEREO_ANALYSIS_UNSUPPORTED":"该输入编码暂不支持上混导出");},
      onPacket(packet){pending.push({packet});},onPcmFrame(frame){pending.push({frame});},onError(message){throw Error(message);},
     },metadata);
    }
@@ -135,9 +147,9 @@ async function run(){
   const tail=resampler.current?.finish();if(tail)store(tail);if(!samples)throw Error("没有可导出的音频");
   const final=fs.fstatSync(input),current=fs.statSync(job.inputPath);
   if([final,current].some(stat=>["dev","ino","size","mtimeMs","ctimeMs"].some(key=>stat[key as keyof typeof stat]!==initial[key as keyof typeof initial])))throw Error("处理期间源文件发生变化，请重试");
-  const sourceMeasurement=source.meter!.finish(),sourceTruePeak=sourceMeasurement.truePeakDbtp,programmeDb=volumeBalance&&sourceMeasurement.integratedLufs!==null?masterBalanceGainDb(sourceMeasurement.integratedLufs,sourceTruePeak):0;
+  const sourceMeasurement=av3aReference??source.meter!.finish(),sourceTruePeak=sourceMeasurement.truePeakDbtp,programmeDb=volumeBalance&&sourceMeasurement.integratedLufs!==null?masterBalanceGainDb(sourceMeasurement.integratedLufs,sourceTruePeak):0;
   if(job.analysisOnly){
-   parentPort!.postMessage({type:"measurement",protocol:1,codec,sampleRate:inputRate,channels:2,frames:Math.round(samples*48000/inputRate),sourceFrames:samples,measurementSampleRate:inputRate,blocks:sourceMeasurement.blocks,integratedLufs:sourceMeasurement.integratedLufs,truePeakDbtp:Number.isFinite(sourceTruePeak)?sourceTruePeak:null,policy:"source-rate-full-track-reference-v1",size:initial.size,mtimeMs:initial.mtimeMs});return;
+   parentPort!.postMessage({type:"measurement",protocol:1,codec,sampleRate:sourceTrackRate||inputRate,channels:av3aChannels||2,complete:true,frames:Math.round(samples*48000/inputRate),sourceFrames:samples,measurementSampleRate:inputRate,blocks:sourceMeasurement.blocks,integratedLufs:sourceMeasurement.integratedLufs,truePeakDbtp:Number.isFinite(sourceTruePeak)?sourceTruePeak:null,policy:"source-rate-full-track-reference-v1",size:initial.size,mtimeMs:initial.mtimeMs});return;
   }
   // Stereo upmix exports use the same unity makeup as live stereo playback.
   const makeupDb=0;

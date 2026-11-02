@@ -219,7 +219,7 @@ impl SpeakerReference {
                     "Ls" | "Rs" | "Lb" | "Rb" | "SurroundLeft" | "SurroundRight" | "RearLeft"
                     | "RearRight" | "RearCenter" => 1.41,
                     "TopFrontLeft" | "TopFrontRight" | "TopSurroundLeft" | "TopSurroundRight"
-                    | "TopRearLeft" | "TopRearRight" | "Tfl" | "Tfr" | "Tbl" | "Tbr" => 1.,
+                    | "TopRearLeft" | "TopRearRight" | "Tfl" | "Tfr" | "Tbl" | "Tbr" | "Tsl" | "Tsr" => 1.,
                     _ => return None,
                 })
             })

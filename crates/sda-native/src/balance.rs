@@ -103,7 +103,7 @@ impl VolumeBalance {
         };
         let mut measurement = frame.reference_loudness.clone();
         if measurement.is_some() {
-            if self.decoded_reference.is_none() {
+            if self.decoded_reference.is_none() && !self.fresh_complete {
                 self.cached = None;
                 if !self.settled {
                     self.meter = None;
@@ -239,6 +239,20 @@ mod tests {
             b.set_cached(Measurement{integrated_lufs:Some(-2.),blocks:100,true_peak_dbtp:Some(-2.)});b.route(&pending);assert_eq!(b.gain_db,-8.);
             b.finish();assert!(b.complete_measurement().is_none());
             b.reset();assert!(!b.startup_measurement_ready());assert!(b.decoded_reference.is_none());
+        }
+    }
+    #[test]
+    fn fresh_complete_av3a_reference_survives_partial_decoder_reference() {
+        let full = Measurement { integrated_lufs:Some(-3.0), blocks:2321, true_peak_dbtp:Some(2.0) };
+        let mut balance = VolumeBalance { enabled:true, ..Default::default() };
+        balance.set_fresh_complete(full).unwrap();
+        for (at, lufs) in [(0,-9.0),(48000,-5.0),(96000,-20.0)] {
+            let mut frame=av3a_frame(at);
+            frame.reference_loudness=Some(Measurement {integrated_lufs:Some(lufs),blocks:57,true_peak_dbtp:Some(0.0)});
+            let pending=balance.measure(frame,None);
+            balance.route(&pending);
+            assert!((balance.gain_db+15.0).abs()<1e-8, "partial intro must not replace the complete source reference");
+            assert!(balance.fresh_complete);
         }
     }
     #[test]

@@ -883,8 +883,8 @@ export function App() {
           setProgramLoudness(null);
           // This reference belongs only to this playback. No stored loudness
           // is read or written, including when balance is toggled later.
-          if (sourceReference && sourceReference.codec === t.codec && t.channels === 2 && sourceReference.sampleRate === t.sampleRate) {
-            createdPlayer?.setMeasuredLoudness(sourceReference.integratedLufs, sourceReference.truePeakDbtp);
+          if (sourceReference && sourceReference.codec === t.codec && (t.codec === "av3a" || t.channels === 2 && sourceReference.sampleRate === t.sampleRate)) {
+            createdPlayer?.setMeasuredLoudness(sourceReference.integratedLufs, sourceReference.truePeakDbtp, t.codec === "av3a");
           }
         },
         onBalanceAnalysis: progress => { if (isCurrent()) setBalanceAnalysisProgress(progress); },

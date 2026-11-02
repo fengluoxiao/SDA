@@ -1261,6 +1261,16 @@ pub unsafe extern "C" fn sda_ios_stereo_reference_create(path: *const c_char, al
     }
 }
 #[no_mangle]
+pub unsafe extern "C" fn sda_ios_av3a_reference_create(path: *const c_char, error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::stereo_reference::FreshStereoReference::open_av3a(unsafe { text(path)? })
+    })).unwrap_or_else(|_| Err("Audio Vivid reference initialization failed".into()));
+    match result {
+        Ok(reference) => Box::into_raw(Box::new(reference)).cast(),
+        Err(message) => { if !error.is_null() { unsafe { *error = reply(Err(message)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
 pub unsafe extern "C" fn sda_ios_stereo_reference_step(p: *mut std::ffi::c_void) -> *mut c_char {
     guarded(|| {
         let reference = unsafe { p.cast::<crate::stereo_reference::FreshStereoReference>().as_mut() }.ok_or("stereo reference unavailable")?;

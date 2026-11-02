@@ -17,6 +17,7 @@ int32_t sda_ios_is_sdar(const char *path);
 void sda_ios_string_free(char *string);
 // Fresh complete stereo reference. Serialized feeder calls; never an audio callback.
 void *sda_ios_stereo_reference_create(const char *path, bool alac, char **error);
+void *sda_ios_av3a_reference_create(const char *path, char **error);
 char *sda_ios_stereo_reference_step(void *reference);
 void sda_ios_stereo_reference_close(void *reference);
 // Apple-decoded 48 kHz interleaved Float32 ALAC stereo, bounded control calls.

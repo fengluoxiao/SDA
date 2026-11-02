@@ -108,10 +108,12 @@ fn front_corner(source: &Source, x: f32) -> bool {
                     && d.height == 0.0
                     && d.depth == 0.0
                     && d.diffuse == 0.0
-                    && d.position
-                        .iter()
-                        .zip([x, 1.0, 0.0])
-                        .all(|(a, b)| (*a - b).abs() < 0.001)
+                    // The convolver may retain a sub-degree neighbor after
+                    // motion ends. Use its own deadband; the authored corner
+                    // above remains exact even when the prepared HRIR is held.
+                    && directional::equivalent_direction(d, directional::Direction {
+                        position: [x, 1.0, 0.0], ..d
+                    })
             })
 }
 // Retain an established pair through authored motion inside the front plane.
@@ -169,14 +171,16 @@ fn unique_pair(
             return None;
         }
         let route = sources[&ids[0]].continuous.as_ref()?.effective_route()?;
-        // Group only identical complete render routes. Arbitrarily close or
-        // diffuse/moving sources must not silently become a stereo pair.
+        // Authored corners must match exactly. Their prepared render routes
+        // may differ within the convolver's deadband after earlier motion.
+        // Keep layout, extent, focus and speaker gains under the same rules
+        // as the convolver instead of rejecting a held equivalent HRIR.
         if ids.iter().any(|id| {
             sources[id]
                 .continuous
                 .as_ref()
                 .and_then(|c| c.effective_route())
-                != Some(route)
+                .is_none_or(|candidate| !directional::equivalent_route(&candidate, &route))
         }) {
             return None;
         }
@@ -197,7 +201,7 @@ fn group_input(
     let mut input = [0.; crate::convolution::DEFAULT_PARTITION];
     for id in ids {
         let source = sources.get(id)?.continuous.as_ref()?;
-        if source.effective_route()? != route {
+        if !directional::equivalent_route(&source.effective_route()?, &route) {
             return None;
         }
         for (out, frame) in input.iter_mut().zip(&source.frames) {
@@ -566,6 +570,76 @@ impl FrontCommon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn held_front_source(set: &hrtf::NativeHrtfSet, x: f32, cached_y: f32) -> Source {
+        let solver = vbap::VbapSolver::new();
+        let mut continuous = directional::ContinuousSource::new(set).unwrap();
+        let position = [x, cached_y, 0.0];
+        continuous.schedule(directional::Direction {
+            position, head: None, width: 0.0, height: 0.0, depth: 0.0,
+            diffuse: 0.0, horizontal_only: false,
+        }, vbap::LayoutId::Dolby7_1_4, solver.pan(position, 0.0), [0.0; vbap::MAX_BUS_COUNT]);
+        for frame in &mut continuous.frames { frame.input = 0.01; }
+        Source {
+            kind: SourceKind::Object, position: [x, 1.0, 0.0],
+            continuous: Some(Box::new(continuous)), continuous_active: true,
+            continuous_mix: 1.0, ..Default::default()
+        }
+    }
+    fn held_front_set() -> hrtf::NativeHrtfSet {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+        hrtf::NativeHrtfSet::load_calibrated(&path).unwrap()
+    }
+    #[test]
+    fn stationary_front_reacquires_after_subdegree_hrtf_hold_and_reset() {
+        let set = held_front_set();
+        let solver = vbap::VbapSolver::new();
+        let mut sources = HashMap::from([
+            ("front-left".into(), held_front_source(&set, -1.0, 0.98518753)),
+            ("front-right".into(), held_front_source(&set, 1.0, 1.0)),
+        ]);
+        let mut bus = bus_renderer::BusRenderer::new(&set, &solver, 0.0).unwrap();
+        let mut common = FrontCommon { enabled: true, grouped: true, ..Default::default() };
+        for _ in 0..2 {
+            common.prepare(&mut sources, &set, &mut bus, vbap::LayoutId::Dolby7_1_4,
+                &solver, None, Default::default(), true);
+            assert_eq!(common.mix, 1.0, "a held equivalent HRIR must not disable the front group");
+            assert!(common.center.is_some());
+            common.reset();
+        }
+    }
+    #[test]
+    fn co_located_front_group_accepts_equivalent_held_routes_without_dropping_input() {
+        let set = held_front_set();
+        let sources = HashMap::from([
+            ("left-a".into(), held_front_source(&set, -1.0, 1.0)),
+            ("left-b".into(), held_front_source(&set, -1.0, 0.98518753)),
+            ("right".into(), held_front_source(&set, 1.0, 1.0)),
+        ]);
+        let (left, right) = unique_pair(&sources, true).expect("identical authored corners with held HRIRs");
+        assert_eq!(left, ["left-a", "left-b"]);
+        assert_eq!(right, ["right"]);
+        let (_, input) = group_input(&sources, &left).unwrap();
+        assert!(input.iter().all(|v| (*v - 0.02).abs() < 1e-7));
+    }
+    #[test]
+    fn held_route_tolerance_keeps_authored_geometry_and_focus_constraints() {
+        let set = held_front_set();
+        let mut source = held_front_source(&set, -1.0, 0.98518753);
+        assert!(front_corner(&source, -1.0));
+        source.position[1] = 0.98;
+        assert!(!front_corner(&source, -1.0), "an authored off-corner object is not a corner");
+        source = held_front_source(&set, -1.0, 0.9);
+        assert!(!front_corner(&source, -1.0), "a different prepared bearing is not equivalent");
+        source = held_front_source(&set, -1.0, 1.0);
+        let reference = source.continuous.as_ref().unwrap().effective_route().unwrap();
+        let mut different_focus = reference;
+        different_focus.3[0] = 1.0;
+        assert!(!directional::equivalent_route(&reference, &different_focus));
+        let mut different_gain = reference;
+        different_gain.2[0] += 0.05;
+        assert!(!directional::equivalent_route(&reference, &different_gain));
+    }
     #[test]
     fn normalization_uses_coherent_pair_not_independent_energy() {
         let l = (vec![1.0, 0.0], vec![0.0, 1.0]);

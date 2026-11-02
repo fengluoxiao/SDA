@@ -32,6 +32,10 @@ fun main(args: Array<String>) {
     SdaEngine.reset();SdaEngine.onStep={source.appendText("changed during analysis")}
     check(runCatching { refs.prepare(source,"mutated",false){false} }.isFailure)
     check(SdaEngine.closed == 1 && refs.ready(source,"mutated") == null)
+    SdaEngine.reset()
+    refs.prepare(source,"av3a",false,true){false}
+    check(SdaEngine.av3aCreated == 1 && SdaEngine.closed == 1)
+    check(refs.ready(source,"av3a") != null)
     refs.clear();check(refs.ready(source,"hash") == null)
     println("PASS import reference: one fresh scan, repeat reuse, hash/path/file-change guard, cancellation, mid-scan mutation, handle cleanup")
 }

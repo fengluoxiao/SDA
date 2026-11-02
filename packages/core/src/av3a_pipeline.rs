@@ -93,6 +93,7 @@ pub struct Av3aPipeline {
     declarations: Vec<ObjectChannelDecl>,
     objects: Option<ObjectScene>,
     reference: Option<crate::scene_reference::SceneMeter>,
+    speaker_reference: crate::loudness::SpeakerReference,
     events: VecDeque<ObjectEvent>,
     transport_channels: usize,
     source_rate: u32,
@@ -113,6 +114,7 @@ impl Av3aPipeline {
             declarations: Vec::new(),
             objects: None,
             reference: None,
+            speaker_reference: Default::default(),
             events: VecDeque::new(),
             transport_channels: 0,
             source_rate: OUTPUT_RATE,
@@ -290,6 +292,10 @@ impl Av3aPipeline {
                     .get_or_insert_with(crate::scene_reference::SceneMeter::new)
                     .measure(&decoded),
             );
+        }
+        if self.objects.is_none() {
+            decoded.reference_loudness = self.speaker_reference.measure(
+                &decoded.channels, &decoded.labels, decoded.sample_rate);
         }
         out.push_back(decoded);
         self.output_samples += count as u64;

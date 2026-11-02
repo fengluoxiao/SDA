@@ -320,7 +320,7 @@ fn av3a_native_balance_reaches_hrtf_output_without_system_spatial() {
         );
     } else {
         assert!(
-            (actual_db - (on_gain + 1.5)).abs() < 0.05,
+            (actual_db - (on_gain + 1.8)).abs() < 0.05,
             "ordinary HRTF gain missing: {actual_db} versus {on_gain}"
         );
     }
@@ -340,11 +340,11 @@ fn av3a_native_live_balance_switch_changes_the_same_playback_output() {
     let on_delta = 10.0 * (restored / disabled).log10();
     eprintln!("AV3A live switch: target={gain:.3} dB, off delta={off_delta:.3} dB, on delta={on_delta:.3} dB");
     assert!(
-        (off_delta + gain + 1.5).abs() < 0.2,
+        (off_delta + gain + 1.8).abs() < 0.2,
         "live switch off ineffective: {off_delta}"
     );
     assert!(
-        (on_delta - gain - 1.5).abs() < 0.2,
+        (on_delta - gain - 1.8).abs() < 0.2,
         "live switch on ineffective: {on_delta}"
     );
 }
@@ -357,7 +357,7 @@ fn av3a_object_reference_balance_reaches_hrtf_and_live_switch() {
     let range = 12 * 48000 * 2..14 * 48000 * 2;
     let db = 10. * (energy(&on[range.clone()]) / energy(&off[range])).log10();
     assert!(gain < -3.);
-    assert!((db - gain - 1.5).abs() < 0.1, "object target {gain}, output {db}");
+    assert!((db - gain - 1.8).abs() < 0.1, "object target {gain}, output {db}");
     let (live, gain) = render_kind(true, true, true);
     let energy_at = |a: usize, b: usize| {
         energy(&live[a * 48000 * 2..b * 48000 * 2]) / ((b - a) * 48000 * 2) as f64
@@ -365,11 +365,11 @@ fn av3a_object_reference_balance_reaches_hrtf_and_live_switch() {
     let delta_off = 10. * (energy_at(14, 15) / energy_at(10, 11)).log10();
     let delta_on = 10. * (energy_at(18, 19) / energy_at(14, 15)).log10();
     assert!(
-        (delta_off + gain + 1.5).abs() < 0.2,
+        (delta_off + gain + 1.8).abs() < 0.2,
         "object live OFF {delta_off}, target {gain}"
     );
     assert!(
-        (delta_on - gain - 1.5).abs() < 0.2,
+        (delta_on - gain - 1.8).abs() < 0.2,
         "object live ON {delta_on}, target {gain}"
     );
 }
@@ -443,7 +443,7 @@ fn shared_object_codecs_four_state_matrix() {
             assert!((off_gain-gain).abs()<0.1);
             let actual=10.*(energy(&on)/energy(&off)).log10();
             eprintln!("four-state matrix codec={codec} objects={objects} spatial={spatial} target={gain:.3} output={actual:.3}");
-            assert!((actual-(gain+1.5)).abs()<0.15,"{codec}: programme attenuation/calibration mismatch: {actual} vs {}",gain+1.5);
+            assert!((actual-(gain+1.8)).abs()<0.15,"{codec}: programme attenuation/calibration mismatch: {actual} vs {}",gain+1.8);
         }
     }
 }
