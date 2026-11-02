@@ -28,6 +28,8 @@ final class CompressedInput {
  private var selectedTrackID: CMPersistentTrackID?
  private var reader: AVAssetReader?
  private var trackOutput: AVAssetReaderTrackOutput?
+ private var seekFirstData: Data?
+ private var lastPCMStart: UInt64 = 0
  private var nextTime = CMTime.zero
  private var retries = 0
  private var resumeTimeValid = true
@@ -88,7 +90,7 @@ final class CompressedInput {
   #if os(iOS)
   let path = url.resolvingSymlinksInPath().standardizedFileURL.path
   let fm = FileManager.default
-  let roots = [fm.urls(for:.cachesDirectory,in:.userDomainMask).first!,
+  let roots = [fm.urls(for:.applicationSupportDirectory,in:.userDomainMask).first!, fm.urls(for:.cachesDirectory,in:.userDomainMask).first!,
    fm.urls(for:.documentDirectory,in:.userDomainMask).first!, fm.temporaryDirectory]
   guard roots.contains(where: { path.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) else { return }
   let value = try fm.attributesOfItem(atPath:path)[.protectionKey]
@@ -152,6 +154,18 @@ final class CompressedInput {
    }
    guard r.startReading() else { throw r.error ?? SdaError.message("音轨读取失败") }
    reader = r; trackOutput = output
+ }
+ // Intentional seeks replace only the Apple reader; the live SDA renderer,
+ // programme gain, room resources and output device remain in place.
+ func seekPCM(positionMs:Double) throws -> UInt64 {
+  guard isAlac, positionMs.isFinite, positionMs >= 0 else { throw SdaError.message("无法定位此 PCM 音轨") }
+  let target=UInt64(positionMs*48); let warm=target > 24000 ? target-24000 : 0
+  seekFirstData=nil; reader?.cancelReading();reader=nil;trackOutput=nil
+  nextTime=CMTime(value:Int64(warm),timescale:48000);resumeTimeValid=true
+  sequentialRecovery=false;resumedRange=false;retries=0
+  try reopenAfterInterruption()
+  guard let first=try next(chunkBytes:24*1024),lastPCMStart <= target else { throw SdaError.message("音轨定位没有返回目标之前的 PCM") }
+  seekFirstData=first;return lastPCMStart
  }
  // Recreate a failed cursor at the first unsubmitted packet, never skip audio.
  static func isRecoverableReaderError(_ error: NSError) -> Bool {
@@ -218,6 +232,7 @@ final class CompressedInput {
   return nil
  }
  func next(chunkBytes: Int = 24 * 1024) throws -> Data? {
+  if let data=seekFirstData { seekFirstData=nil;return data }
   if let indexed {
    let data=try indexed.next(chunkBytes:chunkBytes)
    if let data { submittedHash.update(data:data);submittedCompressedBytes += UInt64(data.count) }
@@ -275,14 +290,16 @@ final class CompressedInput {
   let pts = CMSampleBufferGetPresentationTimeStamp(sample)
   let duration = CMSampleBufferGetDuration(sample)
   // A seek can expose preceding sync samples; don't feed them to the decoder twice.
+  var trimmedPCM = 0
   if resumedRange && pts.isNumeric && CMTimeCompare(pts, nextTime) < 0 {
    if !isAlac { continue }
    // PCM seeks can overlap a partial decoded packet. Trim only the submitted
    // samples, not the whole packet (which would drop the first new samples).
    let overlap = max(0, Int((CMTimeGetSeconds(CMTimeSubtract(nextTime,pts))*48000).rounded()))
    if overlap >= count/8 { continue }
-   data.removeFirst(overlap*8)
+   data.removeFirst(overlap*8);trimmedPCM=overlap
   }
+  if isAlac,pts.isNumeric { lastPCMStart=UInt64(max(0,(CMTimeGetSeconds(pts)*48000).rounded()))+UInt64(trimmedPCM) }
   resumedRange = false
   resumeTimeValid = pts.isNumeric && duration.isNumeric && CMTimeCompare(duration,.zero) > 0
   if resumeTimeValid { nextTime = CMTimeAdd(pts,duration) }

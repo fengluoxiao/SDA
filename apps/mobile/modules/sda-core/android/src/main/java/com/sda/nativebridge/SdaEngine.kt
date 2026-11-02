@@ -24,6 +24,9 @@ object SdaEngine {
     external fun nativePullAlac(ptr: Long, maxFrames: Int, upmix: Boolean): Int
     external fun nativeOpenMp3(ptr: Long, path: String): Int
     external fun nativePullMp3(ptr: Long, maxFrames: Int): Int
+    external fun nativeOpenIndexed(ptr: Long, path: String, codec: String): String
+    external fun nativePullIndexed(ptr: Long, maxFrames: Int): String
+    external fun nativeSeekTo(ptr: Long, positionMs: Double, originSample: Long): String
     external fun nativeLastError(): String
     external fun nativeFeed(ptr: Long, bytes: ByteArray): Int
     external fun nativeAccelerators(): String

@@ -22,6 +22,7 @@ pub mod ac4_pipeline;
 pub mod av3a_pipeline;
 pub mod loudness;
 pub mod scene_reference;
+pub mod seek_header;
 mod av3a_objects;
 pub mod dts_pipeline;
 pub mod eac3_pipeline;
@@ -161,6 +162,7 @@ pub trait Pipeline {
     fn codec_name(&self) -> &'static str;
     fn push(&mut self, data: &[u8], out: &mut VecDeque<FrameData>, errors: &mut Vec<String>);
     fn reset(&mut self);
+    fn reset_for_seek(&mut self, _input_origin: u64) { self.reset(); }
     fn flush(&mut self, _out: &mut VecDeque<FrameData>, _errors: &mut Vec<String>) {}
 }
 
@@ -393,6 +395,12 @@ impl StreamingDecoder {
         self.queue.clear();
     }
 
+    pub fn reset_for_seek(&mut self, input_origin: u64) {
+        self.pipeline.reset_for_seek(input_origin);
+        self.object_targets.clear();self.restore_object_mapping=false;
+        self.queue.clear();self.errors.clear();
+    }
+
     pub fn flush(&mut self) {
         self.pipeline.flush(&mut self.queue, &mut self.errors);
     }
@@ -457,6 +465,11 @@ impl SdaDecoder {
         self.inner.reset();
     }
 
+    #[wasm_bindgen(js_name = resetForSeek)]
+    pub fn reset_for_seek(&mut self, input_origin: f64) -> Result<(),JsValue> {
+        if !input_origin.is_finite() || input_origin < 0. || input_origin.fract()!=0. || input_origin>9_007_199_254_740_991. {return Err(JsValue::from_str("invalid seek input origin"));}
+        self.inner.reset_for_seek(input_origin as u64);Ok(())
+    }
     pub fn flush(&mut self) {
         self.inner.flush();
     }

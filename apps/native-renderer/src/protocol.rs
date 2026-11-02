@@ -773,6 +773,18 @@ fn handle_command(
                 detail: None,
             });
         }
+        Command::SeekReset { origin, target } => {
+            let accepted=target>=origin;
+            if accepted {
+                telemetry.clear_object_activity();
+                remote_audio::END_SAMPLE.store(u64::MAX,Ordering::Release);
+                state.reset_seek(origin,target);
+                // A paused seek does not emit StartAt/Pause again. Publish its
+                // reset state even when no render block will run while paused.
+                telemetry.paused.store(true,Ordering::Release);
+            }
+            write_event(&Event::Ack {command:"seekReset",accepted,detail:(!accepted).then_some("seek target precedes preroll")});
+        }
         Command::Reset { origin } => {
             telemetry.clear_object_activity();
             remote_audio::END_SAMPLE.store(u64::MAX, Ordering::Release);
@@ -814,6 +826,10 @@ pub(super) fn apply_render_command(
     match command {
         render_command::RenderCommand::Command(command) => {
             handle_command(state, command, fifo, telemetry)
+        }
+        render_command::RenderCommand::TransportReset{epoch,command}=>{
+            state.transport_epoch=epoch;
+            handle_command(state,command,fifo,telemetry)
         }
         render_command::RenderCommand::ObjectRendering { direct, directional } => {
             if direct == directional {
@@ -1538,6 +1554,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::ClearHeadPose => "clearHeadPose",
         Command::Pause { .. } => "pause",
         Command::Reset { .. } => "reset",
+        Command::SeekReset { .. } => "seekReset",
         Command::Health => "health",
         Command::Shutdown => "shutdown",
         Command::SetRemoteLocalMute { .. } => "setRemoteLocalMute",

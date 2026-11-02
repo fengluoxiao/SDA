@@ -576,3 +576,19 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReference
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReferenceClose(_env: JNIEnv, _class: JClass, reference: jlong) {
     if reference != 0 { drop(unsafe { Box::from_raw(reference as *mut crate::stereo_reference::FreshStereoReference) }); }
 }
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeOpenIndexed(mut env:JNIEnv,_class:JClass,ptr:jlong,path:JString,codec:JString)->jni::sys::jstring {
+ let value=(||->Result<serde_json::Value,String>{let path:String=env.get_string(&path).map_err(|e|e.to_string())?.into();let codec:String=env.get_string(&codec).map_err(|e|e.to_string())?.into();let e=take_engine(ptr).ok_or("engine unavailable")?;Ok(serde_json::json!({"durationMs":e.open_packet_file(&path,&codec)?,"seekable":true}))})();
+ let text=match value{Ok(v)=>v.to_string(),Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePullIndexed(env:JNIEnv,_class:JClass,ptr:jlong,max:jint)->jni::sys::jstring {
+ let value=(||->Result<serde_json::Value,String>{let e=take_engine(ptr).ok_or("engine unavailable")?;let(frames,eof)=e.pull_packet_file(max.max(1)as usize)?;Ok(serde_json::json!({"frames":frames,"eof":eof,"bytes":e.compressed_input_bytes}))})();
+ let text=match value{Ok(v)=>v.to_string(),Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSeekTo(env:JNIEnv,_class:JClass,ptr:jlong,ms:jni::sys::jdouble,origin:jlong)->jni::sys::jstring {
+ let value=(||->Result<serde_json::Value,String>{if !ms.is_finite()||ms<0.{return Err("invalid seek time".into());}let e=take_engine(ptr).ok_or("engine unavailable")?;if origin>=0{e.seek_stream(origin as u64,(ms*48.)as u64)?;}else{e.seek(ms as u64)?;}Ok(serde_json::json!({"positionMs":ms}))})();
+ let text=match value{Ok(v)=>v.to_string(),Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}

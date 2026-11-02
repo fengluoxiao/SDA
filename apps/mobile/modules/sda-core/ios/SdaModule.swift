@@ -21,6 +21,11 @@ public final class SdaModule: Module {
   Function("reportSceneSmoke") { (_: String) in }
   #endif
   OnCreate {
+   PlaybackStorage.startup()
+   for key in player.prefs.dictionaryRepresentation().keys where key.hasPrefix("sda.loudness.") { player.prefs.removeObject(forKey:key) }
+   let saved=PlaybackStorage.queue()
+   player.playbackQueue=saved["queue"] as? [[String:Any]] ?? []
+   player.playbackMode=saved["mode"] as? String ?? "sequence"
    player.configureDiagnostics(false)
    player.installSystemControls()
    player.locked { player.startHeadTracking() }
@@ -88,10 +93,27 @@ public final class SdaModule: Module {
     else { throw SdaError.message("播放队列无效") }
    // Fix protection while foreground/import still has access, not on a locked-screen EOF.
    for track in queue { if let uri=track["uri"] as? String, let url=URL(string:uri) { try CompressedInput.allowLockedPlaybackOfOwnedCopy(url) } }
+   try PlaybackStorage.save(queue,mode:mode)
+   player.uncommittedRetained.subtract(queue.compactMap { $0["uri"] as? String })
    player.playbackQueue=queue; player.playbackMode=mode
+  } }
+  Function("playbackQueueSnapshot") { try player.locked { try player.json(["queue":player.playbackQueue,"mode":player.playbackMode,"currentHash":player.prefs.string(forKey:"sda.queue.selected") ?? ""]) } }
+  AsyncFunction("retainQueueTrack") { (uri:String,name:String,hash:String) in
+   guard let source=URL(string:uri) else { throw SdaError.message("文件地址无效") }
+   return try PlaybackStorage.retain(source,name:name,hash:hash,didCreate:{ url in _ = player.locked { player.uncommittedRetained.insert(url.absoluteString) } }).absoluteString
+  }
+  AsyncFunction("discardPickerCopy") { (uri:String) in if let url=URL(string:uri) { PlaybackStorage.discardPicker(url) } }
+  AsyncFunction("discardUnqueuedTrack") { (uri:String) in player.locked {
+   guard let url=URL(string:uri),url.isFileURL else { return }
+   let actual=url.resolvingSymlinksInPath().standardizedFileURL
+   guard actual.deletingLastPathComponent() == PlaybackStorage.library.resolvingSymlinksInPath().standardizedFileURL,
+    actual.lastPathComponent != "queue.json",player.uncommittedRetained.contains(uri), !player.playbackQueue.contains(where: { $0["uri"] as? String == uri }) else { return }
+   try? FileManager.default.removeItem(at:actual)
+   player.uncommittedRetained.remove(uri)
   } }
   Function("currentTrackHash") { player.locked { player.trackHash } }
   AsyncFunction("playUri") { (uri:String,name:String,yaw:Double,hash:String) in try player.play(uri,name,yaw,hash) }
+  AsyncFunction("seekTo") { (positionMs:Double,hash:String) in try player.requestSeek(positionMs,expectedHash:hash) }
   AsyncFunction("durationMs") { (uri:String) in guard let u = URL(string:uri) else { return 0.0 }; return player.mediaDuration(u) }
   AsyncFunction("metadata") { (uri:String) in
    guard let u = URL(string:uri) else { throw SdaError.message("文件地址无效") }
@@ -116,7 +138,7 @@ public final class SdaModule: Module {
   }
   AsyncFunction("beginMp4Import") { (uri:String) in try player.locked {
    guard let u=URL(string:uri),u.isFileURL else { throw SdaError.message("文件地址无效") }
-   let token=UUID().uuidString;let out=FileManager.default.temporaryDirectory.appendingPathComponent(token+".mhas")
+   let token=UUID().uuidString;let out=FileManager.default.temporaryDirectory.appendingPathComponent("sda-import-"+token+".mhas")
    FileManager.default.createFile(atPath:out.path,contents:Data());player.imports[token]=(u,out)
    let size=(try FileManager.default.attributesOfItem(atPath:u.path)[.size] as? NSNumber)?.int64Value ?? 0
    return try player.json(["token":token,"size":size])

@@ -12,6 +12,8 @@ import java.security.MessageDigest
 class SdaModule : Module() {
     private val mpeghImport = MpeghImport()
     private val stereoReferences = PreparedStereoReference()
+    private data class PlayingProgramme(val hash:String,val path:String,val bytes:Long,val modified:Long,val measurement:String)
+    @Volatile private var playingProgramme: PlayingProgramme? = null
     private val playbackQueue = NativePlaybackQueue()
     private val playbackCommands = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "SDA native queue") }
     @Volatile private var preservePlaybackLease = false
@@ -46,6 +48,11 @@ class SdaModule : Module() {
     @Volatile private var sceneRenderingRequested = false
     @Volatile private var failureCategory = ""
     @Volatile private var inputBytesSubmitted = 0L
+    private data class SeekRequest(val generation: Long, val ms: Long)
+    @Volatile private var pendingSeek: SeekRequest? = null
+    private val uncommittedRetained = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var activeSeekable = false
+    @Volatile private var activeIndexedDurationMs = 0L
     @Volatile private var dspCpuBudget = 0
     @Volatile private var audioCpuPolicy = JSONObject()
     private var audioPolicyMonitor: java.util.concurrent.ScheduledExecutorService? = null
@@ -316,7 +323,7 @@ class SdaModule : Module() {
         playbackQueue.snapshot().forEach { row -> rows.put(JSONObject().put("hash", row.hash).put("uri", row.uri)
             .put("name", row.name).put("originalName", row.originalName).put("metadata", JSONObject(row.metadata))) }
     }
-    private fun configureQueue(text: String, mode: String, persist: Boolean = true) {
+    private fun configureQueue(text: String, mode: String, persist: Boolean = true): Unit = synchronized(nativeLock) {
         val rows = org.json.JSONArray(text)
         val tracks = (0 until rows.length()).map { index ->
             val row = rows.getJSONObject(index)
@@ -325,10 +332,15 @@ class SdaModule : Module() {
             NativeQueueTrack(hash, row.getString("uri"), row.getString("name"),
                 (row.optJSONObject("metadata") ?: JSONObject()).toString(), row.optString("originalName", row.getString("name")))
         }
+        // Validate without publishing a half-saved queue to background playback.
+        NativePlaybackQueue().configure(tracks, mode)
+        if (persist) {
+            val prefs = appContext.reactContext?.getSharedPreferences("sda-playback-queue", 0) ?: error("no react context")
+            check(prefs.edit().putString("rows", rows.toString()).putString("mode", mode).commit()) { "无法保存播放队列，请检查设备存储空间" }
+        }
         playbackQueue.configure(tracks, mode)
         PlaybackKeepAlive.configureQueue(text)
-        if (persist) appContext.reactContext?.getSharedPreferences("sda-playback-queue", 0)?.edit()
-            ?.putString("rows", queueJson().toString())?.putString("mode", mode)?.apply()
+        if (persist) uncommittedRetained.removeAll(tracks.mapNotNull { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalPath } }.toSet())
     }
     private fun restoreQueue(context: android.content.Context) {
         val prefs = context.getSharedPreferences("sda-playback-queue", 0)
@@ -366,7 +378,8 @@ class SdaModule : Module() {
             val targetLayout = if (displayName.endsWith(".mhas", true)) "360RA-13" else "7.1.4"
             val reusePrepared = synchronized(nativeLock) { handle != 0L && handle == preparedHandle && backgroundSession == 0L && activeLayout == targetLayout }
             stopFeedThread(keepSession = true)
-            failureCategory = ""; inputBytesSubmitted = 0L
+            failureCategory = ""; inputBytesSubmitted = 0L; activeIndexedDurationMs = 0L
+            if (playingProgramme?.hash != contentHash) playingProgramme=null
             val context = appContext?.reactContext ?: throw RuntimeException("no react context")
             val uri = Uri.parse(uriString)
             synchronized(nativeLock) {
@@ -404,11 +417,6 @@ class SdaModule : Module() {
                 }
             }
             return try {
-            // Versioned full-content identity survives temporary MP4 -> MHAS
-            // imports and cannot reuse a result for a changed source file.
-            val referenceVersion = if (displayName.substringAfterLast('.', "").equals("mhas", true)) "v7-mpegh-prelimit" else "v6"
-            val cacheKey = "sda-measured-lufs-$referenceVersion:$contentHash:48000"
-            val loudnessCache = context.getSharedPreferences("sda-loudness", 0)
             val isAv3a = displayName.substringAfterLast('.', "").equals("av3a", ignoreCase = true)
             val isMpegh = displayName.substringAfterLast('.', "").equals("mhas", ignoreCase = true)
             val isMp3 = displayName.substringAfterLast('.', "").equals("mp3", ignoreCase = true)
@@ -433,6 +441,15 @@ class SdaModule : Module() {
             if(isSdarName && !isSdar){if(ownsSourceCopy)mp3Cache?.delete();error("无效或尚未支持的 SDAR 床层文件")}
             if(isWavName && !isSdar){if(ownsSourceCopy)mp3Cache?.delete();error("WAV 文件缺少 SDA 母版渲染元数据")}
             val isAlac = !isSdar && isContainer && mp3Cache != null && SdaEngine.nativeIsAlac(mp3Cache.absolutePath)
+            val indexedFile = mp3Cache ?: localFile
+            val indexedCodec = when {
+                isMpegh -> "mpegh"
+                isAv3a -> "av3a"
+                displayName.endsWith(".ac4", true) -> "ac4"
+                isContainer || displayName.endsWith(".ec3", true) || displayName.endsWith(".eac3", true) -> "eac3"
+                else -> null
+            }
+            var indexed = false
             val input = try {
                 if (isMp3 || isAlac || isSdar) java.io.ByteArrayInputStream(ByteArray(0)) else Eac3Input.open(context, uri, displayName, if (isContainer) mp3Cache else null)
             } catch (error: Throwable) {
@@ -443,7 +460,12 @@ class SdaModule : Module() {
                 synchronized(nativeLock) {
                 check(!destroyed && PlaybackKeepAlive.owns(playbackSession)) { "Playback preparation was cancelled" }
                 ensureEngine(if (isMpegh) "360RA-13" else "7.1.4").also {
-                    if (isMpegh) check(SdaEngine.nativeOpenMpegh(it) == 0) {
+                    if (!isMp3 && !isAlac && !isSdar && indexedFile != null && indexedCodec != null) {
+                        val result = JSONObject(SdaEngine.nativeOpenIndexed(it, indexedFile.absolutePath, indexedCodec))
+                        indexed = !result.has("error") && result.optBoolean("seekable")
+                        if (indexed) activeIndexedDurationMs=result.optLong("durationMs")
+                    }
+                    if (isMpegh && !indexed) check(SdaEngine.nativeOpenMpegh(it) == 0) {
                         "360RA 打开失败: ${SdaEngine.nativeLastError()}"
                     }
                     if (isSdar && mp3Cache != null) check(SdaEngine.nativeOpenSdar(it, mp3Cache.absolutePath, context.cacheDir.absolutePath) > 0) {
@@ -457,15 +479,6 @@ class SdaModule : Module() {
                     }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
                     check(balanceError.isEmpty()) { balanceError }
-                    if (!isAlac && !isMp3 && !isAv3a && !isSdar) loudnessCache.getString(cacheKey, null)?.let { cached ->
-                        // A damaged/stale cache is a miss, never a playback failure.
-                        val valid = runCatching {
-                            val m = JSONObject(cached)
-                            m.getDouble("integratedLufs").isFinite() && m.getInt("blocks") >= 57
-                        }.getOrDefault(false)
-                        if (valid) SdaEngine.nativeSetMeasuredLoudness(it, cached)
-                        else loudnessCache.edit().remove(cacheKey).apply()
-                    }
                     check(SdaEngine.nativeSetHeadYaw(it, headYawDegrees.toFloat()) == 0) {
                         "Native head yaw command failed during startup"
                     }
@@ -488,6 +501,8 @@ class SdaModule : Module() {
                 diagnostics?.event("play", generation)
                 generation
             }
+            activeSeekable = indexed || isMp3 || isAlac || isSdar
+            pendingSeek = null
             feedError = null
             feedDone = false
             paused = false
@@ -514,11 +529,16 @@ class SdaModule : Module() {
                     // Restored/changed files still take a complete fallback measurement.
                     if (!isSdar && (isAlac || isMp3 || isAv3a)) {
                         val file = mp3Cache ?: error("立体声分析输入缺失")
-                        val measurement = stereoReferences.ready(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a) {
+                        // This is the current loaded track's live programme setting, not
+                        // a stored analysis lookup. Keep it while this source remains loaded,
+                        // including seeking after EOF; clear it on a different source.
+                        val active = playingProgramme?.takeIf { it.hash == contentHash && it.path == file.canonicalPath && it.bytes == file.length() && it.modified == file.lastModified() }
+                        val measurement = active?.measurement ?: stereoReferences.take(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a, keepPending = false) {
                             stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)
                         }
                         synchronized(nativeLock) {
                             if (stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)) return@Thread
+                            playingProgramme=PlayingProgramme(contentHash,file.canonicalPath,file.length(),file.lastModified(),measurement)
                             val error = SdaEngine.nativeSetMeasuredLoudness(ptr, measurement)
                             check(error.isEmpty()) { error }
                         }
@@ -531,9 +551,18 @@ class SdaModule : Module() {
                         // player.ts TARGET_AHEAD_SECONDS: same four-second decode
                         // reserve, paced against presented audio rather than FIFO size.
                         val maxLead = if (isAlac) 24_000L else 4 * 48_000L
+                        playbackLoop@ while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
                         while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
                             val state = synchronized(nativeLock) {
                                 if (generation != workerGeneration || handle != ptr || stopped) return@Thread
+                                pendingSeek?.takeIf { it.generation == workerGeneration }?.let { request ->
+                                    pendingSeek = null
+                                    val result = JSONObject(SdaEngine.nativeSeekTo(ptr, request.ms.toDouble(), -1))
+                                    check(!result.has("error")) { result.optString("error") }
+                                    check(SdaEngine.nativePause(ptr, paused) == 0) { "seek resume failed" }
+                                    lastConsumed = request.ms * 48; lastProgressNs = System.nanoTime()
+                                    diagnostics?.event("seek", workerGeneration)
+                                }
                                 JSONObject(SdaEngine.nativeStatus(ptr))
                             }
                             mediaProgress.set(PlaybackKeepAlive.Progress(state.optLong("positionMs"), state.optBoolean("preparingAudio")))
@@ -563,12 +592,17 @@ class SdaModule : Module() {
                                 Thread.sleep(20)
                                 continue
                             }
-                            if (isMp3 || isAlac || isSdar) {
+                            if (isMp3 || isAlac || isSdar || indexed) {
                                 val pulled = synchronized(nativeLock) {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
-                                    if (isSdar) SdaEngine.nativePullSdar(ptr,4096) else if (isAlac) SdaEngine.nativePullAlac(ptr, 4096, alacStereoUpmix) else SdaEngine.nativePullMp3(ptr, 4096)
+                                    if (indexed) {
+                                        val result=JSONObject(SdaEngine.nativePullIndexed(ptr,4096))
+                                        check(!result.has("error")) { result.optString("error") }
+                                        if (result.optBoolean("eof")) -2 else result.optInt("frames")
+                                    } else if (isSdar) SdaEngine.nativePullSdar(ptr,4096) else if (isAlac) SdaEngine.nativePullAlac(ptr, 4096, alacStereoUpmix) else SdaEngine.nativePullMp3(ptr, 4096)
                                 }
                                 if (pulled == -4) break
+                                if (pulled == -2) break
                                 check(pulled >= 0) { "音频解码失败: ${SdaEngine.nativeLastError()}" }
                                 continue
                             }
@@ -590,13 +624,12 @@ class SdaModule : Module() {
                                 if (generation == workerGeneration && handle == ptr && !stopped) {
                                     val result = SdaEngine.nativeFinish(ptr)
                                     check(result >= 0) { "nativeFinish failed: ${SdaEngine.nativeLastError()}" }
-                                    // Match Windows: save only successfully flushed full
-                                    // decodes, not a stopped intro or a failed feed.
-                                    val measurement = SdaEngine.nativeCompleteLoudness(ptr)
-                                    if (!isAlac && !isMp3 && !isAv3a && !isSdar && measurement != "null") loudnessCache.edit().putString(cacheKey, measurement).apply()
+                                    // Programme measurements stay in the live engine, never in preferences.
+
                                 }
                             }
                             while (!stopped && !destroyed && PlaybackKeepAlive.owns(playbackSession)) {
+                                if (pendingSeek?.generation == workerGeneration) continue@playbackLoop
                                 val state = synchronized(nativeLock) {
                                     if (generation != workerGeneration || handle != ptr || stopped) return@Thread
                                     JSONObject(SdaEngine.nativeStatus(ptr))
@@ -616,13 +649,16 @@ class SdaModule : Module() {
                                 Thread.sleep(20)
                             }
                             synchronized(nativeLock) {
-                                if (generation == workerGeneration && handle == ptr && !stopped) {
+                                if (generation == workerGeneration && handle == ptr && !stopped && pendingSeek?.generation != workerGeneration) {
                                     SdaEngine.nativeClose(ptr)
                                     handle = 0L
                                     feedDone = true
                                     diagnostics?.event("ended", workerGeneration)
                                 }
                             }
+                        }
+                        if (pendingSeek?.generation == workerGeneration) continue@playbackLoop
+                        break@playbackLoop
                         }
                     }
                 } catch (error: InterruptedException) {
@@ -663,7 +699,16 @@ class SdaModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
-        OnCreate { appContext.reactContext?.let { restoreQueue(it); VendorNpuRuntime.prepare(it); startAudioPolicy(it.applicationContext) } }
+        OnCreate { appContext.reactContext?.let { restoreQueue(it)
+            val protected = playbackQueue.snapshot().flatMap { row ->
+                val cover = runCatching { JSONObject(row.metadata).optString("coverUri") }.getOrDefault("")
+                listOf(row.uri, cover).mapNotNull { value -> Uri.parse(value).takeIf { u -> u.scheme == "file" }?.path?.let { path -> java.io.File(path) } }
+            }.toSet()
+            PlaybackStorage.startup(it.cacheDir, protected, java.io.File(it.filesDir, "playback-library"))
+            runCatching { RoomAssets.cleanStale(it) }
+            // Retire all historical per-song loudness results; never read them.
+            it.deleteSharedPreferences("sda-loudness")
+            VendorNpuRuntime.prepare(it); startAudioPolicy(it.applicationContext) } }
         Name("SdaEngine")
         Events("onMediaCommand")
         OnActivityEntersForeground { inBackground = false; refreshAudioSchedulingSoon(); diagnostics?.event("foreground", generation) }
@@ -690,7 +735,7 @@ class SdaModule : Module() {
             val status = playbackStatus()
             JSONObject().put("generation", generation).put("trackHash", backgroundHash)
                 .put("hasPlayback", backgroundSession != 0L && !feedDone).put("feedDone", feedDone)
-                .put("feedError", feedError ?: JSONObject.NULL).put("durationMs", PlaybackKeepAlive.snapshot()?.durationMs ?: 0L)
+                .put("feedError", feedError ?: JSONObject.NULL).put("durationMs", if(activeIndexedDurationMs>0) activeIndexedDurationMs else PlaybackKeepAlive.snapshot()?.durationMs ?: 0L)
                 .put("status", status).put("objects", if (includeObjects && handle != 0L) JSONObject(SdaEngine.nativeObjects(handle)) else JSONObject())
                 .put("hrtfStatus", hrtfLoadStatus).toString()
         } }
@@ -702,11 +747,30 @@ class SdaModule : Module() {
             val ext = name.substringAfterLast('.', "audio").lowercase().filter { it.isLetterOrDigit() }.take(8)
             val directory = java.io.File(context.filesDir, "playback-library").apply { mkdirs() }
             val target = java.io.File(directory, "$hash.$ext")
+            val existed = target.isFile
             if (source != target.canonicalFile) {
                 val owned = source.toPath().startsWith(context.cacheDir.canonicalFile.toPath())
-                if (!owned || !source.renameTo(target)) { source.copyTo(target, overwrite = true); if (owned) source.delete() }
+                if (!owned || !source.renameTo(target)) {
+                    val pending = java.io.File.createTempFile("pending-", ".audio", directory)
+                    try {
+                        source.copyTo(pending, overwrite = true)
+                        java.nio.file.Files.move(pending.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                        if (owned) source.delete()
+                    } finally { pending.delete() }
+                }
             }
+            if (!existed) uncommittedRetained.add(target.canonicalPath)
             Uri.fromFile(target).toString()
+        }
+        AsyncFunction("discardUnqueuedTrack") { uri: String ->
+            val context = appContext.reactContext ?: error("no react context")
+            val file = Uri.parse(uri).takeIf { it.scheme == "file" }?.path?.let { java.io.File(it).canonicalFile }
+            synchronized(nativeLock) {
+                if (file != null && file.parentFile == java.io.File(context.filesDir, "playback-library").canonicalFile &&
+                    uncommittedRetained.contains(file.path) && playbackQueue.snapshot().none { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalFile } == file }) {
+                    file.delete();uncommittedRetained.remove(file.path)
+                }
+            }
         }
         AsyncFunction("prepareStereoTrack") { uri: String, name: String, hash: String ->
             require(hash.matches(Regex("[0-9a-f]{64}")))
@@ -921,6 +985,24 @@ class SdaModule : Module() {
         }
 
 
+        AsyncFunction("seekTo") { positionMs: Double, contentHash: String ->
+            require(positionMs.isFinite() && positionMs >= 0) { "定位时间无效" }
+            playbackCommands.submit<Boolean> {
+                check(contentHash == backgroundHash) { "歌曲已经切换，请重新定位" }
+                if (feedDone || handle == 0L) {
+                    val track=playbackQueue.snapshot().firstOrNull { it.hash == contentHash } ?: error("当前歌曲不在播放队列中")
+                    startPlayback(track.uri,track.name,playbackYaw,track.hash)
+                }
+                synchronized(nativeLock) {
+                    check(handle != 0L && activeSeekable && !feedDone) { "当前音轨没有可用的快速定位会话" }
+                    val duration=if(activeIndexedDurationMs>0) activeIndexedDurationMs else PlaybackKeepAlive.snapshot()?.durationMs ?: 0L
+                    val target=if(duration>0) positionMs.toLong().coerceAtMost((duration-1).coerceAtLeast(0)) else positionMs.toLong()
+                    pendingSeek=SeekRequest(generation,target)
+                    check(SdaEngine.nativePause(handle,true)==0) { "seek pause failed" }
+                }
+                true
+            }.get()
+        }
         Function("pause") { -> setPlaybackPaused(true) }
         Function("resume") { -> setPlaybackPaused(false) }
         Function("stop") { -> stopPlayback() }
@@ -971,7 +1053,7 @@ class SdaModule : Module() {
         OnDestroy {
             destroyed = true
             playbackCommands.shutdownNow().forEach { (it as? java.util.concurrent.Future<*>)?.cancel(true) }
-            stereoReferences.clear()
+            stereoReferences.clear();playingProgramme=null
             audioPolicyMonitor?.shutdownNow(); audioPolicyMonitor = null
             diagnostics?.configure(false) { JSONObject() }
             synchronized(nativeLock) {

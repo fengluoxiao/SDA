@@ -68,6 +68,8 @@ jobs:
           python3 scripts/select-ios-sdk.py '${{ matrix.sdk }}'
       - name: Verify output callback recovery policy
         run: python3 scripts/test-ios-output-watchdog.py
+      - name: Verify owned storage cleanup and legacy duplicate migration
+        run: python3 scripts/test-ios-storage.py
       - name: Record build tools
         id: xcode
         run: |

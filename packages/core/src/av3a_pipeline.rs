@@ -97,6 +97,9 @@ pub struct Av3aPipeline {
     events: VecDeque<ObjectEvent>,
     transport_channels: usize,
     source_rate: u32,
+    seek_input_origin: u64,
+    seek_phase_prefix: usize,
+    src_pending: Vec<Vec<f32>>,
     input_samples: u64,
     output_samples: u64,
     delay: usize,
@@ -118,6 +121,7 @@ impl Av3aPipeline {
             events: VecDeque::new(),
             transport_channels: 0,
             source_rate: OUTPUT_RATE,
+            seek_input_origin:0,seek_phase_prefix:0,src_pending:Vec::new(),
             input_samples: 0,
             output_samples: 0,
             delay: 0,
@@ -145,6 +149,9 @@ impl Av3aPipeline {
             CodecProfile::Hoa => return Err("Audio Vivid HOA routing is not validated; refusing to treat coefficients as speaker beds".into()),
         }
         self.source_rate = h.sample_rate;
+        let (mut a,mut b)=(self.source_rate,OUTPUT_RATE);while b!=0{let r=a%b;a=b;b=r;}
+        self.seek_phase_prefix=(self.seek_input_origin%u64::from(self.source_rate/a)) as usize;
+        self.input_samples=self.seek_phase_prefix as u64;
         self.decoder = Some(if h.profile == CodecProfile::Mixed {
             mix_decoder(h)?
         } else {
@@ -239,7 +246,13 @@ impl Av3aPipeline {
         }
         self.input_samples += FRAME_SAMPLES as u64;
         let output = if let Some(src) = &mut self.resampler {
-            src.process(&planar, None).map_err(|e| e.to_string())?
+            if self.seek_phase_prefix==0 {src.process(&planar,None).map_err(|e|e.to_string())?}
+            else {
+                if self.src_pending.is_empty(){self.src_pending=vec![vec![0.;self.seek_phase_prefix];planar.len()];}
+                for (pending,channel) in self.src_pending.iter_mut().zip(planar){pending.extend(channel);}
+                let block:Vec<Vec<f32>>=self.src_pending.iter_mut().map(|p|p.drain(..FRAME_SAMPLES).collect()).collect();
+                src.process(&block,None).map_err(|e|e.to_string())?
+            }
         } else {
             planar
         };
@@ -341,7 +354,11 @@ impl Pipeline for Av3aPipeline {
             let Some(src) = &mut self.resampler else {
                 break;
             };
-            match src.process(&vec![vec![0.0; FRAME_SAMPLES]; self.labels.len()], None) {
+            let mut tail=vec![vec![0.0;FRAME_SAMPLES];self.labels.len()];
+            for (out,pending) in tail.iter_mut().zip(&mut self.src_pending){
+                let count=pending.len().min(FRAME_SAMPLES);out[..count].copy_from_slice(&pending[..count]);pending.drain(..count);
+            }
+            match src.process(&tail, None) {
                 Ok(pcm) => self.emit(pcm, out),
                 Err(error) => {
                     self.failed = true;
@@ -351,6 +368,7 @@ impl Pipeline for Av3aPipeline {
             }
         }
     }
+    fn reset_for_seek(&mut self,input_origin:u64){self.reset();self.seek_input_origin=input_origin;}
     fn reset(&mut self) {
         // Reset is a seek within a programme. Keep its static scene mapping;
         // fresh metadata can replace it before new PCM is emitted.

@@ -17,7 +17,6 @@ final class SdaPlayer {
  let lock = NSRecursiveLock()
  let feeder = DispatchQueue(label: "sda.ios.decode", qos: .userInitiated)
  var handle: UnsafeMutableRawPointer?
- var nativeLoudnessPrefix = "sda.loudness."
  var alacActive = false
  var alacUpmixActive = false
  var systemSpatial: SystemSpatial360?
@@ -27,14 +26,15 @@ final class SdaPlayer {
  private struct StereoSourceIdentity: Equatable {
   let path: String; let bytes: UInt64; let modified: Date
  }
- private var preparedStereoReferences: [String:(StereoSourceIdentity,String)] = [:]
+ private var pendingStereoReferences: [String:(StereoSourceIdentity,String)] = [:]
  var stereoImportGeneration = 0
  private func stereoSourceIdentity(_ path: String) throws -> StereoSourceIdentity {
   let attrs = try FileManager.default.attributesOfItem(atPath:path)
   return StereoSourceIdentity(path:URL(fileURLWithPath:path).standardizedFileURL.path,
    bytes:(attrs[.size] as? NSNumber)?.uint64Value ?? 0, modified:attrs[.modificationDate] as? Date ?? .distantPast)
  }
- func clearPreparedStereoReferences() { stereoImportGeneration += 1; preparedStereoReferences.removeAll() }
+ func clearPreparedStereoReferences() { stereoImportGeneration += 1; pendingStereoReferences.removeAll() }
+ var uncommittedRetained: Set<String> = []
  var playbackQueue: [[String:Any]] = []
  var playbackMode = "sequence"
  var playbackYaw: Double = 0
@@ -68,6 +68,12 @@ final class SdaPlayer {
  var title = "SDA"
  var trackHash = ""
  var mediaInfo: [String:Any] = [:]
+ var indexedPlayback = false
+ var activeInput: CompressedInput?
+ var activeMp3 = false
+ var feedAlive = false
+ var pendingSeek: Double?
+ var resumeAfterSeek = false
  var sdarActive = false
  var duration: Double = 0
  var interruptionWasPlaying = false
@@ -242,6 +248,7 @@ final class SdaPlayer {
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
   alacActive = false; alacUpmixActive = false; sdarActive = false
+  indexedPlayback=false;activeInput=nil;pendingSeek=nil;feedAlive=false
   // Stop callbacks before freeing the C handle. Do not reset on preset changes.
   audio?.stop()
   if let node = source { audio?.detach(node) }
@@ -525,7 +532,7 @@ final class SdaPlayer {
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    _ = settings() // Apply shared-renderer migration before selecting an output route.
    let ext = (name as NSString).pathExtension.lowercased()
-   title=name;trackHash=hash;duration=0;mediaInfo=[MPNowPlayingInfoPropertyAssetURL:url]
+   title=name;trackHash=hash;prefs.set(hash,forKey:"sda.queue.selected");duration=0;mediaInfo=[MPNowPlayingInfoPropertyAssetURL:url]
    let input = try CompressedInput(url:url,name:name)
    alacActive = input.isAlac; sdarActive = input.isSdar
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
@@ -547,7 +554,12 @@ final class SdaPlayer {
     title = name; trackHash = hash; mediaInfo = [MPNowPlayingInfoPropertyAssetURL:url]; duration = mediaDuration(url)
     // Compressed input is already bound by startNative; it never enters auto detection.
     if ext == "mp3" { _ = try command("mp3",["path":url.path]) }
-    if ext == "mhas" && systemSpatial == nil { _ = try command("mpegh") }
+    indexedPlayback=false
+    if systemSpatial == nil, !input.isAlac, !input.isSdar, ext != "mp3" {
+     let codec=ext == "mhas" ? "mpegh" : (input.nativeCodec ?? "eac3")
+     if let info=(try? command("openIndexed",["path":url.path,"codec":codec])) as? [String:Any],info["seekable"] as? Bool == true { indexedPlayback=true;if let ms=info["durationMs"] as? NSNumber,ms.doubleValue>0 {duration=ms.doubleValue} }
+     else if ext == "mhas" { _ = try command("mpegh") }
+    }
     if input.isSdar {
      _ = try command("sdar",["path":url.path,"tempRoot":NSTemporaryDirectory()])
      let fileInfo = try command("sdarInfo") as? [String:Any] ?? [:]
@@ -565,16 +577,14 @@ final class SdaPlayer {
     _ = try command("balance",["enabled":prefs.bool(forKey:"sda.balance")])
     if !prefs.bool(forKey:"sda.headTracking") { _ = try command("yaw",["degrees":playbackYaw]) }
     startHeadTracking()
-    // The CICP19 speaker measurement is not interchangeable with the KU100 reference.
-    nativeLoudnessPrefix = input.isAlac ? "sda.loudness.alac.stereo.v1." : (ext == "mhas" ? "sda.loudness.mpegh.prelimit.v1." : "sda.loudness.")
-    let loudnessKey = (systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix) + hash
-    if !input.isAlac, ext != "mp3", !input.isAv3a, !input.isSdar, !hash.isEmpty, let cached = prefs.string(forKey:loudnessKey) { _ = try? command("measured",["json":cached]) }
+    // Every new playback derives its programme reference from this source.
     // Both descriptors must be opened before JS may unlink an extracted MHAS copy.
     let analysisInput: CompressedInput?
     if systemSpatial?.requiresBalancePreanalysis == true && !input.isAv3a { analysisInput = try CompressedInput(url:url,name:name) } else { analysisInput = nil }
     let token = generation
     if !sessionActivationPending { beginPreparation(token) }
     recordPlaybackEvent("play"); updateNowPlaying()
+    activeInput=input;activeMp3=ext == "mp3";feedAlive=true
     feeder.async { [weak self] in self?.feed(input:input, mp3:ext == "mp3", token:token, hash:hash, analysisInput:analysisInput, stereoReferencePath:(!input.isSdar && (input.isAlac || ext == "mp3" || input.isAv3a)) ? url.path : nil) }
     return try json(["layout":layout,"authoredPlayback":input.isSdar])
    } catch { stopNative(); throw error }
@@ -610,7 +620,6 @@ final class SdaPlayer {
    guard generation == token, let system = systemSpatial else { return false }
    let measurement = try json(decodeReply(sda_ios_speakers_measurement(system.decoder)))
    try system.restartAfterMeasurement(measurement,decodeReply:decodeReply)
-   if !analysis.isAlac, !analysis.isAv3a, !hash.isEmpty { prefs.set(measurement,forKey:system.loudnessPrefix+hash) }
    return true
   }
  }
@@ -628,7 +637,7 @@ final class SdaPlayer {
    self.locked { self.stereoImportGeneration == importToken }
   }) else { throw SdaError.message("立体声分析已取消") }
   guard try stereoSourceIdentity(url.path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
-  locked { if stereoImportGeneration == importToken { preparedStereoReferences[hash] = (identity,measurement) } }
+  locked { if stereoImportGeneration == importToken { pendingStereoReferences[hash] = (identity,measurement) } }
  }
  private func measureNativeStereoReference(path: String, alac: Bool, av3a: Bool, valid: () -> Bool) throws -> String? {
   guard valid() else { return nil }
@@ -655,12 +664,11 @@ final class SdaPlayer {
   let identity = try stereoSourceIdentity(path)
   let valid = { self.locked { self.generation == token && self.hasPlayback && (self.systemSpatial == nil || av3a) } }
   guard valid() else { return false }
-  let ready = locked { preparedStereoReferences[hash].flatMap { $0.0 == identity ? $0.1 : nil } }
+  let ready = locked { pendingStereoReferences.removeValue(forKey:hash).flatMap { $0.0 == identity ? $0.1 : nil } }
   guard let measurement = try ready ?? measureNativeStereoReference(path:path,alac:alac,av3a:av3a,valid:valid) else { return false }
   guard try stereoSourceIdentity(path) == identity else { throw SdaError.message("分析时音源发生变化，请重新打开文件") }
   return try locked {
    guard generation == token && hasPlayback else { return false }
-   preparedStereoReferences[hash] = (identity,measurement)
    if let system = systemSpatial {
     guard av3a else { return false }
     // AV3A's decoded speaker reference is shared with the Apple speaker route.
@@ -670,7 +678,24 @@ final class SdaPlayer {
    return true
   }
  }
+ func requestSeek(_ positionMs:Double, expectedHash:String) throws -> Bool {
+  try locked {
+   guard trackHash == expectedHash else { throw SdaError.message("歌曲已经切换，请重新定位") }
+   guard hasPlayback, let input=activeInput,systemSpatial == nil else { throw SdaError.message("当前输出路径暂不支持快速定位") }
+   guard positionMs.isFinite,positionMs >= 0, duration > 0 else { throw SdaError.message("定位时间无效") }
+   guard input.isAlac || input.isSdar || activeMp3 || indexedPlayback else { throw SdaError.message("此文件缺少可用的定位索引") }
+   pendingSeek=min(positionMs,max(0,duration-1));resumeAfterSeek=resumeAfterSeek || done
+   // Stop old audio immediately; the feeder owns all decoder/reader mutation.
+   _ = try command("pause",["paused":true])
+   if !feedAlive {
+    feedAlive=true;let token=generation;let hash=trackHash;let mp3=activeMp3
+    feeder.async { [weak self] in self?.feed(input:input,mp3:mp3,token:token,hash:hash,analysisInput:nil) }
+   }
+   return true
+  }
+ }
  func feed(input: CompressedInput, mp3: Bool, token: Int, hash: String, analysisInput: CompressedInput?, stereoReferencePath: String? = nil) {
+  defer { locked { if generation == token { feedAlive=false } } }
   var finished = false
   var endDrain = PlaybackEndDrain()
   var lastClock: UInt64 = 0
@@ -685,6 +710,15 @@ final class SdaPlayer {
     let keepFeeding = try autoreleasepool { () throws -> Bool in
     let shouldWait: Bool? = try locked {
      guard generation == token, hasPlayback else { return nil }
+     if let target=pendingSeek {
+      pendingSeek=nil
+      if input.isAlac { let origin=try input.seekPCM(positionMs:target);_ = try command("seek",["positionMs":target,"originSample":origin]) }
+      else { _ = try command("seek",["positionMs":target]) }
+      finished=false;done=false;failure=nil;endDrain.reset();lastClock=UInt64(target*48);lastProgress=Date()
+      if resumeAfterSeek { isPaused=false };resumeAfterSeek=false
+      _ = try setPaused(isPaused)
+      recordPlaybackEvent("seek",detail:"indexed-live-renderer")
+     }
      if isPaused {
       endDrain.reset()
       lastProgress = Date()
@@ -733,13 +767,14 @@ final class SdaPlayer {
      if !(try prepareSystemBalance(input:analysisInput,token:token,hash:hash)) { return false }; lastProgress = Date()
     }
     let previousRecoveries=input.indexedRecoveryCount
-    let data = (mp3 || input.isSdar) ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
+    let data = (mp3 || input.isSdar || indexedPlayback) ? nil : try input.next(chunkBytes:systemMode ? 1024 : 24*1024)
     try locked {
      guard generation == token, hasPlayback else { return }
      compressedInputDiagnostic=input.diagnosticState
      if input.indexedRecoveryCount > previousRecoveries { lastProgress=Date(); recordPlaybackEvent("compressedReaderRecovered",detail:"verified-indexed-mp4") }
      var eof = false
-     if mp3 { let result = try command("pullMp3") as! [String:Any]; eof = result["eof"] as? Bool == true }
+     if indexedPlayback { let result=try command("pullIndexed") as! [String:Any];eof=result["eof"] as? Bool == true }
+     else if mp3 { let result = try command("pullMp3") as! [String:Any]; eof = result["eof"] as? Bool == true }
      else if input.isSdar { let result=try command("pullSdar") as! [String:Any]; eof=result["eof"] as? Bool == true }
      else if let data, let system = systemSpatial { try system.feed(data,finish:false,decodeReply:decodeReply) }
      else if let data, input.isAlac, let h = handle {
@@ -750,7 +785,6 @@ final class SdaPlayer {
      if eof {
       let result = try command("finish") as? [String:Any]
       if let errors = result?["errors"] as? [String], !errors.isEmpty { throw SdaError.message(errors.joined(separator:"; ")) }
-      if !input.isAlac, !mp3, !input.isAv3a, !input.isSdar, !hash.isEmpty, let measurement = try command("loudness") as? String, !measurement.isEmpty && measurement != "null" { prefs.set(measurement,forKey:(systemSpatial?.loudnessPrefix ?? nativeLoudnessPrefix)+hash) }
       let finalStatus = try command("status") as! [String:Any]
       guard let samples = finalStatus["decodedSamplePos"] as? NSNumber, samples.doubleValue > 0 else {
        throw SdaError.message("已读完音轨，但没有解码出任何音频")
@@ -865,7 +899,7 @@ final class SdaPlayer {
    report["native360RA"] = try smokeNative360()
    prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
-   report["system360RACached"] = try smokeSystem360(useCache:true)
+   report["system360RAReopened"] = try smokeSystem360()
    prefs.set(true,forKey:"sda.balance")
    report["native360RAAfterSystem"] = try smokeNative360()
    locked { stopNative() }
@@ -1038,12 +1072,10 @@ final class SdaPlayer {
   } catch { report["error"] = String(describing:error); report["events"] = locked { playbackEvents } }
  }
 
- func smokeSystem360(useCache: Bool = false) throws -> [String:Any] {
+ func smokeSystem360() throws -> [String:Any] {
   prefs.set(true,forKey:"sda.systemSpatial360RA"); prefs.set(true,forKey:"sda.balance")
-  if !useCache { prefs.removeObject(forKey:"sda.loudness.system714.v1.ci-360ra") }
   let uri = try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
   _ = try play(uri,"ci-360ra.mhas",0,"ci-360ra")
-  if useCache && !locked({systemSpatial?.measurementReady == true}) { throw SdaError.message("系统空间音频响度缓存未在起播前恢复") }
   let deadline = Date().addingTimeInterval(30)
   var checkedPause = false
   var displayedObjects = 0
@@ -1077,7 +1109,7 @@ final class SdaPlayer {
        duration > 0 else { throw SdaError.message("曲终媒体状态未停止") }
      return ["ok":true,"status":s,"endedStateVerified":true,"pauseClockStable":true,"togglePreservesCurrentRoute":true,
       "allowedMultichannel":system.renderer.allowedAudioSpatializationFormats.contains(.multichannel),
-      "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true,"fullTrackBalancePrepared":system.measurementReady,"firstSubmissionBalanced":system.firstSubmissionBalanced,"cachedMeasurementRestored":useCache]
+      "physicalSpatialListeningVerified":false,"displayedObjects":displayedObjects,"nowPlayingMetadataVerified":true,"balanceToggleVerified":true,"fullTrackBalancePrepared":system.measurementReady,"firstSubmissionBalanced":system.firstSubmissionBalanced,"measurementComputedForPlayback":true]
     }
     return nil
    }

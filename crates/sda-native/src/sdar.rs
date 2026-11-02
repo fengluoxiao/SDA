@@ -144,47 +144,17 @@ impl MobileEngine {
         }
         Ok((count, done))
     }
-    pub fn seek_sdar(&mut self, position_ms: u64) -> EngineResult<()> {
-        let scene = {
-            let source = self
-                .sdar_source
-                .as_mut()
-                .ok_or("SDAR decoder unavailable")?;
-            source.file.seek(position_ms.saturating_mul(48))?;
-            source.scene.clone()
-        };
-        self.pending.lock().expect("pending lock").clear();
-        *self.newest_sample_pos.lock().expect("clock lock") = 0;
-        *self.last_poll.lock().expect("poll lock") = None;
-        self.object_events
-            .lock()
-            .expect("object events lock")
-            .clear();
-        self.active_objects
-            .lock()
-            .expect("active objects lock")
-            .clear();
-        self.frame_router = frame_router::FrameRouter::default();
-        self.balance.reset();
-        self.balance.enabled = false;
-        self.announced_codec = None;
-        *self.startup.lock().expect("startup lock") = StartupGate::default();
-        if let Some(pipeline) = &self.pipeline {
-            pipeline
-                .commands
-                .push(render_command::RenderCommand::Command(Command::Reset {
-                    origin: 0,
-                }))
-                .map_err(|_| "SDAR seek queue full")?;
-            pipeline.fifo.clear_from_producer();
-            pipeline
-                .telemetry
-                .callback_consumed_sample_pos
-                .store(0, std::sync::atomic::Ordering::Release);
-        }
-        self.apply_authored_scene(scene)?;
+    pub fn seek_sdar(&mut self,position_ms:u64)->EngineResult<()> {
+        let file=&mut self.sdar_source.as_mut().ok_or("SDAR decoder unavailable")?.file;
+        let target=position_ms.saturating_mul(48).min(file.frames().saturating_sub(1));let warm=target.saturating_sub(6144);
+        file.seek(warm)?;
+        self.begin_seek(warm,target);self.decode_origin=0;
+        self.balance.enabled=false;
+        // The immutable authored scene and prepared room/HRTF are already active.
+        // SeekReset keeps that tuning; no asset parsing or filter-bank rebuild.
         Ok(())
     }
+
 }
 
 #[cfg(test)]mod tests {
@@ -244,5 +214,22 @@ impl MobileEngine {
     println!("Mobile visual snapshot: {declared} authored objects from {path}");
    }
   }
+ }
+}
+
+#[cfg(test)] mod seek_resource_tests {
+ use super::*;
+ #[test] fn seek_sdar_keeps_authored_resources_and_absolute_clock() {
+  let Ok(path)=std::env::var("SDA_SDAR_SEEK_FILE")else{return;};
+  let mut engine=MobileEngine::new(EngineConfig::default(),None).unwrap();engine.open_sdar(&path,None).unwrap();
+  let root=engine.sdar_source.as_ref().unwrap()._resources.root.clone();let frames=engine.sdar_source.as_ref().unwrap().file.frames();
+  assert!(root.is_dir());
+  for ms in [2017u64,5000,0,u64::MAX] {
+   engine.seek(ms).unwrap();let target=ms.saturating_mul(48).min(frames.saturating_sub(1));let origin=target.saturating_sub(6144);
+   assert_eq!(engine.decoded_sample_pos(),origin);assert_eq!(engine.sdar_source.as_ref().unwrap()._resources.root,root);
+   assert!(!engine.balance.enabled);engine.pull_sdar(733).unwrap();let pending=engine.take_pending_frames();
+   assert_eq!(pending[0].sample_pos,origin);
+  }
+  drop(engine);assert!(!root.exists(),"closing authored playback must release extracted resources");
  }
 }

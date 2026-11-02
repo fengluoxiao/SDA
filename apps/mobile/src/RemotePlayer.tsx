@@ -45,6 +45,7 @@ export interface PlayerProps {
   renderingStatus: string; volume: number;
   volumeBalanceEnabled: boolean; setVolumeBalance(enabled: boolean): void;
   spatialEnhancementEnabled: boolean; setSpatialEnhancement(enabled: boolean): void;
+  seekTo?(positionMs: number): void;
   chooseFile(): void; play(): void; togglePause(): void; stop(): void;
   adjustYaw(delta: number): void; resetYaw(): void; setVolume(value: number): void;
   hrtfSet: "standard" | "dense" | "dense-raw"; hrtfWetWeight: number; setRenderingPreset(id: string): void;
@@ -216,7 +217,8 @@ function LegacyRemotePlayer(p: PlayerProps) {
               {artist || (p.selectedUri ? "未知艺人" : "打开音频，开始聆听")}
             </Text>
           </View>
-          <View accessibilityRole="progressbar" accessibilityLabel="播放进度"
+          <View accessibilityRole="adjustable" accessibilityLabel="播放进度，点击定位"
+            onTouchEnd={event => { const x=event.nativeEvent.locationX; if (!p.busy && p.durationMs > 0) event.currentTarget.measure((_x, _y, width) => p.seekTo?.(Math.max(0, Math.min(1, x / Math.max(1,width))) * p.durationMs)); }}
             accessibilityValue={p.durationMs > 0 ? { min: 0, max: p.durationMs, now: Math.min(p.positionMs, p.durationMs), text: `${time(p.positionMs)} / ${time(p.durationMs)}` } : { text: "总时长未知" }}
             style={[s.progress, { backgroundColor: c.line }]}>
             <View style={{ height: 5, borderRadius: 8, width: `${progress * 100}%`, backgroundColor: c.accent }} />

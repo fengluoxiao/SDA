@@ -42,6 +42,8 @@ pub mod mpegh;
 pub mod balance;
 pub mod stereo_reference;
 pub mod av3a_reference;
+mod packet_source;
+mod mhas_source;
 mod alac_pcm;
 mod sdar;
 
@@ -213,6 +215,7 @@ struct StartupGate {
     started: bool,
     paused: bool,
     ended: bool,
+    seek_target: Option<u64>,
 }
 
 /// Mobile engine: owns the decoder, the decoded-frame queue and (after
@@ -241,6 +244,8 @@ pub struct MobileEngine {
     stereo_bed_mode: bool,
     mp3_decoder: Option<mp3::Mp3FileDecoder>,
     alac_decoder: Option<mp3::Mp3FileDecoder>,
+    packet_source: Option<packet_source::PacketSource>,
+    decode_origin: u64,
     alac_adapter: alac_pcm::AlacPcm,
     mpegh_decoder: Option<mpegh::MpeghDecoder>,
     hrtf_loaded: bool,
@@ -283,6 +288,7 @@ impl MobileEngine {
             stereo_bed_mode: false,
             mp3_decoder: None,
             alac_decoder: None,
+            packet_source:None,decode_origin:0,
             alac_adapter: Default::default(),
             mpegh_decoder: None,
             hrtf_loaded: false,
@@ -512,10 +518,30 @@ impl MobileEngine {
         self.drain_pending_into_pipeline()
     }
 
+    pub fn open_packet_file(&mut self,path:&str,codec:&str)->EngineResult<u64>{
+        let source=packet_source::PacketSource::open(path,codec)?;
+        if codec=="mpegh" { if self.mpegh_decoder.is_none(){self.open_mpegh()?;} }
+        else {self.select_compressed_codec(codec)?;}
+        let duration=source.duration_samples;self.packet_source=Some(source);Ok(duration/48)
+    }
+    pub fn has_packet_file(&self)->bool{self.packet_source.is_some()}
+    pub fn pull_packet_file(&mut self,max_frames:usize)->EngineResult<(usize,bool)>{
+        let start=self.decoded_sample_pos();let end=start.saturating_add(max_frames.clamp(1,8192)as u64);
+        let mut packets=0;
+        while self.decoded_sample_pos()<end {
+            let packet=self.packet_source.as_mut().ok_or("indexed packet source unavailable")?.next()?;
+            let Some(bytes)=packet else{return Ok(((self.decoded_sample_pos()-start)as usize,true));};
+            let status=self.feed(&bytes)?;if !status.errors.is_empty(){return Err(status.errors.join("; "));}
+            packets+=1;if packets>=128{break;}
+        }
+        Ok(((self.decoded_sample_pos()-start)as usize,false))
+    }
+
     pub fn stereo_bed_mode(&self) -> bool { self.stereo_bed_mode }
 
     pub fn reset_source_state(&mut self) {
         self.sdar_source=None;
+        self.packet_source=None;self.decode_origin=0;
         self.mp3_decoder = None;
         self.alac_decoder = None;
         self.alac_adapter = Default::default();
@@ -593,6 +619,9 @@ impl MobileEngine {
             while let Some((mut frame, reference)) = if let Some(decoder) = &mut self.mpegh_decoder {
                 decoder.next_frame_with_reference().map(|(frame, reference)| (frame, Some(reference)))
             } else { self.decoder.next_frame().map(|frame| (frame, None)) } {
+                frame.sample_pos=frame.sample_pos.saturating_add(self.decode_origin);
+                for event in &mut frame.events {event.sample_pos=event.sample_pos.saturating_add(self.decode_origin);}
+                for trim in &mut frame.downmix_trims {trim.sample_pos=trim.sample_pos.saturating_add(self.decode_origin);}
                 if !self.config.object_rendering { frame.select_compatibility_bed(); }
                 if frame.sample_rate != self.config.sample_rate {
                     return Err(format!("Native {} Hz output requires sample-clock conversion for {} {} Hz", self.config.sample_rate, frame.codec, frame.sample_rate));
@@ -700,34 +729,55 @@ impl MobileEngine {
         }
     }
 
-    /// Seek (plan T1.9): the host repositions demuxing, then calls this to
-    /// flush the decoder, the queued frames and the rendered FIFO so the next
-    /// `feed()` starts the new time base. Object-event coalescing resets.
-    pub fn seek(&mut self, _position_ms: u64) -> EngineResult<()> {
-        if self.sdar_source.is_some(){return self.seek_sdar(_position_ms);}
-        self.decoder.reset();
-        self.compressed_input_bytes = 0;
-        self.announced_codec = None;
+    /// Reuse the active decoder/output and the source's selected programme gain.
+    /// Only a bounded prefix is decoded and rendered; it never reaches the DAC.
+    pub fn seek(&mut self,position_ms:u64)->EngineResult<()> {
+        if self.sdar_source.is_some(){return self.seek_sdar(position_ms);}
+        let target=position_ms.saturating_mul(48);
+        let duration=self.alac_decoder.as_ref().or(self.mp3_decoder.as_ref()).and_then(|d|d.duration_frames())
+            .or_else(||self.packet_source.as_ref().map(|s|s.duration_samples).filter(|n|*n>0));
+        let target=duration.map_or(target,|n|target.min(n.saturating_sub(1)));
+        let warm=target.saturating_sub(6144);
+        if let Some(decoder)=&mut self.alac_decoder {
+            let origin=decoder.seek(warm/48)?;self.alac_adapter=Default::default();
+            self.begin_seek(origin,target);self.decode_origin=0;return Ok(());
+        }
+        if let Some(decoder)=&mut self.mp3_decoder {
+            let origin=decoder.seek(warm/48)?;
+            self.begin_seek(origin,target);self.decode_origin=0;return Ok(());
+        }
+        if let Some(source)=&mut self.packet_source {
+            let point=source.seek(target,6144)?;
+            if let Some(decoder)=&mut self.mpegh_decoder {decoder.reset()?;}else{self.decoder.reset_for_seek(point.input_sample);}
+            self.begin_seek(point.output_sample,target);
+            self.decode_origin=point.output_sample;return Ok(());
+        }
+        if self.mpegh_decoder.is_some(){return Err("MPEG-H requires an indexed independent restart frame".into());}
+        // Streaming clients can position their own demuxer before using this API.
+        self.decoder.reset();self.begin_seek(target,target);self.decode_origin=target;Ok(())
+    }
+    pub fn seek_stream(&mut self,origin:u64,target:u64)->EngineResult<()> {
+        if origin>target{return Err("seek preroll begins after target".into());}
+        if self.mpegh_decoder.is_some(){return Err("MPEG-H requires its restart index".into());}
+        self.decoder.reset();self.begin_seek(origin,target);self.decode_origin=origin;Ok(())
+    }
+    fn begin_seek(&mut self,origin:u64,target:u64){
+        let paused=self.startup.lock().expect("startup lock").paused;
+        self.compressed_input_bytes=0;self.announced_codec=None;
         self.pending.lock().expect("pending lock").clear();
-        *self.newest_sample_pos.lock().expect("clock lock") = 0;
-        *self.last_poll.lock().expect("poll lock") = None;
+        *self.newest_sample_pos.lock().expect("clock lock")=origin;
+        *self.last_poll.lock().expect("poll lock")=None;
         self.object_events.lock().expect("object events lock").clear();
         self.active_objects.lock().expect("active objects lock").clear();
-        self.frame_router = frame_router::FrameRouter::default();
-        self.balance.reset();
-        *self.startup.lock().expect("startup lock") = StartupGate::default();
-        if let Some(pipeline) = &self.pipeline {
-            pipeline.commands.push(render_command::RenderCommand::Command(Command::Reset { origin: 0 }))
-                .map_err(|_| "render command queue full")?;
-            // Invalidate the rendered FIFO: epoch flush consumed by the
-            // output callback, mirroring the desktop seek path.
-            let _epoch = pipeline.fifo.clear_from_producer();
-            pipeline
-                .telemetry
-                .callback_consumed_sample_pos
-                .store(0, std::sync::atomic::Ordering::Release);
+        self.frame_router=frame_router::FrameRouter::default();
+        self.balance.preserve_for_seek();
+        *self.startup.lock().expect("startup lock")=StartupGate{origin:Some(origin),accepted_end:origin,paused,seek_target:Some(target),..Default::default()};
+        if let Some(pipeline)=&self.pipeline {
+            pipeline.telemetry.callback_output_enabled.store(false,std::sync::atomic::Ordering::Release);
+            pipeline.commands.reset_transport(Command::SeekReset{origin,target});
+            pipeline.fifo.clear_from_producer();
+            pipeline.telemetry.callback_consumed_sample_pos.store(target,std::sync::atomic::Ordering::Release);
         }
-        Ok(())
     }
 
     pub fn set_volume_balance(&mut self, enabled: bool) -> EngineResult<()> {
@@ -1077,7 +1127,9 @@ impl MobileEngine {
         let mut startup = self.startup.lock().expect("startup lock");
         let Some(origin) = startup.origin else { return Ok(()) };
         if startup.started || startup.paused { return Ok(()) }
-        if !startup.ended && startup.accepted_end.saturating_sub(origin) < u64::from(self.config.sample_rate) / 2 {
+        let reserve=startup.seek_target.map_or(u64::from(self.config.sample_rate)/2,
+            |target|target.saturating_sub(origin).saturating_add(2048));
+        if !startup.ended && startup.accepted_end.saturating_sub(origin) < reserve {
             return Ok(());
         }
         // This command follows the complete PCM/event batches on the same FIFO.
@@ -1759,7 +1811,7 @@ mod tests {
         engine.seek(30_000).unwrap();
         assert!(engine.take_pending_frames().is_empty());
         assert_eq!(engine.playback_status().position_ms, 0);
-        assert_eq!(engine.decoded_sample_pos(), 0);
+        assert_eq!(engine.decoded_sample_pos(), 30_000*48);
     }
 
     /// T1.10: object snapshots coalesce to one per 66 ms window.

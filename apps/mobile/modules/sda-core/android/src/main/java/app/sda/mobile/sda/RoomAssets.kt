@@ -13,6 +13,15 @@ internal object RoomAssets {
         context.assets.open("builtin-rooms/catalog.json").bufferedReader().use { it.readText() }
     ).getJSONArray("profiles")
 
+    fun cleanStale(context: Context) {
+        // This directory contains only reproducible bundled room responses.
+        // If the new catalog cannot be read, leave existing files intact.
+        val catalog = entries(context)
+        val ids = (0 until catalog.length()).map { catalog.getJSONObject(it).getString("id") }.toSet()
+        require(ids.isNotEmpty() && ids.all { it.matches(Regex("[0-9a-f]{64}")) })
+        PlaybackStorage.cleanBuiltins(File(context.filesDir, "builtin-rooms"), ids)
+    }
+
     fun list(context: Context): JSONArray {
         val entries = entries(context)
         return JSONArray().apply {

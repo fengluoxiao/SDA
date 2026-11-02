@@ -15,6 +15,7 @@ pub const MAX_QUEUED_PCM_BYTES: usize = 16 * 1024 * 1024;
 
 pub enum RenderCommand {
     Command(Command),
+    TransportReset { epoch:u64, command:Command },
     /// One queue entry so mobile settings cannot be only partially enqueued.
     ObjectRendering {
         direct: bool,
@@ -106,14 +107,42 @@ pub struct RenderCommandQueue {
 }
 
 struct QueueState {
+    transport_epoch:u64,
     commands: VecDeque<RenderCommand>,
     pcm_bytes: usize,
 }
 
 impl RenderCommandQueue {
+    /// Supersede queued source audio atomically while retaining live settings
+    /// and their reply handles. Old source/transport commands cannot restart
+    /// the abandoned clock after the new seek reset.
+    pub fn reset_transport(&self, reset: Command) {
+        let mut pending=self.pending.lock().expect("render command queue poisoned");
+        pending.commands.retain(|item| match item {
+            RenderCommand::Command(command)=> !matches!(command,
+                Command::Feed{..}|Command::AddSource{..}|Command::RemoveSource{..}|
+                Command::ObjectEvents{..}|Command::SetDownmixTrims{..}|
+                Command::StartAt{..}|Command::Reset{..}|Command::SeekReset{..}|Command::SetProgramCodec{..}),
+            RenderCommand::TransportReset{..}|RenderCommand::Pcm{..}|RenderCommand::PcmBatch{..}|RenderCommand::PcmFrame{..}|
+            RenderCommand::PcmFrameWithAck{..}|RenderCommand::PcmFrameWithCompatibility{..}=>false,
+            _=>true,
+        });
+        pending.pcm_bytes=pending.commands.iter().map(RenderCommand::pcm_bytes).sum();
+        pending.transport_epoch=pending.transport_epoch.wrapping_add(1);
+        let epoch=pending.transport_epoch;
+        pending.commands.push_front(RenderCommand::TransportReset{epoch,command:reset});
+        if let Some(consumer)=self.consumer.get(){consumer.unpark();}
+    }
+
+    pub(crate) fn publish_transport<T>(&self,epoch:u64,publish:impl FnOnce()->T)->Option<T>{
+        let pending=self.pending.lock().expect("render command queue poisoned");
+        (pending.transport_epoch==epoch).then(publish)
+    }
+
     pub fn new(capacity: usize) -> Self {
         Self {
             pending: Mutex::new(QueueState {
+                transport_epoch:0,
                 commands: VecDeque::with_capacity(capacity),
                 pcm_bytes: 0,
             }),
@@ -273,4 +302,22 @@ mod tests {
             Some(RenderCommand::Command(Command::Health))
         ));
     }
+    #[test]
+    fn seek_epoch_retires_old_audio_and_preserves_live_settings() {
+        let queue=RenderCommandQueue::new(16);
+        assert!(queue.push(RenderCommand::Pcm{id:"old".into(),start:0,samples:vec![0.5;1024]}).is_ok());
+        assert!(queue.push(RenderCommand::ObjectRendering{direct:true,directional:true}).is_ok());
+        queue.reset_transport(Command::SeekReset{origin:4000,target:10000});
+        assert!(matches!(queue.pop(),Some(RenderCommand::TransportReset{epoch:1,..})));
+        assert!(matches!(queue.pop(),Some(RenderCommand::ObjectRendering{direct:true,directional:true})));
+        assert!(queue.pop().is_none());assert_eq!(queue.pending.lock().unwrap().pcm_bytes,0);
+        let published=std::sync::atomic::AtomicUsize::new(0);
+        assert!(queue.publish_transport(0,||published.fetch_add(1,std::sync::atomic::Ordering::Relaxed)).is_none());
+        assert!(queue.publish_transport(1,||published.fetch_add(1,std::sync::atomic::Ordering::Relaxed)).is_some());
+        queue.reset_transport(Command::SeekReset{origin:8000,target:20000});
+        assert!(queue.publish_transport(1,||published.fetch_add(1,std::sync::atomic::Ordering::Relaxed)).is_none());
+        assert!(queue.publish_transport(2,||published.fetch_add(1,std::sync::atomic::Ordering::Relaxed)).is_some());
+        assert_eq!(published.load(std::sync::atomic::Ordering::Relaxed),2,"abandoned render blocks cannot reach FIFO");
+    }
+
 }

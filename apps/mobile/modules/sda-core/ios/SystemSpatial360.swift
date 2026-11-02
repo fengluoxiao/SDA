@@ -93,7 +93,6 @@ final class SystemSpatial360 {
   if let data { return try data.withUnsafeBytes { try decodeReply(feed(decoder,$0.bindMemory(to:UInt8.self).baseAddress,data.count,finish)) } }
   return try decodeReply(feed(decoder,nil,0,finish))
  }
- var loudnessPrefix: String { alacUpmix == nil ? "sda.loudness.system714.v1." : "sda.loudness.alac.stereo.v1." }
  func pump() throws {
   if paused || closed { return }
   if renderer.status == .failed {

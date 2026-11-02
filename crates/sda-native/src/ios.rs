@@ -234,6 +234,23 @@ pub unsafe extern "C" fn sda_ios_command(
             "pullSdar" => {
                 let (frames,eof)=e.pull_sdar(4096)?;return Ok(json!({"frames":frames,"eof":eof}));
             }
+            "openIndexed" => {
+                let codec=str_arg("codec")?;host.check_codec(codec)?;
+                let duration=e.open_packet_file(str_arg("path")?,codec)?;
+                return Ok(json!({"durationMs":duration,"seekable":true}));
+            }
+            "pullIndexed" => {
+                let (frames,eof)=e.pull_packet_file(4096)?;
+                return Ok(json!({"frames":frames,"eof":eof,"bytes":e.compressed_input_bytes}));
+            }
+            "seek" => {
+                let ms=a.get("positionMs").and_then(Value::as_f64).filter(|n|n.is_finite()&&*n>=0.).ok_or("invalid seek time")?;
+                if let Some(origin)=a.get("originSample").and_then(Value::as_u64){
+                    e.seek_stream(origin,(ms*48.)as u64)?;
+                    *host.alac.lock().map_err(|_| "ALAC adapter poisoned")?=Default::default();
+                }else{e.seek(ms as u64)?;}
+                return Ok(json!({"positionMs":ms}));
+            }
             "mp3" => {
                 host.check_codec("mp3")?;
                 e.open_mp3(str_arg("path")?)?;
@@ -1309,4 +1326,37 @@ mod fresh_reference_bridge_tests {
         let mut partial=measured;partial["complete"]=json!(false);
         let mut other=MobileEngine::new(EngineConfig::default(),None).unwrap();assert!(other.set_measured_loudness(&partial.to_string()).is_err());
     }
+}
+#[cfg(test)] mod seek_callback_tests {
+ use super::*;
+ unsafe fn value(p:*mut c_char)->Value{
+  assert!(!p.is_null());let reply:Value=serde_json::from_str(unsafe{CStr::from_ptr(p)}.to_str().unwrap()).unwrap();unsafe{sda_ios_string_free(p)};
+  assert_eq!(reply["ok"],true,"{reply}");reply["value"].clone()
+ }
+ unsafe fn command(h:*mut std::ffi::c_void,op:&str,args:Value)->Value{let op=CString::new(op).unwrap();let args=CString::new(args.to_string()).unwrap();unsafe{value(sda_ios_command(h,op.as_ptr(),args.as_ptr()))}}
+ #[test] fn indexed_seek_reaches_actual_output_callback_without_old_audio(){
+  let Ok(file)=std::env::var("SDA_ATMOS_SEEK_FILE")else{return;};let Ok(hrtf)=std::env::var("SDA_SEEK_HRTF")else{return;};
+  let config=CString::new(r#"{"sampleRate":48000,"outputChannels":2,"layout":"7.1.4","sourceCodec":"eac3","directObjectHrtf":true,"directionalHrtf":true,"objectRendering":true}"#).unwrap();let hrtf=CString::new(hrtf).unwrap();let mut error=std::ptr::null_mut();let h=unsafe{sda_ios_create(config.as_ptr(),hrtf.as_ptr(),&mut error)};
+  if h.is_null(){panic!("{}",unsafe{CStr::from_ptr(error)}.to_string_lossy());}
+  struct Close(*mut std::ffi::c_void);impl Drop for Close{fn drop(&mut self){unsafe{sda_ios_close(self.0)}}}let _close=Close(h);
+  unsafe{command(h,"openIndexed",json!({"path":file,"codec":"eac3"}));}
+  let mut left=[0f32;512];let mut right=[0f32;512];
+  for target in [100013u64,20017,150233]{
+   let started=Instant::now();unsafe{command(h,"seek",json!({"positionMs":target}));command(h,"pause",json!({"paused":false}));}
+   let mut audible=false;
+   while started.elapsed()<Duration::from_secs(5){
+    let status=unsafe{command(h,"status",json!({}))};let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
+    if decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
+    unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};
+    if left.iter().chain(&right).any(|v|v.abs()>1e-5){let status=unsafe{command(h,"status",json!({}))};let consumed=status["consumedSamplePos"].as_u64().unwrap();assert!(consumed>=target*48&&consumed<=target*48+2048,"old or preroll audio reached callback: {consumed} at {target}");audible=true;break;}
+    std::thread::sleep(Duration::from_millis(1));
+   }
+   eprintln!("Actual native callback seek {target} ms: {:?}",started.elapsed());assert!(audible,"no actual audible callback after seek");
+  }
+  unsafe{command(h,"pause",json!({"paused":true}));command(h,"seek",json!({"positionMs":30000}));command(h,"seek",json!({"positionMs":90000}));}
+  for _ in 0..8{unsafe{command(h,"pullIndexed",json!({}));sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};assert!(left.iter().chain(&right).all(|v|*v==0.));}
+  let deadline=Instant::now()+Duration::from_secs(2);
+  let status=loop{let status=unsafe{command(h,"status",json!({}))};if status["paused"]==true{break status;}assert!(Instant::now()<deadline,"paused seek was not applied");std::thread::sleep(Duration::from_millis(2));};
+  assert_eq!(status["consumedSamplePos"],90000u64*48);
+ }
 }

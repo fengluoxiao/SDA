@@ -49,12 +49,14 @@ interface SdaEngineModule extends MpeghMp4Host {
   preparePlayback?(displayName: string): Promise<void>;
   prepareStereoTrack?(uri: string, displayName: string, contentHash: string): Promise<boolean>;
   retainQueueTrack?(uri: string, displayName: string, contentHash: string): Promise<string>;
+  discardUnqueuedTrack?(uri: string): Promise<void>;
   playbackQueueSnapshot?(): string;
   skipPlayback?(direction: number): boolean;
   discardPickerCopy?(uri: string): Promise<boolean>;
   metadata(uri: string): Promise<string>;
   durationMs(uri: string): Promise<number>;
   playUri(uri: string, displayName: string, headYawDegrees: number, contentHash: string): Promise<string>;
+  seekTo?(positionMs: number, contentHash: string): Promise<boolean>;
   pause(): boolean;
   resume(): boolean;
   stop(): boolean;
@@ -392,8 +394,10 @@ export default class App extends React.Component<Record<string, never>, State> {
       let importError: string | null = null;
       for (const [assetIndex, asset] of result.assets.entries()) {
         const pendingId = pending[assetIndex]!.contentHash;
+        let importHash = "";
+        let retainedUri: string | undefined;
         const patch = (update: Partial<QueueTrack>) => this.setState(state => ({
-          queue: state.queue.map(track => track.contentHash === pendingId ? { ...track, ...update } : track),
+          queue: state.queue.map(track => (track.contentHash === pendingId || (importHash && track.contentHash === importHash && !track.preparation)) ? { ...track, ...update } : track),
         }));
         const progress = (value: number, stage: string) => patch({ preparation: { state: "loading", progress: value, stage } });
         try {
@@ -403,13 +407,14 @@ export default class App extends React.Component<Record<string, never>, State> {
         }
         progress(.02, "校验文件");
         const contentHash = await this.getEngine().contentHash(asset.uri);
+        importHash = contentHash;
         if (knownHashes.has(contentHash)) {
           this.setState(state => {
             const selected = state.queue[state.queueIndex]?.contentHash;
             const queue = state.queue.filter(track => track.contentHash !== pendingId);
             return { queue, queueIndex: selected ? queue.findIndex(track => track.contentHash === selected) : -1 };
           });
-          if (Platform.OS === "android") await this.getEngine().discardPickerCopy?.(asset.uri);
+          await this.getEngine().discardPickerCopy?.(asset.uri).catch(() => {});
           continue;
         }
         progress(.08, "读取歌曲信息");
@@ -422,16 +427,15 @@ export default class App extends React.Component<Record<string, never>, State> {
         if (Platform.OS === "android") {
           progress(.985, "准备音频引擎");
           await this.getEngine().preparePlayback?.(prepared?.name ?? track.name);
-          if (prepared) {
-            track.uri = prepared.uri;
-            track.metadata = { ...track.metadata, durationMs: prepared.durationMs || track.metadata.durationMs };
-            await prepared.adopt?.();
-          }
         }
-        if (Platform.OS === "android") {
+        if (prepared) {
+          track.uri = prepared.uri;
+          track.metadata = { ...track.metadata, durationMs: prepared.durationMs || track.metadata.durationMs };
+        }
+        if (this.getEngine().retainQueueTrack) {
           const playbackName = prepared?.name ?? track.name;
           const retained = await this.getEngine().retainQueueTrack?.(track.uri, playbackName, contentHash);
-          if (retained) { track.uri = retained; if (prepared) prepared.uri = retained; }
+          if (retained) { retainedUri = retained; track.uri = retained; if (prepared) prepared.uri = retained; }
           track.playbackName = playbackName;
         }
         if (!track.metadata.authoredPlayback) {
@@ -439,17 +443,31 @@ export default class App extends React.Component<Record<string, never>, State> {
           await this.getEngine().prepareStereoTrack?.(prepared?.uri ?? track.uri, prepared?.name ?? track.name, contentHash);
         }
         progress(.99, "完成准备");
-        await new Promise<void>(resolve => this.setState(state => {
-          const queue = state.queue.map(item => item.contentHash === pendingId ? track : item);
+        await new Promise<void>((resolve, reject) => this.setState(state => {
+          const queue = state.queue.filter(item => item.contentHash === pendingId || item.contentHash !== contentHash || !item.preparation)
+            .map(item => item.contentHash === pendingId ? track : item);
           if (state.queueIndex < 0) return { queue, queueIndex: queue.findIndex(item => item.contentHash === contentHash),
             selectedUri: track.uri, fileName: track.name, metadata: track.metadata, durationMs: track.metadata.durationMs ?? 0 };
           return { queue, queueIndex: state.queueIndex, selectedUri: state.selectedUri, fileName: state.fileName,
             metadata: state.metadata, durationMs: state.durationMs };
-        }, () => { this.syncNativeQueue(); resolve(); }));
+        }, () => { try { this.syncNativeQueue(); resolve(); } catch (error) { reject(error); } }));
         knownHashes.add(contentHash);
+        // Ownership transfers only after queue persistence succeeds. The original picker
+        // copy and demux session are now redundant; the library file remains untouched.
+        if (retainedUri) {
+          await this.getEngine().discardPickerCopy?.(asset.uri).catch(() => {});
+          await prepared?.release?.().catch(() => {});
+          this.preparedTracks.delete(contentHash);
+        }
         } catch (error) {
           importError = error instanceof Error ? error.message : String(error);
-          patch({ preparation: { state: "failed", progress: 0, stage: "准备失败", error: importError } });
+          patch({ contentHash: importHash || pendingId, preparation: { state: "failed", progress: 0, stage: "准备失败", error: importError } });
+          const failedHash = importHash;
+          const failed = this.preparedTracks.get(failedHash);
+          await failed?.release?.().catch(() => {});
+          this.preparedTracks.delete(failedHash);
+          await this.getEngine().discardPickerCopy?.(asset.uri).catch(() => {});
+          if (retainedUri) await this.getEngine().discardUnqueuedTrack?.(retainedUri).catch(() => {});
         }
       }
       if (importError) this.setState({ error: importError });
@@ -475,7 +493,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       ended: playback?.feedDone === true }, () => { if (playback?.hasPlayback || playback?.feedDone) { this.restartStatusPolling(); this.pollStatus(); } });
   };
 
-  // Prepared compressed tracks are queue-owned. Android adopts the raw track instead of retaining a second picker copy.
+  // Preparation owns temporary tracks until both platforms retain and persist one library copy.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
   private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
     if(track.metadata.authoredPlayback || track.playbackName)return null;
@@ -499,6 +517,33 @@ export default class App extends React.Component<Record<string, never>, State> {
     const currentId = this.state.queue[this.state.queueIndex]?.contentHash ?? null;
     const nextId = adjacentPlaylistItemId(items, currentId, direction);
     if (nextId !== null) void this.selectTrack(this.state.queue.findIndex(track => track.contentHash === nextId));
+  };
+
+  private seekSerial = 0;
+  private seekTo = async (positionMs: number) => {
+    if (this.state.busy || this.changingTrack || !this.state.selectedUri || !Number.isFinite(positionMs) || this.state.durationMs <= 0) return;
+    const serial = ++this.seekSerial;
+    const source = this.state.selectedUri;
+    try {
+      if (!this.state.playing && !this.state.paused && !this.state.ended) {
+        await this.selectTrack(this.state.queueIndex);
+        if (this.state.error || source !== this.state.selectedUri || serial !== this.seekSerial) return;
+      }
+      const engine = this.getEngine();
+      if (!engine.seekTo) throw new Error("当前运行环境没有原生定位模块");
+      const target = Math.max(0, Math.min(positionMs, Math.max(0, this.state.durationMs - 1)));
+      const track = this.state.queue[this.state.queueIndex];
+      if (!track || track.preparation) return;
+      await engine.seekTo(target, track.contentHash);
+      if (serial !== this.seekSerial || source !== this.state.selectedUri) return;
+      // The native output clock publishes the new position. Do not fake a UI jump
+      // or reopen/reanalyse the song while the current renderer is seeking.
+      this.setState(state => ({ error: null, ended: false, playing: state.ended ? true : state.playing,
+        paused: state.ended ? false : state.paused }));
+      this.restartStatusPolling();
+    } catch (error) {
+      if (serial === this.seekSerial && source === this.state.selectedUri) this.setState({ error: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   private playSelected = () => this.selectTrack(this.state.queueIndex);
@@ -731,7 +776,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     } : {};
     return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
-      togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
+      seekTo={this.seekTo} togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
   }
 }

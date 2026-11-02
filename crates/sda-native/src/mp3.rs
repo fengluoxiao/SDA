@@ -6,10 +6,11 @@ use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolat
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_ALAC};
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::{FormatOptions, FormatReader};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::{Time, TimeBase};
 
 const OUTPUT_RATE: u32 = 48_000;
 const RESAMPLE_CHUNK: usize = 1024;
@@ -128,7 +129,47 @@ impl Mp3FileDecoder {
         })
     }
 
+    /// Packet-table seek with a short decode-only warmup. No programme scan,
+    /// listening render, or persistent PCM cache participates in a jump.
+    pub fn seek(&mut self, position_ms: u64) -> Result<u64, String> {
+        let target = position_ms.saturating_mul(48);
+        let target = self.expected_output_frames.map_or(target, |end| target.min(end));
+        let warm = target.saturating_sub(24_000);
+        let found = self.format.seek(SeekMode::Accurate, SeekTo::Time {
+            time: Time::from(warm as f64 / f64::from(OUTPUT_RATE)), track_id: Some(self.track_id),
+        }).map_err(|e| format!("seek {}: {e}", self.codec_name))?;
+        let timebase = self.format.tracks().iter().find(|t|t.id==self.track_id)
+            .and_then(|t|t.codec_params.time_base).unwrap_or(TimeBase::new(1,self.input_rate));
+        let input_origin = (u128::from(found.actual_ts) * u128::from(timebase.numer)
+            * u128::from(self.input_rate) / u128::from(timebase.denom)) as u64;
+        self.decoder.reset();
+        self.decoded_pending.clear(); self.output.clear();
+        self.input = [Vec::new(),Vec::new()];
+        self.finished=false; self.resampler_flushed=false; self.eof_output_frames=None;
+        self.total_input_frames=input_origin; self.actual_input_frames=input_origin;
+        self.output_delay_remaining=0;
+        let mut phase=0;
+        if let Some(resampler)=&mut self.resampler {
+            resampler.reset();
+            let (mut a,mut b)=(self.input_rate,OUTPUT_RATE);
+            while b!=0 { let remainder=a%b; a=b; b=remainder; }
+            let period=u64::from(self.input_rate/a);
+            phase=input_origin%period;
+            // Align the restarted SRC to the original rational sample lattice.
+            // Only at most one rate period of zeros precedes the warmup signal.
+            self.input=[vec![0.;phase as usize],vec![0.;phase as usize]];
+        }
+        self.total_output_frames=((u128::from(input_origin-phase)*u128::from(OUTPUT_RATE))
+            /u128::from(self.input_rate)) as u64;
+        while self.total_output_frames<target {
+            let count=(target-self.total_output_frames).min(4096) as usize;
+            if self.read_interleaved(count)?.is_empty() {break;}
+        }
+        Ok(self.total_output_frames)
+    }
+
     pub fn input_rate(&self) -> u32 { self.input_rate }
+    pub fn duration_frames(&self)->Option<u64>{self.eof_output_frames.or(self.expected_output_frames)}
     pub fn output_frames(&self) -> u64 { self.total_output_frames }
     pub fn is_finished(&self) -> bool { self.finished && self.output.is_empty() && self.resampler_flushed }
 

@@ -19,23 +19,24 @@ fun main(args: Array<String>) {
     println("PASS native queue: sequence, EOF, both repeat modes, manual skip, removed source, clear, duplicate validation")
     val source=File(args[0], "reference-fixture.bin").apply { writeText("one") }
     val refs=PreparedStereoReference();SdaEngine.reset()
-    refs.prepare(source,"hash",true){false};check(refs.ready(source,"hash") != null)
-    repeat(10) { check(refs.ready(source,"hash") != null) }
+    refs.prepare(source,"hash",true){false};check(refs.take(source,"hash") != null)
+    repeat(10) { check(refs.take(source,"hash") == null) }
     check(SdaEngine.created == 1 && SdaEngine.closed == 1)
-    check(refs.ready(source,"other-hash") == null)
-    source.writeText("different-file");check(refs.ready(source,"hash") == null)
-    refs.prepare(source,"hash",true){false};check(SdaEngine.created == 2 && SdaEngine.closed == 2)
-    check(source.setLastModified(source.lastModified()+5000));check(refs.ready(source,"hash") == null)
+    refs.prepare(source,"hash",true){false}
+    source.writeText("different-file");check(refs.take(source,"hash") == null)
+    refs.prepare(source,"hash",true){false};check(SdaEngine.created == 3 && SdaEngine.closed == 3)
+    check(source.setLastModified(source.lastModified()+5000));check(refs.take(source,"hash") == null)
+    refs.prepare(source,"live",true,keepPending=false){false};check(refs.take(source,"live") == null)
     SdaEngine.reset();var checks=0
     check(runCatching { refs.prepare(source,"cancel",false){++checks > 1} }.isFailure)
-    check(SdaEngine.created == 1 && SdaEngine.closed == 1 && refs.ready(source,"cancel") == null)
+    check(SdaEngine.created == 1 && SdaEngine.closed == 1 && refs.take(source,"cancel") == null)
     SdaEngine.reset();SdaEngine.onStep={source.appendText("changed during analysis")}
     check(runCatching { refs.prepare(source,"mutated",false){false} }.isFailure)
-    check(SdaEngine.closed == 1 && refs.ready(source,"mutated") == null)
+    check(SdaEngine.closed == 1 && refs.take(source,"mutated") == null)
     SdaEngine.reset()
     refs.prepare(source,"av3a",false,true){false}
     check(SdaEngine.av3aCreated == 1 && SdaEngine.closed == 1)
-    check(refs.ready(source,"av3a") != null)
-    refs.clear();check(refs.ready(source,"hash") == null)
-    println("PASS import reference: one fresh scan, repeat reuse, hash/path/file-change guard, cancellation, mid-scan mutation, handle cleanup")
+    check(refs.take(source,"av3a") != null)
+    refs.clear();check(refs.take(source,"hash") == null)
+    println("PASS import reference: one-time fresh handoff, no repeat reuse, hash/path/file-change guard, cancellation, mid-scan mutation, handle cleanup")
 }

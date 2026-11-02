@@ -43,6 +43,12 @@ impl MpeghDecoder {
         }
         Ok(Self { pending: Vec::new(), frames: VecDeque::new(), sample_pos: 0, speaker_output: layout == 19 })
     }
+    pub fn reset(&mut self)->Result<(),String>{
+        // Retain exclusive bridge ownership while replacing decoder history.
+        let result=unsafe{sda_open_layout(0,if self.speaker_output{19}else{2})};
+        if result!=0{return Err(format!("MPEG-H seek reset: 0x{:x}",result as u32));}
+        self.pending.clear();self.frames.clear();self.sample_pos=0;Ok(())
+    }
     pub fn push(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.pending.extend_from_slice(bytes);
         let mut cursor = 0;

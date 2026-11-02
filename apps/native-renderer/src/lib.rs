@@ -300,6 +300,7 @@ pub enum Command {
     Reset {
         origin: u64,
     },
+    SeekReset { origin: u64, target: u64 },
     Health,
     ListOutputDevices,
     OpenAsioControlPanel,
@@ -1186,6 +1187,9 @@ pub struct Engine {
     #[cfg(test)]
     profile_ms: [f64; 7],
     sample_pos: u64,
+    transport_epoch:u64,
+    seek_discard_before: u64,
+    seek_low_latency: bool,
     paused: bool,
     sources: HashMap<String, Source>,
     pcm_coverage: pcm_coverage::PcmCoverage,
@@ -1341,6 +1345,9 @@ impl Engine {
             #[cfg(test)]
             fast_object_blocks: 0,
             sample_pos: 0,
+            transport_epoch:0,
+            seek_discard_before: 0,
+            seek_low_latency: false,
             paused: false,
             sources: HashMap::new(),
             pcm_coverage: pcm_coverage::PcmCoverage::default(),
@@ -2215,6 +2222,8 @@ impl Engine {
         self.stereo_dry_bus = None;
         self.stereo_weights = [0.0, 0.0, 1.0];
         self.sample_pos = origin;
+        self.seek_discard_before = 0;
+        self.seek_low_latency = false;
         self.block_offset = 0;
         self.direct_mix = 0.0;
         // A replacement player can queue PCM before startAt reaches the worker.
@@ -2256,6 +2265,23 @@ impl Engine {
         if let Some(bus_renderer) = &mut self.bus_renderer {
             bus_renderer.reset();
         }
+    }
+
+    fn reset_seek(&mut self, origin: u64, target: u64) {
+        let pose=self.head_pose;
+        let lfe_muted=self.lfe_muted;
+        let codec=self.program_codec.clone();
+        let programme=self.program_metadata_gain;
+        let authored=std::mem::take(&mut self.authored);
+        self.reset_session(origin);
+        self.authored=authored;
+        self.head_pose=pose;
+        self.lfe_muted=lfe_muted;
+        if let Some(codec)=codec { self.set_program_codec(codec); }
+        self.program_metadata_gain=programme;
+        self.set_program_target(programme,true);
+        self.seek_discard_before=target;
+        self.seek_low_latency=true;
     }
 
     fn health(&self, fifo: &stereo_fifo::StereoFifo, telemetry: &RuntimeTelemetry) -> Health {
@@ -3796,7 +3822,7 @@ pub fn spawn_render_worker(
                         .store(false, Ordering::Release);
                     telemetry
                         .callback_consumed_sample_pos
-                        .store(engine.sample_pos, Ordering::Release);
+                        .store(engine.sample_pos.max(engine.seek_discard_before), Ordering::Release);
                     observed_epoch = engine.render_epoch;
                 }
                 if pending_fifo_flush.is_some_and(|epoch| !fifo.flush_acknowledged(epoch)) {
@@ -3841,7 +3867,7 @@ pub fn spawn_render_worker(
                 let buffer_scale = realtime::render_buffer_scale(synchronized, realtime::dense_object_scene(engine.sources.len(),engine.sources.values().filter(|source|source.kind==SourceKind::Object).count()));
                 // Keep decoded PCM ahead, but do not bake old head orientation
                 // into more than a short reserve of final KU100 stereo audio.
-                let (local_target, start_frames) = realtime::render_reserve(
+                let (local_target, mut start_frames) = realtime::render_reserve(
                     cfg!(target_os = "ios"), engine.head_pose.is_some(), synchronized,
                     (STEREO_FIFO_TARGET_FRAMES * buffer_scale, STEREO_FIFO_START_FRAMES * buffer_scale));
                 let target = if synchronized {
@@ -3901,31 +3927,25 @@ pub fn spawn_render_worker(
                     continue;
                 }
                 let started = Instant::now();
+                let block_start=engine.sample_pos;
                 engine.render_into(&mut block[..frames * 2], 2);
                 engine.pcm_coverage.discard_before(engine.sample_pos);
-                if fifo.push(&block[..frames * 2]) != frames {
-                    // The FIFO is full and the callback is not consuming (or a
-                    // flush raced us). Back off instead of spinning: a render-
-                    // discard loop burned the core and pushed stale blocks
-                    // through flush race windows as audible clicks.
-                    commands.wait(Duration::from_millis(2));
-                    continue;
-                }
-                remote_audio::publish_mirror(&block[..frames * 2]);
-                telemetry.render_block_count.fetch_add(1, Ordering::Relaxed);
+                let skip=engine.seek_discard_before.saturating_sub(block_start).min(frames as u64) as usize;
+                let audible=&block[skip*2..frames*2];
+                let published=commands.publish_transport(engine.transport_epoch,||{
+                    if fifo.push(audible)!=frames-skip{return false;}
+                    if engine.seek_low_latency {start_frames=start_frames.min(2048);}
+                    if fifo.available_read()>=start_frames || (fifo.available_read()>0
+                        && engine.pcm_coverage.available(engine.sample_pos,1)==0) {
+                        telemetry.callback_output_enabled.store(true,Ordering::Release);
+                        engine.seek_low_latency=false;
+                    }
+                    true
+                }).unwrap_or(false);
+                if !published {commands.wait(Duration::from_millis(2));continue;}
+                remote_audio::publish_mirror(audible);
+                telemetry.render_block_count.fetch_add(1,Ordering::Relaxed);
                 telemetry.publish_rendering_state(&engine);
-                // Start pulling the callback only with a solid prebuffer.
-                // Enabling at a thin watermark made the callback catch up to the
-                // renderer during the start burst, and every catch-up dropped to
-                // zeros and refilled as an audible level step.
-                if fifo.available_read() >= start_frames
-                    || (fifo.available_read() > 0
-                        && engine.pcm_coverage.available(engine.sample_pos, 1) == 0)
-                {
-                    telemetry
-                        .callback_output_enabled
-                        .store(true, Ordering::Release);
-                }
                 #[cfg(target_os="android")]
                 spectral_accelerator::cooperation::observe(frames,engine.output_sample_rate as usize,fifo.available_read(),started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
                 let elapsed = started.elapsed().as_micros() as u64;

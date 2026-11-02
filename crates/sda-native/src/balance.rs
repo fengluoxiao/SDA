@@ -55,6 +55,7 @@ pub struct VolumeBalance {
     fresh_complete: bool,
     pub gain_db: f64,
     completed: bool,
+    seek_preserved: bool,
     early_alac_balance: bool,
     mpegh_reference: bool,
 }
@@ -68,6 +69,13 @@ impl VolumeBalance {
             enabled,
             ..Default::default()
         };
+    }
+    pub fn preserve_for_seek(&mut self) {
+        self.seek_preserved=true;
+        self.completed=false;
+        // An already selected programme gain belongs to the source, not the
+        // position. Never replace it with a measurement of a seeked excerpt.
+        if self.settled { self.startup_reference=None; }
     }
     pub fn set_cached(&mut self, cached: Measurement) {
         if self.fresh_complete || self.decoded_reference.is_some() || self.settled {return;}
@@ -94,6 +102,7 @@ impl VolumeBalance {
     }
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
         self.mpegh_reference = frame.codec == "mpegh";
+        if self.seek_preserved && self.settled { return PendingFrame {frame,measurement:None}; }
         let channels = if frame.codec == "mpegh" || crate::alac_pcm::is_upmixed(&frame) {
             reference.as_deref()
         } else if stereo_master(&frame) || av3a_bed(&frame) {
@@ -192,6 +201,7 @@ impl VolumeBalance {
         self.completed = true;
     }
     pub fn complete_measurement(&self) -> Option<Measurement> {
+        if self.seek_preserved {return None;}
         // Object references are measured during this playback, not persisted as a stereo/bed cache.
         if self.decoded_reference.is_some() {return None;}
         let m = self.decoded_reference.clone().or_else(|| self.meter.as_ref().map(LoudnessMeter::integrated))?;
@@ -376,7 +386,7 @@ mod tests {
         assert_eq!(live.gain_db, startup.gain_db, "the float programme tap is not a final-output peak measurement");
     }
 
-    fn frame(codec: &'static str, at: u64) -> FrameData {
+    pub(super) fn frame(codec: &'static str, at: u64) -> FrameData {
         FrameData { downmix_trims: vec![], reference_loudness: None, compatibility_bed: None,
             codec,
             sample_rate: 48000,
@@ -671,4 +681,16 @@ mod fresh_complete_tests {
         let mut fresh=VolumeBalance {enabled:true,..Default::default()};fresh.set_fresh_complete(measurement).unwrap();
         assert!(fresh.prime_av3a_startup(0,false).is_some());assert_eq!(fresh.gain_db,-9.);
     }
+    #[test]
+    fn seek_retains_source_gain_and_never_saves_an_excerpt_as_a_programme() {
+        let mut balance=VolumeBalance{enabled:true,..Default::default()};
+        balance.set_fresh_complete(Measurement{integrated_lufs:Some(-8.),blocks:100,true_peak_dbtp:Some(-1.)}).unwrap();
+        let first=balance.measure(super::tests::frame("alac",0),None);balance.route(&first);assert_eq!(balance.gain_db,-10.);
+        balance.preserve_for_seek();
+        let mut section=super::tests::frame("alac",90*48000);section.reference_loudness=Some(Measurement{integrated_lufs:Some(-2.),blocks:100,true_peak_dbtp:Some(0.)});
+        let section=balance.measure(section,None);let commands=balance.route(&section);
+        assert!(!commands.iter().any(|c|matches!(c,Command::SetProgramGain{..})));assert_eq!(balance.gain_db,-10.);
+        balance.finish();assert!(balance.complete_measurement().is_none());
+    }
+
 }
