@@ -80,8 +80,15 @@ enum SdaError: LocalizedError {
     let skip=Int(target-origin)*2;let base=Int(target)*2
     var error:Float=0
     for i in 0..<9600 { error=max(error,abs(actual[skip+i]-continuous[base+i])) }
-    print("ALAC seek rate=\(rate) ms=\(ms) origin=\(origin) maxError=\(error) elapsed=\(Date().timeIntervalSince(began))")
-    precondition(error<0.0001,"Apple PCM seek changed the target waveform")
+    var bestLag=0;var bestError=Float.greatestFiniteMagnitude
+    for lag in (base == 0 ? 0 : -64)...64 {
+     var sum:Float=0
+     for i in stride(from:128,to:9000,by:2) { sum += abs(actual[skip+i]-continuous[base+i+lag*2]) }
+     if sum<bestError {bestError=sum;bestLag=lag}
+    }
+    let report="ALAC seek rate=\(rate) ms=\(ms) origin=\(origin) maxError=\(error) bestLag=\(bestLag) elapsed=\(Date().timeIntervalSince(began))"
+    FileHandle.standardError.write(Data((report+"\n").utf8))
+    guard error<0.0001 else { throw SdaError.message("Apple PCM seek changed the target waveform: "+report) }
    }
   }
   let mono = dir.appendingPathComponent("mono.m4a")

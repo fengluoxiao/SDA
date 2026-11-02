@@ -8,6 +8,7 @@ import CryptoKit
 final class CompressedInput {
  private(set) var nativeCodec: String?
  private(set) var isAlac = false
+ private(set) var alacSourceRate: UInt64 = 48000
  private(set) var isSdar = false
  private(set) var isAv3a = false
  private(set) var av3aSpeakerBed = false
@@ -132,6 +133,9 @@ final class CompressedInput {
     guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(sourceFormat), asbd.pointee.mChannelsPerFrame == 2 else {
      throw SdaError.message("当前 ALAC 路径仅支持立体声，不会下混多声道母版")
     }
+    let rate=asbd.pointee.mSampleRate
+    guard rate.isFinite,rate > 0,rate <= Double(UInt32.max) else { throw SdaError.message("ALAC 采样率无效") }
+    alacSourceRate=UInt64(rate)
    }
    if !isAlac { _ = try validatedIndex() }
    let r = try AVAssetReader(asset: asset)
@@ -159,7 +163,12 @@ final class CompressedInput {
  // programme gain, room resources and output device remain in place.
  func seekPCM(positionMs:Double) throws -> UInt64 {
   guard isAlac, positionMs.isFinite, positionMs >= 0 else { throw SdaError.message("无法定位此 PCM 音轨") }
-  let target=UInt64(positionMs*48); let warm=target > 24000 ? target-24000 : 0
+  let target=UInt64(positionMs*48)
+  var a=alacSourceRate;var b:UInt64=48000
+  while b != 0 { let r=a%b;a=b;b=r }
+  let period=48000/max(1,a)
+  let prefix=target > 24000 ? target-24000 : 0
+  let warm=(prefix/period)*period
   seekFirstData=nil; reader?.cancelReading();reader=nil;trackOutput=nil
   nextTime=CMTime(value:Int64(warm),timescale:48000);resumeTimeValid=true
   sequentialRecovery=false;resumedRange=false;retries=0
