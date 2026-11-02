@@ -1356,7 +1356,9 @@ mod fresh_reference_bridge_tests {
    while start.elapsed()<Duration::from_secs(5){
     let status=unsafe{command(h,"status",json!({}))};
     let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
-    if status["preparingAudio"]==true || decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
+    // Match the real host: startup needs >=24k decoded frames before StartAt.
+    let lead=if consumed==0{4*48000}else{16384};
+    if status["preparingAudio"]==true || decoded<consumed+lead{unsafe{command(h,"pullIndexed",json!({}));}}
     unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};
     if left.iter().chain(&right).any(|v|v.abs()>1e-6){audible=true;break;}
     std::thread::sleep(Duration::from_millis(1));
