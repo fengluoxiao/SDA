@@ -68,6 +68,7 @@ mod spatial_mode_transition_tests;
 mod front_presentation_tests;
 mod front_ear;
 pub mod convolution;
+pub mod reference_convolution;
 pub mod spectral_accelerator;
 #[cfg(any(target_os = "android", test))]
 pub mod android_audio_cpu;
@@ -1567,7 +1568,9 @@ impl Engine {
     // switch. Ordinary stereo (including upmix) stays at unity makeup. Dolby
     // E-AC-3/TrueHD additionally require declared spatial programme metadata.
     fn refresh_programme_output_makeup(&mut self, immediate: bool) {
-        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "av3a" | "ac4" | "adm"));
+        let av3a_spatial=self.program_codec.as_deref()==Some("av3a") &&
+            (self.sources.len()>2 || self.sources.values().any(|source|source.kind==SourceKind::Object));
+        let named_format = matches!(self.program_codec.as_deref(), Some("mpegh" | "ac4" | "adm")) || av3a_spatial;
         let dolby_codec = matches!(self.program_codec.as_deref(), Some("eac3" | "truehd" | "mlpa"));
         self.dolby_spatial_programme_seen = dolby_codec && (self.dolby_spatial_programme_seen || self.sources.values().any(|source| source.kind == SourceKind::Object
                 || source.bed_label.as_deref().is_some_and(|label| matches!(label,
@@ -7039,3 +7042,15 @@ mod shared_hrtfhq_tests;
 
 #[cfg(test)]
 mod hrtfhq_depth_probe;
+
+#[cfg(test)]mod av3a_makeup_classification_tests {
+ use super::*;
+ #[test]fn genuine_av3a_stereo_has_no_immersive_makeup_but_beds_and_objects_do(){
+  let mut e=Engine::new(48000,2);e.program_enabled=true;e.set_program_codec("av3a".into());
+  for id in ["bed:L","bed:R"]{e.sources.insert(id.into(),Source{kind:SourceKind::Bed,object_id:None,..Default::default()});}
+  e.refresh_programme_output_makeup(true);assert_eq!(e.programme_output_makeup.target_db(),0.);
+  e.sources.insert("bed:C".into(),Source{kind:SourceKind::Bed,object_id:None,..Default::default()});e.refresh_programme_output_makeup(true);assert_eq!(e.programme_output_makeup.target_db(),1.8);
+  for codec in ["alac","mp3"]{e.set_program_codec(codec.into());e.refresh_programme_output_makeup(true);assert_eq!(e.programme_output_makeup.target_db(),0.);}
+  e.sources.clear();e.sources.insert("obj:7".into(),Source{kind:SourceKind::Object,object_id:Some(7),..Default::default()});e.set_program_codec("av3a".into());e.refresh_programme_output_makeup(true);assert_eq!(e.programme_output_makeup.target_db(),1.8);
+ }
+}

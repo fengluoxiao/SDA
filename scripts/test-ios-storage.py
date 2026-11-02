@@ -14,6 +14,14 @@ defer { try? FileManager.default.removeItem(at:root) }
 func file(_ url:URL,_ text:String="audio") throws { try Data(text.utf8).write(to:url) }
 func exists(_ url:URL)->Bool { FileManager.default.fileExists(atPath:url.path) }
 let original=outside.appendingPathComponent("original.wav");try file(original)
+let oldQueue=root.appendingPathComponent("queue.json")
+let queuePayload=try JSONSerialization.data(withJSONObject:["queue":[["uri":original.absoluteString,"hash":"old"]],"mode":"repeat-all"])
+try queuePayload.write(to:oldQueue)
+let retired=PlaybackStorage.retireLegacyQueue(at:oldQueue)
+assert(!exists(oldQueue) && exists(original));assert((retired["queue"] as? [[String:Any]])?.count==1)
+assert(PlaybackStorage.retireLegacyQueue(at:oldQueue).isEmpty)
+try file(oldQueue,"invalid queue");assert(PlaybackStorage.retireLegacyQueue(at:oldQueue).isEmpty && !exists(oldQueue))
+
 let extracted=cache.appendingPathComponent("sda-import-00000000-0000-0000-0000-000000000001.mhas");try file(extracted)
 let legacy=cache.appendingPathComponent("00000000-0000-0000-0000-000000000002.mhas");try file(legacy)
 let queued=cache.appendingPathComponent("00000000-0000-0000-0000-000000000003.mhas");try file(queued)
@@ -37,6 +45,13 @@ let duplicate=picker.appendingPathComponent("duplicate.m4a");try file(duplicate)
 let unique=picker.appendingPathComponent("unique.m4a");try file(unique,"different song")
 assert(PlaybackStorage.deduplicatePicker(picker,candidates:[legacySong,duplicate,unique],protected:[legacySong.resolvingSymlinksInPath().standardizedFileURL.path]))
 assert(exists(legacySong) && exists(unique) && !exists(duplicate))
+let sessions=root.appendingPathComponent("playback-sessions");try FileManager.default.createDirectory(at:sessions,withIntermediateDirectories:true)
+let staleSession=sessions.appendingPathComponent("sda-session-77-00000000-0000-0000-0000-000000000001")
+let activeSession=sessions.appendingPathComponent("sda-session-88-00000000-0000-0000-0000-000000000002")
+let originalFolder=sessions.appendingPathComponent("user-originals")
+for folder in [staleSession,activeSession,originalFolder]{try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true);try file(folder.appendingPathComponent("song.m4a"))}
+PlaybackStorage.cleanPreviousSessions(sessions,keep:activeSession)
+assert(!exists(staleSession) && exists(activeSession) && exists(originalFolder) && exists(original))
 print("iOS storage: owned temporary/resource cleanup, queue and legacy-song protection, symlink boundaries passed")
 '''
 with tempfile.TemporaryDirectory(prefix='sda-ios-storage-') as temporary:

@@ -233,6 +233,10 @@ pub struct McCoreDecoder<'model> {
 
 impl<'model> McCoreDecoder<'model> {
     pub fn new(model: &'model NeuralModel) -> Result<Self, McCoreDecodeError> {
+        Self::new_with_worker_limit(model,None)
+    }
+    fn new_with_worker_limit(model: &'model NeuralModel, worker_limit:Option<usize>) -> Result<Self, McCoreDecodeError> {
+        #[cfg(target_arch = "wasm32")] let _=worker_limit;
         let capacity = usize::from(MAX_CHANNELS);
         let mut channel_dsp = Vec::with_capacity(capacity);
         let mut neural = Vec::with_capacity(capacity);
@@ -244,7 +248,7 @@ impl<'model> McCoreDecoder<'model> {
         let neural_pool = NeuralPool;
         #[cfg(not(target_arch = "wasm32"))]
         let neural_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(neural_worker_count())
+            .num_threads(neural_worker_count().min(worker_limit.unwrap_or(usize::MAX)).max(1))
             .thread_name(|index| format!("avs3a-neural-{index}"))
             .build()
             .map_err(|_| McCoreDecodeError::ThreadPoolBuild)?;
@@ -472,6 +476,12 @@ impl McCoreDecoder<'static> {
     pub fn new_builtin() -> Result<Self, McCoreDecodeError> {
         let model = crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
         Self::new(model)
+    }
+    /// A source-analysis instance may bound its own workers without changing
+    /// process-wide Rayon settings or the decoder used for live playback.
+    pub fn new_builtin_with_worker_limit(limit:usize)->Result<Self,McCoreDecodeError>{
+        let model=crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
+        Self::new_with_worker_limit(model,Some(limit.max(1)))
     }
 }
 

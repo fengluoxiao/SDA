@@ -292,6 +292,13 @@ impl StreamingDecoder {
         }
     }
 
+    /// Source-rate analysis only; never submit these frames to a device output.
+    pub fn av3a_source_reference() -> Self {
+        Self {pipeline:Box::new(av3a_pipeline::Av3aPipeline::new_source_reference()),sniff:None,
+            queue:VecDeque::new(),errors:Vec::new(),object_rendering:true,
+            restore_object_mapping:false,object_targets:Default::default()}
+    }
+
     /// Construct a decoder whose container codec requires initialization bytes.
     /// Currently this is used by ALAC MP4 tracks and expects the full `alac` atom.
     pub fn with_config(codec: &str, config: &[u8]) -> Result<StreamingDecoder, String> {

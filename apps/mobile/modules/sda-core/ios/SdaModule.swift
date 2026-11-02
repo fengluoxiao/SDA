@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import Foundation
 import AVFoundation
+import MediaPlayer
 import CryptoKit
 
 public final class SdaModule: Module {
@@ -23,9 +24,9 @@ public final class SdaModule: Module {
   OnCreate {
    PlaybackStorage.startup()
    for key in player.prefs.dictionaryRepresentation().keys where key.hasPrefix("sda.loudness.") { player.prefs.removeObject(forKey:key) }
-   let saved=PlaybackStorage.queue()
-   player.playbackQueue=saved["queue"] as? [[String:Any]] ?? []
-   player.playbackMode=saved["mode"] as? String ?? "sequence"
+   player.prefs.removeObject(forKey:"sda.queue.selected")
+   MPNowPlayingInfoCenter.default().nowPlayingInfo=nil
+   MPNowPlayingInfoCenter.default().playbackState = .stopped
    player.configureDiagnostics(false)
    player.installSystemControls()
    player.locked { player.startHeadTracking() }
@@ -93,12 +94,11 @@ public final class SdaModule: Module {
     else { throw SdaError.message("播放队列无效") }
    // Fix protection while foreground/import still has access, not on a locked-screen EOF.
    for track in queue { if let uri=track["uri"] as? String, let url=URL(string:uri) { try CompressedInput.allowLockedPlaybackOfOwnedCopy(url) } }
-   try PlaybackStorage.save(queue,mode:mode)
    player.uncommittedRetained.subtract(queue.compactMap { $0["uri"] as? String })
    player.playbackQueue=queue; player.playbackMode=mode
    player.retainProgrammeReferences()
   } }
-  Function("playbackQueueSnapshot") { try player.locked { try player.json(["queue":player.playbackQueue,"mode":player.playbackMode,"currentHash":player.prefs.string(forKey:"sda.queue.selected") ?? ""]) } }
+  Function("playbackQueueSnapshot") { try player.locked { try player.json(["queue":player.playbackQueue,"mode":player.playbackMode,"currentHash":player.trackHash]) } }
   AsyncFunction("retainQueueTrack") { (uri:String,name:String,hash:String) in
    guard let source=URL(string:uri) else { throw SdaError.message("文件地址无效") }
    return try PlaybackStorage.retain(source,name:name,hash:hash,didCreate:{ url in _ = player.locked { player.uncommittedRetained.insert(url.absoluteString) } }).absoluteString

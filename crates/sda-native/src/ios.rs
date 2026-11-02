@@ -1288,6 +1288,16 @@ pub unsafe extern "C" fn sda_ios_av3a_reference_create(path: *const c_char, erro
     }
 }
 #[no_mangle]
+pub unsafe extern "C" fn sda_ios_av3a_reference_create_with_hrtf(path: *const c_char, hrtf: *const c_char, error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::av3a_reference::open_with_hrtf(unsafe { text(path)? },unsafe { text(hrtf)? })
+    })).unwrap_or_else(|_| Err("Audio Vivid reference initialization failed".into()));
+    match result {
+        Ok(reference) => Box::into_raw(Box::new(reference)).cast(),
+        Err(message) => { if !error.is_null() { unsafe { *error = reply(Err(message)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
 pub unsafe extern "C" fn sda_ios_stereo_reference_step(p: *mut std::ffi::c_void) -> *mut c_char {
     guarded(|| {
         let reference = unsafe { p.cast::<crate::stereo_reference::FreshStereoReference>().as_mut() }.ok_or("stereo reference unavailable")?;
@@ -1381,10 +1391,20 @@ mod fresh_reference_bridge_tests {
     let status=unsafe{command(h,"status",json!({}))};let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
     if decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
     unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};
-    if left.iter().chain(&right).any(|v|v.abs()>1e-5){let status=unsafe{command(h,"status",json!({}))};let consumed=status["consumedSamplePos"].as_u64().unwrap();assert!(consumed>=target*48&&consumed<=target*48+2048,"old or preroll audio reached callback: {consumed} at {target}");let objects=unsafe{command(h,"objects",json!({}))};assert!(!objects.as_object().unwrap().is_empty(),"positioned objects must recover after seeking to {target}");audible=true;break;}
+    if left.iter().chain(&right).any(|v|v.abs()>1e-5){let status=unsafe{command(h,"status",json!({}))};let consumed=status["consumedSamplePos"].as_u64().unwrap();assert!(consumed>=target*48&&consumed<=target*48+2048,"old or preroll audio reached callback: {consumed} at {target}");let objects=unsafe{command(h,"objects",json!({}))};assert!(!objects.as_object().unwrap().is_empty(),"positioned objects must recover after seeking to {target}");assert_eq!(status["paused"],false,"restarted audio must publish running status before any user pause");audible=true;break;}
     std::thread::sleep(Duration::from_millis(1));
    }
    eprintln!("Actual native callback seek {target} ms: {:?}",started.elapsed());assert!(audible,"no actual audible callback after seek");
+   let activity_deadline=Instant::now()+Duration::from_secs(2);
+   loop {
+    let status=unsafe{command(h,"status",json!({}))};
+    if status["soundingObjectIds"].as_array().is_some_and(|ids|!ids.is_empty()){break;}
+    assert!(Instant::now()<activity_deadline,"audible object positions exist but activity never recovered without pause/resume: {status}");
+    let decoded=status["decodedSamplePos"].as_u64().unwrap();let consumed=status["consumedSamplePos"].as_u64().unwrap();
+    if decoded<consumed+16384{unsafe{command(h,"pullIndexed",json!({}));}}
+    unsafe{sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};std::thread::sleep(Duration::from_millis(2));
+   }
+
   }
   unsafe{command(h,"pause",json!({"paused":true}));command(h,"seek",json!({"positionMs":30000}));command(h,"seek",json!({"positionMs":90000}));}
   for _ in 0..8{unsafe{command(h,"pullIndexed",json!({}));sda_ios_render(h,left.as_mut_ptr(),right.as_mut_ptr(),512)};assert!(left.iter().chain(&right).all(|v|*v==0.));}

@@ -36,12 +36,17 @@ for(const os of ['android','ios'])test(os+': import computes before ready; playi
  assert.equal(calls.analyses.length,1);assert.equal(calls.plays.length,2);
  if(os==='android')assert(calls.plays.every(args=>args[0].startsWith('file:///files/playback-library/')));
 });
-test('Android restored compressed queue keeps its real MHAS filename and durable URI',async()=>{
+test('live native playback reattaches its real filename without importing again',async()=>{
  const {app,engine,calls}=fixture();engine.playbackQueueSnapshot=()=>JSON.stringify({queue:[{hash:a,uri:'file:///files/a.mhas',name:'a.m4a.mhas',originalName:'a.m4a',metadata:{title:'First'}},{hash:b,uri:'file:///files/b.mhas',name:'b.m4a.mhas',originalName:'b.m4a',metadata:{title:'Second'}}],currentHash:b,mode:'repeat-all'});
- engine.playbackSnapshot=()=>JSON.stringify({generation:3,trackHash:b,hasPlayback:false,feedDone:false,feedError:null,status:{},objects:{},durationMs:1000,hrtfStatus:'ready'});
- app.restoreNativeQueue(engine);assert.equal(app.state.queue.length,2);assert.equal(app.state.queueIndex,1);assert.equal(app.state.fileName,'b.m4a');assert.equal(app.state.playbackMode,'repeat-all');assert.equal(app.state.playing,false);
+ engine.playbackSnapshot=()=>JSON.stringify({generation:3,trackHash:b,hasPlayback:true,feedDone:false,feedError:null,status:{},objects:{},durationMs:1000,hrtfStatus:'ready'});
+ app.attachLiveNativeQueue(engine);assert.equal(app.state.queue.length,2);assert.equal(app.state.queueIndex,1);assert.equal(app.state.fileName,'b.m4a');assert.equal(app.state.playbackMode,'repeat-all');assert.equal(app.state.playing,true);
  await app.selectTrack(1);assert.equal(app.state.error,null);assert.equal(calls.demux,0);assert.equal(calls.plays[0][0],'file:///files/b.mhas');assert.equal(calls.plays[0][1],'b.m4a.mhas');
  app.syncNativeQueue();assert.equal(calls.queues.at(-1).tracks[1].name,'b.m4a.mhas');
+});
+for(const os of ['android','ios'])test(os+': cold launch ignores a legacy playlist without active playback',()=>{
+ const {app,engine}=fixture(os);engine.playbackQueueSnapshot=()=>JSON.stringify({queue:[{hash:a,uri:'file:///old.mhas',name:'old.mhas',metadata:{}}],currentHash:a,mode:'repeat-all'});
+ engine.playbackSnapshot=()=>JSON.stringify({generation:0,trackHash:'',hasPlayback:false,feedDone:false,status:{},objects:{}});
+ app.attachLiveNativeQueue(engine);assert.equal(app.state.queue.length,0);assert.equal(app.state.queueIndex,-1);assert.equal(app.state.selectedUri,'');
 });
 for(const os of ['android','ios'])test(os+': suspended JS reconciles the native current track without a second advancement',()=>{
  const {app,engine,calls}=fixture(os);app.foreground=false;app.state.queue=[{contentHash:a,uri:'file:///a',name:'First',metadata:{}},{contentHash:b,uri:'file:///b',name:'Second',metadata:{title:'Second'}}];app.state.queueIndex=0;app.state.playing=true;

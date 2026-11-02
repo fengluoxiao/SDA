@@ -45,5 +45,13 @@ fun main(args: Array<String>) {
     val custom=File(rooms,"custom-room.json").apply { writeText("user data") }
     PlaybackStorage.cleanBuiltins(rooms,setOf("c".repeat(64)))
     check(current.exists() && custom.exists() && !previous.exists())
+    val sessions=File(args[0],"playback-sessions").apply {mkdirs()}
+    val oldSession=File(sessions,"sda-session-77-00000000-0000-0000-0000-000000000001").apply {mkdirs()}
+    File(oldSession,"track.m4a").writeText("working copy")
+    val currentSession=File(sessions,"sda-session-88-00000000-0000-0000-0000-000000000002").apply {mkdirs()}
+    File(currentSession,"track.m4a").writeText("active source")
+    val unknownSession=File(sessions,"user-originals").apply {mkdirs()};File(unknownSession,"song.wav").writeText("original")
+    PlaybackStorage.cleanPreviousSessions(sessions,currentSession)
+    check(!oldSession.exists() && currentSession.exists() && unknownSession.exists() && outsideSong.exists())
     println("Playback storage: queue/library protection, abandoned copies/resources, cover quota, process lifetime and symlink safety passed")
 }

@@ -213,7 +213,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
     try {
       const engine = this.getEngine();
-      this.restoreNativeQueue(engine);
+      this.attachLiveNativeQueue(engine);
       if (Platform.OS === "android" && engine.addListener) {
         this.lifecycleSubscriptions.push(engine.addListener("onMediaCommand", event => {
           if (event.hash !== this.state.queue[this.state.queueIndex]?.contentHash) return;
@@ -479,21 +479,22 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
-  private restoreNativeQueue = (engine: SdaEngineModule) => {
+  private attachLiveNativeQueue = (engine: SdaEngineModule) => {
     if (!engine.playbackQueueSnapshot || this.state.queue.length) return;
     const saved = JSON.parse(engine.playbackQueueSnapshot()) as { queue: { hash: string; uri: string; name: string; originalName?: string; metadata: TrackMetadata }[]; currentHash: string; mode: PlaybackMode };
     if (!saved.queue?.length) return;
+    const playback = engine.playbackSnapshot ? JSON.parse(engine.playbackSnapshot(false)) as IOSPlaybackSnapshot : null;
+    if (!playback?.hasPlayback) return; // Cold launches never restore a previous playlist.
     const queue: QueueTrack[] = saved.queue.map(row => ({ contentHash: row.hash, uri: row.uri,
       name: row.originalName || row.name, playbackName: row.name, metadata: row.metadata ?? {} }));
     const queueIndex = Math.max(0, queue.findIndex(row => row.contentHash === saved.currentHash));
     const track = queue[queueIndex]!;
-    const playback = engine.playbackSnapshot ? JSON.parse(engine.playbackSnapshot(false)) as IOSPlaybackSnapshot : null;
     this.setState({ queue, queueIndex, playbackMode: saved.mode, selectedUri: track.uri, fileName: track.name,
       metadata: track.metadata, durationMs: track.metadata.durationMs ?? 0, playing: playback?.hasPlayback === true,
       ended: playback?.feedDone === true }, () => { if (playback?.hasPlayback || playback?.feedDone) { this.restartStatusPolling(); this.pollStatus(); } });
   };
 
-  // Preparation owns temporary tracks until both platforms retain and persist one library copy.
+  // Preparation owns temporary tracks until both platforms retain one session-owned playback copy.
   private preparedTracks = new Map<string, Awaited<ReturnType<typeof prepare360RaMp4>>>();
   private prepareTrack = async (track: QueueTrack, onProgress?: (p: import("./src/mpeghMp4").ImportProgress) => void) => {
     if(track.metadata.authoredPlayback || track.playbackName)return null;

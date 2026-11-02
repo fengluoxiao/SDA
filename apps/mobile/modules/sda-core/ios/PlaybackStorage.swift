@@ -1,25 +1,21 @@
 import Foundation
 import CryptoKit
 
-/// File ownership, not file age, decides what may be removed. Library audio is never swept.
+/// File ownership, not file age, decides what may be removed. Original and legacy library audio is never swept; new working copies are session-owned.
 final class PlaybackStorage {
  static let fm = FileManager.default
  static let startupLock = NSLock()
  static var swept = false
- static var library: URL { fm.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("playback-library",isDirectory:true) }
- static var queueFile: URL { library.appendingPathComponent("queue.json") }
- static func queue() -> [String:Any] {
-  guard let data=try? Data(contentsOf:queueFile), let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] else { return [:] }
+ static let sessionName="sda-session-"+String(ProcessInfo.processInfo.processIdentifier)+"-"+UUID().uuidString.lowercased()
+ static var legacyLibrary:URL {fm.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("playback-library",isDirectory:true)}
+ static var sessions:URL {fm.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("playback-sessions",isDirectory:true)}
+ static var library:URL {sessions.appendingPathComponent(sessionName,isDirectory:true)}
+ static var queueFile: URL { legacyLibrary.appendingPathComponent("queue.json") }
+ // Read legacy rows only to protect owned songs during migration, never to resume UI.
+ static func retireLegacyQueue(at file:URL) -> [String:Any] {
+  defer { try? fm.removeItem(at:file) }
+  guard let data=try? Data(contentsOf:file), let value=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] else { return [:] }
   return value
- }
- static func save(_ rows:[[String:Any]], mode:String) throws {
-  try fm.createDirectory(at:library,withIntermediateDirectories:true)
-  let data=try JSONSerialization.data(withJSONObject:["queue":rows,"mode":mode])
-  #if os(iOS)
-  try data.write(to:queueFile,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
-  #else
-  try data.write(to:queueFile,options:.atomic)
-  #endif
  }
  static func ownedPicker(_ url:URL) -> Bool {
   guard url.isFileURL else { return false }
@@ -55,12 +51,15 @@ final class PlaybackStorage {
  static func startup() {
   startupLock.lock(); defer { startupLock.unlock() }
   guard !swept else { return }; swept=true
-  let rows=queue()["queue"] as? [[String:Any]] ?? []
+  let rows=retireLegacyQueue(at:queueFile)["queue"] as? [[String:Any]] ?? []
   let protected=rows.compactMap { ($0["uri"] as? String).flatMap(URL.init(string:)) }.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+  cleanPreviousSessions(sessions,keep:library)
   cleanAbandoned([fm.temporaryDirectory,fm.urls(for:.cachesDirectory,in:.userDomainMask)[0]],protected:protected)
-  for url in (try? fm.contentsOfDirectory(at:library,includingPropertiesForKeys:nil)) ?? [] where url.lastPathComponent.hasPrefix("pending-") {
-   if (try? url.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey]).isRegularFile) == true,
-    (try? url.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink) != true { try? fm.removeItem(at:url) }
+  for directory in [legacyLibrary,library] {
+   for url in (try? fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)) ?? [] where url.lastPathComponent.hasPrefix("pending-") {
+    if (try? url.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey]).isRegularFile)==true,
+     (try? url.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink) != true {try? fm.removeItem(at:url)}
+   }
   }
   // Old iOS imports had no ownership table. Merge only byte-identical picker
   // copies once; preserve every unique song and every saved queue URI.
@@ -71,6 +70,23 @@ final class PlaybackStorage {
    DispatchQueue.global(qos:.utility).async {
     if deduplicatePicker(picker,candidates:candidates,protected:protected) { UserDefaults.standard.set(true,forKey:key) }
    }
+  }
+ }
+ /// Only our UUID session folders are disposable; originals and legacy library
+ /// songs remain outside this boundary. Module reloads do not run startup again.
+ static func cleanPreviousSessions(_ base:URL,keep:URL?) {
+  guard (try? base.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink) != true else {return}
+  let root=base.resolvingSymlinksInPath().standardizedFileURL
+  let kept=keep?.resolvingSymlinksInPath().standardizedFileURL.path
+  for url in (try? fm.contentsOfDirectory(at:base,includingPropertiesForKeys:[.isDirectoryKey,.isSymbolicLinkKey])) ?? [] {
+   guard url.lastPathComponent.range(of:"^sda-session-[0-9]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",options:.regularExpression) != nil,
+    (try? url.resourceValues(forKeys:[.isDirectoryKey]).isDirectory)==true,
+    (try? url.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink) != true else {continue}
+   let actual=url.resolvingSymlinksInPath().standardizedFileURL
+   guard actual.deletingLastPathComponent()==root,actual.path != kept else {continue}
+   var linked=false
+   if let entries=fm.enumerator(at:url,includingPropertiesForKeys:[.isSymbolicLinkKey]){for case let child as URL in entries{if (try? child.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink)==true{linked=true;break}}}
+   if !linked {try? fm.removeItem(at:url)}
   }
  }
  static func cleanAbandoned(_ bases:[URL],protected:[String]) {

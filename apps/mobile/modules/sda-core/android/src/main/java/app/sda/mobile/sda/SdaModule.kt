@@ -108,6 +108,13 @@ class SdaModule : Module() {
         finally { SdaEngine.nativeFreeSpatialCues(prepared) }
     }
 
+    private fun canonicalReferenceHrtf(): String {
+        val context=appContext.reactContext ?: error("no react context")
+        val file=java.io.File(context.filesDir,"hrtf-restored/hrtf-dense/hrtf-set.json")
+        if (!file.isFile) synchronized(nativeLock) { if(handle==0L) preparedHandle=ensureEngine(startPipeline=false) }
+        check(file.isFile) { "Canonical HRTF asset is unavailable" };return file.absolutePath
+    }
+
     private fun ensureEngine(layout: String = "7.1.4", startPipeline: Boolean = true): Long = synchronized(nativeLock) {
         if (handle != 0L) {
             if (startPipeline) startPreparedEngine(handle, activeLayout)
@@ -323,7 +330,7 @@ class SdaModule : Module() {
         playbackQueue.snapshot().forEach { row -> rows.put(JSONObject().put("hash", row.hash).put("uri", row.uri)
             .put("name", row.name).put("originalName", row.originalName).put("metadata", JSONObject(row.metadata))) }
     }
-    private fun configureQueue(text: String, mode: String, persist: Boolean = true): Unit = synchronized(nativeLock) {
+    private fun configureQueue(text: String, mode: String): Unit = synchronized(nativeLock) {
         val rows = org.json.JSONArray(text)
         val tracks = (0 until rows.length()).map { index ->
             val row = rows.getJSONObject(index)
@@ -332,21 +339,17 @@ class SdaModule : Module() {
             NativeQueueTrack(hash, row.getString("uri"), row.getString("name"),
                 (row.optJSONObject("metadata") ?: JSONObject()).toString(), row.optString("originalName", row.getString("name")))
         }
-        // Validate without publishing a half-saved queue to background playback.
+        // The native queue belongs to this running session, never to disk.
         NativePlaybackQueue().configure(tracks, mode)
-        if (persist) {
-            val prefs = appContext.reactContext?.getSharedPreferences("sda-playback-queue", 0) ?: error("no react context")
-            check(prefs.edit().putString("rows", rows.toString()).putString("mode", mode).commit()) { "无法保存播放队列，请检查设备存储空间" }
-        }
         playbackQueue.configure(tracks, mode)
         stereoReferences.retain(tracks.map { it.hash }.toSet() + backgroundHash)
         PlaybackKeepAlive.configureQueue(text)
-        if (persist) uncommittedRetained.removeAll(tracks.mapNotNull { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalPath } }.toSet())
+        uncommittedRetained.removeAll(tracks.mapNotNull { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalPath } }.toSet())
     }
-    private fun restoreQueue(context: android.content.Context) {
-        val prefs = context.getSharedPreferences("sda-playback-queue", 0)
-        runCatching { configureQueue(prefs.getString("rows", "[]") ?: "[]", prefs.getString("mode", "sequence") ?: "sequence", false) }
-        backgroundHash = prefs.getString("selected", "") ?: ""
+    private fun clearLegacyQueue(context: android.content.Context) {
+        context.deleteSharedPreferences("sda-playback-queue")
+        backgroundHash = ""
+        PlaybackKeepAlive.configureQueue("[]")
     }
     private fun requestQueueAdvance(hash: String, token: Long, automatic: Boolean, direction: Int = 1): Boolean {
         if (destroyed || !PlaybackKeepAlive.owns(token) || playbackQueue.next(hash, automatic, direction) == null) return false
@@ -412,7 +415,6 @@ class SdaModule : Module() {
             val playbackSession = synchronized(nativeLock) {
                 check(!destroyed) { "Audio module was destroyed" }
                 backgroundHash = contentHash
-                context.getSharedPreferences("sda-playback-queue", 0).edit().putString("selected", contentHash).apply()
                 PlaybackKeepAlive.begin(context, displayName, contentHash, controls).also {
                     mediaToken = it; backgroundSession = it
                 }
@@ -533,8 +535,9 @@ class SdaModule : Module() {
                         // This is the current loaded track's live programme setting, not
                         // a persistent analysis lookup. Keep it while this source remains loaded,
                         // including seeking after EOF; clear it on a different source.
+                        val referenceHrtf=if(isAv3a) canonicalReferenceHrtf() else null
                         val active = playingProgramme?.takeIf { it.hash == contentHash && it.path == file.canonicalPath && it.bytes == file.length() && it.modified == file.lastModified() }
-                        val measurement = active?.measurement ?: stereoReferences.forSource(file, contentHash) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a, keepPending = true) {
+                        val measurement = active?.measurement ?: stereoReferences.forSource(file, contentHash, referenceHrtf) ?: stereoReferences.prepare(file, contentHash, isAlac, isAv3a, keepPending = true, referenceHrtf = referenceHrtf) {
                             stopped || destroyed || generation != workerGeneration || handle != ptr || !PlaybackKeepAlive.owns(playbackSession)
                         }
                         synchronized(nativeLock) {
@@ -700,12 +703,12 @@ class SdaModule : Module() {
     }
 
     override fun definition() = ModuleDefinition {
-        OnCreate { appContext.reactContext?.let { restoreQueue(it)
+        OnCreate { appContext.reactContext?.let { clearLegacyQueue(it)
             val protected = playbackQueue.snapshot().flatMap { row ->
                 val cover = runCatching { JSONObject(row.metadata).optString("coverUri") }.getOrDefault("")
                 listOf(row.uri, cover).mapNotNull { value -> Uri.parse(value).takeIf { u -> u.scheme == "file" }?.path?.let { path -> java.io.File(path) } }
             }.toSet()
-            PlaybackStorage.startup(it.cacheDir, protected, java.io.File(it.filesDir, "playback-library"))
+            PlaybackStorage.startup(it.cacheDir, protected, java.io.File(it.filesDir, "playback-library"), java.io.File(it.filesDir,"playback-sessions"),PlaybackStorage.sessionDirectory(it.filesDir,android.os.Process.myPid()))
             runCatching { RoomAssets.cleanStale(it) }
             // Retire all historical per-song loudness results; never read them.
             it.deleteSharedPreferences("sda-loudness")
@@ -746,7 +749,7 @@ class SdaModule : Module() {
             val source = Uri.parse(uri).path?.let { java.io.File(it).canonicalFile } ?: error("请选择本地文件")
             check(source.isFile) { "音频文件已不存在，请重新打开" }
             val ext = name.substringAfterLast('.', "audio").lowercase().filter { it.isLetterOrDigit() }.take(8)
-            val directory = java.io.File(context.filesDir, "playback-library").apply { mkdirs() }
+            val directory = PlaybackStorage.sessionDirectory(context.filesDir,android.os.Process.myPid()).apply { check(mkdirs() || isDirectory) }
             val target = java.io.File(directory, "$hash.$ext")
             val existed = target.isFile
             if (source != target.canonicalFile) {
@@ -767,7 +770,7 @@ class SdaModule : Module() {
             val context = appContext.reactContext ?: error("no react context")
             val file = Uri.parse(uri).takeIf { it.scheme == "file" }?.path?.let { java.io.File(it).canonicalFile }
             synchronized(nativeLock) {
-                if (file != null && file.parentFile == java.io.File(context.filesDir, "playback-library").canonicalFile &&
+                if (file != null && file.parentFile == PlaybackStorage.sessionDirectory(context.filesDir,android.os.Process.myPid()).canonicalFile &&
                     uncommittedRetained.contains(file.path) && playbackQueue.snapshot().none { Uri.parse(it.uri).path?.let { path -> java.io.File(path).canonicalFile } == file }) {
                     file.delete();uncommittedRetained.remove(file.path)
                 }
@@ -780,7 +783,7 @@ class SdaModule : Module() {
                 val file = Uri.parse(uri).path?.let { java.io.File(it) } ?: error("请选择本地文件")
                 if (!SdaEngine.nativeIsSdar(file.absolutePath)) {
                     val alac = ext != "mp3" && SdaEngine.nativeIsAlac(file.absolutePath)
-                    if (alac || ext == "mp3" || ext == "av3a") stereoReferences.prepare(file, hash, alac, ext == "av3a") { destroyed || Thread.currentThread().isInterrupted }
+                    if (alac || ext == "mp3" || ext == "av3a") stereoReferences.prepare(file, hash, alac, ext == "av3a", referenceHrtf = if(ext=="av3a") canonicalReferenceHrtf() else null) { destroyed || Thread.currentThread().isInterrupted }
                 }
             }
             true

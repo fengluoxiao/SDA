@@ -32,6 +32,11 @@ impl McDecoderBackend {
         })
     }
 
+    pub fn new_builtin_with_worker_limit(limit:usize)->Result<Self,McCoreDecodeError>{
+        Ok(Self{core:McCoreDecoder::new_builtin_with_worker_limit(limit)?,metadata:MetadataPayloadParser::new(),
+            configured:None,last_diagnostics:None,last_metadata:None})
+    }
+
     pub fn core(&self) -> &McCoreDecoder<'static> {
         &self.core
     }

@@ -65,8 +65,8 @@ fn stereo_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
     )))
 }
 #[inline(never)]
-fn mc_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
-    let backend = McDecoderBackend::new_builtin().map_err(|e| e.to_string())?;
+fn mc_decoder(h: &avs3a::FrameHeader, worker_limit:Option<usize>) -> Result<BuiltinDecoder, String> {
+    let backend = worker_limit.map_or_else(McDecoderBackend::new_builtin,McDecoderBackend::new_builtin_with_worker_limit).map_err(|e|e.to_string())?;
     Ok(BuiltinDecoder::Mc(Box::new(
         PendingDecoder::new(backend)
             .configure(h)
@@ -85,6 +85,8 @@ fn mix_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
 }
 
 pub struct Av3aPipeline {
+    native_reference: bool,
+    output_rate: u32,
     parser: FrameStream,
     decoder: Option<BuiltinDecoder>,
     resampler: Option<SincFixedIn<f32>>,
@@ -109,6 +111,7 @@ pub struct Av3aPipeline {
 impl Av3aPipeline {
     pub fn new() -> Self {
         Self {
+            native_reference:false, output_rate:OUTPUT_RATE,
             parser: FrameStream::new(),
             decoder: None,
             resampler: None,
@@ -128,6 +131,11 @@ impl Av3aPipeline {
             failed: false,
             finished: false,
         }
+    }
+    /// Meter the complete original programme at its own sample rate. Playback
+    /// still uses the 48 kHz path; an analysis pass needs no 12-channel SRC.
+    pub fn new_source_reference() -> Self {
+        let mut pipeline=Self::new();pipeline.native_reference=true;pipeline
     }
     fn configure(&mut self, h: &avs3a::FrameHeader) -> Result<(), String> {
         if h.samples_per_channel as usize != FRAME_SAMPLES {
@@ -149,7 +157,8 @@ impl Av3aPipeline {
             CodecProfile::Hoa => return Err("Audio Vivid HOA routing is not validated; refusing to treat coefficients as speaker beds".into()),
         }
         self.source_rate = h.sample_rate;
-        let (mut a,mut b)=(self.source_rate,OUTPUT_RATE);while b!=0{let r=a%b;a=b;b=r;}
+        self.output_rate=if self.native_reference {h.sample_rate}else{OUTPUT_RATE};
+        let (mut a,mut b)=(self.source_rate,self.output_rate);while b!=0{let r=a%b;a=b;b=r;}
         self.seek_phase_prefix=(self.seek_input_origin%u64::from(self.source_rate/a)) as usize;
         self.input_samples=self.seek_phase_prefix as u64;
         self.decoder = Some(if h.profile == CodecProfile::Mixed {
@@ -158,12 +167,12 @@ impl Av3aPipeline {
             match h.channel_config {
                 Some(ChannelConfig::Mono) => mono_decoder(h)?,
                 Some(ChannelConfig::Stereo) => stereo_decoder(h)?,
-                _ => mc_decoder(h)?,
+                _ => mc_decoder(h,self.native_reference.then_some(4))?,
             }
         });
-        if h.sample_rate != OUTPUT_RATE && h.profile != CodecProfile::Mixed {
+        if h.sample_rate != self.output_rate && h.profile != CodecProfile::Mixed {
             let resampler = SincFixedIn::<f32>::new(
-                OUTPUT_RATE as f64 / h.sample_rate as f64,
+                self.output_rate as f64 / h.sample_rate as f64,
                 1.0,
                 SincInterpolationParameters {
                     sinc_len: 256,
@@ -210,10 +219,10 @@ impl Av3aPipeline {
             }
         }
         if let Some(scene) = &mut self.objects {
-            let at = (self.input_samples * u64::from(OUTPUT_RATE)
+            let at = (self.input_samples * u64::from(self.output_rate)
                 + u64::from(self.source_rate) / 2)
                 / u64::from(self.source_rate);
-            let end = ((self.input_samples + FRAME_SAMPLES as u64) * u64::from(OUTPUT_RATE)
+            let end = ((self.input_samples + FRAME_SAMPLES as u64) * u64::from(self.output_rate)
                 + u64::from(self.source_rate) / 2)
                 / u64::from(self.source_rate);
             let meta = decoder
@@ -225,9 +234,9 @@ impl Av3aPipeline {
             self.declarations = routed.declarations;
             self.events.extend(routed.events);
             planar = routed.channels;
-            if self.source_rate != OUTPUT_RATE && self.resampler.is_none() {
+            if self.source_rate != self.output_rate && self.resampler.is_none() {
                 let src = SincFixedIn::<f32>::new(
-                    OUTPUT_RATE as f64 / self.source_rate as f64,
+                    self.output_rate as f64 / self.source_rate as f64,
                     1.0,
                     SincInterpolationParameters {
                         sinc_len: 256,
@@ -260,7 +269,7 @@ impl Av3aPipeline {
         Ok(())
     }
     fn expected_samples(&self) -> u64 {
-        (self.input_samples * OUTPUT_RATE as u64 + self.source_rate as u64 / 2)
+        (self.input_samples * self.output_rate as u64 + self.source_rate as u64 / 2)
             / self.source_rate as u64
     }
     fn emit(&mut self, mut channels: Vec<Vec<f32>>, out: &mut VecDeque<FrameData>) {
@@ -280,7 +289,7 @@ impl Av3aPipeline {
             reference_loudness: None,
             compatibility_bed: None,
             codec: "av3a",
-            sample_rate: OUTPUT_RATE,
+            sample_rate: self.output_rate,
             sample_pos: self.output_samples,
             channels,
             labels: self.labels.clone(),
@@ -302,7 +311,7 @@ impl Av3aPipeline {
         if self.objects.is_some() {
             decoded.reference_loudness = Some(
                 self.reference
-                    .get_or_insert_with(crate::scene_reference::SceneMeter::new)
+                    .get_or_insert_with(||crate::scene_reference::SceneMeter::with_sample_rate(decoded.sample_rate))
                     .measure(&decoded),
             );
         }
@@ -376,7 +385,8 @@ impl Pipeline for Av3aPipeline {
         if let Some(scene) = &mut scene {
             scene.reset_dynamic();
         }
-        *self = Self::new();
+        let native_reference=self.native_reference;
+        *self = Self::new();self.native_reference=native_reference;
         self.objects = scene;
     }
 }
@@ -409,6 +419,18 @@ mod tests {
         assert_eq!(at, (3 * 1024 * 48000 + 22050) / 44100);
         pcm
     }
+    #[test]
+    fn source_reference_keeps_native_pcm_and_playback_keeps_48k_src() {
+        let mut analysis=Av3aPipeline::new_source_reference();let mut frames=VecDeque::new();let mut errors=vec![];
+        analysis.push(FIXTURE,&mut frames,&mut errors);analysis.flush(&mut frames,&mut errors);
+        assert!(errors.is_empty(),"{errors:?}");assert!(analysis.resampler.is_none());
+        let mut at=0;
+        for frame in frames {assert_eq!(frame.sample_rate,44100);assert_eq!(frame.sample_pos,at);at+=frame.channels[0].len()as u64;assert!(frame.reference_loudness.is_some());}
+        assert_eq!(at,3072);
+        analysis.reset();assert!(analysis.native_reference);
+        let normal=decode(8192);assert_eq!(normal[0].len(),(3*1024*48000+22050)/44100);
+    }
+
     #[test]
     #[cfg(all(not(debug_assertions), not(target_arch = "wasm32")))]
     fn av3a_apple_sized_worker_stack() {

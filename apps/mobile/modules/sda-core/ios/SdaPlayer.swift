@@ -28,6 +28,9 @@ final class SdaPlayer {
  }
  private var loadedProgrammeReferences: [String:(StereoSourceIdentity,String)] = [:]
  var stereoImportGeneration = 0
+ #if targetEnvironment(simulator)
+ var ciProgrammeAnalyses=0
+ #endif
  private func stereoSourceIdentity(_ path: String) throws -> StereoSourceIdentity {
   let attrs = try FileManager.default.attributesOfItem(atPath:path)
   return StereoSourceIdentity(path:URL(fileURLWithPath:path).standardizedFileURL.path,
@@ -537,7 +540,7 @@ final class SdaPlayer {
    guard let url = URL(string:uri), url.isFileURL else { throw SdaError.message("请选择本地音频文件") }
    _ = settings() // Apply shared-renderer migration before selecting an output route.
    let ext = (name as NSString).pathExtension.lowercased()
-   title=name;trackHash=hash;prefs.set(hash,forKey:"sda.queue.selected");duration=0;mediaInfo=[MPNowPlayingInfoPropertyAssetURL:url]
+   title=name;trackHash=hash;duration=0;mediaInfo=[MPNowPlayingInfoPropertyAssetURL:url]
    let input = try CompressedInput(url:url,name:name)
    alacActive = input.isAlac; sdarActive = input.isSdar
    alacUpmixActive = input.isAlac && prefs.bool(forKey:"sda.alacStereoUpmix")
@@ -647,8 +650,13 @@ final class SdaPlayer {
  }
  private func measureNativeStereoReference(path: String, alac: Bool, av3a: Bool, valid: () -> Bool) throws -> String? {
   guard valid() else { return nil }
+  #if targetEnvironment(simulator)
+  locked { ciProgrammeAnalyses += 1 }
+  #endif
   var error: UnsafeMutablePointer<CChar>?
-  guard let reference = (av3a ? sda_ios_av3a_reference_create(path, &error) : sda_ios_stereo_reference_create(path, alac, &error)) else {
+  var referenceHrtf=""
+  if av3a { referenceHrtf=try hrtfPath("dense") }
+  guard let reference = (av3a ? sda_ios_av3a_reference_create_with_hrtf(path, referenceHrtf, &error) : sda_ios_stereo_reference_create(path, alac, &error)) else {
    _ = try decodeReply(error); throw SdaError.message("立体声响度分析初始化失败")
   }
   defer { sda_ios_stereo_reference_close(reference) }
@@ -846,6 +854,8 @@ final class SdaPlayer {
  #if targetEnvironment(simulator)
  func runCISmoke() {
   var report: [String: Any] = ["ok": false]
+  report["coldQueueEmpty"]=locked {playbackQueue.isEmpty && trackHash.isEmpty}
+  report["legacyQueueRetired"] = !FileManager.default.fileExists(atPath:PlaybackStorage.queueFile.path)
   let savedBalance = prefs.bool(forKey:"sda.balance")
   let savedSystemPreference = prefs.bool(forKey:"sda.systemSpatial360RA")
   prefs.set(false,forKey:"sda.systemSpatial360RA")
@@ -904,6 +914,7 @@ final class SdaPlayer {
    report["diagnosticErrorPrivacyVerified"]=true
 
    report["native360RA"] = try smokeNative360()
+   report["av3aQueue"] = try smokePreparedAv3aQueue()
    prefs.set(true,forKey:"sda.systemSpatial360RA")
    report["system360RA"] = try smokeSystem360()
    report["system360RAReopened"] = try smokeSystem360()
@@ -951,19 +962,26 @@ final class SdaPlayer {
   guard layout == "360RA-13" else { throw SdaError.message("360RA 源布局缺失") }
   let deadline = Date().addingTimeInterval(30)
   var displayedObjects = 0
+  var requestedSeek=false,seekVerified=false
   while Date() < deadline {
    let complete: [String:Any]? = try locked {
     if let failure { throw SdaError.message(failure) }
     guard handle != nil, systemSpatial == nil else { throw SdaError.message("360RA 默认 KU100 路由缺失") }
     let status = try command("status") as! [String:Any]
-    displayedObjects = max(displayedObjects,(try command("objects") as? [String:Any])?.count ?? 0)
+    let objects=(try command("objects") as? [String:Any])?.count ?? 0
+    displayedObjects = max(displayedObjects,objects)
+    let clock=(status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+    if !requestedSeek && clock>=12000 && !done {
+     _ = try requestSeek(700,expectedHash:"ci-native-360ra");requestedSeek=true;return nil
+    }
+    if requestedSeek && clock>700*48+4096 && !done && objects==2 && !(status["soundingObjectIds"] as? [Int] ?? []).isEmpty {seekVerified=true}
     if done {
      let decoded = (status["decodedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      let consumed = (status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
      guard isPaused, audio?.isRunning == false,
        MPNowPlayingInfoCenter.default().playbackState == .stopped,
        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 0 else { throw SdaError.message("KU100 ended output/media state is still active") }
-     guard displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
+     guard seekVerified, displayedObjects == 2, decoded > 48000, consumed >= decoded else { throw SdaError.message("360RA KU100 未完成播放") }
      guard status["volumeBalanceEnabled"] as? Bool == prefs.bool(forKey:"sda.balance"),
        status["volumeBalanceEligible"] as? Bool == true else { throw SdaError.message("KU100 音量平衡偏好未恢复") }
      let manifestURL = try assetRoot().appendingPathComponent("hrtf-restored/hrtf-dense/hrtf-set.json")
@@ -975,7 +993,7 @@ final class SdaPlayer {
        status["nearFieldEnabled"] as? Bool == false,
        status["directObjectHrtf"] as? Bool == true,
        status["directionalHrtf"] as? Bool == true else { throw SdaError.message("共享 HRTF 策略或逐对象实际方向未生效") }
-     return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects]
+     return ["ok":true,"status":status,"route":"KU100","decodeQueue":"sda.ios.decode","displayedObjects":displayedObjects,"seekWithoutPauseVerified":seekVerified]
     }
     return nil
    }
@@ -983,6 +1001,48 @@ final class SdaPlayer {
    Thread.sleep(forTimeInterval:0.01)
   }
   throw SdaError.message("360RA KU100 冒烟测试超时")
+ }
+
+ // Simulator-only real native queue regression with generated/public fixtures.
+ func smokePreparedAv3aQueue() throws -> [String:Any] {
+  let documents=FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
+  let url=documents.appendingPathComponent("sda-ci-generated-vivid.av3a")
+  let fixture=try Data(contentsOf:assetRoot().appendingPathComponent("ci-vivid.av3a"))
+  var bytes=Data();for _ in 0..<96 {bytes.append(fixture)};try bytes.write(to:url,options:.atomic)
+  let hash=String(repeating:"a",count:64),first=String(repeating:"b",count:64),last=String(repeating:"c",count:64)
+  let tone=try assetRoot().appendingPathComponent("ci-stereo-tones.m4a").absoluteString
+  let motion=try assetRoot().appendingPathComponent("ci-360ra.mhas").absoluteString
+  defer {locked{playbackQueue=[];playbackMode="sequence";stopNative();loadedProgrammeReferences.removeValue(forKey:hash)};try? FileManager.default.removeItem(at:url)}
+  prefs.set(false,forKey:"sda.systemSpatial360RA");prefs.set(true,forKey:"sda.balance")
+  let analysisStart=Date();try prepareStereoTrack(url.absoluteString,"ci-vivid.av3a",hash)
+  let analyses=locked{ciProgrammeAnalyses};let preparationSeconds=Date().timeIntervalSince(analysisStart)
+  locked{playbackQueue=[["hash":first,"uri":tone,"name":"ci-stereo-tones.m4a"],["hash":hash,"uri":url.absoluteString,"name":"ci-vivid.av3a"],["hash":last,"uri":motion,"name":"ci-360ra.mhas"]];playbackMode="sequence"}
+  _ = try play(tone,"ci-stereo-tones.m4a",0,first)
+  let deadline=Date().addingTimeInterval(35);var entered=false,seeked=false,away=false,back=false,repeatVerified=false
+  var selectedGain:Double?,repeatGeneration:Int?
+  while Date()<deadline {
+   let complete=try locked { () throws -> Bool in
+    if let failure {throw SdaError.message(failure)}
+    guard hasPlayback else{return false}
+    let status=try command("status") as! [String:Any]
+    let clock=(status["consumedSamplePos"] as? NSNumber)?.uint64Value ?? 0
+    if trackHash==hash && clock>12000 {
+     guard ciProgrammeAnalyses==analyses else {throw SdaError.message("Vivid queue switch repeated whole analysis")}
+     guard status["sourceCodec"] as? String=="av3a",status["rendererProgramEnabled"] as? Bool==true,
+      let gain=status["programGainDb"] as? Double,gain.isFinite,gain<=0 else {throw SdaError.message("Vivid queue programme gain is invalid")}
+     if let selectedGain {guard abs(gain-selectedGain)<0.0001 else{throw SdaError.message("Vivid gain drifted across seek/reopen")}}else{selectedGain=gain}
+     entered=true
+     if !seeked {_ = try requestSeek(3500,expectedHash:hash);seeked=true;return false}
+     if back && repeatGeneration==nil {playbackQueue=[["hash":hash,"uri":url.absoluteString,"name":"ci-vivid.av3a"]];playbackMode="repeat-one";repeatGeneration=generation;_ = try requestSeek(max(0,duration-800),expectedHash:hash);return false}
+     if let previous=repeatGeneration,generation>previous {repeatVerified=true;return true}
+    }
+    if entered && trackHash==last && clock>4096 && !back {away=true;_ = try play(url.absoluteString,"ci-vivid.av3a",0,hash);back=true}
+    return false
+   }
+   if complete {break};Thread.sleep(forTimeInterval:0.01)
+  }
+  guard entered && seeked && away && back && repeatVerified else {throw SdaError.message("Vivid native queue regression timed out")}
+  return ["ok":true,"enteredVivid":entered,"seekGainStable":seeked,"advancedAway":away,"reopenedWithoutAnalysis":back,"nativeRepeatOneVerified":repeatVerified,"analysisRuns":analyses,"preparationSeconds":preparationSeconds,"gainDb":selectedGain ?? 0]
  }
 
  func runCIBackgroundSmoke(_ mode: String) {

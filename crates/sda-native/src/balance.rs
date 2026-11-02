@@ -53,6 +53,7 @@ pub struct VolumeBalance {
     cached: Option<Measurement>,
     settled: bool,
     fresh_complete: bool,
+    rendered_reference:Option<Measurement>,
     pub gain_db: f64,
     completed: bool,
     seek_preserved: bool,
@@ -99,6 +100,14 @@ impl VolumeBalance {
         self.fresh_complete = true;
         self.startup_reference = None;
         Ok(())
+    }
+    pub fn set_fresh_complete_with_renderer(&mut self,source:Measurement,rendered:Option<Measurement>)->Result<(),String>{
+        self.set_fresh_complete(source)?;self.rendered_reference=rendered;Ok(())
+    }
+    fn selected_gain(&self,measurement:&Measurement,peak:Option<f64>)->Option<f64>{
+        let source=measurement.integrated_lufs.filter(|v|v.is_finite()).map(|v|master_gain(v,peak));
+        let rendered=self.rendered_reference.as_ref().and_then(|m|m.integrated_lufs.filter(|v|v.is_finite()).map(|v|master_gain(v,m.true_peak_dbtp)));
+        match(source,rendered){(Some(a),Some(b))=>Some(a.min(b)),(a,b)=>a.or(b)}
     }
     pub fn measure(&mut self, frame: FrameData, reference: Option<Vec<Vec<f32>>>) -> PendingFrame {
         self.mpegh_reference = frame.codec == "mpegh";
@@ -149,8 +158,7 @@ impl VolumeBalance {
         // A frozen reference has already passed its route-specific threshold,
         // including the existing Apple ALAC early-start opt-in.
         if !ended && m.blocks < MIN_BLOCKS && self.startup_reference.is_none() && !self.fresh_complete { return None; }
-        let lufs = m.integrated_lufs.filter(|v| v.is_finite())?;
-        self.gain_db = master_gain(lufs, if self.mpegh_reference { None } else { m.true_peak_dbtp });
+        self.gain_db = self.selected_gain(&m,if self.mpegh_reference{None}else{m.true_peak_dbtp})?;
         self.settled = true;
         Some(Command::SetProgramGain { gain: 10_f64.powf(self.gain_db / 20.0) as f32, at: Some(origin) })
     }
@@ -182,9 +190,8 @@ impl VolumeBalance {
             .or(self.startup_reference.as_ref())
             .or(frame.measurement.as_ref());
         if let Some(m) = measurement.filter(|m| self.fresh_complete || m.blocks >= required_blocks) {
-            if let Some(lufs) = m.integrated_lufs.filter(|v| v.is_finite()) {
-                self.gain_db = master_gain(lufs,
-                    if f.codec != "mpegh" && (stereo || referenced) { m.true_peak_dbtp } else { None });
+            if let Some(gain) = self.selected_gain(m,if f.codec != "mpegh" && (stereo || referenced) {m.true_peak_dbtp}else{None}) {
+                self.gain_db = gain;
                 self.settled = true;
                 // Startup preroll applies this at the source origin. Live user
                 // activation uses the same reference and the renderer's existing
@@ -693,4 +700,19 @@ mod fresh_complete_tests {
         balance.finish();assert!(balance.complete_measurement().is_none());
     }
 
+}
+
+#[cfg(test)]mod canonical_reference_tests {
+ use super::*;
+ #[test]fn stricter_canonical_measurement_selects_one_fixed_gain_without_programme_riding(){
+  let mut b=VolumeBalance::default();b.enabled=true;
+  b.set_fresh_complete_with_renderer(Measurement{integrated_lufs:Some(-3.0647115102786833),blocks:2321,true_peak_dbtp:Some(2.077057291894659)},Some(Measurement{integrated_lufs:Some(-1.3731422488420348),blocks:2322,true_peak_dbtp:Some(8.797468072972862)})).unwrap();
+  assert!(b.prime_av3a_startup(0,false).is_some());assert!((b.gain_db+16.626857751157965).abs()<1e-9);
+  let gain=b.gain_db;b.preserve_for_seek();assert!(b.prime_av3a_startup(4800000,false).is_none());assert_eq!(b.gain_db,gain);
+  for enabled in [false,true,false,true]{b.enabled=enabled;assert_eq!(b.gain_db,gain);}
+ }
+ #[test]fn canonical_measurement_never_boosts_quiet_sources_or_overrides_a_stricter_source_peak(){
+  let mut quiet=VolumeBalance::default();quiet.enabled=true;quiet.set_fresh_complete_with_renderer(Measurement{integrated_lufs:Some(-30.),blocks:100,true_peak_dbtp:Some(-10.)},Some(Measurement{integrated_lufs:Some(-28.),blocks:100,true_peak_dbtp:Some(-8.)})).unwrap();quiet.prime_av3a_startup(0,false);assert_eq!(quiet.gain_db,0.);
+  let mut peak=VolumeBalance::default();peak.enabled=true;peak.set_fresh_complete_with_renderer(Measurement{integrated_lufs:Some(-20.),blocks:100,true_peak_dbtp:Some(6.)},Some(Measurement{integrated_lufs:Some(-20.),blocks:100,true_peak_dbtp:Some(-4.)})).unwrap();peak.prime_av3a_startup(0,false);assert_eq!(peak.gain_db,-7.);
+ }
 }

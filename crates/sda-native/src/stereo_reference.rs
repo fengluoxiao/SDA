@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::{Path, PathBuf}, time::SystemTime};
 
 pub const POLICY: &str = "fresh-complete-stereo-reference-v1";
+pub const RENDER_REFERENCE_PROFILE:&str="sda-hrtfhq-canonical-bed-v1";
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct RenderedReference {
+ pub profile:String,pub layout:String,pub hrtf_sha256:String,pub sample_rate:u32,
+ pub measurement:Measurement,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompleteReference {
@@ -15,16 +23,27 @@ pub struct CompleteReference {
     pub frames: u64,
     pub sample_rate: u32,
     pub input_sample_rate: u32,
+    #[serde(default="default_reference_rate")]
+    pub measurement_sample_rate:u32,
     pub codec: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub rendered_reference:Option<RenderedReference>,
 }
+fn default_reference_rate()->u32{48000}
 impl CompleteReference {
     pub fn validate(&self) -> Result<(), String> {
         if self.policy != POLICY || !self.complete || self.frames == 0 || self.sample_rate != 48000
-            || self.input_sample_rate == 0 || !matches!(self.codec.as_str(), "alac" | "mp3" | "av3a")
+            || self.input_sample_rate == 0 || !(8000..=384000).contains(&self.measurement_sample_rate) || !matches!(self.codec.as_str(), "alac" | "mp3" | "av3a")
             || self.measurement.integrated_lufs.is_some_and(|v| !v.is_finite())
             || self.measurement.true_peak_dbtp.is_some_and(|v| !v.is_finite())
             || self.measurement.integrated_lufs.is_some() && self.measurement.blocks == 0 {
             return Err("invalid complete stereo source reference".into());
+        }
+        if let Some(r)=&self.rendered_reference {
+            if self.codec!="av3a"||r.profile!=RENDER_REFERENCE_PROFILE||r.layout!="7.1.4"||r.sample_rate!=self.measurement_sample_rate
+                ||r.hrtf_sha256.len()!=64||!r.hrtf_sha256.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase())
+                ||r.measurement.integrated_lufs.is_some_and(|x|!x.is_finite())||r.measurement.true_peak_dbtp.is_some_and(|x|!x.is_finite())
+                ||r.measurement.integrated_lufs.is_some()&&r.measurement.blocks==0 {return Err("invalid canonical programme reference".into());}
         }
         Ok(())
     }
@@ -70,8 +89,10 @@ impl FreshStereoReference {
         if after.len() != self.bytes || after.modified().ok() != self.modified {
             return Err("source changed during loudness analysis".into());
         }
+        let input_sample_rate=self.programme.as_ref().map_or(self.input_rate,|p|p.input_sample_rate());
+        let measurement_sample_rate=self.programme.as_ref().map_or(48000,|p|p.measurement_sample_rate());
         let reference = CompleteReference { measurement, policy: POLICY.into(), complete: true,
-            frames: self.frames, sample_rate: 48000, input_sample_rate: self.input_rate, codec: self.codec.into() };
+            frames: self.frames, sample_rate: 48000, input_sample_rate, measurement_sample_rate, rendered_reference:self.programme.as_ref().and_then(|p|p.rendered_reference()), codec: self.codec.into() };
         reference.validate()?;
         self.complete = Some(reference);
         Ok(())
@@ -117,4 +138,7 @@ pub(crate) trait ProgrammeReference {
     fn step(&mut self, budget: usize) -> Result<bool, String>;
     fn frames(&self) -> u64;
     fn measurement(&self) -> Measurement;
+    fn input_sample_rate(&self)->u32{48000}
+    fn measurement_sample_rate(&self)->u32{48000}
+    fn rendered_reference(&self)->Option<RenderedReference>{None}
 }

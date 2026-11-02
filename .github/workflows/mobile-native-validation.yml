@@ -1,0 +1,99 @@
+name: Mobile native regression and iOS simulator
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable source commit to validate
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: mobile-native-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      CI: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/ios-build/cargo
+      SDA_IOS_INCLUDE_SIMULATOR: '1'
+      EXPO_NO_TELEMETRY: '1'
+      RCT_NEW_ARCH_ENABLED: '1'
+      RCT_USE_PREBUILT_RNCORE: '0'
+      RCT_USE_RN_DEP: '0'
+      EXPO_USE_PRECOMPILED_MODULES: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+      - name: Select Xcode and record source
+        id: tools
+        run: |
+          mkdir -p nightly-artifacts
+          python3 scripts/select-ios-sdk.py 26
+          xcodebuild -version | tee nightly-artifacts/xcode.txt
+          echo "fingerprint=$(shasum -a 256 nightly-artifacts/xcode.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "SDA_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/sda-native -> ../../ios-build/cargo
+          key: ios-device-26-${{ steps.tools.outputs.fingerprint }}
+          cache-on-failure: true
+      - name: Install dependencies and stage simulator fixtures
+        run: |
+          pnpm install --frozen-lockfile --config.node-linker=hoisted
+          node scripts/prepare-ios-assets.mjs
+          cp packages/core/tests/fixtures/av3a-7-1-4-three-frames.av3a apps/mobile/modules/sda-core/ios/Resources/ci-vivid.av3a
+      - name: Check source ownership, programme state and bounded imports
+        run: |
+          set -o pipefail
+          python3 scripts/test-ios-storage.py 2>&1 | tee nightly-artifacts/storage.txt
+          python3 scripts/test-ios-programme-state.py 2>&1 | tee nightly-artifacts/programme-state.txt
+          python3 scripts/test-ios-import-io.py 2>&1 | tee nightly-artifacts/import-io.txt
+          node --test apps/mobile/test/*.test.cjs apps/mobile/test/*.test.mjs 2>&1 | tee nightly-artifacts/mobile-js.txt
+      - name: Build device and simulator native libraries
+        run: |
+          set -o pipefail
+          bash scripts/build-ios-native.sh 2>&1 | tee nightly-artifacts/rust-build.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ios-pods-v1-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/modules/**/*.podspec') }}
+          restore-keys: ios-pods-v1-${{ steps.tools.outputs.fingerprint }}-
+      - name: Generate simulator project
+        run: |
+          set -o pipefail
+          cd apps/mobile
+          pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../nightly-artifacts/prebuild.txt
+          cd ios
+          pod install 2>&1 | tee ../../../nightly-artifacts/pods.txt
+      - name: Build release simulator app
+        run: |
+          set -o pipefail
+          xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-nightly/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee nightly-artifacts/simulator-build.txt
+      - name: Exercise real playback, seeks, queues, background and UI
+        run: |
+          set -o pipefail
+          python3 scripts/test-ios-simulator.py ios-nightly/simulator/Build/Products/Release-iphonesimulator/SDA.app nightly-artifacts 2>&1 | tee nightly-artifacts/simulator-test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SDA-native-simulator-validation-${{ github.run_number }}
+          path: nightly-artifacts/
+          if-no-files-found: error
+          retention-days: 14

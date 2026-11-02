@@ -42,6 +42,7 @@ pub mod mpegh;
 pub mod balance;
 pub mod stereo_reference;
 pub mod av3a_reference;
+mod av3a_reference_renderer;
 mod packet_source;
 mod mhas_source;
 mod alac_pcm;
@@ -800,7 +801,7 @@ impl MobileEngine {
             let reference: stereo_reference::CompleteReference = serde_json::from_value(value).map_err(|e| e.to_string())?;
             reference.validate()?;
             if self.decoded_sample_pos() != 0 { return Err("complete stereo reference must precede playback PCM".into()); }
-            self.balance.set_fresh_complete(reference.measurement)?;
+            self.balance.set_fresh_complete_with_renderer(reference.measurement,reference.rendered_reference.map(|r|r.measurement))?;
         } else {
             let measurement: balance::Measurement = serde_json::from_value(value).map_err(|e| e.to_string())?;
             self.balance.set_cached(measurement);
@@ -1421,7 +1422,9 @@ mod tests {
         let status = engine.playback_status();
         assert!(status.volume_balance_enabled);
         assert!(!status.volume_balance_eligible);
-        assert_eq!(status.program_gain_db, 0.0);
+        assert_eq!(status.program_gain_db, -8.0,"seek retains the selected source gain even while this unreferenced object route bypasses it");
+        let status=wait_mobile_status(&engine,|s|!s.renderer_program_enabled);
+        assert!(!status.renderer_program_enabled);
         engine.stop();
     }
 
@@ -1853,10 +1856,12 @@ mod tests {
         assert_eq!(snapshot.get(&7).map(|value| value.pos), Some(object.pos));
         assert!(events.is_empty(), "consumed events are evicted from the timeline");
 
-        let inactive = ObjectEvent { has_pos: false, sample_pos: 960, ..object };
-        events.push_back(inactive);
-        assert_eq!(snapshot_at_clock(&mut events, &mut active, 960).len(), 0,
-            "hasPos=false removes the active object on its effective presentation frame");
+        let gain_only = ObjectEvent { has_pos: false, gain_db:-12.0, sample_pos: 960, ..object };
+        events.push_back(gain_only);
+        let snapshot=snapshot_at_clock(&mut events,&mut active,960);
+        assert_eq!(snapshot.len(),1,"gain-only metadata retains the last known geometry; signal activity decides visibility");
+        assert_eq!(snapshot[&7].pos,object.pos);assert_eq!(snapshot[&7].gain_db,-12.0);
+
     }
 
     #[test]

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import {MobileObjectActivity} from "../src/mobile-object-activity.ts";
-import {ObjectActivityFilter} from "../../../packages/player/src/object-activity.ts";
+import {buildSync} from "esbuild";
+import {fileURLToPath} from "node:url";
+function load(relative){
+ const bundle=buildSync({entryPoints:[fileURLToPath(new URL(relative,import.meta.url))],bundle:true,platform:"node",format:"cjs",write:false});
+ const module={exports:{}};new Function("module","exports",bundle.outputFiles[0].text)(module,module.exports);return module.exports;
+}
+const {MobileObjectActivity}=load("../src/mobile-object-activity.ts");
+const {ObjectActivityFilter}=load("../../../packages/player/src/object-activity.ts");
 const fixed={id:11,pos:[-.5,1,0],gainDb:0,hasPos:true},moving={id:12,pos:[.5,1,.4],gainDb:0,hasPos:true};
 const mobile=new MobileObjectActivity(),desktop=new ObjectActivityFilter();
 let objects=[fixed,moving];
@@ -16,3 +22,10 @@ assert.equal(mobile.project(objects,[],1.6,0,false,false).length,0,'seek retires
 const unknown=new MobileObjectActivity();assert.equal(unknown.project(objects,undefined,0,0,false,false).length,2,'older native/system output does not invent signal activity');
 assert.equal(unknown.project(objects,undefined,.1,0,true,false).length,0,'pause hides unknown activity');
 console.log('PASS: shared desktop/mobile fixed+moving signal visibility, brightness, silence fade, pause, resume, seek, all-view and full inventory');
+
+const afterSeek=new MobileObjectActivity();
+assert.equal(afterSeek.project(objects,[11],10,10,false,false).find(o=>o.id===11)?.sceneOpacity,1);
+assert.equal(afterSeek.project(objects,[11,12],10.1,100,false,false).length,2,'forward seek shows current sounding sources without pausing');
+assert.equal(afterSeek.project(objects,[12],10.2,2,false,false).length,1,'backward seek drops previous activity and immediately shows current source');
+assert.equal(afterSeek.project(objects,[12],10.3,2.1,false,false)[0].id,12);
+console.log('PASS: forward/backward seek visibility recovers from live activity with no user pause/resume');

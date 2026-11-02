@@ -484,6 +484,9 @@ fn handle_command(
                 state.block_offset = 0;
                 state.output_active = true;
                 state.paused = false;
+                // SeekReset published paused=true before startup PCM arrived.
+                // StartAt must publish its resume too, including source activity.
+                telemetry.paused.store(false, Ordering::Release);
                 state.render_epoch = state.render_epoch.wrapping_add(1);
                 if let Some(bus_renderer) = &mut state.bus_renderer {
                     bus_renderer.reset();
@@ -739,9 +742,9 @@ fn handle_command(
             }
         }
         Command::Pause { paused } => {
+            telemetry.paused.store(paused, Ordering::Release);
             if state.paused != paused {
                 state.paused = paused;
-                telemetry.paused.store(paused, Ordering::Release);
                 if remote_sync::ENABLED.load(Ordering::Acquire) {
                     // Keep both copies of queued program audio. The shared clock
                     // schedules the real consumers; pausing must not create an epoch.
@@ -2415,5 +2418,27 @@ mod monitor_master_gate_tests {
         let mut e=configured(true,true);assert!(e.cinema.monitor.hardware.enabled);
         let mut last=0.;for _ in 0..4096 {last=e.hardware_stereo[0].process(0.1);}
         assert!(last>0.13&&last<0.16,"explicit +3 dB should remain active: {last}");
+    }
+}
+
+#[cfg(test)]
+mod seek_activity_restart_tests {
+    use super::*;
+    #[test]
+    fn seek_restart_publishes_running_state_before_activity_is_polled() {
+        let mut state=Engine::new(48000,2);
+        state.replace_hrtf(hrtf::NativeHrtfSet::synthetic(16,128,128).unwrap(),0.0).unwrap();
+        let fifo=stereo_fifo::StereoFifo::new(4096);
+        let telemetry=RuntimeTelemetry::default();
+        handle_command(&mut state,Command::SeekReset{origin:96000,target:102144},&fifo,&telemetry);
+        assert!(telemetry.paused.load(Ordering::Acquire));
+        handle_command(&mut state,Command::AddSource{id:"obj:7".into(),at:None,bed_label:None},&fifo,&telemetry);
+        handle_command(&mut state,Command::StartAt{origin:96000},&fifo,&telemetry);
+        assert!(!state.paused);
+        assert!(!telemetry.paused.load(Ordering::Acquire),"audible resumed transport must not suppress sounding IDs as paused");
+        let source=state.sources.get_mut("obj:7").unwrap();source.activity_until=103000;
+        state.queue_object_activity_snapshot(102144);
+        state.emit_consumed_object_activity(102144,&telemetry);
+        assert_eq!(telemetry.sounding_object_ids(),vec![7],"activity must reach the UI without a second user pause/resume");
     }
 }

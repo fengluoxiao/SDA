@@ -27,6 +27,12 @@ try:
  run('xcrun','simctl','boot',udid)
  run('xcrun','simctl','bootstatus',udid,'-b')
  run('xcrun','simctl','install',udid,str(app))
+ container=pathlib.Path(run('xcrun','simctl','get_app_container',udid,'app.sda.mobile','data').stdout.strip())
+ oldLibrary=container/'Library/Application Support/playback-library';oldLibrary.mkdir(parents=True,exist_ok=True)
+ legacySong=oldLibrary/'legacy-unique.wav';legacySong.write_bytes(b'preserved original fixture')
+ (oldLibrary/'queue.json').write_text(json.dumps({'queue':[{'hash':'e'*64,'uri':legacySong.as_uri(),'name':'old.wav'}],'mode':'repeat-all'}))
+ oldSession=container/'Library/Application Support/playback-sessions/sda-session-77-00000000-0000-0000-0000-000000000001';oldSession.mkdir(parents=True,exist_ok=True)
+ (oldSession/'working-copy.m4a').write_bytes(b'disposable prior session')
  os.environ['SIMCTL_CHILD_SDA_IOS_SMOKE']='1'
  launch=run('xcrun','simctl','launch','--stdout='+str(out/'app.stdout'),'--stderr='+str(out/'app.stderr'),udid,'app.sda.mobile')
  (out/'launch.txt').write_text(launch.stdout)
@@ -37,6 +43,8 @@ try:
  while not report.is_file() and time.monotonic()<deadline:time.sleep(2)
  if not report.is_file():raise RuntimeError('Native module did not complete audio smoke test')
  result=json.loads(report.read_text())
+ if result.get('coldQueueEmpty') is not True or result.get('legacyQueueRetired') is not True or oldSession.exists() or legacySong.read_bytes()!=b'preserved original fixture':
+  raise RuntimeError('Cold-launch queue/session cleanup or original protection regression')
  (out/'audio-smoke.json').write_text(json.dumps(result,indent=2))
  if result.get('ok') is not True:raise RuntimeError('Native audio smoke failed: '+str(result))
  if result.get('diagnosticErrorPrivacyVerified') is not True:raise RuntimeError('Remote error privacy regression')
@@ -45,8 +53,11 @@ try:
  restored=result.get('native360RAAfterSystem',{})
  if restored.get('ok') is not True or restored.get('status',{}).get('volumeBalanceEnabled') is not True:raise RuntimeError('System -> KU100 lost balance preference: '+str(restored))
  native=result.get('native360RA',{})
- if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2:
+ if native.get('ok') is not True or native.get('route')!='KU100' or native.get('decodeQueue')!='sda.ios.decode' or native.get('displayedObjects')!=2 or native.get('seekWithoutPauseVerified') is not True:
   raise RuntimeError('360RA default KU100 decode queue regression: '+str(native))
+ vivid=result.get('av3aQueue',{})
+ if vivid.get('ok') is not True or not all(vivid.get(k) is True for k in ['enteredVivid','seekGainStable','advancedAway','reopenedWithoutAnalysis','nativeRepeatOneVerified']):
+  raise RuntimeError('Audio Vivid native queue/seek regression: '+str(vivid))
  spatial=result.get('system360RA',{})
  if spatial.get('ok') is not True or spatial.get('status',{}).get('outputChannels')!=12 or spatial.get('allowedMultichannel') is not True or spatial.get('displayedObjects')!=2 or spatial.get('nowPlayingMetadataVerified') is not True or spatial.get('balanceToggleVerified') is not True or spatial.get('endedStateVerified') is not True or spatial.get('fullTrackBalancePrepared') is not True or spatial.get('firstSubmissionBalanced') is not True:
   raise RuntimeError('360RA 7.1.4 system renderer smoke failed: '+str(spatial))

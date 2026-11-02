@@ -561,6 +561,18 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeAv3aReferenceCr
     }
 }
 #[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeAv3aReferenceCreateWithHrtf(mut env: JNIEnv, _class: JClass, path: JString, hrtf: JString) -> jlong {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let hrtf:String=env.get_string(&hrtf).map_err(|e|e.to_string())?.into();
+        crate::av3a_reference::open_with_hrtf(path,hrtf)
+    })).unwrap_or_else(|_| Err("Audio Vivid reference initialization failed".into()));
+    match result {
+        Ok(reference) => Box::into_raw(Box::new(reference)) as jlong,
+        Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); 0 }
+    }
+}
+#[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeStereoReferenceStep(mut env: JNIEnv, _class: JClass, reference: jlong) -> jni::sys::jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
         if reference == 0 { return Err("stereo reference unavailable".into()); }
