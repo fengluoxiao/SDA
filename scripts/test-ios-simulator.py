@@ -1,7 +1,10 @@
 """Release launch smoke test; not a substitute for physical-device listening."""
 import json,os,pathlib,re,subprocess,sys,time
 from verify_mobile_ios_assets import verify_mobile_ios_assets
+from ios_simulator_fixtures import stage
 app=pathlib.Path(sys.argv[1]).resolve();out=pathlib.Path(sys.argv[2]).resolve()
+out.mkdir(parents=True,exist_ok=True)
+(out/"fixture-staging.json").write_text(json.dumps(stage(app),indent=2))
 def run(*args,check=True):
  return subprocess.run(args,check=check,text=True,capture_output=True)
 runtimes=json.loads(run('xcrun','simctl','list','runtimes','-j').stdout)['runtimes']

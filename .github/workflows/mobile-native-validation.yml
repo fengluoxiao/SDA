@@ -66,10 +66,10 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
-          cp packages/core/tests/fixtures/av3a-7-1-4-three-frames.av3a apps/mobile/modules/sda-core/ios/Resources/ci-vivid.av3a
       - name: Check source ownership, programme state and bounded imports
         run: |
           set -o pipefail
+          python3 scripts/test-ios-simulator-fixtures.py 2>&1 | tee nightly-artifacts/fixture-tests.txt
           python3 scripts/test-ios-storage.py 2>&1 | tee nightly-artifacts/storage.txt
           python3 scripts/test-ios-programme-state.py 2>&1 | tee nightly-artifacts/programme-state.txt
           python3 scripts/test-ios-import-io.py 2>&1 | tee nightly-artifacts/import-io.txt
@@ -94,6 +94,11 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ios-nightly/simulator CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 build 2>&1 | tee nightly-artifacts/simulator-build.txt
+      - name: Stage verified simulator-only audio and preserve the test application
+        run: |
+          set -o pipefail
+          python3 scripts/ios_simulator_fixtures.py ios-nightly/simulator/Build/Products/Release-iphonesimulator/SDA.app | tee nightly-artifacts/fixture-staging-build.json
+          ditto -c -k --keepParent ios-nightly/simulator/Build/Products/Release-iphonesimulator/SDA.app nightly-artifacts/SDA-simulator-app.zip
       - name: Exercise real playback, seeks, queues, background and UI
         run: |
           set -o pipefail
