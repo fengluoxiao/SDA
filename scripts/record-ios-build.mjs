@@ -14,7 +14,7 @@ paths.push('apps/mobile/src/SharedMiniPlayerTransition.tsx','apps/mobile/src/min
 paths.push('crates/sda-native/src/alac_pcm.rs','crates/sda-native/src/stereo_bass_audit.rs','apps/native-renderer/src/stereo_bass.rs','apps/native-renderer/src/bus_renderer.rs','crates/sda-native/src/balance.rs','packages/player/src/player.ts');
 paths.push('apps/mobile/app.json','apps/mobile/package.json','apps/mobile/android/app/build.gradle');
 paths.push('crates/sda-render-metadata/src/lib.rs','crates/sda-render-metadata/Cargo.toml','packages/core/src/dolby_trim.rs','packages/core/src/eac3_pipeline.rs','packages/core/src/truehd_pipeline.rs','packages/core/Cargo.toml','packages/core/Cargo.lock','apps/native-renderer/src/dolby_trim_render.rs','vendor/truehd/src/structs/oamd.rs','vendor/truehd/Cargo.toml','harletty-bridge/eac3/src/eac3dec/metadata.rs','harletty-bridge/eac3/src/eac3dec/mod.rs','harletty-bridge/eac3/src/lib.rs');
-paths.push('crates/sda-native/src/stereo_reference.rs','apps/mobile/modules/sda-core/ios/Headers/SdaNative.h');
+paths.push('crates/sda-native/src/stereo_reference.rs','crates/sda-native/src/av3a_reference.rs','packages/core/src/av3a_pipeline.rs','packages/core/src/loudness.rs','apps/mobile/modules/sda-core/ios/Headers/SdaNative.h');
 const mobileReleaseConfig=JSON.parse(readFileSync(join(root,'apps/mobile/app.json'),'utf8')).expo;
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const sources=Object.fromEntries(paths.map(path=>[path,sha(readFileSync(join(root,path)))]));

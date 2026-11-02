@@ -41,6 +41,7 @@ mod headphone_orientation;
 pub mod mpegh;
 pub mod balance;
 pub mod stereo_reference;
+pub mod av3a_reference;
 mod alac_pcm;
 mod sdar;
 
