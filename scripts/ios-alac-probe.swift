@@ -1,6 +1,10 @@
 import Foundation
 import AVFoundation
 
+// Standalone AVFoundation probe: authored WAV routing is verified by the
+// native format tests; these binaries intentionally do not link the Rust engine.
+func sda_ios_is_sdar(_ path:String) -> Int32 { 0 }
+
 enum SdaError: LocalizedError {
  case message(String)
  var errorDescription: String? { if case let .message(s) = self { return s }; return nil }
