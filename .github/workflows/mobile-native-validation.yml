@@ -1,5 +1,13 @@
 name: Mobile native regression and iOS simulator
 on:
+  push:
+    branches: [fix/mobile-instant-seek-storage-20261102]
+    paths:
+      - '.github/workflows/mobile-native-validation.yml'
+      - 'apps/mobile/**'
+      - 'crates/sda-native/**'
+      - 'apps/native-renderer/**'
+      - 'packages/core/**'
   workflow_dispatch:
     inputs:
       source_ref:
