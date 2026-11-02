@@ -22,6 +22,16 @@ class DesktopArchitectureTests(unittest.TestCase):
   with self.assertRaises(AssertionError):module.validate_package_metadata({'version':pkg['version'],'main':'other.cjs'},pkg['version'])
  def test_unicode_package_entrypoint(self):
   module.validate_package_metadata({'version':'0.9.3','main':'./main.cjs','description':'房间与头部运动'},'0.9.3')
+ def test_installer_requires_current_complete_source_worker(self):
+  import tempfile
+  with tempfile.TemporaryDirectory(prefix='sda-worker-contract-') as temporary:
+   resources=Path(temporary)
+   with self.assertRaisesRegex(AssertionError,'worker missing'):module.verify_source_worker(resources)
+   worker=resources/'app.asar.unpacked/upmix-export-worker.cjs';worker.parent.mkdir()
+   worker.write_text('old stereo worker',encoding='utf-8')
+   with self.assertRaisesRegex(AssertionError,'Stale'):module.verify_source_worker(resources)
+   worker.write_bytes(b'referenceLoudnessJson source-rate-full-track-reference-v1')
+   self.assertEqual(module.verify_source_worker(resources),worker)
  def test_invalid_executable_is_rejected(self):
   with self.assertRaises(ValueError):module.architectures(b'not an executable')
 if __name__=='__main__':unittest.main()

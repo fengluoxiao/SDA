@@ -32,6 +32,13 @@ def asar_package(path):
         f.seek(8+sizes[1]+int(item['offset']));return json.loads(f.read(item['size']))
 def validate_package_metadata(pkg, version):
     assert pkg['version']==version and Path(pkg.get('main','')).as_posix()=='main.cjs'
+def verify_source_worker(resources):
+    worker=resources/'app.asar.unpacked/upmix-export-worker.cjs'
+    assert worker.is_file(),'Complete-source analysis worker missing from installer'
+    content=worker.read_bytes()
+    for marker in [b'referenceLoudnessJson',b'source-rate-full-track-reference-v1']:
+        assert marker in content,'Stale or incomplete source-analysis worker'
+    return worker
 def verify_payload(app, platform, arch, commit, version):
     resources=app/'resources' if platform=='Windows' else app/'Contents/Resources'
     suffix='.exe' if platform=='Windows' else ''
@@ -53,6 +60,7 @@ def verify_payload(app, platform, arch, commit, version):
         p=plistlib.loads((app/'Contents/Info.plist').read_bytes());assert p['CFBundleShortVersionString']==version
     if platform=='Windows' and arch=='arm64':assert not (resources/'head-tracking-driver').exists(),'x64 kernel driver in ARM64 package'
     roles['asar']=resources/'app.asar'
+    roles['sourceReferenceWorker']=verify_source_worker(resources)
     return {role:{'path':path.relative_to(app).as_posix(),'sha256':sha(path)} for role,path in roles.items()}
 def inspect_container(installer, platform, arch, commit, version):
     if platform=='Windows':

@@ -1,8 +1,11 @@
 import {readFile,writeFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';import path from 'node:path';
 const root=process.env.GITHUB_WORKSPACE??path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const [platform,arch]=process.argv.slice(2);
 if(!['Windows','macOS'].includes(platform)||!['x64','arm64'].includes(arch))throw Error('Expected Windows/macOS and x64/arm64');
+// Release workflows invoke electron-builder directly; build the ignored worker first.
+execFileSync(process.execPath,[path.join(root,'scripts/build-upmix-export.mjs')],{cwd:root,stdio:'inherit'});
 const pkg=JSON.parse(await readFile(path.join(root,'apps/desktop/package.json'),'utf8'));
 const config=structuredClone(pkg.build);
 config.electronVersion=pkg.devDependencies.electron.replace(/^[~^]/,'');
