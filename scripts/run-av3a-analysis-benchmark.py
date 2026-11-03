@@ -15,7 +15,7 @@ for label,vendor in [("baseline",baseline/"vendor/avs3a"),("candidate",root/"ven
     manifest=(source/"Cargo.toml").read_text().replace('"../../vendor/avs3a"',json.dumps(vendor.as_posix()))
     (crate/"Cargo.toml").write_text(manifest);shutil.copyfile(source/"Cargo.lock",crate/"Cargo.lock");shutil.copyfile(source/"src/main.rs",crate/"src/main.rs")
     subprocess.run(["cargo","build","--manifest-path",str(crate/"Cargo.toml"),"--locked","--release"],cwd=root,env=env,check=True)
-    executable=out/(label+suffix);shutil.copyfile(work/"target/release"/("av3a-analysis-benchmark"+suffix),executable);executables[label]=executable
+    executable=out/(label+suffix);shutil.copy2(work/"target/release"/("av3a-analysis-benchmark"+suffix),executable);executables[label]=executable
 records=[];expected=None
 for workers in [1,3]:
     runenv=dict(env,RAYON_NUM_THREADS=str(workers))
