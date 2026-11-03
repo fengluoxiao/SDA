@@ -93,9 +93,10 @@ impl ProgrammeReference for Av3aReference {
     fn diagnostics(&self)->Option<serde_json::Value> {
         let timing = self.decode_timing.as_ref()?;
         Some(serde_json::json!({
-            "algorithm": "av3a-complete-deferred-scene-v2",
+            "algorithm": "av3a-complete-caller-pool-v3",
             "elapsedSeconds": self.elapsed_seconds,
             "decodeComputeSeconds": timing.compute_seconds,
+            "decodeWorkerStrategy": "caller-with-bounded-helpers-v1",
             "decodeHandoffWaitSeconds": timing.handoff_seconds,
             "consumerReceiveWaitSeconds": self.receive_seconds,
             "sceneOrSpeakerMeterSeconds": self.meter_seconds,

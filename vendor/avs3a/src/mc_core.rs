@@ -7,7 +7,56 @@ use rayon::prelude::*;
 // order/PRNG advancement and DSP, running the two independent neural stages
 // sequentially there. Native hosts retain the bounded decoder-local pool.
 #[cfg(not(target_arch = "wasm32"))]
-type NeuralPool = rayon::ThreadPool;
+// Bounded source analysis counts the owner as a channel worker. Ordinary
+// playback keeps its existing pool execution and worker budget.
+struct NeuralPool {
+    pool: Option<rayon::ThreadPool>,
+    caller_participates: bool,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl NeuralPool {
+    fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        if self.caller_participates {
+            f()
+        } else {
+            self.pool.as_ref().unwrap().install(f)
+        }
+    }
+    fn for_each<T: Send>(&self, items: &mut [T], work: impl Fn(usize, &mut T) + Send + Sync) {
+        if !self.caller_participates {
+            items
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, item)| work(i, item));
+            return;
+        }
+        let Some(pool) = &self.pool else {
+            for (i, item) in items.iter_mut().enumerate() {
+                work(i, item);
+            }
+            return;
+        };
+        let mut items = items.iter_mut().enumerate();
+        let first = items.next();
+        let pending = std::sync::Mutex::new(items);
+        let drain = || loop {
+            let next = pending.lock().unwrap().next();
+            match next {
+                Some((i, item)) => work(i, item),
+                None => break,
+            }
+        };
+        pool.in_place_scope(|scope| {
+            for _ in 0..pool.current_num_threads() {
+                scope.spawn(|_| drain());
+            }
+            if let Some((i, item)) = first {
+                work(i, item);
+            }
+            drain();
+        });
+    }
+}
 #[cfg(target_arch = "wasm32")]
 struct NeuralPool;
 #[cfg(target_arch = "wasm32")]
@@ -15,15 +64,10 @@ impl NeuralPool {
     fn install<R>(&self, f: impl FnOnce() -> R) -> R {
         f()
     }
-}
-#[cfg(target_arch = "wasm32")]
-trait SequentialChannels<T> {
-    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T>;
-}
-#[cfg(target_arch = "wasm32")]
-impl<T> SequentialChannels<T> for [T] {
-    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
-        self.iter_mut()
+    fn for_each<T>(&self, items: &mut [T], work: impl Fn(usize, &mut T)) {
+        for (i, item) in items.iter_mut().enumerate() {
+            work(i, item);
+        }
     }
 }
 
@@ -255,15 +299,28 @@ impl<'model> McCoreDecoder<'model> {
         #[cfg(target_arch = "wasm32")]
         let neural_pool = NeuralPool;
         #[cfg(not(target_arch = "wasm32"))]
-        let neural_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(
-                neural_worker_count()
-                    .min(worker_limit.unwrap_or(usize::MAX))
-                    .max(1),
-            )
-            .thread_name(|index| format!("avs3a-neural-{index}"))
-            .build()
-            .map_err(|_| McCoreDecodeError::ThreadPoolBuild)?;
+        let neural_pool = {
+            let workers = neural_worker_count()
+                .min(worker_limit.unwrap_or(usize::MAX))
+                .max(1);
+            let caller_participates = worker_limit.is_some();
+            let helpers = workers - usize::from(caller_participates);
+            let pool = if helpers == 0 {
+                None
+            } else {
+                Some(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(helpers)
+                        .thread_name(|i| format!("avs3a-neural-{i}"))
+                        .build()
+                        .map_err(|_| McCoreDecodeError::ThreadPoolBuild)?,
+                )
+            };
+            NeuralPool {
+                pool,
+                caller_participates,
+            }
+        };
         Ok(Self {
             side_information: McSideInfoDecoder::new(),
             neural_pool,
@@ -349,12 +406,16 @@ impl<'model> McCoreDecoder<'model> {
             core::array::from_fn(|_| None);
         self.neural_pool
             .install(|| -> Result<(), McCoreDecodeError> {
-                prepared[..channels]
-                    .par_iter_mut()
-                    .zip(self.neural[..channels].par_iter_mut())
-                    .enumerate()
-                    .for_each(|(channel, (slot, decoder))| {
-                        let result = match neural_inputs[channel]
+                {
+                    let mut iter = prepared[..channels]
+                        .iter_mut()
+                        .zip(self.neural[..channels].iter_mut())
+                        .enumerate();
+                    let mut jobs: [Option<_>; MAX_CHANNELS as usize] =
+                        core::array::from_fn(|_| iter.next());
+                    self.neural_pool.for_each(&mut jobs[..channels], |_, job| {
+                        let (channel, (slot, decoder)) = job.as_mut().unwrap();
+                        let result = match neural_inputs[*channel]
                             .expect("all active neural side information was validated")
                         {
                             ParsedNeuralQc::Main(input) if header.nn_type == NnType::Main => {
@@ -367,10 +428,13 @@ impl<'model> McCoreDecoder<'model> {
                                     .prepare_low_complexity(input)
                                     .map_err(McCoreDecodeError::from)
                             }
-                            _ => Err(McCoreDecodeError::UnexpectedNeuralProfile { channel }),
+                            _ => Err(McCoreDecodeError::UnexpectedNeuralProfile {
+                                channel: *channel,
+                            }),
                         };
-                        *slot = Some(result);
+                        **slot = Some(result);
                     });
+                }
 
                 let mut prepared_ok: [Option<PreparedNeuralSpectrum<'_>>; MAX_CHANNELS as usize] =
                     core::array::from_fn(|_| None);
@@ -388,29 +452,30 @@ impl<'model> McCoreDecoder<'model> {
                     prepared_ok[channel] = Some(result);
                 }
 
-                prepared_ok[..channels]
-                    .par_iter_mut()
-                    .zip(self.neural[..channels].par_iter_mut())
-                    .zip(self.spectra[..channels].par_iter_mut())
-                    .zip(channel_randoms[..channels].par_iter_mut())
-                    .zip(neural_diagnostics[..channels].par_iter_mut())
-                    .zip(finish_errors[..channels].par_iter_mut())
-                    .for_each(
-                        |(((((prepared, decoder), spectrum), random), diagnostics), error)| {
-                            match decoder.finish_prepared(
-                                prepared
-                                    .take()
-                                    .expect("every active channel has prepared neural data"),
-                                random,
-                            ) {
-                                Ok(decoded) => {
-                                    *diagnostics = Some(decoded.diagnostics());
-                                    spectrum.copy_from_slice(decoded.spectrum());
-                                }
-                                Err(failure) => *error = Some(failure.into()),
+                {
+                    let mut iter = prepared_ok[..channels]
+                        .iter_mut()
+                        .zip(self.neural[..channels].iter_mut())
+                        .zip(self.spectra[..channels].iter_mut())
+                        .zip(channel_randoms[..channels].iter_mut())
+                        .zip(neural_diagnostics[..channels].iter_mut())
+                        .zip(finish_errors[..channels].iter_mut());
+                    let mut jobs: [Option<_>; MAX_CHANNELS as usize] =
+                        core::array::from_fn(|_| iter.next());
+                    self.neural_pool.for_each(&mut jobs[..channels], |_, job| {
+                        let (((((prepared, decoder), spectrum), random), diagnostics), error) =
+                            job.as_mut().unwrap();
+                        match decoder
+                            .finish_prepared(prepared.take().expect("prepared neural data"), random)
+                        {
+                            Ok(decoded) => {
+                                **diagnostics = Some(decoded.diagnostics());
+                                spectrum.copy_from_slice(decoded.spectrum());
                             }
-                        },
-                    );
+                            Err(failure) => **error = Some(failure.into()),
+                        }
+                    });
+                }
                 if let Some(error) = finish_errors.iter_mut().find_map(Option::take) {
                     return Err(error);
                 }
@@ -451,19 +516,27 @@ impl<'model> McCoreDecoder<'model> {
                 // the same bounded pool without changing any arithmetic or state order.
                 let mut dsp_errors: [Option<McCoreDecodeError>; MAX_CHANNELS as usize] =
                     core::array::from_fn(|_| None);
-                self.channel_dsp[..channels]
-                    .par_iter_mut()
-                    .zip(self.spectra[..channels].par_iter_mut())
-                    .zip(self.synthesis[..channels].par_iter_mut())
-                    .zip(dsp_errors[..channels].par_iter_mut())
-                    .enumerate()
-                    .for_each(|(channel, (((dsp, spectrum), synthesis), error))| {
+                {
+                    let mut iter = self.channel_dsp[..channels]
+                        .iter_mut()
+                        .zip(self.spectra[..channels].iter_mut())
+                        .zip(self.synthesis[..channels].iter_mut())
+                        .zip(dsp_errors[..channels].iter_mut())
+                        .enumerate();
+                    let mut jobs: [Option<_>; MAX_CHANNELS as usize] =
+                        core::array::from_fn(|_| iter.next());
+                    self.neural_pool.for_each(&mut jobs[..channels], |_, job| {
+                        let (channel, (((dsp, spectrum), synthesis), error)) =
+                            job.as_mut().unwrap();
+                        let spectrum = &mut **spectrum;
+                        let synthesis = &mut **synthesis;
                         let result = (|| -> Result<(), McCoreDecodeError> {
-                            let core = cores[channel]
-                                .ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
+                            let core = cores[*channel].ok_or(
+                                McCoreDecodeError::MissingCoreSideInformation { channel: *channel },
+                            )?;
                             dsp.tns.apply(core.tns(), core.transform_type(), spectrum)?;
                             dsp.fd_shaping.apply(core.lsf(), spectrum)?;
-                            if config.lfe_channel() == Some(channel) {
+                            if config.lfe_channel() == Some(*channel) {
                                 clear_mc_lfe_spectrum(spectrum)?;
                             }
                             dsp.mdct_synthesis.synthesize(
@@ -473,8 +546,9 @@ impl<'model> McCoreDecoder<'model> {
                             )?;
                             Ok(())
                         })();
-                        *error = result.err();
+                        **error = result.err();
                     });
+                }
                 if let Some(error) = dsp_errors.into_iter().flatten().next() {
                     return Err(error);
                 }
@@ -505,8 +579,8 @@ impl McCoreDecoder<'static> {
         let model = crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
         Self::new(model)
     }
-    /// A source-analysis instance may bound its own workers without changing
-    /// process-wide Rayon settings or the decoder used for live playback.
+    /// Bound total source-analysis channel workers, including the calling
+    /// decoder thread, without changing global Rayon state or live playback.
     pub fn new_builtin_with_worker_limit(limit: usize) -> Result<Self, McCoreDecodeError> {
         let model = crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
         Self::new_with_worker_limit(model, Some(limit.max(1)))
@@ -649,5 +723,84 @@ mod tests {
         );
         assert_eq!(decoder.random(), &original_random);
         assert_eq!(output, [7.0; 17]);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod caller_pool_tests {
+    use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    fn pool(workers: usize, caller: bool) -> NeuralPool {
+        let helpers = workers - usize::from(caller);
+        NeuralPool {
+            pool: if helpers == 0 {
+                None
+            } else {
+                Some(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(helpers)
+                        .build()
+                        .unwrap(),
+                )
+            },
+            caller_participates: caller,
+        }
+    }
+    #[test]
+    fn bounded_analysis_executes_on_owner_and_visits_every_channel_once() {
+        let owner = std::thread::current().id();
+        let original_index = rayon::current_thread_index();
+        for workers in 1..=4 {
+            let pool = pool(workers, true);
+            for count in [0, 1, 2, 16, MAX_CHANNELS as usize] {
+                let mut values = vec![0usize; count];
+                let calls: Vec<_> = (0..count).map(|_| AtomicUsize::new(0)).collect();
+                let owner_used = AtomicBool::new(false);
+                let threads = Mutex::new(std::collections::HashSet::new());
+                pool.install(|| {
+                    pool.for_each(&mut values, |i, value| {
+                        calls[i].fetch_add(1, Ordering::Relaxed);
+                        *value = i * 17 + 9;
+                        let current = std::thread::current().id();
+                        threads.lock().unwrap().insert(current);
+                        if current == owner {
+                            owner_used.store(true, Ordering::Relaxed);
+                        }
+                    })
+                });
+                assert_eq!(values, (0..count).map(|i| i * 17 + 9).collect::<Vec<_>>());
+                assert!(calls.iter().all(|n| n.load(Ordering::Relaxed) == 1));
+                assert!(count == 0 || owner_used.load(Ordering::Relaxed));
+                assert!(threads.lock().unwrap().len() <= workers);
+                assert_eq!(rayon::current_thread_index(), original_index);
+            }
+        }
+    }
+    #[test]
+    fn normal_playback_keeps_work_on_the_decoder_pool() {
+        let pool = pool(3, false);
+        let owner = std::thread::current().id();
+        let mut values = [0usize; 32];
+        pool.install(|| {
+            pool.for_each(&mut values, |i, value| {
+                assert_ne!(std::thread::current().id(), owner);
+                assert!(rayon::current_thread_index().is_some());
+                *value = i + 1;
+            })
+        });
+        assert_eq!(values, core::array::from_fn(|i| i + 1));
+    }
+    #[test]
+    fn bounded_pools_can_be_recreated_on_one_owner_without_registering_it() {
+        let before = rayon::current_thread_index();
+        for _ in 0..24 {
+            let pool = pool(3, true);
+            let mut values = [0; 24];
+            pool.install(|| pool.for_each(&mut values, |i, value| *value = i));
+            assert_eq!(rayon::current_thread_index(), before);
+        }
     }
 }

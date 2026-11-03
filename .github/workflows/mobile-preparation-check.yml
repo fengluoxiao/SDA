@@ -2,7 +2,7 @@ name: Mobile preparation regression checks
 on:
   push:
     branches: [fix/mobile-preparation-speed-20261103]
-    paths: [".github/workflows/mobile-preparation-check.yml", "vendor/avs3a/**", "scripts/mpegh-extraction-regression/**", "packages/core/src/loudness.rs", "crates/sda-native/src/mp4_extract.rs"]
+    paths: [".github/workflows/mobile-preparation-check.yml", "vendor/avs3a/**", "scripts/mpegh-extraction-regression/**", "packages/core/src/loudness.rs", "crates/sda-native/src/mp4_extract.rs", "scripts/av3a-analysis-benchmark/**", "scripts/run-av3a-analysis-benchmark.py"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.98.0'
@@ -34,3 +36,11 @@ jobs:
           python3 scripts/test-ios-import-io.py
           python3 scripts/test-ios-storage.py
           python3 scripts/test-ios-programme-state.py
+      - name: Compare complete public-fixture analysis and normal playback
+        run: python scripts/run-av3a-analysis-benchmark.py --baseline ec70183131a867c3d1c9685c12a37597f169e104 --output benchmark-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: av3a-analysis-benchmark-${{ runner.os }}-${{ runner.arch }}
+          path: benchmark-artifacts/results.json
+          if-no-files-found: ignore

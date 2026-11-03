@@ -1,0 +1,10 @@
+[package]
+name = "av3a-analysis-benchmark"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+avs3a = { path = "../../vendor/avs3a" }
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
