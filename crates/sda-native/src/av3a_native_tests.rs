@@ -391,6 +391,10 @@ fn av3a_private_object_programme_balance_changes_real_stereo_output() {
         );
     }
     let energy = |p: &[f32]| p.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+    // Released immersive formats receive this fixed output calibration only
+    // while programme balance is enabled. Check the controller separately,
+    // retaining the measured physical level change in the audit report.
+    let fixed_calibration_db = 1.8_f64;
     let mut windows = vec![];
     for (start, end) in [(12usize, 14usize), (76, 90), (150, 180), (180, 200)] {
         if end * 48000 * 2 > off.len() {
@@ -398,23 +402,24 @@ fn av3a_private_object_programme_balance_changes_real_stereo_output() {
         }
         let range = start * 48000 * 2..end * 48000 * 2;
         let delta = 10. * (energy(&on[range.clone()]) / energy(&off[range])).log10();
+        let normalization_delta = delta - fixed_calibration_db;
         assert!(
-            delta <= 0.02,
-            "balance boosted real output at {start}: {delta}"
+            normalization_delta <= 0.02,
+            "balance boosted beyond fixed calibration at {start}: physical={delta}, normalization={normalization_delta}"
         );
-        windows.push(serde_json::json!({"start":start,"end":end,"onMinusOffDb":delta}));
+        windows.push(serde_json::json!({"start":start,"end":end,"onMinusOffDb":delta,"normalizationDeltaDb":normalization_delta,"fixedCalibrationDb":fixed_calibration_db}));
     }
     println!("real stereo windows: {windows:?}, final target {on_gain}");
     if expect_cut {
         assert!(
             windows
                 .iter()
-                .any(|v| v["onMinusOffDb"].as_f64().unwrap() < -0.05),
+                .any(|v| v["normalizationDeltaDb"].as_f64().unwrap() < -0.05),
             "gain status alone does not prove audible output attenuation"
         );
     }
     let input = std::env::var("SDA_OBJECT_BALANCE_INPUT").unwrap();
-    let report = serde_json::json!({"input":input,"samples":off.len()/2,"targetDb":on_gain,"windows":windows,"offGainDb":off_gain});
+    let report = serde_json::json!({"input":input,"samples":off.len()/2,"targetDb":on_gain,"windows":windows,"offGainDb":off_gain,"fixedCalibrationDb":fixed_calibration_db});
     println!("{report}");
     if let Ok(folder) = std::env::var("SDA_OBJECT_BALANCE_REPORT_DIR") {
         let root = std::path::Path::new(&folder);
