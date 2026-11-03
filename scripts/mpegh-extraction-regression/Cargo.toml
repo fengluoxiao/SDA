@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Compile the actual shared native extractor, without unrelated audio outputs.
+# Compile the actual extractor and meter, without unrelated audio outputs.
 [lib]
-path = "../../crates/sda-native/src/mp4_extract.rs"
+path = "lib.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

@@ -65,10 +65,10 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
   };
   try {
     if (host.extractMp4ImportNative) {
-      onProgress?.({ fraction: 0.05, stage: "提取 360 Reality Audio 音轨" });
+      onProgress?.({ fraction: 0.05, stage: "解析音轨" });
       const result = JSON.parse(await host.extractMp4ImportNative(token)) as null | { codec: string; durationMs: number; packetCount: number; bytes: number };
       if (result) {
-        if (!["mha1", "mhm1"].includes(result.codec) || result.packetCount <= 0 || result.bytes <= 0 || !Number.isFinite(result.durationMs) || result.durationMs < 0) throw new Error("原生音轨提取结果无效");
+        if (!["mha1", "mhm1"].includes(result.codec) || !Number.isSafeInteger(result.packetCount) || result.packetCount <= 0 || !Number.isSafeInteger(result.bytes) || result.bytes <= 0 || !Number.isFinite(result.durationMs) || result.durationMs < 0) throw new Error("原生音轨提取结果无效");
         const playbackUri = await host.finishMp4Import(token);
         onProgress?.({ fraction: 1, stage: "音轨已就绪" });
         return { uri: playbackUri, name: `${name}.mhas`, durationMs: result.durationMs,
