@@ -1,6 +1,6 @@
 //! Complete source-only Audio Vivid analysis, separate from the stereo reader's dependencies.
 use crate::{balance::Measurement,stereo_reference::{FreshStereoReference,ProgrammeReference}};
-use std::{fs,path::Path};
+use std::{fs,path::Path,time::Instant};
 #[cfg(test)] use std::time::SystemTime;
 
 pub fn open(path: impl AsRef<Path>) -> Result<FreshStereoReference,String> {
@@ -9,15 +9,17 @@ pub fn open(path: impl AsRef<Path>) -> Result<FreshStereoReference,String> {
 }
 pub fn open_with_hrtf(path:impl AsRef<Path>,hrtf:impl AsRef<Path>)->Result<FreshStereoReference,String>{
     let path=path.as_ref();let mut reference=Av3aReference::open(path)?;
-    reference.renderer=Some(crate::av3a_reference_renderer::CanonicalReference::new(hrtf.as_ref())?);
+    reference.renderer=Some(crate::av3a_reference_renderer::CanonicalReference::new(hrtf.as_ref()));
     FreshStereoReference::from_programme(path,"av3a",Box::new(reference))
 }
 
 /// Complete analysis with a bounded two-frame handoff: decoding and metering
 /// run concurrently without retaining any programme PCM or calculated disk data.
 struct ReferenceFrame { frame:sda_core::FrameData, scene:bool }
+struct DecodeTiming { compute_seconds: f64, handoff_seconds: f64 }
+enum ReferenceOutput { Frame(ReferenceFrame), Finished(DecodeTiming) }
 struct Av3aReference {
-    receiver: Option<std::sync::mpsc::Receiver<Result<Option<ReferenceFrame>, String>>>,
+    receiver: Option<std::sync::mpsc::Receiver<Result<ReferenceOutput, String>>>,
     worker: Option<std::thread::JoinHandle<()>>,
     native_frames: u64,
     sample_rate: u32,
@@ -27,9 +29,16 @@ struct Av3aReference {
     finished: bool,
     use_speakers: bool,
     renderer: Option<crate::av3a_reference_renderer::CanonicalReference>,
+    started: Instant,
+    receive_seconds: f64,
+    meter_seconds: f64,
+    canonical_seconds: f64,
+    decode_timing: Option<DecodeTiming>,
+    elapsed_seconds: f64,
 }
 impl Av3aReference {
     fn open(path: &Path) -> Result<Self, String> {
+        let started = Instant::now();
         // Open before spawning so an invalid input fails synchronously.
         let input = fs::File::open(path).map_err(|e| e.to_string())?;
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
@@ -38,24 +47,34 @@ impl Av3aReference {
                 let result = decode_reference(input, &sender);
                 // Dropping the receiver cancels a blocked send. No detached job
                 // can outlive its reference owner, including on source changes.
-                let _ = sender.send(result.map(|()| None));
+                let _ = sender.send(result.map(ReferenceOutput::Finished));
             }).map_err(|e| e.to_string())?;
         Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0,
-            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), scene: None, finished: false, use_speakers: false, renderer: None })
+            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), scene: None, finished: false, use_speakers: false, renderer: None,
+            started, receive_seconds: 0., meter_seconds: 0., canonical_seconds: 0.,
+            decode_timing: None, elapsed_seconds: 0. })
     }
 }
-fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<Option<ReferenceFrame>,String>>) -> Result<(),String> {
+fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<ReferenceOutput,String>>) -> Result<DecodeTiming,String> {
     use std::io::Read;
     let mut input = std::io::BufReader::new(input);
     let mut decoder = sda_core::StreamingDecoder::av3a_pipelined_source_reference();
     let mut flushed = false;
+    let started = Instant::now();
+    let mut handoff_seconds = 0.;
     loop {
         let errors = decoder.drain_errors();
         if !errors.is_empty() { return Err(format!("Audio Vivid reference decode failed: {}", errors.join("; "))); }
         if let Some(frame) = decoder.next_frame() {
             let scene=decoder.av3a_reference_is_scene();
-            if sender.send(Ok(Some(ReferenceFrame{frame,scene}))).is_err() { return Ok(()); }
-        } else if flushed { return Ok(()); }
+            let sending = Instant::now();
+            if sender.send(Ok(ReferenceOutput::Frame(ReferenceFrame{frame,scene}))).is_err() {
+                return Ok(DecodeTiming { compute_seconds: started.elapsed().as_secs_f64() - handoff_seconds, handoff_seconds });
+            }
+            handoff_seconds += sending.elapsed().as_secs_f64();
+        } else if flushed { return Ok(DecodeTiming {
+            compute_seconds: started.elapsed().as_secs_f64() - handoff_seconds, handoff_seconds,
+        }); }
         else {
             let mut bytes = [0u8;4096];
             let n = input.read(&mut bytes).map_err(|e|e.to_string())?;
@@ -71,6 +90,21 @@ impl Drop for Av3aReference {
     }
 }
 impl ProgrammeReference for Av3aReference {
+    fn diagnostics(&self)->Option<serde_json::Value> {
+        let timing = self.decode_timing.as_ref()?;
+        Some(serde_json::json!({
+            "algorithm": "av3a-complete-deferred-scene-v2",
+            "elapsedSeconds": self.elapsed_seconds,
+            "decodeComputeSeconds": timing.compute_seconds,
+            "decodeHandoffWaitSeconds": timing.handoff_seconds,
+            "consumerReceiveWaitSeconds": self.receive_seconds,
+            "sceneOrSpeakerMeterSeconds": self.meter_seconds,
+            "canonicalRendererSeconds": self.canonical_seconds,
+            "availableParallelism": std::thread::available_parallelism().map_or(1,usize::from),
+            "sampleFrames": self.native_frames, "sampleRate": self.sample_rate,
+            "objectScene": self.scene.is_some(), "complete": self.finished,
+        }))
+    }
     fn frames(&self) -> u64 { (self.native_frames*48000+u64::from(self.sample_rate)/2)/u64::from(self.sample_rate) }
     fn input_sample_rate(&self)->u32{self.sample_rate}
     fn measurement_sample_rate(&self)->u32{self.sample_rate}
@@ -80,8 +114,11 @@ impl ProgrammeReference for Av3aReference {
         if self.finished { return Ok(true); }
         let end = self.frames().saturating_add(budget as u64);
         loop {
-            match self.receiver.as_ref().ok_or("Audio Vivid reference was closed")?.recv().map_err(|_|"Audio Vivid reference worker stopped unexpectedly")?? {
-                Some(reference) => {
+            let receiving = Instant::now();
+            let received = self.receiver.as_ref().ok_or("Audio Vivid reference was closed")?.recv().map_err(|_|"Audio Vivid reference worker stopped unexpectedly")??;
+            self.receive_seconds += receiving.elapsed().as_secs_f64();
+            match received {
+                ReferenceOutput::Frame(reference) => {
                     let mut frame=reference.frame;
                     if self.native_frames==0 && frame.sample_rate>0 {self.sample_rate=frame.sample_rate;}
                     if frame.sample_rate == 0 || frame.sample_rate != self.sample_rate || frame.sample_pos != self.native_frames
@@ -94,14 +131,17 @@ impl ProgrammeReference for Av3aReference {
                     // normalization, and scene routing validates its gained outputs.
                     // Keep that boundary check rather than repeat the PCM scan here.
                     debug_assert!(frame.channels.iter().flatten().all(|x|x.is_finite()));
+                    let canonical = Instant::now();
                     if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
+                    self.canonical_seconds += canonical.elapsed().as_secs_f64();
+                    let metering = Instant::now();
                     if let Some(measurement)=frame.reference_loudness.take() {
                         self.latest=measurement;self.use_speakers=false;
                     } else if reference.scene {
                         // Metadata/events stay on the original sample timeline.
                         // Only the owning execution thread changes; the scene
                         // mixer, ramps and BS.1770 policy are unchanged.
-                        self.latest=self.scene.get_or_insert_with(||sda_core::scene_reference::SceneMeter::with_sample_rate(frame.sample_rate)).measure(&frame);
+                        self.scene.get_or_insert_with(||sda_core::scene_reference::SceneMeter::with_sample_rate(frame.sample_rate)).push(&frame);
                         self.use_speakers=false;
                     } else {
                         // Programme references are published only at EOF. Accumulate
@@ -111,12 +151,20 @@ impl ProgrammeReference for Av3aReference {
                             .ok_or("Audio Vivid programme reference unavailable")?;
                         self.use_speakers=true;
                     }
+                    self.meter_seconds += metering.elapsed().as_secs_f64();
                     self.native_frames += frame.channels[0].len() as u64;
                     if self.frames() >= end { return Ok(false); }
                 }
-                None => {
+                ReferenceOutput::Finished(timing) => {
+                    self.decode_timing = Some(timing);
                     if self.native_frames == 0 { return Err("no Audio Vivid reference samples".into()); }
+                    let metering = Instant::now();
+                    if let Some(scene) = &self.scene { self.latest = scene.measurement(); }
+                    self.meter_seconds += metering.elapsed().as_secs_f64();
+                    let canonical = Instant::now();
                     if let Some(renderer)=&mut self.renderer{renderer.finish()?;}
+                    self.canonical_seconds += canonical.elapsed().as_secs_f64();
+                    self.elapsed_seconds = self.started.elapsed().as_secs_f64();
                     self.finished = true;
                     return Ok(true);
                 }
@@ -137,7 +185,18 @@ mod tests {
         let mut result=None;
         for _ in 0..10 {
             let step=reference.step(4096).unwrap();
-            if step.done {result=step.measurement;break;}
+            if step.done {
+                let diagnostics=step.diagnostics.as_ref().expect("complete native stage timings");
+                assert_eq!(diagnostics["complete"],true);
+                assert_eq!(diagnostics["objectScene"],false);
+                assert_eq!(diagnostics["sampleRate"],44100);
+                for key in ["elapsedSeconds","decodeComputeSeconds","sceneOrSpeakerMeterSeconds"] {
+                    assert!(diagnostics[key].as_f64().unwrap() >= 0.);
+                }
+                assert!(serde_json::to_string(diagnostics).unwrap().len()<2048);
+                assert!(diagnostics.get("path").is_none() && diagnostics.get("hash").is_none());
+                result=step.measurement;break;
+            }
         }
         let result=result.expect("complete short AV3A reference");
         assert_eq!(result.codec,"av3a");assert!(result.complete);assert_eq!(result.sample_rate,48000);assert_eq!(result.input_sample_rate,44100);assert_eq!(result.measurement_sample_rate,44100);assert!(result.frames>0);

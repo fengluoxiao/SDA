@@ -19,6 +19,7 @@ paths.push('apps/native-renderer/src/reference_convolution.rs','crates/sda-nativ
 const mobileReleaseConfig=JSON.parse(readFileSync(join(root,'apps/mobile/app.json'),'utf8')).expo;
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 paths.push('crates/sda-native/src/mp4_extract.rs','vendor/avs3a/src/imdct.rs');
+paths.push('packages/core/src/scene_reference.rs');
 const sources=Object.fromEntries(paths.map(path=>[path,sha(readFileSync(join(root,path)))]));
 const sourceCheckoutCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 const sourceCommit=process.env.SDA_SOURCE_COMMIT??process.env.GITHUB_SHA??sourceCheckoutCommit;

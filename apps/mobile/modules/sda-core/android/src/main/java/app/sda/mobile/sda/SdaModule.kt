@@ -297,6 +297,7 @@ class SdaModule : Module() {
             .put("input", JSONObject().put("codec", activeSourceCodec).put("layout", activeLayout)
                 .put("bytesSubmitted", inputBytesSubmitted).put("dspCpuBudget", dspCpuBudget).put("audioCpuPolicy", audioCpuPolicy).put("feedThreadAlive", feedThread?.isAlive == true)
                 .put("feedThreadState", feedThread?.state?.name ?: "NONE"))
+            .put("referencePreparations", stereoReferences.diagnostics())
             .put("backgroundPlayback", lease)
             .put("graphics", JSONObject().put("sceneLoopRequested", sceneRenderingRequested))
             .put("accelerators", JSONObject(SdaEngine.nativeAccelerators()))

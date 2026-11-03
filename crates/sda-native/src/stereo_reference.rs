@@ -55,6 +55,9 @@ pub struct Step {
     pub frames: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measurement: Option<CompleteReference>,
+    /// Timings only: no source path, song identity, PCM or persisted analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<serde_json::Value>,
 }
 pub struct FreshStereoReference {
     decoder: Option<Mp3FileDecoder>,
@@ -100,7 +103,7 @@ impl FreshStereoReference {
     /// At most 65536 decoded frames per call; cancellation is checked by the host between calls.
     pub fn step(&mut self, max_frames: usize) -> Result<Step, String> {
         if let Some(measurement) = &self.complete {
-            return Ok(Step { done: true, frames: self.frames, measurement: Some(measurement.clone()) });
+            return Ok(Step { done: true, frames: self.frames, measurement: Some(measurement.clone()), diagnostics: self.programme.as_ref().and_then(|p|p.diagnostics()) });
         }
         let budget = max_frames.clamp(4096, 65536);
         if let Some(programme) = &mut self.programme {
@@ -110,7 +113,7 @@ impl FreshStereoReference {
                 let measurement = programme.measurement();
                 self.finish_reference(measurement)?;
             }
-            return Ok(Step { done: self.complete.is_some(), frames: self.frames, measurement: self.complete.clone() });
+            return Ok(Step { done: self.complete.is_some(), frames: self.frames, measurement: self.complete.clone(), diagnostics: if self.complete.is_some() { self.programme.as_ref().and_then(|p|p.diagnostics()) } else { None } });
         }
         let end = self.frames.saturating_add(budget as u64);
         loop {
@@ -128,13 +131,14 @@ impl FreshStereoReference {
             if self.frames >= end { break; }
             if pcm.is_empty() { return Err("stereo decoder made no progress".into()); }
         }
-        Ok(Step { done: self.complete.is_some(), frames: self.frames, measurement: self.complete.clone() })
+        Ok(Step { done: self.complete.is_some(), frames: self.frames, measurement: self.complete.clone(), diagnostics: None })
     }
 }
 
 /// A bounded source-only reader supplied by a format-specific module.
 /// Keeping this interface decoder-neutral preserves the isolated ALAC/MP3 regression target.
 pub(crate) trait ProgrammeReference {
+    fn diagnostics(&self)->Option<serde_json::Value>{None}
     fn step(&mut self, budget: usize) -> Result<bool, String>;
     fn frames(&self) -> u64;
     fn measurement(&self) -> Measurement;

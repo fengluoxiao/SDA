@@ -151,7 +151,9 @@ impl SceneMeter {
             }
         }
     }
-    pub fn measure(&mut self, f: &FrameData) -> ReferenceLoudness {
+    /// Accumulate the complete scene without re-gating its growing history.
+    /// Import needs only the final value; live callers can still use `measure`.
+    pub fn push(&mut self, f: &FrameData) {
         debug_assert_eq!(f.sample_rate, self.sample_rate);
         let n = f.channels[0].len();
         let mut out = vec![vec![0.; n]; 12];
@@ -189,7 +191,13 @@ impl SceneMeter {
         }
         self.mix(f, &mut out, offset, n);
         self.meter.push(&out);
+    }
+    pub fn measurement(&self) -> ReferenceLoudness {
         self.meter.integrated()
+    }
+    pub fn measure(&mut self, f: &FrameData) -> ReferenceLoudness {
+        self.push(f);
+        self.measurement()
     }
 }
 
@@ -197,6 +205,41 @@ impl SceneMeter {
 mod tests {
     use super::*;
     use crate::ObjectChannelDecl;
+    #[test]
+    fn deferred_scene_gate_preserves_moving_ramped_correlated_programme() {
+        for rate in [44100, 48000] {
+            let mut live = SceneMeter::with_sample_rate(rate);
+            let mut deferred = SceneMeter::with_sample_rate(rate);
+            let mut expected = ReferenceLoudness::default();
+            for block in 0..600 {
+                let mut f = frame(block * 1024, if block % 127 < 30 { 0.00001 } else { 0.17 }, Some(-0.4), 0.);
+                f.sample_rate = rate;
+                if block % 19 == 0 {
+                    for id in [1, 2] {
+                        f.events.push(ObjectEvent {
+                            id, sample_pos: f.sample_pos + 123, has_pos: true,
+                            pos: [((block + id as u64) as f64 * 0.17).sin(), 1., 0.4],
+                            gain_db: if block % 38 == 0 { -7. } else { 1.5 },
+                            size: [0.1, 0.2, 0.], anchor: "room".into(), diffuse: 0.1,
+                            zone_exclusion: vec![], horizontal_only: false, distance_m: None,
+                            distance_infinite: false, screen_factor: None, depth_factor: None,
+                            ramp_duration: 1536,
+                        });
+                    }
+                }
+                expected = live.measure(&f);
+                deferred.push(&f);
+            }
+            let actual = deferred.measurement();
+            assert_eq!(actual.integrated_lufs.map(f64::to_bits), expected.integrated_lufs.map(f64::to_bits));
+            assert_eq!(actual.true_peak_dbtp.map(f64::to_bits), expected.true_peak_dbtp.map(f64::to_bits));
+            assert_eq!(actual.blocks, expected.blocks);
+            for (id, row) in &deferred.rows {
+                assert_eq!(row.current.map(f32::to_bits), live.rows[id].current.map(f32::to_bits));
+                assert_eq!(row.remaining, live.rows[id].remaining);
+            }
+        }
+    }
     fn frame(at: u64, scale: f32, second: Option<f32>, gain: f64) -> FrameData {
         let tone: Vec<f32> = (0..1024)
             .map(|i| scale * (2. * std::f32::consts::PI * 997. * (at + i) as f32 / 48000.).sin())

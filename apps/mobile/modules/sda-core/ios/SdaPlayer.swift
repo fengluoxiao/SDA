@@ -112,6 +112,14 @@ final class SdaPlayer {
  let prefs = UserDefaults.standard
  let diagnostics = RemoteDiagnostics()
  var diagnosticMotion: [String:Any] = [:]
+ var referencePreparationDiagnostics: [[String:Any]] = []
+ func recordReferencePreparation(_ native: [String:Any], elapsed: Double, av3a: Bool, reused: Bool) {
+  locked {
+   referencePreparationDiagnostics.append(["time":Date().timeIntervalSince1970,"codec":av3a ? "av3a" : "stereo",
+    "hostElapsedSeconds":elapsed,"reusedCurrentProgramme":reused,"native":native])
+   if referencePreparationDiagnostics.count > 16 { referencePreparationDiagnostics.removeFirst(referencePreparationDiagnostics.count-16) }
+  }
+ }
  func locked<T>(_ work: () throws -> T) rethrows -> T { lock.lock(); defer { lock.unlock() }; return try work() }
  func json(_ value: Any) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]), as: UTF8.self) }
  func decodeReply(_ p: UnsafeMutablePointer<CChar>?) throws -> Any {
@@ -640,7 +648,9 @@ final class SdaPlayer {
   let input = try CompressedInput(url:url,name:name)
   guard !input.isSdar && (input.isAlac || ext == "mp3" || input.isAv3a) else { return }
   let identity = try stereoSourceIdentity(url.path)
-  if locked({ loadedProgrammeReferences[hash]?.0 == identity }) { return }
+  if locked({ loadedProgrammeReferences[hash]?.0 == identity }) {
+   recordReferencePreparation([:],elapsed:0,av3a:input.isAv3a,reused:true);return
+  }
   let importToken = locked { stereoImportGeneration }
   guard let measurement = try measureNativeStereoReference(path:url.path,alac:input.isAlac,av3a:input.isAv3a,valid:{
    self.locked { self.stereoImportGeneration == importToken }
@@ -653,6 +663,7 @@ final class SdaPlayer {
   #if targetEnvironment(simulator)
   locked { ciProgrammeAnalyses += 1 }
   #endif
+  let analysisStarted=ProcessInfo.processInfo.systemUptime
   var error: UnsafeMutablePointer<CChar>?
   var referenceHrtf=""
   if av3a { referenceHrtf=try hrtfPath("dense") }
@@ -667,6 +678,7 @@ final class SdaPlayer {
     }
     if step["done"] as? Bool != true { return nil }
     guard let measurement = step["measurement"] as? [String:Any] else { throw SdaError.message("立体声整曲响度参考缺失") }
+    recordReferencePreparation(step["diagnostics"] as? [String:Any] ?? [:],elapsed:ProcessInfo.processInfo.systemUptime-analysisStarted,av3a:av3a,reused:false)
     return try json(measurement)
    }
    if let completed { return completed }

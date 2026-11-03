@@ -92,6 +92,7 @@ extension SdaPlayer {
      "backgroundTrackingEnabled":self.prefs.bool(forKey:"sda.headTracking"),
      "error":self.failure == nil ? "" : "playback-error",
      "errorDetails":self.failureDiagnostic,"input":self.compressedInputDiagnostic,
+     "referencePreparations":self.referencePreparationDiagnostics,
      "events":self.playbackEvents.suffix(16).map { ["time":$0["time"] ?? 0,"event":$0["event"] ?? "","generation":$0["generation"] ?? 0] }]
    }
   }

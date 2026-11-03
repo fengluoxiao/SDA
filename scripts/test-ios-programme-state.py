@@ -4,6 +4,7 @@ import subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
 source=(root/"apps/mobile/modules/sda-core/ios/SdaPlayer.swift").read_text(encoding="utf-8")
 state=source[source.index(" private struct StereoSourceIdentity"):source.index(" var uncommittedRetained")]
+metrics=source[source.index(" var referencePreparationDiagnostics:"):source.index(" func locked<")]
 prepare=source[source.index(" func prepareStereoTrack("):source.index(" private func measureNativeStereoReference(")]
 install=source[source.index(" func prepareNativeStereoReference("):source.index(" func requestSeek(")]
 header=r'''
@@ -52,6 +53,9 @@ let before=p.installed;let cancelled=try p.prepareNativeStereoReference(path:a.p
 precondition(!cancelled && before==p.installed,"cancelled source must not install old parameters")
 p.onMeasure=nil
 precondition(try p.prepareNativeStereoReference(path:a.path,alac:false,av3a:true,token:p.generation,hash:ha))
+for _ in 0..<24 {p.recordReferencePreparation([:],elapsed:0,av3a:true,reused:true)}
+precondition(p.referencePreparationDiagnostics.count==16)
+precondition(p.referencePreparationDiagnostics.allSatisfy { $0["reusedCurrentProgramme"] as? Bool == true })
 print("PASS Swift programme state: A-B-A-B, repeat prepare, native/system install, queue pruning, changed source, cancellation, recovery")
 '''
 # Swift autoclosures cannot throw; materialize each throwing predicate first.
@@ -63,5 +67,5 @@ def predicate(match):
  return "let check%d=try %s;precondition(check%d)"%(serial,match.group(1),serial)
 tests=re.sub(r"precondition\(try (p\.prepareNativeStereoReference\([^\n]*?\))\)",predicate,tests)
 with tempfile.TemporaryDirectory(prefix="sda-ios-programme-")as temporary:
- p=Path(temporary)/"main.swift";p.write_text(header+state+prepare+install+"}\n"+tests,encoding="utf-8")
+ p=Path(temporary)/"main.swift";p.write_text(header+state+metrics+prepare+install+"}\n"+tests,encoding="utf-8")
  subprocess.run(["xcrun","swift",str(p)],check=True)

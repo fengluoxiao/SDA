@@ -50,5 +50,11 @@ fun main(args: Array<String>) {
     check(refs.forSource(source,"renderer")==null && refs.forSource(source,"renderer",renderer.absolutePath)!=null)
     renderer.appendText("changed");check(refs.forSource(source,"renderer",renderer.absolutePath)==null)
     refs.prepare(source,"renderer",false,true,referenceHrtf=renderer.absolutePath){false};check(SdaEngine.av3aCreated==2 && SdaEngine.closed==2)
+    repeat(24) { refs.prepare(source,"renderer",false,true,referenceHrtf=renderer.absolutePath){false} }
+    val metrics=refs.diagnostics();check(metrics.length()==16)
+    for (i in 0 until metrics.length()) {
+        check(metrics.getJSONObject(i).getBoolean("reusedCurrentProgramme"))
+        check(!metrics.getJSONObject(i).has("path") && !metrics.getJSONObject(i).has("hash"))
+    }
     println("PASS import reference: loaded-source gain state, no repeat analysis, hash/path/file-change guard, cancellation, mid-scan mutation, handle cleanup")
 }

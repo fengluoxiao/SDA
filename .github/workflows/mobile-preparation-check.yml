@@ -33,3 +33,4 @@ jobs:
         run: |
           python3 scripts/test-ios-import-io.py
           python3 scripts/test-ios-storage.py
+          python3 scripts/test-ios-programme-state.py
