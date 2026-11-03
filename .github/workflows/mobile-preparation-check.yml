@@ -1,5 +1,8 @@
 name: Mobile preparation regression checks
 on:
+  push:
+    branches: [fix/mobile-preparation-speed-20261103]
+    paths: [".github/workflows/mobile-preparation-check.yml", "vendor/avs3a/**", "scripts/mpegh-extraction-regression/**"]
   workflow_dispatch:
 permissions:
   contents: read
