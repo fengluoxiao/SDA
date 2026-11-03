@@ -29,8 +29,8 @@ fn android_log(message: &str) {
     }
 }
 
-// These symbols were introduced in API 32. Resolve them at runtime rather
-// than linking directly: our APK must still load on Android API 26-31.
+// Media/session setters require API 28 and spatialization setters API 32.
+// Resolve optional symbols at runtime so the APK still loads on API 26-31.
 #[link(name = "dl")]
 unsafe extern "C" {
     fn dlopen(name: *const std::ffi::c_char, flags: i32) -> *mut std::ffi::c_void;
@@ -38,17 +38,24 @@ unsafe extern "C" {
     fn dlclose(handle: *mut std::ffi::c_void) -> i32;
 }
 
-unsafe fn disable_system_spatialization(builder: *mut aaudio::AAudioStreamBuilder) {
+unsafe fn configure_media_output(builder: *mut aaudio::AAudioStreamBuilder) {
     // Keep the library handle alive until both optional calls have completed.
     let handle = unsafe { dlopen(c"libaaudio.so".as_ptr(), 2) }; // RTLD_NOW
     if handle.is_null() {
         android_log("spatialization_policy=unavailable library=libaaudio.so");
         return;
     }
-    for (name,value) in [(c"AAudioStreamBuilder_setUsage",1),(c"AAudioStreamBuilder_setContentType",2)] {
+    // A session excludes MMAP in AOSP and gives this music stream the same
+    // effects-compatible shared mixer path used by standard media playback.
+    for (name,value) in [
+        (c"AAudioStreamBuilder_setUsage", aaudio::AAUDIO_USAGE_MEDIA as i32),
+        (c"AAudioStreamBuilder_setContentType", aaudio::AAUDIO_CONTENT_TYPE_MUSIC as i32),
+        (c"AAudioStreamBuilder_setSessionId", aaudio::AAUDIO_SESSION_ID_ALLOCATE as i32),
+    ] {
         let symbol=unsafe{dlsym(handle,name.as_ptr())};
         if !symbol.is_null(){let set:unsafe extern "C" fn(*mut aaudio::AAudioStreamBuilder,i32)=unsafe{std::mem::transmute(symbol)};unsafe{set(builder,value)};}
     }
+    android_log("media_output_policy=shared-media-session-v1");
     let behavior = unsafe { dlsym(handle, c"AAudioStreamBuilder_setSpatializationBehavior".as_ptr()) };
     let spatialized = unsafe { dlsym(handle, c"AAudioStreamBuilder_setIsContentSpatialized".as_ptr()) };
     if !behavior.is_null() {
@@ -178,8 +185,10 @@ impl AAudioWriterSink {
             }
             let builder = Builder(builder);
             aaudio::AAudioStreamBuilder_setDirection(builder.0, aaudio::AAUDIO_DIRECTION_OUTPUT as i32);
+            // A music renderer needs the regular shared media mixer, not an
+            // MMAP/FAST stream that can bypass the device's media processing.
             aaudio::AAudioStreamBuilder_setPerformanceMode(
-                builder.0, aaudio::AAUDIO_PERFORMANCE_MODE_LOW_LATENCY as i32,
+                builder.0, aaudio::AAUDIO_PERFORMANCE_MODE_NONE as i32,
             );
             aaudio::AAudioStreamBuilder_setSharingMode(
                 builder.0, aaudio::AAUDIO_SHARING_MODE_SHARED as i32,
@@ -187,7 +196,7 @@ impl AAudioWriterSink {
             aaudio::AAudioStreamBuilder_setChannelCount(builder.0, CHANNELS as i32);
             aaudio::AAudioStreamBuilder_setFormat(builder.0, aaudio::AAUDIO_FORMAT_PCM_FLOAT as i32);
             aaudio::AAudioStreamBuilder_setSampleRate(builder.0, SAMPLE_RATE);
-            disable_system_spatialization(builder.0);
+            configure_media_output(builder.0);
             aaudio::AAudioStreamBuilder_setBufferCapacityInFrames(builder.0,4096);
             let mut callback=Box::<CallbackContext>::default();
             let userdata=(&mut *callback as *mut CallbackContext).cast();

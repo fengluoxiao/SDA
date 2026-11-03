@@ -1,6 +1,8 @@
 use core::fmt;
 
 #[cfg(not(target_arch = "wasm32"))]
+use crossbeam_utils::atomic::AtomicCell;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 // Browser Workers have no native thread-spawn facility. Keep identical channel
@@ -15,6 +17,9 @@ struct NeuralPool {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl NeuralPool {
+    fn caller_enabled(&self) -> bool {
+        self.caller_participates
+    }
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         if self.caller_participates {
             f()
@@ -36,23 +41,31 @@ impl NeuralPool {
             }
             return;
         };
-        let mut items = items.iter_mut().enumerate();
-        let first = items.next();
-        let pending = std::sync::Mutex::new(items);
+        let count = items.len();
+        if count == 0 {
+            return;
+        }
+        assert!(count <= MAX_CHANNELS as usize);
+        let mut iter = items.iter_mut();
+        // Each slot transfers its unique mutable channel reference exactly once.
+        // Pointer-sized AtomicCell slots avoid a contended mutex in the hot loop.
+        let slots: [AtomicCell<Option<&mut T>>; MAX_CHANNELS as usize] =
+            core::array::from_fn(|_| AtomicCell::new(iter.next()));
+        let next = std::sync::atomic::AtomicUsize::new(1);
+        let first = slots[0].take().unwrap();
         let drain = || loop {
-            let next = pending.lock().unwrap().next();
-            match next {
-                Some((i, item)) => work(i, item),
-                None => break,
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if i >= count {
+                break;
             }
+            let item = slots[i].take().unwrap();
+            work(i, item);
         };
         pool.in_place_scope(|scope| {
             for _ in 0..pool.current_num_threads() {
                 scope.spawn(|_| drain());
             }
-            if let Some((i, item)) = first {
-                work(i, item);
-            }
+            work(0, first);
             drain();
         });
     }
@@ -61,6 +74,9 @@ impl NeuralPool {
 struct NeuralPool;
 #[cfg(target_arch = "wasm32")]
 impl NeuralPool {
+    fn caller_enabled(&self) -> bool {
+        false
+    }
     fn install<R>(&self, f: impl FnOnce() -> R) -> R {
         f()
     }
@@ -68,6 +84,17 @@ impl NeuralPool {
         for (i, item) in items.iter_mut().enumerate() {
             work(i, item);
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+trait SequentialChannels<T> {
+    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T>;
+}
+#[cfg(target_arch = "wasm32")]
+impl<T> SequentialChannels<T> for [T] {
+    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.iter_mut()
     }
 }
 
@@ -406,7 +433,7 @@ impl<'model> McCoreDecoder<'model> {
             core::array::from_fn(|_| None);
         self.neural_pool
             .install(|| -> Result<(), McCoreDecodeError> {
-                {
+                if self.neural_pool.caller_enabled() {
                     let mut iter = prepared[..channels]
                         .iter_mut()
                         .zip(self.neural[..channels].iter_mut())
@@ -434,6 +461,29 @@ impl<'model> McCoreDecoder<'model> {
                         };
                         **slot = Some(result);
                     });
+                } else {
+                    prepared[..channels]
+                        .par_iter_mut()
+                        .zip(self.neural[..channels].par_iter_mut())
+                        .enumerate()
+                        .for_each(|(channel, (slot, decoder))| {
+                            let result = match neural_inputs[channel]
+                                .expect("all active neural side information was validated")
+                            {
+                                ParsedNeuralQc::Main(input) if header.nn_type == NnType::Main => {
+                                    decoder.prepare_main(input).map_err(McCoreDecodeError::from)
+                                }
+                                ParsedNeuralQc::LowComplexity(input)
+                                    if header.nn_type == NnType::LowComplexity =>
+                                {
+                                    decoder
+                                        .prepare_low_complexity(input)
+                                        .map_err(McCoreDecodeError::from)
+                                }
+                                _ => Err(McCoreDecodeError::UnexpectedNeuralProfile { channel }),
+                            };
+                            *slot = Some(result);
+                        });
                 }
 
                 let mut prepared_ok: [Option<PreparedNeuralSpectrum<'_>>; MAX_CHANNELS as usize] =
@@ -452,7 +502,7 @@ impl<'model> McCoreDecoder<'model> {
                     prepared_ok[channel] = Some(result);
                 }
 
-                {
+                if self.neural_pool.caller_enabled() {
                     let mut iter = prepared_ok[..channels]
                         .iter_mut()
                         .zip(self.neural[..channels].iter_mut())
@@ -475,6 +525,30 @@ impl<'model> McCoreDecoder<'model> {
                             Err(failure) => **error = Some(failure.into()),
                         }
                     });
+                } else {
+                    prepared_ok[..channels]
+                        .par_iter_mut()
+                        .zip(self.neural[..channels].par_iter_mut())
+                        .zip(self.spectra[..channels].par_iter_mut())
+                        .zip(channel_randoms[..channels].par_iter_mut())
+                        .zip(neural_diagnostics[..channels].par_iter_mut())
+                        .zip(finish_errors[..channels].par_iter_mut())
+                        .for_each(
+                            |(((((prepared, decoder), spectrum), random), diagnostics), error)| {
+                                match decoder.finish_prepared(
+                                    prepared
+                                        .take()
+                                        .expect("every active channel has prepared neural data"),
+                                    random,
+                                ) {
+                                    Ok(decoded) => {
+                                        *diagnostics = Some(decoded.diagnostics());
+                                        spectrum.copy_from_slice(decoded.spectrum());
+                                    }
+                                    Err(failure) => *error = Some(failure.into()),
+                                }
+                            },
+                        );
                 }
                 if let Some(error) = finish_errors.iter_mut().find_map(Option::take) {
                     return Err(error);
@@ -516,7 +590,7 @@ impl<'model> McCoreDecoder<'model> {
                 // the same bounded pool without changing any arithmetic or state order.
                 let mut dsp_errors: [Option<McCoreDecodeError>; MAX_CHANNELS as usize] =
                     core::array::from_fn(|_| None);
-                {
+                if self.neural_pool.caller_enabled() {
                     let mut iter = self.channel_dsp[..channels]
                         .iter_mut()
                         .zip(self.spectra[..channels].iter_mut())
@@ -548,6 +622,32 @@ impl<'model> McCoreDecoder<'model> {
                         })();
                         **error = result.err();
                     });
+                } else {
+                    self.channel_dsp[..channels]
+                        .par_iter_mut()
+                        .zip(self.spectra[..channels].par_iter_mut())
+                        .zip(self.synthesis[..channels].par_iter_mut())
+                        .zip(dsp_errors[..channels].par_iter_mut())
+                        .enumerate()
+                        .for_each(|(channel, (((dsp, spectrum), synthesis), error))| {
+                            let result = (|| -> Result<(), McCoreDecodeError> {
+                                let core = cores[channel].ok_or(
+                                    McCoreDecodeError::MissingCoreSideInformation { channel },
+                                )?;
+                                dsp.tns.apply(core.tns(), core.transform_type(), spectrum)?;
+                                dsp.fd_shaping.apply(core.lsf(), spectrum)?;
+                                if config.lfe_channel() == Some(channel) {
+                                    clear_mc_lfe_spectrum(spectrum)?;
+                                }
+                                dsp.mdct_synthesis.synthesize(
+                                    spectrum,
+                                    core.transform_type(),
+                                    synthesis,
+                                )?;
+                                Ok(())
+                            })();
+                            *error = result.err();
+                        });
                 }
                 if let Some(error) = dsp_errors.into_iter().flatten().next() {
                     return Err(error);
@@ -798,9 +898,17 @@ mod caller_pool_tests {
         let before = rayon::current_thread_index();
         for _ in 0..24 {
             let pool = pool(3, true);
-            let mut values = [0; 24];
+            let mut values = [0; MAX_CHANNELS as usize];
             pool.install(|| pool.for_each(&mut values, |i, value| *value = i));
             assert_eq!(rayon::current_thread_index(), before);
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod owner_slot_tests {
+    #[test]
+    fn mutable_channel_slots_are_lock_free_on_native_targets() {
+        assert!(crossbeam_utils::atomic::AtomicCell::<Option<&mut usize>>::is_lock_free());
     }
 }

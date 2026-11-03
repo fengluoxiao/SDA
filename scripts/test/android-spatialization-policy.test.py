@@ -6,10 +6,14 @@ import sys
 root = Path(__file__).resolve().parents[2]
 native = (root / "apps/native-renderer/src/aaudio_output.rs").read_text()
 java = (root / "apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/Media3Output.kt").read_text()
-assert native.index("disable_system_spatialization(builder.0)") < native.index("AAudioStreamBuilder_openStream(builder.0")
-for symbol in ("AAudioStreamBuilder_setSpatializationBehavior", "AAudioStreamBuilder_setIsContentSpatialized"):
+assert native.index("configure_media_output(builder.0)") < native.index("AAudioStreamBuilder_openStream(builder.0")
+for symbol in ("AAudioStreamBuilder_setSpatializationBehavior", "AAudioStreamBuilder_setIsContentSpatialized", "AAudioStreamBuilder_setSessionId"):
     assert f'c"{symbol}"' in native
     assert f"aaudio::{symbol}" not in native, "Do not link API-32-only symbols on API 26"
+assert "AAUDIO_PERFORMANCE_MODE_NONE" in native and "AAUDIO_PERFORMANCE_MODE_LOW_LATENCY" not in native
+assert "AAUDIO_SHARING_MODE_SHARED" in native
+assert "AAUDIO_SESSION_ID_ALLOCATE" in native
+assert "AAUDIO_USAGE_MEDIA" in native and "AAUDIO_CONTENT_TYPE_MUSIC" in native
 assert "set(builder, 2)" in native
 assert "set(builder, true)" in native
 assert "if !behavior.is_null()" in native and "if !spatialized.is_null()" in native
@@ -22,5 +26,6 @@ if len(sys.argv) == 3:
         if " UND " in line:
             assert "AAudioStreamBuilder_setSpatializationBehavior" not in line
             assert "AAudioStreamBuilder_setIsContentSpatialized" not in line
+            assert "AAudioStreamBuilder_setSessionId" not in line
     print("PASS: optional API-32 functions are not required ELF imports")
 print("PASS: AAudio and Media3 request no system spatialization before opening output")

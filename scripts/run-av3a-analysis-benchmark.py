@@ -1,6 +1,6 @@
 """Compare bounded analysis and normal playback using only the public 3-frame fixture."""
 from pathlib import Path
-import argparse, hashlib, io, json, os, platform, shutil, statistics, subprocess, tarfile
+import argparse, re, hashlib, io, json, os, platform, shutil, statistics, subprocess, tarfile
 parser=argparse.ArgumentParser();parser.add_argument("--baseline",required=True);parser.add_argument("--output",required=True);parser.add_argument("--repeat",type=int,default=2048);args=parser.parse_args()
 root=Path(__file__).resolve().parents[1];out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=True)
 work=out/"work";work.mkdir(exist_ok=True);baseline=work/"baseline";baseline.mkdir()
@@ -13,7 +13,12 @@ source=root/"scripts/av3a-analysis-benchmark";executables={};suffix=".exe" if os
 for label,vendor in [("baseline",baseline/"vendor/avs3a"),("candidate",root/"vendor/avs3a")]:
     crate=work/(label+"-harness");(crate/"src").mkdir(parents=True)
     manifest=(source/"Cargo.toml").read_text().replace('"../../vendor/avs3a"',json.dumps(vendor.as_posix()))
-    (crate/"Cargo.toml").write_text(manifest);shutil.copyfile(source/"Cargo.lock",crate/"Cargo.lock");shutil.copyfile(source/"src/main.rs",crate/"src/main.rs")
+    (crate/"Cargo.toml").write_text(manifest);lock=(source/"Cargo.lock").read_text()
+    if label=="baseline":
+        pattern=r'(?ms)^\[\[package\]\]\nname = "avs3a"\n.*?(?=^\[\[package\]\]|\Z)'
+        block=re.search(pattern,(vendor/"Cargo.lock").read_text()).group()
+        lock=re.sub(pattern,lambda _:block,lock,count=1)
+    (crate/"Cargo.lock").write_text(lock);shutil.copyfile(source/"src/main.rs",crate/"src/main.rs")
     subprocess.run(["cargo","build","--manifest-path",str(crate/"Cargo.toml"),"--locked","--release"],cwd=root,env=env,check=True)
     executable=out/(label+suffix);shutil.copy2(work/"target/release"/("av3a-analysis-benchmark"+suffix),executable);executables[label]=executable
 records=[];expected=None
