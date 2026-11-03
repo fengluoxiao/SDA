@@ -604,3 +604,13 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSeekTo(env:JNIE
  let value=(||->Result<serde_json::Value,String>{if !ms.is_finite()||ms<0.{return Err("invalid seek time".into());}let e=take_engine(ptr).ok_or("engine unavailable")?;if origin>=0{e.seek_stream(origin as u64,(ms*48.)as u64)?;}else{e.seek(ms as u64)?;}Ok(serde_json::json!({"positionMs":ms}))})();
  let text=match value{Ok(v)=>v.to_string(),Err(error)=>serde_json::json!({"error":error}).to_string()};env.new_string(text).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
+
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeExtractMpeghMp4(mut env:JNIEnv,_class:JClass,source:JString,output:JString)->jni::sys::jstring {
+    let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<String,String> {
+        let source:String=env.get_string(&source).map_err(|e|e.to_string())?.into();
+        let output:String=env.get_string(&output).map_err(|e|e.to_string())?.into();
+        serde_json::to_string(&crate::mp4_extract::extract(source,output)?).map_err(|e|e.to_string())
+    })).unwrap_or_else(|_|Err("MPEG-H extraction failed".into()));
+    match result {Ok(json)=>env.new_string(json).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut()),Err(error)=>{let _=env.throw_new("java/lang/IllegalStateException",error);std::ptr::null_mut()}}
+}

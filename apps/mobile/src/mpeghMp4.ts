@@ -4,6 +4,7 @@ import { fromByteArray, toByteArray } from "base64-js";
 
 export interface MpeghMp4Host {
   mp4ImportChunkBytes?(): number;
+  extractMp4ImportNative?(token: string): Promise<string>;
   beginMp4Import(uri: string): Promise<string>;
   readMp4Import(token: string, offset: number, count: number): Promise<string>;
   appendMp4Import(token: string, bytes: string): Promise<void>;
@@ -13,8 +14,8 @@ export interface MpeghMp4Host {
 }
 const MAX_CHUNK = 1024 * 1024;
 export interface ImportProgress { fraction: number; stage: string }
-/** Use Windows's actual MP4 parser and AV3A/AC-4/MPEG-H packet writers; the mobile host
- * only reads/writes bounded file chunks. Decoding remains entirely native. */
+/** Native MPEG-H extraction avoids JS/base64 transfers. The shared MP4 parser
+ * handles unsupported container variants and AV3A/AC-4 with bounded I/O. */
 export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string, onProgress?: (progress: ImportProgress) => void) {
   if (!/\.(?:m4a|mp4)$/i.test(name)) return null;
   const requestedChunk=host.mp4ImportChunkBytes?.() ?? 256*1024;
@@ -63,6 +64,17 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
     if (failure) throw new Error(`MP4 解析失败：${failure}`);
   };
   try {
+    if (host.extractMp4ImportNative) {
+      onProgress?.({ fraction: 0.05, stage: "提取 360 Reality Audio 音轨" });
+      const result = JSON.parse(await host.extractMp4ImportNative(token)) as null | { codec: string; durationMs: number; packetCount: number; bytes: number };
+      if (result) {
+        if (!["mha1", "mhm1"].includes(result.codec) || result.packetCount <= 0 || result.bytes <= 0 || !Number.isFinite(result.durationMs) || result.durationMs < 0) throw new Error("原生音轨提取结果无效");
+        const playbackUri = await host.finishMp4Import(token);
+        onProgress?.({ fraction: 1, stage: "音轨已就绪" });
+        return { uri: playbackUri, name: `${name}.mhas`, durationMs: result.durationMs,
+          adopt: () => host.adoptMp4Import?.(token), release: () => host.discardMp4Import(token) };
+      }
+    }
     let offset=0,readBytes=0,lastProgress=0;let fraction=0,lastStage="";
     const visits=new Map<number,number>();
     while (offset < size && !demuxer.extractionComplete) {

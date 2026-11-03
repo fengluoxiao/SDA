@@ -100,7 +100,7 @@ final class PlaybackStorage {
    }
    try? fm.removeItem(at:url)
   }
-  let patterns=["^sda-format-[0-9]+-[0-9]+$","^sda-import-[0-9A-Fa-f-]{36}\\.mhas$","^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\\.mhas$"]
+  let patterns=["^sda-format-[0-9]+-[0-9]+$","^sda-import-[0-9A-Fa-f-]{36}\\.mhas(?:\\.native\\.mhas)?$","^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\\.mhas$"]
   for base in bases {
    for url in (try? fm.contentsOfDirectory(at:base,includingPropertiesForKeys:nil)) ?? [] {
     if patterns.contains(where: { url.lastPathComponent.range(of:$0,options:.regularExpression) != nil }) { remove(url,base:base) }

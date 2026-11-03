@@ -144,6 +144,10 @@ public final class SdaModule: Module {
    let session=try Mp4ImportSession(source:u,output:out);player.imports[token]=session
    return try player.json(["token":token,"size":session.size])
   } }
+  AsyncFunction("extractMp4ImportNative") { (token:String) in try player.locked {
+   guard let session=player.imports[token] else {throw SdaError.message("导入任务不存在")}
+   return try session.extractNative(player.decodeReply)
+  } }
   AsyncFunction("readMp4Import") { (token:String,offset:Double,count:Int) in try player.locked {
    guard let session=player.imports[token] else {throw SdaError.message("导入任务不存在")}
    return try session.read(offset:offset,count:count)

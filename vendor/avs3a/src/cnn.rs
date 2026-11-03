@@ -143,6 +143,7 @@ pub struct ScalarCnnDecoder<'model> {
     next: Vec<f32>,
     scratch: Vec<f32>,
     output_len: usize,
+    convolutions: Vec<ConvolutionPlan>,
 }
 
 impl<'model> ScalarCnnDecoder<'model> {
@@ -169,6 +170,7 @@ impl<'model> ScalarCnnDecoder<'model> {
             next: vec![0.0; workspace_values],
             scratch: vec![0.0; workspace_values],
             output_len: 0,
+            convolutions: network.layers().iter().map(ConvolutionPlan::new).collect(),
         })
     }
 
@@ -202,8 +204,9 @@ impl<'model> ScalarCnnDecoder<'model> {
         for (layer_index, layer) in self.network.layers().iter().enumerate() {
             debug_assert_eq!(current_len, layer.input_shape().len());
             let next_len = layer.output_shape().len();
-            decode_layer(
+            decode_layer_planned(
                 layer,
+                &self.convolutions[layer_index],
                 layer_index,
                 &self.current[..current_len],
                 &mut self.next[..next_len],
@@ -284,6 +287,73 @@ fn validate_layer(layer: &CnnLayer, index: usize) -> Result<(), CnnError> {
     Ok(())
 }
 
+// Model-dependent indexing is immutable. Pack it once, rather than rebuilding
+// tap/channel indices for every SIMD position of every frame. Values and the
+// GEMM_REFORM summation order stay exactly the same as the scalar reference.
+#[derive(Debug)]
+struct PackedDot {
+    offsets: Vec<usize>,
+    weights: Vec<Vec<f32>>,
+}
+#[derive(Debug)]
+struct ConvolutionPlan {
+    first: PackedDot,
+    second: PackedDot,
+}
+impl ConvolutionPlan {
+    fn new(layer: &CnnLayer) -> Self {
+        fn dot(layer: &CnnLayer, taps: usize, step: usize, last: usize) -> PackedDot {
+            let channels = layer.input_shape().channels();
+            let outputs = layer.output_shape().channels();
+            let dimensions = layer.input_shape().dimensions();
+            let kernel = layer.kernel_coefficients();
+            let offsets = (0..channels)
+                .flat_map(|c| (0..taps).map(move |t| c * dimensions + t))
+                .collect();
+            let weights = (0..outputs)
+                .map(|out| {
+                    (0..channels)
+                        .flat_map(|c| {
+                            (0..taps).map(move |t| {
+                                kernel[((last - step * t) * outputs + out) * channels + c]
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            PackedDot { offsets, weights }
+        }
+        let k = layer.kernel_size();
+        if layer.stride() == 1 {
+            Self {
+                first: dot(layer, k, 1, k - 1),
+                second: PackedDot {
+                    offsets: vec![],
+                    weights: vec![],
+                },
+            }
+        } else {
+            Self {
+                first: dot(layer, k.div_ceil(2), 2, k - 1),
+                second: dot(layer, (k - 1) / 2, 2, k - 2),
+            }
+        }
+    }
+}
+#[inline]
+fn packed_dot(dot: &PackedDot, output: usize, input: &[f32], base: usize) -> f32x8 {
+    let weights = &dot.weights[output];
+    reformed_sum_wide(dot.offsets.len(), |i| {
+        let start = base + dot.offsets[i];
+        let values = f32x8::new(
+            input[start..start + 8]
+                .try_into()
+                .expect("interior CNN block"),
+        );
+        values * f32x8::splat(weights[i])
+    })
+}
+#[cfg(test)]
 fn decode_layer(
     layer: &CnnLayer,
     layer_index: usize,
@@ -291,9 +361,26 @@ fn decode_layer(
     output: &mut [f32],
     scratch: &mut [f32],
 ) -> Result<(), CnnError> {
+    decode_layer_planned(
+        layer,
+        &ConvolutionPlan::new(layer),
+        layer_index,
+        input,
+        output,
+        scratch,
+    )
+}
+fn decode_layer_planned(
+    layer: &CnnLayer,
+    plan: &ConvolutionPlan,
+    layer_index: usize,
+    input: &[f32],
+    output: &mut [f32],
+    scratch: &mut [f32],
+) -> Result<(), CnnError> {
     match layer.stride() {
-        1 => convolve_transpose_stride_one(layer, input, output),
-        2 => convolve_transpose_stride_two(layer, input, output),
+        1 => convolve_transpose_stride_one(layer, plan, input, output),
+        2 => convolve_transpose_stride_two(layer, plan, input, output),
         stride => {
             return Err(CnnError::UnsupportedStride {
                 layer: layer_index,
@@ -343,7 +430,12 @@ fn decode_layer(
     Ok(())
 }
 
-fn convolve_transpose_stride_one(layer: &CnnLayer, input: &[f32], output: &mut [f32]) {
+fn convolve_transpose_stride_one(
+    layer: &CnnLayer,
+    plan: &ConvolutionPlan,
+    input: &[f32],
+    output: &mut [f32],
+) {
     let dimensions = layer.input_shape().dimensions();
     let input_channels = layer.input_shape().channels();
     let output_channels = layer.output_shape().channels();
@@ -358,23 +450,12 @@ fn convolve_transpose_stride_one(layer: &CnnLayer, input: &[f32], output: &mut [
         let mut dimension = 0;
         while dimension < dimensions {
             if dimension >= padding_begin && dimension + 8 <= interior_end {
-                let mut input_channel=0;let mut column_tap=0;
-                let values = reformed_sum_wide(dot_len, |_| {
-                    let source_position = dimension + column_tap - padding_begin;
-                    let model_tap = kernel_size - column_tap - 1;
-                    let kernel_index = (model_tap * output_channels + output_channel)
-                        * input_channels
-                        + input_channel;
-                    let input_index = input_channel * dimensions + source_position;
-                    let features = f32x8::new(
-                        input[input_index..input_index + 8]
-                            .try_into()
-                            .expect("wide CNN input is an eight-value interior block"),
-                    );
-                    let value=features * f32x8::splat(kernel[kernel_index]);
-                    column_tap+=1;if column_tap==kernel_size{column_tap=0;input_channel+=1;}
-                    value
-                });
+                let values = packed_dot(
+                    &plan.first,
+                    output_channel,
+                    input,
+                    dimension - padding_begin,
+                );
                 let output_index = dimension + output_channel * dimensions;
                 output[output_index..output_index + 8].copy_from_slice(&values.to_array());
                 dimension += 8;
@@ -403,7 +484,12 @@ fn convolve_transpose_stride_one(layer: &CnnLayer, input: &[f32], output: &mut [
     }
 }
 
-fn convolve_transpose_stride_two(layer: &CnnLayer, input: &[f32], output: &mut [f32]) {
+fn convolve_transpose_stride_two(
+    layer: &CnnLayer,
+    plan: &ConvolutionPlan,
+    input: &[f32],
+    output: &mut [f32],
+) {
     let input_dimensions = layer.input_shape().dimensions();
     let output_dimensions = layer.output_shape().dimensions();
     let input_channels = layer.input_shape().channels();
@@ -422,7 +508,14 @@ fn convolve_transpose_stride_two(layer: &CnnLayer, input: &[f32], output: &mut [
         let mut dimension = 0;
         while dimension < input_dimensions {
             if dimension > 0 && dimension + 8 <= interior_end {
-                convolve_transpose_stride_two_wide(layer, input, output, output_channel, dimension);
+                convolve_transpose_stride_two_wide(
+                    layer,
+                    plan,
+                    input,
+                    output,
+                    output_channel,
+                    dimension,
+                );
                 dimension += 8;
                 continue;
             }
@@ -484,57 +577,25 @@ fn convolve_transpose_stride_two(layer: &CnnLayer, input: &[f32], output: &mut [
 #[inline(always)]
 fn convolve_transpose_stride_two_wide(
     layer: &CnnLayer,
+    plan: &ConvolutionPlan,
     input: &[f32],
     output: &mut [f32],
     output_channel: usize,
     dimension: usize,
 ) {
-    let input_dimensions = layer.input_shape().dimensions();
     let output_dimensions = layer.output_shape().dimensions();
-    let input_channels = layer.input_shape().channels();
-    let output_channels = layer.output_shape().channels();
     let kernel_size = layer.kernel_size();
-    let kernel = layer.kernel_coefficients();
-    let odd_kernel_size = kernel_size.div_ceil(2);
-    let even_kernel_size = (kernel_size - 1) / 2;
-
-    let mut input_channel=0;let mut tap=0;
-    let odd = reformed_sum_wide(odd_kernel_size * input_channels, |_| {
-        let source_position = dimension + tap - 1;
-        let model_tap = kernel_size - 2 * tap - 1;
-        let kernel_index =
-            (model_tap * output_channels + output_channel) * input_channels + input_channel;
-        let input_index = input_channel * input_dimensions + source_position;
-        let features = f32x8::new(
-            input[input_index..input_index + 8]
-                .try_into()
-                .expect("wide CNN input is an eight-value interior block"),
-        );
-        let value=features * f32x8::splat(kernel[kernel_index]);
-        tap+=1;if tap==odd_kernel_size{tap=0;input_channel+=1;}
-        value
-    });
-
-    let mut input_channel=0;let mut tap=0;
-    let even = reformed_sum_wide(even_kernel_size * input_channels, |_| {
-        let source_position = if kernel_size == 3 {
+    let odd = packed_dot(&plan.first, output_channel, input, dimension - 1);
+    let even = packed_dot(
+        &plan.second,
+        output_channel,
+        input,
+        if kernel_size == 3 {
             dimension
         } else {
-            dimension + tap - 1
-        };
-        let model_tap = kernel_size - (2 * tap + 1) - 1;
-        let kernel_index =
-            (model_tap * output_channels + output_channel) * input_channels + input_channel;
-        let input_index = input_channel * input_dimensions + source_position;
-        let features = f32x8::new(
-            input[input_index..input_index + 8]
-                .try_into()
-                .expect("wide CNN input is an eight-value interior block"),
-        );
-        let value=features * f32x8::splat(kernel[kernel_index]);
-        tap+=1;if tap==even_kernel_size{tap=0;input_channel+=1;}
-        value
-    });
+            dimension - 1
+        },
+    );
 
     let odd = odd.to_array();
     let even = even.to_array();

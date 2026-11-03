@@ -23,6 +23,7 @@ struct Av3aReference {
     latest: Measurement,
     speakers: sda_core::loudness::SpeakerReference,
     finished: bool,
+    use_speakers: bool,
     renderer: Option<crate::av3a_reference_renderer::CanonicalReference>,
 }
 impl Av3aReference {
@@ -38,7 +39,7 @@ impl Av3aReference {
                 let _ = sender.send(result.map(|()| None));
             }).map_err(|e| e.to_string())?;
         Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0,
-            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), finished: false, renderer: None })
+            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), finished: false, use_speakers: false, renderer: None })
     }
 }
 fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<Option<sda_core::FrameData>,String>>) -> Result<(),String> {
@@ -70,7 +71,7 @@ impl ProgrammeReference for Av3aReference {
     fn frames(&self) -> u64 { (self.native_frames*48000+u64::from(self.sample_rate)/2)/u64::from(self.sample_rate) }
     fn input_sample_rate(&self)->u32{self.sample_rate}
     fn measurement_sample_rate(&self)->u32{self.sample_rate}
-    fn measurement(&self) -> Measurement { self.latest.clone() }
+    fn measurement(&self) -> Measurement { if self.use_speakers { self.speakers.measurement().unwrap_or_default() } else { self.latest.clone() } }
     fn rendered_reference(&self)->Option<crate::stereo_reference::RenderedReference>{self.renderer.as_ref().and_then(|r|r.measurement())}
     fn step(&mut self, budget: usize) -> Result<bool, String> {
         if self.finished { return Ok(true); }
@@ -84,8 +85,16 @@ impl ProgrammeReference for Av3aReference {
                         return Err("invalid Audio Vivid reference timeline or samples".into());
                     }
                     if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
-                    self.latest = frame.reference_loudness.or_else(|| self.speakers.measure(&frame.channels, &frame.labels, frame.sample_rate))
-                        .ok_or("Audio Vivid programme reference unavailable")?;
+                    if let Some(measurement)=frame.reference_loudness {
+                        self.latest=measurement;self.use_speakers=false;
+                    } else {
+                        // Programme references are published only at EOF. Accumulate
+                        // every sample, then apply the exact gates once instead of
+                        // repeatedly re-gating the entire history on each frame.
+                        self.speakers.push(&frame.channels,&frame.labels,frame.sample_rate)
+                            .ok_or("Audio Vivid programme reference unavailable")?;
+                        self.use_speakers=true;
+                    }
                     self.native_frames += frame.channels[0].len() as u64;
                     if self.frames() >= end { return Ok(false); }
                 }

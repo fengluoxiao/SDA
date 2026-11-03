@@ -44,6 +44,7 @@ pub mod stereo_reference;
 pub mod av3a_reference;
 mod av3a_reference_renderer;
 mod packet_source;
+pub mod mp4_extract;
 mod mhas_source;
 mod alac_pcm;
 mod sdar;

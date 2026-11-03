@@ -41,6 +41,7 @@ object SdaEngine {
     external fun nativePause(ptr: Long, paused: Boolean): Int
     external fun nativeSetVolumeBalance(ptr: Long, enabled: Boolean): String
     external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
+    external fun nativeExtractMpeghMp4(source: String, output: String): String
     external fun nativeStereoReferenceCreate(path: String, alac: Boolean): Long
     external fun nativeAv3aReferenceCreate(path: String): Long
     external fun nativeAv3aReferenceCreateWithHrtf(path: String, hrtf: String): Long

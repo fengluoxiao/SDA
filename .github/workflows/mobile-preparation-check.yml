@@ -1,0 +1,32 @@
+name: Mobile preparation regression checks
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            vendor/avs3a -> target
+            scripts/mpegh-extraction-regression -> target
+      - name: Verify decoder arithmetic and reusable transform coefficients
+        run: cargo test --manifest-path vendor/avs3a/Cargo.toml --locked --release --lib
+      - name: Verify actual native MPEG-H extractor and malformed containers
+        run: cargo test --manifest-path scripts/mpegh-extraction-regression/Cargo.toml --locked --release
+      - name: Verify Swift import fallback, native handoff and abandoned-file cleanup
+        if: runner.os == 'macOS'
+        run: |
+          python3 scripts/test-ios-import-io.py
+          python3 scripts/test-ios-storage.py

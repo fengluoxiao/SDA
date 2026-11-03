@@ -196,12 +196,12 @@ pub struct SpeakerReference {
     meter: Option<LoudnessMeter>,
 }
 impl SpeakerReference {
-    pub fn measure(
+    pub fn push(
         &mut self,
         pcm: &[Vec<f32>],
         labels: &[String],
         rate: u32,
-    ) -> Option<ReferenceLoudness> {
+    ) -> Option<()> {
         let weights: Option<Vec<f64>> = labels
             .iter()
             .map(|label| {
@@ -231,12 +231,34 @@ impl SpeakerReference {
         }
         let meter = self.meter.as_mut().unwrap();
         meter.push(pcm);
-        Some(meter.integrated())
+        Some(())
+    }
+    pub fn measurement(&self) -> Option<ReferenceLoudness> {self.meter.as_ref().map(LoudnessMeter::integrated)}
+    pub fn measure(&mut self,pcm:&[Vec<f32>],labels:&[String],rate:u32)->Option<ReferenceLoudness>{
+        self.push(pcm,labels,rate)?;
+        self.measurement()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_programme_gate_matches_every_frame_measurement_bit_for_bit() {
+        let labels:Vec<String>=["L","R","C","LFE","Ls","Rs"].into_iter().map(String::from).collect();
+        let mut deferred=super::SpeakerReference::default();let mut incremental=super::SpeakerReference::default();let mut expected=None;
+        for block in 0..300 {
+            let pcm:Vec<Vec<f32>>=(0..labels.len()).map(|channel|(0..317).map(|i|{
+                let t=(block*317+i)as f32/44100.;
+                (t*(370.+channel as f32*73.)*std::f32::consts::TAU).sin()*if block<40{0.002}else{0.24}
+            }).collect()).collect();
+            deferred.push(&pcm,&labels,44100).unwrap();expected=incremental.measure(&pcm,&labels,44100);
+        }
+        let actual=deferred.measurement().unwrap();let expected=expected.unwrap();
+        assert_eq!(actual.integrated_lufs.map(f64::to_bits),expected.integrated_lufs.map(f64::to_bits));
+        assert_eq!(actual.true_peak_dbtp.map(f64::to_bits),expected.true_peak_dbtp.map(f64::to_bits));
+        assert_eq!(actual.blocks,expected.blocks);
+    }
+
     use super::*;
     #[test]
     fn programme_speaker_reference_uses_roles_not_channel_count_and_rejects_raw_objects() {

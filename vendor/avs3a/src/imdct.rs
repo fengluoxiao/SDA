@@ -43,6 +43,7 @@ pub struct FastImdct {
     fft_512: Arc<dyn Fft<f32>>,
     work: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
+    twiddles: [Vec<(f32, f32)>; 3],
 }
 
 impl FastImdct {
@@ -66,12 +67,85 @@ impl FastImdct {
             fft_512,
             work: vec![Complex::new(0.0, 0.0); MAX_COMPLEX_FFT_LEN],
             scratch: vec![Complex::new(0.0, 0.0); scratch_len],
+            // These are codec constants. Build the exact original f32 recurrence
+            // once; replacing it with cos(index*angle) would change rounding.
+            twiddles: [SHORT_IMDCT_LEN, HALF_LONG_IMDCT_LEN, LONG_IMDCT_LEN].map(|length| {
+                let frequency = 2.0_f32 * AVS3_PI / length as f32;
+                let cosine_step = f64::from(frequency).cos() as f32;
+                let sine_step = f64::from(frequency).sin() as f32;
+                let first_angle = frequency * TWIDDLE_OFFSET;
+                let mut cosine = f64::from(first_angle).cos() as f32;
+                let mut sine = f64::from(first_angle).sin() as f32;
+                (0..length / 4)
+                    .map(|_| {
+                        let value = (cosine, sine);
+                        let old_cosine = cosine;
+                        cosine = cosine * cosine_step - sine * sine_step;
+                        sine = sine * cosine_step + old_cosine * sine_step;
+                        value
+                    })
+                    .collect()
+            }),
         }
     }
 
     /// Transform `N/2` coefficients in the first half of `signal` into `N`
     /// time-domain samples in place, matching the C decoder's buffer contract.
     pub fn process(&mut self, signal: &mut [f32]) -> Result<(), ImdctError> {
+        let length = signal.len();
+        let (fft, twiddles) = match length {
+            SHORT_IMDCT_LEN => (&self.fft_64, &self.twiddles[0]),
+            HALF_LONG_IMDCT_LEN => (&self.fft_256, &self.twiddles[1]),
+            LONG_IMDCT_LEN => (&self.fft_512, &self.twiddles[2]),
+            _ => return Err(ImdctError::UnsupportedLength(length)),
+        };
+        let fft_len = length / 4;
+        let work = &mut self.work[..fft_len];
+
+        for (index, (value, &(cosine, sine))) in work.iter_mut().zip(twiddles).enumerate() {
+            let temporary_real = -signal[2 * index];
+            let temporary_imaginary = signal[length / 2 - 1 - 2 * index];
+            value.re = temporary_real * cosine - temporary_imaginary * sine;
+            value.im = temporary_imaginary * cosine + temporary_real * sine;
+        }
+
+        let required_scratch = fft.get_inplace_scratch_len();
+        fft.process_with_scratch(work, &mut self.scratch[..required_scratch]);
+        let inverse_scale = 1.0_f32 / fft_len as f32;
+        for value in work.iter_mut() {
+            value.re *= inverse_scale;
+            value.im *= inverse_scale;
+        }
+
+        for (index, (value, &(cosine, sine))) in work.iter().zip(twiddles).enumerate() {
+            let temporary_real = MDCT_NORMALIZATION * (value.re * cosine - value.im * sine);
+            let temporary_imaginary = MDCT_NORMALIZATION * (value.im * cosine + value.re * sine);
+
+            signal[length / 2 + length / 4 - 1 - 2 * index] = temporary_real;
+            if index < length / 8 {
+                signal[length / 2 + length / 4 + 2 * index] = temporary_real;
+            } else {
+                signal[2 * index - length / 4] = -temporary_real;
+            }
+
+            signal[length / 4 + 2 * index] = temporary_imaginary;
+            if index < length / 8 {
+                signal[length / 4 - 1 - 2 * index] = -temporary_imaginary;
+            } else {
+                signal[length / 4 + length - 1 - 2 * index] = temporary_imaginary;
+            }
+        }
+
+        // `sqrt` returns double in the C source, so the reference multiply is
+        // carried out in f64 before narrowing back to the signal buffer.
+        let output_scale = (length as f64).sqrt();
+        for value in signal {
+            *value = (f64::from(*value) * output_scale) as f32;
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn process_legacy(&mut self, signal: &mut [f32]) -> Result<(), ImdctError> {
         let length = signal.len();
         let fft = match length {
             SHORT_IMDCT_LEN => &self.fft_64,
@@ -165,6 +239,26 @@ impl fmt::Debug for FastImdct {
 mod tests {
     use super::*;
 
+    #[test]
+    fn prepared_twiddles_preserve_every_output_bit_and_reuse() {
+        for length in [SHORT_IMDCT_LEN, HALF_LONG_IMDCT_LEN, LONG_IMDCT_LEN] {
+            let mut fast = FastImdct::new();
+            let mut legacy = FastImdct::new();
+            for scale in [0.0, 1.0, -0.03125, 1e-20] {
+                let mut actual = deterministic_signal(length);
+                for x in &mut actual {
+                    *x *= scale;
+                }
+                let mut expected = actual.clone();
+                fast.process(&mut actual).unwrap();
+                legacy.process_legacy(&mut expected).unwrap();
+                assert_eq!(
+                    actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
     fn deterministic_signal(length: usize) -> Vec<f32> {
         let mut signal = vec![0.0_f32; length];
         let mut state = 0xc001_d00d_u32;

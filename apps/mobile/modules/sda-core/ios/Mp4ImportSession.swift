@@ -1,6 +1,6 @@
 import Foundation
 
-/// One reader/writer pair for one import. Only bounded file blocks cross JS.
+/// Session-owned compressed working files. Native extraction avoids JS payload transfers.
 final class Mp4ImportSession {
  let source:URL;let output:URL;let size:UInt64
  private var reader:FileHandle?;private var writer:FileHandle?
@@ -11,6 +11,19 @@ final class Mp4ImportSession {
   guard FileManager.default.createFile(atPath:output.path,contents:Data()) else {throw SdaError.message("无法创建提取文件")}
   do {reader=try FileHandle(forReadingFrom:source);writer=try FileHandle(forWritingTo:output)}
   catch {discard();throw error}
+ }
+ func extractNative(_ decode: (UnsafeMutablePointer<CChar>?) throws -> Any) throws -> String {
+  let nativeOutput=output.appendingPathExtension("native.mhas")
+  guard !FileManager.default.fileExists(atPath:nativeOutput.path), (try writer?.offset()) == 0 else {throw SdaError.message("音轨提取已经开始")}
+  defer {try? FileManager.default.removeItem(at:nativeOutput)}
+  let value=try source.path.withCString { sourcePath in try nativeOutput.path.withCString { outputPath in
+   try decode(sda_ios_extract_mpegh_mp4(sourcePath,outputPath))
+  } }
+  if value is NSNull {return "null"}
+  try writer?.close();writer=nil
+  try FileManager.default.removeItem(at:output)
+  try FileManager.default.moveItem(at:nativeOutput,to:output)
+  return String(data:try JSONSerialization.data(withJSONObject:value),encoding:.utf8)!
  }
  func read(offset:Double,count:Int) throws -> String {
   guard let reader,offset.isFinite,offset>=0,offset.rounded(.towardZero)==offset,offset<=Double(size),count>0,count<=1024*1024 else {throw SdaError.message("导入参数无效")}

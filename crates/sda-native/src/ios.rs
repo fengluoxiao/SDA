@@ -1413,3 +1413,9 @@ mod fresh_reference_bridge_tests {
   assert_eq!(status["consumedSamplePos"],90000u64*48);
  }
 }
+
+/// Native compressed MPEG-H file extraction; unsupported containers return null.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_extract_mpegh_mp4(source:*const c_char,output:*const c_char)->*mut c_char {
+    guarded(|| serde_json::to_value(crate::mp4_extract::extract(unsafe{text(source)?},unsafe{text(output)?})?).map_err(|e|e.to_string()))
+}

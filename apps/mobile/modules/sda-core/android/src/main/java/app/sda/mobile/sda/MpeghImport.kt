@@ -1,5 +1,6 @@
 package app.sda.mobile.sda
 
+import com.sda.nativebridge.SdaEngine
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
@@ -8,7 +9,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.util.UUID
 
-/** Bounded file I/O only. The shared Windows Mp4Demuxer owns all MP4 parsing. */
+/** Session-owned compressed input/output; native fast path and bounded JS fallback. */
 class MpeghImport {
     private data class Session(val source: File, val ownsSource: Boolean, val output: File, val reader:RandomAccessFile, var writer: java.io.OutputStream?, var finished: Boolean = false)
     private val sessions = mutableMapOf<String, Session>()
@@ -55,6 +56,20 @@ class MpeghImport {
             if (ownsSource) source.delete()
             output?.delete(); throw error
         }
+    }
+    @Synchronized fun extractNative(token: String): String {
+        val session = sessions[token] ?: error("媒体导入会话已关闭")
+        check(!session.finished && session.output.length() == 0L) { "音轨提取已经开始" }
+        val nativeOutput = File(session.output.path + ".native.mhas")
+        check(!nativeOutput.exists()) { "提取输出已存在" }
+        try {
+            val result = SdaEngine.nativeExtractMpeghMp4(session.source.absolutePath, nativeOutput.absolutePath)
+            if (result != "null") {
+                session.writer?.close(); session.writer = null
+                check(session.output.delete() && nativeOutput.renameTo(session.output)) { "无法完成音轨提取" }
+            }
+            return result
+        } finally { nativeOutput.delete() }
     }
     @Synchronized fun read(token: String, offset: Double, count: Int): String {
         require(offset.isFinite() && offset >= 0 && offset == offset.toLong().toDouble())

@@ -12,7 +12,9 @@ type NeuralPool = rayon::ThreadPool;
 struct NeuralPool;
 #[cfg(target_arch = "wasm32")]
 impl NeuralPool {
-    fn install<R>(&self, f: impl FnOnce() -> R) -> R { f() }
+    fn install<R>(&self, f: impl FnOnce() -> R) -> R {
+        f()
+    }
 }
 #[cfg(target_arch = "wasm32")]
 trait SequentialChannels<T> {
@@ -20,7 +22,9 @@ trait SequentialChannels<T> {
 }
 #[cfg(target_arch = "wasm32")]
 impl<T> SequentialChannels<T> for [T] {
-    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T> { self.iter_mut() }
+    fn par_iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.iter_mut()
+    }
 }
 
 use crate::bwe::{BweSynthesis, BweSynthesisError};
@@ -233,10 +237,14 @@ pub struct McCoreDecoder<'model> {
 
 impl<'model> McCoreDecoder<'model> {
     pub fn new(model: &'model NeuralModel) -> Result<Self, McCoreDecodeError> {
-        Self::new_with_worker_limit(model,None)
+        Self::new_with_worker_limit(model, None)
     }
-    fn new_with_worker_limit(model: &'model NeuralModel, worker_limit:Option<usize>) -> Result<Self, McCoreDecodeError> {
-        #[cfg(target_arch = "wasm32")] let _=worker_limit;
+    fn new_with_worker_limit(
+        model: &'model NeuralModel,
+        worker_limit: Option<usize>,
+    ) -> Result<Self, McCoreDecodeError> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = worker_limit;
         let capacity = usize::from(MAX_CHANNELS);
         let mut channel_dsp = Vec::with_capacity(capacity);
         let mut neural = Vec::with_capacity(capacity);
@@ -248,7 +256,11 @@ impl<'model> McCoreDecoder<'model> {
         let neural_pool = NeuralPool;
         #[cfg(not(target_arch = "wasm32"))]
         let neural_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(neural_worker_count().min(worker_limit.unwrap_or(usize::MAX)).max(1))
+            .num_threads(
+                neural_worker_count()
+                    .min(worker_limit.unwrap_or(usize::MAX))
+                    .max(1),
+            )
             .thread_name(|index| format!("avs3a-neural-{index}"))
             .build()
             .map_err(|_| McCoreDecodeError::ThreadPoolBuild)?;
@@ -333,125 +345,141 @@ impl<'model> McCoreDecoder<'model> {
 
         let mut prepared: [Option<Result<PreparedNeuralSpectrum<'_>, McCoreDecodeError>>;
             MAX_CHANNELS as usize] = core::array::from_fn(|_| None);
-        self.neural_pool.install(|| {
-            prepared[..channels]
-                .par_iter_mut()
-                .zip(self.neural[..channels].par_iter_mut())
-                .enumerate()
-                .for_each(|(channel, (slot, decoder))| {
-                    let result = match neural_inputs[channel]
-                        .expect("all active neural side information was validated")
-                    {
-                        ParsedNeuralQc::Main(input) if header.nn_type == NnType::Main => {
-                            decoder.prepare_main(input).map_err(McCoreDecodeError::from)
-                        }
-                        ParsedNeuralQc::LowComplexity(input)
-                            if header.nn_type == NnType::LowComplexity =>
-                        {
-                            decoder
-                                .prepare_low_complexity(input)
-                                .map_err(McCoreDecodeError::from)
-                        }
-                        _ => Err(McCoreDecodeError::UnexpectedNeuralProfile { channel }),
-                    };
-                    *slot = Some(result);
-                });
-        });
-
-        let mut prepared_ok: [Option<PreparedNeuralSpectrum<'_>>; MAX_CHANNELS as usize] =
-            core::array::from_fn(|_| None);
-        let mut channel_randoms: [Avs3Random; MAX_CHANNELS as usize] =
-            core::array::from_fn(|_| frame_random.clone());
-        for channel in 0..channels {
-            let result = prepared[channel]
-                .take()
-                .expect("every active channel produced a preparation result")?;
-            let draws = self.neural[channel].noise_random_draws(result)?;
-            channel_randoms[channel] = frame_random.clone();
-            for _ in 0..draws {
-                frame_random.rand();
-            }
-            prepared_ok[channel] = Some(result);
-        }
-
         let mut finish_errors: [Option<McCoreDecodeError>; MAX_CHANNELS as usize] =
             core::array::from_fn(|_| None);
-        self.neural_pool.install(|| {
-            prepared_ok[..channels]
-                .par_iter_mut()
-                .zip(self.neural[..channels].par_iter_mut())
-                .zip(self.spectra[..channels].par_iter_mut())
-                .zip(channel_randoms[..channels].par_iter_mut())
-                .zip(neural_diagnostics[..channels].par_iter_mut())
-                .zip(finish_errors[..channels].par_iter_mut())
-                .for_each(
-                    |(((((prepared, decoder), spectrum), random), diagnostics), error)| {
-                        match decoder.finish_prepared(
-                            prepared
-                                .take()
-                                .expect("every active channel has prepared neural data"),
-                            random,
-                        ) {
-                            Ok(decoded) => {
-                                *diagnostics = Some(decoded.diagnostics());
-                                spectrum.copy_from_slice(decoded.spectrum());
+        self.neural_pool
+            .install(|| -> Result<(), McCoreDecodeError> {
+                prepared[..channels]
+                    .par_iter_mut()
+                    .zip(self.neural[..channels].par_iter_mut())
+                    .enumerate()
+                    .for_each(|(channel, (slot, decoder))| {
+                        let result = match neural_inputs[channel]
+                            .expect("all active neural side information was validated")
+                        {
+                            ParsedNeuralQc::Main(input) if header.nn_type == NnType::Main => {
+                                decoder.prepare_main(input).map_err(McCoreDecodeError::from)
                             }
-                            Err(failure) => *error = Some(failure.into()),
-                        }
-                    },
-                );
-        });
-        if let Some(error) = finish_errors.into_iter().flatten().next() {
-            return Err(error);
-        }
+                            ParsedNeuralQc::LowComplexity(input)
+                                if header.nn_type == NnType::LowComplexity =>
+                            {
+                                decoder
+                                    .prepare_low_complexity(input)
+                                    .map_err(McCoreDecodeError::from)
+                            }
+                            _ => Err(McCoreDecodeError::UnexpectedNeuralProfile { channel }),
+                        };
+                        *slot = Some(result);
+                    });
 
-        for (channel, core) in cores[..channels].iter().copied().enumerate() {
-            let core = core.ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
-            self.channel_dsp[channel].reorder.degroup(
-                core.grouping(),
-                core.transform_type(),
-                &mut self.spectra[channel],
-            )?;
-        }
-
-        inverse_mc_coupling(&mut self.spectra[..channels], mc, config)?;
-
-        let bwe_config = config.core().bwe();
-        for (channel, core) in cores[..channels].iter().copied().enumerate() {
-            let core = core.ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
-            match (bwe_config, core.bwe()) {
-                (Some(bwe), Some(side_info)) => self.channel_dsp[channel].bwe.apply(
-                    bwe,
-                    side_info,
-                    &mut self.spectra[channel],
-                    &mut frame_random,
-                )?,
-                (None, None) => {}
-                _ => {
-                    return Err(McCoreDecodeError::InconsistentBweSideInformation { channel });
+                let mut prepared_ok: [Option<PreparedNeuralSpectrum<'_>>; MAX_CHANNELS as usize] =
+                    core::array::from_fn(|_| None);
+                let mut channel_randoms: [Avs3Random; MAX_CHANNELS as usize] =
+                    core::array::from_fn(|_| frame_random.clone());
+                for channel in 0..channels {
+                    let result = prepared[channel]
+                        .take()
+                        .expect("every active channel produced a preparation result")?;
+                    let draws = self.neural[channel].noise_random_draws(result)?;
+                    channel_randoms[channel] = frame_random.clone();
+                    for _ in 0..draws {
+                        frame_random.rand();
+                    }
+                    prepared_ok[channel] = Some(result);
                 }
-            }
-            self.channel_dsp[channel].tns.apply(
-                core.tns(),
-                core.transform_type(),
-                &mut self.spectra[channel],
-            )?;
-            self.channel_dsp[channel]
-                .fd_shaping
-                .apply(core.lsf(), &mut self.spectra[channel])?;
-            if config.lfe_channel() == Some(channel) {
-                clear_mc_lfe_spectrum(&mut self.spectra[channel])?;
-            }
-        }
 
-        for (channel, core) in cores[..channels].iter().copied().enumerate() {
-            let core = core.ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
-            self.channel_dsp[channel].mdct_synthesis.synthesize(
-                &self.spectra[channel],
-                core.transform_type(),
-                &mut self.synthesis[channel],
-            )?;
-        }
+                prepared_ok[..channels]
+                    .par_iter_mut()
+                    .zip(self.neural[..channels].par_iter_mut())
+                    .zip(self.spectra[..channels].par_iter_mut())
+                    .zip(channel_randoms[..channels].par_iter_mut())
+                    .zip(neural_diagnostics[..channels].par_iter_mut())
+                    .zip(finish_errors[..channels].par_iter_mut())
+                    .for_each(
+                        |(((((prepared, decoder), spectrum), random), diagnostics), error)| {
+                            match decoder.finish_prepared(
+                                prepared
+                                    .take()
+                                    .expect("every active channel has prepared neural data"),
+                                random,
+                            ) {
+                                Ok(decoded) => {
+                                    *diagnostics = Some(decoded.diagnostics());
+                                    spectrum.copy_from_slice(decoded.spectrum());
+                                }
+                                Err(failure) => *error = Some(failure.into()),
+                            }
+                        },
+                    );
+                if let Some(error) = finish_errors.iter_mut().find_map(Option::take) {
+                    return Err(error);
+                }
+
+                for (channel, core) in cores[..channels].iter().copied().enumerate() {
+                    let core =
+                        core.ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
+                    self.channel_dsp[channel].reorder.degroup(
+                        core.grouping(),
+                        core.transform_type(),
+                        &mut self.spectra[channel],
+                    )?;
+                }
+
+                inverse_mc_coupling(&mut self.spectra[..channels], mc, config)?;
+
+                let bwe_config = config.core().bwe();
+                for (channel, core) in cores[..channels].iter().copied().enumerate() {
+                    let core =
+                        core.ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
+                    match (bwe_config, core.bwe()) {
+                        (Some(bwe), Some(side_info)) => self.channel_dsp[channel].bwe.apply(
+                            bwe,
+                            side_info,
+                            &mut self.spectra[channel],
+                            &mut frame_random,
+                        )?,
+                        (None, None) => {}
+                        _ => {
+                            return Err(McCoreDecodeError::InconsistentBweSideInformation {
+                                channel,
+                            });
+                        }
+                    }
+                }
+                // BWE above consumes the normative shared PRNG in channel order.
+                // These remaining stages own channel-local histories and can run on
+                // the same bounded pool without changing any arithmetic or state order.
+                let mut dsp_errors: [Option<McCoreDecodeError>; MAX_CHANNELS as usize] =
+                    core::array::from_fn(|_| None);
+                self.channel_dsp[..channels]
+                    .par_iter_mut()
+                    .zip(self.spectra[..channels].par_iter_mut())
+                    .zip(self.synthesis[..channels].par_iter_mut())
+                    .zip(dsp_errors[..channels].par_iter_mut())
+                    .enumerate()
+                    .for_each(|(channel, (((dsp, spectrum), synthesis), error))| {
+                        let result = (|| -> Result<(), McCoreDecodeError> {
+                            let core = cores[channel]
+                                .ok_or(McCoreDecodeError::MissingCoreSideInformation { channel })?;
+                            dsp.tns.apply(core.tns(), core.transform_type(), spectrum)?;
+                            dsp.fd_shaping.apply(core.lsf(), spectrum)?;
+                            if config.lfe_channel() == Some(channel) {
+                                clear_mc_lfe_spectrum(spectrum)?;
+                            }
+                            dsp.mdct_synthesis.synthesize(
+                                spectrum,
+                                core.transform_type(),
+                                synthesis,
+                            )?;
+                            Ok(())
+                        })();
+                        *error = result.err();
+                    });
+                if let Some(error) = dsp_errors.into_iter().flatten().next() {
+                    return Err(error);
+                }
+                Ok(())
+            })?;
         for sample in 0..AVS3_FEATURE_DIMENSIONS {
             for channel in 0..channels {
                 output[sample * channels + channel] = self.synthesis[channel][sample];
@@ -479,9 +507,9 @@ impl McCoreDecoder<'static> {
     }
     /// A source-analysis instance may bound its own workers without changing
     /// process-wide Rayon settings or the decoder used for live playback.
-    pub fn new_builtin_with_worker_limit(limit:usize)->Result<Self,McCoreDecodeError>{
-        let model=crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
-        Self::new_with_worker_limit(model,Some(limit.max(1)))
+    pub fn new_builtin_with_worker_limit(limit: usize) -> Result<Self, McCoreDecodeError> {
+        let model = crate::builtin_model::builtin_neural_model().map_err(NeuralQcError::from)?;
+        Self::new_with_worker_limit(model, Some(limit.max(1)))
     }
 }
 

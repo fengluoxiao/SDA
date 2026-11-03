@@ -980,6 +980,7 @@ class SdaModule : Module() {
         AsyncFunction("beginMp4Import") { uri: String ->
             mpeghImport.begin(appContext.reactContext ?: error("no react context"), Uri.parse(uri))
         }
+        AsyncFunction("extractMp4ImportNative") { token: String -> mpeghImport.extractNative(token) }
         AsyncFunction("readMp4Import") { token: String, offset: Double, count: Int -> mpeghImport.read(token, offset, count) }
         AsyncFunction("appendMp4Import") { token: String, bytes: String -> mpeghImport.append(token, bytes) }
         AsyncFunction("finishMp4Import") { token: String -> mpeghImport.finish(token) }

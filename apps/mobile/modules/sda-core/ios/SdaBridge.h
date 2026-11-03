@@ -44,4 +44,5 @@ void *sda_ios_sources_create(char **error);
 char *sda_ios_sources_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
 char *sda_ios_sources_next(void *decoder);
 void sda_ios_sources_close(void *decoder);
+char *sda_ios_extract_mpegh_mp4(const char *source, const char *output);
 #endif
