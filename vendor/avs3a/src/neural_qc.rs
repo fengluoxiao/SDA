@@ -482,7 +482,7 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         input: MainNeuralQc<'a>,
     ) -> Result<PreparedNeuralSpectrum<'a>, NeuralQcError> {
         let (context_bytes_consumed, base_bytes_consumed) =
-            self.decode_latents(input.bitstreams)?;
+            self.decode_latents(input.bitstreams, false)?;
         Ok(PreparedNeuralSpectrum::Main {
             input,
             context_bytes_consumed,
@@ -501,7 +501,7 @@ impl<'model> NeuralSpectrumDecoder<'model> {
             });
         }
         let (context_bytes_consumed, base_bytes_consumed) =
-            self.decode_latents(input.bitstreams)?;
+            self.decode_latents(input.bitstreams, true)?;
         Ok(PreparedNeuralSpectrum::LowComplexity {
             input,
             context_bytes_consumed,
@@ -540,17 +540,18 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         &self,
         prepared: PreparedNeuralSpectrum<'_>,
     ) -> Result<usize, NeuralQcError> {
-        let (noise_filling, noise_dimensions) = match prepared {
+        let (noise_filling, noise_dimensions, flat) = match prepared {
             PreparedNeuralSpectrum::Main { input, .. } => {
                 let mut dimensions = input.noise_filling.num_lines;
                 for layer in self.base.decoder().layers() {
                     dimensions /= layer.stride();
                 }
-                (input.noise_filling, dimensions)
+                (input.noise_filling, dimensions, false)
             }
             PreparedNeuralSpectrum::LowComplexity { input, .. } => (
                 input.noise_filling,
                 input.noise_filling.num_lines / self.base.latent_shape().channels(),
+                true,
             ),
         };
         let shape = self.base.latent_shape();
@@ -562,12 +563,17 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         }
         let ranges = noise_ranges(shape, noise_dimensions, noise_filling);
         let medians = self.base.quantizer().quantile_medians();
+        let (values, dimension_stride, channel_stride) = if flat {
+            (&self.low_complexity_output, shape.channels(), 1)
+        } else {
+            (&self.base_dequantized, 1, shape.dimensions())
+        };
         let mut draws = 0;
         for range in ranges[..noise_filling.group_count].iter() {
             for dimension in range.0..range.1 {
                 for (channel, &median) in medians.iter().enumerate() {
-                    let index = dimension + channel * shape.dimensions();
-                    if self.base_dequantized[index] == median {
+                    let index = dimension * dimension_stride + channel * channel_stride;
+                    if values[index] == median {
                         draws += 1;
                     }
                 }
@@ -588,7 +594,8 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         for layer in self.base.decoder().layers() {
             noise_dimensions /= layer.stride();
         }
-        let noise_parameters = self.apply_noise_filling(noise_filling, noise_dimensions, random)?;
+        let noise_parameters =
+            self.apply_noise_filling(noise_filling, noise_dimensions, random, false)?;
         let feature_scale = main_feature_scale(input.feature_amplified, input.scale_index);
         for value in &mut self.base_dequantized {
             *value /= feature_scale;
@@ -626,15 +633,14 @@ impl<'model> NeuralSpectrumDecoder<'model> {
     ) -> Result<DecodedNeuralSpectrum<'decoder>, NeuralQcError> {
         let noise_filling = input.noise_filling;
         let noise_dimensions = noise_filling.num_lines / self.base.latent_shape().channels();
-        let noise_parameters = self.apply_noise_filling(noise_filling, noise_dimensions, random)?;
+        let noise_parameters =
+            self.apply_noise_filling(noise_filling, noise_dimensions, random, true)?;
         let feature_scale = low_complexity_feature_scale(input.scale_index);
 
-        let shape = self.base.latent_shape();
-        for dimension in 0..shape.dimensions() {
-            for channel in 0..shape.channels() {
-                self.low_complexity_output[dimension * shape.channels() + channel] =
-                    self.base_dequantized[dimension + channel * shape.dimensions()] / feature_scale;
-            }
+        // Entropy coding already emits the LC spectrum in its final order.
+        // Normalize contiguously, without a channel-major round trip.
+        for value in &mut self.low_complexity_output {
+            *value /= feature_scale;
         }
 
         Ok(DecodedNeuralSpectrum {
@@ -649,9 +655,46 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         })
     }
 
+    fn dequantize_base_flat(&mut self) -> Result<(), NeuralQcError> {
+        let shape = self.base.latent_shape();
+        let medians = self.base.quantizer().quantile_medians();
+        if shape.channels() != medians.len() {
+            return Err(LatentError::QuantizerChannelMismatch {
+                shape: shape.channels(),
+                quantizer: medians.len(),
+            }
+            .into());
+        }
+        for (buffer, actual) in [
+            ("flattened latent", self.base_flattened.len()),
+            ("dequantized latent", self.low_complexity_output.len()),
+        ] {
+            if actual != shape.len() {
+                return Err(LatentError::LengthMismatch {
+                    buffer,
+                    expected: shape.len(),
+                    actual,
+                }
+                .into());
+            }
+        }
+        let channels = shape.channels();
+        for (output, input) in self
+            .low_complexity_output
+            .chunks_exact_mut(channels)
+            .zip(self.base_flattened.chunks_exact(channels))
+        {
+            for ((out, &value), &median) in output.iter_mut().zip(input).zip(medians) {
+                *out = value as f32 + median;
+            }
+        }
+        Ok(())
+    }
+
     fn decode_latents(
         &mut self,
         bitstreams: NeuralBitstreams<'_>,
+        flat: bool,
     ) -> Result<(usize, usize), NeuralQcError> {
         let context_shape = self.context.latent_shape();
         let mut context_range = RangeDecoder::new(bitstreams.context);
@@ -690,16 +733,20 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         )?;
         let base_bytes_consumed = base_range.bytes_consumed();
         let base_shape = self.base.latent_shape();
-        unflatten_from_entropy_coder_into(
-            base_shape,
-            &self.base_flattened,
-            &mut self.base_quantized,
-        )?;
-        self.base.quantizer().dequantize_into(
-            base_shape,
-            &self.base_quantized,
-            &mut self.base_dequantized,
-        )?;
+        if flat {
+            self.dequantize_base_flat()?;
+        } else {
+            unflatten_from_entropy_coder_into(
+                base_shape,
+                &self.base_flattened,
+                &mut self.base_quantized,
+            )?;
+            self.base.quantizer().dequantize_into(
+                base_shape,
+                &self.base_quantized,
+                &mut self.base_dequantized,
+            )?;
+        }
         Ok((context_bytes_consumed, base_bytes_consumed))
     }
 
@@ -708,6 +755,7 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         noise_filling: NoiseFilling,
         noise_dimensions: usize,
         random: &mut Avs3Random,
+        flat: bool,
     ) -> Result<[f32; AVS3_NOISE_GROUPS], NeuralQcError> {
         let shape = self.base.latent_shape();
         if noise_dimensions > shape.dimensions() {
@@ -720,17 +768,22 @@ impl<'model> NeuralSpectrumDecoder<'model> {
         let ranges = noise_ranges(shape, noise_dimensions, noise_filling);
         let mut noise_parameters = [0.0_f32; AVS3_NOISE_GROUPS];
         let medians = self.base.quantizer().quantile_medians();
+        let (output, dimension_stride, channel_stride) = if flat {
+            (&mut self.low_complexity_output, shape.channels(), 1)
+        } else {
+            (&mut self.base_dequantized, 1, shape.dimensions())
+        };
         for group in 0..noise_filling.group_count {
             let noise_parameter = noise_filling.quantized_indexes[group] as f32 / 23.34_f32;
             noise_parameters[group] = noise_parameter;
             for dimension in ranges[group].0..ranges[group].1 {
                 for (channel, &median) in medians.iter().enumerate() {
-                    let index = dimension + channel * shape.dimensions();
-                    if self.base_dequantized[index] == median {
+                    let index = dimension * dimension_stride + channel * channel_stride;
+                    if output[index] == median {
                         let mut noise = random.rand() as f32 / AVS3_RAND_MAX as f32;
                         noise = noise * 2.0_f32 - 1.0_f32;
                         noise *= noise_parameter;
-                        self.base_dequantized[index] += noise;
+                        output[index] += noise;
                     }
                 }
             }
@@ -799,6 +852,110 @@ mod tests {
             .fold(0xcbf2_9ce4_8422_2325_u64, |hash, value| {
                 (hash ^ u64::from(value.to_bits())).wrapping_mul(0x100_0000_01b3)
             })
+    }
+
+    #[test]
+    fn flat_lc_dequant_noise_and_normalization_match_original_layout() {
+        let mut decoder = NeuralSpectrumDecoder::new_builtin().unwrap();
+        let shape = decoder.base.latent_shape();
+        let medians = decoder.base.quantizer().quantile_medians().to_vec();
+        let quantized: Vec<i32> = (0..shape.len())
+            .map(|i| {
+                if i % 3 == 0 {
+                    0
+                } else {
+                    [1, -1, 17, -19, 16777217, -16777217, i32::MAX, i32::MIN][i % 8]
+                }
+            })
+            .collect();
+        let alternating = core::array::from_fn(|i| {
+            if i % 2 == 0 {
+                NoiseGroup::Transient
+            } else {
+                NoiseGroup::Other
+            }
+        });
+        let noises = [
+            NoiseFilling::single(0, 0).unwrap(),
+            NoiseFilling::single(17, 7).unwrap(),
+            NoiseFilling::single(1024, 7).unwrap(),
+            NoiseFilling::two_groups(997, alternating, [3, 7]).unwrap(),
+        ];
+        let streams = NeuralBitstreams::new(&[], &[]).unwrap();
+        for scale_index in 0..=u8::MAX {
+            for noise in noises {
+                decoder.base_flattened.copy_from_slice(&quantized);
+                unflatten_from_entropy_coder_into(shape, &quantized, &mut decoder.base_quantized)
+                    .unwrap();
+                decoder
+                    .base
+                    .quantizer()
+                    .dequantize_into(
+                        shape,
+                        &decoder.base_quantized,
+                        &mut decoder.base_dequantized,
+                    )
+                    .unwrap();
+                decoder.dequantize_base_flat().unwrap();
+                let dimensions = noise.num_lines / shape.channels();
+                let ranges = noise_ranges(shape, dimensions, noise);
+                let mut expected_draws = 0;
+                for &(start, end) in &ranges[..noise.group_count] {
+                    for dimension in start..end {
+                        for (channel, &median) in medians.iter().enumerate() {
+                            if decoder.base_dequantized[dimension + channel * shape.dimensions()]
+                                == median
+                            {
+                                expected_draws += 1;
+                            }
+                        }
+                    }
+                }
+                let input = LowComplexityNeuralQc::new(streams, noise, scale_index);
+                assert_eq!(
+                    decoder
+                        .noise_random_draws(PreparedNeuralSpectrum::LowComplexity {
+                            input,
+                            context_bytes_consumed: 0,
+                            base_bytes_consumed: 0
+                        })
+                        .unwrap(),
+                    expected_draws
+                );
+                let mut original_random = Avs3Random::new();
+                for _ in 0..scale_index % 17 {
+                    original_random.rand();
+                }
+                let mut actual_random = original_random.clone();
+                let expected_parameters = decoder
+                    .apply_noise_filling(noise, dimensions, &mut original_random, false)
+                    .unwrap();
+                let scale = low_complexity_feature_scale(scale_index);
+                let mut expected = vec![0.0_f32; shape.len()];
+                for dimension in 0..shape.dimensions() {
+                    for channel in 0..shape.channels() {
+                        expected[dimension * shape.channels() + channel] = decoder.base_dequantized
+                            [dimension + channel * shape.dimensions()]
+                            / scale;
+                    }
+                }
+                let actual = decoder
+                    .finish_low_complexity(input, 0, 0, &mut actual_random)
+                    .unwrap();
+                for (a, b) in actual.spectrum().iter().zip(&expected) {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "scale={scale_index} noise={noise:?}"
+                    );
+                }
+                assert_eq!(
+                    actual.diagnostics().noise_parameters.map(f32::to_bits),
+                    expected_parameters.map(f32::to_bits)
+                );
+                assert_eq!(actual_random, original_random);
+            }
+        }
     }
 
     #[test]

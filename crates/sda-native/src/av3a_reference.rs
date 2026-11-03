@@ -85,9 +85,15 @@ impl ProgrammeReference for Av3aReference {
                     let mut frame=reference.frame;
                     if self.native_frames==0 && frame.sample_rate>0 {self.sample_rate=frame.sample_rate;}
                     if frame.sample_rate == 0 || frame.sample_rate != self.sample_rate || frame.sample_pos != self.native_frames
-                        || frame.channels.is_empty() || frame.channels.iter().flatten().any(|x|!x.is_finite()) {
+                        || frame.channels.is_empty()
+                        || frame.channels.iter().any(|c| c.is_empty() || c.len()!=frame.channels[0].len()) {
                         return Err("invalid Audio Vivid reference timeline or samples".into());
                     }
+                    // This private handoff receives only AV3A core frames. The
+                    // producer rejects nonfinite synthesis samples before native-rate
+                    // normalization, and scene routing validates its gained outputs.
+                    // Keep that boundary check rather than repeat the PCM scan here.
+                    debug_assert!(frame.channels.iter().flatten().all(|x|x.is_finite()));
                     if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
                     if let Some(measurement)=frame.reference_loudness.take() {
                         self.latest=measurement;self.use_speakers=false;

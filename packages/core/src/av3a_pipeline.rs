@@ -75,8 +75,8 @@ fn mc_decoder(h: &avs3a::FrameHeader, worker_limit:Option<usize>) -> Result<Buil
 }
 
 #[inline(never)]
-fn mix_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
-    let backend = MixDecoderBackend::new_builtin().map_err(|e| e.to_string())?;
+fn mix_decoder(h: &avs3a::FrameHeader, worker_limit: Option<usize>) -> Result<BuiltinDecoder, String> {
+    let backend = worker_limit.map_or_else(MixDecoderBackend::new_builtin, MixDecoderBackend::new_builtin_with_worker_limit).map_err(|e| e.to_string())?;
     Ok(BuiltinDecoder::Mix(Box::new(
         PendingDecoder::new(backend)
             .configure(h)
@@ -168,7 +168,9 @@ impl Av3aPipeline {
         self.seek_phase_prefix=(self.seek_input_origin%u64::from(self.source_rate/a)) as usize;
         self.input_samples=self.seek_phase_prefix as u64;
         self.decoder = Some(if h.profile == CodecProfile::Mixed {
-            mix_decoder(h)?
+            // Match speaker-reference preparation: reserve CPU for metering and
+            // the host instead of oversubscribing the analysis worker pool.
+            mix_decoder(h, self.native_reference.then_some(4))?
         } else {
             match h.channel_config {
                 Some(ChannelConfig::Mono) => mono_decoder(h)?,

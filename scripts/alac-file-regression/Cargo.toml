@@ -9,6 +9,7 @@ publish = false
 path = "../../crates/sda-native/src/mp3.rs"
 
 [dependencies]
+wide = "=1.7.1"
 rubato = "=0.16.2"
 symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "alac", "isomp4"] }
 

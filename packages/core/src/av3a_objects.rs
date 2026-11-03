@@ -331,15 +331,12 @@ impl ObjectScene {
     fn install(&mut self, scene: SceneSpec) -> Result<(), String> {
         let mut routes = compile(scene, self.channels)?;
         if self.started {
-            let key = |r: &Route| {
-                (
-                    r.role.clone(),
-                    r.inputs.iter().map(|i| i.transport).collect::<Vec<_>>(),
-                )
-            };
-            if self.routes.iter().map(key).collect::<Vec<_>>()
-                != routes.iter().map(key).collect::<Vec<_>>()
-            {
+            let same_topology = self.routes.len() == routes.len()
+                && self.routes.iter().zip(&routes).all(|(old, new)| {
+                    old.role == new.role && old.inputs.len() == new.inputs.len()
+                        && old.inputs.iter().zip(&new.inputs).all(|(a, b)| a.transport == b.transport)
+                });
+            if !same_topology {
                 return Err("AV3A logical topology changed during playback".into());
             }
             for (old, new) in self.routes.iter().zip(&mut routes) {

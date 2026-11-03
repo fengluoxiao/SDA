@@ -347,6 +347,10 @@ impl Quantizer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextScaleTable {
     scales: Vec<f32>,
+    // Immutable model data, at most 32,640 packed u32 entries. This narrows an exact
+    // threshold search; it never stores programme audio or calculated results.
+    hint_start: usize,
+    index_hints: Vec<u32>,
 }
 
 impl ContextScaleTable {
@@ -371,7 +375,74 @@ impl ContextScaleTable {
                 return Err(LatentError::UnsortedContextScales { index });
             }
         }
-        Ok(Self { scales })
+        let hint_start = (scales[0].to_bits() >> 16) as usize;
+        let index_hints = if scales[0] >= f32::MIN_POSITIVE {
+            let last_prefix = (scales[scales.len() - 1].to_bits() >> 16) as usize;
+            let last_index = scales.len() - 1;
+            (hint_start..=last_prefix)
+                .map(|prefix| {
+                    let lower = f32::from_bits((prefix as u32) << 16);
+                    let first = scales
+                        .partition_point(|&scale| scale < lower)
+                        .min(last_index);
+                    let end = if prefix == last_prefix {
+                        last_index
+                    } else {
+                        let next = f32::from_bits(((prefix + 1) as u32) << 16);
+                        scales
+                            .partition_point(|&scale| scale < next)
+                            .min(last_index)
+                    };
+                    (first as u32) | ((end as u32) << 16)
+                })
+                .collect()
+        } else {
+            // Preserve the original search for subnormal model thresholds.
+            Vec::new()
+        };
+        Ok(Self {
+            scales,
+            hint_start,
+            index_hints,
+        })
+    }
+
+    #[inline(always)]
+    fn index_for(&self, value: f32) -> usize {
+        debug_assert!(value.is_finite());
+        let last = self.scales.len() - 1;
+        if value <= self.scales[0] {
+            return 0;
+        }
+        if value > self.scales[last] {
+            return last;
+        }
+        if self.index_hints.is_empty() {
+            return self
+                .scales
+                .partition_point(|&scale| scale < value)
+                .min(last);
+        }
+        let bucket = (value.to_bits() >> 16) as usize;
+        let hint = self.index_hints[bucket - self.hint_start];
+        let first = (hint & 0xffff) as usize;
+        let end = (hint >> 16) as usize;
+        if first == end {
+            return first;
+        }
+        // Every value in the bucket has its first-equal threshold in this
+        // inclusive interval. Search the original f32 thresholds exactly;
+        // duplicate or densely packed model scales still take logarithmic work.
+        if end == first + 1 {
+            return if self.scales[first] < value {
+                end
+            } else {
+                first
+            };
+        }
+        // The end threshold is already known to be >= value, so it need not
+        // be tested again; a search that reaches the slice end selects it.
+        first + self.scales[first..end].partition_point(|&scale| scale < value)
     }
 
     pub fn scales(&self) -> &[f32] {
@@ -411,8 +482,7 @@ impl ContextScaleTable {
                         bits: value.to_bits(),
                     });
                 }
-                let selected = self.scales.partition_point(|&scale| scale < value);
-                let selected = selected.min(self.scales.len() - 1);
+                let selected = self.index_for(value);
                 indexes[output_position] = selected as u16;
                 output_position += 1;
             }
@@ -424,6 +494,80 @@ impl ContextScaleTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hinted_cdf_search_matches_full_precision_lower_bound() {
+        let sets = vec![
+            vec![0.5],
+            vec![1.0; 64],
+            vec![
+                0.11, 0.11000001, 0.11000002, 0.11000002, 0.12, 0.5, 1.0, 1.0, 2.0, 9.0,
+            ],
+            (0..2048)
+                .map(|i| f32::from_bits(0x3f800000 + i * 7))
+                .collect(),
+            vec![
+                f32::MIN_POSITIVE,
+                f32::from_bits(f32::MIN_POSITIVE.to_bits() + 1),
+                1.0,
+                f32::MAX,
+            ],
+            vec![f32::from_bits(1), f32::from_bits(2), f32::MIN_POSITIVE, 0.5],
+        ];
+        for scales in sets {
+            let table = ContextScaleTable::new(scales.clone()).unwrap();
+            assert!(table.index_hints.len() <= 32640);
+            let mut values = vec![
+                -f32::MAX,
+                -1.0,
+                -0.0,
+                0.0,
+                f32::from_bits(1),
+                f32::MIN_POSITIVE,
+                f32::MAX,
+            ];
+            for &scale in &scales {
+                values.extend([
+                    f32::from_bits(scale.to_bits() - 1),
+                    scale,
+                    f32::from_bits(scale.to_bits() + 1),
+                ]);
+            }
+            for offset in 0..table.index_hints.len() {
+                let bits = ((table.hint_start + offset) as u32) << 16;
+                values.extend([f32::from_bits(bits), f32::from_bits(bits | 0xffff)]);
+            }
+            let mut state = 123456789u32;
+            for _ in 0..100000 {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                values.push(f32::from_bits(state));
+            }
+            for value in values.into_iter().filter(|v| v.is_finite()) {
+                let expected = scales
+                    .partition_point(|&scale| scale < value)
+                    .min(scales.len() - 1);
+                assert_eq!(
+                    table.index_for(value),
+                    expected,
+                    "value bits={:08x}",
+                    value.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cdf_bucket_selection_preserves_nonfinite_errors() {
+        let table = ContextScaleTable::new(vec![0.1, 0.5, 1.0]).unwrap();
+        let shape = LatentShape::new(4, 1).unwrap();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut output = [0u16; 4];
+            assert!(matches!(
+                table.cdf_indexes_into(shape, &[0.2, 0.3, bad, 0.4], &mut output),
+                Err(LatentError::NonFiniteContextValue { index: 2, .. })
+            ));
+        }
+    }
 
     #[test]
     fn layout_conversion_matches_mdct_decoder_loops() {

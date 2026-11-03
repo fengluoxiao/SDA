@@ -31,12 +31,23 @@ enum MixBackendState {
 #[derive(Debug)]
 pub struct MixDecoderBackend {
     state: MixBackendState,
+    worker_limit: Option<usize>,
 }
 
 impl MixDecoderBackend {
     pub fn new_builtin() -> Result<Self, DecodeError> {
         Ok(Self {
             state: MixBackendState::Unconfigured,
+            worker_limit: None,
+        })
+    }
+
+    /// Bound native neural workers without changing channel count or synthesis.
+    /// The default constructor retains the ordinary playback worker policy.
+    pub fn new_builtin_with_worker_limit(limit: usize) -> Result<Self, DecodeError> {
+        Ok(Self {
+            state: MixBackendState::Unconfigured,
+            worker_limit: Some(limit.max(1)),
         })
     }
 
@@ -106,7 +117,10 @@ impl DecoderBackend for MixDecoderBackend {
                 MixBackendState::Stereo(backend)
             }
             Some(SoundBedType::ObjectsOnly | SoundBedType::ChannelBed) => {
-                let mut backend = Box::new(McDecoderBackend::new_builtin()?);
+                let mut backend = Box::new(match self.worker_limit {
+                    Some(limit) => McDecoderBackend::new_builtin_with_worker_limit(limit)?,
+                    None => McDecoderBackend::new_builtin()?,
+                });
                 backend.configure(config)?;
                 MixBackendState::Multichannel(backend)
             }

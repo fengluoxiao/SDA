@@ -15,6 +15,7 @@ default = ["wasm"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys"]
 
 [dependencies]
+wide = "=1.7.1"
 sda-render-metadata = { path = "../../crates/sda-render-metadata" }
 avs3a = { path = "../../vendor/avs3a" }
 rubato = "0.16.2"

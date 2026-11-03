@@ -116,6 +116,7 @@ pub struct RangeCoderConfig {
     offsets: Vec<i16>,
     precision: u8,
     overflow_width: u8,
+    preferred_symbols: Vec<usize>,
 }
 
 impl RangeCoderConfig {
@@ -169,11 +170,27 @@ impl RangeCoderConfig {
                 });
             }
         }
+        // Model-only fast paths: narrow distributions usually decode their
+        // modal symbol. Membership is still checked against the exact interval.
+        let preferred_symbols = cdfs
+            .iter()
+            .map(|cdf| {
+                let index = (0..cdf.len() - 1)
+                    .max_by_key(|&i| cdf[i + 1] - cdf[i])
+                    .unwrap();
+                if cdf.len() >= 5 && (cdf[index + 1] - cdf[index]) * 2 >= expected_end {
+                    index
+                } else {
+                    usize::MAX
+                }
+            })
+            .collect();
         Ok(Self {
             cdfs,
             offsets,
             precision,
             overflow_width,
+            preferred_symbols,
         })
     }
 
@@ -314,8 +331,12 @@ impl<'a> RangeDecoder<'a> {
                 })?;
             let max_value =
                 i32::try_from(cdf.len() - 2).map_err(|_| RangeCoderError::IntegerOverflow)?;
-            let mut value = i32::try_from(self.decode_symbol(cdf, config.precision)?)
-                .map_err(|_| RangeCoderError::IntegerOverflow)?;
+            let mut value = i32::try_from(self.decode_symbol(
+                cdf,
+                config.precision,
+                config.preferred_symbols[index],
+            )?)
+            .map_err(|_| RangeCoderError::IntegerOverflow)?;
 
             if value == max_value {
                 let mut widths = 0_u32;
@@ -367,13 +388,28 @@ impl<'a> RangeDecoder<'a> {
         Ok(())
     }
 
-    fn decode_symbol(&mut self, cdf: &[u32], precision: u8) -> Result<u32, RangeCoderError> {
+    fn decode_symbol(
+        &mut self,
+        cdf: &[u32],
+        precision: u8,
+        preferred: usize,
+    ) -> Result<u32, RangeCoderError> {
         self.initialize();
 
         let size = u64::from(self.size_minus_one) + 1;
         let relative = self.value.wrapping_sub(self.base);
         let offset = ((u64::from(relative) + 1) << precision) - 1;
-        let pv = cdf.partition_point(|&value| size * u64::from(value) <= offset);
+        // Products fit in 48 bits (a 32-bit range and at most 16-bit CDF).
+        // Wrapping below the lower bound produces a value far above any valid
+        // interval width, so this is the same exact half-open interval test.
+        let pv = if preferred != usize::MAX
+            && offset.wrapping_sub(size * u64::from(cdf[preferred]))
+                < size * u64::from(cdf[preferred + 1] - cdf[preferred])
+        {
+            preferred + 1
+        } else {
+            cdf.partition_point(|&value| size * u64::from(value) <= offset)
+        };
         if pv == 0 || pv >= cdf.len() {
             return Err(RangeCoderError::InvalidInterval);
         }
@@ -511,6 +547,106 @@ mod tests {
             vec![-1, -2],
         )
         .unwrap()
+    }
+
+    fn same_decoder_state(a: &RangeDecoder<'_>, b: &RangeDecoder<'_>) {
+        assert_eq!(
+            (
+                a.input_position,
+                a.base,
+                a.size_minus_one,
+                a.value,
+                a.initialized
+            ),
+            (
+                b.input_position,
+                b.base,
+                b.size_minus_one,
+                b.value,
+                b.initialized
+            )
+        );
+    }
+
+    #[test]
+    fn preferred_intervals_match_binary_search_at_every_boundary() {
+        for precision in 3..=16 {
+            let total = 1u32 << precision;
+            let cdfs = [
+                vec![0, 1, 2, total - 1, total],
+                vec![0, total - 3, total - 2, total - 1, total],
+                vec![0, total / 4, total / 2, total * 3 / 4, total],
+            ];
+            for cdf in &cdfs {
+                for preferred in 0..cdf.len() - 1 {
+                    for size_minus_one in [0x00010000u32, 0x00ffffff, 0x12345678, u32::MAX] {
+                        let size = u64::from(size_minus_one) + 1;
+                        let mut values = vec![0, u32::MAX];
+                        for &edge in cdf {
+                            let point = (size * u64::from(edge)) >> precision;
+                            for value in [point.saturating_sub(1), point, point + 1] {
+                                if let Ok(value) = u32::try_from(value) {
+                                    values.push(value);
+                                }
+                            }
+                        }
+                        for value in values {
+                            let mut binary = RangeDecoder::new(&[]);
+                            let mut actual = RangeDecoder::new(&[]);
+                            for decoder in [&mut binary, &mut actual] {
+                                decoder.initialized = true;
+                                decoder.base = 0x9abcdef0;
+                                decoder.size_minus_one = size_minus_one;
+                                decoder.value = decoder.base.wrapping_add(value);
+                            }
+                            assert_eq!(
+                                actual.decode_symbol(cdf, precision, preferred),
+                                binary.decode_symbol(cdf, precision, usize::MAX)
+                            );
+                            same_decoder_state(&actual, &binary);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preferred_model_path_preserves_streams_errors_and_overflow_state() {
+        let mut state = 7654321u32;
+        for precision in 3..=16 {
+            let total = 1u32 << precision;
+            let cdfs = vec![
+                vec![0, 1, 2, total - 1, total],
+                vec![0, total - 3, total - 2, total - 1, total],
+                vec![0, total / 4, total / 2, total * 3 / 4, total],
+            ];
+            let config =
+                RangeCoderConfig::with_parameters(cdfs, vec![-2, 0, 3], precision, 3).unwrap();
+            let mut binary_config = config.clone();
+            binary_config.preferred_symbols.fill(usize::MAX);
+            for length in [0, 1, 3, 17, 128] {
+                for _ in 0..32 {
+                    let input: Vec<u8> = (0..length)
+                        .map(|_| {
+                            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                            (state >> 24) as u8
+                        })
+                        .collect();
+                    let indexes: Vec<u16> = (0..73).map(|i| (i % 3) as u16).collect();
+                    let mut a = RangeDecoder::new(&input);
+                    let mut b = RangeDecoder::new(&input);
+                    let (mut actual, mut expected) =
+                        (vec![0; indexes.len()], vec![0; indexes.len()]);
+                    assert_eq!(
+                        a.decode_into(&config, &indexes, &mut actual),
+                        b.decode_into(&binary_config, &indexes, &mut expected)
+                    );
+                    assert_eq!(actual, expected);
+                    same_decoder_state(&a, &b);
+                }
+            }
+        }
     }
 
     #[test]
