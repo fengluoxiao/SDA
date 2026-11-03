@@ -15,13 +15,15 @@ pub fn open_with_hrtf(path:impl AsRef<Path>,hrtf:impl AsRef<Path>)->Result<Fresh
 
 /// Complete analysis with a bounded two-frame handoff: decoding and metering
 /// run concurrently without retaining any programme PCM or calculated disk data.
+struct ReferenceFrame { frame:sda_core::FrameData, scene:bool }
 struct Av3aReference {
-    receiver: Option<std::sync::mpsc::Receiver<Result<Option<sda_core::FrameData>, String>>>,
+    receiver: Option<std::sync::mpsc::Receiver<Result<Option<ReferenceFrame>, String>>>,
     worker: Option<std::thread::JoinHandle<()>>,
     native_frames: u64,
     sample_rate: u32,
     latest: Measurement,
     speakers: sda_core::loudness::SpeakerReference,
+    scene: Option<sda_core::scene_reference::SceneMeter>,
     finished: bool,
     use_speakers: bool,
     renderer: Option<crate::av3a_reference_renderer::CanonicalReference>,
@@ -39,10 +41,10 @@ impl Av3aReference {
                 let _ = sender.send(result.map(|()| None));
             }).map_err(|e| e.to_string())?;
         Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0,
-            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), finished: false, use_speakers: false, renderer: None })
+            sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), scene: None, finished: false, use_speakers: false, renderer: None })
     }
 }
-fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<Option<sda_core::FrameData>,String>>) -> Result<(),String> {
+fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<Option<ReferenceFrame>,String>>) -> Result<(),String> {
     use std::io::Read;
     let mut input = std::io::BufReader::new(input);
     let mut decoder = sda_core::StreamingDecoder::av3a_pipelined_source_reference();
@@ -51,7 +53,8 @@ fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result
         let errors = decoder.drain_errors();
         if !errors.is_empty() { return Err(format!("Audio Vivid reference decode failed: {}", errors.join("; "))); }
         if let Some(frame) = decoder.next_frame() {
-            if sender.send(Ok(Some(frame))).is_err() { return Ok(()); }
+            let scene=decoder.av3a_reference_is_scene();
+            if sender.send(Ok(Some(ReferenceFrame{frame,scene}))).is_err() { return Ok(()); }
         } else if flushed { return Ok(()); }
         else {
             let mut bytes = [0u8;4096];
@@ -78,15 +81,22 @@ impl ProgrammeReference for Av3aReference {
         let end = self.frames().saturating_add(budget as u64);
         loop {
             match self.receiver.as_ref().ok_or("Audio Vivid reference was closed")?.recv().map_err(|_|"Audio Vivid reference worker stopped unexpectedly")?? {
-                Some(frame) => {
+                Some(reference) => {
+                    let mut frame=reference.frame;
                     if self.native_frames==0 && frame.sample_rate>0 {self.sample_rate=frame.sample_rate;}
                     if frame.sample_rate == 0 || frame.sample_rate != self.sample_rate || frame.sample_pos != self.native_frames
                         || frame.channels.is_empty() || frame.channels.iter().flatten().any(|x|!x.is_finite()) {
                         return Err("invalid Audio Vivid reference timeline or samples".into());
                     }
                     if let Some(renderer)=&mut self.renderer{renderer.push(&frame)?;}
-                    if let Some(measurement)=frame.reference_loudness {
+                    if let Some(measurement)=frame.reference_loudness.take() {
                         self.latest=measurement;self.use_speakers=false;
+                    } else if reference.scene {
+                        // Metadata/events stay on the original sample timeline.
+                        // Only the owning execution thread changes; the scene
+                        // mixer, ramps and BS.1770 policy are unchanged.
+                        self.latest=self.scene.get_or_insert_with(||sda_core::scene_reference::SceneMeter::with_sample_rate(frame.sample_rate)).measure(&frame);
+                        self.use_speakers=false;
                     } else {
                         // Programme references are published only at EOF. Accumulate
                         // every sample, then apply the exact gates once instead of

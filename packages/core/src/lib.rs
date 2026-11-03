@@ -158,6 +158,7 @@ impl FrameData {
 }
 
 pub trait Pipeline {
+    fn av3a_reference_is_scene(&self) -> bool { false }
     fn set_object_rendering(&mut self, _enabled: bool) {}
     fn codec_name(&self) -> &'static str;
     fn push(&mut self, data: &[u8], out: &mut VecDeque<FrameData>, errors: &mut Vec<String>);
@@ -299,7 +300,10 @@ impl StreamingDecoder {
             restore_object_mapping:false,object_targets:Default::default()}
     }
 
-    /// Source-rate PCM for a bounded parallel analysis pass. Speaker metering
+    /// Reference policy selected by the AV3A programme's declared transport.
+    pub fn av3a_reference_is_scene(&self) -> bool { self.pipeline.av3a_reference_is_scene() }
+
+    /// Source-rate PCM for a bounded parallel analysis pass. Programme metering
     /// belongs to the receiver; this decoder never changes the playback path.
     pub fn av3a_pipelined_source_reference() -> Self {
         Self {pipeline:Box::new(av3a_pipeline::Av3aPipeline::new_pipelined_source_reference()),sniff:None,

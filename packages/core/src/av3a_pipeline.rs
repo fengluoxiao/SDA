@@ -86,7 +86,7 @@ fn mix_decoder(h: &avs3a::FrameHeader) -> Result<BuiltinDecoder, String> {
 
 pub struct Av3aPipeline {
     native_reference: bool,
-    defer_speaker_reference: bool,
+    defer_programme_reference: bool,
     output_rate: u32,
     parser: FrameStream,
     decoder: Option<BuiltinDecoder>,
@@ -112,7 +112,7 @@ pub struct Av3aPipeline {
 impl Av3aPipeline {
     pub fn new() -> Self {
         Self {
-            native_reference:false, defer_speaker_reference:false, output_rate:OUTPUT_RATE,
+            native_reference:false, defer_programme_reference:false, output_rate:OUTPUT_RATE,
             parser: FrameStream::new(),
             decoder: None,
             resampler: None,
@@ -138,10 +138,10 @@ impl Av3aPipeline {
     pub fn new_source_reference() -> Self {
         let mut pipeline=Self::new();pipeline.native_reference=true;pipeline
     }
-    /// A bounded producer/consumer analysis pass meters speaker PCM on its
-    /// consuming thread. Object-scene references keep their original path.
+    /// A bounded producer/consumer analysis pass meters speaker and object
+    /// programmes on its consuming thread, using the same reference policies.
     pub fn new_pipelined_source_reference() -> Self {
-        let mut pipeline=Self::new_source_reference();pipeline.defer_speaker_reference=true;pipeline
+        let mut pipeline=Self::new_source_reference();pipeline.defer_programme_reference=true;pipeline
     }
     fn configure(&mut self, h: &avs3a::FrameHeader) -> Result<(), String> {
         if h.samples_per_channel as usize != FRAME_SAMPLES {
@@ -314,14 +314,14 @@ impl Av3aPipeline {
             program_loudness: None,
             ramp_duration: 0,
         };
-        if self.objects.is_some() {
+        if self.objects.is_some() && !self.defer_programme_reference {
             decoded.reference_loudness = Some(
                 self.reference
                     .get_or_insert_with(||crate::scene_reference::SceneMeter::with_sample_rate(decoded.sample_rate))
                     .measure(&decoded),
             );
         }
-        if self.objects.is_none() && !self.defer_speaker_reference {
+        if self.objects.is_none() && !self.defer_programme_reference {
             decoded.reference_loudness = self.speaker_reference.measure(
                 &decoded.channels, &decoded.labels, decoded.sample_rate);
         }
@@ -330,6 +330,7 @@ impl Av3aPipeline {
     }
 }
 impl Pipeline for Av3aPipeline {
+    fn av3a_reference_is_scene(&self) -> bool { self.objects.is_some() }
     fn codec_name(&self) -> &'static str {
         "av3a"
     }
@@ -391,8 +392,8 @@ impl Pipeline for Av3aPipeline {
         if let Some(scene) = &mut scene {
             scene.reset_dynamic();
         }
-        let native_reference=self.native_reference;let deferred=self.defer_speaker_reference;
-        *self = Self::new();self.native_reference=native_reference;self.defer_speaker_reference=deferred;
+        let native_reference=self.native_reference;let deferred=self.defer_programme_reference;
+        *self = Self::new();self.native_reference=native_reference;self.defer_programme_reference=deferred;
         self.objects = scene;
     }
 }
@@ -489,6 +490,23 @@ mod tests {
         );
         assert!(pipeline.labels.is_empty() && pipeline.raw_beds.is_empty());
         assert_eq!(pipeline.objects.as_ref().unwrap().transport_channels(), 16);
+        assert!(pipeline.av3a_reference_is_scene());
+        pipeline.labels=vec!["Obj_1".into()];
+        pipeline.declarations=vec![ObjectChannelDecl{id:1,channel:0}];
+        pipeline.input_samples=1024;
+        let mut normal=VecDeque::new();pipeline.emit(vec![vec![0.125;1024]],&mut normal);
+        assert!(normal[0].reference_loudness.is_some());
+        let mut deferred=Av3aPipeline::new_pipelined_source_reference();
+        deferred.configure(&h).unwrap();
+        assert!(deferred.av3a_reference_is_scene());
+        deferred.labels=vec!["Obj_1".into()];
+        deferred.declarations=vec![ObjectChannelDecl{id:1,channel:0}];
+        deferred.input_samples=1024;
+        let mut frames=VecDeque::new();deferred.emit(vec![vec![0.125;1024]],&mut frames);
+        assert!(frames[0].reference_loudness.is_none() && deferred.reference.is_none(),"object metering belongs to the receiving thread");
+        assert_eq!(frames[0].channels,normal[0].channels);
+        assert_eq!(frames[0].labels,normal[0].labels);
+        assert_eq!(frames[0].object_channels.len(),1);
     }
     #[test]
     fn av3a_chunking_clock_and_layout() {
