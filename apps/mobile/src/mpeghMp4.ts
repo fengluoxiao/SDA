@@ -14,8 +14,8 @@ export interface MpeghMp4Host {
 }
 const MAX_CHUNK = 1024 * 1024;
 export interface ImportProgress { fraction: number; stage: string }
-/** Native MPEG-H extraction avoids JS/base64 transfers. The shared MP4 parser
- * handles unsupported container variants and AV3A/AC-4 with bounded I/O. */
+/** Native MPEG-H/Audio Vivid extraction avoids JS/base64 transfers. The shared
+ * MP4 parser handles unsupported container variants and AC-4 with bounded I/O. */
 export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: string, onProgress?: (progress: ImportProgress) => void) {
   if (!/\.(?:m4a|mp4)$/i.test(name)) return null;
   const requestedChunk=host.mp4ImportChunkBytes?.() ?? 256*1024;
@@ -68,10 +68,10 @@ export async function prepare360RaMp4(host: MpeghMp4Host, uri: string, name: str
       onProgress?.({ fraction: 0.05, stage: "解析音轨" });
       const result = JSON.parse(await host.extractMp4ImportNative(token)) as null | { codec: string; durationMs: number; packetCount: number; bytes: number };
       if (result) {
-        if (!["mha1", "mhm1"].includes(result.codec) || !Number.isSafeInteger(result.packetCount) || result.packetCount <= 0 || !Number.isSafeInteger(result.bytes) || result.bytes <= 0 || !Number.isFinite(result.durationMs) || result.durationMs < 0) throw new Error("原生音轨提取结果无效");
+        if (!["mha1", "mhm1", "av3a"].includes(result.codec) || !Number.isSafeInteger(result.packetCount) || result.packetCount <= 0 || !Number.isSafeInteger(result.bytes) || result.bytes <= 0 || !Number.isFinite(result.durationMs) || result.durationMs < 0) throw new Error("原生音轨提取结果无效");
         const playbackUri = await host.finishMp4Import(token);
         onProgress?.({ fraction: 1, stage: "音轨已就绪" });
-        return { uri: playbackUri, name: `${name}.mhas`, durationMs: result.durationMs,
+        return { uri: playbackUri, name: `${name}.${result.codec === "av3a" ? "av3a" : "mhas"}`, durationMs: result.durationMs,
           adopt: () => host.adoptMp4Import?.(token), release: () => host.discardMp4Import(token) };
       }
     }

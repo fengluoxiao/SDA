@@ -1,4 +1,4 @@
-//! Bounded native MPEG-H extraction. Only compressed access units are copied;
+//! Bounded native MPEG-H and Audio Vivid extraction. Only compressed access units are copied;
 //! no PCM, analysis results, or persistent content cache is created here.
 use serde::Serialize;
 use std::{
@@ -23,7 +23,7 @@ struct Atom<'a> {
     body: &'a [u8],
 }
 fn invalid() -> String {
-    "Invalid MPEG-H MP4 sample index".into()
+    "Invalid MP4 audio sample index".into()
 }
 fn uint(b: &[u8], at: usize, width: usize) -> Result<u64, String> {
     let end = at.checked_add(width).ok_or_else(invalid)?;
@@ -87,154 +87,168 @@ fn parse_index(moov: &[u8]) -> Result<Option<Index>, String> {
     if child(moov, b"mvex")?.is_some() {
         return Ok(None);
     } // fragmented MP4 stays with the established demuxer
-    for track in atoms(moov)?.into_iter().filter(|a| a.kind == *b"trak") {
-        let Some(mdia) = child(track.body, b"mdia")? else {
-            continue;
-        };
-        if required(mdia, b"hdlr")?.get(8..12) != Some(b"soun") {
-            continue;
-        }
-        let stbl = required(required(mdia, b"minf")?, b"stbl")?;
-        let stsd = required(stbl, b"stsd")?;
-        let entries = atoms(stsd.get(8..).ok_or_else(invalid)?)?;
-        let Some(entry) = entries.first() else {
-            continue;
-        };
-        if entry.kind != *b"mha1" && entry.kind != *b"mhm1" {
-            continue;
-        }
-        if entries.len() != 1 || uint(stsd, 4, 4)? != 1 {
-            return Ok(None);
-        }
-        // The standard version-0 audio sample entry is 28 bytes before children.
-        // Alternate descriptions/versions or external data references use fallback.
-        if uint(entry.body, 8, 2)? != 0 || uint(entry.body, 6, 2)? != 1 {
-            return Ok(None);
-        }
-        let extension = entry.body.get(28..).ok_or_else(invalid)?;
-        if child(extension, b"sinf")?.is_some() {
-            return Err("Encrypted MPEG-H track cannot be extracted".into());
-        }
-        let minf = required(mdia, b"minf")?;
-        let dref = required(required(minf, b"dinf")?, b"dref")?;
-        let refs = atoms(dref.get(8..).ok_or_else(invalid)?)?;
-        if uint(dref, 4, 4)? != 1
-            || refs.len() != 1
-            || refs[0].kind != *b"url "
-            || uint(refs[0].body, 0, 4)? != 1
-        {
-            return Ok(None);
-        }
-        let mut config = Vec::new();
-        if entry.kind == *b"mha1" {
-            let c = required(extension, b"mhaC")?;
-            let n = uint(c, 3, 2)? as usize;
-            if n == 0 {
-                return Err("MPEG-H mha1 requires mhaC configuration".into());
+    let tracks = atoms(moov)?;
+    // Match Mp4Demuxer's selection: MPEG-H tracks first, then AV3A,
+    // retaining file order within each group even in mixed-codec containers.
+    for audio_vivid in [false, true] {
+        for track in tracks.iter().filter(|a| a.kind == *b"trak") {
+            let Some(mdia) = child(track.body, b"mdia")? else {
+                continue;
+            };
+            if required(mdia, b"hdlr")?.get(8..12) != Some(b"soun") {
+                continue;
             }
-            config.extend_from_slice(c.get(5..5 + n).ok_or_else(invalid)?);
-        }
-        if let Some(ctts) = child(stbl, b"ctts")? {
-            let n = table(ctts, 8, 8)?;
-            if uint(ctts, 0, 1)? > 1 {
+            let stbl = required(required(mdia, b"minf")?, b"stbl")?;
+            let stsd = required(stbl, b"stsd")?;
+            let entries = atoms(stsd.get(8..).ok_or_else(invalid)?)?;
+            let Some(entry) = entries.first() else {
+                continue;
+            };
+            if if audio_vivid {
+                entry.kind != *b"av3a"
+            } else {
+                entry.kind != *b"mha1" && entry.kind != *b"mhm1"
+            } {
+                continue;
+            }
+            if entries.len() != 1 || uint(stsd, 4, 4)? != 1 {
                 return Ok(None);
             }
-            for i in 0..n {
-                if uint(ctts, 12 + i * 8, 4)? != 0 {
+            if audio_vivid
+                && (!(1..=16).contains(&uint(entry.body, 16, 2)?) || uint(entry.body, 24, 4)? == 0)
+            {
+                return Err("Invalid Audio Vivid audio sample entry".into());
+            }
+            // The standard version-0 audio sample entry is 28 bytes before children.
+            // Alternate descriptions/versions or external data references use fallback.
+            if uint(entry.body, 8, 2)? != 0 || uint(entry.body, 6, 2)? != 1 {
+                return Ok(None);
+            }
+            let extension = entry.body.get(28..).ok_or_else(invalid)?;
+            if child(extension, b"sinf")?.is_some() {
+                return Err("Encrypted audio track cannot be extracted".into());
+            }
+            let minf = required(mdia, b"minf")?;
+            let dref = required(required(minf, b"dinf")?, b"dref")?;
+            let refs = atoms(dref.get(8..).ok_or_else(invalid)?)?;
+            if uint(dref, 4, 4)? != 1
+                || refs.len() != 1
+                || refs[0].kind != *b"url "
+                || uint(refs[0].body, 0, 4)? != 1
+            {
+                return Ok(None);
+            }
+            let mut config = Vec::new();
+            if entry.kind == *b"mha1" {
+                let c = required(extension, b"mhaC")?;
+                let n = uint(c, 3, 2)? as usize;
+                if n == 0 {
+                    return Err("MPEG-H mha1 requires mhaC configuration".into());
+                }
+                config.extend_from_slice(c.get(5..5 + n).ok_or_else(invalid)?);
+            }
+            if let Some(ctts) = child(stbl, b"ctts")? {
+                let n = table(ctts, 8, 8)?;
+                if uint(ctts, 0, 1)? > 1 {
                     return Ok(None);
                 }
+                for i in 0..n {
+                    if uint(ctts, 12 + i * 8, 4)? != 0 {
+                        return Ok(None);
+                    }
+                }
             }
-        }
-        let mdhd = required(mdia, b"mdhd")?;
-        let version = uint(mdhd, 0, 1)?;
-        let (rate, duration) = match version {
-            0 => (uint(mdhd, 12, 4)?, uint(mdhd, 16, 4)?),
-            1 => (uint(mdhd, 20, 4)?, uint(mdhd, 24, 8)?),
-            _ => return Ok(None),
-        };
-        if rate == 0 {
-            return Err(invalid());
-        }
-        // An edit list does not alter extracted access-unit bytes. Keep the same
-        // mdhd duration and AU sequence as Mp4Demuxer (no trimming/re-encoding).
-        let Some(sz) = child(stbl, b"stsz")? else {
-            return Ok(None);
-        };
-        let fixed = uint(sz, 4, 4)? as usize;
-        let total = uint(sz, 8, 4)? as usize;
-        if total == 0 || total > MAX_SAMPLES || (fixed == 0 && sz.len() < 12 + total * 4) {
-            return Err(invalid());
-        }
-        let mut sizes = Vec::with_capacity(total);
-        for i in 0..total {
-            let n = if fixed == 0 {
-                uint(sz, 12 + i * 4, 4)? as usize
-            } else {
-                fixed
+            let mdhd = required(mdia, b"mdhd")?;
+            let version = uint(mdhd, 0, 1)?;
+            let (rate, duration) = match version {
+                0 => (uint(mdhd, 12, 4)?, uint(mdhd, 16, 4)?),
+                1 => (uint(mdhd, 20, 4)?, uint(mdhd, 24, 8)?),
+                _ => return Ok(None),
             };
-            if n == 0 || n > MAX_PACKET {
+            if rate == 0 {
                 return Err(invalid());
             }
-            sizes.push(n);
-        }
-        let (offsets, width) = if let Some(co) = child(stbl, b"stco")? {
-            (co, 4)
-        } else if let Some(co) = child(stbl, b"co64")? {
-            (co, 8)
-        } else {
-            return Err(invalid());
-        };
-        let n = table(offsets, 8, width)?;
-        if n == 0 {
-            return Err(invalid());
-        }
-        let chunks = (0..n)
-            .map(|i| uint(offsets, 8 + i * width, width))
-            .collect::<Result<Vec<_>, _>>()?;
-        let sc = required(stbl, b"stsc")?;
-        let n = table(sc, 8, 12)?;
-        if n == 0 || n > chunks.len() {
-            return Err(invalid());
-        }
-        let mut runs = Vec::with_capacity(n);
-        for i in 0..n {
-            let first = uint(sc, 8 + i * 12, 4)? as usize;
-            let count = uint(sc, 12 + i * 12, 4)? as usize;
-            if uint(sc, 16 + i * 12, 4)? != 1 {
+            // An edit list does not alter extracted access-unit bytes. Keep the same
+            // mdhd duration and AU sequence as Mp4Demuxer (no trimming/re-encoding).
+            let Some(sz) = child(stbl, b"stsz")? else {
                 return Ok(None);
-            }
-            if first == 0
-                || first > chunks.len()
-                || count == 0
-                || count > total
-                || runs.last().map_or(first != 1, |&(old, _)| first <= old)
-            {
+            };
+            let fixed = uint(sz, 4, 4)? as usize;
+            let total = uint(sz, 8, 4)? as usize;
+            if total == 0 || total > MAX_SAMPLES || (fixed == 0 && sz.len() < 12 + total * 4) {
                 return Err(invalid());
             }
-            runs.push((first, count));
-        }
-        let ts = required(stbl, b"stts")?;
-        let n = table(ts, 8, 8)?;
-        let mut frames = 0u64;
-        for i in 0..n {
-            let count = uint(ts, 8 + i * 8, 4)?;
-            let duration = uint(ts, 12 + i * 8, 4)?;
-            if duration == 0 {
+            let mut sizes = Vec::with_capacity(total);
+            for i in 0..total {
+                let n = if fixed == 0 {
+                    uint(sz, 12 + i * 4, 4)? as usize
+                } else {
+                    fixed
+                };
+                if n == 0 || n > MAX_PACKET {
+                    return Err(invalid());
+                }
+                sizes.push(n);
+            }
+            let (offsets, width) = if let Some(co) = child(stbl, b"stco")? {
+                (co, 4)
+            } else if let Some(co) = child(stbl, b"co64")? {
+                (co, 8)
+            } else {
+                return Err(invalid());
+            };
+            let n = table(offsets, 8, width)?;
+            if n == 0 {
                 return Err(invalid());
             }
-            frames = frames.checked_add(count).ok_or_else(invalid)?;
+            let chunks = (0..n)
+                .map(|i| uint(offsets, 8 + i * width, width))
+                .collect::<Result<Vec<_>, _>>()?;
+            let sc = required(stbl, b"stsc")?;
+            let n = table(sc, 8, 12)?;
+            if n == 0 || n > chunks.len() {
+                return Err(invalid());
+            }
+            let mut runs = Vec::with_capacity(n);
+            for i in 0..n {
+                let first = uint(sc, 8 + i * 12, 4)? as usize;
+                let count = uint(sc, 12 + i * 12, 4)? as usize;
+                if uint(sc, 16 + i * 12, 4)? != 1 {
+                    return Ok(None);
+                }
+                if first == 0
+                    || first > chunks.len()
+                    || count == 0
+                    || count > total
+                    || runs.last().map_or(first != 1, |&(old, _)| first <= old)
+                {
+                    return Err(invalid());
+                }
+                runs.push((first, count));
+            }
+            let ts = required(stbl, b"stts")?;
+            let n = table(ts, 8, 8)?;
+            let mut frames = 0u64;
+            for i in 0..n {
+                let count = uint(ts, 8 + i * 8, 4)?;
+                let duration = uint(ts, 12 + i * 8, 4)?;
+                if duration == 0 {
+                    return Err(invalid());
+                }
+                frames = frames.checked_add(count).ok_or_else(invalid)?;
+            }
+            if frames != total as u64 {
+                return Err(invalid());
+            }
+            return Ok(Some(Index {
+                codec: String::from_utf8(entry.kind.to_vec()).unwrap(),
+                config,
+                sizes,
+                chunks,
+                runs,
+                duration_ms: duration as f64 / rate as f64 * 1000.,
+            }));
         }
-        if frames != total as u64 {
-            return Err(invalid());
-        }
-        return Ok(Some(Index {
-            codec: String::from_utf8(entry.kind.to_vec()).unwrap(),
-            config,
-            sizes,
-            chunks,
-            runs,
-            duration_ms: duration as f64 * 1000. / rate as f64,
-        }));
     }
     Ok(None)
 }
@@ -359,9 +373,7 @@ pub fn extract(
             .iter()
             .any(|range| start >= range.start && end <= range.end)
         {
-            return Err(
-                "MPEG-H sample extends outside MP4 audio data (file may be incomplete)".into(),
-            );
+            return Err("Audio sample extends outside MP4 data (file may be incomplete)".into());
         }
         sample = end_sample;
     }
@@ -445,16 +457,19 @@ mod tests {
         v.iter().flat_map(|n| n.to_be_bytes()).collect()
     }
     fn fixture(raw: bool, co64: bool, tail: bool, fragmented: bool) -> Vec<u8> {
-        fn movie(raw: bool, co64: bool, offset: u64, fragmented: bool) -> Vec<u8> {
+        fixture_codec(if raw { b"mha1" } else { b"mhm1" }, co64, tail, fragmented)
+    }
+    fn fixture_codec(codec: &[u8; 4], co64: bool, tail: bool, fragmented: bool) -> Vec<u8> {
+        fn movie(codec: &[u8; 4], co64: bool, offset: u64, fragmented: bool) -> Vec<u8> {
             let mut entry = vec![0; 28];
             entry[7] = 1;
             entry[16..18].copy_from_slice(&2u16.to_be_bytes());
             entry[24..28].copy_from_slice(&(48000u32 << 16).to_be_bytes());
-            if raw {
+            if codec == b"mha1" {
                 entry.extend(atom(b"mhaC", vec![1, 0, 0, 0, 2, 0xab, 0xcd]));
             }
             let mut sd = words(&[0, 1]);
-            sd.extend(atom(if raw { b"mha1" } else { b"mhm1" }, entry));
+            sd.extend(atom(codec, entry));
             let mut stbl = atom(b"stsd", sd);
             stbl.extend(atom(b"stsz", words(&[0, 0, 3, 3, 2, 4])));
             stbl.extend(atom(b"stsc", words(&[0, 1, 1, 3, 1])));
@@ -482,9 +497,9 @@ mod tests {
             atom(b"moov", moov)
         }
         let ftyp = atom(b"ftyp", b"isom0000".to_vec());
-        let provisional = movie(raw, co64, 0, fragmented);
+        let provisional = movie(codec, co64, 0, fragmented);
         let offset = (ftyp.len() + 8 + if tail { 0 } else { provisional.len() }) as u64;
-        let moov = movie(raw, co64, offset, fragmented);
+        let moov = movie(codec, co64, offset, fragmented);
         let mdat = atom(b"mdat", vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let mut b = ftyp;
         if tail {
@@ -523,6 +538,69 @@ mod tests {
                 assert_eq!(b, (1..=9).collect::<Vec<_>>());
             }
         }
+    }
+    #[test]
+    fn av3a_is_exact_raw_access_units_for_front_tail_and_co64() {
+        for tail in [false, true] {
+            for co64 in [false, true] {
+                let (result, bytes) = run(&fixture_codec(b"av3a", co64, tail, false));
+                let result = result.unwrap().unwrap();
+                assert_eq!(result.codec, "av3a");
+                assert_eq!(result.packet_count, 3);
+                assert_eq!(result.duration_ms, 64.);
+                assert_eq!(result.bytes, 9);
+                assert_eq!(bytes, (1..=9).collect::<Vec<_>>());
+            }
+        }
+    }
+    #[test]
+    fn av3a_invalid_sample_entry_is_rejected_like_shared_demuxer() {
+        for (offset, width) in [(20, 2), (28, 4)] {
+            let mut file = fixture_codec(b"av3a", false, true, false);
+            let at = file.windows(4).position(|w| w == b"av3a").unwrap();
+            file[at + offset..at + offset + width].fill(0);
+            assert!(run(&file).0.is_err());
+        }
+    }
+    #[test]
+    fn av3a_fragmented_stays_on_existing_demuxer_without_output() {
+        let (result, bytes) = run(&fixture_codec(b"av3a", true, true, true));
+        assert!(result.unwrap().is_none());
+        assert!(bytes.is_empty());
+    }
+    #[test]
+    fn mixed_track_selection_keeps_existing_mpegh_priority() {
+        let vivid = fixture_codec(b"av3a", false, true, false);
+        let mpegh = fixture(false, false, true, false);
+        let va = atoms(&vivid).unwrap();
+        let ma = atoms(&mpegh).unwrap();
+        let mut output = atom(
+            b"ftyp",
+            va.iter()
+                .find(|a| a.kind == *b"ftyp")
+                .unwrap()
+                .body
+                .to_vec(),
+        );
+        output.extend(atom(
+            b"mdat",
+            va.iter()
+                .find(|a| a.kind == *b"mdat")
+                .unwrap()
+                .body
+                .to_vec(),
+        ));
+        let mut movie = va
+            .iter()
+            .find(|a| a.kind == *b"moov")
+            .unwrap()
+            .body
+            .to_vec();
+        movie.extend_from_slice(ma.iter().find(|a| a.kind == *b"moov").unwrap().body);
+        output.extend(atom(b"moov", movie));
+        let (result, bytes) = run(&output);
+        assert_eq!(result.unwrap().unwrap().codec, "mhm1");
+        assert_eq!(bytes, (1..=9).collect::<Vec<_>>());
     }
     #[test]
     fn mha1_emits_configuration_and_each_au_header() {

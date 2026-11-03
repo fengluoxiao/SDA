@@ -18,6 +18,7 @@ paths.push('crates/sda-native/src/stereo_reference.rs','crates/sda-native/src/av
 paths.push('apps/native-renderer/src/reference_convolution.rs','crates/sda-native/src/av3a_reference_renderer.rs','crates/sda-native/src/stereo_reference.rs','apps/mobile/modules/sda-core/ios/PlaybackStorage.swift','apps/mobile/modules/sda-core/ios/Mp4ImportSession.swift','apps/mobile/src/mpeghMp4.ts','packages/demux/src/mp4.ts','vendor/avs3a/src/cnn.rs','vendor/avs3a/src/mc_core.rs','vendor/avs3a/src/mc_backend.rs');
 const mobileReleaseConfig=JSON.parse(readFileSync(join(root,'apps/mobile/app.json'),'utf8')).expo;
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+paths.push('crates/sda-native/src/mp4_extract.rs','vendor/avs3a/src/imdct.rs');
 const sources=Object.fromEntries(paths.map(path=>[path,sha(readFileSync(join(root,path)))]));
 const sourceCheckoutCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 const sourceCommit=process.env.SDA_SOURCE_COMMIT??process.env.GITHUB_SHA??sourceCheckoutCommit;
