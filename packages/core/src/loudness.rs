@@ -67,6 +67,7 @@ pub struct LoudnessMeter {
     energy: Vec<f64>,
     history: Vec<Vec<f32>>,
     history_length: usize,
+    history_peak: Vec<f32>,
     write: usize,
     phases: Vec<Vec<(usize, f64)>>,
     peak_bound: f64,
@@ -116,6 +117,7 @@ impl LoudnessMeter {
             energy: vec![],
             history: (0..weights.len()).map(|_| vec![0.0; delay * 2]).collect(),
             history_length: delay,
+            history_peak: vec![0.0; weights.len()],
             weights,
             write: 0,
             peak_bound: phases.iter().map(|phase|phase.iter().map(|(_,c)|c.abs()).sum::<f64>()).fold(0.,f64::max)*(1.+1e-12),
@@ -124,47 +126,59 @@ impl LoudnessMeter {
         }
     }
     pub fn push(&mut self, channels: &[Vec<f32>]) {
-        for i in 0..channels[0].len() {
+        let mut offset = 0;
+        while offset < channels[0].len() {
+            let count = (channels[0].len() - offset).min(self.block[0].len() - self.fill);
+            // Process a contiguous span per channel. Filter/FIR states are
+            // independent; energy blocks and their addition order stay intact.
             for ch in 0..self.weights.len() {
-                let x = channels[ch][i];
-                self.history[ch][self.write] = x;
-                self.history[ch][self.write + self.history_length] = x;
-                // The FIR L1 norm bounds every possible inter-sample peak in
-                // this window. Quiet channels/windows cannot change an already
-                // larger peak; skip their dot products without approximating it.
-                let window_peak=self.history[ch][self.write+1..self.write+self.history_length+1].iter().map(|x|f64::from(x.abs())).fold(0.,f64::max);
-                if window_peak*self.peak_bound>self.peak {
-                for phase in &self.phases {
-                    let y: f64 = phase
-                        .iter()
-                        .map(|(offset, c)| {
-                            self.history[ch][self.write + self.history_length - offset] as f64
-                                * c
-                        })
-                        .sum();
-                    self.peak = self.peak.max(y.abs());
+                let channel = &channels[ch];
+                let history = &mut self.history[ch];
+                let filters = &mut self.filters[ch];
+                let output = &mut self.block[ch][self.fill..self.fill + count];
+                let mut write = self.write;
+                let mut window_peak = self.history_peak[ch];
+                let mut peak = self.peak;
+                for (&x, out) in channel[offset..offset + count].iter().zip(output) {
+                    let outgoing = history[write].abs();
+                    history[write] = x;
+                    history[write + self.history_length] = x;
+                    let incoming = x.abs();
+                    // Maintain the exact FIR-window maximum. Only rescan when
+                    // its previous maximum leaves; no peak is approximated.
+                    window_peak = if incoming >= window_peak { incoming }
+                        else if outgoing >= window_peak {
+                            history[write+1..write+self.history_length+1]
+                                .iter().map(|x| x.abs()).fold(0.0_f32, f32::max)
+                        } else { window_peak };
+                    // The FIR L1 norm bounds every possible inter-sample peak
+                    // in this window, so a smaller bound cannot change peak.
+                    if f64::from(window_peak) * self.peak_bound > peak {
+                        for phase in &self.phases {
+                            let y: f64 = phase.iter().map(|(delay, c)|
+                                f64::from(history[write+self.history_length-delay])*c).sum();
+                            peak = peak.max(y.abs());
+                        }
+                    }
+                    let filtered = filters[0].process(x);
+                    *out = filters[1].process(filtered);
+                    write += 1;
+                    if write == self.history_length { write = 0; }
                 }
-                }
-                let y = self.filters[ch][0].process(x);
-                self.block[ch][self.fill] = self.filters[ch][1].process(y);
+                self.history_peak[ch] = window_peak;
+                self.peak = peak;
             }
-            self.write += 1;
-            if self.write == self.history_length { self.write = 0; }
-            self.fill += 1;
+            self.write = (self.write + count) % self.history_length;
+            self.fill += count;
+            offset += count;
             if self.fill == self.block[0].len() {
                 let n = self.fill;
                 self.energy.push(
-                    self.block
-                        .iter()
-                        .zip(&self.weights)
-                        .map(|(ch, weight)| {
-                            weight * ch.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n as f64
-                        })
-                        .sum(),
+                    self.block.iter().zip(&self.weights).map(|(ch, weight)| {
+                        weight * ch.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n as f64
+                    }).sum(),
                 );
-                for block in &mut self.block {
-                    block.copy_within(self.hop..n, 0);
-                }
+                for block in &mut self.block { block.copy_within(self.hop..n, 0); }
                 self.fill = n - self.hop;
             }
         }
@@ -260,6 +274,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn sliding_peak_bound_matches_unconditional_fir_at_all_oversampling_rates() {
+        for rate in [8000, 44100, 48000, 96000, 192000] {
+            let mut meter = LoudnessMeter::with_weights(rate, vec![1.0, 0.0, 1.41]);
+            let pcm: Vec<Vec<f32>> = (0..3).map(|channel| (0..24000).map(|i| {
+                let phase = (i * (17 + channel * 7)) as f32 * 0.031;
+                let level = match i / 3000 { 0 => 0.0, 1 => 0.01, 2 => 0.8, 3 => 0.07, 4 => 0.0, 5 => 0.4, _ => 0.002 };
+                if i % 1013 == channel { 0.95 } else { phase.sin() * level }
+            }).collect()).collect();
+            let mut history = vec![vec![0.0_f32; meter.history_length * 2]; pcm.len()];
+            let mut write = 0;
+            let mut expected_peak = 0.0_f64;
+            for i in 0..pcm[0].len() {
+                for ch in 0..pcm.len() {
+                    history[ch][write] = pcm[ch][i];
+                    history[ch][write + meter.history_length] = pcm[ch][i];
+                    for phase in &meter.phases {
+                        let y: f64 = phase.iter().map(|(offset, c)| f64::from(history[ch][write + meter.history_length - offset]) * c).sum();
+                        expected_peak = expected_peak.max(y.abs());
+                    }
+                }
+                write = (write + 1) % meter.history_length;
+            }
+            let mut at = 0;
+            for count in [1, 3, 13, 7, 1024, 17].into_iter().cycle() {
+                if at == pcm[0].len() { break; }
+                let end = (at + count).min(pcm[0].len());
+                let chunk: Vec<Vec<f32>> = pcm.iter().map(|ch| ch[at..end].to_vec()).collect();
+                meter.push(&chunk);
+                for ch in 0..pcm.len() {
+                    let expected = meter.history[ch][..meter.history_length].iter().map(|x| x.abs()).fold(0.0_f32, f32::max);
+                    assert_eq!(meter.history_peak[ch].to_bits(), expected.to_bits(), "rate={rate} channel={ch} at={end}");
+                }
+                at = end;
+            }
+            assert_eq!(meter.peak.to_bits(), expected_peak.to_bits(), "rate={rate}");
+            assert_eq!(meter.integrated().true_peak_dbtp.unwrap().to_bits(), (20.0 * expected_peak.log10()).to_bits());
+        }
+    }
+
     #[test]
     fn programme_speaker_reference_uses_roles_not_channel_count_and_rejects_raw_objects() {
         let mut m = SpeakerReference::default();

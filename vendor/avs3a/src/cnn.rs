@@ -133,7 +133,8 @@ impl std::error::Error for CnnError {}
 
 /// Allocation-stable scalar runner for a parsed AVS3 decoder network.
 ///
-/// Construction allocates three bounded work buffers. `decode` then performs
+/// Construction allocates bounded work buffers for layer outputs and a single
+/// eight-position convolution tile. `decode` then performs
 /// no allocation and preserves the grouping/order of `GEMM_REFORM_ENC` from
 /// the C reference. The returned slice is valid until the next mutable call.
 #[derive(Debug)]
@@ -144,6 +145,7 @@ pub struct ScalarCnnDecoder<'model> {
     scratch: Vec<f32>,
     output_len: usize,
     convolutions: Vec<ConvolutionPlan>,
+    convolution_workspace: Vec<f32x8>,
 }
 
 impl<'model> ScalarCnnDecoder<'model> {
@@ -153,9 +155,16 @@ impl<'model> ScalarCnnDecoder<'model> {
         }
 
         let mut workspace_values = network.input_shape().len();
+        let mut convolution_values = 0;
         for (index, layer) in network.layers().iter().enumerate() {
             validate_layer(layer, index)?;
             workspace_values = workspace_values.max(layer.output_shape().len());
+            let values = layer
+                .input_shape()
+                .channels()
+                .saturating_mul(layer.kernel_size())
+                .saturating_mul(8);
+            convolution_values = convolution_values.max(values);
         }
         if workspace_values > MAX_CNN_WORKSPACE_VALUES {
             return Err(CnnError::WorkspaceTooLarge {
@@ -164,13 +173,22 @@ impl<'model> ScalarCnnDecoder<'model> {
             });
         }
 
+        if convolution_values > MAX_CNN_WORKSPACE_VALUES {
+            return Err(CnnError::WorkspaceTooLarge {
+                values: convolution_values,
+                limit: MAX_CNN_WORKSPACE_VALUES,
+            });
+        }
+        let convolutions: Vec<_> = network.layers().iter().map(ConvolutionPlan::new).collect();
+        let feature_count = convolution_values / 8;
         Ok(Self {
             network,
             current: vec![0.0; workspace_values],
             next: vec![0.0; workspace_values],
             scratch: vec![0.0; workspace_values],
             output_len: 0,
-            convolutions: network.layers().iter().map(ConvolutionPlan::new).collect(),
+            convolutions,
+            convolution_workspace: vec![f32x8::ZERO; feature_count],
         })
     }
 
@@ -207,6 +225,7 @@ impl<'model> ScalarCnnDecoder<'model> {
             decode_layer_planned(
                 layer,
                 &self.convolutions[layer_index],
+                &mut self.convolution_workspace,
                 layer_index,
                 &self.current[..current_len],
                 &mut self.next[..next_len],
@@ -292,7 +311,7 @@ fn validate_layer(layer: &CnnLayer, index: usize) -> Result<(), CnnError> {
 // GEMM_REFORM summation order stay exactly the same as the scalar reference.
 #[derive(Debug)]
 struct PackedDot {
-    offsets: Vec<usize>,
+    offsets: Vec<(usize, usize)>,
     weights: Vec<Vec<f32>>,
 }
 #[derive(Debug)]
@@ -305,10 +324,9 @@ impl ConvolutionPlan {
         fn dot(layer: &CnnLayer, taps: usize, step: usize, last: usize) -> PackedDot {
             let channels = layer.input_shape().channels();
             let outputs = layer.output_shape().channels();
-            let dimensions = layer.input_shape().dimensions();
             let kernel = layer.kernel_coefficients();
             let offsets = (0..channels)
-                .flat_map(|c| (0..taps).map(move |t| c * dimensions + t))
+                .flat_map(|c| (0..taps).map(move |t| (c, t)))
                 .collect();
             let weights = (0..outputs)
                 .map(|out| {
@@ -341,17 +359,36 @@ impl ConvolutionPlan {
     }
 }
 #[inline]
-fn packed_dot(dot: &PackedDot, output: usize, input: &[f32], base: usize) -> f32x8 {
+fn packed_dot(dot: &PackedDot, output: usize, features: &[f32x8]) -> f32x8 {
     let weights = &dot.weights[output];
-    reformed_sum_wide(dot.offsets.len(), |i| {
-        let start = base + dot.offsets[i];
-        let values = f32x8::new(
-            input[start..start + 8]
-                .try_into()
-                .expect("interior CNN block"),
-        );
-        values * f32x8::splat(weights[i])
-    })
+    assert_eq!(features.len(), weights.len());
+    reformed_sum_wide(features.len(), |i| features[i] * f32x8::splat(weights[i]))
+}
+// Pack each input tile once for all output channels. This workspace is
+// overwritten on every tile; it retains no decoded audio between frames.
+fn pack_features(
+    dot: &PackedDot,
+    input: &[f32],
+    dimensions: usize,
+    base: isize,
+    features: &mut [f32x8],
+) {
+    assert_eq!(features.len(), dot.offsets.len());
+    for (feature, &(channel, tap)) in features.iter_mut().zip(&dot.offsets) {
+        let position = base + tap as isize;
+        *feature = if position >= 0 && position as usize + 8 <= dimensions {
+            let start = channel * dimensions + position as usize;
+            f32x8::new(
+                input[start..start + 8]
+                    .try_into()
+                    .expect("interior CNN block"),
+            )
+        } else {
+            f32x8::new(core::array::from_fn(|lane| {
+                padded_value(input, dimensions, channel, position + lane as isize)
+            }))
+        };
+    }
 }
 #[cfg(test)]
 fn decode_layer(
@@ -361,26 +398,22 @@ fn decode_layer(
     output: &mut [f32],
     scratch: &mut [f32],
 ) -> Result<(), CnnError> {
-    decode_layer_planned(
-        layer,
-        &ConvolutionPlan::new(layer),
-        layer_index,
-        input,
-        output,
-        scratch,
-    )
+    let plan = ConvolutionPlan::new(layer);
+    let mut work = vec![f32x8::ZERO; plan.first.offsets.len() + plan.second.offsets.len()];
+    decode_layer_planned(layer, &plan, &mut work, layer_index, input, output, scratch)
 }
 fn decode_layer_planned(
     layer: &CnnLayer,
     plan: &ConvolutionPlan,
+    workspace: &mut [f32x8],
     layer_index: usize,
     input: &[f32],
     output: &mut [f32],
     scratch: &mut [f32],
 ) -> Result<(), CnnError> {
     match layer.stride() {
-        1 => convolve_transpose_stride_one(layer, plan, input, output),
-        2 => convolve_transpose_stride_two(layer, plan, input, output),
+        1 => convolve_transpose_stride_one(layer, plan, workspace, input, output),
+        2 => convolve_transpose_stride_two(layer, plan, workspace, input, output),
         stride => {
             return Err(CnnError::UnsupportedStride {
                 layer: layer_index,
@@ -433,181 +466,70 @@ fn decode_layer_planned(
 fn convolve_transpose_stride_one(
     layer: &CnnLayer,
     plan: &ConvolutionPlan,
+    workspace: &mut [f32x8],
     input: &[f32],
     output: &mut [f32],
 ) {
     let dimensions = layer.input_shape().dimensions();
-    let input_channels = layer.input_shape().channels();
-    let output_channels = layer.output_shape().channels();
-    let kernel_size = layer.kernel_size();
-    let padding_begin = (kernel_size - 1) / 2;
-    let dot_len = kernel_size * input_channels;
-    let kernel = layer.kernel_coefficients();
-
-    for output_channel in 0..output_channels {
-        let padding_end = kernel_size - 1 - padding_begin;
-        let interior_end = dimensions.saturating_sub(padding_end);
-        let mut dimension = 0;
-        while dimension < dimensions {
-            if dimension >= padding_begin && dimension + 8 <= interior_end {
-                let values = packed_dot(
-                    &plan.first,
-                    output_channel,
-                    input,
-                    dimension - padding_begin,
-                );
-                let output_index = dimension + output_channel * dimensions;
-                output[output_index..output_index + 8].copy_from_slice(&values.to_array());
-                dimension += 8;
-                continue;
-            }
-
-            let mut input_channel = 0;
-            let mut column_tap = 0;
-            output[dimension + output_channel * dimensions] = reformed_sum(dot_len, |_| {
-                let source_position =
-                    dimension as isize + column_tap as isize - padding_begin as isize;
-                let feature = padded_value(input, dimensions, input_channel, source_position);
-                let model_tap = kernel_size - column_tap - 1;
-                let kernel_index =
-                    (model_tap * output_channels + output_channel) * input_channels + input_channel;
-                let product = kernel[kernel_index] * feature;
-                column_tap += 1;
-                if column_tap == kernel_size {
-                    column_tap = 0;
-                    input_channel += 1;
-                }
-                product
-            });
-            dimension += 1;
+    let channels = layer.output_shape().channels();
+    let padding = (layer.kernel_size() - 1) / 2;
+    let features = &mut workspace[..plan.first.offsets.len()];
+    for dimension in (0..dimensions).step_by(8) {
+        pack_features(
+            &plan.first,
+            input,
+            dimensions,
+            dimension as isize - padding as isize,
+            features,
+        );
+        let count = (dimensions - dimension).min(8);
+        for channel in 0..channels {
+            let values = packed_dot(&plan.first, channel, features).to_array();
+            let at = channel * dimensions + dimension;
+            output[at..at + count].copy_from_slice(&values[..count]);
         }
     }
 }
-
 fn convolve_transpose_stride_two(
     layer: &CnnLayer,
     plan: &ConvolutionPlan,
+    workspace: &mut [f32x8],
     input: &[f32],
     output: &mut [f32],
 ) {
-    let input_dimensions = layer.input_shape().dimensions();
-    let output_dimensions = layer.output_shape().dimensions();
-    let input_channels = layer.input_shape().channels();
-    let output_channels = layer.output_shape().channels();
-    let kernel_size = layer.kernel_size();
-    let odd_kernel_size = kernel_size.div_ceil(2);
-    let even_kernel_size = (kernel_size - 1) / 2;
-    let kernel = layer.kernel_coefficients();
-
-    for output_channel in 0..output_channels {
-        let interior_end = if kernel_size == 5 {
-            input_dimensions - 1
-        } else {
-            input_dimensions
-        };
-        let mut dimension = 0;
-        while dimension < input_dimensions {
-            if dimension > 0 && dimension + 8 <= interior_end {
-                convolve_transpose_stride_two_wide(
-                    layer,
-                    plan,
-                    input,
-                    output,
-                    output_channel,
-                    dimension,
-                );
-                dimension += 8;
-                continue;
-            }
-            let mut odd_input_channel = 0;
-            let mut odd_part_tap = 0;
-            let odd = reformed_sum(odd_kernel_size * input_channels, |_| {
-                let feature = padded_value(
-                    input,
-                    input_dimensions,
-                    odd_input_channel,
-                    dimension as isize + odd_part_tap as isize - 1,
-                );
-                let model_tap = kernel_size - 2 * odd_part_tap - 1;
-                let kernel_index = (model_tap * output_channels + output_channel) * input_channels
-                    + odd_input_channel;
-                let product = kernel[kernel_index] * feature;
-                odd_part_tap += 1;
-                if odd_part_tap == odd_kernel_size {
-                    odd_part_tap = 0;
-                    odd_input_channel += 1;
-                }
-                product
-            });
-            let mut even_input_channel = 0;
-            let mut even_part_tap = 0;
-            let even = reformed_sum(even_kernel_size * input_channels, |_| {
-                let source_position = if kernel_size == 3 {
-                    dimension as isize
-                } else {
-                    dimension as isize + even_part_tap as isize - 1
-                };
-                let feature =
-                    padded_value(input, input_dimensions, even_input_channel, source_position);
-                let model_tap = kernel_size - (2 * even_part_tap + 1) - 1;
-                let kernel_index = (model_tap * output_channels + output_channel) * input_channels
-                    + even_input_channel;
-                let product = kernel[kernel_index] * feature;
-                even_part_tap += 1;
-                if even_part_tap == even_kernel_size {
-                    even_part_tap = 0;
-                    even_input_channel += 1;
-                }
-                product
-            });
-
-            let output_index = output_channel * output_dimensions + 2 * dimension;
-            if kernel_size == 5 {
-                output[output_index] = even;
-                output[output_index + 1] = odd;
+    let dimensions = layer.input_shape().dimensions();
+    let out_dimensions = layer.output_shape().dimensions();
+    let channels = layer.output_shape().channels();
+    let kernel = layer.kernel_size();
+    let (odd, rest) = workspace.split_at_mut(plan.first.offsets.len());
+    let even = &mut rest[..plan.second.offsets.len()];
+    for dimension in (0..dimensions).step_by(8) {
+        pack_features(&plan.first, input, dimensions, dimension as isize - 1, odd);
+        pack_features(
+            &plan.second,
+            input,
+            dimensions,
+            if kernel == 3 {
+                dimension as isize
             } else {
-                output[output_index] = odd;
-                output[output_index + 1] = even;
+                dimension as isize - 1
+            },
+            even,
+        );
+        let count = (dimensions - dimension).min(8);
+        for channel in 0..channels {
+            let a = packed_dot(&plan.first, channel, odd).to_array();
+            let b = packed_dot(&plan.second, channel, even).to_array();
+            let at = channel * out_dimensions + 2 * dimension;
+            for lane in 0..count {
+                if kernel == 5 {
+                    output[at + 2 * lane] = b[lane];
+                    output[at + 2 * lane + 1] = a[lane];
+                } else {
+                    output[at + 2 * lane] = a[lane];
+                    output[at + 2 * lane + 1] = b[lane];
+                }
             }
-            dimension += 1;
-        }
-    }
-}
-
-#[inline(always)]
-fn convolve_transpose_stride_two_wide(
-    layer: &CnnLayer,
-    plan: &ConvolutionPlan,
-    input: &[f32],
-    output: &mut [f32],
-    output_channel: usize,
-    dimension: usize,
-) {
-    let output_dimensions = layer.output_shape().dimensions();
-    let kernel_size = layer.kernel_size();
-    let odd = packed_dot(&plan.first, output_channel, input, dimension - 1);
-    let even = packed_dot(
-        &plan.second,
-        output_channel,
-        input,
-        if kernel_size == 3 {
-            dimension
-        } else {
-            dimension - 1
-        },
-    );
-
-    let odd = odd.to_array();
-    let even = even.to_array();
-    let output_base = output_channel * output_dimensions + 2 * dimension;
-    for lane in 0..8 {
-        let output_index = output_base + 2 * lane;
-        if kernel_size == 5 {
-            output[output_index] = even[lane];
-            output[output_index + 1] = odd[lane];
-        } else {
-            output[output_index] = odd[lane];
-            output[output_index + 1] = even[lane];
         }
     }
 }
@@ -1036,5 +958,126 @@ mod tests {
                 0xbce3_f56e,
             ]
         );
+    }
+
+    #[test]
+    fn packed_tiles_preserve_channel_padding_and_partial_blocks() {
+        for dimensions in [1, 2, 3, 5, 7, 8, 9, 15, 16, 17] {
+            let input: Vec<f32> = (0..dimensions * 3).map(|i| i as f32 + 0.5).collect();
+            let dot = PackedDot {
+                offsets: (0..3).flat_map(|c| (0..5).map(move |t| (c, t))).collect(),
+                weights: vec![],
+            };
+            let mut features = vec![f32x8::ZERO; dot.offsets.len()];
+            for base in -5..dimensions as isize + 2 {
+                pack_features(&dot, &input, dimensions, base, &mut features);
+                for (&(channel, tap), packed) in dot.offsets.iter().zip(&features) {
+                    for (lane, actual) in packed.to_array().iter().enumerate() {
+                        let position = base + tap as isize + lane as isize;
+                        let expected = if (0..dimensions as isize).contains(&position) {
+                            input[channel * dimensions + position as usize]
+                        } else {
+                            0.0
+                        };
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "dim={dimensions} base={base} channel={channel} tap={tap} lane={lane}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // An independent per-output scalar convolution catches changes in tap
+    // reversal, stride-two parity and the GEMM_REFORM accumulation order.
+    fn scalar_convolution(layer: &CnnLayer, input: &[f32]) -> Vec<f32> {
+        let dimensions = layer.input_shape().dimensions();
+        let outputs = layer.output_shape().channels();
+        let inputs = layer.input_shape().channels();
+        let out_dimensions = layer.output_shape().dimensions();
+        let kernel_size = layer.kernel_size();
+        let kernel = layer.kernel_coefficients();
+        let mut output = vec![0.; outputs * out_dimensions];
+        for channel in 0..outputs {
+            for dimension in 0..dimensions {
+                if layer.stride() == 1 {
+                    output[channel * out_dimensions + dimension] =
+                        reformed_sum(inputs * kernel_size, |i| {
+                            let c = i / kernel_size;
+                            let tap = i % kernel_size;
+                            let position = dimension as isize + tap as isize
+                                - ((kernel_size - 1) / 2) as isize;
+                            let feature = padded_value(input, dimensions, c, position);
+                            kernel[((kernel_size - tap - 1) * outputs + channel) * inputs + c]
+                                * feature
+                        });
+                } else {
+                    for part in 0..2 {
+                        let taps = if part == 0 {
+                            kernel_size.div_ceil(2)
+                        } else {
+                            (kernel_size - 1) / 2
+                        };
+                        let value = reformed_sum(inputs * taps, |i| {
+                            let c = i / taps;
+                            let tap = i % taps;
+                            let position = if part == 1 && kernel_size == 3 {
+                                dimension as isize
+                            } else {
+                                dimension as isize + tap as isize - 1
+                            };
+                            let feature = padded_value(input, dimensions, c, position);
+                            kernel[((kernel_size - 2 * tap - part - 1) * outputs + channel)
+                                * inputs
+                                + c]
+                                * feature
+                        });
+                        let parity = if kernel_size == 5 { 1 - part } else { part };
+                        output[channel * out_dimensions + 2 * dimension + parity] = value;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn tiled_convolution_matches_independent_scalar_arithmetic() {
+        for kernel_three in [false, true] {
+            let model = reference_model_with_kernel(kernel_three);
+            for layer in model.base().decoder().layers() {
+                let input: Vec<f32> = (0..layer.input_shape().len())
+                    .map(|i| ((i * 73 % 101) as f32 - 50.) / 37.)
+                    .collect();
+                let plan = ConvolutionPlan::new(layer);
+                let mut workspace =
+                    vec![f32x8::ZERO; plan.first.offsets.len() + plan.second.offsets.len()];
+                let mut output = vec![f32::NAN; layer.output_shape().len()];
+                match layer.stride() {
+                    1 => convolve_transpose_stride_one(
+                        layer,
+                        &plan,
+                        &mut workspace,
+                        &input,
+                        &mut output,
+                    ),
+                    2 => convolve_transpose_stride_two(
+                        layer,
+                        &plan,
+                        &mut workspace,
+                        &input,
+                        &mut output,
+                    ),
+                    _ => unreachable!(),
+                }
+                let expected = scalar_convolution(layer, &input);
+                assert_eq!(
+                    output.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
     }
 }
