@@ -1,0 +1,58 @@
+name: Android SDK58 native UI preflight
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable application source to compile
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  android-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install pinned UI dependencies and Android SDK
+        run: |
+          set -euo pipefail
+          mkdir -p android-ui-preflight
+          git rev-parse HEAD > android-ui-preflight/source-commit.txt
+          pnpm install --prod=false --frozen-lockfile --config.node-linker=hoisted
+          sdkRoot="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          "$sdkRoot/cmdline-tools/latest/bin/sdkmanager" "--sdk_root=$sdkRoot" 'cmdline-tools;22.0'
+          sdkManager="$sdkRoot/cmdline-tools/22.0/bin/sdkmanager"
+          yes | "$sdkManager" "--sdk_root=$sdkRoot" --licenses >/dev/null || true
+          "$sdkManager" "--sdk_root=$sdkRoot" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          test -f "$sdkRoot/platforms/android-37.0/android.jar"
+          test -x "$sdkRoot/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+      - name: Compile the actual native player UI module
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          ./gradlew :sda-core:compileReleaseKotlin --no-daemon --stacktrace --console=plain --max-workers=2 -PsdaVendorAudio=false -PsdaVendorAudioLegacyOnly=false '-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m' 2>&1 | tee "$GITHUB_WORKSPACE/android-ui-preflight/native-ui-compile.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-native-UI-preflight-${{ github.run_id }}
+          path: android-ui-preflight/
+          retention-days: 7
