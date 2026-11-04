@@ -55,6 +55,7 @@ jobs:
         with:
           workspaces: crates/sda-native -> ../../android-rust
           key: android-windows-ndk27-release
+          cache-on-failure: true
       - uses: actions/cache@v4
         with:
           path: |
@@ -68,10 +69,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dependency install failed' }
           node scripts/prepare-ac4.mjs
           if ($LASTEXITCODE -ne 0) { throw 'AC4 preparation failed' }
-          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'cmdline-tools;23.0'
+          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'cmdline-tools;22.0'
           if ($LASTEXITCODE -ne 0) { throw 'Android command-line tools install failed' }
-          & "$env:ANDROID_HOME/cmdline-tools/23.0/bin/sdkmanager.bat" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          1..80 | ForEach-Object { 'y' } | & "$env:ANDROID_HOME/cmdline-tools/22.0/bin/sdkmanager.bat" --licenses "--sdk_root=$env:ANDROID_HOME"
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK license check failed' }
+          & "$env:ANDROID_HOME/cmdline-tools/22.0/bin/sdkmanager.bat" "--sdk_root=$env:ANDROID_HOME" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed' }
+          foreach ($requiredTool in @('platforms/android-37.0/android.jar', 'build-tools/37.0.0/apksigner.bat', 'ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:ANDROID_HOME $requiredTool) -PathType Leaf)) { throw "Android SDK tool missing after installation: $requiredTool" }
+          }
       - name: Verify shared Android and iOS lyrics UI
         run: |
           node scripts/test-mobile-lyrics.mjs

@@ -162,8 +162,8 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "cmdline-tools;23.0"
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/23.0/bin/sdkmanager"
+          "$SDKMANAGER" "cmdline-tools;22.0"
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/22.0/bin/sdkmanager"
           "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
           test -x "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
         env:
