@@ -74,6 +74,10 @@ jobs:
         run: |
           cargo test --manifest-path scripts/alac-file-regression/Cargo.toml --locked
           if ($LASTEXITCODE -ne 0) { throw 'ALAC file decoder regression failed' }
+      - name: Verify seek restart reaches actual rendered audio
+        run: |
+          cargo test --manifest-path crates/sda-native/Cargo.toml --locked --release --no-default-features --test android_seek_feed -j 2 -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Seek restart audio/clock regression failed' }
       - name: Build and verify official APK
         run: ./scripts/build-android-release-windows.ps1
         env:
@@ -81,6 +85,10 @@ jobs:
           SDA_ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_STORE_PASSWORD }}
           SDA_ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.SDA_ANDROID_RELEASE_KEY_ALIAS }}
           SDA_ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_KEY_PASSWORD }}
+      - name: Verify Android feed gate matches iOS seek pause intent
+        run: |
+          python scripts/test-android-seek-feed.py --fetch-test-dependencies
+          if ($LASTEXITCODE -ne 0) { throw 'Android production seek feed gate regression failed' }
       - name: Upload versioned package to requested draft release
         if: ${{ inputs.release_tag != '' }}
         env:

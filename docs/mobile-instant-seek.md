@@ -39,3 +39,12 @@ iOS Swift 集成仍需 Xcode 编译，随后在已安装应用里核对文件类
 Audio Vivid 和立体声的整曲响度参数属于当前进程中已加载的队列音源；A→B→A、重复播放和定位不会对同一有效音源重复分析。移出队列、文件变化或模块销毁后按归属释放。测量器减少取模、重复分配和对数计算，CNN 减少内层整数索引运算，保留测量政策和浮点累加顺序。235 秒的 Audio Vivid 诊断文件在当前 Windows 机器由 24.57 秒降至 19.05 秒，整曲响度/真峰值结果相同；这不是手机分析耗时，首次分析仍需进一步优化。
 
 360RA/Audio Vivid 的 MP4 提取优先遵循容器索引读取偏移，支持末尾 moov，无需先传完整 mdat。原生导入会话持有一个输入与一个输出句柄，使用最多 1 MiB 的读写块；旧宿主使用 256 KiB 后备。进度桥接限频，阶段切换立即报告。碎片 MP4 不使用普通 MP4 的提前完成条件，保留全部片段。所有临时句柄和未完成输出在失败/取消时关闭回收。
+
+## Android 与 iOS 的暂停语义
+
+Android 的解码循环与 iOS `SdaPlayer.feed` 一致：用户暂停或音频焦点中断时等待，定位期间不以渲染器的临时 `paused` 遥测阻止解码。`SeekReset` 会先把渲染器置为暂停；只有继续提供新位置附近的有限预滚 PCM，才能达到 `StartAt` 的恢复条件。等待这一临时标记会造成解码与渲染相互等待，手动恢复播放也无法解除。
+
+Android `playbackStatus` 与 iOS `playbackSnapshot` 一样返回宿主的暂停意图，避免界面在定位准备期间误显示为用户已暂停。保留原定位索引、节目增益与对象事件，不重新分析整曲，也不持久化渲染音频。
+
+- `python scripts/test-android-seek-feed.py`：在 JVM 上执行从生产 Kotlin 提取的真实解码等待条件；覆盖播放中定位、暂停后定位、恢复播放、连续定位与设备恢复。
+- `cargo test --manifest-path crates/sda-native/Cargo.toml --no-default-features --test android_seek_feed -- --test-threads=1`：通过真实解码器、渲染工作线程和 FIFO 消费核对定位后实际出声、采样时钟推进与旧 PCM 隔离；使用仓库合成 ALAC/MP3 素材。设置 `SDA_ATMOS_SEEK_FILE`、`SDA_AV3A_SEEK_FILE`、`SDA_MHAS_SEEK_FILE` 可追加本地沉浸式文件检查，私人音频不进入 CI。

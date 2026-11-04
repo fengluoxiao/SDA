@@ -322,6 +322,8 @@ class SdaModule : Module() {
 
     // Caller holds nativeLock so the clock, identity and codec describe one track.
     private fun playbackStatus(): JSONObject = (if (handle != 0L) JSONObject(SdaEngine.nativeStatus(handle)) else JSONObject())
+        // Like iOS playbackSnapshot, expose playback intent during seek preroll.
+        .put("paused", paused)
         .put("sourceCodec", activeSourceCodec)
         .put("outputLayout", if (activeSourceCodec == "alac" && !alacStereoUpmix) "2.0" else activeLayout)
         .put("alacUpmixActive", activeSourceCodec == "alac" && alacStereoUpmix).put("outputChannels", 2)
@@ -575,7 +577,10 @@ class SdaModule : Module() {
                             val decoded = state.getLong("decodedSamplePos")
                             val consumed = state.getLong("consumedSamplePos")
                             val fifoFrames = state.optInt("fifoFrames", 0)
-                            if (paused || state.optBoolean("paused", false) || state.optJSONObject("outputDevice")?.optBoolean("recovering", false) == true) {
+                            // Match iOS: only user/focus pause stops the feeder. SeekReset
+                            // reports renderer paused until enough new PCM reaches StartAt;
+                            // waiting on that telemetry would prevent StartAt forever.
+                            if (paused || state.optJSONObject("outputDevice")?.optBoolean("recovering", false) == true) {
                                 lastProgressNs = System.nanoTime()
                                 Thread.sleep(20)
                                 continue
