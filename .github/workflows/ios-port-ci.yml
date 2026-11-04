@@ -114,6 +114,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
+      - name: Verify shared Android and iOS lyrics UI
+        run: node scripts/test-mobile-lyrics.mjs
       - name: Build device Rust library
         run: |
           set -o pipefail
@@ -154,6 +156,8 @@ jobs:
           zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
           cd ../..
           printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; no automated test or simulator run. Requires signing for installation.\n' > ios-artifacts/README.txt
+      - name: Verify lyrics UI in packaged IPA
+        run: python3 scripts/verify-mobile-lyrics-package.py iOS ios-artifacts
       - name: Upload versioned package to requested draft release
         if: ${{ inputs.release_tag != '' }}
         env:

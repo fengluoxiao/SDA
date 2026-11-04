@@ -1,3 +1,4 @@
+import type { LyricSource } from "./mobile-lyrics";
 import { useProgressScrubber } from "./use-progress-scrubber";
 import { hasAndroidChrome } from "./AndroidChrome";
 import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
@@ -15,6 +16,7 @@ import { IOSPlayer } from "./IOSPlayer";
 
 export interface TrackMetadata {
   title?: string; artist?: string; album?: string; albumArtist?: string; authoredPlayback?:boolean; sourceCodec?:string;
+  lyrics?: string | LyricSource[];
   year?: string; track?: string; coverUri?: string; artworkColor?: string; durationMs?: number;
 }
 export interface QueueTrack {
@@ -23,6 +25,8 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  previewMode?: boolean;
+  attachLyrics?(uri: string, source: LyricSource): void;
   soundingObjectIds?: readonly number[];
   authoredPlayback?:boolean;
   binauralEnabled?: boolean; setBinauralEnabled?(enabled: boolean): void;
@@ -60,7 +64,7 @@ const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms /
 
 // Native counterpart of desktop/remote-web: same palette, cards and three-page navigation.
 export function RemotePlayer(p: PlayerProps) {
-  return Platform.OS === "ios" || hasAndroidChrome ? <IOSPlayer {...p} /> : <SafeAreaProvider initialMetrics={initialWindowMetrics}><AppThemeProvider><LegacyRemotePlayer {...p} /></AppThemeProvider></SafeAreaProvider>;
+  return Platform.OS === "ios" || Platform.OS === "android" ? <IOSPlayer {...p} /> : <SafeAreaProvider initialMetrics={initialWindowMetrics}><AppThemeProvider><LegacyRemotePlayer {...p} /></AppThemeProvider></SafeAreaProvider>;
 }
 
 function LegacyRemotePlayer(p: PlayerProps) {
@@ -95,10 +99,10 @@ function LegacyRemotePlayer(p: PlayerProps) {
   }, [height, sheetDrag]);
   const isLight = useColorScheme() === "light";
   const [volumeWidth, setVolumeWidth] = useState(1);
-  const pager = useRef<ScrollView>(null);
-  const playerScroll = useRef<ScrollView>(null);
-  const sceneScroll = useRef<ScrollView>(null);
-  const settingsScroll = useRef<ScrollView>(null);
+  const pager = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const playerScroll = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const sceneScroll = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const settingsScroll = useRef<React.ComponentRef<typeof ScrollView>>(null);
   // CI-only anchors capture the entire long settings sheet, not just its top.
   const settingsHeading = (text: string, stage: string) => <View onLayout={event => {
     if (chromeSmoke === stage) settingsScroll.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: false });
@@ -186,7 +190,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
       <Image source={{ uri: p.metadata.coverUri }} blurRadius={65} style={[StyleSheet.absoluteFill, { opacity: .2 }]} />
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "#10131888" }]} />
     </View>}
-    <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
+    <StatusBar barStyle={isLight ? "dark-content" : "light-content"} />
     <View style={s.header}>
       {button("＋", "打开本机媒体", p.chooseFile, p.busy)}
       <View style={{ flex: 1, alignItems: "center" }}>{label(page === 0 ? (p.busy || p.preparingAudio ? "正在准备音频…" : "正在播放") : page === 1 ? "音乐资料库" : "空间音频", true, s.eyebrow)}
@@ -292,7 +296,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
       <View style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: page === index ? c.field : "transparent" }}>{label(name, page !== index, { fontSize: 12, fontWeight: page === index ? "600" : "400" })}</View></Pressable>)}</View>}
     {p.error && <Text accessibilityRole="alert" style={s.error}>{p.error}</Text>}
     <Modal transparent visible={settings} animationType="slide" onRequestClose={() => setSettings(false)}>
-      <StatusBar barStyle={isLight ? "dark-content" : "light-content"} backgroundColor={c.bg} />
+      <StatusBar barStyle={isLight ? "dark-content" : "light-content"} />
       <Animated.View style={[s.backdrop, { opacity: sheetDrag.interpolate({ inputRange: [0, height], outputRange: [1, 0], extrapolate: "clamp" }) }]}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭设置" style={StyleSheet.absoluteFill} onPress={() => setSettings(false)} />
       </Animated.View>

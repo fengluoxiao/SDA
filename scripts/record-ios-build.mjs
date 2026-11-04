@@ -17,6 +17,7 @@ paths.push('crates/sda-render-metadata/src/lib.rs','crates/sda-render-metadata/C
 paths.push('crates/sda-native/src/stereo_reference.rs','crates/sda-native/src/av3a_reference.rs','packages/core/src/av3a_pipeline.rs','packages/core/src/loudness.rs','apps/mobile/modules/sda-core/ios/Headers/SdaNative.h');
 paths.push('apps/native-renderer/src/reference_convolution.rs','crates/sda-native/src/av3a_reference_renderer.rs','crates/sda-native/src/stereo_reference.rs','apps/mobile/modules/sda-core/ios/PlaybackStorage.swift','apps/mobile/modules/sda-core/ios/Mp4ImportSession.swift','apps/mobile/src/mpeghMp4.ts','packages/demux/src/mp4.ts','vendor/avs3a/src/cnn.rs','vendor/avs3a/src/mc_core.rs','vendor/avs3a/src/mc_backend.rs','vendor/avs3a/src/latent.rs','vendor/avs3a/src/mix_backend.rs','vendor/avs3a/src/neural_qc.rs','vendor/avs3a/src/range_coder.rs');
 const mobileReleaseConfig=JSON.parse(readFileSync(join(root,'apps/mobile/app.json'),'utf8')).expo;
+paths.push('apps/mobile/src/PortraitLyricsPager.tsx','apps/mobile/src/mobile-lyrics.ts','apps/mobile/src/embedded-lyrics.ts','apps/mobile/src/lyric-files.ts','apps/mobile/src/use-lyrics-follow.ts','apps/mobile/src/use-lyrics-swipe.ts','apps/mobile/src/use-track-lyrics.ts','apps/mobile/src/player-progress-paint.ts','apps/mobile/src/IOSVerticalTabBar.tsx');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 paths.push('crates/sda-native/src/mp4_extract.rs','vendor/avs3a/src/imdct.rs');
 paths.push('packages/core/src/scene_reference.rs');

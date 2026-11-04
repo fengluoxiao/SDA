@@ -102,5 +102,13 @@ props={...props,page:1};render();assert.equal(result.active,true,'placeholder mu
 animations.at(-1).callback({finished:true});render();props={...props,page:0};render();runFrames();assert.equal(result.active,true,'placeholder returns along the same independent routes');animations.at(-1).callback({finished:true});render();assert.equal(result.mainOpacity,1);
 // Replacing it with an unloaded image restores the image readiness guard.
 props={...props,mediaKey:'cover-again',artworkUri:'file:///new.jpg'};render();await measure();props={...props,page:1};render();runFrames();assert.equal(result.active,false);
+// A rotation may render before layout-effect cleanup. Never hide the real
+// image in that render if the transfer overlay is no longer eligible.
+props={...props,enabled:true,page:0,layoutKey:'rotation-start',mediaKey:'rotation-placeholder',artworkUri:''};render();await measure();
+props={...props,page:1};render();runFrames();assert.equal(result.active,true);
+props={...props,enabled:false,page:0,layoutKey:'rotation-end'};cursor=0;
+const rotationRender=api.useSharedMiniPlayerTransition(props);
+assert.equal(rotationRender.mainOpacity,1,'the original cover must be visible before cleanup on a rotation');assert.equal(rotationRender.active,false);
+render();assert.equal(result.mainOpacity,1);
 for(const slot of slots)slot?.cleanup?.();assert.deepEqual(Object.keys(events),[]);assert.equal(timers.size,0);globalThis.setTimeout=realTimeout;globalThis.clearTimeout=realClearTimeout;
 console.log('Shared transition passed: separate straight routes, straight track expansion, connected ring geometry, image and placeholder readiness, committed-node start, native-position reversal, frozen endpoints, stale-callback rejection, timeout recovery, cancellation, reduced motion, background and rotation.');

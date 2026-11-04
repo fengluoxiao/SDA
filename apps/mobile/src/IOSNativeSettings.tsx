@@ -136,10 +136,10 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
         frame({ maxWidth: width, alignment: "leading" }),
         background(PlatformColor("systemGroupedBackground"), { ignoresSafeAreaEdges: "all" }),
       ]}>
-        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width, height: 52 })]}>
+        <HStack spacing={0} modifiers={[padding({ horizontal: 16 }), frame({ maxWidth: width }), frame({ height: 52 })]}>
           <Button label="返回" systemImage="chevron.left" onPress={onClose} modifiers={[
             buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), labelStyle("iconOnly"), controlSize("large"), tint(appTheme.accent),
-            font({ size: 22, weight: "semibold" }), frame({ width: 44, minHeight: 44 }),
+            font({ size: 22, weight: "semibold" }), frame({ width: 44 }), frame({ minHeight: 44 }),
             frame({ width: 88, alignment: "leading" }), accessibilityLabel("返回播放器"),
           ]} />
           <Text modifiers={[font({ textStyle: "headline", weight: "semibold" }), frame({ maxWidth: width })]}>设置</Text>

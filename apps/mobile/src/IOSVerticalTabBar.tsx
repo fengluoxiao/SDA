@@ -46,7 +46,7 @@ export function IOSVerticalTabBar({ selected, onChange, accent, dark }: {
     <View testID="vertical-tab-touch-layer" style={{ position: "absolute", width: length, height: 48, left: (48 - length) / 2, top: (visibleLength - 48) / 2,
       backgroundColor: "transparent", transform: [{ rotate: "90deg" }] }}>
       <View testID="vertical-tab-inset-compensation" style={{ position: "absolute", ...nativeFrame, backgroundColor: "transparent" }}>
-      <Tabs.Host style={{ width: nativeFrame.width, height: nativeFrame.height, flex: 0 }} navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
+      <Tabs.Host navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
         nativeContainerStyle={{ backgroundColor: "transparent" }} colorScheme={dark ? "dark" : "light"}
         ios={{ tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never", bottomAccessoryHidden: true }}
         onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {

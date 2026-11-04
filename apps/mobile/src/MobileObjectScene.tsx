@@ -1,7 +1,7 @@
 import { normalizeNativeShaderLogs } from "./nativeShaderLogs";
 import { resetNativeSceneDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
-import { AppState, Platform, PanResponder, View, Text, Pressable, InteractionManager, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { AppState, Platform, PanResponder, View, Text, Pressable, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
@@ -101,7 +101,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     return () => subscription.remove();
   }, []);
   const renderActive = active && foreground;
-  const view = useRef<View>(null);
+  const view = useRef<React.ComponentRef<typeof View>>(null);
   const interaction = useRef(onInteractionChange);
   React.useEffect(() => () => interaction.current?.(false), []);
   interaction.current = onInteractionChange;
@@ -125,10 +125,10 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
   React.useEffect(() => {
     if (!renderActive || mounted || viewport.width <= 0 || viewport.height <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const task = InteractionManager.runAfterInteractions(() => {
+    const task = requestIdleCallback(() => {
       timer = setTimeout(() => setMounted(true), 300);
     });
-    return () => { task.cancel(); if (timer) clearTimeout(timer); };
+    return () => { cancelIdleCallback(task); if (timer) clearTimeout(timer); };
   }, [renderActive, mounted, viewport.width, viewport.height]);
   React.useEffect(() => {
     if (!renderActive || !mounted || ready || failure) return;

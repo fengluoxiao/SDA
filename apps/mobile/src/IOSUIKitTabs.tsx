@@ -20,8 +20,9 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, libraryHeaderActions, libraryHeaderActionsWidth, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false }: {
+export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, pageBackgrounds, libraryHeaderActions, libraryHeaderActionsWidth, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false }: {
   pageHeaders?: React.ReactNode[];
+  pageBackgrounds?: React.ReactNode[];
   libraryHeaderActions?: React.ReactNode;
   libraryHeaderActionsWidth?: number;
   sideBarInsetReserved?: boolean; sideBar?: React.ReactNode; sideBarExternal?: boolean; sideBarPosition?: "left" | "right"; sideBarWidth?: number; rightContentGap?: number; leftContentOffset?: number;
@@ -63,11 +64,12 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     const nativeHeader = index === 1 && hasNativePageHeader;
     const viewport = <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
         <SafeAreaView edges={nativeHeader ? [] : ["top", "left", "right"]} style={{ flex: 1 }}>
-          {!nativeHeader && <View style={{ paddingHorizontal: 18 }}>{pageHeaders?.[index]}</View>}
-          <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
+          {!nativeHeader && <View pointerEvents="box-none" style={{ paddingHorizontal: 18, zIndex: index === 0 ? 2 : 0, backgroundColor: "transparent" }}>{pageHeaders?.[index]}</View>}
+          <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : index === 0 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
             {pageContent(index)}{index !== 0 && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: sideBarInsetReserved ? 0 : Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaView>
+        {pageBackgrounds?.[index]}
         </SafeAreaProvider>;
     return index === 1 && hasNativePageHeader ? <IOSNativePage screenId="sda-library-content" title="资料库" theme={theme} accent={accent}
       onHeaderHeightChange={height => setLibraryHeaderHeight(previous => Math.abs(previous - height) < 0.5 ? previous : height)}
@@ -82,7 +84,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
       tabBarHidden={!!sideBar}
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
       nativeContainerStyle={{ backgroundColor }} colorScheme={theme}
-      ios={{ tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never",
+      ios={{ tabBarHiddenAnimationEnabled: false, tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never",
         // The factory is mounted twice by screens. Its content has no local
         // playback state/effects; both variants act on the same parent engine.
         bottomAccessory: !sideBar && hasUIKitTabAccessory && nativeAccessory ? nativeAccessory : undefined,
@@ -99,7 +101,9 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
         style={{ backgroundColor: pageBackgroundColors?.[index] ?? backgroundColor }} tabBarItemAccessibilityLabel={label}
         ios={{
           experimental_userInterfaceStyle: theme,
-          icon: { type: "sfSymbol", name: symbols[index] },
+          // Playback owns its control-page inset; lyrics continue beneath the glass.
+          overrideScrollViewContentInsetAdjustmentBehavior: index !== 0,
+          icon: { type: "sfSymbol", name: symbols[index]! },
           standardAppearance: appearance, scrollEdgeAppearance: appearance,
         }}>
         {renderPage(index)}

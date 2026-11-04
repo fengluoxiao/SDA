@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Dimensions, View } from "react-native";
 import { createSurfaceLayoutState, surfaceLayoutSize, type SurfaceLayoutState } from "./surface-layout-state";
@@ -9,7 +10,7 @@ export function usePlayerSurfaceLayout() {
   const model = useRef<ReturnType<typeof createSurfaceLayoutState> | null>(null);
   if (!model.current) model.current = createSurfaceLayoutState(snapshot.window, snapshot.active, setSnapshot);
   const controller = model.current;
-  const surfaceRef = useRef<View>(null);
+  const surfaceRef = useRef<React.ComponentRef<typeof View>>(null);
   const pendingFrame = useRef<number | null>(null);
   const mounted = useRef(false);
   const latestRead = useRef(0);
@@ -20,7 +21,7 @@ export function usePlayerSurfaceLayout() {
       if (!mounted.current || !controller.get().active) return;
       const revision = controller.get().revision;
       const read = ++latestRead.current;
-      const node = surfaceRef.current as (View & { offsetWidth?: number; offsetHeight?: number }) | null;
+      const node = surfaceRef.current as (React.ComponentRef<typeof View> & { offsetWidth?: number; offsetHeight?: number }) | null;
       if (!node) return;
       const accept = (width: number, height: number) => {
         if (!mounted.current || read !== latestRead.current) return;
@@ -36,7 +37,7 @@ export function usePlayerSurfaceLayout() {
   }, [controller]);
   useEffect(() => {
     mounted.current = true;
-    const window = Dimensions.addEventListener("change", ({ window }) => {
+    const window = Dimensions.addEventListener("change", ({ window }: { window: ReturnType<typeof Dimensions.get> }) => {
       controller.windowChanged(window); measureSurface();
     });
     const activity = AppState.addEventListener("change", value => {

@@ -25,7 +25,7 @@ type Props = {
   title: string; artist: string; artworkUri: string; color: string;
   positionMs: number; durationMs: number; playing: boolean; disabled: boolean;
   onTogglePlayback(): void; onOpenPlayer(): void;
-  elementRef?: React.Ref<View>; onLayout?(): void; interactive?: boolean; visibility?: number | Animated.AnimatedInterpolation<number>;
+  elementRef?: React.Ref<React.ComponentRef<typeof View>>; onLayout?(): void; interactive?: boolean; visibility?: number | Animated.AnimatedInterpolation<number>;
 };
 
 export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
@@ -42,7 +42,7 @@ export const CircularMiniPlayer = memo(function CircularMiniPlayer(p: Props) {
     disabled={p.disabled} onPress={p.onTogglePlayback} onLongPress={p.onOpenPlayer}
     delayLongPress={400} style={({ pressed }) => [s.control, { opacity: p.disabled ? .4 : pressed ? .7 : 1, transform: [{ scale: pressed ? .94 : 1 }] }]}>
     <Animated.View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[s.face, { opacity: p.visibility ?? 1 }]}>
-      <View style={[StyleSheet.absoluteFill, { opacity: .24 }]}><ProgressArc degrees={270} color={p.color} /></View>
+      <View collapsable={false} needsOffscreenAlphaCompositing shouldRasterizeIOS style={[StyleSheet.absoluteFill, { opacity: .24 }]}><ProgressArc degrees={270} color={p.color} /></View>
       <ProgressArc degrees={270 * progress} color={p.color} />
       <View style={s.artwork}>
         {hasArtwork && <Image key={p.artworkUri} source={{ uri: p.artworkUri }} resizeMode="cover" onError={() => setFailedArtwork(p.artworkUri)} style={StyleSheet.absoluteFill} />}

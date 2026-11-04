@@ -28,7 +28,7 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955'])for(cons
  assert.equal(rotation.props.style.left+rotation.props.style.width/2-24,0);
  assert.equal(rotation.props.style.top+24-rotation.props.style.width/2,0);
  assert.equal(compensation.props.style.width,216);assert.equal(compensation.props.style.left,-38);
- assert.equal(native.type,'NativeTabsHost');assert.deepEqual(native.props.style,{width:216,height:69,flex:0});assert.equal(native.props.navStateRequest.selectedScreenKey,String(selected));
+ assert.equal(native.type,'NativeTabsHost');assert.equal(native.props.style,undefined,'SDK58 Tabs.Host is sized by its parent');assert.equal(compensation.props.style.height,69);assert.equal(native.props.navStateRequest.selectedScreenKey,String(selected));
  assert.equal(native.props.ios.tabBarTintColor,accent);assert.equal(native.props.colorScheme,dark?'dark':'light');
  const items=native.props.children[0];assert.equal(items.length,3);
  const images=items.map(item=>item.props.ios.icon.templateSource);assert.equal(new Set(images).size,3);
@@ -83,19 +83,19 @@ console.log('Native tab item icons: real opaque alpha glyphs, inverse pixel rota
 for(const left of [0,44,59,62])for(const right of [0,44,59,62])for(const bottom of [0,21,34]) {
  const api=load({insets:{left,right,bottom}}),tree=api.IOSVerticalTabBar({selected:0,onChange(){},accent:'#7799CC',dark:false});
  const compensation=tree.props.children[0].props.children[0],host=compensation.props.children[0];
- assert.equal(host.props.style.width-Math.max(0,left-bottom)-Math.max(0,right-bottom),140);
- assert.equal(compensation.props.style.left,-Math.max(0,left-bottom));assert.equal(host.props.style.height-bottom,48);
+ assert.equal(compensation.props.style.width-Math.max(0,left-bottom)-Math.max(0,right-bottom),140);
+ assert.equal(compensation.props.style.left,-Math.max(0,left-bottom));assert.equal(compensation.props.style.height-bottom,48);
  for(const page of host.props.children[0])assert.equal(page.props.children[0].props.onChange,undefined);
 }
 
 // Tablet fitting space remains wide while its visible capsule docks in a compact frame.
 for(const bottom of [0,20,34]) {
  const tree=load({isPad:true,insets:{left:0,right:0,bottom}}).IOSVerticalTabBar({selected:0,onChange(){},accent:'#7799CC',dark:false});
- const rotation=tree.props.children[0],host=rotation.props.children[0].props.children[0];
+ const rotation=tree.props.children[0],compensation=rotation.props.children[0],host=compensation.props.children[0];
  assert.equal(tree.props.style.height,160);assert.equal(rotation.props.style.width,320);
  assert.equal(rotation.props.style.left,(48-320)/2);assert.equal(rotation.props.style.top,(160-48)/2);
  assert.equal(rotation.props.style.top+24,tree.props.style.height/2,"native capsule center follows the visible dock, not blank controller space");
- assert.equal(host.props.style.width,320);assert.equal(host.props.style.height,48+bottom);
+ assert.equal(compensation.props.style.width,320);assert.equal(compensation.props.style.height,48+bottom);
  assert.equal(host.props.children[0].length,3);
 }
 

@@ -19,6 +19,8 @@ function fixture(os='android',options={}) {
  const deps=name=>name==='react'?{Component}:name==='react-native'?{Platform:{OS:os},AppState:{currentState:'active'}}:
   name==='expo-document-picker'?{getDocumentAsync:async()=>({canceled:false,assets})}:
   name.endsWith('/mpeghMp4')?{prepare360RaMp4:async()=>{calls.demux++;return options.prepared??null;}}:
+  name.endsWith('/lyric-files')?{readFileLyrics:async()=>[],readExternalLyric:async(uri,name)=>({text:'[0:1]歌词',name,source:'external'}),releaseLyricPickerCopy:async()=>{}}:
+  name.endsWith('/mobile-lyrics')?{lyricSources:value=>Array.isArray(value)?value:[]}:
   name.endsWith('/SystemVolumeSlider')?{hasSystemVolumeSlider:false}:
   name.endsWith('/artwork-color')?{primeArtworkColor:async()=>{}}:
   name.endsWith('/playbackOrder')?{nextPlaylistItemId:()=>{throw Error('native EOF must never ask JS to advance');}}:
@@ -117,4 +119,13 @@ test('older iOS native host keeps temporary ownership until durable retain is av
 test('retrying a failed import replaces its failed row without leaving a second loading entry',async()=>{
  const {app,engine}=fixture('ios');engine.prepareStereoTrack=async()=>{throw Error('temporary failure');};await app.chooseFile();assert.equal(app.state.queue.length,1);
  engine.prepareStereoTrack=async()=>true;await app.chooseFile();assert.equal(app.state.queue.length,1);assert(!app.state.queue[0].preparation);assert.equal(app.state.error,null);
+});
+
+test('external lyrics selected with a song attach to its metadata, never enter the decoder queue',async()=>{
+ const {app,calls,assets}=fixture();assets.push({uri:'file:///picker/a.lrc',name:'a.lrc'});await app.chooseFile();
+ assert.equal(app.state.queue.length,1);assert.equal(calls.analyses.length,1);assert.equal(app.state.metadata.lyrics[0].text,'[0:1]歌词');
+});
+test('attaching lyrics preserves the existing native queue and playback state',()=>{
+ const {app,calls}=fixture();app.state.queue=[{contentHash:a,uri:'file:///song',name:'song',metadata:{}}];app.state.queueIndex=0;app.state.selectedUri='file:///song';app.state.playing=true;
+ app.attachLyrics('file:///song',{text:'[0:1]一',source:'external'});assert.equal(app.state.playing,true);assert.equal(app.state.queue[0].metadata.lyrics[0].text,'[0:1]一');assert.equal(calls.plays.length,0);assert.equal(calls.analyses.length,0);
 });

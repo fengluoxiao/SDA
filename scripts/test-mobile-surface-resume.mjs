@@ -58,7 +58,7 @@ for(const [before,after] of [[portrait,landscape],[landscape,portrait],[portrait
 }
 const late=fixture();late.frame();const callback=late.measurements.shift();late.cleanup();const count=late.snapshots.length;callback(0,0,932,430);assert.equal(late.snapshots.length,count);
 const ui=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8'),scene=readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8');
-assert.match(ui,/ref=\{surfaceRef\}/);assert.match(ui,/onLayout=\{onSurfaceLayout\}/);assert.match(ui,/active=\{page === 2 && !settings && layoutReady\}/);
+assert.match(ui,/ref=\{surfaceRef\}/);assert.match(ui,/onLayout=\{\(\) => \{ onSurfaceLayout\(\); sharedMini\.capture\(\); \}\}/);assert.match(ui,/active=\{page === 2 && !settings && layoutReady\}/);
 assert.doesNotMatch(ui,/surfaceSize \|\| initialWindow/);
 assert.match(scene,/<Canvas[^>]+style=\{\{ flex: 1 \}\}/);
 assert.doesNotMatch(scene,/<Canvas[^>]+style=\{\{ width: viewport.width/);

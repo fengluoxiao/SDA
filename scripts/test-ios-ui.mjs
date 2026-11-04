@@ -145,7 +145,7 @@ for (const screen of tabHost.props.children[0]) {
   assert.deepEqual(screen.props.ios.standardAppearance, screen.props.ios.scrollEdgeAppearance);
   assert.equal(screen.props.ios.standardAppearance.tabBarBlurEffect, 'systemDefault');
   const safeViewport = pageViewport(screen);
-  assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? ["left","right"] : ["bottom"]);
+  assert.deepEqual(safeViewport.props.edges, screen.props.screenKey === "1" ? ["left","right"] : screen.props.screenKey === "0" ? [] : ["bottom"]);
   assert.equal(safeViewport.props.style.backgroundColor, "transparent");
 }
 for (const key of ['1', '0', 'oops', '-1', '3', '1.5']) tabHost.props.onTabSelected({ nativeEvent: { selectedScreenKey: key, provenance: 1, actionOrigin: "user" } });
@@ -284,7 +284,7 @@ assert.equal(iosPlayerLayout(430, 900, 237).coverSize, 340);
 // Standalone-only SDA managers may supply audio, never a different home design.
 const sharedTransport = ui.slice(ui.indexOf('  const icon ='), ui.indexOf('  const divider ='));
 assert.doesNotMatch(sharedTransport, /hasNativeIOSChrome|IOSIconButton/);
-const sharedVolume = ui.slice(ui.indexOf('<View style={[np.volume, np.controlsDown,'), ui.indexOf('<View style={[np.volume, np.controlsDown,') + 1800);
+const sharedVolume = ui.slice(ui.indexOf('<LyricsGestureBoundary style={[np.volume, np.controlsDown,'), ui.indexOf('<LyricsGestureBoundary style={[np.volume, np.controlsDown,') + 1800);
 assert.doesNotMatch(sharedVolume, /hasNativeIOSChrome|IOSVolumeSlider/);
 assert.match(sharedVolume, /accessibilityRole="adjustable"/);
 assert.match(sharedVolume, /accessibilityLabel="音量滑块"/);
@@ -412,7 +412,8 @@ assert.match(ui, /const homeBackground = immersiveHome \? "transparent" : c.bg/)
 assert.doesNotMatch(homePages, /np.coverImage|np.emptyCover/);
 
 
-assert.match(ui, /backgroundColor=\{Platform\.OS === "android" \? "transparent" : homeBackground\}/);
+// SDK 58 uses edge-to-edge native backgrounds; removed StatusBar props must not return.
+assert.doesNotMatch(ui.match(/<StatusBar[^>]+>/)?.[0] ?? "", /backgroundColor=|translucent=/);
 assert.match(ui, /immersiveHome && <View pointerEvents="none"/);
 
 
@@ -674,3 +675,39 @@ for(const sideBarPosition of ['left','right']) {
  assert.equal(mini.props.style[sideBarPosition==='left'?'marginLeft':'marginRight'],0);
 }
 console.log('Tablet page adapters: one shared navigation lane, no duplicate left/right inset or mini-player offset.');
+
+// Selecting another main tab remains available while the playback subpage is lyrics.
+{
+ const api=loadNativeTabs('ios',true).api,events=[];
+ const root=api.IOSUIKitTabs({...accessoryProps,selected:0,onChange:index=>events.push(index)}),host=root.props.children[0];
+ assert.equal(host.props.tabBarHidden,false);assert.equal(host.props.ios.tabBarHiddenAnimationEnabled,false);assert.equal(host.props.ios.tabBarTintColor,accessoryProps.accent);
+ assert.deepEqual(host.props.children[0].map(item=>item.props.tabBarItemAccessibilityLabel),['播放','资料库','空间']);
+ for(const item of host.props.children[0]){assert.equal(item.props.preventNativeSelection,undefined);assert.equal(item.props.ios.standardAppearance.tabBarBlurEffect,'systemDefault');}
+ host.props.onTabSelected({nativeEvent:{selectedScreenKey:'1',provenance:1,actionOrigin:'user'}});
+ const libraryHost=api.IOSUIKitTabs({...accessoryProps,selected:1,onChange:index=>events.push(index)}).props.children[0];
+ libraryHost.props.onTabSelected({nativeEvent:{selectedScreenKey:'0',provenance:2,actionOrigin:'user'}});assert.deepEqual(events,[1,0]);
+ console.log('Playback tabs retain their icons, tint, and working library/playback navigation.');
+}
+
+// The native playback screen owns its backdrop even before JS handles tab selection.
+{
+ const api=loadNativeTabs('ios',true).api,backdrop={type:'RetainedLyricsBackdrop',props:{visible:true}};
+ for(const selected of [0,1,2,0]){
+  const root=api.IOSUIKitTabs({...accessoryProps,selected,pageBackgrounds:[backdrop]}),screens=root.props.children[0].props.children[0];
+  const playbackProvider=screens[0].props.children[0];assert.equal(playbackProvider.props.children[1],backdrop,'tab selection must not remove or restart the playback backdrop');
+ }
+ console.log('The playback screen retains its own background across native tab switches.');
+}
+
+
+// Match the library fix: the playback viewport reaches beneath the floating bar,
+// while its controls page owns the inset and lyrics keep their explicit insets.
+{
+ const host=loadNativeTabs('ios',true).api.IOSUIKitTabs({...accessoryProps,selected:0}).props.children[0];
+ for(const screen of host.props.children[0]){
+  assert.equal(screen.props.ios.overrideScrollViewContentInsetAdjustmentBehavior,screen.props.screenKey!=='0');
+  if(screen.props.screenKey==='0')assert.deepEqual(pageViewport(screen).props.edges,[]);
+ }
+ assert.match(ui,/preservePlaybackBottomInset=\{hasUIKitIOSTabs\}/);
+ console.log('Playback lyrics underlay the system glass without a reserved bottom background strip.');
+}

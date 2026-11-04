@@ -68,8 +68,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dependency install failed' }
           node scripts/prepare-ac4.mjs
           if ($LASTEXITCODE -ne 0) { throw 'AC4 preparation failed' }
-          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed' }
+      - name: Verify shared Android and iOS lyrics UI
+        run: |
+          node scripts/test-mobile-lyrics.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Shared lyrics UI regression failed' }
       - name: Test ALAC file decoding and resampling
         run: |
           cargo test --manifest-path scripts/alac-file-regression/Cargo.toml --locked
@@ -87,6 +91,10 @@ jobs:
           SDA_ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_STORE_PASSWORD }}
           SDA_ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.SDA_ANDROID_RELEASE_KEY_ALIAS }}
           SDA_ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.SDA_ANDROID_RELEASE_KEY_PASSWORD }}
+      - name: Verify lyrics UI in packaged APK
+        run: |
+          python scripts/verify-mobile-lyrics-package.py Android android-artifacts
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Android lyrics UI verification failed' }
       - name: Verify Android feed gate matches iOS seek pause intent
         run: |
           python scripts/test-android-seek-feed.py --fetch-test-dependencies

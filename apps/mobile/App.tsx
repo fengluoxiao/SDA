@@ -1,3 +1,5 @@
+import { readExternalLyric, releaseLyricPickerCopy, readFileLyrics } from "./src/lyric-files";
+import { lyricSources, type LyricSource } from "./src/mobile-lyrics";
 import { primeArtworkColor } from "./src/artwork-color";
 import { hasSystemVolumeSlider } from "./src/SystemVolumeSlider";
 import React from "react";
@@ -177,6 +179,7 @@ export default class App extends React.Component<Record<string, never>, State> {
   private lifecycleSubscriptions: NativeEventSubscription[] = [];
   private engine?: SdaEngineModule;
   private artworkPreview = false;
+  private previewTicker?: ReturnType<typeof setInterval>;
   private changingTrack = false;
   private lastIOSPlaybackGeneration = -1;
   private poller?: ReturnType<typeof setInterval>;
@@ -195,6 +198,14 @@ export default class App extends React.Component<Record<string, never>, State> {
         require("expo-constants").default.executionEnvironment === "storeClient") {
       this.artworkPreview = true;
       this.setState(require("./dev-preview/fixture").createArtworkPreview());
+      let previous = Date.now();
+      this.previewTicker = setInterval(() => {
+        const now = Date.now(), elapsed = Math.max(0, Math.min(500, now - previous)); previous = now;
+        if (this.state.playing && !this.state.paused && !this.state.ended) this.setState(state => {
+          const positionMs = Math.min(state.durationMs, state.positionMs + elapsed);
+          return { positionMs, ended: positionMs >= state.durationMs, paused: positionMs >= state.durationMs };
+        });
+      }, 100);
       return;
     }
     const showPlayback = () => this.setState(previous => ({ playbackPageRequest: previous.playbackPageRequest + 1 }));
@@ -361,10 +372,19 @@ export default class App extends React.Component<Record<string, never>, State> {
   };
 
   componentWillUnmount() {
+    if (this.previewTicker) clearInterval(this.previewTicker);
     for (const subscription of this.lifecycleSubscriptions) subscription.remove();
     this.lifecycleSubscriptions = [];
     if (this.poller) clearInterval(this.poller);
   }
+
+  private attachLyrics = (uri: string, source: LyricSource) => {
+    this.setState(state => {
+      const append = (metadata: TrackMetadata): TrackMetadata => ({ ...metadata, lyrics: [source, ...lyricSources(metadata.lyrics).filter(s => s.source !== "external")] });
+      return { queue: state.queue.map(track => track.uri === uri ? { ...track, metadata: append(track.metadata) } : track),
+        metadata: state.selectedUri === uri ? append(state.metadata) : state.metadata };
+    }, () => { if (!this.artworkPreview) { try { this.syncNativeQueue(); } catch { /* Lyrics must not interrupt a playing source. */ } } });
+  };
 
   private getEngine(): SdaEngineModule {
     const module = (globalThis as any).expo?.modules?.SdaEngine;
@@ -384,15 +404,30 @@ export default class App extends React.Component<Record<string, never>, State> {
         multiple: true,
       });
       if (result.canceled) return;
+      const audioAssets = result.assets.filter(asset => !/\.(?:lrc|ttml)$/i.test(asset.name));
+      const sidecars = result.assets.filter(asset => /\.(?:lrc|ttml)$/i.test(asset.name));
+      const lyricAttachments = new Map<string, LyricSource>();
+      const stem = (name: string) => name.replace(/\.[^.]+$/, "").normalize("NFC").toLocaleLowerCase();
+      for (const asset of sidecars) {
+        try {
+          const source = await readExternalLyric(asset.uri, asset.name, asset.size);
+          const match = audioAssets.find(audio => stem(audio.name) === stem(asset.name));
+          if (match) lyricAttachments.set(match.uri, source);
+          else if (audioAssets.length === 1) lyricAttachments.set(audioAssets[0]!.uri, source);
+          else if (!audioAssets.length && this.state.selectedUri) this.attachLyrics(this.state.selectedUri, source);
+          else throw Error("请先选择歌曲，或同时选择同名歌曲与歌词文件");
+        } finally { await releaseLyricPickerCopy(asset.uri); }
+      }
+      if (!audioAssets.length) return;
       const knownHashes = new Set(this.state.queue.filter(track => !track.preparation).map(track => track.contentHash));
       const batch = Date.now();
-      const pending: QueueTrack[] = result.assets.map((asset, i) => ({
+      const pending: QueueTrack[] = audioAssets.map((asset, i) => ({
         contentHash: `pending:${batch}:${i}`, uri: asset.uri, name: asset.name, metadata: {},
         preparation: { state: "loading", progress: 0, stage: "等待处理" },
       }));
       await new Promise<void>(resolve => this.setState(state => ({ queue: [...state.queue, ...pending] }), resolve));
       let importError: string | null = null;
-      for (const [assetIndex, asset] of result.assets.entries()) {
+      for (const [assetIndex, asset] of audioAssets.entries()) {
         const pendingId = pending[assetIndex]!.contentHash;
         let importHash = "";
         let retainedUri: string | undefined;
@@ -419,6 +454,12 @@ export default class App extends React.Component<Record<string, never>, State> {
         }
         progress(.08, "读取歌曲信息");
         const metadata = JSON.parse(await this.getEngine().metadata(asset.uri)) as TrackMetadata;
+        const attached = lyricAttachments.get(asset.uri);
+        // Read only metadata ranges while the original container is still available.
+        // Demuxing 360RA can later replace this URI with its raw compressed track.
+        const embedded = await readFileLyrics(asset.uri).catch(() => []);
+        const sources = [...(attached ? [attached] : []), ...lyricSources(metadata.lyrics), ...embedded];
+        if (sources.length) metadata.lyrics = sources;
         if (metadata.coverUri) void primeArtworkColor(metadata.coverUri, metadata.artworkColor).catch(() => {});
         patch({ metadata });
         const track: QueueTrack = { contentHash, uri: asset.uri, name: asset.name, metadata };
@@ -763,6 +804,8 @@ export default class App extends React.Component<Record<string, never>, State> {
 
   render() {
     const previewProps = __DEV__ && this.artworkPreview ? {
+      previewMode: true,
+      seekTo: (positionMs: number) => this.setState(state => ({ positionMs: Math.max(0, Math.min(positionMs, state.durationMs - 1)), ended: false, playing: state.ended ? true : state.playing, paused: state.ended ? false : state.paused })),
       selectTrack: (index: number) => {
         const track = this.state.queue[index];
         if (track) this.setState({ queueIndex: index, selectedUri: track.uri, fileName: track.name, metadata: track.metadata, positionMs: 0 });
@@ -775,7 +818,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       setHeadTracking: (headTrackingEnabled: boolean) => this.setState({ headTrackingEnabled }),
       setRendering: (directObjects: boolean, directionalObjects: boolean) => this.setState({ directObjects, directionalObjects }),
     } : {};
-    return <RemotePlayer {...this.state} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
+    return <RemotePlayer {...this.state} attachLyrics={this.attachLyrics} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       seekTo={this.seekTo} togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
       resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;

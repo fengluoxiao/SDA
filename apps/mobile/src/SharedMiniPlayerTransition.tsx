@@ -2,16 +2,10 @@ import React, { memo, useMemo } from "react";
 import { Animated, Image, StyleSheet, Text, View } from "react-native";
 import { IOSPlaybackSymbol } from "./IOSPlaybackSymbol";
 import { formatPlaybackTime } from "./ios-ui-model";
+import { PLAYER_PROGRESS_PAINT } from "./player-progress-paint";
 import { MINI_MOTION_SAMPLES, miniMotionPose, progressMotionSegments, type MiniPlayerFrames } from "./mini-player-motion";
 
-type MotionProps = { frames: MiniPlayerFrames; value: Animated.Value; active: boolean; motionId: number; positionMs: number; durationMs: number; home: boolean; targetColor: string; backgroundColor: string };
-// Blend once into an opaque stroke; overlapping joins can no longer darken.
-export function motionTrackColor(background: string, ink: string) {
-  const rgb = (hex: string) => { const value = hex.replace("#", ""); const full = value.length === 3 ? value.split("").map(c => c + c).join("") : value; return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16)); };
-  const bg = rgb(background), fg = rgb(ink);
-  if (![...bg, ...fg].every(Number.isFinite)) return "#8e8e93";
-  return "#" + bg.map((c, i) => Math.round(c * .76 + fg[i]! * .24).toString(16).padStart(2, "0")).join("");
-}
+type MotionProps = { frames: MiniPlayerFrames; value: Animated.Value; active: boolean; motionId: number; positionMs: number; durationMs: number; home: boolean; targetColor: string; backgroundColor: string; stationaryProgress?: boolean };
 const Stroke = memo(function Stroke({ frames, fraction, value, color }: { frames: MiniPlayerFrames; fraction: number; value: Animated.Value; color: string }) {
   const styles = useMemo(() => {
     const parts = progressMotionSegments(frames, fraction);
@@ -65,20 +59,29 @@ export const SharedMiniPlayerArtwork = memo(function SharedMiniPlayerArtwork({ f
 export const SharedMiniPlayerTransition = memo(function SharedMiniPlayerTransition(p: MotionProps) {
   // Freeze progress for this short transfer, so playback ticks don't rebuild its native graph.
   const progress = useMemo(() => ({ time: formatPlaybackTime(p.positionMs), ratio: p.durationMs > 0 ? Math.max(0, Math.min(1, p.positionMs / p.durationMs)) : 0 }), [p.motionId]);
+  const miniPosition = React.useRef(new Animated.Value(1)).current;
+  const progressValue = p.stationaryProgress ? miniPosition : p.value;
   const styles = useMemo(() => {
     const from = p.frames.time, poses = MINI_MOTION_SAMPLES.map(t => miniMotionPose(p.frames, t));
-    const sample = (read: (pose: ReturnType<typeof miniMotionPose>) => number) => p.value.interpolate({ inputRange: MINI_MOTION_SAMPLES, outputRange: poses.map(read) });
+    const sample = (read: (pose: ReturnType<typeof miniMotionPose>) => number) => progressValue.interpolate({ inputRange: MINI_MOTION_SAMPLES, outputRange: poses.map(read) });
     return { time: { width: from.width, height: from.height, transform: [{ translateX: sample(pose => pose.timeCenter.x - from.width / 2) },
       { translateY: sample(pose => pose.timeCenter.y - from.height / 2) }, { scale: sample(pose => pose.timeScale) }] } };
-  }, [p.frames, p.value]);
-  const color = p.home ? "#c9c9ce" : p.targetColor;
+  }, [p.frames, progressValue]);
+  const color = p.home ? PLAYER_PROGRESS_PAINT.fillColor : p.targetColor;
+  React.useEffect(() => {
+    if (__DEV__ && p.active) console.info("[SDA UI] landscape mini progress paint v2", { motion: p.motionId, home: p.home, stationary: !!p.stationaryProgress, track: p.home ? PLAYER_PROGRESS_PAINT.trackColor : p.targetColor, alpha: PLAYER_PROGRESS_PAINT.trackAlpha, iosGroupRaster: true });
+  }, [p.motionId, p.active, p.home, p.stationaryProgress, p.targetColor]);
   if (!p.active) return null;
   return <View testID="shared-mini-player-transition" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 30 }]}>
-    <View style={StyleSheet.absoluteFill}>
-      <Stroke frames={p.frames} fraction={1} value={p.value} color={motionTrackColor(p.backgroundColor, p.home ? "#ffffff" : p.targetColor)} />
-      <Stroke frames={p.frames} fraction={progress.ratio} value={p.value} color={color} />
+    <Animated.View testID="shared-mini-progress-layer" style={[StyleSheet.absoluteFill, { opacity: p.stationaryProgress ? p.value : 1 }]}>
+      {/* Composite opaque segments once at the same alpha as the real slider.
+          Preblending against a guessed solid background changes color over artwork. */}
+      <View testID="shared-mini-track-paint" pointerEvents="none" collapsable={false} needsOffscreenAlphaCompositing shouldRasterizeIOS style={[StyleSheet.absoluteFill, { opacity: PLAYER_PROGRESS_PAINT.trackAlpha }]}>
+        <Stroke frames={p.frames} fraction={1} value={progressValue} color={p.home ? PLAYER_PROGRESS_PAINT.trackColor : p.targetColor} />
+      </View>
+      <Stroke frames={p.frames} fraction={progress.ratio} value={progressValue} color={color} />
       <Animated.View style={[s.origin, styles.time]}><Text numberOfLines={1} style={{ color, fontSize: 11, lineHeight: p.frames.time.height, fontVariant: ["tabular-nums"], textAlign: "center" }}>{progress.time}</Text></Animated.View>
-    </View>
+    </Animated.View>
   </View>;
 });
 const s = StyleSheet.create({

@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AccessibilityInfo, Animated, AppState, Easing, Text, View } from "react-native";
 import { MINI_MOTION_DURATION, relativeMotionRect, validMotionRect, type MiniPlayerFrames, type MotionRect } from "./mini-player-motion";
@@ -12,11 +13,11 @@ function readRect(node: Measurable | null): Promise<MotionRect | null> {
   });
 }
 
-type Motion = { id: number; frames: MiniPlayerFrames; target: number; ready: boolean };
+type Motion = { id: number; frames: MiniPlayerFrames; target: number; ready: boolean; layoutKey: string; mediaKey: string };
 export function useSharedMiniPlayerTransition({ enabled, page, layoutKey, mediaKey, artworkUri, rootRef }: {
-  enabled: boolean; page: number; layoutKey: string; mediaKey: string; artworkUri: string; rootRef: RefObject<View | null>;
+  enabled: boolean; page: number; layoutKey: string; mediaKey: string; artworkUri: string; rootRef: RefObject<React.ComponentRef<typeof View> | null>;
 }) {
-  const artworkRef = useRef<View>(null), progressRef = useRef<View>(null), timeRef = useRef<Text>(null), miniRef = useRef<View>(null);
+  const artworkRef = useRef<React.ComponentRef<typeof View>>(null), progressRef = useRef<React.ComponentRef<typeof View>>(null), timeRef = useRef<React.ComponentRef<typeof Text>>(null), miniRef = useRef<React.ComponentRef<typeof View>>(null);
   const target = page === 0 ? 0 : 1;
   const travel = useRef(new Animated.Value(target)).current;
   const cached = useRef<{ key: string; frames: MiniPlayerFrames } | null>(null);
@@ -70,12 +71,12 @@ export function useSharedMiniPlayerTransition({ enabled, page, layoutKey, mediaK
     if (!frames || (!!artworkUri && readyUri !== artworkUri)) { settle(target); return; }
     const id = ++generation.current;
     clearTimer(); ++readGeneration.current;
-    const pending = { id, frames, target, ready: false }; moving.current = pending; setMotion(pending);
+    const pending = { id, frames, target, ready: false, layoutKey, mediaKey }; moving.current = pending; setMotion(pending);
     // Read the native position before reversing; JS's last value may lag it.
     travel.stopAnimation(value => {
       if (generation.current !== id) return;
       travel.setValue(Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : old.target);
-      const next = { id, frames, target, ready: true }; moving.current = next; setMotion(next);
+      const next = { id, frames, target, ready: true, layoutKey, mediaKey }; moving.current = next; setMotion(next);
     });
     // Never leave the real player hidden if a native callback is lost.
     timer.current = setTimeout(() => { if (generation.current === id) settle(current.current.target); }, MINI_MOTION_DURATION + 180);
@@ -90,7 +91,8 @@ export function useSharedMiniPlayerTransition({ enabled, page, layoutKey, mediaK
     });
     return () => cancelAnimationFrame(frame);
   }, [motion, travel, settle]);
-  // Idle visibility is ordinary React state, independent of native animation state.
-  return { artworkRef, progressRef, timeRef, miniRef, travel, frames: motion?.frames ?? prepared, active: motion !== null, motionId: motion?.id ?? 0,
-    capture, onArtworkReady, mainOpacity: motion ? 0 : 1, miniOpacity: motion ? 0 : target === 0 ? 0 : 1 };
+  const validMotion = enabled && motion?.layoutKey === layoutKey && motion.mediaKey === mediaKey ? motion : null;
+  // Invalidated transfer frames must never hide the real cover during rotation.
+  return { artworkRef, progressRef, timeRef, miniRef, travel, frames: validMotion?.frames ?? prepared, active: validMotion !== null, motionId: validMotion?.id ?? 0,
+    capture, onArtworkReady, mainOpacity: validMotion ? 0 : 1, miniOpacity: validMotion ? 0 : target === 0 ? 0 : 1 };
 }

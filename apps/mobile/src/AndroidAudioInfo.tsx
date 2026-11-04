@@ -12,7 +12,7 @@ export function AndroidAudioInfo({ rows, dark, onClose, sheet = false }: { rows:
   const appTheme = useAppTheme();
   const c = androidMaterialTheme(appTheme.id, dark);
   return <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={sheet ? ["bottom"] : ["top", "bottom", "left", "right"]}>
-    {!sheet && <StatusBar translucent backgroundColor="transparent" barStyle={dark ? "light-content" : "dark-content"} />}
+    {!sheet && <StatusBar barStyle={dark ? "light-content" : "dark-content"} />}
     <View style={[s.header, sheet && s.sheetHeader]}>{!hasAndroidChrome && <View style={s.back}><AndroidGlassSettingsButton back onPress={onClose} /></View>}
       <Text accessibilityRole="header" style={[s.title, sheet && s.sheetTitle, { color: c.ink, flex: 1 }]}>歌曲元数据</Text>{hasAndroidChrome && <AndroidGlassAction title="完成" dark={dark} accent={c.primary} onPress={onClose} />}</View>
     <ScrollView style={{ flex: 1 }} nestedScrollEnabled contentOffset={metadataStart} contentContainerStyle={s.content}>
