@@ -1,3 +1,12 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
+
+abstract class SdaThemeResources extends DefaultTask {
+  @OutputDirectory
+  abstract DirectoryProperty getOutputDirectory()
+}
+
 buildscript {
   repositories { mavenCentral() }
   dependencies {
@@ -71,12 +80,13 @@ tasks.named('preBuild').configure { dependsOn(syncBackdropLicense) }
 // with the JS Material palette. Generate overlays instead of duplicating colors.
 def popupPalette = file('../../../src/android-material-schemes.json')
 def popupThemeResources = layout.buildDirectory.dir('generated/sdaPopupThemes/res')
-def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
+def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes', SdaThemeResources) {
+  outputDirectory.set(popupThemeResources)
   inputs.file(popupPalette)
   outputs.dir(popupThemeResources)
   doLast {
     def palettes = new groovy.json.JsonSlurper().parse(popupPalette)
-    def output = popupThemeResources.get().asFile
+    def output = outputDirectory.get().asFile
     def names = []
     def xml = new StringBuilder('<resources>\n')
     palettes.each { id, modes ->
@@ -105,7 +115,9 @@ def generateSdaPopupThemes = tasks.register('generateSdaPopupThemes') {
     new File(output, 'raw/sda_popup_theme_keep.xml').setText("<resources xmlns:tools=\"http://schemas.android.com/tools\" tools:keep=\"${keep}\"/>\n", 'UTF-8')
   }
 }
-android.sourceSets.main.res.srcDir(popupThemeResources)
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+  variant.sources.res?.addGeneratedSourceDirectory(generateSdaPopupThemes) { task -> task.outputDirectory }
+}
 tasks.named('preBuild').configure { dependsOn(generateSdaPopupThemes) }
 
 // Public vendor runtimes are assets: DSP ELFs are not Android/arm64 JNI libraries.

@@ -1,3 +1,12 @@
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.Sync
+
+abstract class SdaAssetSync extends Sync {
+    @OutputDirectory
+    abstract DirectoryProperty getOutputDirectory()
+}
+
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
@@ -158,8 +167,9 @@ android {
 def mobileAssets = file('src/main/assets')
 def mobileHrtfAssets = file('../../assets')
 def sharedAssets = layout.buildDirectory.dir('generated/sharedKu100Assets')
-android.sourceSets.main.assets.setSrcDirs([sharedAssets])
-def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
+android.sourceSets.main.assets.setSrcDirs([])
+def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', SdaAssetSync) {
+    outputDirectory.set(sharedAssets)
     inputs.dir(new File(projectRoot, 'ios-experiments'))
     inputs.dir(new File(projectRoot, '../../assets/hrtf/apple-hrtfhq-v1'))
     inputs.file(new File(projectRoot, '../../scripts/stage-shared-render-experiment.mjs'))
@@ -171,7 +181,7 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
     from('../../../../harletty-bridge/eac3') { include 'JOC_INPUT_CONDITIONING_LICENSE'; into 'licenses/joc-input-conditioning' }
     from(mobileHrtfAssets) { include 'hrtf-restored/**' }
-    into(sharedAssets)
+    into(outputDirectory)
     doFirst {
         def selected = new groovy.json.JsonSlurper().parse(new File(projectRoot, 'ios-experiments/active.json'))
         if (selected.id == 'apple-hrtfhq-542-v1') {
@@ -194,6 +204,9 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', Sync) {
                 new File(sharedAssets.get().asFile, 'hrtf-restored').absolutePath
         }.result.get().assertNormalExitValue()
     }
+}
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(syncSharedKu100Assets) { task -> task.outputDirectory }
 }
 tasks.named('preBuild').configure { dependsOn(syncSharedKu100Assets) }
 
