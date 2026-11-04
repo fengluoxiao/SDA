@@ -75,6 +75,8 @@ jobs:
           cargo test --manifest-path scripts/alac-file-regression/Cargo.toml --locked
           if ($LASTEXITCODE -ne 0) { throw 'ALAC file decoder regression failed' }
       - name: Verify seek restart reaches actual rendered audio
+        env:
+          MACINDECODE_AC4_SPEC_DIR: ${{ github.workspace }}/tmp/MacinDecode-AC4-Core/spec
         run: |
           cargo test --manifest-path crates/sda-native/Cargo.toml --locked --release --no-default-features --test android_seek_feed -j 2 -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Seek restart audio/clock regression failed' }
