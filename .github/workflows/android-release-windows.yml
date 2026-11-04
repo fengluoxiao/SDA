@@ -68,7 +68,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dependency install failed' }
           node scripts/prepare-ac4.mjs
           if ($LASTEXITCODE -ne 0) { throw 'AC4 preparation failed' }
-          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          & "$env:ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager.bat" 'cmdline-tools;23.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android command-line tools install failed' }
+          & "$env:ANDROID_HOME/cmdline-tools/23.0/bin/sdkmanager.bat" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed' }
       - name: Verify shared Android and iOS lyrics UI
         run: |
