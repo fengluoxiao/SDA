@@ -116,6 +116,10 @@ android {
         versionCode 940
         versionName "0.9.38"
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+        // Keep generated React Native C++ object paths within Windows Ninja limits.
+        externalNativeBuild {
+            cmake { arguments "-DCMAKE_OBJECT_PATH_MAX=240" }
+        }
         // RN's architecture property alone does not filter prebuilt AAR/JNI libraries.
         // Keep the final APK restricted to the requested native engine ABI(s).
         ndk {
