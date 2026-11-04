@@ -109,7 +109,7 @@ export function drainDecoderCheckpoints(){
 }
 
 export function initCore(): Promise<unknown> {
-  initPromise ??= init(wasmUrl).then(value=>{setDiagnostics(diagnosticEnabled);return value;});
+  initPromise ??= Promise.resolve<unknown>(init(wasmUrl)).then(value=>{setDiagnostics(diagnosticEnabled);return value;});
   return initPromise;
 }
 
