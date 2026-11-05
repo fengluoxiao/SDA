@@ -1,3 +1,4 @@
+import { supportsIOSGlass } from "./ios-platform-version";
 import { IOSVerticalTabBar, hasNativeVerticalTabBar } from "./IOSVerticalTabBar";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Platform, PanResponder, StyleSheet, View, useWindowDimensions } from "react-native";
@@ -6,8 +7,7 @@ import { IOS_TABS } from "./ios-ui-model";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
 
 export const SIDE_NAVIGATION_WIDTH = 48;
-const nativeUI: typeof import("@expo/ui/swift-ui") | null = Platform.OS === "ios" &&
-  Number(Platform.Version) >= 26 && (globalThis as any).expo?.modules?.ExpoUI &&
+const nativeUI: typeof import("@expo/ui/swift-ui") | null = supportsIOSGlass(Platform.OS, Platform.Version) && (globalThis as any).expo?.modules?.ExpoUI &&
   ["HostView", "VStackView", "ImageView"].every(name => (globalThis as any).expo?.getViewConfig?.("ExpoUI", name))
     ? require("@expo/ui/swift-ui") : null;
 const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"] as const;

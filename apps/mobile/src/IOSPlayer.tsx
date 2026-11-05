@@ -1,3 +1,4 @@
+import { supportsIOSGlass } from "./ios-platform-version";
 import { TabletLandscapePlayer } from "./TabletLandscapePlayer";
 import { PortraitLyricsPager, LandscapeLyricsPager, LyricsGestureBoundary, LyricsBackdrop } from "./PortraitLyricsPager";
 import { useProgressScrubber } from "./use-progress-scrubber";
@@ -268,8 +269,9 @@ function ThemedPlayer(p: PlayerProps) {
   const cover = (size: number) => p.metadata.coverUri
     ? <Image source={{ uri: p.metadata.coverUri }} resizeMode="cover" accessibilityLabel={(p.metadata.album || title) + " 封面"} style={{ width: size, height: size, borderRadius: size > 100 ? 18 : 8 }} />
     : <View accessibilityLabel="无专辑封面" style={[s.emptyCover, { width: size, height: size, borderRadius: size > 100 ? 18 : 8, backgroundColor: c.field }]}>{label("♫", true, { fontSize: size > 100 ? 56 : 23 })}</View>;
-  const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && !circularMiniPlayerActive && <View style={[s.miniPlayer, environment ? s.nativeMiniPlayer : sideNavigationActive ? s.floatingMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
-    {!environment && sideNavigationActive && <IOSMiniPlayerBackdrop dark={!isLight} />}
+  const standaloneMiniGlass = sideNavigationActive || supportsIOSGlass(Platform.OS, Platform.Version);
+  const miniPlayer = (environment?: "regular" | "inline") => !!p.selectedUri && !circularMiniPlayerActive && <View testID={environment ? "native-mini-player-content" : standaloneMiniGlass ? "floating-mini-player-glass" : "mini-player-compatibility"} style={[s.miniPlayer, environment ? s.nativeMiniPlayer : standaloneMiniGlass ? s.floatingMiniPlayer : { backgroundColor: c.panel, borderColor: c.line }]}>
+    {!environment && standaloneMiniGlass && <IOSMiniPlayerBackdrop dark={!isLight} />}
     <Pressable accessibilityRole="button" accessibilityLabel="展开正在播放" onPress={() => navigate(0)} style={s.miniSong}>{cover(environment === "inline" ? 24 : 32)}<View style={{ flex: 1 }}><Text numberOfLines={1} style={[s.miniTitle, { color: c.ink }]}>{title}</Text>{environment !== "inline" && <Text numberOfLines={1} style={[s.miniArtist, { color: c.muted }]}>{artist}</Text>}</View></Pressable>
     <Pressable accessibilityRole="button" accessibilityLabel={playing ? "暂停" : "播放"} accessibilityState={{ disabled: p.busy || !p.selectedUri }} disabled={p.busy || !p.selectedUri} onPress={togglePlayback} style={[s.miniPlayback, { opacity: p.busy ? .35 : 1 }]}>
       <IOSPlaybackSymbol playing={playing} color={c.accent} />

@@ -161,7 +161,7 @@ console.log('Native tabs adapter checks passed: transparent bar appearances, con
 // Requested cleanup must not reintroduce redundant import/head-direction controls.
 assert.doesNotMatch(ui, /folder\.badge\.plus|头向左转|头向右转|重置头向/);
 assert.match(ui, /"folder.open", "打开本机文件"/);
-assert.match(settings, /Number\(Platform.Version\) >= 26 \? "glass"/);
+assert.match(settings, /supportsIOSGlass\(Platform.OS, Platform.Version\) \? "glass"/);
 assert.match(settings, /buttonStyle\(settingsButtonStyle\)/);
 assert.match(compatibilityPage, /<HStack spacing=\{0\}/);
 assert.match(compatibilityPage, /frame\(\{ width: 88, alignment: "leading" \}\)/);
@@ -315,6 +315,12 @@ for (const adapter of [loadNativeTabs('ios', true, 25), loadNativeTabs('ios', tr
 assert.match(ui, /nativeAccessory=\{p.selectedUri && !circularMiniPlayerActive \? miniPlayer : undefined\}/);
 assert.match(ui, /environment \? s.nativeMiniPlayer/);
 console.log('Mini-player checks passed: official accessory, both environments, hidden/empty, old-OS/missing-manager fallback, no double card');
+for (const version of ['26.1.1','26.2.1','27.0.1']) {
+  const adapter=loadNativeTabs('ios',true,version);
+  assert.equal(adapter.api.hasUIKitTabAccessory,true,'patch versions must retain the native glass mini-player');
+  const host=accessoryHost(adapter);assert.equal(typeof host.props.ios.bottomAccessory,'function');assert.equal(host.props.ios.bottomAccessoryHidden,false);
+}
+
 
 const miniPlayerSource = ui.slice(ui.indexOf('const miniPlayer ='), ui.indexOf('const heading ='));
 assert.match(miniPlayerSource, /cover\(environment === "inline" \? 24 : 32\)/);
@@ -484,7 +490,7 @@ assert.match(readFileSync("crates/sda-native/src/ios.rs", "utf8"), /status\["sou
 assert.doesNotMatch(readFileSync("apps/mobile/modules/sda-core/ios/SdaPlayer.swift", "utf8"), /layout == "360RA-13" \? "mpegh" : ""/);
 
 assert.match(ui, /animated=\{false\} barStyle=\{settings \?/);
-assert.match(metadataSheet, /buttonStyle\(Platform.OS === "ios" && Number\(Platform.Version\) >= 26 \? "glass"/);
+assert.match(metadataSheet, /buttonStyle\(supportsIOSGlass\(Platform.OS, Platform.Version\) \? "glass"/);
 assert.match(readFileSync('apps/mobile/src/IOSUIKitTabs.tsx','utf8'), /pageBackgroundColors\?\.\[index\] \?\? backgroundColor/);
 
 assert.doesNotMatch(readFileSync("apps/mobile/src/IOSNativeSettings.tsx", "utf8"), /statusBarStyle=|statusBarAnimation=/);
@@ -498,10 +504,10 @@ assert.doesNotMatch(uiKitTabs, /index === 0 \? "dark"/);
 assert.match(homePages, /color=\{selected \? "#ffffff" : c.ink\}/);
 
 
-assert.match(metadataSheet, /pointerEvents="none"/);
+assert.doesNotMatch(metadataSheet, /opacity\(0\)|pointerEvents="none"/);
 assert.match(metadataSheet, /color: accent, fontSize: 17/);
 
-assert.match(metadataSheet, /<NativeText modifiers=\{\[frame\(\{ width: 44, height: 28 \}\), opacity\(0\)\]\}/);
+assert.match(metadataSheet, /foregroundColor\(accent\)/);
 assert.doesNotMatch(metadataSheet, /label=" "/);
 
 assert.doesNotMatch(ui, /barStyle=\{settings \|\| metadataOpen/);

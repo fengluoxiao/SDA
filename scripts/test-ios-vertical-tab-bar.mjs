@@ -47,7 +47,8 @@ for(const accent of ['#7799CC','#FFEE55','#EE5577','#9977CC','#BB9955'])for(cons
  assert.deepEqual(events,[(selected+1)%3],'mount/sync callbacks cannot change the actual page');
  assert.equal(tree.props.onTouchMove,undefined);
 }
-for(const options of [{os:'android'},{version:25},{available:false}])assert.equal(load(options).hasNativeVerticalTabBar,false);
+for(const version of ['26.2.1','27.0.1'])assert.equal(load({version}).hasNativeVerticalTabBar,true);
+for(const options of [{os:'android'},{version:25},{version:'unknown'},{available:false}])assert.equal(load(options).hasNativeVerticalTabBar,false);
 assert.match(readFileSync('apps/mobile/src/IOSUIKitTabs.tsx','utf8'),/const appearance = iosTabAppearance/);
 
 // Decode these generated RGBA PNGs with only Node built-ins. An all-transparent

@@ -1,3 +1,4 @@
+import { supportsIOSGlass } from "./ios-platform-version";
 import { resolveNativeTabSelection } from "./native-tab-selection";
 import React, { useRef, useState } from "react";
 import { AppState, Platform, UIManager, View, type NativeSyntheticEvent } from "react-native";
@@ -9,7 +10,7 @@ import { iosTabletTabIcons } from "./ios-tablet-tab-icons";
 import { iosTabAppearance } from "./ios-tab-appearance";
 
 function supportsNativeTabBar() {
-  if (Platform.OS !== "ios" || Number(Platform.Version) < 26) return false;
+  if (!supportsIOSGlass(Platform.OS, Platform.Version)) return false;
   try {
     return ["RNSTabsHostIOS", "RNSTabsScreenIOS"].every(name => UIManager.hasViewManagerConfig(name));
   } catch { return false; }

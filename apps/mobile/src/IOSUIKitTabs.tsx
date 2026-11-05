@@ -1,3 +1,4 @@
+import { supportsIOSGlass } from "./ios-platform-version";
 import { resolveNativeTabSelection } from "./native-tab-selection";
 import { iosTabAppearance } from "./ios-tab-appearance";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
@@ -12,7 +13,7 @@ import { IOS_TABS } from "./ios-ui-model";
 // installed SDA versions may expose different native navigation surfaces.
 export const hasUIKitIOSTabs = Platform.OS === "ios" &&
   ["RNSTabsHostIOS", "RNSTabsScreenIOS"].every(name => UIManager.hasViewManagerConfig(name));
-export const hasUIKitTabAccessory = hasUIKitIOSTabs && Number(Platform.Version) >= 26 &&
+export const hasUIKitTabAccessory = hasUIKitIOSTabs && supportsIOSGlass(Platform.OS, Platform.Version) &&
   ["RNSTabsBottomAccessory", "RNSTabsBottomAccessoryContent"].every(name => UIManager.hasViewManagerConfig(name));
 if (__DEV__ && Platform.OS === "ios") {
   console.info("[SDA UI] tab bar:", hasUIKitIOSTabs ? "UIKit / explicit transparent appearances" : "SwiftUI compatibility / UIKit managers unavailable");

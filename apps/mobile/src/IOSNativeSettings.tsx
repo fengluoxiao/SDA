@@ -1,3 +1,4 @@
+import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
 import { useNavigationPreferences } from "./navigation-preferences";
@@ -23,7 +24,7 @@ const nativeScreens: typeof import("react-native-screens") | null =
 // Settings uses one inline system title. Never add a second large title
 // inside the hosted Form; keep the same header in Expo Go and the app.
 
-const settingsButtonStyle = Platform.OS === "ios" && Number(Platform.Version) >= 26 ? "glass" : "bordered";
+const settingsButtonStyle = supportsIOSGlass(Platform.OS, Platform.Version) ? "glass" : "bordered";
 
 const playerActionIconSize = 22;
 
@@ -32,7 +33,7 @@ export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): vo
   const { Host, Button } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const image = hasView("ImageView") ? <swiftUI.Image systemName="gearshape" size={playerActionIconSize} /> : undefined;
-  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44 }}>
+  return <Host ignoreSafeArea="container" alignment="center" style={{ width: 44, height: 44 }}>
     <Button label={image ? undefined : "更多设置"} systemImage={image ? undefined : "gearshape"} onPress={onPress}
       modifiers={[labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]}>{image}</Button>
   </Host>;
@@ -42,7 +43,7 @@ function IOSSettingsBackButton({ onPress }: { onPress(): void }) {
   if (!swiftUI) return null;
   const { Host, Button } = swiftUI;
   const { labelStyle, buttonStyle, buttonBorderShape, accessibilityLabel, controlSize, font, frame } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  return <Host ignoreSafeArea="container" style={{ width: 44, height: 44 }}>
+  return <Host ignoreSafeArea="container" alignment="center" style={{ width: 44, height: 44 }}>
     <Button label="返回" systemImage="chevron.left" onPress={onPress} modifiers={[
       labelStyle("iconOnly"), controlSize("large"), font({ size: 22, weight: "semibold" }),
       buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), frame({ width: 44, height: 44 }), accessibilityLabel("返回播放器"),
@@ -62,13 +63,13 @@ export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, a
     modifiers={[rotation3DEffect({ angle: indicator.poseDegrees, axis: { y: 1 }, perspective: .35 }), foregroundColor(indicator.color)]} /> : null;
   const modifiers = [labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"),
     accessibilityLabel(label), disabled(isDisabled), tint(indicator.active ? accent : inactiveColor)];
-  if (!hasView("MenuView")) return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
+  if (!hasView("MenuView")) return <Host ignoreSafeArea="container" alignment="center" style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <swiftUI.Button label={image ? undefined : label} systemImage={image ? undefined : indicator.symbol} onPress={() => Alert.alert("空间音频", "", [
       ...(onDisable ? [{ text: "关闭", onPress: onDisable }] : []),
       { text: "固定", onPress: () => onSelect(false) }, { text: "头部追踪", onPress: () => onSelect(true) }, { text: "取消", style: "cancel" },
     ])} modifiers={modifiers}>{image || undefined}</swiftUI.Button>
   </Host>;
-  return <Host ignoreSafeArea={sideDock ? "container" : undefined} style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
+  return <Host ignoreSafeArea="container" alignment="center" style={{ width: 44, height: 44, marginRight: sideDock ? 0 : 8 }}>
     <Menu label={image || label} systemImage={image ? undefined : indicator.symbol} modifiers={modifiers}>
       <Picker label="空间音频" selection={!spatialEnabled ? "off" : enabled ? "tracking" : "fixed"}
         onSelectionChange={(value: string) => value === "off" ? onDisable?.() : onSelect(value === "tracking")} modifiers={[pickerStyle("inline")]}>
