@@ -1,5 +1,6 @@
+import { KaraokeText } from "./KaraokeText";
 import React from "react";
-import { ActivityIndicator, Animated, Image, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type ViewProps } from "react-native";
+import { ActivityIndicator, Animated, Image, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type ViewProps, type StyleProp, type TextStyle } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { PlayerProps } from "./RemotePlayer";
 import { lyricPresentationDocument, lyricSpeakerAlignments, type LyricLine } from "./mobile-lyrics";
@@ -55,7 +56,7 @@ export function LyricsBackdrop({ visible, artworkUri, backgroundColor }: { visib
   </Animated.View>;
 }
 
-function LyricsPanel({ player: p, active, compact = false }: { player: PlayerProps; active: boolean; compact?: boolean }) {
+export function LyricsPanel({ player: p, active, compact = false }: { player: PlayerProps; active: boolean; compact?: boolean }) {
   const lyrics = useTrackLyrics({ uri: p.selectedUri, metadataLyrics: p.metadata.lyrics, active, attach: p.attachLyrics });
   const document = React.useMemo(() => lyrics.document ? lyricPresentationDocument(lyrics.document) : null, [lyrics.document]);
   const speakerAlignments = React.useMemo(() => document ? lyricSpeakerAlignments(document) : new Map(), [document]);
@@ -66,9 +67,10 @@ function LyricsPanel({ player: p, active, compact = false }: { player: PlayerPro
     follow.resetManual();
     p.seekTo(Math.max(0, Math.min(line.startMs, Math.max(0, p.durationMs - 1))));
   };
-  const renderWords = (line: LyricLine, sounding: boolean) => {
+  const renderLyricText = (line: LyricLine, sounding: boolean, testID: string, style: StyleProp<TextStyle>) => {
     const wordsMatch = line.words.length > 0 && line.words.map(word => word.text).join("").replace(/\s+/g, " ").trim() === line.text.replace(/\s+/g, " ").trim();
-    return sounding && wordsMatch ? line.words.map((word, n) => <Text key={n} style={{ color: p.positionMs >= word.startMs ? "#ffffff" : "rgba(255,255,255,.5)" }}>{word.text}</Text>) : line.text || "♪";
+    return sounding && wordsMatch ? <KaraokeText testID={testID} line={line} positionMs={p.positionMs} playing={p.playing && !p.paused && !disabled} active={active} style={style} />
+      : <Text testID={testID} style={style}>{line.text || "♪"}</Text>;
   };
   const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
   return <View testID="portrait-lyrics-page" style={styles.panel}>
@@ -80,15 +82,13 @@ function LyricsPanel({ player: p, active, compact = false }: { player: PlayerPro
         const alignment = { textAlign: line.agentIds?.length === 1 ? speakerAlignments.get(line.agentIds[0]!) ?? "left" : "left" };
         const supporting = line.vocal === "background" || line.vocal === "chorus";
         return <Pressable key={line.id} testID={`lyric-line-${i}`} accessibilityRole={tappable ? "button" : "text"} accessibilityLabel={line.text ? `${line.text}${tappable ? `，跳转到 ${clock(line.startMs)}` : ""}` : "间奏"} accessibilityState={{ disabled: !tappable, selected: sounding }} disabled={!tappable} onPress={() => seek(line)} onLayout={e => follow.onLineLayout(i, e.nativeEvent.layout.y)} style={({ pressed }) => [styles.line, compact && styles.compactLine, compact && i === 0 && { paddingTop: 0 }, { opacity: pressed ? .55 : 1 }]}>
-          <Text testID={`lyric-text-${i}`} style={[supporting ? styles.backingText : styles.lineText, alignment, { color: sounding || !document.timed ? "#ffffff" : "rgba(255,255,255,.38)" }]}>
-            {renderWords(line, sounding)}
-          </Text>
+          {renderLyricText(line, sounding, `lyric-text-${i}`, [supporting ? styles.backingText : styles.lineText, alignment, { color: sounding || !document.timed ? "#ffffff" : "rgba(255,255,255,.38)" }])}
           {!!line.translation && <Text testID={`lyric-translation-${i}`} style={[styles.translation, supporting && styles.backingTranslation, alignment, { color: sounding ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{line.translation}</Text>}
           {line.background?.map((backing, n) => {
             const singing = p.positionMs >= backing.startMs && p.positionMs < backing.endMs;
             return <Pressable key={backing.id || n} testID={`lyric-backing-${i}-${n}`} accessibilityRole={tappable ? "button" : "text"} accessibilityLabel={`${backing.text}${tappable ? `，跳转到 ${clock(backing.startMs)}` : ""}`} accessibilityState={{ disabled: !tappable, selected: singing }} disabled={!tappable}
               onPress={event => { event.stopPropagation(); seek(backing); }} style={{ paddingTop: 10, minHeight: 44 }}>
-              <Text testID={`lyric-backing-text-${i}-${n}`} style={[styles.backingText, alignment, { color: singing ? "#ffffff" : "rgba(255,255,255,.38)" }]}>{renderWords(backing, singing)}</Text>
+              {renderLyricText(backing, singing, `lyric-backing-text-${i}-${n}`, [styles.backingText, alignment, { color: singing ? "#ffffff" : "rgba(255,255,255,.38)" }])}
               {!!backing.translation && <Text style={[styles.translation, styles.backingTranslation, alignment, { color: singing ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{backing.translation}</Text>}
             </Pressable>;
           })}

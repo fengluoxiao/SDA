@@ -37,3 +37,20 @@ export function tabletNavigationPageInsets(leftInset: number, rightInset: number
   const margin = tabletNavigationLane(Math.max(safeLeft, safeRight));
   return { marginLeft: margin, marginRight: margin };
 }
+
+// Permanent landscape split: controls stay in the lower album half; lyrics use
+// the full right column. Phone and tablet portrait keep their existing model.
+export function tabletImmersivePlayerLayout(width: number, height: number, navigationSide?: "left" | "right") {
+  const columnWidth = Math.max(0, width) / 2;
+  const horizontalPadding = Math.max(16, Math.min(36, columnWidth * .07));
+  const scale = Math.min(1, Math.max(0, (height - 280) / 280));
+  // Keep the immersive cover size from before removing the page gutters.
+  // Moving the album to the screen edge must neither enlarge it with the
+  // expanded viewport nor shrink it back to the old framed-cover layout.
+  const originalViewport = Math.max(0, width - (navigationSide ? tabletNavigationLane(0) * 2 : 0));
+  const coverSize = originalViewport / 2 + 48;
+  return { contentWidth: width, columnWidth: coverSize, lyricsWidth: Math.max(0, width - coverSize), columnGap: 0, coverSize,
+    horizontalPadding, verticalPadding: height < 500 ? 8 : 20,
+    controlsWidth: Math.max(0, Math.min(440, coverSize - horizontalPadding * 2)),
+    metadataGap: 8 + 8 * scale, transportGap: 8 + 10 * scale, volumeGap: 4 + 8 * scale };
+}

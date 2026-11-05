@@ -4,3 +4,12 @@ const result=await build({entryPoints:['apps/mobile/index.js'],bundle:true,platf
 assert(!Object.keys(result.metafile.inputs).some(name=>name.includes('dev-preview/')),'development preview fixtures entered the production bundle');
 assert(!result.outputFiles[0].text.includes('mock://'),'mock media entered the production bundle');
 console.log('Production JavaScript bundle excludes development preview fixtures and mock media.');
+
+const productionInputs = new Set(Object.keys(result.metafile.inputs));
+for (const source of ['apps/mobile/src/TabletLandscapePlayer.tsx', 'apps/mobile/src/KaraokeText.tsx', 'apps/mobile/src/lyric-karaoke.ts']) {
+  assert(productionInputs.has(source), `shared phone/tablet renderer excluded from production: ${source}`);
+}
+for (const marker of ['tablet-landscape-lyrics', 'lyric-word-fill', 'lyric-held-note-glow']) {
+  assert(result.outputFiles[0].text.includes(marker), `approved mobile lyric UI missing from production: ${marker}`);
+}
+console.log('Production retains tablet landscape lyrics, continuous word fill and held-note glow in the shared mobile UI.');

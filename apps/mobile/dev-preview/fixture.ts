@@ -33,7 +33,7 @@ export function createArtworkPreview() {
     const seconds = 60 + i * 8; return `[${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}.00]第 ${i + 2} 行，点击或切回 Tab 验证当前进度`;
   }).join("\n");
   const bilingualLyrics = "[0:3.0]風が吹く\n[00:03.000]风在吹\n[0:6.0]君の声が聞こえる\n[00:06.000]听见了你的声音\n[0:10.0]同じ空を見上げて\n[00:10.000]抬头望着同一片天空\n[0:16.0]一緒に歩こう\n[00:16.000]一起向前走吧\n[0:24.0]";
-  const wordLyrics = "[0:3.0]<0:3.0>风<0:3.5>吹<0:4.0>过<0:4.5>长<0:5.0>街\n[00:03.000]The wind passes along the street.\n[0:6.0]<0:6.0>我<0:6.5>还<0:7.0>在<0:7.5>等<0:8.0>你\n[00:06.000]I am still waiting for you.\n[0:10.0]";
+  const wordLyrics = "[0:3.0]<0:3.0>风<0:3.5>吹<0:4.0>过<0:4.5>长<0:5.0>街\n[00:03.000]The wind passes along the street.\n[0:6.0]<0:6.0>我<0:6.5>还<0:7.0>在<0:7.5>等<0:8.0>你\n[00:06.000]I am still waiting for you.\n[0:10.0]<0:10.0>光<0:12.5>慢慢<0:15.0>亮起\n[00:10.000]Watch a held character fill continuously.\n[0:18.0]";
   const queue: QueueTrack[] = Array.from({ length: 12 }, (_, index) => ({
     contentHash: `expo-artwork-preview-${index}`, uri: `preview://artwork/${index}`,
     name: index === 0 ? "05. エガクミライ.m4a" : index === 1 ? "对唱与合唱测试.m4a" : index === 2 ? "四秒自动回正测试.m4a" : index === 3 ? "LRC双语翻译测试.m4a" : index === 4 ? "LRC逐字与翻译测试.m4a" : `界面预览 ${index + 1}.m4a`,

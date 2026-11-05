@@ -377,12 +377,14 @@ console.log('Live ALAC mode setter preserves the active playback session');
 // Restyle the existing first tab, never introduce a separate playback route.
 assert.doesNotMatch(ui, /IOSNowPlaying|setNowPlaying|presentationStyle="fullScreen"/);
 assert.match(homePages, /s.page, np.root/);
-assert.match(homePages, /onPress=\{p.previous\}/);
-assert.match(homePages, /onPress=\{p.next\}/);
-assert.match(homePages, /播放进度，点击或拖动定位/);
-assert.match(homePages, /progressGesture\.panHandlers/);
+const playbackControls = ui.slice(ui.indexOf("  const playbackControls = <>"), ui.indexOf("  return <SafeAreaProvider"));
+assert.match(homePages, /\{playbackControls\}/);
+assert.match(playbackControls, /onPress=\{p.previous\}/);
+assert.match(playbackControls, /onPress=\{p.next\}/);
+assert.match(playbackControls, /播放进度，点击或拖动定位/);
+assert.match(playbackControls, /progressGesture\.panHandlers/);
 assert.match(ui, /useProgressScrubber\(/);
-assert.match(homePages, /onAccessibilityAction=/);
+assert.match(playbackControls, /onAccessibilityAction=/);
 console.log('Existing playback tab checks passed: page background, reference layout, original navigation, no new screen/modal');
 
 assert.ok(iosPlayerLayout(390, 780, 237).coverSize > 260);
@@ -401,7 +403,7 @@ for (const height of [520, 650, 780]) {
 assert.match(ui, /marginTop: transportMargin/);
 assert.match(ui, /layout.height - transportMargin/);
 
-assert.equal((homePages.match(/np.infoProgressOffset/g) || []).length, 1);
+assert.equal((playbackControls.match(/np.infoProgressOffset/g) || []).length, 1);
 assert.match(ui, /infoProgressOffset: \{ transform: \[\{ translateY: 12 \}\]/);
 
 
@@ -422,7 +424,7 @@ assert.match(ui, /artworkColor\(artworkUri\)/);
 
 assert.match(ui, /width: artworkWidth, height: artworkSize/);
 assert.match(ui, /const artworkWidth = landscapePlayer \? artworkLayout.width : artworkSize/);
-assert.equal((homePages.match(/np.controlsDown/g) || []).length, 2);
+assert.equal((playbackControls.match(/np.controlsDown/g) || []).length, 2);
 
 assert.match(ui, /const artworkSize = landscapePlayer \? artworkLayout.size : width \+ 48/);
 assert.match(ui, /landscapePlayer = width > height && \(Platform\.OS === "ios" \|\| Platform\.OS === "android"\)/);
@@ -653,7 +655,7 @@ for(const offset of [0,-31.5]) {
  assert.equal(library.props.children[0].props.children[1].props.style.marginLeft,38+offset);
 }
 
-// Tablet artwork is an in-flow complete square; its ambient background fills
+// Portrait tablet artwork is an in-flow complete square; its ambient background fills
 // the surface independently of the foreground cover and control geometry.
 assert.match(ui, /isTabletPlayer\(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height\)/);
 assert.match(ui, /testID="tablet-ambient-artwork"[^>]+resizeMode="cover" blurRadius=\{48\}/);
@@ -675,6 +677,26 @@ for(const sideBarPosition of ['left','right']) {
  assert.equal(mini.props.style[sideBarPosition==='left'?'marginLeft':'marginRight'],0);
 }
 console.log('Tablet page adapters: one shared navigation lane, no duplicate left/right inset or mini-player offset.');
+
+// Immersive tablet playback gets the full native screen. Insets are local to
+// the other pages, so centering the transport never places text outside a
+// narrower native clipping rectangle. Check every selected page and dock side.
+for (const sideBarPosition of ['left', 'right']) for (const selected of [0, 1, 2]) {
+ const margins = { marginLeft: 96, marginRight: 96 };
+ const root = nativeAdapter.api.IOSUIKitTabs({...accessoryProps, selected, sideBar: true, sideBarExternal: true, sideBarPosition, sideBarInsetReserved: true, tabletPageInsets: margins});
+ const pages = root.props.children[0].props.children[0];
+ assert.equal(pages[0].props.children[0].type, 'SafeAreaProvider', 'playback must remain outside the inset wrapper');
+ for (const index of [1, 2]) {
+  const wrapper = pages[index].props.children[0];
+  assert.equal(wrapper.props.testID, 'tablet-inset-page');
+  assert.deepEqual(wrapper.props.style[1], margins, 'library and spatial content keep the original page lane');
+ }
+}
+assert.doesNotMatch(ui, /tabletImmersivePageMargin/);
+assert.match(ui, /tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets/);
+assert.match(ui, /artwork-color-fade-horizontal\.png[^\n]*opacity: landscapePlayer && !tabletLandscape \? 1 : 0/);
+console.log('Immersive tablet clipping: full native playback viewport, stable library/spatial insets, centered text bounds and unmasked album right edge passed.');
+
 
 // Selecting another main tab remains available while the playback subpage is lyrics.
 {

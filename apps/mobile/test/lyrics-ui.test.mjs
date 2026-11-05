@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {readFileSync} from 'node:fs';
 import {build} from 'esbuild';
-const source=readFileSync('apps/mobile/src/PortraitLyricsPager.tsx','utf8')+'\nexport { LyricsPanel };';
+const source=readFileSync('apps/mobile/src/PortraitLyricsPager.tsx','utf8');
 const compiled=await build({stdin:{contents:source,loader:'tsx',resolveDir:process.cwd()},bundle:true,platform:'node',format:'cjs',external:['*'],write:false});
 const modelBundle=await build({entryPoints:['apps/mobile/src/mobile-lyrics.ts'],bundle:true,platform:'node',format:'cjs',write:false});
 const modelModule={exports:{}};new Function('module','exports',modelBundle.outputFiles[0].text)(modelModule,modelModule.exports);const lyricModel=modelModule.exports;
@@ -10,7 +10,7 @@ function fixture({timed=true,paused=false,busy=false,document:provided,positionM
  const calls=[],line={id:'one',text:'歌词',startMs:12345,endMs:20000,words:[]},doc=provided??{timed,lines:[line]};
  const React={createElement:(type,props,...children)=>({type,props:{...props,children}}),useRef:current=>({current}),useState:initial=>[initial,()=>{}],useCallback:fn=>fn,useMemo:fn=>fn(),useEffect(){},useLayoutEffect(){},createContext:()=>({Provider:"LyricsSwipeLockProvider"}),useContext:()=>value=>calls.push(["lock",value])};
  const native={View:'View',Text:'Text',Pressable:'Pressable',ScrollView:'ScrollView',Image:'Image',Animated:{View:'AnimatedView',Value:class{constructor(value){this.value=value;}}},ActivityIndicator:'ActivityIndicator',StyleSheet:{create:x=>x,flatten:value=>Array.isArray(value)?Object.assign({},...value):value},useWindowDimensions:()=>({width:390,height:844})};
- const module={exports:{}};new Function('require','module','exports',compiled.outputFiles[0].text)(name=>name==='react'?React:name==='react-native'?native:name==='react-native-safe-area-context'?{SafeAreaView:'SafeAreaView'}:name.endsWith('use-lyrics-follow')?{useLyricsFollow:()=>({scrollRef:{current:null},viewportHeight:400,index:0,resetManual(){},onViewportLayout(){},onLineLayout(){},onContentSizeChange(){},scrollHandlers:{onScrollBeginDrag(){},onScrollEndDrag(){},onMomentumScrollBegin(){},onMomentumScrollEnd(){}}})}:name.endsWith('use-lyrics-swipe')?{useLyricsSwipe:()=>({panHandlers:{},translation:0,page:0,setBlocked(){}})}:name.endsWith('use-track-lyrics')?{useTrackLyrics:()=>({document:doc,loading:false,importing:false,error:'',importLyrics(){}})}:lyricModel,module,module.exports);
+ const module={exports:{}};new Function('require','module','exports',compiled.outputFiles[0].text)(name=>name==='react'?React:name==='react-native'?native:name==='react-native-safe-area-context'?{SafeAreaView:'SafeAreaView'}:name.endsWith('KaraokeText')?{KaraokeText:'KaraokeText'}:name.endsWith('use-lyrics-follow')?{useLyricsFollow:()=>({scrollRef:{current:null},viewportHeight:400,index:0,resetManual(){},onViewportLayout(){},onLineLayout(){},onContentSizeChange(){},scrollHandlers:{onScrollBeginDrag(){},onScrollEndDrag(){},onMomentumScrollBegin(){},onMomentumScrollEnd(){}}})}:name.endsWith('use-lyrics-swipe')?{useLyricsSwipe:()=>({panHandlers:{},translation:0,page:0,setBlocked(){}})}:name.endsWith('use-track-lyrics')?{useTrackLyrics:()=>({document:doc,loading:false,importing:false,error:'',importLyrics(){}})}:lyricModel,module,module.exports);
  const player={selectedUri:'file:///song',metadata:{},positionMs,durationMs:30000,playing:true,paused,busy,seekTo:ms=>calls.push(['seek',ms]),togglePause:()=>calls.push(['pause']),play:()=>calls.push(['play'])};
  const tree=module.exports.LyricsPanel({player,active:true,onBack(){}});
  const find=(node,predicate)=>{if(!node||typeof node!=='object')return null;if(predicate(node))return node;for(const child of node.props?.children?.flat(Infinity)??[]){const result=find(child,predicate);if(result)return result;}return null;};
@@ -173,7 +173,7 @@ test('native playback controls retain their bottom safe area while lyrics underl
 });
 
 
-test('enhanced LRC and TTML advance word highlights equally, including backward seeking and translation',()=>{
+test('enhanced LRC and TTML share continuous karaoke timing, including backward seeking and translation',()=>{
  const sources=[
   '[0:3.0]<0:3.0>风<0:3.5>吹<0:4.0>过\n[00:03.000]Wind passes\n[0:6.0]下一句',
   '<tt xmlns:itunes="http://music.apple.com/lyric"><body><p begin="3.0" end="6.0"><span begin="3.0" end="3.5">风</span><span begin="3.5" end="4.0">吹</span><span begin="4.0" end="6.0">过</span><span role="x-translation">Wind passes</span></p><p begin="6.0" end="8.0">下一句</p></body></tt>'
@@ -181,9 +181,10 @@ test('enhanced LRC and TTML advance word highlights equally, including backward 
  for(const source of sources){
   const document=lyricModel.parseLyrics({text:source});
   for(const [time,count] of [[3000,1],[3499,1],[3500,2],[3999,2],[4000,3],[5999,3],[3100,1]]){
-   const f=fixture({document,positionMs:time}),text=f.find(n=>n.props.testID==='lyric-text-0'),words=text.props.children.flat(Infinity);
-   assert.deepEqual(words.map(w=>w.props.children[0]),['风','吹','过']);
-   assert.deepEqual(words.map(w=>w.props.style.color),['风','吹','过'].map((_,i)=>i<count?'#ffffff':'rgba(255,255,255,.5)'));
+   const f=fixture({document,positionMs:time}),text=f.find(n=>n.props.testID==='lyric-text-0');
+   assert.equal(text.type,'KaraokeText');
+   assert.deepEqual(text.props.line.words.map(w=>w.text),['风','吹','过']);
+   assert.equal(text.props.positionMs,time);assert.equal(text.props.playing,true);assert.equal(text.props.active,true);
    assert.equal(f.find(n=>n.props.testID==='lyric-translation-0').props.children[0],'Wind passes');
   }
   const ended=fixture({document,positionMs:6000});assert.equal(ended.find(n=>n.props.testID==='lyric-text-0').props.children[0],'风吹过');assert.equal(ended.find(n=>n.props.testID==='lyric-line-0').props.accessibilityState.selected,false);
@@ -192,4 +193,14 @@ test('enhanced LRC and TTML advance word highlights equally, including backward 
 test('ordinary LRC with only line times stays line-synchronized without invented word timing',()=>{
  const document=lyricModel.parseLyrics({text:'[0:3.0]风吹过\n[0:6.0]下一句'});assert.deepEqual(document.lines[0].words,[]);
  const f=fixture({document,positionMs:3500});assert.equal(f.find(n=>n.props.testID==='lyric-text-0').props.children[0],'风吹过');
+});
+
+test('duet and backing karaoke keep separate timing and freeze independently when paused',()=>{
+ const document=lyricModel.parseLyrics({text:'<tt xmlns:itunes="http://music.apple.com/lyric"><body><p agent="a" begin="3.0" end="8.0"><span begin="3.0" end="8.0">甲</span><span role="x-bg" begin="5.0" end="7.0"><span begin="5.0" end="7.0">和</span></span></p><p agent="b" begin="4.0" end="8.0"><span begin="4.0" end="8.0">乙</span></p></body></tt>'});
+ for(const paused of [false,true]){
+  const f=fixture({document,positionMs:6000,paused});
+  for(const [id,start] of [['lyric-text-0',3000],['lyric-text-1',4000],['lyric-backing-text-0-0',5000]]){
+   const text=f.find(n=>n.props.testID===id);assert.equal(text.type,'KaraokeText');assert.equal(text.props.line.words[0].startMs,start);assert.equal(text.props.positionMs,6000);assert.equal(text.props.playing,!paused);
+  }
+ }
 });

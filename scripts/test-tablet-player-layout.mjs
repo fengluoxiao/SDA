@@ -59,7 +59,7 @@ for(const [left,right] of [[0,0],[24,0],[0,24],[12,28]])for(const width of [1097
  assert.equal(margins.marginLeft+viewport/2,width/2,'content center stays on the screen center with the rail on either side');
  assert(margins.marginLeft>=left+96);assert(margins.marginRight>=right+96);
 }
-assert.match(source,/tabletSideNavigation && tabletNavigationPageInsets\(outerInsets\?\.left \?\? 0, outerInsets\?\.right \?\? 0\)/);
+assert.match(source,/tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets\(outerInsets\?\.left \?\? 0, outerInsets\?\.right \?\? 0\)/);
 
 for(const os of ['ios','android'])for(const enabled of [false,true]) {
  assert.equal(isTabletPlayer(os,false,390,844,enabled),enabled,'phone portrait follows the saved style switch');
@@ -74,7 +74,8 @@ const blurEnabled=new Function('tabletDevice','landscapePlayer','navigationPrefe
 for(const tablet of [false,true])for(const landscape of [false,true])for(const enabled of [false,true])assert.equal(blurEnabled(tablet,landscape,{tabletPortraitLayout:enabled}),!tablet&&landscape&&enabled);
 assert(source.indexOf('<PhoneLandscapeBlur uri=')<source.indexOf('key={artworkUri}'),'blur is behind the original sharp cover');
 assert.match(source,/!phoneLandscapeBlur && <>/,'only the optional phone landscape style suppresses both existing gradient masks');
-assert.match(source,/key=\{artworkUri\} source=\{\{ uri: artworkUri \}\} resizeMode="contain".*top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize/,'foreground artwork geometry and contain mode are unchanged');
+assert.match(source,/: \{ left: artworkLeft, top: artworkTop, width: artworkWidth, height: artworkSize \}/,'phone foreground artwork keeps its existing geometry');
+assert.match(source,/key=\{artworkUri\} source=\{\{ uri: artworkUri \}\} resizeMode="contain"/,'foreground artwork retains contain mode');
 console.log('Phone style switch: portrait tablet layout, landscape blur-only backdrop, original sharp cover geometry and off-state gradient retained.');
 
 // Tablet artwork/background styles reuse the approved gradient-player typography.

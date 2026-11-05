@@ -15,6 +15,6 @@ test('landscape never installs the full-page blurred lyrics background over the 
 });
 test('the phone artwork stays mounted across tablet-style and landscape presentations',()=>{
  const plane=elements.find(node=>node.openingElement.getText(file).includes('testID="persistent-artwork-plane"'));assert(plane);
- assert.match(plane.openingElement.getText(file),/opacity: tabletPlayer \? 0 : 1/);
+ assert.match(plane.openingElement.getText(file),/opacity: tabletPlayer && !tabletLandscape \? 0 : 1/);
  assert(plane.getText(file).includes('<Animated.Image'),'the preloaded sharp artwork is retained in its stable native plane');
 });

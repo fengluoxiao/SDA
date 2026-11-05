@@ -1,12 +1,13 @@
+import { TabletLandscapePlayer } from "./TabletLandscapePlayer";
 import { PortraitLyricsPager, LandscapeLyricsPager, LyricsGestureBoundary, LyricsBackdrop } from "./PortraitLyricsPager";
 import { useProgressScrubber } from "./use-progress-scrubber";
 import { PLAYER_PROGRESS_PAINT, PLAYER_PROGRESS_TRACK } from "./player-progress-paint";
 import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
-import { PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
-import { phoneLandscapeBlurEdge } from "./phone-landscape-blur-model";
-import { isTabletPlayer, tabletPlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
+import { PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
+import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT } from "./phone-landscape-blur-model";
+import { isTabletPlayer, tabletPlayerLayout, tabletImmersivePlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
 import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
 import { hasNativePageHeader } from "./IOSNativePage";
@@ -77,6 +78,7 @@ function ThemedPlayer(p: PlayerProps) {
   const sideNavigationActive = (Platform.OS === "ios" || (Platform.OS === "android" && hasAndroidChrome)) && navigationPreferences.landscapeSideTabs && landscapePlayer;
   const sideNavigationRight = sideNavigationActive && navigationPreferences.sideTabPosition === "right";
   const tabletDevice = isTabletPlayer(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height);
+  const tabletLandscape = tabletDevice && landscapePlayer;
   const androidPhone = Platform.OS === "android" && !tabletDevice;
   const showSystemClock = landscapePlayer && !tabletDevice && (Platform.OS === "ios" || (Platform.OS === "android" && sideNavigationActive));
   const circularMiniPlayerActive = showSystemClock && sideNavigationActive && !!p.selectedUri;
@@ -181,10 +183,10 @@ function ThemedPlayer(p: PlayerProps) {
   // Shared compact landscape spacing; Android phones use the approved columns too.
   const iosLandscape = landscapePlayer;
   const landscapeSpacing = iosLandscape ? iosLandscapeControlLayout(Math.max(0, playerHeight - (compactLandscape ? 0 : 22)), measuredBlockHeight) : null;
-  const tabletLayout = tabletPlayer ? tabletPlayerLayout(playerWidths[layoutKey] ?? width, playerHeight, measuredBlockHeight, landscapePlayer, sideNavigationActive && !tabletSideNavigation) : null;
+  const tabletLayout = tabletLandscape ? tabletImmersivePlayerLayout(playerWidths[layoutKey] ?? width, playerHeight, sideNavigationActive ? navigationPreferences.sideTabPosition : undefined) : tabletPlayer ? tabletPlayerLayout(playerWidths[layoutKey] ?? width, playerHeight, measuredBlockHeight, landscapePlayer, sideNavigationActive && !tabletSideNavigation) : null;
   const tabletArtworkRef = useRef<React.ComponentRef<typeof View>>(null);
   const [measuredTabletArtwork, setMeasuredTabletArtwork] = useState<{ key: string; frame: ArtworkFrame } | null>(null);
-  const tabletArtworkKey = `${width}:${height}:${tabletLayout?.coverSize ?? 0}`;
+  const tabletArtworkKey = `${width}:${height}:${tabletLayout?.coverSize ?? 0}:${tabletLandscape}`;
   const measureTabletArtwork = useCallback(() => {
     const surface = surfaceRef.current;
     if (!tabletPlayer || !landscapePlayer || !surface) { setMeasuredTabletArtwork(null); return; }
@@ -201,6 +203,12 @@ function ThemedPlayer(p: PlayerProps) {
     return () => cancelAnimationFrame(pending);
   }, [measureTabletArtwork, page, layoutReady]);
   const tabletArtworkFrame = layoutReady && measuredTabletArtwork?.key === tabletArtworkKey ? measuredTabletArtwork.frame : null;
+  // Tablet controls now sit below the sharp album plane, just like the phone.
+  // Measure its column against the root so either side-rail position stays aligned.
+  const immersiveArtwork = tabletLandscape ? {
+    left: tabletArtworkFrame?.left ?? 0,
+    top: 0, width: tabletLayout!.coverSize, height: tabletLayout!.coverSize,
+  } : { left: artworkLeft, top: artworkTop, width: artworkWidth, height: artworkSize };
   const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings, page, rootRef: surfaceRef,
     layoutKey: [width, height, cutoutSide, navigationPreferences.sideTabPosition, tabletPlayer].join(":"), mediaKey: `${p.selectedUri || ""}:${hasArtwork ? artworkUri : "placeholder"}`, artworkUri: hasArtwork ? artworkUri : "" });
   const fallbackArtwork = React.useMemo(() => <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />, []);
@@ -300,7 +308,7 @@ function ThemedPlayer(p: PlayerProps) {
           onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
         {circularMiniPlayerActive ? <Animated.View testID="landscape-side-action-controls" pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, alignItems: "center", gap: sideActionMetrics.gap, transform: [{ translateY: sharedMini.active ? sideActionsTravel : page === 0 ? -collapsedMiniSpace : 0 }] }}>{sideActions}</Animated.View> : sideActions}
   </>;
-  const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined}>
+  const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={[sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined, tabletLandscape && tabletSideNavigation && (index === 0 || (!hasUIKitIOSTabs && !hasAndroidChrome)) && tabletNavigationPageInsets(headerInsets?.left ?? 0, headerInsets?.right ?? 0)]}>
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 },
@@ -328,61 +336,7 @@ function ThemedPlayer(p: PlayerProps) {
     if (stage && chromeSmoke === stage) { const y = event.nativeEvent.layout.y; requestAnimationFrame(() => settingsScroll.current?.scrollTo({ y, animated: false })); }
   }}>{label(name, true, s.groupTitle)}</View>;
 
-  return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: immersiveHome ? fadeColor : c.bg }}>
-  <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
-    {Platform.OS === "android" ? <AndroidAudioInfo rows={infoRows} dark={!isLight} onClose={() => setMetadataOpen(false)} /> :
-    <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><IOSMetadataDoneButton accent={c.accent} onPress={() => setMetadataOpen(false)} theme={isLight ? "light" : "dark"} /></View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
-    </SafeAreaView>}
-  </IOSMetadataSheet>
-  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
-  <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
-  {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {tabletPlayer && <>
-      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: .45 }]} />}
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,.24)" }]} />
-    </>}
-    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer ? 0 : 1 }]}>
-    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /></View> : <View style={{ position: "absolute", top: artworkTop, left: artworkLeft, width: artworkWidth, height: artworkSize, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
-    </View>
-  </View>}
-  {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
-  {/* Keep both the moving and settled artwork below the original edge treatment. */}
-  {immersiveHome && !tabletPlayer && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
-    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    {!phoneLandscapeBlur && <>
-    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
-    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer ? 1 : 0 }} />
-    </>}
-  </View>}
-  {/* Native tabs own the bottom inset. Reserve only the header/side insets
-      here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
-    <StatusBar hidden={Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
-    <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
-      <SafeAreaInsetsContext.Consumer>{outerInsets => <View testID="tablet-page-viewport" style={[{ flex: 1 }, tabletSideNavigation && tabletNavigationPageInsets(outerInsets?.left ?? 0, outerInsets?.right ?? 0)]} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
-      {/* UIKit pages own their headers/insets so selecting a tab never resizes
-          the host underneath an in-flight native page transition. */}
-      {!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader(page)}
-      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} onOpenSettings={() => setSettings(true)} pageHeaders={hasUIKitIOSTabs || hasAndroidChrome ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} libraryHeaderActionsWidth={showSystemClock ? 152 : 96} sideBar={sideNavigationActive || undefined} sideBarInsetReserved={tabletSideNavigation} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri && !circularMiniPlayerActive ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} pageBackgrounds={[!landscapePlayer && <LyricsBackdrop key="lyrics-backdrop" visible={lyricsPageSelected} artworkUri={hasArtwork ? artworkUri : ""} backgroundColor={fadeColor} />]} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
-        <PortraitLyricsPager preservePlaybackBottomInset={hasUIKitIOSTabs} key="lyrics-track-header-v4" headerHeight={playerHeaderHeight} playbackHeader={headerContent(0)} lyricsSelected={lyricsPageSelected} onLyricsPageChange={setLyricsPageSelected} player={p} enabled={!landscapePlayer} visible={page === 0}>
-        <View style={[s.page, np.root, landscapePlayer && { overflow: "visible" }, !hasSystemIOSTabs && page !== 0 && s.hidden]}
-          onLayout={event => {
-            if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
-            const { width: measuredWidth, height: available } = event.nativeEvent.layout;
-            if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available });
-            if (measuredWidth > 0) setPlayerWidths(previous => Math.abs((previous[layoutKey] ?? 0) - measuredWidth) < 0.5 ? previous : { ...previous, [layoutKey]: measuredWidth });
-          }}>
-          <View ref={playerRowRef} onLayout={measureLandscapeLyrics} testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
-          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
-            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
-              {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
-            </View>}
-            {!tabletPlayer && !hasArtwork && <Animated.View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ opacity: sharedMini.mainOpacity }}>{fallbackArtwork}</Animated.View>}
-          </Pressable>
-          <LandscapeLyricsPager columnRef={landscapeControlsRef} onGeometryChange={measureLandscapeLyrics} onLyricsPageSettled={sharedMini.capture} topClearance={sideNavigationActive && lyricsAlignment?.key === alignmentKey ? lyricsAlignment.clearance : Math.min(24, playerHeaderHeight * .35)} player={p} enabled={landscapePlayer} visible={page === 0} lyricsSelected={lyricsPageSelected} onLyricsPageChange={setLyricsPageSelected} style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, landscapePlayer && np.landscapeControls, sideNavigationRight && { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }, tabletLayout && { width: tabletLayout.controlsWidth, alignSelf: "center", paddingLeft: 0, paddingRight: 0, paddingTop: 0, gap: 0 }]}>
+  const playbackControls = <>
           <View style={[np.metadata, { transform: [{ translateY: tabletPlayer || landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
             <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, androidPhone && ap.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, androidPhone && ap.artist, { color: pc.muted }]}>{artist}</Text></View>
           </View>
@@ -404,8 +358,78 @@ function ThemedPlayer(p: PlayerProps) {
           </LyricsGestureBoundary>
           <View style={s.playerBlock} onLayout={event => measurePlayerBlock("status", event.nativeEvent.layout.height)}>
           </View>
+  </>;
+
+  return <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: immersiveHome ? fadeColor : c.bg }}>
+  <IOSMetadataSheet open={metadataOpen} onChange={setMetadataOpen} theme={isLight ? "light" : "dark"}>
+    {Platform.OS === "android" ? <AndroidAudioInfo rows={infoRows} dark={!isLight} onClose={() => setMetadataOpen(false)} /> :
+    <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }} edges={["top", "bottom"]}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 20 }}><Text accessibilityRole="header" style={{ color: PlatformColor("label"), fontSize: 20, fontWeight: "600" }}>歌曲元数据</Text><IOSMetadataDoneButton accent={c.accent} onPress={() => setMetadataOpen(false)} theme={isLight ? "light" : "dark"} /></View>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
+    </SafeAreaView>}
+  </IOSMetadataSheet>
+  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
+  {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
+    {tabletPlayer && <>
+      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
+    </>}
+    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
+    <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>
+    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /></View> : <View style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    </View>
+  </View>}
+  {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
+  {/* Keep both the moving and settled artwork below the original edge treatment. */}
+  {immersiveHome && (!tabletPlayer || tabletLandscape) && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
+    {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
+    {!phoneLandscapeBlur && <>
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
+    <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
+    </>}
+    {tabletLandscape && hasArtwork && <TabletArtworkFeather
+      backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
+      artworkLeft={immersiveArtwork.left} artworkTop={immersiveArtwork.top} artworkWidth={immersiveArtwork.width} artworkHeight={immersiveArtwork.height} />}
+  </View>}
+  {/* Native tabs own the bottom inset. Reserve only the header/side insets
+      here, so the tab bar's background reaches the home indicator. */}
+  <SafeAreaView edges={hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
+    <StatusBar hidden={Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
+    <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
+      <SafeAreaInsetsContext.Consumer>{outerInsets => <View testID="tablet-page-viewport" style={[{ flex: 1 }, tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets(outerInsets?.left ?? 0, outerInsets?.right ?? 0)]} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
+      {/* UIKit pages own their headers/insets so selecting a tab never resizes
+          the host underneath an in-flight native page transition. */}
+      {!hasUIKitIOSTabs && !hasAndroidChrome && pageHeader(page)}
+      <SafeAreaInsetsContext.Consumer>{screenInsets => <IOSSystemTabs selected={page} onChange={navigate} onOpenSettings={() => setSettings(true)} pageHeaders={hasUIKitIOSTabs || hasAndroidChrome ? [pageHeader(0), nativeLibraryHeaderActive ? null : pageHeader(1), pageHeader(2)] : undefined} libraryHeaderActions={!sideNavigationActive ? headerActions : undefined} libraryHeaderActionsWidth={showSystemClock ? 152 : 96} sideBar={sideNavigationActive || undefined} sideBarInsetReserved={tabletSideNavigation} tabletPageInsets={tabletLandscape && tabletSideNavigation ? tabletNavigationPageInsets(screenInsets?.left ?? 0, screenInsets?.right ?? 0) : undefined} sideBarExternal sideBarPosition={navigationPreferences.sideTabPosition} sideBarWidth={SIDE_NAVIGATION_WIDTH} rightContentGap={iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide)} leftContentOffset={iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)} player={p} accessory={miniPlayer()} nativeAccessory={p.selectedUri && !circularMiniPlayerActive ? miniPlayer : undefined} backgroundColor="transparent" pageBackgroundColors={["transparent", c.bg, c.bg]} accent={c.accent} theme={isLight ? "light" : "dark"} pageBackgrounds={[!landscapePlayer && <LyricsBackdrop key="lyrics-backdrop" visible={lyricsPageSelected} artworkUri={hasArtwork ? artworkUri : ""} backgroundColor={fadeColor} />]} fallback={<View style={s.tabs}>{hasNativeIOSChrome ? <IOSGlassTabs selected={page} onChange={navigate} /> : <View style={[s.fallbackTabs, { backgroundColor: c.panel, borderColor: c.line }]}>{IOS_TABS.map((name, index) => <Pressable key={name} accessibilityRole="tab" accessibilityState={{ selected: page === index }} onPress={() => navigate(index)} style={[s.fallbackTab, { backgroundColor: page === index ? c.field : "transparent" }]}>{label(name, page !== index, s.small)}</Pressable>)}</View>}</View>}>
+        <PortraitLyricsPager preservePlaybackBottomInset={hasUIKitIOSTabs} key="lyrics-track-header-v4" headerHeight={playerHeaderHeight} playbackHeader={headerContent(0)} lyricsSelected={lyricsPageSelected} onLyricsPageChange={setLyricsPageSelected} player={p} enabled={!landscapePlayer} visible={page === 0}>
+        <View style={[s.page, np.root, landscapePlayer && { overflow: "visible" }, !hasSystemIOSTabs && page !== 0 && s.hidden]}
+          onLayout={event => {
+            if (page !== 0) return; // Library's under-header viewport must not replace playback measurements.
+            const { width: measuredWidth, height: available } = event.nativeEvent.layout;
+            if (available > 0) setPlayerMeasurements(previous => Math.abs((previous[layoutKey] ?? 0) - available) < 0.5 ? previous : { ...previous, [layoutKey]: available });
+            if (measuredWidth > 0) setPlayerWidths(previous => Math.abs((previous[layoutKey] ?? 0) - measuredWidth) < 0.5 ? previous : { ...previous, [layoutKey]: measuredWidth });
+          }}>
+          {tabletLandscape ? <TabletLandscapePlayer player={p} visible={page === 0}
+            rowRef={playerRowRef} lyricsRef={landscapeControlsRef} onLyricsGeometryChange={measureLandscapeLyrics}
+            topClearance={lyricsAlignment?.key === alignmentKey ? lyricsAlignment.clearance : Math.min(24, playerHeaderHeight * .35)}
+            columnRef={tabletArtworkRef} onGeometryChange={measureTabletArtwork}
+            albumWidth={tabletLayout!.coverSize} controlsWidth={tabletLayout!.controlsWidth} horizontalPadding={tabletLayout!.horizontalPadding}
+            verticalPadding={tabletLayout!.verticalPadding} navigationSide={sideNavigationActive ? navigationPreferences.sideTabPosition : undefined} coverPlaceholder={!hasArtwork ? fallbackArtwork : undefined} coverLabel={(p.metadata.album || title) + " 专辑封面，轻点选择歌曲"}>
+            {playbackControls}
+          </TabletLandscapePlayer> : <>
+          <View ref={playerRowRef} onLayout={measureLandscapeLyrics} testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
+          <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
+            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
+              {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
+            </View>}
+            {!tabletPlayer && !hasArtwork && <Animated.View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ opacity: sharedMini.mainOpacity }}>{fallbackArtwork}</Animated.View>}
+          </Pressable>
+          <LandscapeLyricsPager columnRef={landscapeControlsRef} onGeometryChange={measureLandscapeLyrics} onLyricsPageSettled={sharedMini.capture} topClearance={sideNavigationActive && lyricsAlignment?.key === alignmentKey ? lyricsAlignment.clearance : Math.min(24, playerHeaderHeight * .35)} player={p} enabled={landscapePlayer} visible={page === 0} lyricsSelected={lyricsPageSelected} onLyricsPageChange={setLyricsPageSelected} style={[{ gap: iosLandscape ? 0 : playerGap, flexShrink: 0 }, landscapePlayer && np.landscapeControls, sideNavigationRight && { paddingRight: SIDE_NAVIGATION_WIDTH + iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) }, landscapeSpacing && { paddingTop: landscapeSpacing.topPadding }, tabletLayout && { width: tabletLayout.controlsWidth, alignSelf: "center", paddingLeft: 0, paddingRight: 0, paddingTop: 0, gap: 0 }]}>
+          {playbackControls}
           </LandscapeLyricsPager>
           </View>
+          </>}
         </View>
         </PortraitLyricsPager>
         <ScrollView style={[s.page, s.libraryViewport, sideNavigationActive && !tabletSideNavigation && (sideNavigationRight
