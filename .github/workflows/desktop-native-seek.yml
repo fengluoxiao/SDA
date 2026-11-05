@@ -120,13 +120,14 @@ jobs:
           cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop::tests -- --test-threads=1
           cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop_src::tests -- --test-threads=1
           cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop_wave::tests -- --test-threads=1
+          cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' renderer_ack::tests -- --test-threads=1
           cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' mp4_extract::tests -- --test-threads=1
       - name: Verify Windows native decoder callbacks and sample clocks
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($testFilter in @('desktop::tests','desktop_src::tests','desktop_wave::tests','mp4_extract::tests')) {
+          foreach ($testFilter in @('desktop::tests','desktop_src::tests','desktop_wave::tests','renderer_ack::tests','mp4_extract::tests')) {
             cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' $testFilter -- --test-threads=1
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

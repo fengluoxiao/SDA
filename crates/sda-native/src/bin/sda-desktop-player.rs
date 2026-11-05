@@ -8,7 +8,9 @@ fn main() {
     let commands = Arc::new(render_command::RenderCommandQueue::new(4 * sda_core::MAX_DECODED_SOURCE_CHANNELS + 32));
     let fifo = Arc::new(stereo_fifo::StereoFifo::new(STEREO_FIFO_CAPACITY_FRAMES));
     let telemetry = Arc::new(RuntimeTelemetry::default());
-    sda_native::desktop::install(commands.clone(), fifo.clone(), telemetry.clone());
+    let files = sda_native::desktop::install(commands.clone(), fifo.clone(), telemetry.clone());
     if !remote_audio::receiver() { spawn_render_worker(Engine::new(48000, 2), commands.clone(), fifo.clone(), telemetry.clone()); }
-    output_manager::run(fifo, telemetry, commands);
+    output_manager::run(fifo, telemetry.clone(), commands);
+    telemetry.shutdown_requested.store(true,std::sync::atomic::Ordering::Release);
+    let _=files.join();
 }

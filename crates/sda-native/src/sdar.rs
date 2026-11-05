@@ -20,9 +20,7 @@ impl MobileEngine {
                     reply,
                 })
                 .map_err(|_| "SDAR render command queue full")?;
-            received
-                .recv_timeout(Duration::from_secs(60))
-                .map_err(|_| "SDAR renderer preparation timed out".to_string())??;
+            renderer_ack::wait(&received,&pipeline.telemetry,Duration::from_secs(60),"SDAR renderer preparation timed out")??;
         } else {
             self.renderer
                 .as_mut()

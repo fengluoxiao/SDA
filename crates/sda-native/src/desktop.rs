@@ -86,7 +86,7 @@ fn snapshot(engine:&MobileEngine,p:&Playback)->Value{
  json!({"session":p.session,"epoch":p.epoch,"codec":p.codec,"sampleRate":p.rate,"outputSampleRate":48000,"durationMs":p.duration,"positionMs":status.position_ms,"decodedMs":status.decoded_sample_pos/48,
  "paused":engine.startup.lock().expect("startup lock").paused,"preparing":status.preparing_audio,"ended":p.finished,"channels":p.wave.as_ref().map(|w|w.channels).unwrap_or_else(||p.stereo.as_ref().map_or_else(||if matches!(p.source,Source::Alac|Source::Mp3){2}else{beds.len()+objects},|d|d.source_channels())),"bedLabels":beds,"objectChannels":objects,"objects":engine.object_snapshot(),"soundingObjectIds":status.sounding_object_ids})
 }
-pub fn install(commands:Arc<render_command::RenderCommandQueue>,fifo:Arc<stereo_fifo::StereoFifo>,telemetry:Arc<RuntimeTelemetry>){
+pub fn install(commands:Arc<render_command::RenderCommandQueue>,fifo:Arc<stereo_fifo::StereoFifo>,telemetry:Arc<RuntimeTelemetry>)->std::thread::JoinHandle<()>{
  let(tx,rx)=mpsc::sync_channel(32);install_control_extension(Arc::new(Controller{tx}));
  std::thread::Builder::new().name("sda-native-file".into()).stack_size(16*1024*1024).spawn(move||{
   let mut engine=MobileEngine::new(EngineConfig::default(),None).expect("desktop engine config");engine.renderer=None;
@@ -136,7 +136,7 @@ pub fn install(commands:Arc<render_command::RenderCommandQueue>,fifo:Arc<stereo_
     if last.elapsed()>=Duration::from_millis(33){emit(json!({"kind":"state","session":p.session,"snapshot":snapshot(&engine,p)}));last=Instant::now();}
    }
   }
- }).expect("desktop native file worker");
+ }).expect("desktop native file worker")
 }
 
 #[cfg(test)] mod tests {

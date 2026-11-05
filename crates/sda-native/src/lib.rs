@@ -48,6 +48,7 @@ pub mod mp4_extract;
 mod mhas_source;
 mod alac_pcm;
 mod sdar;
+mod renderer_ack;
 #[cfg(feature = "desktop-output")]
 pub mod desktop;
 #[cfg(feature = "desktop-output")]
@@ -1145,7 +1146,7 @@ impl MobileEngine {
                     other=>{pipeline.commands.push(other).map_err(|_|"render command queue full")?;continue;}
                 };
                 pipeline.commands.push(command).map_err(|_|"render command queue full; feed must be paced")?;
-                if !received.recv_timeout(Duration::from_secs(10)).map_err(|_|"PCM frame acknowledgement timed out")? {
+                if !renderer_ack::wait(&received,&pipeline.telemetry,Duration::from_secs(10),"PCM frame acknowledgement timed out")? {
                     return Err(format!("renderer rejected PCM frame at {:?}",range.map(|r|r.0)));
                 }
             }

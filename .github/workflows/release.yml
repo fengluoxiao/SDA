@@ -24,7 +24,7 @@ permissions:
   contents: write
   actions: read
 concurrency:
-  group: desktop-release-${{ inputs.tag }}-${{ inputs.platform }}
+  group: desktop-release-${{ inputs.tag || inputs.source_ref || github.sha }}-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
   build-web:
@@ -220,18 +220,20 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: macos-26-intel
+            runner: macos-26
             target: x86_64-apple-darwin
             folder: mac
+            jobs: 1
           - arch: arm64
             runner: macos-26
             target: aarch64-apple-darwin
             folder: mac-arm64
+            jobs: 3
     env:
       SDA_NATIVE_TARGET: ${{ matrix.target }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/desktop-native
       CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '3'
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
