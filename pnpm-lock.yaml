@@ -25,6 +25,9 @@ importers:
       h5wasm:
         specifier: 0.10.3
         version: 0.10.3
+      music-metadata:
+        specifier: 11.16.0
+        version: 11.16.0
       ws:
         specifier: ^8.21.3
         version: 8.21.3

@@ -514,6 +514,7 @@ pub fn write_event(event: &Event) {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Event<'a> {
+    FilePlayback { data: serde_json::Value },
     OutputDevices {
         status: output_manager::Status,
         devices: Vec<output_manager::Endpoint>,

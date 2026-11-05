@@ -70,3 +70,6 @@ apps/mobile/.expo/
 /apps/desktop/audio-encoder/
 /apps/desktop/licenses/
 /crates/sda-format/target/
+
+# Generated metadata-only desktop BWF parser.
+/apps/desktop/bwf-metadata.cjs

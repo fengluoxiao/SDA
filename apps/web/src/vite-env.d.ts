@@ -112,6 +112,7 @@ declare global {
     directionalHrtf?: boolean;
     binauralEnabled?: boolean;
     programCodecSupported?: boolean | null;
+    nativeFilePlaybackSupported?: boolean;
     rendererRevision?: string;
     monitorEnabled?: boolean;
     hardwareSimulationEnabled?: boolean;
@@ -229,6 +230,9 @@ declare global {
       nativeRendererSourceExtent?: (settings: {enabled:boolean;width:number;diffusion:number}) => Promise<boolean>;
       nativeRendererLayout?: (layout: import("@sda/renderer").LayoutId) => Promise<boolean>;
       nativeRendererOutputActive?: (active: boolean) => Promise<boolean>;
+      nativeFileProbe?: (path: string) => Promise<{ supported: boolean; codec?: string; detail?: string }>;
+      nativeFileCommand?: (command: Record<string, unknown>) => Promise<import("@sda/player").NativeFileSnapshot>;
+      onNativeFileState?: (callback: (event: import("@sda/player").NativeFileEvent) => void) => () => void;
       nativeRendererStartAt?: (origin: number) => Promise<boolean>;
       nativeRendererPause?: (paused: boolean) => Promise<boolean>;
       nativeRendererFrame?: (samplePos: number, entries: readonly { id: string; samples: Float32Array }[], events?: readonly import("@sda/core").ObjectEvent[]) => Promise<{ accepted: boolean; samples: number; reason?: string }>;
@@ -245,7 +249,7 @@ declare global {
       bindAuthoredRoomEditor?: (callback:(settings:CinemaSettings,profileId:string|null)=>Promise<boolean>)=>(()=>void);
       setAuthoredFileCinema?: (id:string,settings:CinemaSettings,profileId:string|null)=>Promise<boolean>;
       setAuthoredFileLayout?: (id:string,layout:string) => Promise<boolean>;
-      analyzeStereoLoudness?: (filePath:string) => Promise<{codec:string;sampleRate:number;channels:number;integratedLufs:number|null;truePeakDbtp:number|null;blocks:number;frames:number;size:number;mtimeMs:number;policy:string}|null>;
+      analyzeStereoLoudness?: (filePath:string) => Promise<{nativeReference?:unknown;codec:string;sampleRate:number;channels:number;integratedLufs:number|null;truePeakDbtp:number|null;blocks:number;frames:number;size:number;mtimeMs:number;policy:string}|null>;
       cancelStereoLoudness?: () => Promise<boolean>;
       onStereoLoudnessProgress?: (callback:(progress:number)=>void) => (()=>void);
       upmixExportBalancesVersion?: number;

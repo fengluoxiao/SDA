@@ -8,10 +8,12 @@ impl Bits<'_>{
  fn esc(&mut self,a:usize,b:usize,c:usize)->Option<u64>{let mut v=self.get(a)?;if v==(1<<a)-1{let w=self.get(b)?;v+=w;if w==(1<<b)-1{v+=self.get(c)?;}}Some(v)}
 }
 struct Point{offset:u64,end:u64,sample:u64,restart:bool,state:std::sync::Arc<Vec<u8>>}
-pub struct MhasSource{file:File,points:Vec<Point>,next:usize,bootstrap:bool,pub duration:u64}
+pub trait SeekableInput:Read+Seek+Send{}
+impl<T:Read+Seek+Send> SeekableInput for T{}
+pub struct MhasSource{file:Box<dyn SeekableInput>,points:Vec<Point>,next:usize,bootstrap:bool,pub duration:u64}
 impl MhasSource{
- pub fn open(mut file:File)->Result<Self,String>{
-  let length=file.metadata().map_err(|e|e.to_string())?.len();let mut at=0;let mut au_start=0;let mut sample=0;
+ pub fn open(mut file:impl SeekableInput+'static)->Result<Self,String>{
+  let length=file.seek(SeekFrom::End(0)).map_err(|e|e.to_string())?;let mut at=0;let mut au_start=0;let mut sample=0;
   let mut points=Vec::new();let mut controls=std::collections::BTreeMap::<(u64,u64),Vec<u8>>::new();let mut snapshot=std::sync::Arc::new(Vec::new());let mut dirty=false;let mut rate=None;
   while at<length{
    file.seek(SeekFrom::Start(at)).map_err(|e|e.to_string())?;let mut header=[0u8;16];let n=file.read(&mut header).map_err(|e|e.to_string())?;
@@ -43,7 +45,7 @@ impl MhasSource{
   }
   if points.is_empty()||!points[0].restart{return Err("MPEG-H stream lacks an initial independent frame".into());}
   if au_start!=length{return Err("MHAS ends in an incomplete access unit".into());}
-  file.rewind().map_err(|e|e.to_string())?;Ok(Self{file,points,next:0,bootstrap:false,duration:sample})
+  file.rewind().map_err(|e|e.to_string())?;Ok(Self{file:Box::new(file),points,next:0,bootstrap:false,duration:sample})
  }
  pub fn seek(&mut self,target:u64,preroll:u64)->Result<u64,String>{
   let warm=target.saturating_sub(preroll);let mut i=self.points.partition_point(|p|p.sample<=warm).saturating_sub(1);

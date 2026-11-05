@@ -3,8 +3,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing app source and draft release tag
-        required: true
+        description: Optional existing draft release tag; omit for Actions installers only
+        required: false
         type: string
       source_ref:
         description: Optional immutable app source commit
@@ -168,6 +168,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path crates/sda-native/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/build-head-tracking-helper.mjs
@@ -189,6 +191,7 @@ jobs:
           python "$env:SDA_RELEASE_TOOLS/verify-desktop-release.py" --platform Windows --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }} --installer "apps/desktop/dist/SDA-$version-Windows-${{ matrix.arch }}.exe" --verify-container
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload verified installer to draft release
+        if: ${{ inputs.tag != '' }}
         env:
           SDA_RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
@@ -282,6 +285,7 @@ jobs:
           export SDA_SOURCE_COMMIT="$(git rev-parse HEAD)"
           node scripts/prepare-ac4.mjs
           cargo fetch --locked --manifest-path apps/head-tracking-helper/Cargo.toml
+          cargo fetch --locked --manifest-path crates/sda-native/Cargo.toml
           cargo fetch --locked --manifest-path apps/native-renderer/Cargo.toml
           node scripts/build-head-tracking-helper.mjs
           node scripts/build-native-renderer.mjs
@@ -292,6 +296,7 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           python3 "$SDA_RELEASE_TOOLS/verify-desktop-release.py" --platform macOS --arch ${{ matrix.arch }} --app-dir apps/desktop/dist/${{ matrix.folder }}/SDA.app --installer "apps/desktop/dist/SDA-$version-macOS-${{ matrix.arch }}.dmg" --verify-container
       - name: Upload verified installer to draft release
+        if: ${{ inputs.tag != '' }}
         env:
           SDA_RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}

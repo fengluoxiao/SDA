@@ -819,7 +819,7 @@ mod platform {
             protocol: PROTOCOL,
             sample_rate: 48000,
             output_channels: 2,
-            features: &["programCodec"],
+            features: if crate::protocol::has_control_extension() { &["programCodec", "nativeFilePlayback", "nativeProgrammeReference"] } else { &["programCodec"] },
         });
         let input_fifo = fifo.clone();
         let input_t = telemetry.clone();
@@ -1500,7 +1500,7 @@ mod platform {
             protocol: PROTOCOL,
             sample_rate: 48000,
             output_channels: 2,
-            features: &["programCodec"],
+            features: if crate::protocol::has_control_extension() { &["programCodec", "nativeFilePlayback", "nativeProgrammeReference"] } else { &["programCodec"] },
         });
         let input_fifo = fifo.clone();
         let input_t = telemetry.clone();

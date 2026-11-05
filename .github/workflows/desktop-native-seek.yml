@@ -1,0 +1,138 @@
+name: Desktop native seek validation
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable application commit to verify
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: desktop-native-seek-${{ inputs.source_ref }}
+  cancel-in-progress: false
+jobs:
+  transport:
+    name: Desktop controls and native file lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - run: node scripts/build-desktop-bwf-metadata.mjs
+      - run: node --test apps/desktop/test/bwf-file-metadata.test.cjs apps/desktop/test/native-event-lines.test.cjs apps/desktop/test/native-file-playback.test.cjs apps/web/test/desktop-progress.test.mjs packages/player/test/native-file-seek.test.mjs
+      - run: pnpm exec tsc --noEmit --pretty false -p apps/web/tsconfig.json
+      - run: node --check apps/desktop/main.cjs
+  native:
+    name: Native decode and seek ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            arch: x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            msvc: amd64
+          - platform: Windows
+            arch: arm64
+            runner: windows-2022
+            target: aarch64-pc-windows-msvc
+            msvc: amd64_arm64
+          - platform: macOS
+            arch: x64
+            runner: macos-26-intel
+            target: x86_64-apple-darwin
+          - platform: macOS
+            arch: arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/desktop-native
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      RUST_MIN_STACK: '16777216'
+    steps:
+      - name: Windows checkout paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.0'
+          targets: ${{ matrix.target }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: ./.github/actions/prepare-asio
+        if: runner.os == 'Windows'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/sda-native -> ../../desktop-native
+          key: desktop-file-seek-${{ matrix.target }}-v1
+          cache-on-failure: true
+      - name: Prepare pinned native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SDA_SOURCE_COMMIT="$(git rev-parse HEAD)"
+          echo "SDA_SOURCE_COMMIT=$SDA_SOURCE_COMMIT" >> "$GITHUB_ENV"
+          node scripts/prepare-ac4.mjs
+          cargo fetch --locked --manifest-path crates/sda-native/Cargo.toml
+      - name: Build target-native player
+        shell: bash
+        run: cargo build --locked --manifest-path crates/sda-native/Cargo.toml --bin sda-desktop-player --target '${{ matrix.target }}'
+      - name: Verify real native decoder callbacks and sample clocks
+        if: matrix.platform != 'Windows' || matrix.arch == 'x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop::tests -- --test-threads=1
+          cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop_src::tests -- --test-threads=1
+          cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' desktop_wave::tests -- --test-threads=1
+          cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' mp4_extract::tests -- --test-threads=1
+      - name: Compile Windows ARM64 regression harness
+        if: matrix.platform == 'Windows' && matrix.arch == 'arm64'
+        shell: bash
+        run: cargo test --locked --manifest-path crates/sda-native/Cargo.toml --lib --target '${{ matrix.target }}' --no-run
+      - name: Verify analysis process without an audio device
+        if: matrix.platform != 'Windows' || matrix.arch == 'x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable="desktop-native/${{ matrix.target }}/debug/sda-desktop-player"
+          if [ '${{ runner.os }}' = Windows ]; then executable="$executable.exe"; fi
+          "$executable" --programme-reference crates/sda-native/tests/fixtures/alac/tone-96000-2ch-entry1.m4a > native-reference.json
+          python -c "import json; x=json.load(open('native-reference.json')); assert x['type']=='measurement' and x['complete'] and x['sampleRate']==96000 and x['nativeReference']['sampleRate']==48000"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-native-seek-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            desktop-native/${{ matrix.target }}/debug/sda-desktop-player*
+            native-reference.json
+          if-no-files-found: warn

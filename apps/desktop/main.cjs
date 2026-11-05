@@ -278,7 +278,8 @@ const HEAD_TRACKING_MOCK_INTERVAL_MS = 20;
 // Native object renderer owns desktop audible output. It remains muted until a
 // complete calibrated HRTF is prepared and the player issues startAt().
 const NATIVE_RENDERER_PROTOCOL = 7;
-const NATIVE_RENDERER_MAX_LINE_BYTES = 16 * 1024;
+const NATIVE_RENDERER_MAX_CONTROL_BYTES = 16 * 1024;
+const NATIVE_RENDERER_MAX_LINE_BYTES = 1024 * 1024;
 let nativeRenderer = null;
 let nativeRendererExit = Promise.resolve();
 let nativeRendererQuitting = false;
@@ -300,13 +301,17 @@ const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   corePath:app.isPackaged?path.join(__dirname,"performance-core/sda_core.cjs"):path.resolve(__dirname,"../../packages/core/pkg-node/sda_core.cjs"),
 });
 const stereoLoudness = require("./stereo-loudness.cjs").createStereoLoudness({
-  ipcMain,
+  ipcMain, nativeExecutable: () => { const executable=bundledNativeRendererPath(); return executable && (nativeFilePlayback.programmeReference || nativeReferenceSupported(executable)) ? executable : null; },
   workerPath: path.join(__dirname, "upmix-export-worker.cjs"),
   corePath: app.isPackaged ? path.join(__dirname, "performance-core/sda_core.cjs") : path.resolve(__dirname, "../../packages/core/pkg-node/sda_core.cjs"),
 });
 const authoredPlayback = require("./authored-playback.cjs").createAuthoredPlayback({
   ipcMain,rendererPath:()=>bundledNativeRendererPath(),
-  configureScene:scene=>nativeRendererCommandAck({type:"configureAuthoredScene",scene},"configureAuthoredScene",60000),
+  configureScene:async scene=>{
+    const accepted=await nativeRendererCommandAck({type:"configureAuthoredScene",scene},"configureAuthoredScene",60000);
+    if(accepted&&nativeMasterSession)await nativeFilePlayback.request({action:"configure",session:nativeMasterSession,authoredScene:scene});
+    return accepted;
+  },
   readRoom:id=>readCinemaProfile(id),
 });
 const performanceMonitor = require('./performance-monitor.cjs').createPerformanceMonitor({
@@ -317,6 +322,11 @@ let nativeRendererStatus = { running: false, referenceMix: true, detail: "未启
 // Older bundled sidecars do not advertise the codec gate. Keep this tri-state
 // until ready/first use so an old binary cannot hold the PCM queue on timeout.
 let nativeRendererProgramCodecSupported = null;
+const nativeFilePlayback = new (require("./native-file-playback.cjs").NativeFilePlayback)({
+  send: command => nativeRendererCommand(command, true),
+  publish: data => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send("sda:native-file-state", data); },
+});
+
 let nativeRendererSelectedHrtf = null;
 let nativeRendererActiveHeadphoneFir = null;
 let nativeRendererObjectActivity = [];
@@ -336,6 +346,17 @@ function bundledNativeRendererPath() {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
+const nativeReferenceCapabilities=new Map();
+function nativeReferenceSupported(executable) {
+  const stat=fs.statSync(executable),key=`${executable}:${stat.size}:${stat.mtimeMs}`;
+  if(nativeReferenceCapabilities.has(key))return nativeReferenceCapabilities.get(key);
+  // Bounded marker scan supports analysis before the audio device is started.
+  const needle=Buffer.from("nativeProgrammeReference"),fd=fs.openSync(executable,"r");let tail=Buffer.alloc(0),found=false;
+  try {const chunk=Buffer.alloc(65536);for(;;){const n=fs.readSync(fd,chunk,0,chunk.length,null);if(!n)break;const bytes=Buffer.concat([tail,chunk.subarray(0,n)]);if(bytes.includes(needle)){found=true;break;}tail=Buffer.from(bytes.subarray(Math.max(0,bytes.length-needle.length+1)));}}
+  finally{fs.closeSync(fd);}
+  nativeReferenceCapabilities.clear();nativeReferenceCapabilities.set(key,found);return found;
+}
+
 function publishNativeRendererStatus() {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("sda:native-renderer-status", nativeRendererStatus);
@@ -353,6 +374,7 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
     hrtfReady: telemetry.hrtfReady === true,
     directionalHrtf: telemetry.directionalHrtf === true,
     binauralEnabled: telemetry.binauralEnabled !== false,
+    nativeFilePlaybackSupported: nativeFilePlayback.supported,
     programCodecSupported: typeof telemetry.programCodecSupported === "boolean"
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
@@ -401,7 +423,7 @@ function nativeRendererCommand(command, priority = false) {
   if (!nativeRenderer?.stdin || nativeRenderer.stdin.destroyed || (!nativeRendererWritable&&!priority) || !command || typeof command !== "object") return false;
   try {
     const json = Buffer.from(JSON.stringify(command), "utf8");
-    if (json.length > NATIVE_RENDERER_MAX_LINE_BYTES) return false;
+    if (json.length > NATIVE_RENDERER_MAX_CONTROL_BYTES) return false;
     const header = Buffer.allocUnsafe(5);
     header.writeUInt8("J".charCodeAt(0), 0);
     header.writeUInt32LE(json.length, 1);
@@ -584,25 +606,21 @@ function normalizeOutputSettings(value) {
   return {deviceId:value.remoteCompatible ? null : value.deviceId,exclusive:value.remoteCompatible || (value.deviceId?.startsWith("asio:") || value.deviceId?.startsWith("dsound:")) ? false : value.exclusive,remoteCompatible:value.remoteCompatible===true};
 }
 function consumeNativeRendererOutput(chunk) {
-  nativeRendererBuffer += chunk;
-  if (nativeRendererBuffer.length > NATIVE_RENDERER_MAX_LINE_BYTES * 2) {
-    nativeRendererBuffer = "";
-    setNativeRendererStatus(false, "native renderer 输出超限，播放已停止");
-    return;
-  }
-  for (;;) {
-    const newline = nativeRendererBuffer.indexOf("\n");
-    if (newline < 0) break;
-    const line = nativeRendererBuffer.slice(0, newline);
-    nativeRendererBuffer = nativeRendererBuffer.slice(newline + 1);
-    if (!line || line.length > NATIVE_RENDERER_MAX_LINE_BYTES) continue;
+  const received=require("./native-event-lines.cjs").readNativeEventLines(nativeRendererBuffer,chunk,NATIVE_RENDERER_MAX_LINE_BYTES);
+  nativeRendererBuffer=received.remaining;
+  if(received.overflow)setNativeRendererStatus(false,"native renderer 输出消息超过元数据上限");
+  for(const line of received.lines){
     try {
       const message = JSON.parse(line);
       if (message?.type === "ready" && message.protocol === NATIVE_RENDERER_PROTOCOL) {
+        nativeFilePlayback.supported = Array.isArray(message.features) && message.features.includes("nativeFilePlayback");
+        nativeFilePlayback.programmeReference = message.features?.includes("nativeProgrammeReference") === true;
         nativeRendererProgramCodecSupported = Array.isArray(message.features) && message.features.includes("programCodec");
         setNativeRendererStatus(true, `渲染 ${message.sampleRate ?? message.sample_rate}Hz / ${message.outputChannels ?? message.output_channels}ch（等待完整 HRTF）`, true, {
           programCodecSupported: nativeRendererProgramCodecSupported,
         });
+      } else if (message?.type === "filePlayback") {
+        nativeFilePlayback.handle(message.data);
       } else if (message?.type === "outputDevices") {
         publishOutputDevices({status:message.status,devices:message.devices});
         writeStartupLog(`audio output: ${JSON.stringify(message.status)}`);
@@ -669,6 +687,7 @@ function consumeNativeRendererOutput(chunk) {
 }
 
 function clearNativeRendererSession(reason) {
+  nativeFilePlayback.reset(reason);
   nativeRendererProgramCodecSupported = null;
   publishOutputDevices({status:{requested:savedOutputSettings(),state:"unavailable",detail:reason},devices:[]});
   publishNativeRendererObjectActivity([]);
@@ -1546,6 +1565,56 @@ ipcMain.handle("sda:head-tracking-use-bundled-helper", async () => {
 });
 ipcMain.handle("sda:head-tracking-start", () => startHeadTracking());
 ipcMain.handle("sda:head-tracking-stop", () => suspendHeadTracking());
+let nativeFileOpenRevision=0;
+let nativeOpeningSession=null;
+let nativeMetadataAbort=null;
+let nativeMasterSession=null;
+ipcMain.handle("sda:native-file-command", async (_event, command) => {
+  if (["open", "probe"].includes(command?.action)) {
+    if (typeof command.path !== "string" || !path.isAbsolute(command.path)) throw new Error("Native input requires an absolute local file path");
+    const metadata = await fs.promises.stat(command.path); if (!metadata.isFile()) throw new Error("Native input is not a regular file");
+  }
+  if (command?.action === "open") {
+    const revision=++nativeFileOpenRevision;nativeMasterSession=null;nativeOpeningSession=command.session;
+    nativeMetadataAbort?.abort();const metadataAbort=new AbortController();nativeMetadataAbort=metadataAbort;
+    const isCurrent=()=>{if(revision!==nativeFileOpenRevision)throw Error("Native file open was replaced");};
+    let wave;
+    const input=await fs.promises.open(command.path,'r');
+    try{const head=Buffer.alloc(12);await input.read(head,0,12,0);if(!command.masterEditable&&['RIFF','RF64','BW64'].includes(head.toString('ascii',0,4))&&head.toString('ascii',8,12)==='WAVE')wave=await require('./bwf-file-metadata.cjs').readBwfFileMetadata(command.path,{signal:metadataAbort.signal});}finally{await input.close();}
+    isCurrent();
+    if(wave){
+      await nativeFilePlayback.request({action:'metadata',session:command.session,path:command.path,description:wave.description,eventCount:wave.events.length});isCurrent();
+      let events=[],bytes=0;
+      for(const event of wave.events){const n=Buffer.byteLength(JSON.stringify(event))+1;if(n>12000)throw Error('ADM event exceeds the control packet limit');if(bytes+n>12000){isCurrent();await nativeFilePlayback.request({action:'metadata',session:command.session,events});events=[];bytes=0;}events.push(event);bytes+=n;}
+      if(events.length){isCurrent();await nativeFilePlayback.request({action:'metadata',session:command.session,events});}
+    }
+    let metadata;
+    try {
+      const tags = await (await import("music-metadata")).parseFile(command.path, { duration: false });
+      const picture = tags.common.picture?.find(p => ["image/jpeg", "image/png"].includes(p.format));
+      metadata = { durationMs: Number.isFinite(tags.format.duration) ? tags.format.duration * 1000 : undefined, title: tags.common.title, artist: tags.common.artist, album: tags.common.album,
+        coverArt: picture ? { bytes: new Uint8Array(picture.data), mimeType: picture.format } : undefined };
+    } catch { /* Native source probing remains authoritative for unsupported tag containers. */ }
+    isCurrent();
+    const value = await nativeFilePlayback.request(command);
+    isCurrent();
+    nativeOpeningSession=null;nativeMetadataAbort=null;nativeMasterSession=command.masterEditable?command.session:null;
+    if(wave)metadata={...metadata,title:metadata?.title||wave.title,binaural:wave.binaural};
+    if (value.codec === "sdar") {
+      const summary = value.authored?.summary || {};
+      metadata = { ...metadata, title: typeof summary.title === "string" ? summary.title : metadata?.title,
+        artist: typeof summary.artist === "string" ? summary.artist : metadata?.artist, album: typeof summary.album === "string" ? summary.album : metadata?.album };
+      if (!metadata.coverArt) {
+        const cover = value.authored?.covers?.find(item => ["image/jpeg", "image/png"].includes(item.mimeType));
+        if (cover && path.isAbsolute(cover.path)) {const coverPath=require("./authored-playback.cjs").canonicalResourcePath(cover.path);if((await fs.promises.stat(coverPath)).size<=8*1024*1024)metadata.coverArt={bytes:new Uint8Array(await fs.promises.readFile(coverPath)),mimeType:cover.mimeType};}
+      }
+    }
+    return { ...value, durationMs: value.durationMs > 0 ? value.durationMs : metadata?.durationMs || 0, container: path.extname(command.path).slice(1), metadata };
+  }
+  if(command?.action==="close"&&command.session===nativeOpeningSession){nativeFileOpenRevision++;nativeOpeningSession=null;nativeMetadataAbort?.abort();nativeMetadataAbort=null;}
+  if(command?.action==="close"&&command.session===nativeMasterSession)nativeMasterSession=null;
+  return nativeFilePlayback.request(command);
+});
 ipcMain.handle("sda:native-renderer-status", () => nativeRendererStatus);
 ipcMain.handle("sda:takeover-airpods-audio", () => takeoverAirpodsAudio());
 ipcMain.handle("sda:output-devices", async () => {

@@ -21,6 +21,10 @@
       "assets/**",
       "main.cjs",
       "native-event-batches.cjs",
+      "native-event-lines.cjs",
+      "native-file-playback.cjs",
+      "bwf-file-metadata.cjs",
+      "bwf-metadata.cjs",
       "remote-session.cjs",
       "remote-rtc.cjs",
       "pcm-lossless.cjs",
@@ -75,6 +79,8 @@
       "sdar-public-tags.cjs"
     ],
     "asarUnpack": [
+      "bwf-file-metadata.cjs",
+      "bwf-metadata.cjs",
       "node_modules/h5wasm/**",
       "personal-hrtf-worker.cjs",
       "personal-hrtf.cjs",
@@ -155,6 +161,7 @@
   "dependencies": {
     "fft.js": "4.0.4",
     "h5wasm": "0.10.3",
+    "music-metadata": "11.16.0",
     "ws": "^8.21.3"
   }
 }

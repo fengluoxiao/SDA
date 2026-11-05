@@ -22,6 +22,7 @@ struct Av3aReference {
     receiver: Option<std::sync::mpsc::Receiver<Result<ReferenceOutput, String>>>,
     worker: Option<std::thread::JoinHandle<()>>,
     native_frames: u64,
+    channels: usize,
     sample_rate: u32,
     latest: Measurement,
     speakers: sda_core::loudness::SpeakerReference,
@@ -40,7 +41,15 @@ impl Av3aReference {
     fn open(path: &Path) -> Result<Self, String> {
         let started = Instant::now();
         // Open before spawning so an invalid input fails synchronously.
-        let input = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut probe=fs::File::open(path).map_err(|e|e.to_string())?;
+        use std::io::Read;
+        let mut head=[0u8;8];let count=probe.read(&mut head).map_err(|e|e.to_string())?;
+        let container=count==8&&matches!(&head[4..8],b"ftyp"|b"moov"|b"free"|b"mdat");
+        let input:Box<dyn Read+Send>=if container {
+            match crate::mp4_extract::MhasFile::open_av3a(path)? {
+                Some(view)=>Box::new(view),None=>Box::new(PacketInput{source:crate::packet_source::PacketSource::open(path,"av3a")?,pending:std::io::Cursor::new(vec![])}),
+            }
+        }else{Box::new(fs::File::open(path).map_err(|e|e.to_string())?)};
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
         let worker = std::thread::Builder::new().name("sda-vivid-reference".into())
             .stack_size(4 * 1024 * 1024).spawn(move || {
@@ -49,13 +58,22 @@ impl Av3aReference {
                 // can outlive its reference owner, including on source changes.
                 let _ = sender.send(result.map(ReferenceOutput::Finished));
             }).map_err(|e| e.to_string())?;
-        Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0,
+        Ok(Self { receiver: Some(receiver), worker: Some(worker), native_frames: 0, channels: 0,
             sample_rate: 48000, latest: Measurement::default(), speakers: Default::default(), scene: None, finished: false, use_speakers: false, renderer: None,
             started, receive_seconds: 0., meter_seconds: 0., canonical_seconds: 0.,
             decode_timing: None, elapsed_seconds: 0. })
     }
 }
-fn decode_reference(input: fs::File, sender: &std::sync::mpsc::SyncSender<Result<ReferenceOutput,String>>) -> Result<DecodeTiming,String> {
+struct PacketInput {source:crate::packet_source::PacketSource,pending:std::io::Cursor<Vec<u8>>}
+impl std::io::Read for PacketInput {
+ fn read(&mut self,output:&mut[u8])->std::io::Result<usize>{
+  if output.is_empty(){return Ok(0);}
+  loop{let count=self.pending.read(output)?;if count>0{return Ok(count);}
+   match self.source.next().map_err(std::io::Error::other)?{Some(packet)=>self.pending=std::io::Cursor::new(packet),None=>return Ok(0)}
+  }
+ }
+}
+fn decode_reference(input: Box<dyn std::io::Read + Send>, sender: &std::sync::mpsc::SyncSender<Result<ReferenceOutput,String>>) -> Result<DecodeTiming,String> {
     use std::io::Read;
     let mut input = std::io::BufReader::new(input);
     let mut decoder = sda_core::StreamingDecoder::av3a_pipelined_source_reference();
@@ -106,6 +124,7 @@ impl ProgrammeReference for Av3aReference {
             "objectScene": self.scene.is_some(), "complete": self.finished,
         }))
     }
+    fn channels(&self)->usize{self.channels}
     fn frames(&self) -> u64 { (self.native_frames*48000+u64::from(self.sample_rate)/2)/u64::from(self.sample_rate) }
     fn input_sample_rate(&self)->u32{self.sample_rate}
     fn measurement_sample_rate(&self)->u32{self.sample_rate}
@@ -153,6 +172,7 @@ impl ProgrammeReference for Av3aReference {
                         self.use_speakers=true;
                     }
                     self.meter_seconds += metering.elapsed().as_secs_f64();
+                    self.channels=self.channels.max(frame.channels.len());
                     self.native_frames += frame.channels[0].len() as u64;
                     if self.frames() >= end { return Ok(false); }
                 }

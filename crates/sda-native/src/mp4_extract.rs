@@ -283,16 +283,7 @@ fn mhas_header(kind: u8, len: usize) -> Vec<u8> {
     bytes
 }
 /// Returns None before opening `output` for unsupported container variants.
-/// Caller owns and retires the session working file, just as for JS extraction.
-pub fn extract(
-    source: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-) -> Result<Option<ExtractedTrack>, String> {
-    let source = source.as_ref();
-    let output = output.as_ref();
-    if source == output {
-        return Err("Extraction output must differ from input".into());
-    }
+fn open_index(source: &Path) -> Result<Option<(BufReader<File>, Index)>, String> {
     let mut input =
         BufReader::with_capacity(1024 * 1024, File::open(source).map_err(|e| e.to_string())?);
     let length = input.get_ref().metadata().map_err(|e| e.to_string())?.len();
@@ -380,6 +371,20 @@ pub fn extract(
     if sample != index.sizes.len() {
         return Err(invalid());
     }
+    Ok(Some((input,index)))
+}
+
+/// Caller owns and retires the session working file, just as for JS extraction.
+pub fn extract(
+    source: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<Option<ExtractedTrack>, String> {
+    let source = source.as_ref();
+    let output = output.as_ref();
+    if source == output {
+        return Err("Extraction output must differ from input".into());
+    }
+    let Some((mut input,index)) = open_index(source)? else { return Ok(None); };
     // create_new prevents accidentally replacing the input or another user's file.
     let mut writer = BufWriter::with_capacity(
         1024 * 1024,
@@ -667,6 +672,21 @@ mod tests {
         assert_eq!(mhas_header(2, 2048), [0x4f, 0xff, 0, 0, 1]);
     }
     #[test]
+    fn virtual_compressed_views_match_extraction_at_random_offsets() {
+        for codec in [b"mha1",b"mhm1",b"av3a"] { for co64 in [false,true] {for tail in [false,true] {
+            let dir=std::env::temp_dir().join(format!("sda-view-{}-{}-{co64}-{tail}",std::process::id(),String::from_utf8_lossy(codec)));
+            std::fs::create_dir_all(&dir).unwrap();let input=dir.join("source.mp4");let output=dir.join("track");
+            std::fs::write(&input,fixture_codec(codec,co64,tail,false)).unwrap();extract(&input,&output).unwrap().unwrap();
+            let expected=std::fs::read(&output).unwrap();
+            let mut view=if codec==b"av3a"{MhasFile::open_av3a(&input)}else{MhasFile::open(&input)}.unwrap().unwrap();
+            let mut all=vec![];view.read_to_end(&mut all).unwrap();assert_eq!(all,expected);
+            for start in 0..=expected.len(){view.seek(SeekFrom::Start(start as u64)).unwrap();let mut got=vec![0;3];let n=view.read(&mut got).unwrap();assert_eq!(&got[..n],&expected[start..(start+3).min(expected.len())]);}
+            assert!(view.seek(SeekFrom::End(-1)).is_ok());let mut byte=[0];view.read_exact(&mut byte).unwrap();assert_eq!(byte[0],*expected.last().unwrap());
+            assert!(view.seek(SeekFrom::Start(100000)).is_ok());assert_eq!(view.read(&mut byte).unwrap(),0);
+            std::fs::remove_dir_all(dir).unwrap();
+        }}}
+    }
+    #[test]
     fn existing_output_is_never_overwritten() {
         let dir = std::env::temp_dir().join(format!("sda-existing-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -679,4 +699,45 @@ mod tests {
         assert!(extract(&input, &input).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+/// An indexed view over the original MP4 bytes. No extracted track or PCM file.
+/// It presents exactly the MHAS bytes emitted by `extract`, including mha1 headers.
+pub struct MhasFile { input: BufReader<File>, spans: Vec<(u64,Span)>, length:u64, position:u64 }
+enum Span { Memory(Vec<u8>), Source{offset:u64,length:usize} }
+impl MhasFile {
+ pub fn open(path:impl AsRef<Path>)->Result<Option<Self>,String>{
+  Self::open_kind(path.as_ref(),false)
+ }
+ pub fn open_av3a(path:impl AsRef<Path>)->Result<Option<Self>,String>{Self::open_kind(path.as_ref(),true)}
+ fn open_kind(path:&Path,av3a:bool)->Result<Option<Self>,String>{
+  let Some((input,index))=open_index(path)?else{return Ok(None)};
+  if if av3a {index.codec!="av3a"} else {!matches!(index.codec.as_str(),"mha1"|"mhm1")} {return Ok(None);}
+  let raw=index.codec=="mha1";let mut view=Self{input,spans:Vec::new(),length:0,position:0};
+  if raw {let mut config=mhas_header(1,index.config.len());config.extend_from_slice(&index.config);view.push(Span::Memory(config))?;}
+  let(mut sample,mut run)=(0,0);
+  for(chunk,&offset)in index.chunks.iter().enumerate(){
+   while run+1<index.runs.len()&&index.runs[run+1].0<=chunk+1{run+=1;}
+   let mut at=offset;
+   for _ in 0..index.runs[run].1{let bytes=index.sizes[sample];if raw{view.push(Span::Memory(mhas_header(2,bytes)))?;}
+    view.push(Span::Source{offset:at,length:bytes})?;at+=bytes as u64;sample+=1;
+   }
+  }
+  Ok(Some(view))
+ }
+ fn push(&mut self,span:Span)->Result<(),String>{let n=match &span{Span::Memory(b)=>b.len(),Span::Source{length,..}=>*length};self.spans.push((self.length,span));self.length=self.length.checked_add(n as u64).ok_or("virtual MHAS length overflow")?;Ok(())}
+}
+impl Read for MhasFile {
+ fn read(&mut self,out:&mut[u8])->std::io::Result<usize>{
+  let mut written=0;
+  while written<out.len()&&self.position<self.length{
+   let index=self.spans.partition_point(|(at,_)|*at<=self.position).saturating_sub(1);let(start,span)=&self.spans[index];let relative=(self.position-start)as usize;
+   let total=match span{Span::Memory(bytes)=>bytes.len(),Span::Source{length,..}=>*length};let count=(total-relative).min(out.len()-written);
+   match span{Span::Memory(bytes)=>out[written..written+count].copy_from_slice(&bytes[relative..relative+count]),Span::Source{offset,..}=>{self.input.seek(SeekFrom::Start(offset+relative as u64))?;self.input.read_exact(&mut out[written..written+count])?;}}
+   self.position+=count as u64;written+=count;
+  }Ok(written)
+ }
+}
+impl Seek for MhasFile {
+ fn seek(&mut self,from:SeekFrom)->std::io::Result<u64>{let position=match from{SeekFrom::Start(n)=>i128::from(n),SeekFrom::Current(n)=>i128::from(self.position)+i128::from(n),SeekFrom::End(n)=>i128::from(self.length)+i128::from(n)};self.position=u64::try_from(position).map_err(|_|std::io::Error::new(std::io::ErrorKind::InvalidInput,"invalid virtual MHAS seek"))?;Ok(self.position)}
 }

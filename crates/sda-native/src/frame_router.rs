@@ -20,6 +20,11 @@ fn same_target(a: &ObjectEvent, b: &ObjectEvent) -> bool {
 }
 
 impl FrameRouter {
+    pub(crate) fn topology(&self) -> (Vec<String>, usize) {
+        let mut beds = self.declared.iter().filter_map(|(id,label)| label.as_ref().map(|label|(id.strip_prefix("bed:").and_then(|v|v.parse::<usize>().ok()).unwrap_or(usize::MAX),label.clone()))).collect::<Vec<_>>();
+        beds.sort_by_key(|v|v.0); (beds.into_iter().map(|v|v.1).collect(), self.objects.len())
+    }
+
     pub fn route(&mut self,frame:FrameData)->EngineResult<Vec<RenderCommand>> {
         frame.validate_source_count()?;
         let frames=self.presentations.push(frame)?;self.route_ready(frames)

@@ -34,6 +34,15 @@ impl MobileEngine {
         Ok(())
     }
     pub fn open_sdar(&mut self, path: &str, temp_root: Option<&str>) -> EngineResult<u32> {
+        self.open_sdar_with_layout(path, temp_root, "7.1.4")
+    }
+    pub(crate) fn open_sdar_with_layout(&mut self, path: &str, temp_root: Option<&str>, layout: &str) -> EngineResult<u32> {
+        self.open_sdar_kind(path,temp_root,layout,false)
+    }
+    #[cfg(feature="desktop-output")]
+    pub(crate) fn open_sdar_master(&mut self,path:&str,layout:&str)->EngineResult<u32>{self.open_sdar_kind(path,None,layout,true)}
+    fn open_sdar_kind(&mut self,path:&str,temp_root:Option<&str>,layout:&str,allow_master:bool)->EngineResult<u32>{
+        let layout=if matches!(layout,"2.0"|"2.1"){"7.1.4"}else{layout};
         if self.sdar_source.is_some()
             || self.mp3_decoder.is_some()
             || self.alac_decoder.is_some()
@@ -42,18 +51,18 @@ impl MobileEngine {
         {
             return Err("engine already has an active source".into());
         }
-        let mut file = BedFile::open_interchange(path)?;
+        let mut file = if allow_master{BedFile::open_master_wave(path)?}else{BedFile::open_interchange(path)?};
         let resources = if let Some(root) = temp_root {
             PreparedResources::new_in(&file.metadata, std::path::Path::new(root))?
         } else {
             PreparedResources::new(&file.metadata)?
         };
-        let value = resources.renderer_scene(&file.metadata, "7.1.4")?;
+        let value = resources.renderer_scene(&file.metadata, layout)?;
         let scene: sda_native_renderer::authored::Scene =
             serde_json::from_value(value).map_err(|e| e.to_string())?;
-        let info = serde_json::json!({"summary":file.metadata.summary(),"inputRate":file.input_rate,"format":if file.transport.as_ref().is_some_and(|v|v["container"]!="sdar"){"SDA M4A"}else{"SDAR Bed Channel"},"frames":file.frames(),"covers":resources.covers,"lyrics":resources.lyrics});
+        let info = serde_json::json!({"summary":file.metadata.summary(),"lossless":file.transport.as_ref().map_or(true,|t|t["lossless"]==true),"masterEditable":file.is_editable_master(),"inputRate":file.input_rate,"format":if file.transport.as_ref().is_some_and(|v|v["container"]!="sdar"){"SDA M4A"}else{"SDAR Bed Channel"},"frames":file.frames(),"covers":resources.covers,"lyrics":resources.lyrics});
         self.apply_authored_scene(scene.clone())?;
-        self.config.layout = "7.1.4".into();
+        self.config.layout = layout.into();
         self.config.hrtf_wet_weight = scene.resources.hrtf_wet;
         self.config.direct_object_hrtf = scene.render["playbackSnapshot"]["hrtf"]
             ["directObjectHrtf"]
@@ -83,6 +92,14 @@ impl MobileEngine {
         });
         self.announced_codec = None;
         Ok(rate)
+    }
+    pub(crate) fn set_sdar_layout(&mut self, layout: &str) -> EngineResult<()> {
+        let layout = if matches!(layout,"2.0"|"2.1") {"7.1.4"} else {layout};
+        let source = self.sdar_source.as_ref().ok_or("SDAR source unavailable")?;
+        let mut scene=source.scene.clone();scene.layout=layout.into();
+        self.apply_authored_scene(scene.clone())?;
+        self.sdar_source.as_mut().unwrap().scene = scene;
+        self.config.layout = layout.into(); Ok(())
     }
     pub fn sdar_info(&self) -> serde_json::Value {
         self.sdar_source

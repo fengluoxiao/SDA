@@ -1,5 +1,12 @@
 use super::*;
 
+/// Desktop decoder hosts can consume file controls without routing PCM through JS.
+pub trait ControlExtension: Send + Sync { fn handle(&self, value: &serde_json::Value) -> bool; }
+static CONTROL_EXTENSION: std::sync::RwLock<Option<Arc<dyn ControlExtension>>> = std::sync::RwLock::new(None);
+pub fn install_control_extension(handler: Arc<dyn ControlExtension>) { *CONTROL_EXTENSION.write().expect("control extension lock") = Some(handler); }
+pub fn has_control_extension() -> bool { CONTROL_EXTENSION.read().expect("control extension lock").is_some() }
+
+
 fn apply_object_events(state: &mut Engine, events: Vec<NativeObjectEvent>) {
     for event in events {
         let id = format!("obj:{}", event.id);
@@ -1324,7 +1331,10 @@ fn read_frame(
                 }
                 let mut bytes = vec![0; length];
                 input.read_exact(&mut bytes)?;
-                let command = serde_json::from_slice::<Command>(&bytes)
+                let value: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                if CONTROL_EXTENSION.read().expect("control extension lock").as_ref().is_some_and(|handler| handler.handle(&value)) { return Ok(true); }
+                let command = serde_json::from_value::<Command>(value)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 if let Command::Hello { protocol } = command {
                     write_event(&Event::Ack {

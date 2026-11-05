@@ -33,7 +33,7 @@ fn default_reference_rate()->u32{48000}
 impl CompleteReference {
     pub fn validate(&self) -> Result<(), String> {
         if self.policy != POLICY || !self.complete || self.frames == 0 || self.sample_rate != 48000
-            || self.input_sample_rate == 0 || !(8000..=384000).contains(&self.measurement_sample_rate) || !matches!(self.codec.as_str(), "alac" | "mp3" | "av3a")
+            || self.input_sample_rate == 0 || !(8000..=384000).contains(&self.measurement_sample_rate) || !matches!(self.codec.as_str(), "alac" | "mp3" | "av3a" | "pcm" | "flac" | "aac" | "vorbis")
             || self.measurement.integrated_lufs.is_some_and(|v| !v.is_finite())
             || self.measurement.true_peak_dbtp.is_some_and(|v| !v.is_finite())
             || self.measurement.integrated_lufs.is_some() && self.measurement.blocks == 0 {
@@ -81,6 +81,16 @@ impl FreshStereoReference {
         Ok(Self { decoder:Some(decoder), programme:None, meter:LoudnessMeter::new(48000), path, bytes:before.len(), modified:before.modified().ok(),
             frames:0, codec:if alac { "alac" } else { "mp3" }, input_rate, complete:None })
     }
+    #[cfg(feature = "desktop-output")]
+    pub fn open_audio(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path=path.as_ref().to_path_buf();
+        let before=fs::metadata(&path).map_err(|e|e.to_string())?;
+        let decoder=Mp3FileDecoder::open_audio(&path)?;
+        if decoder.source_channels()!=2 {return Err("programme reference requires stereo input".into());}
+        let codec=decoder.source_codec();let input_rate=decoder.input_rate();
+        Ok(Self {decoder:Some(decoder),programme:None,meter:LoudnessMeter::new(48000),path,
+            bytes:before.len(),modified:before.modified().ok(),frames:0,codec,input_rate,complete:None})
+    }
     pub(crate) fn from_programme(path: &Path, codec: &'static str, programme: Box<dyn ProgrammeReference>) -> Result<Self, String> {
         let before=fs::metadata(path).map_err(|e|e.to_string())?;
         if !before.is_file() || before.len()==0 { return Err("empty programme source".into()); }
@@ -100,6 +110,8 @@ impl FreshStereoReference {
         self.complete = Some(reference);
         Ok(())
     }
+    #[cfg(feature="desktop-output")]
+    pub fn channels(&self)->usize{self.programme.as_ref().map_or(2,|p|p.channels())}
     /// At most 65536 decoded frames per call; cancellation is checked by the host between calls.
     pub fn step(&mut self, max_frames: usize) -> Result<Step, String> {
         if let Some(measurement) = &self.complete {
@@ -138,6 +150,7 @@ impl FreshStereoReference {
 /// A bounded source-only reader supplied by a format-specific module.
 /// Keeping this interface decoder-neutral preserves the isolated ALAC/MP3 regression target.
 pub(crate) trait ProgrammeReference {
+    fn channels(&self)->usize{2}
     fn diagnostics(&self)->Option<serde_json::Value>{None}
     fn step(&mut self, budget: usize) -> Result<bool, String>;
     fn frames(&self) -> u64;

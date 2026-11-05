@@ -48,6 +48,12 @@ pub mod mp4_extract;
 mod mhas_source;
 mod alac_pcm;
 mod sdar;
+#[cfg(feature = "desktop-output")]
+pub mod desktop;
+#[cfg(feature = "desktop-output")]
+mod desktop_src;
+#[cfg(feature = "desktop-output")]
+mod desktop_wave;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -253,6 +259,9 @@ pub struct MobileEngine {
     alac_adapter: alac_pcm::AlacPcm,
     mpegh_decoder: Option<mpegh::MpeghDecoder>,
     hrtf_loaded: bool,
+    external_transport: bool,
+    #[cfg(feature = "desktop-output")]
+    desktop_converter: desktop_src::Converter,
     sdar_source: Option<sdar::Source>,
 }
 
@@ -296,6 +305,9 @@ impl MobileEngine {
             alac_adapter: Default::default(),
             mpegh_decoder: None,
             hrtf_loaded: false,
+            external_transport: false,
+            #[cfg(feature = "desktop-output")]
+            desktop_converter: Default::default(),
             sdar_source: None,
         })
     }
@@ -544,6 +556,8 @@ impl MobileEngine {
     pub fn stereo_bed_mode(&self) -> bool { self.stereo_bed_mode }
 
     pub fn reset_source_state(&mut self) {
+        #[cfg(feature = "desktop-output")]
+        { self.desktop_converter = Default::default(); }
         self.sdar_source=None;
         self.packet_source=None;self.decode_origin=0;
         self.mp3_decoder = None;
@@ -623,6 +637,12 @@ impl MobileEngine {
             while let Some((mut frame, reference)) = if let Some(decoder) = &mut self.mpegh_decoder {
                 decoder.next_frame_with_reference().map(|(frame, reference)| (frame, Some(reference)))
             } else { self.decoder.next_frame().map(|frame| (frame, None)) } {
+                #[cfg(feature = "desktop-output")]
+                let frames = self.desktop_converter.push(frame)?;
+                #[cfg(not(feature = "desktop-output"))]
+                let frames = vec![frame];
+                let mut reference = reference;
+                for mut frame in frames {
                 frame.sample_pos=frame.sample_pos.saturating_add(self.decode_origin);
                 for event in &mut frame.events {event.sample_pos=event.sample_pos.saturating_add(self.decode_origin);}
                 for trim in &mut frame.downmix_trims {trim.sample_pos=trim.sample_pos.saturating_add(self.decode_origin);}
@@ -632,8 +652,9 @@ impl MobileEngine {
                 }
                 sample_pos = frame.sample_pos + frame.channels.first().map_or(0, |pcm| pcm.len()) as u64;
                 self.queue_object_visual_events(&frame.events, consumed_sample_pos)?;
-                pending.push_back(self.balance.measure(frame, reference));
+                pending.push_back(self.balance.measure(frame, reference.take()));
                 frames_pushed += 1;
+                }
             }
         }
         *self.newest_sample_pos.lock().expect("clock lock") = sample_pos;
@@ -651,6 +672,15 @@ impl MobileEngine {
         let status = self.feed(&[])?;
         if self.compressed_input_bytes > 0 && self.decoded_sample_pos() == 0 {
             return Err(format!("no decoded audio after {} compressed bytes (codec: {})",self.compressed_input_bytes,self.codec_name()));
+        }
+        #[cfg(feature = "desktop-output")]
+        for mut frame in self.desktop_converter.finish()? {
+            frame.sample_pos += self.decode_origin;
+            for event in &mut frame.events { event.sample_pos += self.decode_origin; }
+            for trim in &mut frame.downmix_trims { trim.sample_pos += self.decode_origin; }
+            self.queue_object_visual_events(&frame.events, self.playback_status().consumed_sample_pos)?;
+            *self.newest_sample_pos.lock().expect("clock lock") = frame.sample_pos + frame.channels[0].len() as u64;
+            self.pending.lock().expect("pending lock").push_back(self.balance.measure(frame, None));
         }
         self.balance.finish();
         self.startup.lock().expect("startup lock").ended = true;
@@ -754,6 +784,8 @@ impl MobileEngine {
             let point=source.seek(target,6144)?;
             if let Some(decoder)=&mut self.mpegh_decoder {decoder.reset()?;}else{self.decoder.reset_for_seek(point.input_sample);}
             self.begin_seek(point.output_sample,target);
+            #[cfg(feature = "desktop-output")]
+            self.desktop_converter.reset(point.input_sample,point.sample_rate);
             self.decode_origin=point.output_sample;return Ok(());
         }
         if self.mpegh_decoder.is_some(){return Err("MPEG-H requires an indexed independent restart frame".into());}
@@ -1101,7 +1133,7 @@ impl MobileEngine {
                     Some((*start,*start+entries.first().map_or(0,|(_,pcm)|pcm.len()) as u64)),
                 _=>None,
             };
-            if self.hrtf_directions==0 {
+            if self.hrtf_directions==0 && !self.external_transport {
                 pipeline.commands.push(command).map_err(|_|"render command queue full")?;
             } else {
                 let (reply,received)=std::sync::mpsc::channel();

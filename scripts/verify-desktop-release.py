@@ -54,7 +54,7 @@ def verify_payload(app, platform, arch, commit, version):
     assert info['sourceCommit']==commit,'Wrong native renderer source'
     assert info['sha256']==sha(roles['renderer']) and info['roomReferenceSha256']==sha(roles['room'])
     binary=roles['renderer'].read_bytes()
-    for marker in [commit.encode(),b'bedExportReady',b'SDAR Bed Channel with Objects']:assert marker in binary,marker
+    for marker in [commit.encode(),b'bedExportReady',b'SDAR Bed Channel with Objects',b'nativeFilePlayback',b'nativeProgrammeReference']:assert marker in binary,marker
     pkg=asar_package(resources/'app.asar');validate_package_metadata(pkg,version)
     if platform=='macOS':
         p=plistlib.loads((app/'Contents/Info.plist').read_bytes());assert p['CFBundleShortVersionString']==version

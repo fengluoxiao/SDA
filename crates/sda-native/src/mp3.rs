@@ -61,6 +61,13 @@ impl Mp3FileDecoder {
         Self::open_format(path, false)
     }
 
+    #[cfg(feature = "desktop-output")]
+    pub fn open_audio(path: impl AsRef<Path>) -> Result<Self, String> { Self::open_format(path, false) }
+    #[cfg(feature = "desktop-output")]
+    pub fn source_codec(&self) -> &'static str {
+        use symphonia::core::codecs::*;
+        match self.decoder.codec_params().codec { CODEC_TYPE_ALAC => "alac", CODEC_TYPE_MP3 => "mp3", CODEC_TYPE_FLAC => "flac", CODEC_TYPE_AAC => "aac", CODEC_TYPE_VORBIS => "vorbis", _ => "pcm" }
+    }
     pub fn open_alac(path: impl AsRef<Path>) -> Result<Self, String> {
         Self::open_format(path, true)
     }
@@ -70,11 +77,9 @@ impl Mp3FileDecoder {
         let file = File::open(path.as_ref()).map_err(|e| format!("open {codec_name}: {e}"))?;
         let stream = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new();
-        hint.with_extension(if alac { "m4a" } else { "mp3" });
-        let probed = symphonia::default::get_probe()
-            .format(&hint, stream, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
-            .map_err(|e| format!("probe {codec_name}: {e}"))?;
-        let mut format = probed.format;
+        hint.with_extension(path.as_ref().extension().and_then(|v|v.to_str()).unwrap_or(if alac {"m4a"}else{"mp3"}));
+        let options=FormatOptions{enable_gapless:true,..Default::default()};
+        let format=symphonia::default::get_probe().format(&hint,stream,&options,&MetadataOptions::default()).map_err(|e|format!("probe {codec_name}: {e}"))?.format;
         let track = format.tracks().iter()
             .find(|track| if alac { track.codec_params.codec == CODEC_TYPE_ALAC } else { track.codec_params.codec != CODEC_TYPE_NULL })
             .ok_or_else(|| format!("{codec_name} contains no supported audio track"))?;
@@ -86,7 +91,7 @@ impl Mp3FileDecoder {
         // sample entries can carry a placeholder rate (e.g. 1 for 96 kHz ALAC)
         // and may omit channels. The initialized ALAC buffer already has the
         // cookie's real signal specification, before the first packet is read.
-        let (input_rate, channels) = if alac {
+        let (input_rate, channels) = if track.codec_params.codec == CODEC_TYPE_ALAC {
             let spec = decoder.last_decoded().spec().to_owned();
             (spec.rate, spec.channels.count())
         } else {
@@ -168,6 +173,8 @@ impl Mp3FileDecoder {
         Ok(self.total_output_frames)
     }
 
+    #[cfg(feature = "desktop-output")]
+    pub fn source_channels(&self) -> usize {self.channels}
     pub fn input_rate(&self) -> u32 { self.input_rate }
     pub fn duration_frames(&self)->Option<u64>{self.eof_output_frames.or(self.expected_output_frames)}
     pub fn output_frames(&self) -> u64 { self.total_output_frames }

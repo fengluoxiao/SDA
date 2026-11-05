@@ -12,7 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # Desktop host output (cpal). Mobile hosts build with --no-default-features
 # and supply their own AudioOutput (AAudio sink on Android, T2.2).
 default = ["desktop-output"]
-desktop-output = ["sda-native-renderer/cpal-output"]
+desktop-output = ["sda-native-renderer/cpal-output", "symphonia/aac", "symphonia/flac", "symphonia/pcm", "symphonia/wav", "symphonia/aiff", "symphonia/mkv", "symphonia/ogg", "symphonia/vorbis"]
 ios-host = ["sda-native-renderer/coreml-audio"]
 pcm-diagnostic = ["sda-native-renderer/pcm-diagnostic"]
 
@@ -41,3 +41,12 @@ codegen-units = 1
 # Match core: split TrueHD code generation without lowering opt-level or Thin LTO.
 [profile.release.package.truehd]
 codegen-units = 16
+
+[[bin]]
+name = "sda-desktop-player"
+path = "src/bin/sda-desktop-player.rs"
+required-features = ["desktop-output"]
+
+[patch.crates-io]
+asio-sys = { path = "../../apps/native-renderer/vendor/asio-sys" }
+parse_cfg = { path = "../../apps/native-renderer/vendor/parse_cfg" }

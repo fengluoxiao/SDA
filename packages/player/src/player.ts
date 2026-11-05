@@ -1,3 +1,4 @@
+import type { NativeFileBridge, NativeFileSnapshot } from "./native-file.js";
 import { av3aStartupDecision, AV3A_STARTUP_MAX_SECONDS } from "./av3a-startup.js";
 import {connectPerformanceWorker} from "./performance-sink";
 import { isStereoMasterFrame, isAv3aBedFrame } from "./stereo-master.js";
@@ -222,6 +223,8 @@ export interface SdaPlayerOptions {
   /** Native PCM transport. It is a best-effort mirror in Web Audio mode and the
    * authoritative batch ACK/startup clock in native-sidecar mode. */
   nativeRendererSink?: NativeRendererSink;
+  nativeFileBridge?: NativeFileBridge;
+  nativeFileMeasurement?: unknown;
 }
 
 /** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
@@ -300,7 +303,16 @@ export class SdaPlayer {
   /** 实例序号，用于诊断"界面控制的实例"和"实际发声的实例"是否一致。 */
   readonly id = SdaPlayer.nextId++;
 
-  private worker: Worker;
+  private worker: Worker | null;
+  private readonly nativeFileBridge?: NativeFileBridge;
+  private readonly nativeFileMeasurement?: unknown;
+  private nativeFileSession: string | null = null;
+  private nativeFileEpoch = 0;
+  private nativeFileState: NativeFileSnapshot | null = null;
+  private nativeFileOpening = false;
+  private nativeFilePendingState: NativeFileSnapshot | null = null;
+  private nativeFileUnsubscribe?: () => void;
+
   private objectRenderingEnabled = true;
   private renderer: SpatialRenderer | null = null;
   private readonly headPoseOptions: HeadPoseOptions | undefined;
@@ -450,11 +462,15 @@ export class SdaPlayer {
   private disposed = false;
   private authoredInput:AuthoredPcmInput|null=null;
   private authoredSourceExpected = false;
+  private nativeAuthoredInfo:Record<string,unknown>|null=null;
   private authoredMasterEditable = false;
+  private nativeAuthoredEditor: {close:()=>Promise<unknown>;setCinema:(settings:unknown,profileId:string|null)=>Promise<boolean>;shouldResume:()=>boolean} | null = null;
+  attachNativeAuthoredEditor(editor:NonNullable<SdaPlayer["nativeAuthoredEditor"]>):void{if(!this.nativeFileBridge||!this.isEditableAuthoredMaster)throw Error("native master editor requires a WAV master");this.nativeAuthoredEditor=editor;}
+
   private authoredControlChain:Promise<unknown> = Promise.resolve();
   get isEditableAuthoredMaster():boolean{return this.isAuthoredSource&&this.authoredMasterEditable;}
   get isAuthoredSource():boolean{return this.authoredSourceExpected === true || this.authoredInput != null;}
-  get isLosslessAuthoredSource():boolean{return this.authoredInput?.lossless===true;}
+  get isLosslessAuthoredSource():boolean{return this.authoredInput?.lossless===true||this.nativeAuthoredInfo?.lossless===true;}
 
   constructor(cb: PlayerCallbacks = {}, options: SdaPlayerOptions = {}) {
     this.cb = cb;
@@ -465,6 +481,13 @@ export class SdaPlayer {
     this.nativeHeadTracker = new HeadPoseTracker({...options.headPose,fixedForward:true});
     this.outputBackend = options.outputBackend ?? "web-audio";
     this.nativeRendererSink = options.nativeRendererSink;
+    this.nativeFileBridge = options.nativeFileBridge;
+    this.nativeFileMeasurement = options.nativeFileMeasurement;
+    this.nativeFileUnsubscribe = this.nativeFileBridge?.onState(event => {
+      if (event.session !== this.nativeFileSession || this.disposed) return;
+      if (event.kind === "error") this.cb.onError?.(event.error || "原生文件解码失败");
+      else if (event.snapshot) { if (this.nativeFileOpening) this.nativeFilePendingState = event.snapshot; else this.applyNativeFileState(event.snapshot); }
+    });
     if (this.outputBackend === "native-sidecar" && !this.nativeRendererSink) {
       throw new Error("native-sidecar outputBackend requires nativeRendererSink");
     }
@@ -473,12 +496,14 @@ export class SdaPlayer {
     this.pendingOutputLatencySeconds = validatedOutputLatencySeconds(options.initialOutputLatencySeconds);
     this.requestedOutputLatencySeconds = this.pendingOutputLatencySeconds;
     this.health = this.createHealthSnapshot();
-    this.worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), { type: "module" });
-    this.performanceDisconnect=connectPerformanceWorker(this.worker);
+    this.worker = this.nativeFileBridge ? null : new Worker(new URL("./decoder.worker.ts", import.meta.url), { type: "module" });
+    if (this.worker) this.performanceDisconnect=connectPerformanceWorker(this.worker);
     this.ready = new Promise<void>((res) => (this.readyResolve = res));
+    if (this.worker) {
     this.worker.onmessage = (e) => this.onWorkerMessage(e.data);
     this.worker.onerror = (e) => this.handleWorkerFailure(`解码 worker 异常：${e.message || "未知错误"}`);
     this.worker.onmessageerror = () => this.handleWorkerFailure("解码 worker 消息传输失败");
+    }
   }
 
   async init(
@@ -515,7 +540,8 @@ export class SdaPlayer {
         this.setNativeProgramGainDb(this.programLoudnessGainDb);
         this.setHeadphoneCompensation(this.headphoneProfileId);
         this.initialRendererReady = true;
-        this.worker.postMessage({ type: "init" });
+        if (this.nativeFileBridge) this.readyResolve();
+        else this.worker?.postMessage({ type: "init" });
         await this.ready;
         return;
       }
@@ -537,7 +563,7 @@ export class SdaPlayer {
       this.renderer.setBinauralEqBands(this.binauralEqBands);
       this.renderer.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
       await this.attachBinauralIrs(this.renderer);
-      this.worker.postMessage({ type: "init" });
+      this.worker?.postMessage({ type: "init" });
       await this.ready;
     } catch (error) {
       await this.dispose().catch(() => {});
@@ -570,7 +596,7 @@ export class SdaPlayer {
   setLayout(layout: readonly VirtualSpeaker[], manual = true): void {
     if (!this.initArgs) return;
     if (manual) this.autoLayoutEnabled = false;
-    if(this.isAuthoredSource){if(manual&&this.authoredInput?.setLayout)void this.queueAuthoredEdit(input=>input.setLayout!(layoutIdFor(layout))).catch(error=>this.cb.onError?.(String(error)));this.initArgs.layout=layout;return;}
+    if(this.isAuthoredSource){if(manual&&this.nativeFileSession)void this.nativeFileBridge?.command({action:"configure",session:this.nativeFileSession,layout:layoutIdFor(layout)}).catch(error=>this.cb.onError?.(String(error)));else if(manual&&this.authoredInput?.setLayout)void this.queueAuthoredEdit(input=>input.setLayout!(layoutIdFor(layout))).catch(error=>this.cb.onError?.(String(error)));this.initArgs.layout=layout;return;}
     this.initArgs.layout = layout;
     this.renderer?.setLayout(layout);
     if (this.outputBackend === "native-sidecar") {
@@ -601,8 +627,10 @@ export class SdaPlayer {
 
   /** Enable the reversible 2.0 -> 7.1.4 listening transform for ALAC masters. */
   setAlacStereoUpmixEnabled(enabled: boolean): void {
+    if (this.isAuthoredSource) return;
     if (this.alacStereoUpmixEnabled === enabled) return;
     this.alacStereoUpmixEnabled = enabled;
+    if (this.nativeFileSession) void this.nativeFileBridge?.command({ action: "configure", session: this.nativeFileSession, upmix: enabled }).catch(error => this.cb.onError?.(String(error)));
     // The fixed 7.1.4 native bed and warmed low-pass state survive the toggle.
     // Only decoded PCM crossfades; normalization remains the selected reference.
     this.setVolumeBalance(this.volumeBalanceEnabled);
@@ -610,14 +638,16 @@ export class SdaPlayer {
 
   /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
   setObjectRenderingEnabled(enabled: boolean): void {
+    if (this.isAuthoredSource) return;
     this.objectRenderingEnabled = enabled;
-    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: enabled && this.outputMode !== "stereo" });
+    if (this.nativeFileSession) void this.nativeFileBridge?.command({ action: "configure", session: this.nativeFileSession, objectRendering: enabled && this.outputMode !== "stereo" }).catch(error => this.cb.onError?.(String(error)));
+    this.worker?.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: enabled && this.outputMode !== "stereo" });
   }
 
   setOutputMode(mode: OutputMode): void {
     if (!this.initArgs) return;
     this.initArgs.mode = mode;
-    this.worker.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: this.objectRenderingEnabled && mode !== "stereo" });
+    this.worker?.postMessage({ type: "objectRendering", epoch: this.decodeEpoch, enabled: this.objectRenderingEnabled && mode !== "stereo" });
     this.renderer?.setOutputMode(mode);
     this.emitHealth();
   }
@@ -1035,6 +1065,61 @@ export class SdaPlayer {
     return this.renderer?.ctx ?? null;
   }
 
+  get usesNativeFilePlayback(): boolean { return !!this.nativeFileBridge; }
+  get canSeek(): boolean { return this.nativeFileSession !== null; }
+  private applyNativeFileState(snapshot: NativeFileSnapshot): void {
+    if (snapshot.session !== this.nativeFileSession || (snapshot.epoch ?? 0) !== this.nativeFileEpoch || this.disposed) return;
+    this.nativeFileState = snapshot; this.sampleRate = 48000;
+    if (snapshot.durationMs > 0) this.containerDurationSec = snapshot.durationMs / 1000;
+    this.acceptedEndSample = Math.round(snapshot.decodedMs * 48);
+    this.playbackStarted = !snapshot.preparing;
+    const objects = Object.values(snapshot.objects || {}).map(visualObjectFromEvent);
+    this.cb.onVisualState?.(objects, snapshot.positionMs / 1000, new Set(snapshot.paused ? [] : snapshot.soundingObjectIds || []));
+    const format = JSON.stringify([snapshot.bedLabels, snapshot.objectChannels, snapshot.channels]);
+    if (format !== this.decodedFormatKey) {
+      this.decodedFormatKey = format;
+      const stereo = ["alac", "mp3", "flac", "pcm", "aac", "vorbis"].includes(snapshot.codec) && snapshot.objectChannels === 0;
+      this.cb.onDecodedFormat?.({ rawBedLabels: stereo ? ["FrontLeft", "FrontRight"] : snapshot.bedLabels, bedLabels: snapshot.bedLabels, objectChannels: snapshot.objectChannels, stereoSource: stereo, upmixed: stereo && snapshot.bedLabels.length > 2 });
+    }
+    if (snapshot.ended && !this.ended) { this.ended = true; this.cb.onEnded?.(); }
+  }
+  async playNativeFile(path: string): Promise<void> {
+    if (!this.nativeFileBridge || !this.initialRendererReady) throw Error("Native file decoder is unavailable");
+    const session = `${this.id}:${Date.now()}`; this.nativeFileSession = session; this.nativeFileEpoch = 0; this.ended = false;
+    this.nativeFileOpening = true; this.nativeFilePendingState = null;
+    let snapshot: NativeFileSnapshot;
+    try { snapshot = await this.nativeFileBridge.command({ action: "open", session, epoch: 0, path, codec: "auto", masterEditable:this.authoredMasterEditable, layout: layoutIdFor(this.initArgs?.layout ?? LAYOUTS["7.1.4"]), paused: true, upmix: this.outputMode !== "stereo" && this.alacStereoUpmixEnabled, volumeBalance: this.volumeBalanceEnabled, objectRendering: this.objectRenderingEnabled && this.outputMode !== "stereo", binauralEnabled: this.outputMode !== "stereo", measurement: this.nativeFileMeasurement }); }
+    catch (error) { this.nativeFileSession = null; throw error; }
+    finally { this.nativeFileOpening = false; }
+    if (this.disposed || this.nativeFileSession !== session) return;
+    const pending = this.nativeFilePendingState as NativeFileSnapshot | null;
+    if (pending && pending.positionMs >= snapshot.positionMs) snapshot = { ...pending, metadata: snapshot.metadata, container: snapshot.container, authored:snapshot.authored };
+    this.nativeFilePendingState = null;
+    this.nativeAuthoredInfo=snapshot.authored??null;
+    this.trackReported = true; this.trackCodec = snapshot.codec;
+    if(snapshot.metadata?.binaural){this.binauralMetadata=snapshot.metadata.binaural;this.cb.onBinauralMetadata?.(this.binauralMetadata);}
+    this.cb.onTrack?.({ codec: snapshot.codec, sampleRate: snapshot.sampleRate, channels: snapshot.channels, container: snapshot.container || path.split(".").pop() || "file", durationSec: snapshot.durationMs / 1000, ...snapshot.metadata });
+    this.applyNativeFileState(snapshot);
+    // onTrack synchronously queues the codec's HRTF/layout updates on the same
+    // control chain. Only release audio after those commands have been accepted.
+    if (!this.pausedState) this.applyNativeFileState(await this.nativeFileBridge.command({ action: "pause", session, paused: false }));
+    this.cb.onPlaybackReady?.();
+  }
+  async seek(positionSeconds: number): Promise<void> {
+    if (!this.nativeFileBridge || !this.nativeFileSession || !Number.isFinite(positionSeconds)) throw Error("当前文件不支持原生定位");
+    const positionMs = Math.max(0, Math.min(positionSeconds * 1000, Math.max(0, this.durationSeconds() * 1000 - 1)));
+    const previousState = this.nativeFileState, previousEpoch = this.nativeFileEpoch;
+    const session = this.nativeFileSession, epoch = ++this.nativeFileEpoch; this.ended = false;
+    if (this.nativeFileState) this.nativeFileState = { ...this.nativeFileState, positionMs, epoch, ended: false };
+    try {
+      const snapshot = await this.nativeFileBridge.command({ action: "seek", session, epoch, positionMs, paused: this.pausedState });
+      if (this.nativeFileSession === session && epoch === this.nativeFileEpoch) this.applyNativeFileState(snapshot);
+    } catch (error) {
+      if (this.nativeFileSession !== session || epoch !== this.nativeFileEpoch) return;
+      this.nativeFileEpoch = previousEpoch; this.nativeFileState = previousState; throw error;
+    }
+  }
+
   /** Play a File/Blob (browser) end-to-end. */
   async playFile(file: Blob, codec: "auto" | "truehd" | "eac3" | "ac4" | "av3a" | "dts" = "auto"): Promise<void> {
     if (this.outputBackend === "web-audio" && !this.renderer) throw new Error("call init() first");
@@ -1067,6 +1152,9 @@ export class SdaPlayer {
   }
   async editAuthoredCinema(settings:unknown,profileId:string|null):Promise<boolean>{
     if(!this.isEditableAuthoredMaster)throw Error("只有 WAV 母版允许调整房间");
+    if(this.nativeAuthoredEditor){
+      const editor=this.nativeAuthoredEditor;const run=async()=>{if(this.disposed||this.nativeAuthoredEditor!==editor)throw Error("母版会话已更换");const paused=this.pausedState;await this.pause();try{if(!await editor.setCinema(settings,profileId))throw Error("母版房间设置未被接受");}finally{if(!this.disposed&&this.nativeAuthoredEditor===editor&&!paused&&editor.shouldResume())await this.resume();}};const result=this.authoredControlChain.then(run);this.authoredControlChain=result.catch(()=>{});await result;return true;
+    }
     await this.queueAuthoredEdit(async input=>{if(!input.setCinema)throw Error("请重启桌面版加载母版编辑接口");const accepted=await input.setCinema(settings,profileId);if(accepted!==true)throw Error("母版房间设置未被接受");});return true;
   }
 
@@ -1170,7 +1258,7 @@ export class SdaPlayer {
     for (const warning of bwfMetadata?.adm?.warnings ?? []) console.warn(`[SDA] ${warning}`);
     this.resetOutputLatencyProtection(true);
     this.resetHealth();
-    this.worker.postMessage({ type: "open", epoch:this.decodeEpoch, objectRendering:this.objectRenderingEnabled && this.outputMode !== "stereo", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
+    this.worker?.postMessage({ type: "open", epoch:this.decodeEpoch, objectRendering:this.objectRenderingEnabled && this.outputMode !== "stereo", codec, bwfMetadata, outputSampleRate: this.outputBackend === "native-sidecar" ? 48000 : undefined });
     this.visualTimer ??= setInterval(() => this.emitVisual(), 1000 / 30);
   }
 
@@ -1179,7 +1267,7 @@ export class SdaPlayer {
     const sequence = this.nextWorkerPushSequence++;
     return new Promise<void>((resolve, reject) => {
       this.pendingWorkerPushes.set(sequence, { resolve, reject });
-      this.worker.postMessage({ type: "push", epoch:this.decodeEpoch, chunk, sequence, fileStart }, [chunk]);
+      this.worker?.postMessage({ type: "push", epoch:this.decodeEpoch, chunk, sequence, fileStart }, [chunk]);
     });
   }
 
@@ -1199,10 +1287,14 @@ export class SdaPlayer {
 
   /** Signal end of a manually pushed stream and drain remaining demuxed PCM. */
   end(): void {
-    this.worker.postMessage({ type: "flush", epoch:this.decodeEpoch });
+    this.worker?.postMessage({ type: "flush", epoch:this.decodeEpoch });
   }
 
   stop(): void {
+    this.nativeAuthoredInfo=null;
+    const editor=this.nativeAuthoredEditor;this.nativeAuthoredEditor=null;if(editor)void editor.close().catch(()=>{});
+    if (this.nativeFileSession) { const session = this.nativeFileSession; this.nativeFileSession = null; this.nativeFileState = null; this.nativeFileEpoch++; void this.nativeFileBridge?.command({ action: "close", session }).catch(() => {}); }
+
     this.balanceAnalysisAbort.abort();
     this.resetOutputLatencyProtection();
     if (this.visualTimer) clearInterval(this.visualTimer);
@@ -1292,6 +1384,9 @@ export class SdaPlayer {
     this.pausedState = true;
     this.soundingObjectIds.clear();
     this.soundingObjectIdsDirty = true;
+    if (this.nativeFileBridge && this.nativeFileSession) {
+      this.applyNativeFileState(await this.nativeFileBridge.command({ action: "pause", session: this.nativeFileSession, paused: true })); return;
+    }
     if (this.outputBackend === "native-sidecar") {
       try { await this.nativeRendererSink?.pause(true); } catch (error) {
         console.warn(`[SDA] player#${this.id} native pause failed:`, error);
@@ -1313,6 +1408,9 @@ export class SdaPlayer {
 
   async resume(): Promise<void> {
     this.pausedState = false;
+    if (this.nativeFileBridge && this.nativeFileSession) {
+      this.applyNativeFileState(await this.nativeFileBridge.command({ action: "pause", session: this.nativeFileSession, paused: false })); return;
+    }
     if (this.outputBackend === "native-sidecar") {
       if (!this.playbackStarted) {
         this.startPlaybackIfReady();
@@ -1371,6 +1469,8 @@ export class SdaPlayer {
   }
 
   setVolumeBalance(enabled: boolean): void {
+    if (this.nativeFileSession) { this.volumeBalanceEnabled = enabled; void this.nativeFileBridge?.command({ action: "configure", session: this.nativeFileSession, volumeBalance: enabled }).catch(error => this.cb.onError?.(String(error))); return; }
+
     this.volumeBalanceEnabled = enabled;
     const effective = enabled && this.stereoBalanceEligible;
     this.renderer?.setVolumeBalance(effective);
@@ -1438,6 +1538,9 @@ export class SdaPlayer {
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
     this.disposed = true;
+    if (this.nativeFileSession) { const session = this.nativeFileSession; this.nativeFileSession = null; await this.nativeFileBridge?.command({ action: "close", session }).catch(() => {}); }
+    const editor=this.nativeAuthoredEditor;this.nativeAuthoredEditor=null;if(editor)await editor.close().catch(()=>{});
+    this.nativeFileUnsubscribe?.(); this.nativeFileUnsubscribe = undefined;
     this.balanceAnalysisAbort.abort();
     if(this.nativeHeadTimer !== null) clearInterval(this.nativeHeadTimer);
     this.nativeHeadTimer=null;this.nativeHeadSent=null;this.nativeHeadTracker.clear();
@@ -1445,7 +1548,7 @@ export class SdaPlayer {
     this.stop();
     this.performanceDisconnect?.();
     const authored=this.authoredInput;this.authoredInput=null;if(authored)await authored.close().catch(()=>{});
-    this.worker.terminate();
+    this.worker?.terminate();
     this.nativeConsumedUnsubscribe?.();
     this.nativeConsumedUnsubscribe = undefined;
     this.nativeObjectActivityUnsubscribe?.();
@@ -1460,6 +1563,7 @@ export class SdaPlayer {
    *  rendering silence blocks and its counter would otherwise run past the
    *  end of the song. */
   positionSeconds(): number {
+    if (this.nativeFileState) return this.clampToDuration(this.nativeFileState.positionMs / 1000);
     if (this.outputBackend === "native-sidecar") {
       return this.clampToDuration(Math.max(0, this.consumedSamples()) / this.sampleRate);
     }

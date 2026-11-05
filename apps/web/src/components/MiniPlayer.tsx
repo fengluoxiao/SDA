@@ -1,7 +1,7 @@
 import { Slider } from "./Slider";
 import PlaybackModeButton from "./PlaybackModeButton";
 import type { PlaybackMode } from "../playbackOrder";
-import { memo, type ReactNode } from "react";
+import { memo, useState, useRef, useEffect, type ReactNode } from "react";
 import { GlassRefraction } from "./GlassRefraction";
 import { Info, Pause, Play, RotateCcw, Volume2, ListMusic, SkipBack, SkipForward } from "lucide-react";
 
@@ -45,6 +45,7 @@ interface MiniPlayerProps {
   onNext: () => void;
   canSkip: boolean;
   onTogglePlay: () => void;
+  onSeek?: (seconds: number) => void;
   playbackMode: PlaybackMode;
   onPlaybackModeChange: (mode: PlaybackMode) => void;
   playlistOpen: boolean;
@@ -73,6 +74,7 @@ export const MiniPlayer = memo(function MiniPlayer({
   onNext,
   canSkip,
   onTogglePlay,
+  onSeek,
   playbackMode,
   onPlaybackModeChange,
   playlistOpen,
@@ -81,9 +83,15 @@ export const MiniPlayer = memo(function MiniPlayer({
   onReplay,
   onVolume,
 }: MiniPlayerProps) {
+  const [seekPreview, setSeekPreview] = useState<number | null>(null);
+  const seekDrag = useRef<{ pointer: number; value: number } | null>(null);
+  useEffect(() => { seekDrag.current = null; setSeekPreview(null); }, [track?.title, track?.codec]);
+  const seekable = !!onSeek && Number.isFinite(duration) && duration > 0;
+  const pointerPosition = (clientX: number, node: HTMLDivElement) => { const box = node.getBoundingClientRect(); return Math.max(0, Math.min(duration, (clientX - box.left) / Math.max(1, box.width) * duration)); };
+  const shownPosition = seekPreview ?? position;
   if (!track) return null;
   const codecLabel = track.codec === "sdar" ? ((track.objectChannels ?? 0) > 0 ? "SDAR Bed Channel With Objects" : "SDAR Bed Channel") : track.codec === "av3a" ? "Audio Vivid" : track.codec;
-  const progress = duration > 0 ? Math.min(1, position / duration) : 0;
+  const progress = duration > 0 ? Math.max(0, Math.min(1, shownPosition / duration)) : 0;
   return (
     <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
       <div className="mp-glass">
@@ -129,10 +137,21 @@ export const MiniPlayer = memo(function MiniPlayer({
               </button>
             </div>
             <div className="mp-progress">
-              <span className="mp-time">{formatTime(position)}</span>
-              <div className="mp-track-line" aria-label="播放进度">
-                <div className="mp-track-fill" style={{ transform: `scaleX(${progress})` }} />
-                {duration <= 0 && <div className="mp-track-shimmer" />}
+              <span className="mp-time">{formatTime(shownPosition)}</span>
+              <div className="mp-track-line" role="slider" aria-label="播放进度，点击或拖动定位" tabIndex={seekable ? 0 : -1}
+                aria-disabled={!seekable} aria-valuemin={0} aria-valuemax={duration} aria-valuenow={shownPosition}
+                aria-valuetext={`${formatTime(shownPosition)} / ${formatTime(duration)}`} style={{ overflow: "visible", touchAction: "none", cursor: seekable ? "pointer" : "default" }}
+                onPointerDown={event => { if (!seekable || event.button !== 0) return; event.preventDefault(); const value = pointerPosition(event.clientX, event.currentTarget); seekDrag.current = { pointer: event.pointerId, value }; setSeekPreview(value); event.currentTarget.setPointerCapture(event.pointerId); }}
+                onPointerMove={event => { if (seekDrag.current?.pointer !== event.pointerId) return; const value = pointerPosition(event.clientX, event.currentTarget); seekDrag.current.value = value; setSeekPreview(value); }}
+                onPointerUp={event => { const drag = seekDrag.current; if (!drag || drag.pointer !== event.pointerId) return; seekDrag.current = null; const value = pointerPosition(event.clientX, event.currentTarget); setSeekPreview(null); event.currentTarget.releasePointerCapture(event.pointerId); onSeek?.(value); }}
+                onPointerCancel={() => { seekDrag.current = null; setSeekPreview(null); }}
+                onLostPointerCapture={() => { seekDrag.current = null; setSeekPreview(null); }}
+                onKeyDown={event => { if (!seekable) return; const next = event.key === "Home" ? 0 : event.key === "End" ? duration : ["ArrowLeft", "ArrowDown"].includes(event.key) ? position - 5 : ["ArrowRight", "ArrowUp"].includes(event.key) ? position + 5 : null; if (next !== null) { event.preventDefault(); onSeek?.(Math.max(0, Math.min(duration, next))); } }}>
+                <span aria-hidden="true" style={{ position: "absolute", inset: "-10px 0" }} />
+                <div style={{ position: "absolute", inset: 0, borderRadius: "inherit", overflow: "hidden", pointerEvents: "none" }}>
+                  <div className="mp-track-fill" style={{ transform: `scaleX(${progress})` }} />
+                  {duration <= 0 && <div className="mp-track-shimmer" />}
+                </div>
               </div>
               <span className="mp-time dim">{duration > 0 ? formatTime(duration) : "--:--"}</span>
             </div>

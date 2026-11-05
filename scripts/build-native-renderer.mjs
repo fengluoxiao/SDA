@@ -17,7 +17,7 @@ process.env.MACINDECODE_AC4_SPEC_DIR ??= join(root,'tmp','MacinDecode-AC4-Core',
 process.env.SDA_SOURCE_COMMIT ??= execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 
 await new Promise((resolveRun, reject) => {
-  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", "--bin", "sda-native-renderer", "--example", "room_hrtf", ...(targetTriple?["--target",targetTriple]:[])], {
+  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", "--example", "room_hrtf", ...(targetTriple?["--target",targetTriple]:[])], {
     cwd: renderer,
     stdio: "inherit",
     windowsHide: true,
@@ -26,10 +26,18 @@ await new Promise((resolveRun, reject) => {
   child.once("exit", (code) => code === 0 ? resolveRun() : reject(new Error(`cargo exited with ${code}`)));
 });
 
+// The file-owning facade links the same renderer plus native decoders and seek indexes.
+const nativePlayer = join(root, "crates", "sda-native");
+await import("./build-desktop-bwf-metadata.mjs");
+await new Promise((resolveRun, reject) => {
+  const child = spawn(process.env.CARGO ?? "cargo", ["build", "--release", "--locked", "--offline", "--bin", "sda-desktop-player", ...(targetTriple ? ["--target", targetTriple] : [])], { cwd: nativePlayer, stdio: "inherit", windowsHide: true });
+  child.once("error", reject); child.once("exit", code => code === 0 ? resolveRun() : reject(new Error(`native decoder cargo exited with ${code}`)));
+});
 const destination = join(root, "apps", "desktop", "native-renderer");
 await mkdir(destination, { recursive: true });
 const cargoTarget = process.env.CARGO_TARGET_DIR ? resolve(renderer, process.env.CARGO_TARGET_DIR) : join(renderer, "target");
-const source = join(cargoTarget, ...(targetTriple?[targetTriple]:[]), "release", exeName);
+const playerTarget = process.env.CARGO_TARGET_DIR ? resolve(nativePlayer, process.env.CARGO_TARGET_DIR) : join(nativePlayer, "target");
+const source = join(playerTarget, ...(targetTriple?[targetTriple]:[]), "release", `sda-desktop-player${exeSuffix}`);
 const target = join(destination, targetName);
 await copyFile(source, target);
 const roomHelper = join(destination, `SdaRoomReference${exeSuffix}`);
@@ -106,7 +114,9 @@ console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified
 
 const bytes = await readFile(target);
 if(!bytes.includes(Buffer.from('bedExportReady')))throw new Error('Native renderer lacks offline bed-balance export');
+if(!bytes.includes(Buffer.from('nativeProgrammeReference')))throw new Error('Native renderer lacks native programme measurement');
+if(!bytes.includes(Buffer.from('nativeFilePlayback')))throw new Error('Native renderer lacks native file decoding and indexed seek');
 if(!bytes.includes(Buffer.from('setDownmixTrims')))throw new Error('Native renderer lacks file-owned Dolby downmix trims');
-const sourceCommit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
+const sourceCommit = process.env.SDA_SOURCE_COMMIT ?? execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 if (!bytes.includes(Buffer.from(sourceCommit)) || !bytes.includes(Buffer.from('front-direct-mirror-lowband-v2'))) throw new Error('Staged renderer does not match the current source revision and stereo calibration');
-await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,bedExportProtocol:1,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');
+await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,bedExportProtocol:1,nativeFilePlayback:true,nativeProgrammeReference:true,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');

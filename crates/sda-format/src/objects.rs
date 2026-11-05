@@ -180,6 +180,21 @@ impl ObjectTimeline {
             end: None,
         })
     }
+    /// Validated source-owned ADM metadata; the PCM remains in its original BWF.
+    pub fn from_adm(channels:Vec<ObjectChannel>,events:Vec<ObjectEvent>,lanes:usize,frames:u64)->Result<Self,String>{
+        let mut ids=BTreeSet::new();let mut used=BTreeSet::new();
+        for c in &channels{if c.channel as usize>=lanes||!ids.insert(c.id)||!used.insert(c.channel){return Err("invalid ADM channel mapping".into());}}
+        let mut previous=None;
+        for e in &events{
+            if !ids.contains(&e.id)||e.sample_pos>frames||previous.is_some_and(|at|at>(e.sample_pos,e.id))
+              ||!e.gain_db.is_finite()||!(-200.0..=24.0).contains(&e.gain_db)||e.pos.iter().chain(e.size.iter()).any(|v|!v.is_finite())
+              ||!e.diffuse.is_finite()||!matches!(e.anchor.as_str(),"room"|"screen"|"speaker")||e.zone_exclusion.iter().any(|z|!valid_zone(z))
+              ||e.distance_m.is_some_and(|v|!v.is_finite()||v<0.)||[e.screen_factor,e.depth_factor].into_iter().flatten().any(|v|!v.is_finite())
+              {return Err("invalid ADM automation".into());}
+            previous=Some((e.sample_pos,e.id));
+        }
+        Ok(Self{channels,events,next:0,end:None})
+    }
     /// Pull only events in this PCM interval. A discontinuity reconstructs the
     /// interrupted ramp from its original endpoints, then continues its remainder.
     pub fn events(&mut self, start: u64, frames: usize) -> Vec<ObjectEvent> {

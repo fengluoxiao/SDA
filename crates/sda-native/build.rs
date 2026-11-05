@@ -1,5 +1,13 @@
 use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
+    // These final-link flags belong to this facade's desktop binary/tests, not
+    // only the renderer library's original standalone executable.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+        && env::var_os("CARGO_FEATURE_DESKTOP_OUTPUT").is_some() {
+        for flag in ["-Wl,-Bstatic","-Wl,--start-group","-lstdc++","-lgcc_eh","-lwinpthread","-lssp","-lmingwex","-lmsvcrt","-lkernel32","-Wl,--end-group","-Wl,-Bdynamic"] { println!("cargo:rustc-link-arg={flag}"); }
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
         // Reject missing native runtime symbols before APK installation.
         println!("cargo:rustc-link-arg=-Wl,--no-undefined");
@@ -27,6 +35,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", root.join(path).display());
     }
     println!("cargo:rerun-if-env-changed=SDA_NODE");
+    println!("cargo:rerun-if-env-changed=SDA_MPEGH_SOURCE_DIR");
     let status = Command::new(env::var_os("SDA_NODE").unwrap_or_else(|| "node".into()))
         .arg(root.join("scripts/prepare-mpegh.mjs")).arg(&out).status()
         .expect("Node.js is required to prepare the same MPEG-H capture bridge as Windows (set SDA_NODE)");

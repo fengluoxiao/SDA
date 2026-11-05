@@ -4,44 +4,62 @@ use symphonia::core::{formats::{FormatOptions,FormatReader,SeekMode,SeekTo},io::
 const MAX_PACKET:usize=16*1024*1024;
 #[derive(Clone,Copy,Debug)]
 struct Point { offset:u64,bytes:usize,sample:u64,rate:u32,restart:bool }
+#[derive(Clone,Copy)]
+struct ContainerPoint{ts:u64,sample:u64,restart:bool,fingerprint:u64}
+fn fingerprint(data:&[u8])->u64{data.iter().take(64).fold(data.len()as u64,|a,b|a.wrapping_mul(1099511628211)^u64::from(*b))}
 pub struct SeekPoint { pub input_sample:u64,pub sample_rate:u32,pub output_sample:u64 }
 enum Input {
  Mhas(crate::mhas_source::MhasSource),
- Container {format:Box<dyn FormatReader>,track:u32,timebase:TimeBase},
+ Container {format:Box<dyn FormatReader>,track:u32,timebase:TimeBase,rate:u32,points:Vec<ContainerPoint>,pending:Option<Vec<u8>>},
  Raw {file:File,points:Vec<Point>,next:usize},
 }
 pub struct PacketSource { input:Input, path:std::path::PathBuf, bytes:u64,modified:Option<SystemTime>,pub codec:String,pub duration_samples:u64 }
 impl PacketSource {
+ pub fn input_rate(&self)->u32{match &self.input{Input::Mhas(_)=>48000,Input::Container{rate,..}=>*rate,Input::Raw{points,..}=>points.first().map_or(48000,|p|p.rate)}}
+
  pub fn open(path:impl AsRef<Path>,codec:&str)->Result<Self,String>{
   let path=path.as_ref();let meta=std::fs::metadata(path).map_err(|e|e.to_string())?;
   let mut file=File::open(path).map_err(|e|e.to_string())?;let mut prefix=[0u8;12];let n=file.read(&mut prefix).map_err(|e|e.to_string())?;file.rewind().map_err(|e|e.to_string())?;
   let (input,duration_samples)=if codec=="mpegh" {
-   let source=crate::mhas_source::MhasSource::open(file)?;let duration=source.duration;(Input::Mhas(source),duration)
-  }else if n>=8&&&prefix[4..8]==b"ftyp" {
-   let mut hint=Hint::new();hint.with_extension("mp4");
+   let source=if n>=8&&&prefix[4..8]==b"ftyp" {crate::mhas_source::MhasSource::open(crate::mp4_extract::MhasFile::open(path)?.ok_or("MP4 does not contain indexed MPEG-H audio")?)?} else {crate::mhas_source::MhasSource::open(file)?};let duration=source.duration;(Input::Mhas(source),duration)
+  }else if n>=8&&&prefix[4..8]==b"ftyp" || n>=4&&prefix[..4]==[0x1a,0x45,0xdf,0xa3] {
+   let mut hint=Hint::new();hint.with_extension(if prefix[..4]==[0x1a,0x45,0xdf,0xa3]{"mkv"}else{"mp4"});
    let mut format=symphonia::default::get_probe().format(&hint,MediaSourceStream::new(Box::new(file),Default::default()),&FormatOptions::default(),&MetadataOptions::default()).map_err(|e|format!("MP4 packet index: {e}"))?.format;
-   let tracks:Vec<_>=format.tracks().iter().filter_map(|t|t.codec_params.time_base.map(|tb|(t.id,tb,t.codec_params.n_frames))).collect();
+   let tracks:Vec<_>=format.tracks().iter().filter(|t|{use symphonia::core::codecs::*;!matches!(t.codec_params.codec,CODEC_TYPE_ALAC|CODEC_TYPE_AAC|CODEC_TYPE_MP3|CODEC_TYPE_FLAC|CODEC_TYPE_VORBIS)}).filter_map(|t|t.codec_params.time_base.map(|tb|(t.id,tb,t.codec_params.n_frames))).collect();
    let mut selected=None;
    for (id,tb,duration) in tracks {
     if format.seek(SeekMode::Accurate,SeekTo::Time{time:Time::from(0.),track_id:Some(id)}).is_err(){continue;}
     for _ in 0..512 {let Ok(packet)=format.next_packet()else{break;};if packet.track_id()!=id{continue;}
-     if sda_core::seek_header::inspect(codec,&packet.data).is_ok(){selected=Some((id,tb,duration));}break;
+     if let Ok(header)=sda_core::seek_header::inspect(codec,&packet.data){selected=Some((id,tb,duration,header.sample_rate));}break;
     }
     if selected.is_some(){break;}
    }
-   let (track,timebase,duration)=selected.ok_or("MP4 does not contain the declared clear audio codec")?;
+   let (track,timebase,duration,rate)=selected.ok_or("MP4 does not contain the declared clear audio codec")?;
    format.seek(SeekMode::Accurate,SeekTo::Time{time:Time::from(0.),track_id:Some(track)}).map_err(|e|e.to_string())?;
-   let samples=duration.map_or(0,|n|(u128::from(n)*u128::from(timebase.numer)*48000/u128::from(timebase.denom))as u64);
-   (Input::Container{format,track,timebase},samples)
+   let mut points=Vec::new();let mut clock=0u64;
+   if matches!(codec,"truehd"|"dts"|"ac4") {
+    loop{let packet=match format.next_packet(){Ok(p)=>p,Err(symphonia::core::errors::Error::IoError(e))if e.kind()==std::io::ErrorKind::UnexpectedEof=>break,Err(e)=>return Err(format!("container index: {e}"))};if packet.track_id()!=track{continue;}
+     let(mut offset,mut samples,mut restart)=(0usize,0u64,true);
+     while offset<packet.data.len(){let h=sda_core::seek_header::inspect_with_rate(codec,&packet.data[offset..],rate)?;if h.bytes==0||offset+h.bytes>packet.data.len(){return Err("container access unit is truncated".into());}
+      if offset==0{restart=h.random_access;}else if codec=="dts"&&!h.advances_clock{restart&=h.random_access;}
+      if h.advances_clock{if h.sample_rate!=rate{return Err("container needs separate sample-rate segments".into());}samples+=u64::from(h.samples);}offset+=h.bytes;
+     }
+     if points.len()>=4_194_304{return Err("container seek index exceeds its metadata bound".into());}
+     points.push(ContainerPoint{ts:packet.ts,sample:clock,restart,fingerprint:fingerprint(&packet.data)});clock+=samples;
+    }
+    format.seek(SeekMode::Accurate,SeekTo::Time{time:Time::from(0.),track_id:Some(track)}).map_err(|e|e.to_string())?;
+   }
+   let samples=if points.is_empty(){duration.map_or(0,|n|(u128::from(n)*u128::from(timebase.numer)*48000/u128::from(timebase.denom))as u64)}else{(u128::from(clock)*48000/u128::from(rate))as u64};
+   (Input::Container{format,track,timebase,rate,points,pending:None},samples)
   }else{
    let mut points:Vec<Point>=Vec::new();let mut offset=0;let mut sample=0;let mut rate=0;
    while offset<meta.len(){
     file.seek(SeekFrom::Start(offset)).map_err(|e|e.to_string())?;let mut head=[0u8;64];let count=file.read(&mut head).map_err(|e|e.to_string())?;
-    let h=sda_core::seek_header::inspect(codec,&head[..count])?;
+    let h=sda_core::seek_header::inspect_with_rate(codec,&head[..count],rate)?;
     if h.bytes==0||h.bytes>MAX_PACKET||offset.checked_add(h.bytes as u64).is_none_or(|end|end>meta.len()){return Err("truncated access unit in seek index".into());}
-    if rate!=0&&rate!=h.sample_rate{return Err("seek index requires a new segment for a sample-rate change".into());}rate=h.sample_rate;
+    if h.advances_clock {if rate!=0&&rate!=h.sample_rate{return Err("seek index requires a new segment for a sample-rate change".into());}rate=h.sample_rate;}
     if h.advances_clock {points.push(Point{offset,bytes:h.bytes,sample,rate,restart:h.random_access});sample=sample.checked_add(u64::from(h.samples)).ok_or("audio duration overflow")?;}
-    else if let Some(last)=points.last_mut(){last.bytes+=h.bytes;}else{return Err("dependent audio precedes its primary stream".into());}
+    else if let Some(last)=points.last_mut(){last.bytes+=h.bytes;if codec=="dts"{last.restart&=h.random_access;}}else if codec!="truehd"{return Err("dependent audio precedes its primary stream".into());}
     offset+=h.bytes as u64;
    }
    if points.is_empty(){return Err("no indexed audio frames".into());}file.rewind().map_err(|e|e.to_string())?;
@@ -56,12 +74,22 @@ impl PacketSource {
   let warm=target.saturating_sub(preroll);
   match &mut self.input {
    Input::Mhas(source)=>{let sample=source.seek(target,preroll)?;Ok(SeekPoint{input_sample:sample,sample_rate:48000,output_sample:sample})},
-   Input::Container{format,track,timebase}=>{
+   Input::Container{format,track,timebase,rate,points,pending}=>{
+    *pending=None;
+    if !points.is_empty(){
+     let mut index=points.partition_point(|p|(u128::from(p.sample)*48000/u128::from(*rate))as u64<=warm).saturating_sub(1);while index>0&&!points[index].restart{index-=1;}let point=points[index];
+     if !point.restart{return Err("container lacks an independent restart packet".into());}
+     format.seek(SeekMode::Accurate,SeekTo::TimeStamp{ts:point.ts,track_id:*track}).map_err(|e|e.to_string())?;
+     let mut found=false;for _ in 0..8192{let packet=format.next_packet().map_err(|e|e.to_string())?;if packet.track_id()==*track&&packet.ts==point.ts&&fingerprint(&packet.data)==point.fingerprint{*pending=Some(packet.data.to_vec());found=true;break;}}
+     if !found{return Err("container seek did not return its indexed restart packet".into());}
+     let(mut a,mut b)=(*rate,48000);while b!=0{let rem=a%b;a=b;b=rem;}let phase=point.sample%u64::from(*rate/a);
+     return Ok(SeekPoint{input_sample:point.sample,sample_rate:*rate,output_sample:(u128::from(point.sample-phase)*48000/u128::from(*rate))as u64});
+    }
     let at=format.seek(SeekMode::Accurate,SeekTo::Time{time:Time::from(warm as f64/48000.),track_id:Some(*track)}).map_err(|e|e.to_string())?;
-    let sample=(u128::from(at.actual_ts)*u128::from(timebase.numer)*48000/u128::from(timebase.denom))as u64;
-    // Native EC-3 is 48 kHz. AV3A uses the raw normalized import path below.
-    if self.codec!="eac3"&&self.codec!="ac3"{return Err("container codec needs input-rate phase metadata".into());}
-    Ok(SeekPoint{input_sample:sample,sample_rate:48000,output_sample:sample})
+    let input=(u128::from(at.actual_ts)*u128::from(timebase.numer)*u128::from(*rate)/u128::from(timebase.denom))as u64;
+    let(mut a,mut b)=(*rate,48000);while b!=0{let rem=a%b;a=b;b=rem;}
+    let phase=input%u64::from(*rate/a);let output=(u128::from(input-phase)*48000/u128::from(*rate))as u64;
+    Ok(SeekPoint{input_sample:input,sample_rate:*rate,output_sample:output})
    },
    Input::Raw{points,next,..}=>{
     let mut point=points.partition_point(|p|(u128::from(p.sample)*48000/u128::from(p.rate))as u64<=warm).saturating_sub(1);
@@ -75,7 +103,7 @@ impl PacketSource {
  }
  pub fn next(&mut self)->Result<Option<Vec<u8>>,String>{match &mut self.input{
   Input::Mhas(source)=>source.next(),
-  Input::Container{format,track,..}=>loop{match format.next_packet(){Ok(p)if p.track_id()==*track=>return Ok(Some(p.data.to_vec())),Ok(_)=>{},Err(symphonia::core::errors::Error::IoError(e))if e.kind()==std::io::ErrorKind::UnexpectedEof=>return Ok(None),Err(e)=>return Err(format!("read indexed packet: {e}"))}},
+  Input::Container{format,track,pending,..}=>{if let Some(bytes)=pending.take(){return Ok(Some(bytes));}loop{match format.next_packet(){Ok(p)if p.track_id()==*track=>return Ok(Some(p.data.to_vec())),Ok(_)=>{},Err(symphonia::core::errors::Error::IoError(e))if e.kind()==std::io::ErrorKind::UnexpectedEof=>return Ok(None),Err(e)=>return Err(format!("read indexed packet: {e}"))}}},
   Input::Raw{file,points,next}=>{let Some(point)=points.get(*next).copied()else{return Ok(None);};file.seek(SeekFrom::Start(point.offset)).map_err(|e|e.to_string())?;let mut bytes=vec![0u8;point.bytes];file.read_exact(&mut bytes).map_err(|e|e.to_string())?;*next+=1;Ok(Some(bytes))},
  }}
 }

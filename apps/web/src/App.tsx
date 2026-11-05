@@ -64,6 +64,8 @@ import {
 import { HeadTrackingSession } from "./head-tracking-session";
 
 type StereoProgrammeReference = {
+  nativeReference?: unknown;
+  blocks: number;
   codec: string;
   sampleRate: number;
   channels: number;
@@ -841,6 +843,9 @@ export function App() {
             }),
           }
         : undefined;
+      const nativeFilePath = source?.kind === "path" ? source.path : source?.kind === "file" ? desktop.localFilePath?.(source.file) : undefined;
+      const nativeFileCapable = !!desktop.nativeFileCommand && !!desktop.onNativeFileState && (await desktop.getNativeRendererStatus?.())?.nativeFilePlaybackSupported === true;
+      const nativeFileReady = nativeFileCapable && !!nativeFilePath && (await desktop.nativeFileProbe?.(nativeFilePath))?.supported === true;
       const player = new SdaPlayer({
         onOutputLatencyRecommendation: (seconds) => {
           if (!isCurrent()) return;
@@ -883,7 +888,7 @@ export function App() {
           setProgramLoudness(null);
           // This reference belongs only to this playback. No stored loudness
           // is read or written, including when balance is toggled later.
-          if (sourceReference && sourceReference.codec === t.codec && (t.codec === "av3a" || t.channels === 2 && sourceReference.sampleRate === t.sampleRate)) {
+          if (!createdPlayer?.usesNativeFilePlayback && sourceReference && sourceReference.codec === t.codec && (t.codec === "av3a" || t.channels === 2 && sourceReference.sampleRate === t.sampleRate)) {
             createdPlayer?.setMeasuredLoudness(sourceReference.integratedLufs, sourceReference.truePeakDbtp, t.codec === "av3a");
           }
         },
@@ -979,6 +984,11 @@ export function App() {
         denseBinauralBaseUrl: denseBinauralBaseUrl(),
         outputBackend: "native-sidecar",
         nativeRendererSink: nativeRendererSink!,
+        nativeFileBridge: nativeFileReady ? {
+          command: command => command.action === "close" ? desktop.nativeFileCommand!(command) : enqueueNative(`native file ${String(command.action)}`, () => desktop.nativeFileCommand!(command)),
+          onState: callback => desktop.onNativeFileState!(callback),
+        } : undefined,
+        nativeFileMeasurement: sourceReference?.nativeReference ?? (sourceReference ? { integratedLufs: sourceReference.integratedLufs, truePeakDbtp: sourceReference.truePeakDbtp, blocks: sourceReference.blocks } : undefined),
         // KU100 stays at the room origin while world-locked sources are viewed
         // through the inverse head rotation. Apple-like feel: 1:1 rotation, a
         // few hundred ms of damping, and a dead zone that swallows tremor — the
@@ -1530,7 +1540,16 @@ export function App() {
         if (!isCurrent() || playerRef.current !== player || feedRequest !== feedRequestRef.current) return;
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
-        if(authored&&localPath&&desktop?.openAuthoredFile&&desktop.pullAuthoredFile&&desktop.closeAuthoredFile){
+        if (player.usesNativeFilePlayback && localPath) {
+          if(authored?.kind==="wav-master"){
+            if(!desktop?.openAuthoredFile||!desktop.closeAuthoredFile||!desktop.setAuthoredFileCinema)throw Error("母版编辑接口不可用");
+            const target=layoutIdRef.current==="auto"?"7.1.4":layoutIdRef.current;
+            const opened=await desktop.openAuthoredFile(localPath,["2.0","2.1"].includes(target)?"7.1.4":target);
+            if(!isCurrent()||playerRef.current!==player){await desktop.closeAuthoredFile(opened.id);return;}
+            player.attachNativeAuthoredEditor({close:()=>desktop.closeAuthoredFile!(opened.id),shouldResume:()=>!pausedRef.current&&isCurrent(),setCinema:(settings,profileId)=>desktop.setAuthoredFileCinema!(opened.id,settings as CinemaSettings,profileId)});
+          }
+          await player.playNativeFile(localPath);
+        } else if(authored&&localPath&&desktop?.openAuthoredFile&&desktop.pullAuthoredFile&&desktop.closeAuthoredFile){
           const target=layoutIdRef.current==="auto"?"7.1.4":layoutIdRef.current;
           const opened=await desktop.openAuthoredFile(localPath,["2.0","2.1"].includes(target)?"7.1.4":target);
           if(!isCurrent()||playerRef.current!==player){await desktop.closeAuthoredFile(opened.id);return;}
@@ -2500,6 +2519,7 @@ export function App() {
             canSkip={playlist.length>0}
             onPrevious={()=>{const id=adjacentPlaylistItemId(playlistRef.current,playlistCurrentIdRef.current,-1);if(id)void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]));}}
             onNext={()=>{const id=adjacentPlaylistItemId(playlistRef.current,playlistCurrentIdRef.current,1);if(id)void playPlaylistItem(id,"local").catch(error=>setErrors(prev=>[...prev,String(error)]));}}
+            onSeek={playerReady?.canSeek ? seconds => { setPosition(seconds); void playerRef.current?.seek(seconds).catch(error=>setErrors(prev=>[...prev,String(error)])); } : undefined}
             onTogglePlay={()=>void togglePlay().catch(error=>setErrors(prev=>[...prev,String(error)]))}
             playbackMode={playbackMode}
             onPlaybackModeChange={changePlaybackMode}

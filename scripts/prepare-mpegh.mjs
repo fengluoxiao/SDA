@@ -5,10 +5,12 @@ import {resolve,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 export const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 export function prepareMpegh(build) {
-const upstream=join(root,'vendor/libmpegh'), pin='f7ff0ac78d4d83f0b853bf2dff2ef075c92724f8';
+const upstream=resolve(process.env.SDA_MPEGH_SOURCE_DIR??join(root,'vendor/libmpegh')), pin='f7ff0ac78d4d83f0b853bf2dff2ef075c92724f8';
 const run=(cmd,args)=>execFileSync(cmd,args,{cwd:root,stdio:'inherit',windowsHide:true});
 if(!existsSync(join(upstream,'README.md'))){run('git',['clone','https://github.com/ittiam-systems/libmpegh.git',upstream]);run('git',['-C',upstream,'checkout',pin]);}
-if(execFileSync('git',['-C',upstream,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==pin)throw Error('Unexpected libmpegh revision');
+const actualRevision=execFileSync('git',['-C',upstream,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+// Verified archive imports may have different commit metadata but must have the identical pinned source tree.
+if(actualRevision!==pin && execFileSync('git',['-C',upstream,'rev-parse','HEAD^{tree}'],{encoding:'utf8'}).trim()!=="8af8a0f7fce44c91f4c3d69e7969440543b4c714")throw Error('Unexpected libmpegh source tree');
 mkdirSync(build,{recursive:true});
 const dec=join(build,'decoder');cpSync(join(upstream,'decoder'),dec,{recursive:true});
 // Keep source/OAM/DRC storage consistent with the shared 128-source route.
