@@ -5,8 +5,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['apps/mobile/src/' + name for name in [
     'PortraitLyricsPager.tsx', 'mobile-lyrics.ts', 'embedded-lyrics.ts', 'lyric-files.ts',
     'use-lyrics-follow.ts', 'use-lyrics-swipe.ts', 'use-track-lyrics.ts',
-    'RemotePlayer.tsx', 'IOSPlayer.tsx', 'PlatformPlayerTabs.tsx']]
-MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header']
+    'RemotePlayer.tsx', 'IOSPlayer.tsx', 'PlatformPlayerTabs.tsx',
+    'KaraokeText.tsx', 'lyric-karaoke.ts', 'TabletLandscapePlayer.tsx', 'tablet-player-layout.ts',
+    'PhoneLandscapeBlur.tsx', 'phone-landscape-blur-model.ts', 'IOSUIKitTabs.tsx', 'IOSSystemTabs.tsx']]
+MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])
     assert platform in ['Android', 'iOS']
