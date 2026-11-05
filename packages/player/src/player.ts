@@ -311,6 +311,7 @@ export class SdaPlayer {
   private nativeFileState: NativeFileSnapshot | null = null;
   private nativeFileOpening = false;
   private nativeFilePendingState: NativeFileSnapshot | null = null;
+  private nativeSeekStates = new Map<number,NativeFileSnapshot|null>();
   private nativeFileUnsubscribe?: () => void;
 
   private objectRenderingEnabled = true;
@@ -1069,6 +1070,7 @@ export class SdaPlayer {
   get canSeek(): boolean { return this.nativeFileSession !== null; }
   private applyNativeFileState(snapshot: NativeFileSnapshot): void {
     if (snapshot.session !== this.nativeFileSession || (snapshot.epoch ?? 0) !== this.nativeFileEpoch || this.disposed) return;
+    if(this.nativeSeekStates.has(snapshot.epoch??0)){this.nativeSeekStates.set(snapshot.epoch??0,snapshot);return;}
     this.nativeFileState = snapshot; this.sampleRate = 48000;
     if (snapshot.durationMs > 0) this.containerDurationSec = snapshot.durationMs / 1000;
     this.acceptedEndSample = Math.round(snapshot.decodedMs * 48);
@@ -1086,7 +1088,7 @@ export class SdaPlayer {
   async playNativeFile(path: string): Promise<void> {
     if (!this.nativeFileBridge || !this.initialRendererReady) throw Error("Native file decoder is unavailable");
     const session = `${this.id}:${Date.now()}`; this.nativeFileSession = session; this.nativeFileEpoch = 0; this.ended = false;
-    this.nativeFileOpening = true; this.nativeFilePendingState = null;
+    this.nativeFileOpening = true; this.nativeFilePendingState = null;this.nativeSeekStates.clear();
     let snapshot: NativeFileSnapshot;
     try { snapshot = await this.nativeFileBridge.command({ action: "open", session, epoch: 0, path, codec: "auto", masterEditable:this.authoredMasterEditable, layout: layoutIdFor(this.initArgs?.layout ?? LAYOUTS["7.1.4"]), paused: true, upmix: this.outputMode !== "stereo" && this.alacStereoUpmixEnabled, volumeBalance: this.volumeBalanceEnabled, objectRendering: this.objectRenderingEnabled && this.outputMode !== "stereo", binauralEnabled: this.outputMode !== "stereo", measurement: this.nativeFileMeasurement }); }
     catch (error) { this.nativeFileSession = null; throw error; }
@@ -1109,12 +1111,14 @@ export class SdaPlayer {
     if (!this.nativeFileBridge || !this.nativeFileSession || !Number.isFinite(positionSeconds)) throw Error("当前文件不支持原生定位");
     const positionMs = Math.max(0, Math.min(positionSeconds * 1000, Math.max(0, this.durationSeconds() * 1000 - 1)));
     const previousState = this.nativeFileState, previousEpoch = this.nativeFileEpoch;
-    const session = this.nativeFileSession, epoch = ++this.nativeFileEpoch; this.ended = false;
+    const session = this.nativeFileSession, epoch = ++this.nativeFileEpoch; this.ended = false;this.nativeSeekStates.set(epoch,null);
     if (this.nativeFileState) this.nativeFileState = { ...this.nativeFileState, positionMs, epoch, ended: false };
     try {
       const snapshot = await this.nativeFileBridge.command({ action: "seek", session, epoch, positionMs, paused: this.pausedState });
-      if (this.nativeFileSession === session && epoch === this.nativeFileEpoch) {this.applyNativeFileState(snapshot);this.cb.onPlaybackReady?.();}
+      const pending=this.nativeSeekStates.get(epoch);this.nativeSeekStates.delete(epoch);
+      if (this.nativeFileSession === session && epoch === this.nativeFileEpoch) {this.cb.onPlaybackReady?.();this.applyNativeFileState(pending&&(pending.ended||pending.positionMs>=snapshot.positionMs)?pending:snapshot);}
     } catch (error) {
+      this.nativeSeekStates.delete(epoch);
       if (this.nativeFileSession !== session || epoch !== this.nativeFileEpoch) return;
       this.nativeFileEpoch = previousEpoch; this.nativeFileState = previousState; throw error;
     }
@@ -1291,7 +1295,7 @@ export class SdaPlayer {
   }
 
   stop(): void {
-    this.nativeAuthoredInfo=null;
+    this.nativeAuthoredInfo=null;this.nativeSeekStates.clear();
     const editor=this.nativeAuthoredEditor;this.nativeAuthoredEditor=null;if(editor)void editor.close().catch(()=>{});
     if (this.nativeFileSession) { const session = this.nativeFileSession; this.nativeFileSession = null; this.nativeFileState = null; this.nativeFileEpoch++; void this.nativeFileBridge?.command({ action: "close", session }).catch(() => {}); }
 

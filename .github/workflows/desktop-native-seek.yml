@@ -104,8 +104,13 @@ jobs:
           echo "SDA_SOURCE_COMMIT=$SDA_SOURCE_COMMIT" >> "$GITHUB_ENV"
           node scripts/prepare-ac4.mjs
           cargo fetch --locked --manifest-path crates/sda-native/Cargo.toml
-      - name: Build target-native player
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      - name: Build Windows native player
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo build --locked --manifest-path crates/sda-native/Cargo.toml --bin sda-desktop-player --target '${{ matrix.target }}'
+      - name: Build macOS native player
+        if: runner.os != 'Windows'
+        shell: bash
         run: cargo build --locked --manifest-path crates/sda-native/Cargo.toml --bin sda-desktop-player --target '${{ matrix.target }}'
       - name: Verify real native decoder callbacks and sample clocks
         if: runner.os != 'Windows'
@@ -143,6 +148,5 @@ jobs:
         with:
           name: desktop-native-seek-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            desktop-native/${{ matrix.target }}/debug/sda-desktop-player*
             native-reference.json
           if-no-files-found: warn
