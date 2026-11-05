@@ -62,6 +62,11 @@ jobs:
           tar -xzf "$RUNNER_TEMP/wasm-bindgen/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP/wasm-bindgen"
           echo "$RUNNER_TEMP/wasm-bindgen/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - name: Verify desktop transport and progress interactions
+        run: |
+          node scripts/build-desktop-bwf-metadata.mjs
+          node --test apps/desktop/test/bwf-file-metadata.test.cjs apps/desktop/test/native-event-lines.test.cjs apps/desktop/test/native-file-playback.test.cjs apps/web/test/desktop-progress.test.mjs packages/player/test/native-file-seek.test.mjs
+          pnpm exec tsc --noEmit --pretty false -p apps/web/tsconfig.json
       - uses: ./.github/actions/prepare-decoders
       - name: Build shared web resources
         run: pnpm --filter @sda/web build

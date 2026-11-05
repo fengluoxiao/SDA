@@ -974,6 +974,8 @@ export function App() {
         },
         onPlaybackReady: () => {
           if (isCurrent()) {
+            endedHandled = false;
+            if (!pausedRef.current) {playingRef.current=true;setPlaying(true);}
             setPosition(playerRef.current?.positionSeconds() ?? 0);
           }
         },

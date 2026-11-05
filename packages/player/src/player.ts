@@ -1113,7 +1113,7 @@ export class SdaPlayer {
     if (this.nativeFileState) this.nativeFileState = { ...this.nativeFileState, positionMs, epoch, ended: false };
     try {
       const snapshot = await this.nativeFileBridge.command({ action: "seek", session, epoch, positionMs, paused: this.pausedState });
-      if (this.nativeFileSession === session && epoch === this.nativeFileEpoch) this.applyNativeFileState(snapshot);
+      if (this.nativeFileSession === session && epoch === this.nativeFileEpoch) {this.applyNativeFileState(snapshot);this.cb.onPlaybackReady?.();}
     } catch (error) {
       if (this.nativeFileSession !== session || epoch !== this.nativeFileEpoch) return;
       this.nativeFileEpoch = previousEpoch; this.nativeFileState = previousState; throw error;
