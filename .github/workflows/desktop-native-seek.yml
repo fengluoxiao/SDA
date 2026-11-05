@@ -63,6 +63,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
       RUST_MIN_STACK: '16777216'
+      MACINDECODE_AC4_SPEC_DIR: ${{ github.workspace }}/tmp/MacinDecode-AC4-Core/spec
     steps:
       - name: Windows checkout paths
         if: runner.os == 'Windows'
