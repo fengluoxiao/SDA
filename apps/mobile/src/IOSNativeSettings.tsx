@@ -22,6 +22,8 @@ const hasUIKitSettingsNavigation = hasNativePageHeader;
 const nativeScreens: typeof import("react-native-screens") | null =
   hasUIKitSettingsNavigation ? require("react-native-screens") : null;
 
+export const hasIOSControllerStatusBar = !!swiftUI && hasNativeIOSSettings && !!nativeScreens;
+
 // Settings uses one inline system title. Never add a second large title
 // inside the hosted Form; keep the same header in Expo Go and the app.
 
@@ -96,7 +98,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
     return <ScreenStack style={{ flex: 1 }}>
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
-      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false} homeIndicatorHidden={fullscreen} unstable_safeAreaEdges={fullscreen ? { top: false, right: false, bottom: false, left: false } : undefined}
+      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false} testID="space-fullscreen-controller" statusBarHidden={fullscreen} homeIndicatorHidden={fullscreen} unstable_safeAreaEdges={fullscreen ? { top: false, right: false, bottom: false, left: false } : undefined}
         headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: immersive ? "transparent" : PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
         {children}
       </ScreenStackItem>

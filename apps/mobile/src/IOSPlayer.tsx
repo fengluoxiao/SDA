@@ -40,7 +40,7 @@ import { AndroidSymbol } from "./AndroidSymbol";
 import { AndroidGlassSettingsButton } from "./AndroidGlassSettingsButton";
 import { AndroidSettings } from "./AndroidSettings";
 import { AndroidAudioInfo } from "./AndroidAudioInfo";
-import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings } from "./IOSNativeSettings";
+import { IOSSettingsNavigation, IOSSettingsButton, IOSHeadTrackingButton, hasNativeIOSSettings, hasIOSControllerStatusBar } from "./IOSNativeSettings";
 import { iosLeftContentOffset, iosRightSideContentGap, IOS_TABS, isPresetSelected, trackTitle, iosPlayerLayout, iosLandscapeControlLayout, landscapeArtworkLayout, iosLeftLibraryGutter, iosRightLibraryGutter, formatPlaybackTime } from "./ios-ui-model";
 
 import { IOSMetadataDoneButton, IOSMetadataSheet } from "./IOSMetadataSheet";
@@ -407,7 +407,7 @@ function ThemedPlayer(p: PlayerProps) {
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
   <SafeAreaView edges={fullscreenSpace ? [] : hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
-    <StatusBar hidden={fullscreenSpace || Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
+    <StatusBar hidden={Platform.OS === "ios" && hasIOSControllerStatusBar ? undefined : fullscreenSpace || Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
     <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }, fullscreenSpace && { paddingHorizontal: 0, paddingBottom: 0 }]}>
       <SafeAreaInsetsContext.Consumer>{outerInsets => <View testID="tablet-page-viewport" style={[{ flex: 1 }, !fullscreenSpace && tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets(outerInsets?.left ?? 0, outerInsets?.right ?? 0)]} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       {/* UIKit pages own their headers/insets so selecting a tab never resizes

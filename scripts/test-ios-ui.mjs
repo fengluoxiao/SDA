@@ -231,6 +231,11 @@ for (const available of [true,false]) {
   const tree = adapter.IOSSettingsNavigation({ children: 'approved-home', settings: true, onSettingsChange: value => closed.push(value), title: '正在播放', player: {}, theme: 'dark' });
   const [home,settingsScreen] = tree.props.children;
   assert.equal(home.props.children[0], 'approved-home');
+  assert.equal(home.props.statusBarHidden,false);assert.equal(home.props.homeIndicatorHidden,false);
+  const full=adapter.IOSSettingsNavigation({children:'approved-home',settings:false,onSettingsChange(){},title:'空间',player:{},theme:'light',fullscreen:true});
+  const fullHome=full.props.children[0];assert.equal(fullHome.props.statusBarHidden,true);assert.equal(fullHome.props.homeIndicatorHidden,true);
+  assert.deepEqual(fullHome.props.unstable_safeAreaEdges,{top:false,right:false,bottom:false,left:false});
+  assert.equal(fullHome.props.testID,'space-fullscreen-controller');
   assert.equal(settingsScreen.props.headerConfig.hidden,true);
   const nativePage=settingsScreen.props.children[0];
   assert.equal(nativePage.type,'NativePage');assert.equal(nativePage.props.title,'设置');

@@ -1,6 +1,6 @@
 """Verify lyrics UI in the actual packaged Hermes bundle, without audio/device claims."""
 from pathlib import Path
-import hashlib, json, subprocess, sys, zipfile
+import hashlib, json, plistlib, subprocess, sys, zipfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ['apps/mobile/src/' + name for name in [
     'PortraitLyricsPager.tsx', 'mobile-lyrics.ts', 'embedded-lyrics.ts', 'lyric-files.ts',
@@ -14,7 +14,7 @@ MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'lands
            b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition']
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
-IOS_GLASS_MARKERS = [b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
+IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])
     assert platform in ['Android', 'iOS']
@@ -32,6 +32,13 @@ def main():
     else: assert str(info['appBuildNumber']) == str(config['ios']['buildNumber'])
     markers = MARKERS + (IOS_GLASS_MARKERS if platform == 'iOS' else [])
     with zipfile.ZipFile(package) as archive:
+        if platform == 'iOS':
+            plists = [name for name in archive.namelist() if name.startswith('Payload/') and name.count('/') == 2 and name.endswith('/Info.plist')]
+            assert len(plists) == 1, 'Missing app Info.plist'
+            plist = plistlib.loads(archive.read(plists[0]))
+            assert plist.get('UIViewControllerBasedStatusBarAppearance') is True, 'Fullscreen must use the native screen controller'
+            assert plist.get('CADisableMinimumFrameDurationOnPhone') is True, 'Native ProMotion opt-in missing'
+            assert info.get('fullscreenStatusBarPolicy') == 'native-screen-controller-v1'
         bundles = [name for name in archive.namelist() if name == 'assets/index.android.bundle' or name.startswith('Payload/') and name.endswith('.app/main.jsbundle')]
         assert len(bundles) == 1, 'Missing packaged JavaScript bundle'
         bundle = archive.read(bundles[0])
