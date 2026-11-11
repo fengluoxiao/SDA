@@ -1,3 +1,9 @@
+import { CARDBOARD_DEFAULTS, type CardboardConfig } from "./cardboard-config";
+import { CardboardRenderer, createSpaceRenderer, getSpaceRawDraw } from "./cardboard-renderer";
+import { CardboardControls } from "./CardboardControls";
+import { useCardboardSession } from "./use-cardboard-session";
+import type { CardboardPose } from "./cardboard-pose";
+import { ChannelSpeakers } from "./ChannelSpeakers";
 import { MobileSceneCamera } from "./MobileSceneCamera";
 import { LISTENER_VIEW_FOV, listenerViewFov, rotateListenerView, type SceneCameraInput } from "./scene-camera-input";
 import { BatchedSpaceObjects } from "./BatchedSpaceObjects";
@@ -11,10 +17,9 @@ import React, { useMemo, useRef } from "react";
 import { AccessibilityInfo, AppState, Platform, PanResponder, View, Text, Pressable, Dimensions, type GestureResponderEvent } from "react-native";
 import { Canvas, useFrame } from "@react-three/fiber/native";
 import * as THREE from "three";
-import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
+import { PALETTE, Room, SphericalRoom, Listener } from "../../../packages/renderer/src/scene-models";
 import { rotateScene } from "./scene-gesture";
-import { LAYOUTS } from "../../../packages/renderer/src/layouts";
-import { SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
+import { SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT } from "../../../packages/renderer/src/scene-coordinates";
 
 import {MobileObjectActivity, type MobileObjectPoint} from "./mobile-object-activity";
 export type {MobileObjectPoint} from "./mobile-object-activity";
@@ -29,7 +34,7 @@ interface ActivityProps {
 }
 
 function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
-  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate, firstPerson }: ActivityProps & { immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
+  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate, firstPerson, showSpeakers, cardboard, vrPose }: ActivityProps & { cardboard?: CardboardConfig; vrPose?: CardboardPose; immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; showSpeakers: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
   const glow = useSpaceGlowTexture(immersive);
   const phase = useMemo(() => ({ current: 0 }), [sourceKey]);
   const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
@@ -48,23 +53,15 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
   const pacing = useMemo(() => new SceneFrameClock(), []);
   useFrame(state => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, 1);
   return <>
-    <MobileSceneCamera input={cameraInput} firstPerson={firstPerson} immersive={immersive} layout={layout} />
+    <MobileSceneCamera cardboard={cardboard} vrPose={vrPose} input={cameraInput} firstPerson={firstPerson} immersive={immersive} layout={layout} />
     {immersive ? <ImmersiveSpaceEnvironment layout={layout} accent={accent} glow={glow} showListener={!firstPerson} /> : <>
     <color attach="background" args={[PALETTE.dark.bg]} />
     <ambientLight intensity={0.75} /><directionalLight position={[2.5, 4, 2]} intensity={1.2} />
     {layout === "360RA-13" ? <SphericalRoom p={PALETTE.dark} /> : <Room p={PALETTE.dark} />}
     {layout !== "360RA-13" && <gridHelper args={[SCENE_ROOM_HALF_EXTENT * 2, 10, PALETTE.dark.gridMain, PALETTE.dark.floorGrid]} position={[0, SCENE_FLOOR_Y, 0]} />}
-    {LAYOUTS[layout].map((speaker) => {
-      const position = speakerScenePosition(speaker);
-      const facing = new THREE.Object3D();
-      facing.position.set(...position);
-      facing.lookAt(0, speaker.isLfe ? SCENE_FLOOR_Y + 0.13 : 0, 0);
-      return <group key={speaker.name} position={position} quaternion={facing.quaternion.toArray() as [number, number, number, number]}>
-        {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
-      </group>;
-    })}
     {!firstPerson && <Listener />}
     </>}
+    <ChannelSpeakers layout={layout} visible={showSpeakers} />
     <BatchedSpaceObjects objects={objects} visibility={visibility} immersive={immersive} phase={phase} reduceMotion={reduceMotion} sourceKey={sourceKey} streamTimeSec={streamTimeSec} paused={paused} />
   </>;
 }
@@ -76,7 +73,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, displayActive, onInteractionChange, onTap, frameRate = 60, fullscreen = false, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { frameRate?: number; fullscreen?: boolean; displayActive?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
+export function MobileObjectScene({ objects, layout, active, displayActive, onInteractionChange, onTap, frameRate = 60, fullscreen = false, showSpeakers = false, cardboard = CARDBOARD_DEFAULTS, onCardboardChange, onVrExit, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { cardboard?: CardboardConfig; onCardboardChange?: (config: CardboardConfig) => void; onVrExit?: () => void; frameRate?: number; fullscreen?: boolean; showSpeakers?: boolean; displayActive?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
   // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
@@ -87,6 +84,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     return () => subscription.remove();
   }, []);
   const renderActive = active && foreground;
+  const effectiveFrameRate = useSceneDisplayPolicy((displayActive ?? active) && foreground, frameRate, fullscreen);
   const view = useRef<React.ComponentRef<typeof View>>(null);
   const [reduceMotion, setReduceMotion] = React.useState(false);
   React.useEffect(() => {
@@ -102,6 +100,21 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
   React.useEffect(() => () => interaction.current?.(false), []);
   interaction.current = onInteractionChange;
   const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
+  const vrRequested = fullscreen && cardboard.enabled;
+  const vrActive = vrRequested && viewport.width > viewport.height;
+  // Layout settling during the forced rotation must not cancel/restore the VR session.
+  const vrSession = useCardboardSession(vrRequested && (displayActive ?? active) && foreground, effectiveFrameRate);
+  const [vrTools, setVrTools] = React.useState(true);
+  const [vrCalibration, setVrCalibration] = React.useState(false);
+  const vrRenderer = useRef<CardboardRenderer | null>(null);
+  tapHandler.current = vrRequested ? () => setVrTools(value => !value) : onTap;
+  const vrFrame = useRef({ active: vrActive, cardboard, calibration: vrCalibration });
+  vrFrame.current = { active: vrActive, cardboard, calibration: vrCalibration };
+  React.useEffect(() => { setVrTools(true); setVrCalibration(false); }, [vrRequested]);
+  React.useEffect(() => {
+    if (!vrActive) { vrRenderer.current?.dispose(); vrRenderer.current = null; }
+  }, [vrActive]);
+  React.useEffect(() => () => { vrRenderer.current?.dispose(); vrRenderer.current = null; }, []);
   const [mounted, setMounted] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
   const [ready, setReady] = React.useState(false);
@@ -110,7 +123,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     engine?.setSceneRenderingRequested?.(renderActive && mounted);
     return () => engine?.setSceneRenderingRequested?.(false);
   }, [renderActive, mounted]);
-  const effectiveFrameRate = useSceneDisplayPolicy((displayActive ?? active) && foreground, frameRate, fullscreen);
+
   const [failure, setFailure] = React.useState<string | null>(null);
   const firstFrame = useRef(false);
   const alive = useRef(true);
@@ -143,6 +156,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
   React.useEffect(() => { if (failure) report({ ok: false, error: failure }); }, [failure, report]);
   const retry = () => { firstFrame.current = false; setReady(false); setFailure(null); setAttempt(value => value + 1); };
   const input = useRef<SceneCameraInput>({ rotation: { x: 0.72, y: 0.25 }, distance: 7, look: { yaw: 0, pitch: 0 }, fov: LISTENER_VIEW_FOV });
+  const vrGesture = useRef(vrRequested); vrGesture.current = vrRequested;
   const firstPerson = useRef(fullscreen); firstPerson.current = fullscreen;
   const previousPinch = useRef(0);
   const previousDrag = useRef<{ x: number; y: number } | null>(null);
@@ -174,6 +188,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     },
     onPanResponderMove: (event: GestureResponderEvent) => {
       tap.current.update(event.nativeEvent.touches);
+      if (vrGesture.current) return;
       const touches = event.nativeEvent.touches;
       if (touches.length >= 2) {
         previousDrag.current = null;
@@ -203,28 +218,36 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     },
     onPanResponderTerminate: () => { tap.current.cancel(); previousDrag.current = null; previousPinch.current = 0; interaction.current?.(false); },
   })).current;
-  return <View ref={view} collapsable={false} style={{ flex: 1, overflow: "hidden" }} onLayout={event => {
+  return <View style={{ flex: 1 }}><View ref={view} collapsable={false} style={{ flex: 1, overflow: "hidden" }} onLayout={event => {
     const { width, height } = event.nativeEvent.layout;
     viewportHeight.current = height;
     setViewport(previous => previous.width === width && previous.height === height ? previous : { width, height });
   }} {...pan.panHandlers}>
     {/* Let the native GL view resize with its parent immediately on resume;
         cached viewport dimensions only gate the initial mount. */}
-    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={renderActive ? "always" : "never"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={{ antialias: false, alpha: false }} onCreated={state => {
-      const renderFrame = state.gl.render.bind(state.gl);
+    {mounted && viewport.width > 0 && viewport.height > 0 && <SceneBoundary key={attempt} onError={setFailure}><Canvas frameloop={renderActive ? "always" : "never"} style={{ flex: 1 }} camera={{ position: [5, 4.2, 6], fov: 50 }} gl={createSpaceRenderer} onCreated={state => {
+      vrRenderer.current?.dispose(); vrRenderer.current = null;
+      const renderFrame = getSpaceRawDraw(state.gl);
       const context = state.gl.getContext() as any;
       normalizeNativeShaderLogs(context);
       const smoke = (globalThis as any).expo?.modules?.SdaEngine?.sceneSmokeEnabled?.() === true;
       let frames = 0;
       let smokeReported = false;
       state.gl.render = (scene, camera) => {
+        if (currentAttempt.current !== attempt || !alive.current) return;
         // Expo owns/presents/resizes the drawable outside Three's state cache.
         // Rebind its current default FBO rather than retaining a deleted/stale
         // drawable after the native tab has laid out or resumed.
         if (Platform.OS === "ios") {
           resetNativeSceneDrawable(state.get, context);
         }
-        renderFrame(scene, camera);
+        if (vrFrame.current.active) {
+          vrRenderer.current ??= new CardboardRenderer();
+          vrRenderer.current.render(state.gl, renderFrame, scene, camera as THREE.PerspectiveCamera, vrFrame.current.cardboard, vrFrame.current.calibration);
+        } else renderFrame(scene, camera);
+        // Raw offscreen eye draws never call Fiber's per-render endFrameEXP.
+        // Exactly one completed screen image is presented per rendered frame.
+        context.endFrameEXP?.();
         if (currentAttempt.current !== attempt || !alive.current) return;
         if (state.gl.info.render.calls <= 0 || state.gl.info.render.triangles <= 0) return;
         frames++;
@@ -269,11 +292,13 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
         }
       };
     }}>
-      <Scene {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene cardboard={vrActive ? cardboard : undefined} vrPose={vrSession.pose.current} {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} showSpeakers={showSpeakers} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>
       {failure && <Pressable accessibilityRole="button" accessibilityLabel="重试空间视图" onPress={retry}><Text style={{ color: "#ffffff", padding: 12 }}>重试空间视图</Text></Pressable>}
     </View>}
+  </View>
+    {vrRequested && <CardboardControls config={cardboard} onChange={onCardboardChange} landscape={vrActive} status={vrSession.status} visible={vrTools || !vrActive} calibrating={vrCalibration} onCalibrate={setVrCalibration} onHide={() => setVrTools(false)} onRecenter={vrSession.recenter} onRetry={vrSession.retry} onExit={onVrExit} />}
   </View>;
 }

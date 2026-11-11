@@ -50,7 +50,7 @@ assert.match(settings, /getViewConfig/);
 assert.match(settings, /if \(nativeScreens\)/);
 assert.match(settings, /presentationStyle="fullScreen"/);
 assert.match(readFileSync('apps/mobile/metro.config.js','utf8'), /moduleName === 'three'/);
-assert.match(readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8'), /quaternion=\{facing.quaternion.toArray\(\)/);
+assert.match(readFileSync('apps/mobile/src/ChannelSpeakers.tsx','utf8'), /quaternion=\{quaternion\}/);
 console.log('iOS UI regression checks passed: navigation, status, original 360RA rooms, presets, real scene, safe import');
 
 assert.match(settings, /<IOSSettingsCompatibilityPage player=\{player\}/);
@@ -375,7 +375,7 @@ assert.match(alacPlayer,/layout = input\.isAlac \? \(alacUpmixActive \? "7\.1\.4
 assert.ok(alacPlayer.indexOf('layout = input.isAlac') < alacPlayer.indexOf('} else { try startNative('));
 assert.match(alacPlayer,/status\["outputLayout"\] = layout/);
 assert.match(readFileSync('apps/mobile/App.tsx','utf8'),/layout: value\.outputLayout \?\? this\.state\.layout/);
-assert.match(readFileSync('apps/mobile/src/MobileObjectScene.tsx','utf8'),/LAYOUTS\[layout\]\.map/);
+assert.match(readFileSync('apps/mobile/src/ChannelSpeakers.tsx','utf8'),/LAYOUTS\[layout\]\.map/);
 assert.doesNotMatch(readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8'),/"360° 球形声场" : "7\.1\.4"/);
 console.log('ALAC 2.0 layout checks passed: engine, status, scene and label');
 

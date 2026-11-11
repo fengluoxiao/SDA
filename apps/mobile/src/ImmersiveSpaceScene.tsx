@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { LAYOUTS } from "../../../packages/renderer/src/layouts";
-import { SCENE_ROOM_HALF_EXTENT, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
+import { SCENE_ROOM_HALF_EXTENT } from "../../../packages/renderer/src/scene-coordinates";
 import { Listener } from "../../../packages/renderer/src/scene-models";
 import { SPACE_STAGE, spaceStageFloor } from "./space-visual-model";
 
@@ -46,10 +45,6 @@ export function ImmersiveSpaceEnvironment({ layout, accent, glow, showListener =
       <meshBasicMaterial map={glow} color={accent} transparent opacity={.19} depthWrite={false} blending={THREE.AdditiveBlending} />
     </mesh>}
     {[.34, .7, 1, 1.3].map((scale, index) => <Orbit key={scale} floorY={floorY} radius={SCENE_ROOM_HALF_EXTENT * scale} color={index === 2 ? accent : SPACE_STAGE.orbit} opacity={index === 2 ? .34 : .15} />)}
-    {LAYOUTS[layout].map(speaker => <mesh key={speaker.name} position={speakerScenePosition(speaker)}>
-      <sphereGeometry args={[speaker.isLfe ? .055 : .035, 10, 8]} />
-      <meshBasicMaterial color="#cad7f1" transparent opacity={.6} />
-    </mesh>)}
     {layout === "360RA-13" && <mesh>
       <sphereGeometry args={[SCENE_ROOM_HALF_EXTENT, 24, 12]} />
       <meshBasicMaterial color={SPACE_STAGE.orbit} wireframe transparent opacity={.075} depthWrite={false} />

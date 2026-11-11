@@ -141,3 +141,25 @@ test("Android removes fullscreen chrome and its reserved lane, then restores the
   assert(parent);assert.equal(parent.props.style.paddingBottom,spaceFullscreen?0:sideBar?80:132);
  }
 });
+
+
+test("channel speakers default hidden and reuse the original speaker/sub assets at every channel position",()=>{
+ const ts=require("typescript"),fs=require("node:fs"),THREE=require("three");
+ const layouts=moduleFor("packages/renderer/src/layouts.ts").LAYOUTS;
+ const positions=moduleFor("packages/renderer/src/scene-coordinates.ts");
+ const react={createElement:(type,props,...children)=>({type,props:{...props,children}}),useMemo:fn=>fn()};
+ const text=ts.transpileModule(fs.readFileSync("apps/mobile/src/ChannelSpeakers.tsx","utf8"),{compilerOptions:{jsx:ts.JsxEmit.React,target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+ const module={exports:{}};
+ const mocks={react,three:THREE,"../../../packages/renderer/src/layouts":{LAYOUTS:layouts},"../../../packages/renderer/src/scene-coordinates":positions,"../../../packages/renderer/src/scene-models":{GenelecSpeaker:"original-speaker",GenelecSub:"original-sub"}};
+ new Function("require","module","exports",text)(name=>mocks[name]??require(name),module,module.exports);
+ for(const layout of ["2.0","7.1.4","360RA-13"]){
+  assert.equal(module.exports.ChannelSpeakers({layout}),null);
+  const tree=module.exports.ChannelSpeakers({layout,visible:true}),channels=tree.props.children[0];assert.equal(channels.length,layouts[layout].length);
+  for(let index=0;index<channels.length;index++){
+   const node=channels[index],speaker=layouts[layout][index];assert.equal(node.props.name,speaker.name);assert.deepEqual(node.props.position,positions.speakerScenePosition(speaker));
+   assert.equal(node.props.children[0].type,speaker.isLfe?"original-sub":"original-speaker");
+   const toward=new THREE.Vector3(0,speaker.isLfe?positions.SCENE_FLOOR_Y+.13:0,0).sub(new THREE.Vector3(...node.props.position)).normalize();
+   const front=new THREE.Vector3(0,0,1).applyQuaternion(new THREE.Quaternion(...node.props.quaternion));assert(front.dot(toward)>.9999);
+  }
+ }
+});

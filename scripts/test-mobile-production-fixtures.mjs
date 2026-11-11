@@ -13,3 +13,9 @@ for (const marker of ['tablet-landscape-lyrics', 'lyric-word-fill', 'lyric-held-
   assert(result.outputFiles[0].text.includes(marker), `approved mobile lyric UI missing from production: ${marker}`);
 }
 console.log('Production retains tablet landscape lyrics, continuous word fill and held-note glow in the shared mobile UI.');
+
+for (const source of ['cardboard-config.ts', 'cardboard-renderer.ts', 'cardboard-pose.ts', 'cardboard-session.ts', 'use-cardboard-session.ts', 'CardboardControls.tsx']) {
+  assert(productionInputs.has('apps/mobile/src/' + source), `shared VR source excluded from production: ${source}`);
+}
+for (const marker of ['cardboard-vr-controls', 'cardboard-calibration-panel']) assert(result.outputFiles[0].text.includes(marker), `VR UI missing from production: ${marker}`);
+console.log('Production retains the same cardboard VR cameras, warp renderer, calibration controls and native sensor session used by the mobile preview.');

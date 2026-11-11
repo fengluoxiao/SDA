@@ -9,7 +9,7 @@
     "ios": {
       "bundleIdentifier": "app.sda.mobile",
       "infoPlist": {
-        "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向。",
+        "NSMotionUsageDescription": "SDA 使用兼容耳机的头部运动数据控制空间音频方向，并在纸盒 VR 模式中读取手机姿态控制视角。",
         "NSLocalNetworkUsageDescription": "开启远程诊断服务时，允许同网络电脑读取 SDA 的播放状态和头部姿态。",
         "UIBackgroundModes": [
           "audio"
@@ -58,7 +58,13 @@
       "versionCode": 943
     },
     "plugins": [
-      "./plugins/with-ios-deployment"
+      "./plugins/with-ios-deployment",
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "SDA 使用兼容耳机的头部运动数据控制空间音频方向，并在纸盒 VR 模式中读取手机姿态控制视角。"
+        }
+      ]
     ],
     "scheme": "sda",
     "icon": "./assets/app-icon.png",

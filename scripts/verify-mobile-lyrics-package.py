@@ -9,9 +9,9 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'KaraokeText.tsx', 'lyric-karaoke.ts', 'TabletLandscapePlayer.tsx', 'tablet-player-layout.ts',
     'PhoneLandscapeBlur.tsx', 'phone-landscape-blur-model.ts', 'IOSUIKitTabs.tsx', 'IOSSystemTabs.tsx',
     'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
-    'MobileSceneCamera.tsx', 'scene-camera-input.ts', 'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
+    'cardboard-config.ts', 'cardboard-renderer.ts', 'cardboard-pose.ts', 'cardboard-session.ts', 'use-cardboard-session.ts', 'CardboardControls.tsx', 'ChannelSpeakers.tsx', 'MobileSceneCamera.tsx', 'scene-camera-input.ts', 'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
-           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view']
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel']
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
 IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
