@@ -1,5 +1,9 @@
-const {withPodfileProperties,withXcodeProject}=require('@expo/config-plugins');
+const {withPodfileProperties,withXcodeProject,withDangerousMod}=require('@expo/config-plugins');
 module.exports=function(config){
+ config=withDangerousMod(config,['ios',async mod=>{
+  require('../../../scripts/patch-ios-scene-frame-rate.cjs').patchIOSSceneFrameRates(mod.modRequest.projectRoot);
+  return mod;
+ }]);
  config=withPodfileProperties(config,mod=>{
   mod.modResults['ios.deploymentTarget']='16.4';
   mod.modResults['newArchEnabled']='true';

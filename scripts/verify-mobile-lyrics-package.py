@@ -9,9 +9,11 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'KaraokeText.tsx', 'lyric-karaoke.ts', 'TabletLandscapePlayer.tsx', 'tablet-player-layout.ts',
     'PhoneLandscapeBlur.tsx', 'phone-landscape-blur-model.ts', 'IOSUIKitTabs.tsx', 'IOSSystemTabs.tsx',
     'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
-    'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
+    'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
-           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-track-identity', b'space-fullscreen-button']
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition']
+SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
+            'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
 IOS_GLASS_MARKERS = [b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])

@@ -10,6 +10,7 @@ import java.security.MessageDigest
 
 /** Android Expo bridge for raw and M4A/MP4-contained E-AC-3/JOC streams. */
 class SdaModule : Module() {
+    private val sceneDisplay = SceneDisplayPolicy()
     private val mpeghImport = MpeghImport()
     private val stereoReferences = PreparedStereoReference()
     private data class PlayingProgramme(val hash:String,val path:String,val bytes:Long,val modified:Long,val measurement:String)
@@ -720,6 +721,8 @@ class SdaModule : Module() {
             it.deleteSharedPreferences("sda-loudness")
             VendorNpuRuntime.prepare(it); startAudioPolicy(it.applicationContext) } }
         Name("SdaEngine")
+        Function("sceneDisplayCapabilities") { sceneDisplay.capabilities(appContext.currentActivity) }
+        Function("configureSceneDisplay") { active: Boolean, fps: Int, fullscreen: Boolean -> sceneDisplay.configure(appContext.currentActivity, active, fps, fullscreen) }
         Events("onMediaCommand")
         OnActivityEntersForeground { inBackground = false; refreshAudioSchedulingSoon(); diagnostics?.event("foreground", generation) }
         OnActivityEntersBackground { inBackground = true; refreshAudioSchedulingSoon(); diagnostics?.event("background", generation) }
@@ -1063,6 +1066,7 @@ class SdaModule : Module() {
         }
 
         OnDestroy {
+            appContext.currentActivity?.runOnUiThread { sceneDisplay.restore() }
             destroyed = true
             playbackCommands.shutdownNow().forEach { (it as? java.util.concurrent.Future<*>)?.cancel(true) }
             stereoReferences.clear();playingProgramme=null

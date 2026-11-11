@@ -72,11 +72,11 @@ assert.match(settings, /scrollContentBackground\("hidden"\)/);
 // The home screen must not clip the native TabView at the bottom safe area
 // or show a different-color native page between the top/bottom backgrounds.
 assert.match(ui, /SafeAreaProvider initialMetrics=\{initialWindowMetrics\}/);
-assert.match(ui, /edges=\{hasUIKitIOSTabs \? \[\] : hasSystemIOSTabs && Platform\.OS === "ios"/);
+assert.match(ui, /edges=\{fullscreenSpace \? \[\] : hasUIKitIOSTabs \? \[\] : hasSystemIOSTabs && Platform\.OS === "ios"/);
 assert.match(ui, /hasSystemIOSTabs && \{ paddingBottom: 0 \}/);
 assert.match(ui, /backgroundColor="transparent" pageBackgroundColors=\{\["transparent", c.bg, c.bg\]\} accent=\{c.accent\}/);
 assert.match(tabs, /background\(backgroundColor, \{ ignoresSafeAreaEdges: "all" \}\)/);
-assert.match(tabs, /paddingHorizontal: 18, backgroundColor/);
+assert.match(tabs, /paddingHorizontal: spaceFullscreen \? 0 : 18, backgroundColor/);
 
 // Never place an engine-error footer between the native tabs and home indicator.
 assert.doesNotMatch(ui, /<\/IOSSystemTabs>\s*\{!!p.error/);
@@ -93,7 +93,7 @@ assert.match(readFileSync("apps/mobile/src/ios-tab-appearance.ts","utf8"), /tabB
 assert.match(uiKitTabs, /standardAppearance: appearance, scrollEdgeAppearance: appearance/);
 assert.match(uiKitTabs, /nativeContainerStyle=\{\{ backgroundColor \}\}/);
 assert.match(uiKitTabs, /navStateRequest=\{\{ selectedScreenKey: String\(selected\), baseProvenance: provenance \}\}/);
-assert.match(uiKitTabs, /edges=\{index === 1 \?/);
+assert.match(uiKitTabs, /edges=\{spaceFullscreen \? \[\] : index === 1 \?/);
 assert.doesNotMatch(uiKitTabs, /\b(?:stop|pause|resume|play|setSystemSpatial360RA)\(/);
 
 // Exercise the UI adapter with mocked native components (not a visual/native

@@ -37,15 +37,15 @@ export function IOSSystemTabs({ spaceFullscreen = false, selected, onChange, chi
   if (hasUIKitIOSTabs) return <IOSUIKitTabs spaceFullscreen={spaceFullscreen} selected={selected} onChange={onChange} pages={pages} pageHeaders={pageHeaders} pageBackgrounds={pageBackgrounds} accessory={accessory} nativeAccessory={nativeAccessory} accent={accent} theme={theme} backgroundColor={backgroundColor} pageBackgroundColors={pageBackgroundColors} libraryHeaderActions={libraryHeaderActions} libraryHeaderActionsWidth={libraryHeaderActionsWidth} sideBar={sideBar} sideBarExternal={sideBarExternal} sideBarPosition={sideBarPosition} sideBarWidth={sideBarWidth} rightContentGap={rightContentGap} leftContentOffset={leftContentOffset} sideBarInsetReserved={sideBarInsetReserved} tabletPageInsets={tabletPageInsets} />;
   // Compatibility hosts without UIKit's tab-bar visibility API still use the
   // same page content and player callbacks; the current native path stays mounted.
-  if (sideBar) return <View style={{ flex: 1, marginHorizontal: -18 }}>
-    <View style={{ flex: 1, paddingHorizontal: 18, ...(!spaceFullscreen && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{pages.map((page, index) => <View key={index} style={{ flex: 1, ...(index !== 0 ? tabletPageInsets : {}), display: selected === index ? "flex" : "none" }}>{sidePageContent(page, index)}{pageBackgrounds?.[index]}</View>)}</View>
+  if (sideBar) return <View style={{ flex: 1, marginHorizontal: spaceFullscreen ? 0 : -18 }}>
+    <View style={{ flex: 1, paddingHorizontal: spaceFullscreen ? 0 : 18, ...(!spaceFullscreen && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{pages.map((page, index) => <View key={index} style={{ flex: 1, ...(index !== 0 ? tabletPageInsets : {}), display: selected === index ? "flex" : "none" }}>{sidePageContent(page, index)}{pageBackgrounds?.[index]}</View>)}</View>
     {!sideBarExternal && <SafeAreaView edges={hasSystemIOSTabs ? ["bottom"] : []} pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: sideBarPosition === "left" ? "flex-start" : "flex-end", justifyContent: "flex-end", paddingRight: 0, paddingBottom: 8 }}><View pointerEvents="box-none" style={{ width: sideBarWidth, alignItems: "center" }}>{sideBar}</View></SafeAreaView>}
   </View>;
   if (!swiftUI) return <><View style={{ flex: 1 }}>{pages}{pageBackgrounds?.[selected]}</View>{selected !== 0 && !spaceFullscreen && accessory}{!spaceFullscreen && fallback}</>;
   const { Host, TabView, RNHostView, VStack } = swiftUI;
   const { tabViewStyle, background } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
   const symbols = ["play.circle.fill", "music.note.list", "cube.transparent"] as const;
-  return <Host style={{ flex: 1, marginHorizontal: -18, backgroundColor }} colorScheme={theme} seedColor={accent}>
+  return <Host style={{ flex: 1, marginHorizontal: spaceFullscreen ? 0 : -18, backgroundColor }} colorScheme={theme} seedColor={accent}>
     <TabView modifiers={[spaceFullscreen ? tabViewStyle({ type: "page", indexDisplayMode: "never" }) : tabViewStyle({ type: "automatic" }), background(backgroundColor, { ignoresSafeAreaEdges: "all" })]} selection={String(selected)} onSelectionChange={value => {
       const index = Number(value);
       if (Number.isInteger(index) && index >= 0 && index < IOS_TABS.length) onChange(index);
@@ -54,7 +54,7 @@ export function IOSSystemTabs({ spaceFullscreen = false, selected, onChange, chi
         {/* Paint inside each native tab, not just underneath TabView itself.
             The page background must continue behind the floating system bar. */}
         <VStack spacing={0}>
-          <RNHostView><View style={{ flex: 1, paddingHorizontal: 18, backgroundColor: "transparent" }}>{pages[index]}{index !== 0 && !spaceFullscreen && accessory}{pageBackgrounds?.[index]}</View></RNHostView>
+          <RNHostView><View style={{ flex: 1, paddingHorizontal: spaceFullscreen ? 0 : 18, backgroundColor: "transparent" }}>{pages[index]}{index !== 0 && !spaceFullscreen && accessory}{pageBackgrounds?.[index]}</View></RNHostView>
         </VStack>
       </TabView.Tab>)}
     </TabView>

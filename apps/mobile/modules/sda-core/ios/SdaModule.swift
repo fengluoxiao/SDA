@@ -9,6 +9,8 @@ public final class SdaModule: Module {
  public func definition() -> ModuleDefinition {
   let player = self.player
   Name("SdaEngine")
+  Function("sceneDisplayCapabilities") { SceneDisplayPolicy.capabilities() }
+  Function("configureSceneDisplay") { (active:Bool,fps:Int,_:Bool) in SceneDisplayPolicy.configure(active:active,fps:fps) }
   #if targetEnvironment(simulator)
   Function("sceneSmokeEnabled") { ProcessInfo.processInfo.environment["SDA_IOS_SCENE_SMOKE"] == "1" }
   Function("reportSceneSmoke") { (text: String) in
@@ -22,6 +24,7 @@ public final class SdaModule: Module {
   Function("reportSceneSmoke") { (_: String) in }
   #endif
   OnCreate {
+   SceneDisplayPolicy.configure(active:false,fps:60)
    PlaybackStorage.startup()
    for key in player.prefs.dictionaryRepresentation().keys where key.hasPrefix("sda.loudness.") { player.prefs.removeObject(forKey:key) }
    player.prefs.removeObject(forKey:"sda.queue.selected")
@@ -38,7 +41,7 @@ public final class SdaModule: Module {
    }
    #endif
   }
-  OnDestroy { player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for session in player.imports.values { session.discard() }; player.imports.removeAll() } }
+  OnDestroy { SceneDisplayPolicy.configure(active:false,fps:60); player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for session in player.imports.values { session.discard() }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }

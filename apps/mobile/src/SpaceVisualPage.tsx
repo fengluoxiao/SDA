@@ -1,11 +1,11 @@
 import React from "react";
-import { Image, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { SPACE_STAGE, spaceVisualColumns } from "./space-visual-model";
 
 type Props = React.PropsWithChildren<{
-  enabled: boolean; compact?: boolean; title: string; artist: string; artworkUri?: string;
-  accent: string; ink: string; muted: string; layout: string; objectCount: number;
-  fullscreen?: boolean; onFullscreenChange?: (fullscreen: boolean) => void; header: React.ReactNode; footer: React.ReactNode | ((columns: boolean) => React.ReactNode);
+  enabled: boolean; compact?: boolean;
+  accent: string; objectCount: number;
+  fullscreen?: boolean; fullscreenInsets?: { top: number; right: number; bottom: number; left: number }; onFullscreenChange?: (fullscreen: boolean) => void; header: React.ReactNode; footer: React.ReactNode | ((columns: boolean) => React.ReactNode);
   viewportStyle: StyleProp<ViewStyle>;
 }>;
 
@@ -16,20 +16,15 @@ export function SpaceVisualPage(p: Props) {
   const panelWidth = Math.min(p.compact ? 224 : 264, Math.max(176, size.width * .24));
   return <View style={[s.page, columns && s.columns]} onLayout={event => { const { width, height } = event.nativeEvent.layout; setSize(old => old.width === width && old.height === height ? old : { width, height }); }} testID={p.enabled ? "immersive-space-page" : "classic-space-page"}>
     <View style={[columns && { width: panelWidth }, p.fullscreen && s.hidden]}>
-      {p.enabled && <View style={[s.hero, p.compact && s.compactHero]} testID="space-track-identity">
-        {p.artworkUri ? <Image source={{ uri: p.artworkUri }} style={[s.artwork, p.compact && s.compactArtwork]} /> : <View style={[s.artwork, s.placeholder, p.compact && s.compactArtwork, { backgroundColor: p.accent + "22" }]}><Text style={{ color: p.ink, fontSize: p.compact ? 18 : 26 }}>♫</Text></View>}
-        <View style={s.trackCopy}><Text numberOfLines={1} style={[s.title, p.compact && s.compactTitle, { color: p.ink }]}>{p.title}</Text><Text numberOfLines={1} style={[s.artist, { color: p.muted }]}>{p.artist}</Text></View>
-        <View style={[s.layoutBadge, { borderColor: p.accent + "55" }]}><Text style={[s.layoutText, { color: p.ink }]}>{p.layout === "360RA-13" ? "360RA" : p.layout}</Text></View>
-      </View>}
       {p.header}
     </View>
     <View style={[p.enabled ? [s.stage, p.compact && s.compactStage, columns && s.columnStage] : p.viewportStyle, p.fullscreen && s.fullscreenStage]} testID="space-scene-viewport">
       {p.children}
       {p.enabled && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={StyleSheet.absoluteFill}>
-        <View style={[s.sceneCaption, p.compact && s.compactCaption]}><View style={[s.statusDot, { backgroundColor: p.accent }]} /><Text style={s.caption}>空间声场</Text></View>
-        <View style={[s.counter, p.compact && s.compactCounter]}><Text style={s.counterLabel}>显示对象</Text><Text style={[s.counterValue, p.compact && s.compactCounterValue]}>{String(p.objectCount).padStart(2, "0")}</Text></View>
+        <View style={[s.sceneCaption, p.compact && s.compactCaption, p.fullscreen && { top: 20 + (p.fullscreenInsets?.top ?? 0), left: 18 + (p.fullscreenInsets?.left ?? 0) }]}><View style={[s.statusDot, { backgroundColor: p.accent }]} /><Text style={s.caption}>空间声场</Text></View>
+        <View style={[s.counter, p.compact && s.compactCounter, p.fullscreen && { top: 16 + (p.fullscreenInsets?.top ?? 0), right: 18 + (p.fullscreenInsets?.right ?? 0) }]}><Text style={s.counterLabel}>显示对象</Text><Text style={[s.counterValue, p.compact && s.compactCounterValue]}>{String(p.objectCount).padStart(2, "0")}</Text></View>
       </View>}
-      {p.onFullscreenChange && <Pressable testID="space-fullscreen-button" accessibilityRole="button" accessibilityLabel={p.fullscreen ? "退出空间全屏" : "空间全屏"} onPress={() => p.onFullscreenChange?.(!p.fullscreen)} style={s.fullscreenButton}>
+      {p.onFullscreenChange && <Pressable testID="space-fullscreen-button" accessibilityRole="button" accessibilityLabel={p.fullscreen ? "退出空间全屏" : "空间全屏"} onPress={() => p.onFullscreenChange?.(!p.fullscreen)} style={[s.fullscreenButton, p.fullscreen && { bottom: 12 + (p.fullscreenInsets?.bottom ?? 0), right: 12 + (p.fullscreenInsets?.right ?? 0) }]}>
         <Text style={s.fullscreenLabel}>{p.fullscreen ? "退出全屏" : "全屏"}</Text>
       </Pressable>}
     </View>
@@ -37,13 +32,10 @@ export function SpaceVisualPage(p: Props) {
   </View>;
 }
 const s = StyleSheet.create({
-  hidden: { display: "none" }, fullscreenStage: { flex: 1, maxHeight: "100%", marginHorizontal: -18, marginTop: 0, borderRadius: 0, borderWidth: 0 },
+  hidden: { display: "none" }, fullscreenStage: { flex: 1, maxHeight: "100%", marginHorizontal: 0, marginTop: 0, borderRadius: 0, borderWidth: 0 },
   fullscreenButton: { position: "absolute", bottom: 12, right: 12, minWidth: 64, minHeight: 44, paddingHorizontal: 14, justifyContent: "center", alignItems: "center", borderRadius: 22, backgroundColor: "#1b243be6" },
   fullscreenLabel: { color: "#eef2ff", fontSize: 13, fontWeight: "600" },
-  page: { flex: 1, minHeight: 0, minWidth: 0 }, columns: { flexDirection: "row", columnGap: 18 }, columnStage: { marginTop: 0 }, hero: { flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 6, marginBottom: 16 },
-  compactHero: { gap: 9, paddingTop: 0, marginBottom: 7 }, artwork: { width: 52, height: 52, borderRadius: 14 }, compactArtwork: { width: 34, height: 34, borderRadius: 10 },
-  placeholder: { alignItems: "center", justifyContent: "center" }, trackCopy: { flex: 1, minWidth: 0 }, title: { fontSize: 22, lineHeight: 28, fontWeight: "700", letterSpacing: -.6 },
-  compactTitle: { fontSize: 16, lineHeight: 20 }, artist: { fontSize: 12, lineHeight: 17, marginTop: 3 }, layoutBadge: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 6 }, layoutText: { fontSize: 11, fontWeight: "700", letterSpacing: .6 },
+  page: { flex: 1, minHeight: 0, minWidth: 0 }, columns: { flexDirection: "row", columnGap: 18 }, columnStage: { marginTop: 0 },
   stage: { flex: 1, minHeight: 0, marginTop: 13, borderRadius: 28, borderWidth: 1, borderColor: "#cad7f126", overflow: "hidden", backgroundColor: SPACE_STAGE.background }, compactStage: { marginTop: 7, borderRadius: 20 },
   sceneCaption: { position: "absolute", left: 18, top: 20, flexDirection: "row", alignItems: "center", gap: 7 }, compactCaption: { top: 12, left: 14 }, statusDot: { width: 5, height: 5, borderRadius: 3 }, caption: { fontSize: 11, letterSpacing: 1.3, color: "#b8c6e2" },
   counter: { position: "absolute", top: 16, right: 18, alignItems: "flex-end" }, compactCounter: { top: 10, right: 14 }, counterLabel: { fontSize: 9, letterSpacing: 1.5, color: "#889ab9" },

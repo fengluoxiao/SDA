@@ -1,3 +1,4 @@
+import { sceneDisplayCapabilities } from "./scene-display";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { androidHeaderLayout } from "./android-chrome-model";
 import { AndroidGlassToggle, AndroidPageHeader, hasAndroidChrome } from "./AndroidChrome";
@@ -22,6 +23,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
   const insets = useSafeAreaInsets();
   const header = androidHeaderLayout(insets.top);
   const navigation = useNavigationPreferences();
+  const display = sceneDisplayCapabilities();
   const engine = (globalThis as any).expo?.modules?.SdaEngine;
   const [diagnosticsEnabled, setDiagnosticsEnabled] = React.useState(() => engine?.diagnosticsEnabled?.() === true);
   const [diagnosticsStatus, setDiagnosticsStatus] = React.useState("已关闭");
@@ -110,7 +112,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           [{ id: "left", label: "左边" }, { id: "right", label: "右边" }], navigation.sideTabPosition,
           value => { if (value === "left" || value === "right") navigation.setSideTabPosition(value); })}
       </>, "横屏时将导航栏放在侧边；默认在右边，竖屏仍使用底部导航栏。")}
-      {section("空间视图", toggle("Folia 风格空间", navigation.immersiveSpace, navigation.setImmersiveSpace, false), "在空间标签页使用柔光、环形声场和新的歌曲排版；保留旋转、缩放和对象显示操作。") }
+      {section("空间视图", <>{toggle("Folia 风格空间", navigation.immersiveSpace, navigation.setImmersiveSpace, false)}{toggle("120fps 空间视图", display.supports120 && navigation.space120Fps, navigation.setSpace120Fps, !display.supports120, display.supports120 ? "支持的设备可请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps 空间视图")}</>, "在空间标签页使用柔光、环形声场和对象柔光；保留旋转、缩放和对象显示操作。") }
       {section("主题色", <AndroidThemeMenu dark={dark} onFallbackOpen={() => setSelection({ title: "主题色", options: CHARACTER_THEMES.map(item => ({ id: item.id, label: item.name })), selected: appTheme.id, choose: id => { const theme = CHARACTER_THEMES.find(item => item.id === id); if (theme) appTheme.setTheme(theme.id); } })} />)}
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}

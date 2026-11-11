@@ -1,45 +1,21 @@
+import { BatchedSpaceObjects } from "./BatchedSpaceObjects";
+import { SceneFrameClock } from "./scene-motion";
+import { useSceneDisplayPolicy } from "./scene-display";
 import { ImmersiveSpaceEnvironment, useSpaceGlowTexture } from "./ImmersiveSpaceScene";
-import { spaceCameraDistance, spaceGlowOpacity, spaceObjectColor, SpaceSceneTap } from "./space-visual-model";
+import { spaceCameraDistance, SpaceSceneTap } from "./space-visual-model";
 import { normalizeNativeShaderLogs } from "./nativeShaderLogs";
 import { resetNativeSceneDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
-import { AccessibilityInfo, AppState, Platform, PanResponder, View, Text, Pressable, Dimensions, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { AccessibilityInfo, AppState, Platform, PanResponder, View, Text, Pressable, Dimensions, type GestureResponderEvent } from "react-native";
 import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
 import { rotateScene } from "./scene-gesture";
 import { LAYOUTS } from "../../../packages/renderer/src/layouts";
-import { admToScenePosition, SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT, SCENE_WALL_HEIGHT, SCENE_WALL_MID_Y, smoothScenePosition, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
+import { SCENE_FLOOR_Y, SCENE_ROOM_HALF_EXTENT, speakerScenePosition } from "../../../packages/renderer/src/scene-coordinates";
 
 import {MobileObjectActivity, type MobileObjectPoint} from "./mobile-object-activity";
 export type {MobileObjectPoint} from "./mobile-object-activity";
-
-function ObjectPoint({ object, visibility, immersive, glow, phase, reduceMotion }: {
-  object: MobileObjectPoint; visibility: ReadonlyMap<number, number>; immersive: boolean;
-  glow: THREE.Texture | null; phase: { current: number }; reduceMotion: boolean;
-}) {
-  const group = useRef<THREE.Group>(null), dot = useRef<THREE.MeshBasicMaterial>(null);
-  const halo = useRef<THREE.MeshBasicMaterial>(null), softHalo = useRef<THREE.SpriteMaterial>(null);
-  const target = useRef(new THREE.Vector3(...admToScenePosition(object.pos)));
-  useFrame((_, dt) => {
-    if (!group.current) return;
-    const opacity = visibility.get(object.id) ?? 0;
-    target.current.set(...admToScenePosition(object.pos));
-    if (opacity > 0 && !group.current.visible) group.current.position.copy(target.current);
-    group.current.visible = opacity > 0;
-    if (dot.current) dot.current.opacity = opacity;
-    if (halo.current) halo.current.opacity = opacity * .18;
-    if (softHalo.current) softHalo.current.opacity = spaceGlowOpacity(opacity, phase.current + object.id * .43, reduceMotion);
-    if (!group.current.visible) return;
-    group.current.position.set(...smoothScenePosition(group.current.position.toArray() as [number, number, number], target.current.toArray() as [number, number, number], dt));
-  });
-  const color = useMemo(() => immersive ? new THREE.Color(spaceObjectColor(object.id)) : new THREE.Color().setHSL(0.55 - object.pos[2] * 0.25, 0.9, 0.6), [immersive, object.id, object.pos[2]]);
-  return <group ref={group} visible={false} position={admToScenePosition(object.pos)}>
-    {immersive ? <sprite scale={[.65, .65, 1]}><spriteMaterial ref={softHalo} map={glow} color={color} transparent opacity={0} blending={THREE.AdditiveBlending} depthTest={false} depthWrite={false} /></sprite>
-      : <mesh><sphereGeometry args={[0.09, 12, 12]} /><meshBasicMaterial ref={halo} color={color} transparent opacity={0} depthTest={false} depthWrite={false} /></mesh>}
-    <mesh><sphereGeometry args={[0.06, 10, 10]} /><meshBasicMaterial ref={dot} color={color} transparent opacity={0} depthTest={false} depthWrite={false} /></mesh>
-  </group>;
-}
 
 interface ActivityProps {
   soundingIds?: readonly number[];
@@ -51,7 +27,7 @@ interface ActivityProps {
 }
 
 function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
-  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion }: ActivityProps & { immersive: boolean; accent: string; reduceMotion: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
+  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate }: ActivityProps & { immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
   const glow = useSpaceGlowTexture(immersive);
   const phase = useMemo(() => ({ current: 0 }), [sourceKey]);
   const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
@@ -67,6 +43,8 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
       onVisibleObjectCountChange?.(visible.length);
     }
   }, -1);
+  const pacing = useMemo(() => new SceneFrameClock(), []);
+  useFrame(state => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, 1);
   const camera = useThree((state) => state.camera);
   const sceneSize = useThree((state) => state.size);
   useFrame(() => {
@@ -93,7 +71,7 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
     })}
     <Listener />
     </>}
-    {objects.map((object) => <ObjectPoint key={object.id} object={object} visibility={visibility} immersive={immersive} glow={glow} phase={phase} reduceMotion={reduceMotion} />)}
+    <BatchedSpaceObjects objects={objects} visibility={visibility} immersive={immersive} phase={phase} reduceMotion={reduceMotion} sourceKey={sourceKey} streamTimeSec={streamTimeSec} paused={paused} />
   </>;
 }
 
@@ -104,7 +82,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, onInteractionChange, onTap, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
+export function MobileObjectScene({ objects, layout, active, onInteractionChange, onTap, frameRate = 60, fullscreen = false, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { frameRate?: number; fullscreen?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
   // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
@@ -138,6 +116,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     engine?.setSceneRenderingRequested?.(renderActive && mounted);
     return () => engine?.setSceneRenderingRequested?.(false);
   }, [renderActive, mounted]);
+  const effectiveFrameRate = useSceneDisplayPolicy(renderActive && mounted, frameRate, fullscreen);
   const [failure, setFailure] = React.useState<string | null>(null);
   const firstFrame = useRef(false);
   const alive = useRef(true);
@@ -278,7 +257,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
         }
       };
     }}>
-      <Scene {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>

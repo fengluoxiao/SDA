@@ -40,7 +40,8 @@
               "public.mime-type": "audio/vnd.sda.bed"
             }
           }
-        ]
+        ],
+        "CADisableMinimumFrameDurationOnPhone": true
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",

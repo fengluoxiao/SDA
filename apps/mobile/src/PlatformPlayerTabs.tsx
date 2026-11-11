@@ -49,9 +49,9 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
       </View>
     </View>;
   };
-  return <View style={{ flex: 1, marginHorizontal: -18 }}>
-    <View style={{ flex: 1, paddingHorizontal: 18, ...(!props.spaceFullscreen && side && !props.sideBarInsetReserved && props.sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{React.Children.toArray(props.children).map((page, index) =>
-      <View key={index} style={{ flex: 1, ...(index !== 0 ? props.tabletPageInsets : {}), paddingBottom: index === 1 ? 0 : footerHeight + insets.bottom, display: props.selected === index ? "flex" : "none" }}>{renderPage(page, index)}{props.pageBackgrounds?.[index]}</View>)}</View>
+  return <View style={{ flex: 1, marginHorizontal: props.spaceFullscreen ? 0 : -18 }}>
+    <View style={{ flex: 1, paddingHorizontal: props.spaceFullscreen ? 0 : 18, ...(!props.spaceFullscreen && side && !props.sideBarInsetReserved && props.sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{React.Children.toArray(props.children).map((page, index) =>
+      <View key={index} style={{ flex: 1, ...(index !== 0 ? props.tabletPageInsets : {}), paddingBottom: index === 1 ? 0 : props.spaceFullscreen ? 0 : footerHeight + insets.bottom, display: props.selected === index ? "flex" : "none" }}>{renderPage(page, index)}{props.pageBackgrounds?.[index]}</View>)}</View>
     {!props.spaceFullscreen && (!side || mini) && <View style={{ position: "absolute", bottom: insets.bottom, left: leftRail ? contentInset - 16 : 0, right: rightRail ? contentInset - 16 : 0, paddingHorizontal: 16, overflow: "visible" }}><AndroidChrome presentation={side ? "mini" : "bottom"} player={player} selected={props.selected} onSelect={props.onChange}
       dark={props.theme === "dark"} backgroundColor={props.selected === 0 ? "#111113" : md3.bg} /></View>}
   </View>;

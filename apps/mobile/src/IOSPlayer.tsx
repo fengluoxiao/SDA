@@ -1,3 +1,4 @@
+import { sceneDisplayCapabilities } from "./scene-display";
 import { SpaceVisualPage } from "./SpaceVisualPage";
 import { supportsIOSGlass } from "./ios-platform-version";
 import { TabletLandscapePlayer } from "./TabletLandscapePlayer";
@@ -379,7 +380,7 @@ function ThemedPlayer(p: PlayerProps) {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
     </SafeAreaView>}
   </IOSMetadataSheet>
-  <IOSSettingsNavigation immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
     {tabletPlayer && <>
@@ -405,9 +406,9 @@ function ThemedPlayer(p: PlayerProps) {
   </View>}
   {/* Native tabs own the bottom inset. Reserve only the header/side insets
       here, so the tab bar's background reaches the home indicator. */}
-  <SafeAreaView edges={hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
-    <StatusBar hidden={Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
-    <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }]}>
+  <SafeAreaView edges={fullscreenSpace ? [] : hasUIKitIOSTabs ? [] : hasSystemIOSTabs && Platform.OS === "ios" ? ["top", "left", "right"] : Platform.OS === "android" && hasAndroidChrome ? ["left", "right"] : ["top", "bottom", "left", "right"]} style={[s.safe, { backgroundColor: Platform.OS === "android" && settings ? md3.bg : homeBackground }]}>
+    <StatusBar hidden={fullscreenSpace || Platform.OS === "android" && sideNavigationActive && !tabletDevice && !settings} animated={false} barStyle={settings ? (isLight ? "dark-content" : "light-content") : immersiveHome ? "light-content" : isLight ? "dark-content" : "light-content"} />
+    <View style={[s.root, hasSystemIOSTabs && { paddingBottom: 0 }, fullscreenSpace && { paddingHorizontal: 0, paddingBottom: 0 }]}>
       <SafeAreaInsetsContext.Consumer>{outerInsets => <View testID="tablet-page-viewport" style={[{ flex: 1 }, !fullscreenSpace && tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets(outerInsets?.left ?? 0, outerInsets?.right ?? 0)]} accessibilityElementsHidden={settings} importantForAccessibility={settings ? "no-hide-descendants" : "auto"}>
       {/* UIKit pages own their headers/insets so selecting a tab never resizes
           the host underneath an in-flight native page transition. */}
@@ -473,12 +474,12 @@ function ThemedPlayer(p: PlayerProps) {
           {label("本机播放，不上传音乐，也不改变源文件。", true, s.libraryHint)}
         </ScrollView>
         <View style={[s.page, s.otherContent, compactLandscape && s.compactScenePage, fullscreenSpace && { paddingTop: 0, paddingBottom: 0 }, !fullscreenSpace && sideNavigationActive && !tabletSideNavigation && { [sideNavigationRight ? "paddingRight" : "paddingLeft"]: Math.max(0, SIDE_NAVIGATION_WIDTH + (sideNavigationRight ? iosRightSideContentGap(screenInsets?.right ?? 0, cutoutSide) : 8 + iosLeftContentOffset(screenInsets?.left ?? 0, cutoutSide)) - 18) }, !hasSystemIOSTabs && page !== 2 && s.hidden]}>
-          <SpaceVisualPage enabled={navigationPreferences.immersiveSpace} compact={compactLandscape} title={title} artist={artist} artworkUri={hasArtwork ? artworkUri : ""} accent={c.accent} ink={c.ink} muted={c.muted} layout={p.layout} objectCount={visibleObjectCount} fullscreen={fullscreenSpace} onFullscreenChange={setSpaceFullscreen}
+          <SpaceVisualPage enabled={navigationPreferences.immersiveSpace} compact={compactLandscape} accent={c.accent} objectCount={visibleObjectCount} fullscreenInsets={screenInsets ?? undefined} fullscreen={fullscreenSpace} onFullscreenChange={setSpaceFullscreen}
             viewportStyle={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}
             header={<View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>}
             footer={(stacked: boolean) => <><View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, navigationPreferences.immersiveSpace && { marginTop: 12 }, stacked && { flexDirection: "column", alignItems: "flex-start", gap: 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects && p.soundingObjectIds !== undefined ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View></View>
           {label("轻点全屏 · 单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint, navigationPreferences.immersiveSpace && { marginTop: 8 }])}</>}>
-            {sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} immersive={navigationPreferences.immersiveSpace} accent={c.accent} active={page === 2 && !settings && layoutReady} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} onTap={() => setSpaceFullscreen(true)} />}
+            {sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} frameRate={navigationPreferences.space120Fps ? 120 : 60} fullscreen={fullscreenSpace} immersive={navigationPreferences.immersiveSpace} accent={c.accent} active={page === 2 && !settings && layoutReady} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} onTap={() => setSpaceFullscreen(true)} />}
           </SpaceVisualPage>
         </View>
       </IOSSystemTabs>}</SafeAreaInsetsContext.Consumer>
@@ -521,7 +522,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}
-          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("Folia 风格空间", "柔光、环形声场和新的歌曲排版，显示偏好会自动保存", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}</View>
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("Folia 风格空间", "柔光和环形声场，显示偏好会自动保存", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}{divider()}{toggle("120fps 空间视图", sceneDisplayCapabilities().supports120 ? "开启后请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps", sceneDisplayCapabilities().supports120 && navigationPreferences.space120Fps, navigationPreferences.setSpace120Fps, !sceneDisplayCapabilities().supports120)}</View>
           <View style={[s.group, { backgroundColor: c.panel }]}>{!tabletDevice && <>{toggle("平板风格界面", "竖屏使用平板布局，横屏只改为模糊背景，封面保持原样；关闭恢复原有样式", navigationPreferences.tabletPortraitLayout, navigationPreferences.setTabletPortraitLayout)}{divider()}</>}{toggle("横屏侧边导航", "横屏时在所选侧显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}{divider()}{actionRow("sidebar.left", "导航栏位置", navigationPreferences.sideTabPosition === "left" ? "左边" : "右边", () => Alert.alert("导航栏位置", undefined, [{ text: "左边", onPress: () => navigationPreferences.setSideTabPosition("left") }, { text: "右边", onPress: () => navigationPreferences.setSideTabPosition("right") }, { text: "取消", style: "cancel" }]))}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>

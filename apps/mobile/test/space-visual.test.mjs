@@ -36,7 +36,7 @@ test("switching appearance retains one existing Canvas in the same viewport tree
   assert.equal(classic.props.children[1].props.testID, immersive.props.children[1].props.testID);
   for (const tree of [classic, immersive]) assert.equal(nodes(tree).filter(n => n.type === "existing-scene").length, 1);
   assert.equal(nodes(classic).some(n=>n.props?.testID==='space-track-identity'), false);
-  assert(nodes(immersive).some(n=>n.props?.testID==='space-track-identity'));
+  assert.equal(nodes(immersive).some(n=>n.props?.testID==='space-track-identity'), false);
 });
 test("portrait, compact landscape and empty metadata have finite layout and real object counts", () => {
   for (const compact of [false, true]) for (const count of [0, 16, 128]) {
@@ -121,6 +121,8 @@ test("iOS hides native tabs and mini-player in fullscreen and restores them on e
  });
  for(const spaceFullscreen of [false,true,false]){
   const tree=IOSUIKitTabs({...hostProps,spaceFullscreen});
+  assert.equal(tree.props.style.marginHorizontal,spaceFullscreen?0:-18);
+  const safe=nodes(tree).filter(n=>n.type==="SafeAreaView");if(spaceFullscreen)for(const view of safe)assert.deepEqual(view.props.edges,[]);
   const host=nodes(tree).find(n=>n.type==="TabsHost");assert.equal(host.props.tabBarHidden,spaceFullscreen);assert.equal(host.props.ios.bottomAccessoryHidden,spaceFullscreen);
   assert.equal(nodes(tree).filter(n=>n.type==="test-page-2").length,1);
  }
@@ -136,6 +138,6 @@ test("Android removes fullscreen chrome and its reserved lane, then restores the
   const tree=PlatformPlayerTabs({...hostProps,player:{},spaceFullscreen,sideBar,sideBarPosition:"left"});
   assert.equal(nodes(tree).filter(n=>n.type==="AndroidChrome").length,spaceFullscreen?0:1);
   const parent=nodes(tree).find(n=>n.type==="View"&&n.props.children?.[0]?.props?.children?.includes(pages[2]));
-  assert(parent);assert.equal(parent.props.style.paddingBottom,spaceFullscreen?16:sideBar?80:132);
+  assert(parent);assert.equal(parent.props.style.paddingBottom,spaceFullscreen?0:sideBar?80:132);
  }
 });

@@ -66,9 +66,9 @@ export function IOSUIKitTabs({ spaceFullscreen = false, selected, onChange, page
   const renderPage = (index: number) => {
     const nativeHeader = index === 1 && hasNativePageHeader;
     const viewport = <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
-        <SafeAreaView edges={nativeHeader ? [] : ["top", "left", "right"]} style={{ flex: 1 }}>
+        <SafeAreaView edges={spaceFullscreen || nativeHeader ? [] : ["top", "left", "right"]} style={{ flex: 1 }}>
           {!nativeHeader && <View pointerEvents="box-none" style={{ paddingHorizontal: 18, zIndex: index === 0 ? 2 : 0, backgroundColor: "transparent" }}>{!spaceFullscreen && pageHeaders?.[index]}</View>}
-          <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : index === 0 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(!spaceFullscreen && sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
+          <SafeAreaView edges={spaceFullscreen ? [] : index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : index === 0 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: spaceFullscreen ? 0 : 18, ...(!spaceFullscreen && sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
             {pageContent(index)}{index !== 0 && !spaceFullscreen && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: sideBarInsetReserved ? 0 : Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaView>
@@ -83,7 +83,7 @@ export function IOSUIKitTabs({ spaceFullscreen = false, selected, onChange, page
   // behind the TabView cannot override its opaque native bar appearance.
   // Keep the system glass effect; remove only the explicit fill and divider.
   const appearance = iosTabAppearance;
-  return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor }}>
+  return <View style={{ flex: 1, marginHorizontal: spaceFullscreen ? 0 : -18, backgroundColor }}>
     <Tabs.Host
       tabBarHidden={spaceFullscreen || !!sideBar}
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}

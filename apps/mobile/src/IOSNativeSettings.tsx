@@ -1,3 +1,4 @@
+import { sceneDisplayCapabilities } from "./scene-display";
 import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
@@ -83,9 +84,9 @@ export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, a
 
 // A single native navigation stack stays mounted over the existing player.
 // Its controlled path changes only presentation, never the audio engine.
-export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme, immersive = false }: {
+export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme, immersive = false, fullscreen = false }: {
   children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void;
-  title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean;
+  title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean; fullscreen?: boolean;
 }) {
   if (!swiftUI || !hasNativeIOSSettings) return children;
   if (nativeScreens) {
@@ -95,7 +96,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
     return <ScreenStack style={{ flex: 1 }}>
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
-      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false}
+      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false} homeIndicatorHidden={fullscreen} unstable_safeAreaEdges={fullscreen ? { top: false, right: false, bottom: false, left: false } : undefined}
         headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: immersive ? "transparent" : PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
         {children}
       </ScreenStackItem>
@@ -155,6 +156,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
+  const display = sceneDisplayCapabilities();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
   const { Form, Section, Toggle, Picker, Text, Button, HStack } = swiftUI;
@@ -212,8 +214,10 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Text modifiers={[tag("right")]}>右边</Text>
       </Picker>
     </Section>
-    <Section title="空间视图" footer={<Text>在空间标签页使用柔光、环形声场和新的歌曲排版。单指旋转、双指缩放，显示偏好会自动保存。</Text>}>
+    <Section title="空间视图" footer={<Text>在空间标签页使用柔光、环形声场和对象柔光。默认以 60fps 显示。支持的设备可开启 120fps；实际刷新率由系统电源与温度策略决定。</Text>}>
       <Toggle label="Folia 风格空间" isOn={navigationPreferences.immersiveSpace} onIsOnChange={navigationPreferences.setImmersiveSpace} />
+      <Toggle label="120fps 空间视图" isOn={display.supports120 && navigationPreferences.space120Fps} onIsOnChange={navigationPreferences.setSpace120Fps} modifiers={[disabled(!display.supports120)]} />
+      {!display.supports120 && <Text>此设备或当前版本仅支持 60fps 空间视图</Text>}
     </Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
