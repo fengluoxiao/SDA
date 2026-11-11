@@ -94,3 +94,29 @@ test("rotation/layout settling stops GL work without restoring fullscreen bars o
  apply(true,true,false,120,true,policy);assert.deepEqual(calls.at(-1),[false,120,true]);
  apply(undefined,true,true,60,false,policy);assert.deepEqual(calls.at(-1),[true,60,false]);
 });
+
+
+test("fullscreen camera uses the desktop listener origin, forward axis and 85-degree field of view",()=>{
+ const THREE=require("three"),camera=new THREE.PerspectiveCamera(50,430/932,.1,1000),size={width:430,height:932};
+ const slots=[];let index=0,frames=[];
+ const react={useRef:value=>slots[index++]??(slots[index-1]={current:value}),useMemo:fn=>slots[index++]??(slots[index-1]=fn())};
+ const{MobileSceneCamera}=load("apps/mobile/src/MobileSceneCamera.tsx",{react,"@react-three/fiber/native":{useThree:pick=>pick({camera,size}),useFrame:fn=>frames.push(fn)}});
+ const input={rotation:{x:.72,y:.25},distance:7,look:{yaw:0,pitch:0},fov:85};
+ const render=firstPerson=>{index=0;frames=[];MobileSceneCamera({input,firstPerson,immersive:true,layout:"7.1.4"});for(const f of frames)f();};
+ render(false);const position=camera.position.clone(),orientation=camera.quaternion.clone();const orbit=JSON.stringify({rotation:input.rotation,distance:input.distance});
+ render(true);assert.deepEqual(camera.position.toArray(),[0,0,0]);assert.equal(camera.fov,85);assert.equal(camera.near,.02);
+ assert(camera.getWorldDirection(new THREE.Vector3()).distanceTo(new THREE.Vector3(0,0,-1))<1e-10);
+ input.look={yaw:-Math.PI/2,pitch:.3};input.fov=45;render(true);assert.deepEqual(camera.position.toArray(),[0,0,0]);assert.equal(camera.fov,45);assert(camera.getWorldDirection(new THREE.Vector3()).x>.9);
+ assert.equal(JSON.stringify({rotation:input.rotation,distance:input.distance}),orbit);
+ render(false);assert(camera.position.distanceTo(position)<1e-10);assert(camera.quaternion.angleTo(orientation)<1e-7);assert.equal(camera.fov,50);assert.equal(camera.near,.1);
+ render(true);size.width=932;size.height=430;camera.aspect=size.width/size.height;camera.updateProjectionMatrix();render(true);assert.deepEqual(camera.position.toArray(),[0,0,0]);assert.equal(camera.fov,45);
+});
+
+test("first-person touch look stays finite, clamps pitch, and pinch changes field of view instead of the orbit",()=>{
+ const{rotateListenerView,listenerViewFov,LISTENER_VIEW_FOV}=load("apps/mobile/src/scene-camera-input.ts");
+ assert.equal(LISTENER_VIEW_FOV,85);
+ let look={yaw:0,pitch:0};look=rotateListenerView(look,100,0,932);assert(look.yaw<0);assert.equal(look.pitch,0);
+ assert.equal(rotateListenerView(look,0,-10000,932).pitch,1.48);assert.equal(rotateListenerView(look,0,10000,932).pitch,-1.48);
+ assert.deepEqual(rotateListenerView(look,NaN,10,932),look);
+ assert.equal(listenerViewFov(85,.5),42.5);assert.equal(listenerViewFov(85,.01),35);assert.equal(listenerViewFov(85,10),105);assert.equal(listenerViewFov(NaN,1),85);
+});

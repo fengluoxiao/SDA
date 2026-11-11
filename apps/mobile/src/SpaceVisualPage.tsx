@@ -21,7 +21,7 @@ export function SpaceVisualPage(p: Props) {
     <View style={[p.enabled ? [s.stage, p.compact && s.compactStage, columns && s.columnStage] : p.viewportStyle, p.fullscreen && s.fullscreenStage]} testID="space-scene-viewport">
       {p.children}
       {p.enabled && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={StyleSheet.absoluteFill}>
-        <View style={[s.sceneCaption, p.compact && s.compactCaption, p.fullscreen && { top: 20 + (p.fullscreenInsets?.top ?? 0), left: 18 + (p.fullscreenInsets?.left ?? 0) }]}><View style={[s.statusDot, { backgroundColor: p.accent }]} /><Text style={s.caption}>空间声场</Text></View>
+        <View style={[s.sceneCaption, p.compact && s.compactCaption, p.fullscreen && { top: 20 + (p.fullscreenInsets?.top ?? 0), left: 18 + (p.fullscreenInsets?.left ?? 0) }]}><View style={[s.statusDot, { backgroundColor: p.accent }]} /><Text testID={p.fullscreen ? "space-listener-view" : undefined} style={s.caption}>{p.fullscreen ? "人头麦视角" : "空间声场"}</Text></View>
         <View style={[s.counter, p.compact && s.compactCounter, p.fullscreen && { top: 16 + (p.fullscreenInsets?.top ?? 0), right: 18 + (p.fullscreenInsets?.right ?? 0) }]}><Text style={s.counterLabel}>显示对象</Text><Text style={[s.counterValue, p.compact && s.compactCounterValue]}>{String(p.objectCount).padStart(2, "0")}</Text></View>
       </View>}
       {p.onFullscreenChange && <Pressable testID="space-fullscreen-button" accessibilityRole="button" accessibilityLabel={p.fullscreen ? "退出空间全屏" : "空间全屏"} onPress={() => p.onFullscreenChange?.(!p.fullscreen)} style={[s.fullscreenButton, p.fullscreen && { bottom: 12 + (p.fullscreenInsets?.bottom ?? 0), right: 12 + (p.fullscreenInsets?.right ?? 0) }]}>

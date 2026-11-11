@@ -31,19 +31,8 @@ function Orbit({ radius, color, opacity = .15, floorY }: { radius: number; color
   </mesh>;
 }
 
-export function ImmersiveSpaceEnvironment({ layout, accent, glow }: { layout: "2.0" | "7.1.4" | "360RA-13"; accent: string; glow: THREE.Texture | null }) {
+export function ImmersiveSpaceEnvironment({ layout, accent, glow, showListener = true }: { showListener?: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; accent: string; glow: THREE.Texture | null }) {
   const floorY = spaceStageFloor(layout);
-  const guide = useMemo(() => {
-    const geometry = new THREE.BufferGeometry();
-    const positions: number[] = [];
-    for (const speaker of LAYOUTS[layout]) {
-      const [x, y, z] = speakerScenePosition(speaker);
-      positions.push(x, floorY, z, x, y, z);
-    }
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    return geometry;
-  }, [layout, floorY]);
-  useEffect(() => () => guide.dispose(), [guide]);
   return <>
     <color attach="background" args={[SPACE_STAGE.background]} />
     <fog attach="fog" args={[SPACE_STAGE.background, 11, 25]} />
@@ -57,15 +46,14 @@ export function ImmersiveSpaceEnvironment({ layout, accent, glow }: { layout: "2
       <meshBasicMaterial map={glow} color={accent} transparent opacity={.19} depthWrite={false} blending={THREE.AdditiveBlending} />
     </mesh>}
     {[.34, .7, 1, 1.3].map((scale, index) => <Orbit key={scale} floorY={floorY} radius={SCENE_ROOM_HALF_EXTENT * scale} color={index === 2 ? accent : SPACE_STAGE.orbit} opacity={index === 2 ? .34 : .15} />)}
-    <lineSegments geometry={guide}><lineBasicMaterial color={SPACE_STAGE.orbit} transparent opacity={.24} depthWrite={false} /></lineSegments>
-    {LAYOUTS[layout].map(speaker => <group key={speaker.name} position={speakerScenePosition(speaker)}>
-      <mesh rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[.10, .115, 32]} /><meshBasicMaterial color={accent} transparent opacity={speaker.isLfe ? .35 : .65} side={THREE.DoubleSide} /></mesh>
-      <mesh><sphereGeometry args={[speaker.isLfe ? .055 : .035, 10, 8]} /><meshBasicMaterial color="#cad7f1" /></mesh>
-    </group>)}
+    {LAYOUTS[layout].map(speaker => <mesh key={speaker.name} position={speakerScenePosition(speaker)}>
+      <sphereGeometry args={[speaker.isLfe ? .055 : .035, 10, 8]} />
+      <meshBasicMaterial color="#cad7f1" transparent opacity={.6} />
+    </mesh>)}
     {layout === "360RA-13" && <mesh>
       <sphereGeometry args={[SCENE_ROOM_HALF_EXTENT, 24, 12]} />
       <meshBasicMaterial color={SPACE_STAGE.orbit} wireframe transparent opacity={.075} depthWrite={false} />
     </mesh>}
-    <Listener />
+    {showListener && <Listener />}
   </>;
 }

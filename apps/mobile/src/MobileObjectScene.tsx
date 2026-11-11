@@ -1,13 +1,15 @@
+import { MobileSceneCamera } from "./MobileSceneCamera";
+import { LISTENER_VIEW_FOV, listenerViewFov, rotateListenerView, type SceneCameraInput } from "./scene-camera-input";
 import { BatchedSpaceObjects } from "./BatchedSpaceObjects";
 import { SceneFrameClock } from "./scene-motion";
 import { useSceneDisplayPolicy } from "./scene-display";
 import { ImmersiveSpaceEnvironment, useSpaceGlowTexture } from "./ImmersiveSpaceScene";
-import { spaceCameraDistance, SpaceSceneTap } from "./space-visual-model";
+import { SpaceSceneTap } from "./space-visual-model";
 import { normalizeNativeShaderLogs } from "./nativeShaderLogs";
 import { resetNativeSceneDrawable } from "./nativeDrawable";
 import React, { useMemo, useRef } from "react";
 import { AccessibilityInfo, AppState, Platform, PanResponder, View, Text, Pressable, Dimensions, type GestureResponderEvent } from "react-native";
-import { Canvas, useFrame, useThree } from "@react-three/fiber/native";
+import { Canvas, useFrame } from "@react-three/fiber/native";
 import * as THREE from "three";
 import { PALETTE, Room, SphericalRoom, Listener, GenelecSpeaker, GenelecSub } from "../../../packages/renderer/src/scene-models";
 import { rotateScene } from "./scene-gesture";
@@ -27,7 +29,7 @@ interface ActivityProps {
 }
 
 function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
-  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate }: ActivityProps & { immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: { rotation: { x: number; y: number }; distance: number } }) {
+  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate, firstPerson }: ActivityProps & { immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
   const glow = useSpaceGlowTexture(immersive);
   const phase = useMemo(() => ({ current: 0 }), [sourceKey]);
   const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
@@ -45,17 +47,9 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
   }, -1);
   const pacing = useMemo(() => new SceneFrameClock(), []);
   useFrame(state => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, 1);
-  const camera = useThree((state) => state.camera);
-  const sceneSize = useThree((state) => state.size);
-  useFrame(() => {
-    const spherical = new THREE.Spherical(immersive ? spaceCameraDistance(cameraInput.distance, sceneSize.width, sceneSize.height) : cameraInput.distance, Math.PI / 2.9 + cameraInput.rotation.y, cameraInput.rotation.x);
-    camera.position.setFromSpherical(spherical);
-    const centerY = immersive || layout === "360RA-13" ? 0 : 0.5;
-    camera.position.y += centerY;
-    camera.lookAt(0, centerY, 0);
-  });
   return <>
-    {immersive ? <ImmersiveSpaceEnvironment layout={layout} accent={accent} glow={glow} /> : <>
+    <MobileSceneCamera input={cameraInput} firstPerson={firstPerson} immersive={immersive} layout={layout} />
+    {immersive ? <ImmersiveSpaceEnvironment layout={layout} accent={accent} glow={glow} showListener={!firstPerson} /> : <>
     <color attach="background" args={[PALETTE.dark.bg]} />
     <ambientLight intensity={0.75} /><directionalLight position={[2.5, 4, 2]} intensity={1.2} />
     {layout === "360RA-13" ? <SphericalRoom p={PALETTE.dark} /> : <Room p={PALETTE.dark} />}
@@ -69,7 +63,7 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
         {speaker.isLfe ? <GenelecSub /> : <GenelecSpeaker />}
       </group>;
     })}
-    <Listener />
+    {!firstPerson && <Listener />}
     </>}
     <BatchedSpaceObjects objects={objects} visibility={visibility} immersive={immersive} phase={phase} reduceMotion={reduceMotion} sourceKey={sourceKey} streamTimeSec={streamTimeSec} paused={paused} />
   </>;
@@ -148,10 +142,15 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
   }, [layout]);
   React.useEffect(() => { if (failure) report({ ok: false, error: failure }); }, [failure, report]);
   const retry = () => { firstFrame.current = false; setReady(false); setFailure(null); setAttempt(value => value + 1); };
-  const input = useRef({ rotation: { x: 0.72, y: 0.25 }, distance: 7 });
+  const input = useRef<SceneCameraInput>({ rotation: { x: 0.72, y: 0.25 }, distance: 7, look: { yaw: 0, pitch: 0 }, fov: LISTENER_VIEW_FOV });
+  const firstPerson = useRef(fullscreen); firstPerson.current = fullscreen;
   const previousPinch = useRef(0);
   const previousDrag = useRef<{ x: number; y: number } | null>(null);
   const viewportHeight = useRef(300);
+  React.useLayoutEffect(() => {
+    if (fullscreen) { input.current.look = { yaw: 0, pitch: 0 }; input.current.fov = LISTENER_VIEW_FOV; }
+    previousDrag.current = null; previousPinch.current = 0; tap.current.cancel();
+  }, [fullscreen]);
   const pan = useRef(PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onStartShouldSetPanResponderCapture: () => true,
@@ -165,19 +164,32 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
       previousDrag.current = touches.length === 1 ? { x: touches[0]!.pageX, y: touches[0]!.pageY } : null;
       previousPinch.current = touches.length >= 2 ? Math.hypot(touches[0]!.pageX - touches[1]!.pageX, touches[0]!.pageY - touches[1]!.pageY) : 0;
     },
-    onPanResponderStart: event => { tap.current.update(event.nativeEvent.touches); },
+    onPanResponderStart: event => {
+      const touches = event.nativeEvent.touches;
+      tap.current.update(touches);
+      if (touches.length >= 2) {
+        previousDrag.current = null;
+        previousPinch.current = Math.hypot(touches[0]!.pageX - touches[1]!.pageX, touches[0]!.pageY - touches[1]!.pageY);
+      }
+    },
     onPanResponderMove: (event: GestureResponderEvent) => {
       tap.current.update(event.nativeEvent.touches);
       const touches = event.nativeEvent.touches;
       if (touches.length >= 2) {
         previousDrag.current = null;
         const pinch = Math.hypot(touches[0]!.pageX - touches[1]!.pageX, touches[0]!.pageY - touches[1]!.pageY);
-        if (previousPinch.current > 0) input.current.distance = THREE.MathUtils.clamp(input.current.distance * previousPinch.current / Math.max(1, pinch), 3.5, 12);
+        if (previousPinch.current > 0) {
+          const ratio = previousPinch.current / Math.max(1, pinch);
+          if (firstPerson.current) input.current.fov = listenerViewFov(input.current.fov, ratio);
+          else input.current.distance = THREE.MathUtils.clamp(input.current.distance * ratio, 3.5, 12);
+        }
         previousPinch.current = pinch;
       } else if (touches.length === 1) {
         const point = { x: touches[0]!.pageX, y: touches[0]!.pageY };
         if (previousDrag.current) {
-          input.current.rotation = rotateScene(input.current.rotation, point.x - previousDrag.current.x, point.y - previousDrag.current.y, viewportHeight.current);
+          const dx = point.x - previousDrag.current.x, dy = point.y - previousDrag.current.y;
+          if (firstPerson.current) input.current.look = rotateListenerView(input.current.look, dx, dy, viewportHeight.current);
+          else input.current.rotation = rotateScene(input.current.rotation, dx, dy, viewportHeight.current);
         }
         previousDrag.current = point;
         previousPinch.current = 0;
@@ -257,7 +269,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
         }
       };
     }}>
-      <Scene {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>
