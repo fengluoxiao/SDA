@@ -1,31 +1,36 @@
 import assert from "node:assert/strict";
-import {buildSync} from "esbuild";
-import {fileURLToPath} from "node:url";
-function load(relative){
- const bundle=buildSync({entryPoints:[fileURLToPath(new URL(relative,import.meta.url))],bundle:true,platform:"node",format:"cjs",write:false});
- const module={exports:{}};new Function("module","exports",bundle.outputFiles[0].text)(module,module.exports);return module.exports;
-}
-const {MobileObjectActivity}=load("../src/mobile-object-activity.ts");
-const {ObjectActivityFilter}=load("../../../packages/player/src/object-activity.ts");
-const fixed={id:11,pos:[-.5,1,0],gainDb:0,hasPos:true},moving={id:12,pos:[.5,1,.4],gainDb:0,hasPos:true};
-const mobile=new MobileObjectActivity(),desktop=new ObjectActivityFilter();
-let objects=[fixed,moving];
-for(const [clock,stream,sounding,paused] of [[0,0,[],false],[.1,.1,[11],false],[.2,.2,[11,12],false],[.3,.3,[],false],[.5,.5,[],false],[.7,.7,[],false],[.8,.8,[11],false],[.9,.8,[11],true],[1.3,.8,[11],true],[1.4,.8,[11],false]]){
- const actual=mobile.project(objects,sounding,clock,stream,paused,false);
- const expected=desktop.project(objects,new Set(paused?[]:sounding),clock);
- assert.deepEqual(actual,expected,'desktop/mobile signal policy differs at '+clock);
- if(!paused&&sounding.includes(11))assert.equal(actual.find(o=>o.id===11).sceneOpacity,1,'a fixed sounding source is full brightness');
-}
-assert.equal(objects.length,2,'the full inventory remains available');assert.equal(fixed.sceneOpacity,undefined);
-const all=mobile.project(objects,[],1.5,.9,false,true);assert.equal(all.length,2);assert(all.every(o=>o.sceneOpacity===.12));
-assert.equal(mobile.project(objects,[],1.6,0,false,false).length,0,'seek retires the previous activity trail');
-const unknown=new MobileObjectActivity();assert.equal(unknown.project(objects,undefined,0,0,false,false).length,2,'older native/system output does not invent signal activity');
-assert.equal(unknown.project(objects,undefined,.1,0,true,false).length,0,'pause hides unknown activity');
-console.log('PASS: shared desktop/mobile fixed+moving signal visibility, brightness, silence fade, pause, resume, seek, all-view and full inventory');
-
-const afterSeek=new MobileObjectActivity();
-assert.equal(afterSeek.project(objects,[11],10,10,false,false).find(o=>o.id===11)?.sceneOpacity,1);
-assert.equal(afterSeek.project(objects,[11,12],10.1,100,false,false).length,2,'forward seek shows current sounding sources without pausing');
-assert.equal(afterSeek.project(objects,[12],10.2,2,false,false).length,1,'backward seek drops previous activity and immediately shows current source');
-assert.equal(afterSeek.project(objects,[12],10.3,2.1,false,false)[0].id,12);
-console.log('PASS: forward/backward seek visibility recovers from live activity with no user pause/resume');
+import { test } from "node:test";
+import { buildSync } from "esbuild";
+import { fileURLToPath } from "node:url";
+const bundle = buildSync({ entryPoints: [fileURLToPath(new URL("../src/mobile-object-activity.ts", import.meta.url))], bundle: true, platform: "node", format: "cjs", write: false });
+const module = { exports: {} }; new Function("module", "exports", bundle.outputFiles[0].text)(module, module.exports);
+const { MobileObjectActivity } = module.exports;
+const fixed = { id: 11, pos: [-.5,1,0], gainDb: 0, hasPos: true }, moving = { id: 12, pos: [.5,1,.4], gainDb: 0, hasPos: true };
+const objects = [fixed, moving];
+test("sounding-only mode hides silent fixed/moving objects immediately instead of retaining faded lights", () => {
+ const activity = new MobileObjectActivity();
+ assert.deepEqual(activity.project(objects,[],0,0,false,false),[]);
+ assert.deepEqual(activity.project(objects,[11],.1,.1,false,false).map(p=>p.id),[11]);
+ assert.equal(activity.project(objects,[11],.2,.2,false,false)[0].sceneOpacity,1);
+ assert.deepEqual(activity.project(objects,[],.201,.201,false,false),[]);
+ assert.deepEqual(activity.project(objects,[12],.3,.3,false,false).map(p=>p.id),[12]);
+ assert.equal(fixed.sceneOpacity,undefined);assert.equal(objects.length,2);
+});
+test("show-silent is a real display toggle; toggling off, pausing, seeking and unknown activity leave no dim fallback", () => {
+ const activity = new MobileObjectActivity();
+ assert(activity.project(objects,[],1,1,false,true).every(p=>p.sceneOpacity===1));
+ assert.deepEqual(activity.project(objects,[],1.001,1,false,false),[]);
+ assert.equal(activity.project(objects,[11],2,100,false,false)[0].id,11);
+ assert.equal(activity.project(objects,[12],2.1,2,false,false)[0].id,12);
+ assert.deepEqual(activity.project(objects,[12],2.2,2,true,false),[]);
+ assert.deepEqual(activity.project(objects,undefined,2.3,2,false,false),[]);
+ assert.equal(activity.project(objects,undefined,2.4,2,false,true).length,2);
+});
+test("invalid positions and missing inventory never create ghost markers for stale activity ids", () => {
+ const activity = new MobileObjectActivity();
+ assert.deepEqual(activity.project([{...fixed,hasPos:false},{...moving,pos:[NaN,1,0]}],[11,12],0,0,false,true),[]);
+ assert.deepEqual(activity.project(objects,[99],.1,.1,false,false),[]);
+ activity.project(objects,[11,12],.2,.2,false,true);
+ assert.deepEqual(activity.project([], [11,12],.3,.3,false,false),[]);
+ assert.deepEqual(activity.project(objects,[],.4,.4,false,false),[]);
+});

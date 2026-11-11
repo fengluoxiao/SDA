@@ -129,7 +129,11 @@ function ThemedPlayer(p: PlayerProps) {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => { setSettings(false); return true; });
     return () => subscription.remove();
   }, [settings]);
-  const [spaceFullscreen, setSpaceFullscreen] = useState(false);
+  const [spaceFullscreen, setRequestedSpaceFullscreen] = useState(false);
+  const spaceFullscreenIntent = useRef(false);
+  const setSpaceFullscreen = useCallback((requested: boolean) => {
+    spaceFullscreenIntent.current = requested; setRequestedSpaceFullscreen(requested);
+  }, []);
   const fullscreenSpace = spaceFullscreen && page === 2 && !settings;
   React.useEffect(() => {
     if (!fullscreenSpace) return;
@@ -242,7 +246,11 @@ function ThemedPlayer(p: PlayerProps) {
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
-  const navigate = useCallback((index: number) => { setPage(index); if (index === 2) setSceneVisited(true); }, []);
+  const navigate = useCallback((index: number) => {
+    // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
+    // must not turn that retained screen into an application navigation action.
+    if (spaceFullscreenIntent.current && index !== 2) return;
+    setPage(index); if (index === 2) setSceneVisited(true); }, []);
   const openPlayer = useCallback(() => navigate(0), [navigate]);
   useEffect(() => {
     if (p.playbackPageRequest) { setSettings(false); navigate(0); }
@@ -477,7 +485,7 @@ function ThemedPlayer(p: PlayerProps) {
           <SpaceVisualPage vr={navigationPreferences.cardboard.enabled} enabled={navigationPreferences.immersiveSpace} compact={compactLandscape} accent={c.accent} objectCount={visibleObjectCount} fullscreenInsets={screenInsets ?? undefined} fullscreen={fullscreenSpace} onFullscreenChange={setSpaceFullscreen}
             viewportStyle={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}
             header={<View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>}
-            footer={(stacked: boolean) => <><View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, navigationPreferences.immersiveSpace && { marginTop: 12 }, stacked && { flexDirection: "column", alignItems: "flex-start", gap: 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects && p.soundingObjectIds !== undefined ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View></View>
+            footer={(stacked: boolean) => <><View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, navigationPreferences.immersiveSpace && { marginTop: 12 }, stacked && { flexDirection: "column", alignItems: "flex-start", gap: 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>{label("显示不发声对象", true, s.small)}<Switch accessibilityLabel="显示不发声对象" value={showAllObjects} onValueChange={setShowAllObjects} /></View></View></View>
           {label("轻点全屏 · 单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint, navigationPreferences.immersiveSpace && { marginTop: 8 }])}</>}>
             {sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} cardboard={navigationPreferences.cardboard} onCardboardChange={navigationPreferences.setCardboard} onVrExit={() => setSpaceFullscreen(false)} showSpeakers={navigationPreferences.showChannelSpeakers} frameRate={navigationPreferences.space120Fps ? 120 : 60} fullscreen={fullscreenSpace} immersive={navigationPreferences.immersiveSpace} accent={c.accent} active={page === 2 && !settings && layoutReady} displayActive={page === 2 && !settings} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} onTap={() => setSpaceFullscreen(true)} />}
           </SpaceVisualPage>

@@ -120,3 +120,27 @@ test("first-person touch look stays finite, clamps pitch, and pinch changes fiel
  assert.deepEqual(rotateListenerView(look,NaN,10,932),look);
  assert.equal(listenerViewFov(85,.5),42.5);assert.equal(listenerViewFov(85,.01),35);assert.equal(listenerViewFov(85,10),105);assert.equal(listenerViewFov(NaN,1),85);
 });
+
+test("silent objects submit zero instances for both dots and glows; packing activity changes preserves source colors",()=>{
+ const frames=[],cleanup=[];const react={createElement:(type,props,...children)=>({type,props:{...props,children}}),useMemo:fn=>fn(),useEffect:fn=>cleanup.push(fn())};
+ const {BatchedSpaceObjects}=load("apps/mobile/src/BatchedSpaceObjects.tsx",{react,"@react-three/fiber/native":{useFrame:fn=>frames.push(fn)}});
+ const objects=[point(7,0),point(11,.3),point(20,.6)],visibility=new Map();
+ const tree=BatchedSpaceObjects({objects,visibility,immersive:true,phase:{current:0},reduceMotion:false,sourceKey:"activity",streamTimeSec:0,paused:false});
+ const geometries=tree.props.children.map(m=>m.props.geometry);const run=()=>frames[0]();run();for(const g of geometries)assert.equal(g.instanceCount,0);
+ visibility.set(7,1);visibility.set(20,1);run();for(const g of geometries)assert.equal(g.instanceCount,2);
+ const firstColor=geometries[0].getAttribute("instanceColor").array.slice(0,3);
+ visibility.delete(7);run();for(const g of geometries){assert.equal(g.instanceCount,1);assert.equal(g.getAttribute("instanceOpacity").array[0]>0,true);}
+ const nextColor=geometries[0].getAttribute("instanceColor").array.slice(0,3);assert.notDeepEqual(nextColor,firstColor);
+ visibility.clear();run();for(const g of geometries)assert.equal(g.instanceCount,0);
+ for(const object of objects)visibility.set(object.id,1);run();for(const g of geometries)assert.equal(g.instanceCount,3);
+ for(const dispose of cleanup)dispose();
+});
+test("fullscreen intent ignores hidden-tab resume callbacks until the user explicitly exits",()=>{
+ const ts=require("typescript"),text=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8"),source=ts.createSourceFile("IOSPlayer.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const initializers={};const visit=node=>{if(ts.isVariableDeclaration(node)&&["navigate","setSpaceFullscreen"].includes(node.name.getText(source)))initializers[node.name.getText(source)]=node.initializer.getText(source);ts.forEachChild(node,visit);};visit(source);
+ let page=2,requested=false;const intent={current:false},callback=fn=>fn,visited=[];
+ const navigate=new Function("useCallback","spaceFullscreenIntent","setPage","setSceneVisited",ts.transpileModule("var extracted = "+initializers.navigate,{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText+";return extracted")(callback,intent,value=>page=value,value=>visited.push(value));
+ const setFullscreen=new Function("useCallback","spaceFullscreenIntent","setRequestedSpaceFullscreen",ts.transpileModule("var extracted = "+initializers.setSpaceFullscreen,{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText+";return extracted")(callback,intent,value=>requested=value);
+ setFullscreen(true);for(const index of [0,1,0,2,1])navigate(index);assert.equal(page,2);assert.equal(requested,true);
+ setFullscreen(false);navigate(1);assert.equal(page,1);assert.equal(requested,false);navigate(2);assert.equal(page,2);
+});

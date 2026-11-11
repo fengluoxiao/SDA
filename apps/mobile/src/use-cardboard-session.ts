@@ -1,21 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
-import { CardboardPose } from "./cardboard-pose";
+import { CardboardPose, cardboardIOSScreenAngle } from "./cardboard-pose";
 import { acquireCardboardOrientation } from "./cardboard-session";
 
 let sessionSerial = 0;
 
-export function useCardboardSession(enabled: boolean, frameRate: number) {
+/** Requested view survives backgrounding; only foreground motion/awake work pauses. */
+export function useCardboardSession(requested: boolean, frameRate: number, foreground = true) {
   const pose = useRef(new CardboardPose());
+  const screenAngle = useRef<number | undefined>(undefined);
   const [status, setStatus] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
-    pose.current.reset(); setStatus("");
-    if (!enabled) return;
-    let active = true, subscription: { remove(): void } | undefined, releaseOrientation: (() => void) | undefined;
+    pose.current.reset(); screenAngle.current = undefined; setStatus("");
+    if (!requested || Platform.OS === "web") return;
+    let active = true, orientationRevision = 0, release: (() => void) | undefined;
+    let subscription: { remove(): void } | undefined;
+    try {
+      const orientation: typeof import("expo-screen-orientation") = require("expo-screen-orientation");
+      release = acquireCardboardOrientation(orientation, orientation.OrientationLock.LANDSCAPE, () => { if (active) setStatus("请手动把手机转成横屏"); });
+      if (Platform.OS === "ios") {
+        const apply = (value: number) => { const angle = cardboardIOSScreenAngle(value); if (active && angle !== undefined) screenAngle.current = angle; };
+        subscription = orientation.addOrientationChangeListener(event => { ++orientationRevision; apply(event.orientationInfo.orientation); });
+        const snapshot = orientationRevision;
+        void orientation.getOrientationAsync().then(value => { if (snapshot === orientationRevision) apply(value); }).catch(() => {});
+      }
+    } catch { setStatus("横屏模块不可用，请手动横屏或更新安装包"); }
+    return () => { active = false; subscription?.remove(); release?.(); pose.current.reset(); screenAngle.current = undefined; };
+  }, [requested]);
+  useEffect(() => {
+    if (!requested || !foreground) return;
+    let active = true, subscription: { remove(): void } | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let latestSample = 0;
-    let motion: typeof import("expo-sensors").DeviceMotion | undefined;
     let awake: typeof import("expo-keep-awake") | undefined;
     const tag = "sda-cardboard-vr-" + (++sessionSerial);
     let currentStatus = "";
@@ -23,22 +40,21 @@ export function useCardboardSession(enabled: boolean, frameRate: number) {
     const start = async () => {
       if (Platform.OS === "web") { fail("浏览器预览不接手机姿态；请用 Expo Go 或安装包体验"); return; }
       try {
-        const orientation: typeof import("expo-screen-orientation") = require("expo-screen-orientation");
-        releaseOrientation = acquireCardboardOrientation(orientation, orientation.OrientationLock.LANDSCAPE, () => fail("请手动把手机转成横屏"));
         awake = require("expo-keep-awake");
         await awake!.activateKeepAwakeAsync(tag).catch(() => {});
         if (!active) { void awake!.deactivateKeepAwake(tag).catch(() => {}); return; }
-        motion = require("expo-sensors").DeviceMotion;
-        if (!await motion!.isAvailableAsync()) { fail("设备不支持手机姿态传感器"); return; }
+        const motion: typeof import("expo-sensors").DeviceMotion = require("expo-sensors").DeviceMotion;
+        if (!await motion.isAvailableAsync()) { fail("设备不支持手机姿态传感器"); return; }
         if (!active) return;
-        const permission = await motion!.requestPermissionsAsync();
+        const permission = await motion.requestPermissionsAsync();
         if (!active) return;
         if (permission.status !== "granted") { fail("请在系统设置中允许 SDA 访问运动与健身，再点重试"); return; }
-        motion!.setUpdateInterval(frameRate >= 120 ? 8 : 16);
+        motion.setUpdateInterval(frameRate >= 120 ? 8 : 16);
         fail("正在连接手机姿态…");
-        subscription = motion!.addListener(event => {
+        subscription = motion.addListener(event => {
           if (!active || !event.rotation) return;
-          if (pose.current.update(event.rotation, event.orientation * Math.PI / 180, performance.now(), Platform.OS === "ios" ? "ios" : "android")) {
+          const angle = Platform.OS === "ios" ? screenAngle.current ?? event.orientation * Math.PI / 180 : event.orientation * Math.PI / 180;
+          if (pose.current.update(event.rotation, angle, performance.now(), Platform.OS === "ios" ? "ios" : "android")) {
             latestSample = performance.now(); fail("");
           }
         });
@@ -48,8 +64,8 @@ export function useCardboardSession(enabled: boolean, frameRate: number) {
     void start();
     return () => {
       active = false; subscription?.remove(); if (timeout) clearInterval(timeout);
-      releaseOrientation?.(); void awake?.deactivateKeepAwake(tag).catch(() => {}); pose.current.reset();
+      void awake?.deactivateKeepAwake(tag).catch(() => {});
     };
-  }, [enabled, frameRate, revision]);
+  }, [requested, foreground, frameRate, revision]);
   return { pose, status, retry: () => setRevision(value => value + 1), recenter: () => pose.current.recenter() };
 }

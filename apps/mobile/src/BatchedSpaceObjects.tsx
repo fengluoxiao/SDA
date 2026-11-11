@@ -43,29 +43,36 @@ export function BatchedSpaceObjects({ objects, visibility, immersive, phase, red
     const glowMaterial = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, fragmentShader: glowFragment,
       vertexShader: declarations + `varying vec2 vUv; void main(){ vUv=uv; vColor=instanceColor; vOpacity=instanceOpacity;
       vec4 center=modelViewMatrix*vec4(instancePosition,1.0); center.xy+=position.xy; gl_Position=projectionMatrix*center; }` });
-    return { position, color, opacity, glowOpacity, dotGeometry, glowGeometry, dotMaterial, glowMaterial, tint: new THREE.Color(), colorSource: null as readonly MobileObjectPoint[] | null };
+    return { position, color, opacity, glowOpacity, dotGeometry, glowGeometry, dotMaterial, glowMaterial, tint: new THREE.Color(), colorIds: new Int32Array(capacity).fill(-1), colorSource: null as readonly MobileObjectPoint[] | null };
   }, [objects.length, immersive]);
   useEffect(() => () => { batch.dotGeometry.dispose(); batch.glowGeometry.dispose(); batch.dotMaterial.dispose(); batch.glowMaterial.dispose(); }, [batch]);
   useFrame(() => {
     const now = performance.now() / 1000;
     motion.update(objects, streamTimeSec, now, paused);
-    const colorsChanged = batch.colorSource !== objects;
-    for (let index = 0; index < objects.length; index++) {
-      const object = objects[index]!, offset = index * 3;
-      const valid = motion.write(object.id, now, batch.position.array as Float32Array, offset);
-      const alpha = valid ? visibility.get(object.id) ?? 0 : 0;
-      batch.opacity.array[index] = alpha;
-      batch.glowOpacity.array[index] = immersive ? spaceGlowOpacity(alpha, phase.current + object.id * .43, reduceMotion) : alpha * .18;
-      if (colorsChanged) {
+    const sourceChanged = batch.colorSource !== objects;
+    let count = 0, colorsChanged = false;
+    for (const object of objects) {
+      const alpha = visibility.get(object.id) ?? 0;
+      if (!Number.isFinite(alpha) || alpha <= 0) continue;
+      const offset = count * 3;
+      if (!motion.write(object.id, now, batch.position.array as Float32Array, offset)) continue;
+      batch.opacity.array[count] = Math.min(1, alpha);
+      batch.glowOpacity.array[count] = immersive ? spaceGlowOpacity(alpha, phase.current + object.id * .43, reduceMotion) : alpha * .18;
+      if (sourceChanged || batch.colorIds[count] !== object.id) {
         if (immersive) batch.tint.set(spaceObjectColor(object.id)); else batch.tint.setHSL(.55 - object.pos[2] * .25, .9, .6);
-        batch.color.setXYZ(index, batch.tint.r, batch.tint.g, batch.tint.b);
+        batch.color.setXYZ(count, batch.tint.r, batch.tint.g, batch.tint.b);
+        batch.colorIds[count] = object.id; colorsChanged = true;
       }
+      count++;
     }
+    // Hidden instances are absent from both draw calls, including their halo.
+    batch.dotGeometry.instanceCount = batch.glowGeometry.instanceCount = count;
     batch.position.needsUpdate = batch.opacity.needsUpdate = batch.glowOpacity.needsUpdate = true;
-    if (colorsChanged) { batch.color.needsUpdate = true; batch.colorSource = objects; }
+    if (colorsChanged) batch.color.needsUpdate = true;
+    batch.colorSource = objects;
   });
-  return <group>
-    <mesh geometry={batch.glowGeometry} material={batch.glowMaterial} frustumCulled={false} />
-    <mesh geometry={batch.dotGeometry} material={batch.dotMaterial} frustumCulled={false} />
+  return <group name="space-object-instances">
+    <mesh name="space-object-glows" geometry={batch.glowGeometry} material={batch.glowMaterial} frustumCulled={false} />
+    <mesh name="space-object-dots" geometry={batch.dotGeometry} material={batch.dotMaterial} frustumCulled={false} />
   </group>;
 }

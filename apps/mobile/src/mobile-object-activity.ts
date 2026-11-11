@@ -1,5 +1,3 @@
-import {ObjectActivityFilter} from "../../../packages/player/src/object-activity";
-
 export interface MobileObjectPoint {
   id: number;
   pos: [number, number, number];
@@ -8,33 +6,29 @@ export interface MobileObjectPoint {
   sceneOpacity?: number;
 }
 
-/** Same signal/fade policy as desktop. Keep the full metadata list outside it. */
+/** Display only: confirmed sounding objects or an explicit full inventory.
+ * Silent/unknown sources have no dim marker or lingering glow in sounding-only
+ * mode. Movement and metadata gain never stand in for measured signal activity.
+ */
 export class MobileObjectActivity {
-  private activity = new ObjectActivityFilter<MobileObjectPoint>();
-  private lastStreamTime = -Infinity;
-  private all = new Map<number, {source: MobileObjectPoint; point: MobileObjectPoint}>();
-
+  private points = new Map<number, { source: MobileObjectPoint; point: MobileObjectPoint }>();
   project(objects: readonly MobileObjectPoint[], soundingIds: readonly number[] | undefined,
-      clockSec: number, streamTimeSec: number, paused: boolean, showAll: boolean): readonly MobileObjectPoint[] {
-    if (!objects.length || streamTimeSec < this.lastStreamTime || streamTimeSec - this.lastStreamTime > 0.5) this.activity.reset();
-    this.lastStreamTime = streamTimeSec;
+      _clockSec: number, _streamTimeSec: number, paused: boolean, showAll: boolean): readonly MobileObjectPoint[] {
     const sounding = new Set(paused ? [] : soundingIds);
-    const visible = this.activity.project(objects, sounding, clockSec);
-    // Older native modules/system-owned output may not report source activity.
-    // Preserve their positions rather than guessing activity from movement.
-    if (!showAll && (soundingIds !== undefined || paused)) return visible;
     const present = new Set<number>();
-    const result = objects.filter(o => o.hasPos !== false && o.pos.every(Number.isFinite)).map(object => {
+    const result: MobileObjectPoint[] = [];
+    for (const object of objects) {
       present.add(object.id);
-      const opacity = soundingIds === undefined && !paused || sounding.has(object.id) ? 1 : 0.12;
-      let cached = this.all.get(object.id);
-      if (cached?.source !== object || cached.point.sceneOpacity !== opacity) {
-        cached = {source: object, point: {...object, sceneOpacity: opacity}};
-        this.all.set(object.id, cached);
+      if (object.hasPos === false || !object.pos.every(Number.isFinite)) continue;
+      if (!showAll && !sounding.has(object.id)) continue;
+      let cached = this.points.get(object.id);
+      if (cached?.source !== object) {
+        cached = { source: object, point: { ...object, sceneOpacity: 1 } };
+        this.points.set(object.id, cached);
       }
-      return cached.point;
-    });
-    for (const id of this.all.keys()) if (!present.has(id)) this.all.delete(id);
+      result.push(cached!.point);
+    }
+    for (const id of this.points.keys()) if (!present.has(id)) this.points.delete(id);
     return result;
   }
 }

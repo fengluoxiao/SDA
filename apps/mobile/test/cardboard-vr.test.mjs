@@ -13,7 +13,7 @@ function load(path, mocks = {}, timers = {}) {
   return module.exports;
 }
 const configModule = load("cardboard-config.ts"), defaults = configModule.CARDBOARD_DEFAULTS;
-const { CardboardPose } = load("cardboard-pose.ts");
+const { CardboardPose, cardboardIOSScreenAngle } = load("cardboard-pose.ts");
 const { CardboardRenderer } = load("cardboard-renderer.ts");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
@@ -44,7 +44,7 @@ test("lens mapping keeps mirrored optical centers and horizon aligned, and zero 
 function nativeSample(camera, screenAngle, platform) {
   // Known world orientation -> native attitude in a Z-up inertial frame.
   const native = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2).multiply(camera)
-    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),screenAngle));
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),platform === "ios" ? -screenAngle : screenAngle));
   const e = new THREE.Euler().setFromQuaternion(native,platform === "ios" ? "ZYX" : "ZXY");
   return platform === "ios" ? {alpha:e.z,beta:e.y,gamma:e.x} : {alpha:e.z,beta:e.x,gamma:e.y};
 }
@@ -100,14 +100,14 @@ test("rapid VR enter/exit serializes orientation restoration before the next loc
   let failures=0;const failed=acquireCardboardOrientation({getOrientationLockAsync:async()=>1,lockAsync:async()=>{throw Error("denied");}},5,()=>failures++);await settle();assert.equal(failures,1);failed();await settle();
 });
 function hookHarness(options={}) {
-  const cells=[],pending=[],intervals=new Map(),calls={listeners:0,removes:0,permissions:0,interval:0,locks:[],awake:new Set()};let cursor=0,callback,awakeActivations=0;
+  const cells=[],pending=[],intervals=new Map(),calls={listeners:0,removes:0,permissions:0,interval:0,locks:[],awake:new Set()};let cursor=0,callback,awakeActivations=0,orientationCallback;
   const react={useRef:value=>{const i=cursor++;return cells[i]??(cells[i]={current:value});},useState:initial=>{const i=cursor++;if(!(i in cells))cells[i]=initial;return[cells[i],value=>{cells[i]=typeof value==="function"?value(cells[i]):value;}];},useEffect:(effect,deps)=>{const i=cursor++;const previous=cells[i];if(!previous||deps.some((v,j)=>v!==previous.deps[j])){previous?.cleanup?.();const state=cells[i]={deps};pending.push(()=>state.cleanup=effect());}}};
   const motion={isAvailableAsync:async()=>options.available!==false,requestPermissionsAsync:async()=>{calls.permissions++;return options.permissionGate?await options.permissionGate:{status:options.denied?"denied":"granted"};},setUpdateInterval:value=>calls.interval=value,addListener:fn=>{callback=fn;calls.listeners++;return{remove:()=>calls.removes++};}};
-  const orientation={OrientationLock:{LANDSCAPE:5},getOrientationLockAsync:async()=>1,lockAsync:async value=>calls.locks.push(value)};
+  const orientation={OrientationLock:{LANDSCAPE:5},getOrientationLockAsync:async()=>1,lockAsync:async value=>calls.locks.push(value),getOrientationAsync:async()=>options.orientationGate?await options.orientationGate:options.interfaceOrientation??3,addOrientationChangeListener:fn=>{orientationCallback=fn;return{remove:()=>{orientationCallback=undefined;}};}};
   const awake={activateKeepAwakeAsync:async tag=>{if(options.awakeGate&&++awakeActivations===1)await options.awakeGate;calls.awake.add(tag);},deactivateKeepAwake:async tag=>calls.awake.delete(tag)};
   const module=load("use-cardboard-session.ts",{react,"react-native":{Platform:{OS:options.os??"ios"}},"expo-sensors":{DeviceMotion:motion},"expo-screen-orientation":orientation,"expo-keep-awake":awake},{setInterval:fn=>{const id=intervals.size+1;intervals.set(id,fn);return id;},clearInterval:id=>intervals.delete(id)});
-  const render=(enabled=true,fps=60)=>{cursor=0;const result=module.useCardboardSession(enabled,fps);for(const run of pending.splice(0))run();return result;};
-  return {render,calls,intervals,event:()=>callback?.({rotation:{alpha:0,beta:0,gamma:Math.PI/2},orientation:0})};
+  const render=(enabled=true,fps=60,foreground=true)=>{cursor=0;const result=module.useCardboardSession(enabled,fps,foreground);for(const run of pending.splice(0))run();return result;};
+  return {render,calls,intervals,event:(rotation={alpha:-Math.PI/2,beta:Math.PI/2,gamma:0},orientation=90)=>callback?.({rotation,orientation}),orientation:value=>orientationCallback?.({orientationInfo:{orientation:value}})};
 }
 test("motion starts only in VR, handles denied/unavailable sensors, removes background listeners and reacquires on resume", async () => {
   const h=hookHarness();h.render(false);await settle();assert.equal(h.calls.listeners,0);assert.equal(h.calls.permissions,0);
@@ -123,7 +123,7 @@ test("leaving while motion permission is pending cannot subscribe or leave an aw
 test("same native and Expo preview sources retain VR controls, stereo frame boundary and unchanged audio ownership",()=>{
   const source=readFileSync("apps/mobile/src/MobileObjectScene.tsx","utf8");
   assert.match(source,/gl={createSpaceRenderer}/);assert.match(source,/getSpaceRawDraw\(state.gl\)/);assert.equal((source.match(/context.endFrameEXP\?\.\(\)/g)||[]).length,1);
-  assert.match(source,/vrRequested && \(displayActive \?\? active\) && foreground/);assert.match(source,/cardboard-vr|CardboardControls/);
+  assert.match(source,/useCardboardSession\(vrRequested && \(displayActive \?\? active\), effectiveFrameRate, foreground\)/);assert.match(source,/cardboard-vr|CardboardControls/);
   const pose=readFileSync("apps/mobile/src/use-cardboard-session.ts","utf8");assert.doesNotMatch(pose,/setHeadTracking|setListener|setHeadPose/);
   const app=JSON.parse(readFileSync("apps/mobile/app.json","utf8"));assert.match(app.expo.ios.infoPlist.NSMotionUsageDescription,/纸盒 VR/);assert(app.expo.plugins.some(p=>Array.isArray(p)&&p[0]==="expo-sensors"));
 });
@@ -133,4 +133,35 @@ test("a delayed wake activation from an old session cannot release the new sessi
   h.render(false);h.render(true);await settle();assert.equal(h.calls.awake.size,1);assert.equal(h.calls.listeners,1);
   release();await settle();assert.equal(h.calls.awake.size,1);assert.equal(h.calls.listeners,1);
   h.render(false);await settle();assert.equal(h.calls.awake.size,0);
+});
+
+test("independent native landscape samples keep sky above floor in both eyes, including the iOS UIDevice sign",()=>{
+ const samples=[
+  {platform:"ios",angle:-Math.PI/2,rotation:{alpha:Math.PI/2,beta:-Math.PI/2,gamma:0}},
+  {platform:"ios",angle:Math.PI/2,rotation:{alpha:-Math.PI/2,beta:Math.PI/2,gamma:0}},
+  {platform:"android",angle:Math.PI/2,rotation:{alpha:Math.PI/2,beta:0,gamma:-Math.PI/2}},
+  {platform:"android",angle:-Math.PI/2,rotation:{alpha:-Math.PI/2,beta:0,gamma:Math.PI/2}},
+ ];
+ for(const sample of samples){
+  const pose=new CardboardPose();pose.update(sample.rotation,sample.angle,0,sample.platform);
+  const up=new THREE.Vector3(0,1,0).applyQuaternion(pose.value);assert(up.y>.99999,JSON.stringify(sample));
+  const camera=new THREE.PerspectiveCamera(85,2.1,.02,100);camera.quaternion.copy(pose.value);camera.focus=1000000;camera.updateMatrixWorld();
+  const stereo=new THREE.StereoCamera();stereo.aspect=.5;stereo.update(camera);
+  for(const eye of [stereo.cameraL,stereo.cameraR]){eye.updateMatrixWorld();assert(new THREE.Vector3(0,1,-3).project(eye).y>0);assert(new THREE.Vector3(0,-1,-3).project(eye).y<0);}
+ }
+ assert.equal(cardboardIOSScreenAngle(3),Math.PI/2);assert.equal(cardboardIOSScreenAngle(4),-Math.PI/2);assert.equal(cardboardIOSScreenAngle(0),undefined);
+});
+test("backgrounding retains VR orientation lock and recentered pose while stopping sensors/awake, and resumes the same session",async()=>{
+ const h=hookHarness();let state=h.render();await settle();h.event();state=h.render();
+ h.event(nativeSample(new THREE.Quaternion().setFromEuler(new THREE.Euler(.15,.3,0,"YXZ")),Math.PI/2,"ios"));
+ state=h.render();state.recenter();const q=state.pose.current.value.clone();const locks=h.calls.locks.length;
+ state=h.render(true,60,false);await settle();assert.equal(h.calls.removes,1);assert.equal(h.calls.awake.size,0);assert.equal(h.calls.locks.length,locks);assert.equal(state.pose.current.ready,true);assert(state.pose.current.value.angleTo(q)<1e-7);
+ h.event();assert(state.pose.current.value.angleTo(q)<1e-7,"late sensor callback changed retained view");
+ state=h.render(true,60,true);await settle();assert.equal(h.calls.listeners,2);assert.equal(h.calls.awake.size,1);assert.equal(h.calls.locks.length,locks);assert(state.pose.current.value.angleTo(q)<1e-7);
+ h.render(false);await settle();assert.equal(h.calls.locks.at(-1),1);assert.equal(h.calls.awake.size,0);assert.equal(state.pose.current.ready,false);
+});
+test("iOS interface orientation survives faceUp sensor orientation and rejects a stale initial query",async()=>{
+ const h=hookHarness({interfaceOrientation:3});h.render();await settle();h.event(undefined,0);let state=h.render();assert(new THREE.Vector3(0,1,0).applyQuaternion(state.pose.current.value).y>.99);
+ h.orientation(4);h.event({alpha:Math.PI/2,beta:-Math.PI/2,gamma:0},0);state=h.render();assert(new THREE.Vector3(0,1,0).applyQuaternion(state.pose.current.value).y>.99);h.render(false);await settle();
+ let release;const orientationGate=new Promise(resolve=>release=resolve),pending=hookHarness({orientationGate});pending.render();pending.orientation(4);release(3);await settle();pending.event({alpha:Math.PI/2,beta:-Math.PI/2,gamma:0},0);assert(new THREE.Vector3(0,1,0).applyQuaternion(pending.render().pose.current.value).y>.99);pending.render(false);await settle();
 });

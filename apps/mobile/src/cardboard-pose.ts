@@ -17,8 +17,11 @@ export class CardboardPose {
     const { alpha, beta, gamma } = rotation;
     if (![alpha, beta, gamma, screenAngle, now].every(Number.isFinite)) return false;
     // CoreMotion yaw/pitch/roll is ZYX; Android getOrientation is ZXY.
+    // Expo iOS reports UIDevice landscape directions; Android reports display
+    // rotation. Their landscape signs are opposite, including a 180-degree flip.
+    const displayRotation = platform === "ios" ? screenAngle : -screenAngle;
     this.raw.setFromEuler(platform === "ios" ? this.euler.set(gamma, beta, alpha, "ZYX") : this.euler.set(beta, gamma, alpha, "ZXY"))
-      .premultiply(SCREEN_TO_CAMERA).multiply(this.screen.setFromAxisAngle(Z, -screenAngle)).normalize();
+      .premultiply(SCREEN_TO_CAMERA).multiply(this.screen.setFromAxisAngle(Z, displayRotation)).normalize();
     if (!this.centered || this.orientation !== screenAngle) {
       this.orientation = screenAngle; this.recenter(); this.value.copy(this.center).multiply(this.raw);
     } else {
@@ -36,4 +39,12 @@ export class CardboardPose {
     this.centered = true; this.value.copy(this.center).multiply(this.raw);
   }
   reset() { this.centered = false; this.ready = false; this.lastSample = 0; this.value.identity(); }
+}
+
+/** UIInterfaceOrientation is opposite UIDeviceOrientation in landscape. Keep
+ * using the displayed interface when looking up/down makes UIDevice faceUp. */
+export function cardboardIOSScreenAngle(interfaceOrientation: number): number | undefined {
+  if (interfaceOrientation === 3) return Math.PI / 2;
+  if (interfaceOrientation === 4) return -Math.PI / 2;
+  return undefined;
 }

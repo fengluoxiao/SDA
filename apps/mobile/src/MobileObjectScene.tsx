@@ -103,7 +103,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
   const vrRequested = fullscreen && cardboard.enabled;
   const vrActive = vrRequested && viewport.width > viewport.height;
   // Layout settling during the forced rotation must not cancel/restore the VR session.
-  const vrSession = useCardboardSession(vrRequested && (displayActive ?? active) && foreground, effectiveFrameRate);
+  const vrSession = useCardboardSession(vrRequested && (displayActive ?? active), effectiveFrameRate, foreground);
   const [vrTools, setVrTools] = React.useState(true);
   const [vrCalibration, setVrCalibration] = React.useState(false);
   const vrRenderer = useRef<CardboardRenderer | null>(null);
