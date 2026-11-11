@@ -16,11 +16,14 @@ export class CardboardPose {
   update(rotation: { alpha: number; beta: number; gamma: number }, screenAngle: number, now: number, platform: "ios" | "android" = "android") {
     const { alpha, beta, gamma } = rotation;
     if (![alpha, beta, gamma, screenAngle, now].every(Number.isFinite)) return false;
-    // CoreMotion yaw/pitch/roll is ZYX; Android getOrientation is ZXY.
+    // Expo forwards CoreMotion pitch about X, roll about Y and yaw about Z.
+    // Reconstruct Rz(yaw) * Rx(pitch) * Ry(roll), as WebKit does for CMAttitude:
+    // Source/WebCore/platform/ios/WebCoreMotionManager.mm (intermediate ZXY).
+    // Do not swap pitch/roll or use the aircraft ZYX convention.
     // Expo iOS reports UIDevice landscape directions; Android reports display
     // rotation. Their landscape signs are opposite, including a 180-degree flip.
     const displayRotation = platform === "ios" ? screenAngle : -screenAngle;
-    this.raw.setFromEuler(platform === "ios" ? this.euler.set(gamma, beta, alpha, "ZYX") : this.euler.set(beta, gamma, alpha, "ZXY"))
+    this.raw.setFromEuler(this.euler.set(beta, gamma, alpha, "ZXY"))
       .premultiply(SCREEN_TO_CAMERA).multiply(this.screen.setFromAxisAngle(Z, displayRotation)).normalize();
     if (!this.centered || this.orientation !== screenAngle) {
       this.orientation = screenAngle; this.recenter(); this.value.copy(this.center).multiply(this.raw);

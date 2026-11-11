@@ -45,8 +45,8 @@ function nativeSample(camera, screenAngle, platform) {
   // Known world orientation -> native attitude in a Z-up inertial frame.
   const native = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2).multiply(camera)
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),platform === "ios" ? -screenAngle : screenAngle));
-  const e = new THREE.Euler().setFromQuaternion(native,platform === "ios" ? "ZYX" : "ZXY");
-  return platform === "ios" ? {alpha:e.z,beta:e.y,gamma:e.x} : {alpha:e.z,beta:e.x,gamma:e.y};
+  const e = new THREE.Euler().setFromQuaternion(native,"ZXY");
+  return {alpha:e.z,beta:e.x,gamma:e.y};
 }
 test("both native Euler conventions preserve upright landscape, tilt, turn direction and 180-degree screen rotation", () => {
   for (const platform of ["ios","android"]) for (const angle of [Math.PI/2,-Math.PI/2]) {
@@ -107,7 +107,7 @@ function hookHarness(options={}) {
   const awake={activateKeepAwakeAsync:async tag=>{if(options.awakeGate&&++awakeActivations===1)await options.awakeGate;calls.awake.add(tag);},deactivateKeepAwake:async tag=>calls.awake.delete(tag)};
   const module=load("use-cardboard-session.ts",{react,"react-native":{Platform:{OS:options.os??"ios"}},"expo-sensors":{DeviceMotion:motion},"expo-screen-orientation":orientation,"expo-keep-awake":awake},{setInterval:fn=>{const id=intervals.size+1;intervals.set(id,fn);return id;},clearInterval:id=>intervals.delete(id)});
   const render=(enabled=true,fps=60,foreground=true)=>{cursor=0;const result=module.useCardboardSession(enabled,fps,foreground);for(const run of pending.splice(0))run();return result;};
-  return {render,calls,intervals,event:(rotation={alpha:-Math.PI/2,beta:Math.PI/2,gamma:0},orientation=90)=>callback?.({rotation,orientation}),orientation:value=>orientationCallback?.({orientationInfo:{orientation:value}})};
+  return {render,calls,intervals,event:(rotation={alpha:-Math.PI/2,beta:0,gamma:Math.PI/2},orientation=90)=>callback?.({rotation,orientation}),orientation:value=>orientationCallback?.({orientationInfo:{orientation:value}})};
 }
 test("motion starts only in VR, handles denied/unavailable sensors, removes background listeners and reacquires on resume", async () => {
   const h=hookHarness();h.render(false);await settle();assert.equal(h.calls.listeners,0);assert.equal(h.calls.permissions,0);
@@ -137,8 +137,8 @@ test("a delayed wake activation from an old session cannot release the new sessi
 
 test("independent native landscape samples keep sky above floor in both eyes, including the iOS UIDevice sign",()=>{
  const samples=[
-  {platform:"ios",angle:-Math.PI/2,rotation:{alpha:Math.PI/2,beta:-Math.PI/2,gamma:0}},
-  {platform:"ios",angle:Math.PI/2,rotation:{alpha:-Math.PI/2,beta:Math.PI/2,gamma:0}},
+  {platform:"ios",angle:-Math.PI/2,rotation:{alpha:Math.PI/2,beta:0,gamma:-Math.PI/2}},
+  {platform:"ios",angle:Math.PI/2,rotation:{alpha:-Math.PI/2,beta:0,gamma:Math.PI/2}},
   {platform:"android",angle:Math.PI/2,rotation:{alpha:Math.PI/2,beta:0,gamma:-Math.PI/2}},
   {platform:"android",angle:-Math.PI/2,rotation:{alpha:-Math.PI/2,beta:0,gamma:Math.PI/2}},
  ];
@@ -162,6 +162,30 @@ test("backgrounding retains VR orientation lock and recentered pose while stoppi
 });
 test("iOS interface orientation survives faceUp sensor orientation and rejects a stale initial query",async()=>{
  const h=hookHarness({interfaceOrientation:3});h.render();await settle();h.event(undefined,0);let state=h.render();assert(new THREE.Vector3(0,1,0).applyQuaternion(state.pose.current.value).y>.99);
- h.orientation(4);h.event({alpha:Math.PI/2,beta:-Math.PI/2,gamma:0},0);state=h.render();assert(new THREE.Vector3(0,1,0).applyQuaternion(state.pose.current.value).y>.99);h.render(false);await settle();
- let release;const orientationGate=new Promise(resolve=>release=resolve),pending=hookHarness({orientationGate});pending.render();pending.orientation(4);release(3);await settle();pending.event({alpha:Math.PI/2,beta:-Math.PI/2,gamma:0},0);assert(new THREE.Vector3(0,1,0).applyQuaternion(pending.render().pose.current.value).y>.99);pending.render(false);await settle();
+ h.orientation(4);h.event({alpha:Math.PI/2,beta:0,gamma:-Math.PI/2},0);state=h.render();assert(new THREE.Vector3(0,1,0).applyQuaternion(state.pose.current.value).y>.99);h.render(false);await settle();
+ let release;const orientationGate=new Promise(resolve=>release=resolve),pending=hookHarness({orientationGate});pending.render();pending.orientation(4);release(3);await settle();pending.event({alpha:Math.PI/2,beta:0,gamma:-Math.PI/2},0);assert(new THREE.Vector3(0,1,0).applyQuaternion(pending.render().pose.current.value).y>.99);pending.render(false);await settle();
+});
+
+// Independent reference: the explicit CMAttitude matrix in WebKit's
+// Source/WebCore/platform/ios/WebCoreMotionManager.mm. No Euler conversion is
+// used to build the expected result; the old swapped-axis ZYX implementation
+// fails this reference even though its self-generated fixtures passed.
+function coreMotionMatrix({alpha:z,beta:x,gamma:y}) {
+ const cX=Math.cos(x),sX=Math.sin(x),cY=Math.cos(y),sY=Math.sin(y),cZ=Math.cos(z),sZ=Math.sin(z);
+ return [[cZ*cY-sZ*sX*sY,-cX*sZ,cY*sZ*sX+cZ*sY],
+  [cY*sZ+cZ*sX*sY,cZ*cX,sZ*sY-cZ*cY*sX],[-cX*sY,sX,cX*cY]];
+}
+const multiply3=(a,b)=>a.map(row=>b[0].map((_,j)=>row.reduce((sum,v,k)=>sum+v*b[k][j],0)));
+function matrixQuaternion(m){return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().set(...m[0],0,...m[1],0,...m[2],0,0,0,0,1));}
+test("native pitch/roll follow the independent WebKit matrix and measured gravity basis over compound rotations",()=>{
+ for(const platform of ["ios","android"])for(const angle of [-Math.PI/2,Math.PI/2])for(const beta of [-1.2,-.4,.2,.9])for(const gamma of [-1.1,-.2,.4,1.2])for(const alpha of [-2,-.4,.7,2]){
+  const rotation={alpha,beta,gamma},device=coreMotionMatrix(rotation),screen=platform==="ios"?angle:-angle,c=Math.cos(screen),sn=Math.sin(screen);
+  const world=multiply3(multiply3([[1,0,0],[0,0,1],[0,-1,0]],device),[[c,-sn,0],[sn,c,0],[0,0,1]]);
+  const yaw=Math.atan2(world[0][2],world[2][2]),cy=Math.cos(-yaw),sy=Math.sin(-yaw);
+  const expected=matrixQuaternion(multiply3([[cy,0,sy],[0,1,0],[-sy,0,cy]],world));
+  const pose=new CardboardPose();pose.update(rotation,angle,0,platform);assert(pose.value.angleTo(expected)<1e-6,JSON.stringify({platform,rotation,angle}));
+  // Native gravity is the negative third row of the device rotation matrix.
+  const cameraUp=new THREE.Vector3(...device[2]).applyAxisAngle(new THREE.Vector3(0,0,1),-screen).applyQuaternion(pose.value);
+  assert(cameraUp.distanceTo(new THREE.Vector3(0,1,0))<1e-6,"gravity/horizon basis disagrees");
+ }
 });

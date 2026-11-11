@@ -288,7 +288,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           <View style={s.row}>{label(p.layout === "360RA-13" ? "360° 球形声场" : "空间视图", false, s.sectionTitle)}{label(!showAllObjects ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : `${p.objects.length} 个对象`, true, s.small)}</View>
           {label(`${p.layout} · 对象实时位置`, true, { ...s.small, marginTop: 12 })}
           <View style={[s.scene, { height: Math.max(260, height * .40) }]}>{sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} active={page === 2} onInteractionChange={sceneInteraction} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} />}</View>
-          <View style={s.row}>{label("单指旋转 · 双指缩放", true, s.help)}<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>{label("显示不发声对象", true, s.small)}<Switch accessibilityLabel="显示不发声对象" value={showAllObjects} onValueChange={setShowAllObjects} /></View></View>
+          <View style={s.row}>{label("单指旋转 · 双指缩放", true, s.help)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View>
         </View>
       </ScrollView>
     </ScrollView>

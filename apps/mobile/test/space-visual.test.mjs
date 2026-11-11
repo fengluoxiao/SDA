@@ -163,3 +163,17 @@ test("channel speakers default hidden and reuse the original speaker/sub assets 
   }
  }
 });
+
+test("object visibility retains the original text action in both mobile player hosts",async()=>{
+ const {readFileSync}=await import("node:fs"),ts=require("typescript");
+ for(const file of ["IOSPlayer.tsx","RemotePlayer.tsx"]){
+  const text=readFileSync("apps/mobile/src/"+file,"utf8"),source=ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let control;
+  const visit=node=>{if(ts.isJsxElement(node)&&node.openingElement.tagName.getText(source)==="Pressable"&&node.openingElement.attributes.properties.some(p=>ts.isJsxAttribute(p)&&p.name.getText(source)==="accessibilityLabel"&&p.initializer?.text==="显示全部对象"))control=node;ts.forEachChild(node,visit);};visit(source);
+  assert(control,"original text action missing: "+file);assert.doesNotMatch(text,/<Switch accessibilityLabel="显示不发声对象"/);
+  const code=ts.transpileModule("var control = "+control.getText(source),{compilerOptions:{jsx:ts.JsxEmit.React,target:ts.ScriptTarget.ES2020}}).outputText;
+  const render=new Function("React","Pressable","label","showAllObjects","setShowAllObjects","s",code+";return control;");
+  for(const enabled of [false,true]){let next=enabled;const tree=render({createElement:(type,props,...children)=>({type,props:{...props,children}})},"Pressable",label=>label,enabled,fn=>next=fn(next),{small:{}});
+   assert.equal(tree.type,"Pressable");assert.equal(tree.props.children[0],enabled?"仅显示发声对象":"显示全部对象");assert.equal(tree.props.accessibilityState.checked,enabled);tree.props.onPress();assert.equal(next,!enabled);
+  }
+ }
+});
