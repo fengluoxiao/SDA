@@ -78,3 +78,17 @@ test("Expo Go fullscreen hides and restores its navigation bar, including an int
   }
  }finally{globalThis.expo=before;}
 });
+
+
+test("rotation/layout settling stops GL work without restoring fullscreen bars or resetting its refresh request",()=>{
+ const ts=require("typescript"),text=readFileSync("apps/mobile/src/MobileObjectScene.tsx","utf8");
+ const source=ts.createSourceFile("MobileObjectScene.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let expression;const visit=node=>{if(ts.isVariableDeclaration(node)&&node.name.getText(source)==="effectiveFrameRate")expression=node.initializer.getText(source);ts.forEachChild(node,visit);};visit(source);assert(expression);
+ const apply=new Function("displayActive","active","foreground","frameRate","fullscreen","useSceneDisplayPolicy","return "+expression);
+ const calls=[];const policy=(...args)=>{calls.push(args);return args[1];};
+ // A layout-induced render pause must preserve the native display policy.
+ apply(true,false,true,120,true,policy);assert.deepEqual(calls.at(-1),[true,120,true]);
+ apply(false,false,true,120,false,policy);assert.deepEqual(calls.at(-1),[false,120,false]);
+ apply(true,true,false,120,true,policy);assert.deepEqual(calls.at(-1),[false,120,true]);
+ apply(undefined,true,true,60,false,policy);assert.deepEqual(calls.at(-1),[true,60,false]);
+});

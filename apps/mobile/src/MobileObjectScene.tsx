@@ -82,7 +82,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, onInteractionChange, onTap, frameRate = 60, fullscreen = false, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { frameRate?: number; fullscreen?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
+export function MobileObjectScene({ objects, layout, active, displayActive, onInteractionChange, onTap, frameRate = 60, fullscreen = false, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { frameRate?: number; fullscreen?: boolean; displayActive?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
   // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
@@ -116,7 +116,7 @@ export function MobileObjectScene({ objects, layout, active, onInteractionChange
     engine?.setSceneRenderingRequested?.(renderActive && mounted);
     return () => engine?.setSceneRenderingRequested?.(false);
   }, [renderActive, mounted]);
-  const effectiveFrameRate = useSceneDisplayPolicy(renderActive && mounted, frameRate, fullscreen);
+  const effectiveFrameRate = useSceneDisplayPolicy((displayActive ?? active) && foreground, frameRate, fullscreen);
   const [failure, setFailure] = React.useState<string | null>(null);
   const firstFrame = useRef(false);
   const alive = useRef(true);
