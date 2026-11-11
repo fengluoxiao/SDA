@@ -8,9 +8,10 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'RemotePlayer.tsx', 'IOSPlayer.tsx', 'PlatformPlayerTabs.tsx',
     'KaraokeText.tsx', 'lyric-karaoke.ts', 'TabletLandscapePlayer.tsx', 'tablet-player-layout.ts',
     'PhoneLandscapeBlur.tsx', 'phone-landscape-blur-model.ts', 'IOSUIKitTabs.tsx', 'IOSSystemTabs.tsx',
-    'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx']]
+    'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
+    'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
-           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow']
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-track-identity', b'space-fullscreen-button']
 IOS_GLASS_MARKERS = [b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])

@@ -21,7 +21,8 @@ if (__DEV__ && Platform.OS === "ios") {
 const screens: typeof import("react-native-screens") | null = hasUIKitIOSTabs
   ? require("react-native-screens") : null;
 
-export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, pageBackgrounds, libraryHeaderActions, libraryHeaderActionsWidth, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false, tabletPageInsets }: {
+export function IOSUIKitTabs({ spaceFullscreen = false, selected, onChange, pages, accessory, nativeAccessory, accent, theme, backgroundColor, pageBackgroundColors, pageHeaders, pageBackgrounds, libraryHeaderActions, libraryHeaderActionsWidth, sideBar, sideBarExternal = false, sideBarPosition = "right", sideBarWidth = 48, rightContentGap = 8, leftContentOffset = 0, sideBarInsetReserved = false, tabletPageInsets }: {
+  spaceFullscreen?: boolean;
   pageHeaders?: React.ReactNode[];
   pageBackgrounds?: React.ReactNode[];
   tabletPageInsets?: { marginLeft: number; marginRight: number };
@@ -50,7 +51,7 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     const scroll = React.isValidElement<ScrollViewProps>(page)
       ? React.cloneElement(page, {
           contentContainerStyle: [page.props.contentContainerStyle, { paddingBottom: floatingLibraryAccessory ? 76 + libraryBottomInset : 24 + libraryBottomInset }],
-          ...(sideBar && !sideBarInsetReserved && sideBarPosition === "left" && hasNativePageHeader ? {
+          ...(!spaceFullscreen && sideBar && !sideBarInsetReserved && sideBarPosition === "left" && hasNativePageHeader ? {
             // Its viewport extends through the right safe inset for the native
             // edge effect. Apply indicator safety once, using the measured bar.
             automaticallyAdjustsScrollIndicatorInsets: false,
@@ -66,9 +67,9 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
     const nativeHeader = index === 1 && hasNativePageHeader;
     const viewport = <SafeAreaProvider style={{ flex: 1, backgroundColor: "transparent" }}>
         <SafeAreaView edges={nativeHeader ? [] : ["top", "left", "right"]} style={{ flex: 1 }}>
-          {!nativeHeader && <View pointerEvents="box-none" style={{ paddingHorizontal: 18, zIndex: index === 0 ? 2 : 0, backgroundColor: "transparent" }}>{pageHeaders?.[index]}</View>}
-          <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : index === 0 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
-            {pageContent(index)}{index !== 0 && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: sideBarInsetReserved ? 0 : Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View> : accessory)}
+          {!nativeHeader && <View pointerEvents="box-none" style={{ paddingHorizontal: 18, zIndex: index === 0 ? 2 : 0, backgroundColor: "transparent" }}>{!spaceFullscreen && pageHeaders?.[index]}</View>}
+          <SafeAreaView edges={index === 1 ? [...(hasNativePageHeader ? ["left", "right"] as const : []), ...(libraryUnderlaysNativeBar || sideBar ? [] : ["bottom"] as const)] : index === 0 ? [] : ["bottom"]} style={{ flex: 1, paddingHorizontal: 18, ...(!spaceFullscreen && sideBar && !sideBarInsetReserved && sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}), backgroundColor: "transparent" }}>
+            {pageContent(index)}{index !== 0 && !spaceFullscreen && !(index === 1 && floatingLibraryAccessory) && (sideBar || !(hasUIKitTabAccessory && nativeAccessory)) && (sideBar ? <View style={{ [sideBarPosition === "left" ? "marginLeft" : "marginRight"]: sideBarInsetReserved ? 0 : Math.max(0, sideBarWidth + (sideBarPosition === "right" ? rightContentGap : 8 + leftContentOffset) - 18) }}>{accessory}</View> : accessory)}
           </SafeAreaView>
         </SafeAreaView>
         {pageBackgrounds?.[index]}
@@ -84,14 +85,14 @@ export function IOSUIKitTabs({ selected, onChange, pages, accessory, nativeAcces
   const appearance = iosTabAppearance;
   return <View style={{ flex: 1, marginHorizontal: -18, backgroundColor }}>
     <Tabs.Host
-      tabBarHidden={!!sideBar}
+      tabBarHidden={spaceFullscreen || !!sideBar}
       navStateRequest={{ selectedScreenKey: String(selected), baseProvenance: provenance }}
       nativeContainerStyle={{ backgroundColor }} colorScheme={theme}
       ios={{ tabBarHiddenAnimationEnabled: false, tabBarTintColor: accent, tabBarControllerMode: "tabBar", tabBarMinimizeBehavior: "never",
         // The factory is mounted twice by screens. Its content has no local
         // playback state/effects; both variants act on the same parent engine.
         bottomAccessory: !sideBar && hasUIKitTabAccessory && nativeAccessory ? nativeAccessory : undefined,
-        bottomAccessoryHidden: !!sideBar || selected === 0 || !nativeAccessory,
+        bottomAccessoryHidden: spaceFullscreen || !!sideBar || selected === 0 || !nativeAccessory,
       }}
       onTabSelected={({ nativeEvent }: NativeSyntheticEvent<TabSelectedEvent>) => {
         const update = resolveNativeTabSelection(nativeEvent, lastProvenance.current, selected, AppState.currentState === "active", "main");

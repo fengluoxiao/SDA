@@ -17,12 +17,12 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
   const [libraryScrolled, setLibraryScrolled] = useState(false);
   const md3 = androidMaterialTheme(appTheme.id, props.theme === "dark");
   if (Platform.OS !== "android") return <IOSSystemTabs {...props} />;
-  if (!hasAndroidChrome) return <><View style={{ flex: 1 }}>{props.children}{props.pageBackgrounds?.[props.selected]}</View>{props.selected !== 0 && props.accessory}{props.fallback}</>;
+  if (!hasAndroidChrome) return <><View style={{ flex: 1 }}>{props.children}{props.pageBackgrounds?.[props.selected]}</View>{props.selected !== 0 && !props.spaceFullscreen && props.accessory}{!props.spaceFullscreen && props.fallback}</>;
   const side = !!props.sideBar;
   const mini = !!props.accessory && androidChromeState(player, props.selected).showMini;
-  const footerHeight = side ? (mini ? 64 : 0) : androidChromeState(player, props.selected).height;
-  const leftRail = side && !props.sideBarInsetReserved && props.sideBarPosition === "left";
-  const rightRail = side && !props.sideBarInsetReserved && !leftRail;
+  const footerHeight = props.spaceFullscreen ? 0 : side ? (mini ? 64 : 0) : androidChromeState(player, props.selected).height;
+  const leftRail = !props.spaceFullscreen && side && !props.sideBarInsetReserved && props.sideBarPosition === "left";
+  const rightRail = !props.spaceFullscreen && side && !props.sideBarInsetReserved && !leftRail;
   // All coordinates are inside the outer system safe area. Keep 12 dp between
   // the 48 dp capsule (8 dp from the edge) and content; the indicator uses half.
   const contentInset = (props.sideBarWidth ?? 48) + 8 + 12;
@@ -30,7 +30,7 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
   const parentLeft = leftRail ? 30 : 18;
   const parentRight = leftRail ? 6 : 18;
   const renderPage = (page: React.ReactNode, index: number) => {
-    if (index !== 1) return <><View pointerEvents="box-none" style={{ backgroundColor: "transparent", zIndex: index === 0 ? 2 : 0, paddingTop: header.top, ...(leftRail ? { marginLeft: -12, marginRight: 12 } : {}) }}>{props.pageHeaders?.[index]}</View>{page}</>;
+    if (index !== 1) return <><View pointerEvents="box-none" style={{ backgroundColor: "transparent", zIndex: index === 0 ? 2 : 0, paddingTop: props.spaceFullscreen ? 0 : header.top, ...(leftRail ? { marginLeft: -12, marginRight: 12 } : {}) }}>{!props.spaceFullscreen && props.pageHeaders?.[index]}</View>{page}</>;
     const scroll = React.isValidElement<ScrollViewProps>(page) ? React.cloneElement(page, {
       // Reserve an actual viewport lane: Android ignores iOS scrollIndicatorInsets.
       style: [page.props.style, side && { marginLeft: (leftRail ? scrollInset : 0) - parentLeft,
@@ -50,9 +50,9 @@ export function PlatformPlayerTabs({ player, ...props }: React.ComponentProps<ty
     </View>;
   };
   return <View style={{ flex: 1, marginHorizontal: -18 }}>
-    <View style={{ flex: 1, paddingHorizontal: 18, ...(side && !props.sideBarInsetReserved && props.sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{React.Children.toArray(props.children).map((page, index) =>
+    <View style={{ flex: 1, paddingHorizontal: 18, ...(!props.spaceFullscreen && side && !props.sideBarInsetReserved && props.sideBarPosition === "left" ? { paddingLeft: 30, paddingRight: 6 } : {}) }}>{React.Children.toArray(props.children).map((page, index) =>
       <View key={index} style={{ flex: 1, ...(index !== 0 ? props.tabletPageInsets : {}), paddingBottom: index === 1 ? 0 : footerHeight + insets.bottom, display: props.selected === index ? "flex" : "none" }}>{renderPage(page, index)}{props.pageBackgrounds?.[index]}</View>)}</View>
-    {(!side || mini) && <View style={{ position: "absolute", bottom: insets.bottom, left: leftRail ? contentInset - 16 : 0, right: rightRail ? contentInset - 16 : 0, paddingHorizontal: 16, overflow: "visible" }}><AndroidChrome presentation={side ? "mini" : "bottom"} player={player} selected={props.selected} onSelect={props.onChange}
+    {!props.spaceFullscreen && (!side || mini) && <View style={{ position: "absolute", bottom: insets.bottom, left: leftRail ? contentInset - 16 : 0, right: rightRail ? contentInset - 16 : 0, paddingHorizontal: 16, overflow: "visible" }}><AndroidChrome presentation={side ? "mini" : "bottom"} player={player} selected={props.selected} onSelect={props.onChange}
       dark={props.theme === "dark"} backgroundColor={props.selected === 0 ? "#111113" : md3.bg} /></View>}
   </View>;
 }

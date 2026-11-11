@@ -24,6 +24,7 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 paths.push('crates/sda-native/src/mp4_extract.rs','vendor/avs3a/src/imdct.rs');
 paths.push('packages/core/src/scene_reference.rs');
 paths.push('vendor/avs3a/Cargo.toml','vendor/avs3a/Cargo.lock','crates/sda-native/Cargo.lock');
+paths.push("apps/mobile/src/SpaceVisualPage.tsx","apps/mobile/src/ImmersiveSpaceScene.tsx","apps/mobile/src/space-visual-model.ts","apps/mobile/src/MobileObjectScene.tsx","apps/mobile/src/navigation-preferences.tsx");
 const sources=Object.fromEntries(paths.map(path=>[path,sha(readFileSync(join(root,path)))]));
 const sourceCheckoutCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 const sourceCommit=process.env.SDA_SOURCE_COMMIT??process.env.GITHUB_SHA??sourceCheckoutCommit;

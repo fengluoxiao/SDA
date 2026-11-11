@@ -68,7 +68,7 @@ test("permanent lyrics are restricted to physical tablet landscape and do not re
   }
   assert.match(source, /tabletLandscape \? <TabletLandscapePlayer/);
   assert.match(source, /tabletSideNavigation && !tabletLandscape && tabletNavigationPageInsets/);
-  assert.match(source, /tabletPageInsets=\{tabletLandscape && tabletSideNavigation \?/);
+  assert.match(source, /tabletPageInsets=\{!fullscreenSpace && tabletLandscape && tabletSideNavigation \?/);
   assert.doesNotMatch(source, /tabletImmersivePageMargin/);
   assert.match(source, /<LandscapeLyricsPager[^>]*enabled=\{landscapePlayer\}/);
   assert.match(source, /<PortraitLyricsPager[^>]*enabled=\{!landscapePlayer\}/);

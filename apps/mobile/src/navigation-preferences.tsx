@@ -3,9 +3,9 @@ import * as FileSystem from "expo-file-system/legacy";
 
 export type SideTabPosition = "left" | "right";
 // Keep the saved key stable: this style switch also controls phone landscape blur.
-type Preferences = { landscapeSideTabs: boolean; tabletPortraitLayout: boolean; sideTabPosition: SideTabPosition };
-const defaults: Preferences = { landscapeSideTabs: false, tabletPortraitLayout: false, sideTabPosition: "right" };
-const Context = createContext({ ...defaults, setLandscapeSideTabs: (_enabled: boolean) => {}, setTabletPortraitLayout: (_enabled: boolean) => {}, setSideTabPosition: (_position: SideTabPosition) => {} });
+type Preferences = { landscapeSideTabs: boolean; tabletPortraitLayout: boolean; immersiveSpace: boolean; sideTabPosition: SideTabPosition };
+const defaults: Preferences = { landscapeSideTabs: false, tabletPortraitLayout: false, immersiveSpace: false, sideTabPosition: "right" };
+const Context = createContext({ ...defaults, setLandscapeSideTabs: (_enabled: boolean) => {}, setTabletPortraitLayout: (_enabled: boolean) => {}, setImmersiveSpace: (_enabled: boolean) => {}, setSideTabPosition: (_position: SideTabPosition) => {} });
 export const useNavigationPreferences = () => useContext(Context);
 
 export function NavigationPreferencesProvider({ children }: { children: React.ReactNode }) {
@@ -23,7 +23,8 @@ export function NavigationPreferencesProvider({ children }: { children: React.Re
       if (!changed.current.has("landscapeSideTabs") && typeof saved.landscapeSideTabs === "boolean") restored.landscapeSideTabs = saved.landscapeSideTabs;
       if (!changed.current.has("sideTabPosition") && (saved.sideTabPosition === "left" || saved.sideTabPosition === "right")) restored.sideTabPosition = saved.sideTabPosition;
       if (!changed.current.has("tabletPortraitLayout") && typeof saved.tabletPortraitLayout === "boolean") restored.tabletPortraitLayout = saved.tabletPortraitLayout;
-      const restoredUntouchedField = restored.landscapeSideTabs !== current.current.landscapeSideTabs || restored.sideTabPosition !== current.current.sideTabPosition || restored.tabletPortraitLayout !== current.current.tabletPortraitLayout;
+      if (!changed.current.has("immersiveSpace") && typeof saved.immersiveSpace === "boolean") restored.immersiveSpace = saved.immersiveSpace;
+      const restoredUntouchedField = restored.landscapeSideTabs !== current.current.landscapeSideTabs || restored.sideTabPosition !== current.current.sideTabPosition || restored.tabletPortraitLayout !== current.current.tabletPortraitLayout || restored.immersiveSpace !== current.current.immersiveSpace;
       current.current = restored; setPreferences(restored);
       // Preserve untouched saved fields when a user acted before the read finished.
       if (changed.current.size && restoredUntouchedField) save(restored);
@@ -41,6 +42,7 @@ export function NavigationPreferencesProvider({ children }: { children: React.Re
   };
   const setLandscapeSideTabs = (enabled: boolean) => update("landscapeSideTabs", enabled);
   const setTabletPortraitLayout = (enabled: boolean) => update("tabletPortraitLayout", enabled);
+  const setImmersiveSpace = (enabled: boolean) => update("immersiveSpace", enabled);
   const setSideTabPosition = (position: SideTabPosition) => { if (position === "left" || position === "right") update("sideTabPosition", position); };
-  return <Context.Provider value={{ ...preferences, setLandscapeSideTabs, setSideTabPosition, setTabletPortraitLayout }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ ...preferences, setLandscapeSideTabs, setSideTabPosition, setTabletPortraitLayout, setImmersiveSpace }}>{children}</Context.Provider>;
 }

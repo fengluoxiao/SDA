@@ -212,6 +212,9 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Text modifiers={[tag("right")]}>右边</Text>
       </Picker>
     </Section>
+    <Section title="空间视图" footer={<Text>在空间标签页使用柔光、环形声场和新的歌曲排版。单指旋转、双指缩放，显示偏好会自动保存。</Text>}>
+      <Toggle label="Folia 风格空间" isOn={navigationPreferences.immersiveSpace} onIsOnChange={navigationPreferences.setImmersiveSpace} />
+    </Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
     </Section>

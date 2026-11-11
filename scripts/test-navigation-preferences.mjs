@@ -38,13 +38,13 @@ console.log('Side navigation preference: default off, save order, reload, late-r
 const sides=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true})));
 assert.equal(sides.render().sideTabPosition,'right');await tick();
 sides.render().setSideTabPosition('left');sides.render().setLandscapeSideTabs(false);await tick();
-assert.deepEqual(sides.writes.at(-1),{landscapeSideTabs:false,tabletPortraitLayout:false,sideTabPosition:'left'});
+assert.deepEqual(sides.writes.at(-1),{landscapeSideTabs:false,tabletPortraitLayout:false,immersiveSpace:false,sideTabPosition:'left'});
 const sideReload=harness(Promise.resolve(JSON.stringify(sides.writes.at(-1))));sideReload.render();await tick();
 assert.equal(sideReload.render().sideTabPosition,'left');
 let releasePosition;const sideRace=harness(new Promise(resolve=>{releasePosition=resolve;}));
 sideRace.render().setSideTabPosition('right');releasePosition(JSON.stringify({landscapeSideTabs:true,sideTabPosition:'left'}));await tick();
 assert.equal(sideRace.render().sideTabPosition,'right');assert.equal(sideRace.render().landscapeSideTabs,true);
-assert.deepEqual(sideRace.writes.at(-1),{landscapeSideTabs:true,tabletPortraitLayout:false,sideTabPosition:'right'});
+assert.deepEqual(sideRace.writes.at(-1),{landscapeSideTabs:true,tabletPortraitLayout:false,immersiveSpace:false,sideTabPosition:'right'});
 const invalidSide=harness(Promise.resolve(JSON.stringify({sideTabPosition:'top'})));invalidSide.render();await tick();assert.equal(invalidSide.render().sideTabPosition,'right');
 console.log('Side position: default right, migration, persistence, independent late-read protection passed.');
 
@@ -64,3 +64,16 @@ for(const file of ['apps/mobile/src/AndroidSettings.tsx','apps/mobile/src/IOSNat
  const settings=readFileSync(file,'utf8');assert.match(settings,/平板风格界面/);assert.match(settings,/setTabletPortraitLayout/);
 }
 console.log('Phone portrait layout preference: default-off migration, enable/disable, persistence, independent load races and both native settings switches passed.');
+
+const stageDefaults=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true,tabletPortraitLayout:true,sideTabPosition:'left'})));
+assert.equal(stageDefaults.render().immersiveSpace,false);await tick();assert.equal(stageDefaults.render().immersiveSpace,false);
+stageDefaults.render().setImmersiveSpace(true);await tick();
+assert.deepEqual(stageDefaults.writes.at(-1),{landscapeSideTabs:true,tabletPortraitLayout:true,immersiveSpace:true,sideTabPosition:'left'});
+const stageReload=harness(Promise.resolve(JSON.stringify(stageDefaults.writes.at(-1))));stageReload.render();await tick();assert.equal(stageReload.render().immersiveSpace,true);
+let releaseStage;const stageRace=harness(new Promise(resolve=>{releaseStage=resolve;}));
+stageRace.render().setImmersiveSpace(true);releaseStage(JSON.stringify({immersiveSpace:false,sideTabPosition:'left',tabletPortraitLayout:true}));await tick();
+assert.equal(stageRace.render().immersiveSpace,true);assert.equal(stageRace.render().sideTabPosition,'left');assert.equal(stageRace.render().tabletPortraitLayout,true);
+assert.equal(stageRace.writes.at(-1).immersiveSpace,true);assert.equal(stageRace.writes.at(-1).sideTabPosition,'left');
+for(const invalid of ['true',1,null,{}]){const h=harness(Promise.resolve(JSON.stringify({immersiveSpace:invalid})));h.render();await tick();assert.equal(h.render().immersiveSpace,false);}
+stageRace.render().setImmersiveSpace(false);await tick();assert.equal(stageRace.writes.at(-1).immersiveSpace,false);
+console.log('Immersive Space preference: migration defaults off, persistence, independent late-read protection and restoring classic appearance passed.');

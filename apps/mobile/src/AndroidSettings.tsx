@@ -110,6 +110,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           [{ id: "left", label: "左边" }, { id: "right", label: "右边" }], navigation.sideTabPosition,
           value => { if (value === "left" || value === "right") navigation.setSideTabPosition(value); })}
       </>, "横屏时将导航栏放在侧边；默认在右边，竖屏仍使用底部导航栏。")}
+      {section("空间视图", toggle("Folia 风格空间", navigation.immersiveSpace, navigation.setImmersiveSpace, false), "在空间标签页使用柔光、环形声场和新的歌曲排版；保留旋转、缩放和对象显示操作。") }
       {section("主题色", <AndroidThemeMenu dark={dark} onFallbackOpen={() => setSelection({ title: "主题色", options: CHARACTER_THEMES.map(item => ({ id: item.id, label: item.name })), selected: appTheme.id, choose: id => { const theme = CHARACTER_THEMES.find(item => item.id === id); if (theme) appTheme.setTheme(theme.id); } })} />)}
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}
