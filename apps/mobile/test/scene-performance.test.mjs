@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {test} from "node:test";
 import {createRequire} from "node:module";
 import {readFileSync} from "node:fs";
+import {dirname,join} from "node:path";
 import {buildSync} from "esbuild";
 const require=createRequire(import.meta.url);
 function load(path,mocks={}){
@@ -45,8 +46,9 @@ test("display policy rejects unsupported 120Hz and restores requests when the sc
 });
 test("the native iOS GL presenter and JS animation display link are both patched idempotently",()=>{
  const{patchSource}=require("../../../scripts/patch-ios-scene-frame-rate.cjs");
- for(const[kind,file]of [["gl","expo-gl/ios/GLView.swift"],["raf","react-native/React/Base/RCTDisplayLink.m"]]){
-  const before=readFileSync("apps/mobile/node_modules/"+file,"utf8"),after=patchSource(before,kind);
+ for(const[kind,packageName,relative]of [["gl","expo-gl","ios/GLView.swift"],["raf","react-native","React/Base/RCTDisplayLink.m"]]){
+  const file=join(dirname(require.resolve(packageName+"/package.json")),relative);
+  const before=readFileSync(file,"utf8"),after=patchSource(before,kind);
   assert(after.includes("sda.scene.preferredFrameRate"));assert(after.includes("preferredFrameRateRange"));assert.equal(patchSource(after,kind),after);assert.equal(after.split("SDA_SCENE_FRAME_RATE").length,2);
  }
  assert.throws(()=>patchSource("unknown upgraded source","gl"),/Unsupported/);
