@@ -2,7 +2,7 @@ export interface LyricSource { text: string; format?: "lrc" | "ttml" | "text"; n
 export interface LyricAgent { id: string; type: "person" | "group" | "other"; name?: string; }
 export type LyricVocal = "lead" | "background" | "chorus";
 export interface LyricWord { text: string; startMs: number; endMs: number; agentIds?: string[]; }
-export interface LyricLine { id: string; text: string; startMs: number; endMs: number; words: LyricWord[]; translation?: string; agentIds?: string[]; vocal?: LyricVocal; background?: LyricLine[]; }
+export interface LyricLine { id: string; text: string; startMs: number; endMs: number; words: LyricWord[]; translation?: string; romanization?: string; agentIds?: string[]; vocal?: LyricVocal; background?: LyricLine[]; }
 export interface LyricDocument { format: "lrc" | "ttml" | "text"; lines: LyricLine[]; timed: boolean; source: LyricSource; agents?: LyricAgent[]; }
 const MAX_TEXT = 2 * 1024 * 1024;
 const entity = (s: string) => s.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (all, key: string) => {
@@ -121,19 +121,48 @@ function ttml(source: LyricSource): LyricDocument {
   if (multiplier?.length === 2 && multiplier[1]) rate *= multiplier[0]! / multiplier[1];
   if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(ticks) || ticks <= 0) throw Error("TTML 时间基准无效");
   const apple = /music\.apple\.com\/lyric|ttml\.amll\.dev/i.test(source.text);
-  const lines: LyricLine[] = [], agents = new Map<string, LyricAgent>(), sidecarText = new Map<string, string[]>();
+  const lines: LyricLine[] = [], agents = new Map<string, LyricAgent>(), sidecarText = new Map<string, string[]>(), sidecarRomanization = new Map<string, string[]>();
   const ids = (value: string | undefined) => value?.trim().split(/\s+/).filter(Boolean).map(id => id.replace(/^#/, ""));
   const normalize = (value: string) => value.replace(/[\t\r ]+/g, " ").replace(/ *\n */g, "\n").trim();
   const plain = (n: Node): string => n.children.map(c => typeof c === "string" ? c : c.tag === "br" ? "\n" : plain(c)).join("");
-  const translated = (n: Node) => /translation|roman/i.test(attr(n, "role") ?? "");
+  type AnnotationKind = "translation" | "romanization";
+  const annotationKind = (n: Node): AnnotationKind | undefined => {
+    const roles = (attr(n, "role") ?? "").toLowerCase().split(/\s+/);
+    if (roles.some(role => /^(?:x-)?translation$/.test(role))) return "translation";
+    if (roles.some(role => /^(?:x-)?(?:roman|romanization|transliteration)$/.test(role))) return "romanization";
+    return undefined;
+  };
+  const annotated = (n: Node) => annotationKind(n) !== undefined;
   const background = (n: Node) => /(?:^|\s)(?:x-bg|background|x-background)(?:\s|$)/i.test(attr(n, "role") ?? "");
   const chorus = (n: Node) => /(?:^|\s)(?:x-)?chorus(?:\s|$)/i.test(attr(n, "role") ?? "");
   const supporting = (n: Node) => background(n) || chorus(n);
-  function metadata(n: Node, inSidecar = false) {
-    const sidecar = inSidecar || n.tag === "translations" || n.tag === "transliterations";
+  // A TTML translation/transliteration may repeat the original (for example
+  // Latin-script text also supplied as its own transliteration). Do not turn
+  // that annotation into a second visible lyric row. Compare presentation-only
+  // whitespace/quote variants; retain genuinely different translations.
+  function secondaryText(original: string, values: readonly string[], preceding: readonly string[] = []): string[] {
+    const key = (value: string) => {
+      const text = normalize(value), canonical = typeof text.normalize === "function" ? text.normalize("NFC") : text;
+      return canonical.replace(/\s+/g, " ").replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
+    };
+    const seen = new Set([key(original), ...preceding.map(key)]), result: string[] = [];
+    for (const value of values) {
+      const text = normalize(value), identity = key(text);
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity); result.push(text);
+    }
+    return result;
+  }
+  function sungText(n: Node): string {
+    if (annotated(n) || supporting(n) || attr(n, "ruby") === "text" || n.tag === "metadata") return "";
+    if (n.tag === "br") return "\n";
+    return n.children.map(child => typeof child === "string" ? child : sungText(child)).join("");
+  }
+  function metadata(n: Node, inSidecar?: AnnotationKind) {
+    const sidecar = n.tag === "translations" ? "translation" : n.tag === "transliterations" ? "romanization" : inSidecar;
     if (sidecar && n.tag === "text") {
-      const text = normalize(plain(n));
-      if (text) for (const key of ids(attr(n, "for")) ?? []) sidecarText.set(key, [...(sidecarText.get(key) ?? []), text]);
+      const text = normalize(plain(n)), target = sidecar === "translation" ? sidecarText : sidecarRomanization;
+      if (text) for (const key of ids(attr(n, "for")) ?? []) target.set(key, [...(target.get(key) ?? []), text]);
     }
     if (n.tag === "agent") {
       const id = attr(n, "id"), type = attr(n, "type");
@@ -160,11 +189,11 @@ function ttml(source: LyricSource): LyricDocument {
     if (dur !== undefined) finish = Math.min(finish, start + value(dur));
     return [Math.max(parentStart, start), Math.min(parentEnd, finish)];
   }
-  function collect(n: Node, start: number, end: number, words: LyricWord[], secondary: string[], backing: LyricLine[], inherited: string[], inTranslation = false, inBackground = false): string {
-    const here = voiceIds(n, inherited), isTranslation = inTranslation || translated(n);
+  function collect(n: Node, start: number, end: number, words: LyricWord[], secondary: Record<AnnotationKind, string[]>, backing: LyricLine[], inherited: string[], inAnnotation?: AnnotationKind, inBackground = false): string {
+    const here = voiceIds(n, inherited), kind = inAnnotation ?? annotationKind(n);
     if (attr(n, "ruby") === "text" || n.tag === "metadata") return "";
     if (n.tag === "br") return "\n";
-    if (supporting(n) && !inBackground && !isTranslation) {
+    if (supporting(n) && !inBackground && !kind) {
       const line = buildLine(n, start, end, here, vocalRole(n, "background"), true);
       if (line) backing.push(line);
       return "";
@@ -174,40 +203,50 @@ function ttml(source: LyricSource): LyricDocument {
       if (typeof child === "string") { parts.push(child); continue; }
       const [s, e] = times(child, start, end, attr(n, "timeContainer") === "seq" ? cursor : start);
       if (Number.isFinite(e)) cursor = e;
-      const text = collect(child, s, e, words, secondary, backing, here, isTranslation, inBackground);
-      if (!isTranslation && !translated(child) && !supporting(child) && (attr(child, "begin") !== undefined || attr(child, "end") !== undefined || attr(child, "dur") !== undefined) && text.trim() && !child.children.some(x => typeof x !== "string" && (attr(x, "begin") !== undefined || attr(x, "dur") !== undefined))) {
+      const text = collect(child, s, e, words, secondary, backing, here, kind, inBackground);
+      if (!kind && !annotated(child) && !supporting(child) && (attr(child, "begin") !== undefined || attr(child, "end") !== undefined || attr(child, "dur") !== undefined) && text.trim() && !child.children.some(x => typeof x !== "string" && (attr(x, "begin") !== undefined || attr(x, "dur") !== undefined))) {
         const speaker = voiceIds(child, here);
         words.push({ text, startMs: s, endMs: e, ...(speaker.length ? { agentIds: speaker } : {}) });
       }
       parts.push(text);
     }
     const result = parts.join("");
-    if (isTranslation && !inTranslation) { if (result.trim()) secondary.push(result.trim()); return ""; }
+    if (kind && !inAnnotation) { if (result.trim()) secondary[kind].push(result.trim()); return ""; }
     return result;
   }
   function buildLine(n: Node, start: number, end: number, inherited: string[], role: LyricVocal, inBackground = false): LyricLine | null {
-    const here = voiceIds(n, inherited), words: LyricWord[] = [], secondary: string[] = [], backing: LyricLine[] = [];
-    const text = normalize(collect(n, start, end, words, secondary, backing, here, false, inBackground));
+    const here = voiceIds(n, inherited), words: LyricWord[] = [], secondary: Record<AnnotationKind, string[]> = { translation: [], romanization: [] }, backing: LyricLine[] = [];
+    const text = normalize(collect(n, start, end, words, secondary, backing, here, undefined, inBackground));
     words.sort((a, b) => a.startMs - b.startMs);
     const first = attr(n, "begin") === undefined ? words[0]?.startMs ?? start : start;
     let last = Number.isFinite(end) ? end : words.length && Number.isFinite(words.at(-1)!.endMs) ? words.at(-1)!.endMs : Infinity;
     if (role === "background" && attr(n, "end") === undefined && attr(n, "dur") === undefined && words.length && Number.isFinite(words.at(-1)!.endMs)) last = Math.min(last, words.at(-1)!.endMs);
     const vocal: LyricVocal = role === "background" ? role : role === "chorus" || here.length > 1 || here.some(id => agents.get(id)?.type === "group") ? "chorus" : "lead";
-    const translations = [...new Set([...secondary.map(normalize), ...(sidecarText.get(attr(n, "key") ?? attr(n, "id") ?? "") ?? [])])];
+    const key = attr(n, "key") ?? attr(n, "id") ?? "";
+    const translations = secondaryText(text, [...secondary.translation, ...(sidecarText.get(key) ?? [])]);
+    const romanizations = secondaryText(text, [...secondary.romanization, ...(sidecarRomanization.get(key) ?? [])], translations);
     if (!text) { lines.push(...backing); return null; }
-    return { id: "", text, startMs: first, endMs: last, words, vocal, ...(here.length ? { agentIds: here } : {}), ...(translations.length ? { translation: translations.join("\n") } : {}), ...(backing.length ? { background: backing } : {}) };
+    return { id: "", text, startMs: first, endMs: last, words, vocal, ...(here.length ? { agentIds: here } : {}), ...(translations.length ? { translation: translations.join("\n") } : {}), ...(romanizations.length ? { romanization: romanizations.join("\n") } : {}), ...(backing.length ? { background: backing } : {}) };
   }
   function visit(n: Node, parentStart: number, parentEnd: number, fallback: number, inherited: string[], role: LyricVocal): number {
     const [start, end] = times(n, parentStart, parentEnd, fallback), here = voiceIds(n, inherited), vocal = vocalRole(n, role);
     if (n.tag === "p") {
-      const voices = n.children.filter((c): c is Node => typeof c !== "string" && c.tag === "span" && attr(c, "agent") !== undefined && !translated(c) && !background(c));
-      const splitVoices = new Set(voices.map(c => voiceIds(c, here).join(" "))).size > 1 && n.children.every(c => typeof c === "string" ? !c.trim() : voices.includes(c) || translated(c));
+      const voices = n.children.filter((c): c is Node => typeof c !== "string" && c.tag === "span" && attr(c, "agent") !== undefined && !annotated(c) && !background(c));
+      const splitVoices = new Set(voices.map(c => voiceIds(c, here).join(" "))).size > 1 && n.children.every(c => typeof c === "string" ? !c.trim() : voices.includes(c) || annotated(c));
       let extent = start;
       if (splitVoices) {
-        const translations = [...new Set([...n.children.filter((c): c is Node => typeof c !== "string" && translated(c)).map(c => normalize(plain(c))).filter(Boolean), ...(sidecarText.get(attr(n, "key") ?? attr(n, "id") ?? "") ?? [])])];
+        const primary = voices.map(sungText).join(""), key = attr(n, "key") ?? attr(n, "id") ?? "";
+        const translations = secondaryText(primary, [...n.children.filter((c): c is Node => typeof c !== "string" && annotationKind(c) === "translation").map(plain), ...(sidecarText.get(key) ?? [])]);
+        const romanizations = secondaryText(primary, [...n.children.filter((c): c is Node => typeof c !== "string" && annotationKind(c) === "romanization").map(plain), ...(sidecarRomanization.get(key) ?? [])]);
         for (const child of voices) {
           const [s, e] = times(child, start, end, start), line = buildLine(child, s, e, here, vocal);
-          if (line) { if (translations.length) line.translation = [...new Set([...(line.translation?.split("\n") ?? []), ...translations])].join("\n"); lines.push(line); extent = Math.max(extent, line.endMs); }
+          if (line) {
+            const combined = secondaryText(line.text, [...(line.translation?.split("\n") ?? []), ...translations]);
+            if (combined.length) line.translation = combined.join("\n"); else delete line.translation;
+            const pronunciation = secondaryText(line.text, [...(line.romanization?.split("\n") ?? []), ...romanizations], combined);
+            if (pronunciation.length) line.romanization = pronunciation.join("\n"); else delete line.romanization;
+            lines.push(line); extent = Math.max(extent, line.endMs);
+          }
         }
       } else {
         const line = buildLine(n, start, end, here, vocal, vocal === "background" || vocal === "chorus");

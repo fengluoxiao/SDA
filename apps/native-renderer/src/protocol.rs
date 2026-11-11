@@ -2452,3 +2452,7 @@ mod seek_activity_restart_tests {
         assert_eq!(telemetry.sounding_object_ids(),vec![7],"activity must reach the UI without a second user pause/resume");
     }
 }
+
+#[cfg(test)]
+#[path = "head_tracking_audio_tests.rs"]
+mod head_tracking_audio_tests;

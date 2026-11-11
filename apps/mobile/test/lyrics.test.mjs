@@ -179,10 +179,55 @@ test('bilingual LRC pairs repeated refrains across separate original and transla
 });
 test('TTML Apple head translations resolve keys without changing sung text or word timing',()=>{
  const d=parse('<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal"><head><metadata><iTunesMetadata><translations><translation xml:lang="zh-Hans"><text for="L1">风在吹</text><text for="L2">听得见</text><text for="unused">无关译文</text></translation></translations><transliterations><transliteration><text for="L1">kaze ga fuku</text></transliteration></transliterations></iTunesMetadata></metadata></head><body><p itunes:key="L1" begin="3.0" end="6.0"><span begin="3.0" end="5.0">風が</span><span begin="5.0" end="6.0">吹く</span><span role="x-translation">风在吹</span></p><p itunes:key="L2" begin="6.0" end="8.0">聞こえる</p></body></tt>');
- assert.equal(d.lines.length,2);assert.equal(d.lines[0].text,'風が吹く');assert.equal(d.lines[0].translation,'风在吹\nkaze ga fuku');assert.equal(d.lines[1].translation,'听得见');
+ assert.equal(d.lines.length,2);assert.equal(d.lines[0].text,'風が吹く');assert.equal(d.lines[0].translation,'风在吹');assert.equal(d.lines[0].romanization,'kaze ga fuku');assert.equal(d.lines[1].translation,'听得见');
  assert.deepEqual(d.lines[0].words.map(w=>[w.startMs,w.endMs]),[[3000,5000],[5000,6000]]);
 });
 test('TTML head and inline supporting translations stay under their own singer',()=>{
  const d=parse('<tt><head><metadata><translations><translation><text for="backing">合唱翻译</text></translation></translations></metadata></head><body><p agent="b" begin="0s" end="5s">Original<span role="x-translation">原文翻译</span><span key="backing" role="x-bg" begin="2s" end="4s">Backing</span></p></body></tt>');
  assert.equal(d.lines[0].translation,'原文翻译');assert.equal(d.lines[0].background[0].translation,'合唱翻译');assert.equal(d.lines[0].background[0].text,'Backing');
+});
+
+test('TTML original-only transliteration does not create a duplicate small-text layer',()=>{
+ const d=parse('<tt xmlns:itunes="http://music.apple.com/lyric"><head><metadata><transliterations><transliteration xml:lang="en"><text for="L1">One original lyric line</text></transliteration></transliterations></metadata></head><body><p itunes:key="L1" begin="1.0" end="4.0"><span begin="1.0" end="2.0">One original </span><span begin="2.0" end="4.0">lyric line</span></p></body></tt>');
+ const line=d.lines[0];assert.equal(line.text,'One original lyric line');assert.equal(line.translation,undefined);
+ assert.deepEqual(line.words.map(w=>[w.text,w.startMs,w.endMs]),[['One original ',1000,2000],['lyric line',2000,4000]]);
+});
+test('TTML inline and header annotations remove self-copies and deduplicate real translations conservatively',()=>{
+ const d=parse('<tt><head><metadata><translations><translation><text for="L1">Don’t   wait</text><text for="L1">不要等待</text></translation></translations></metadata></head><body><p key="L1" begin="1s" end="3s">Don&apos;t wait<span role="x-translation">Don’t wait</span><span role="x-translation">不要等待</span></p></body></tt>');
+ assert.equal(d.lines[0].text,"Don't wait");assert.equal(d.lines[0].translation,'不要等待');
+ const distinct=parse('<tt><body><p begin="0s" end="2s">Stay!<span role="x-translation">Stay?</span></p><p begin="2s" end="3s">US<span role="x-translation">us</span></p></body></tt>');
+ assert.equal(distinct.lines[0].translation,'Stay?');assert.equal(distinct.lines[1].translation,'us');
+});
+test('TTML wrapped or canonically equivalent original annotations disappear without hiding a real English translation',()=>{
+ const d=parse('<tt><body><p begin="0s" end="2s">Café line<span role="x-roman">Cafe&#x301;<br/>line</span></p><p begin="2s" end="4s">風が吹く<span role="x-translation">The wind blows</span><span role="x-roman">kaze ga fuku</span></p></body></tt>');
+ assert.equal(d.lines[0].translation,undefined);assert.equal(d.lines[1].translation,'The wind blows');assert.equal(d.lines[1].romanization,'kaze ga fuku');
+});
+test('same sung text in backing vocals remains independently timed while only its redundant annotation is hidden',()=>{
+ const d=parse('<tt><body><p agent="a" begin="0s" end="5s">Echo<span role="x-translation">Echo</span><span role="x-bg" agent="b" begin="2s" end="4s">Echo<span role="x-translation">Echo</span></span></p></body></tt>');
+ assert.equal(d.lines[0].text,'Echo');assert.equal(d.lines[0].translation,undefined);assert.equal(d.lines[0].background.length,1);
+ const backing=d.lines[0].background[0];assert.equal(backing.text,'Echo');assert.equal(backing.translation,undefined);assert.deepEqual([backing.startMs,backing.endMs],[2000,4000]);assert.deepEqual(backing.agentIds,['b']);
+});
+test('split TTML duet lines do not inherit a duplicate of the combined original',()=>{
+ const d=parse(voiceTTML('<p begin="0s" end="4s"><span agent="a" begin="0s" end="3s">One </span><span agent="b" begin="1s" end="4s">Two</span><span role="x-translation">One Two</span><span role="x-translation">一和二</span></p>'));
+ assert.deepEqual(d.lines.map(l=>[l.text,l.translation,l.startMs,l.endMs]),[['One','一和二',0,3000],['Two','一和二',1000,4000]]);
+ assert.deepEqual(d.lines.map(l=>l.agentIds),[['a'],['b']]);
+});
+
+test('TTML with only a Jyutping transliteration table never invents translation rows',()=>{
+ const d=parse('<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal"><head><metadata><transliterations><transliteration xml:lang="zh-Latn-jyutping"><text for="L1">One original line</text><text for="L2">nei hou</text></transliteration></transliterations></metadata></head><body><p itunes:key="L1" begin="1.0" end="3.0"><span begin="1.0" end="2.0">One original </span><span begin="2.0" end="3.0">line</span></p><p itunes:key="L2" begin="3.0" end="5.0">你好</p></body></tt>');
+ assert(d.lines.every(line=>line.translation===undefined));assert.equal(d.lines[0].romanization,undefined);assert.equal(d.lines[1].romanization,'nei hou');
+ assert.deepEqual(d.lines[0].words.map(w=>[w.startMs,w.endMs]),[[1000,2000],[2000,3000]]);
+});
+test('plain TTML and romanization roles are never classified as translated vocals',()=>{
+ const plain=parse('<tt><body><p begin="1s" end="3s"><span begin="1s" end="2s">One </span><span begin="2s" end="3s">line</span></p></body></tt>');assert.equal(plain.lines[0].translation,undefined);
+ const inline=parse('<tt><body><p begin="1s" end="3s">你好<span role="x-roman">nei hou</span></p></body></tt>');assert.equal(inline.lines[0].text,'你好');assert.equal(inline.lines[0].translation,undefined);assert.equal(inline.lines[0].romanization,'nei hou');
+});
+
+test('TTML annotation parsing remains usable on hosts without String normalization support',()=>{
+ const normalize=String.prototype.normalize;
+ try {
+  String.prototype.normalize=undefined;
+  const d=parse('<tt><body><p begin="1s" end="3s">Original<span role="x-translation">Original</span><span role="x-roman">Original</span></p></body></tt>');
+  assert.equal(d.lines[0].text,'Original');assert.equal(d.lines[0].translation,undefined);assert.equal(d.lines[0].romanization,undefined);
+ } finally { String.prototype.normalize=normalize; }
 });

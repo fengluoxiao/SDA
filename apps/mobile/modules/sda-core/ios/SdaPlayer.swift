@@ -58,6 +58,7 @@ final class SdaPlayer {
  var motionBackgroundCallbackCount = 0
  var motionRetryAfter: TimeInterval = 0
  var motionRetryCount = 0
+ var motionOriginPose: [Double]?
  var motionWarmSamples: [(time:TimeInterval, pose:[Double])] = []
  var motionNeutralApplied = false
  var motionWatchdog: DispatchSourceTimer?

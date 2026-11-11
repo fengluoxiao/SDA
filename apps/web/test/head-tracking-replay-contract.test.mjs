@@ -14,7 +14,7 @@ const outgoingDispose = play.indexOf("await previous.dispose()");
 const invalidateSink = play.indexOf("nativeSessionEpochRef.current++");
 assert.ok(invalidateSink >= 0 && outgoingDispose > invalidateSink, "invalidate the previous native sink before disposal");
 assert.ok(replacementReady > outgoingDispose, "stop the previous decoder before resetting the native render clock");
-assert.match(play, /if \(!isCurrent\(\) \|\| playerRef\.current !== player \|\| feedRequest !== seekRequestRef\.current\) return/);
+assert.match(play, /if \(!isCurrent\(\) \|\| playerRef\.current !== player \|\| feedRequest !== feedRequestRef\.current\) return/);
 
 assert.match(source, /const headTrackingSessionRef = useRef\(new HeadTrackingSession\(/);
 assert.match(source, /headTrackingSessionRef\.current\.update\(rendererHeadPose\(pose\)\)/);

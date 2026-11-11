@@ -204,3 +204,22 @@ test('duet and backing karaoke keep separate timing and freeze independently whe
   }
  }
 });
+
+test('TTML self-translation creates no repeated Text row while real translation and lyric seek remain available',()=>{
+ const document=lyricModel.parseLyrics({text:'<tt><body><p begin="1s" end="3s">One original line<span role="x-translation">One original line</span></p><p begin="3s" end="5s">原文<span role="x-translation">Real translation</span></p></body></tt>'});
+ const f=fixture({document});assert.equal(f.find(n=>n.props.testID==='lyric-translation-0'),null);
+ assert.equal(f.find(n=>n.props.testID==='lyric-text-0').props.children[0],'One original line');
+ assert.equal(f.find(n=>n.props.testID==='lyric-translation-1').props.children[0],'Real translation');
+ f.find(n=>n.props.testID==='lyric-line-0').props.onPress();assert.deepEqual(f.calls,[['seek',1000]]);
+});
+
+test('a TTML pronunciation-only sidecar produces no translation Text nodes',()=>{
+ const document=lyricModel.parseLyrics({text:'<tt><head><metadata><transliterations><transliteration xml:lang="zh-Latn-jyutping"><text for="L1">One original line</text><text for="L2">nei hou</text></transliteration></transliterations></metadata></head><body><p key="L1" begin="1s" end="3s">One original line</p><p key="L2" begin="3s" end="5s">你好</p></body></tt>'});
+ const f=fixture({document});assert.equal(f.find(n=>n.props.testID==='lyric-translation-0'),null);assert.equal(f.find(n=>n.props.testID==='lyric-translation-1'),null);
+ assert.equal(document.lines[1].romanization,'nei hou');assert.equal(f.find(n=>n.props.testID==='lyric-text-1').props.children[0],'你好');assert.equal(f.find(n=>n.props.testID==='lyric-romanization-0'),null);assert.equal(f.find(n=>n.props.testID==='lyric-romanization-1').props.children[0],'nei hou');
+});
+
+test('real translation and pronunciation retain the existing small-text layout without duplicated content',()=>{
+ const document=lyricModel.parseLyrics({text:'<tt><body><p begin="1s" end="3s">你好<span role="x-translation">Hello</span><span role="x-roman">nei hou</span></p><p begin="3s" end="5s">你好<span role="x-translation">Hello</span><span role="x-roman">Hello</span></p></body></tt>'});
+ const f=fixture({document});assert.equal(f.find(n=>n.props.testID==='lyric-translation-0').props.children[0],'Hello\nnei hou');assert.equal(f.find(n=>n.props.testID==='lyric-translation-1').props.children[0],'Hello');
+});

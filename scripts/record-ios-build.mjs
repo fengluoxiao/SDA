@@ -21,6 +21,7 @@ paths.push('apps/mobile/src/ios-platform-version.ts','apps/mobile/src/IOSMetadat
 const mobileReleaseConfig=JSON.parse(readFileSync(join(root,'apps/mobile/app.json'),'utf8')).expo;
 paths.push('apps/mobile/src/PortraitLyricsPager.tsx','apps/mobile/src/mobile-lyrics.ts','apps/mobile/src/embedded-lyrics.ts','apps/mobile/src/lyric-files.ts','apps/mobile/src/use-lyrics-follow.ts','apps/mobile/src/use-lyrics-swipe.ts','apps/mobile/src/use-track-lyrics.ts','apps/mobile/src/player-progress-paint.ts','apps/mobile/src/IOSVerticalTabBar.tsx');
 paths.push('apps/mobile/src/KaraokeText.tsx','apps/mobile/src/lyric-karaoke.ts','apps/mobile/src/TabletLandscapePlayer.tsx','apps/mobile/src/tablet-player-layout.ts');
+paths.push('apps/head-tracking-helper/src/orientation.rs','crates/sda-native/src/ios.rs','apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 paths.push('crates/sda-native/src/mp4_extract.rs','vendor/avs3a/src/imdct.rs');
 paths.push('packages/core/src/scene_reference.rs');

@@ -11,7 +11,7 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
     'mobile-object-activity.ts', 'cardboard-config.ts', 'cardboard-renderer.ts', 'cardboard-pose.ts', 'cardboard-session.ts', 'use-cardboard-session.ts', 'CardboardControls.tsx', 'ChannelSpeakers.tsx', 'MobileSceneCamera.tsx', 'scene-camera-input.ts', 'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
-           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel', b'space-object-dots', b'space-object-glows']
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'lyric-romanization-', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel', b'space-object-dots', b'space-object-glows']
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
 IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
@@ -26,7 +26,8 @@ def main():
     info = json.loads((output / 'build-info.json').read_text(encoding='utf-8'))
     assert info['sourceCommit'] == sha
     hashes = info['sourceHashes' if platform == 'Android' else 'sources']
-    for name in SOURCES:
+    verified_sources = SOURCES + (['apps/head-tracking-helper/src/orientation.rs', 'crates/sda-native/src/ios.rs', 'apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift'] if platform == 'iOS' else [])
+    for name in verified_sources:
         assert hashes[name] == hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), name
     if platform == 'Android': assert info['androidVersionCode'] == config['android']['versionCode']
     else: assert str(info['appBuildNumber']) == str(config['ios']['buildNumber'])
@@ -48,7 +49,7 @@ def main():
     result = {'platform': platform, 'version': config['version'], 'build': config['android']['versionCode'] if platform == 'Android' else config['ios']['buildNumber'],
               'sourceCommit': sha, 'file': package.name, 'bytes': package.stat().st_size, 'sha256': hashlib.sha256(package.read_bytes()).hexdigest(),
               'bundleEntry': bundles[0], 'bundleSha256': hashlib.sha256(bundle).hexdigest(), 'lyricsUiMarkers': [m.decode() for m in markers],
-              'sourceFilesVerified': SOURCES, 'developmentFixturesExcluded': True, 'physicalDeviceVerified': False}
+              'sourceFilesVerified': verified_sources, 'developmentFixturesExcluded': True, 'physicalDeviceVerified': False}
     (output / 'lyrics-package-verification.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result, indent=2))
 if __name__ == '__main__': main()

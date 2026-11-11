@@ -116,6 +116,8 @@ jobs:
           node scripts/prepare-ios-assets.mjs
       - name: Verify shared Android and iOS lyrics UI
         run: node scripts/test-mobile-lyrics.mjs
+      - name: Verify native head tracking startup and rendered audio
+        run: node scripts/test-native-head-tracking.mjs
       - name: Build device Rust library
         run: |
           set -o pipefail

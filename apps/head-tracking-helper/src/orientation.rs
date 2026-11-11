@@ -62,6 +62,10 @@ struct PendingDiscontinuity {
 
 #[derive(Default)]
 pub struct HeadOrientation {
+    // Core Motion is already a fused absolute attitude stream. Its session
+    // origin must not use the stationary calibration or packet drift lock.
+    quaternion_origin: Option<[f64; 4]>,
+    quaternion_yaw: Option<f64>,
     samples: Vec<[f64; 3]>,
     calibration_subtype: Option<u8>,
     stream_subtype: Option<u8>,
@@ -87,48 +91,35 @@ pub struct HeadOrientation {
 }
 
 impl HeadOrientation {
-    /// Core Motion replaces AACP decoding, not the shared attitude filter.
+    /// Native fused poses start immediately, including during a turn. Keep
+    /// the first valid pose as a fixed session origin; never learn user motion
+    /// as a new neutral or pass absolute poses through the AACP drift gate.
     pub fn process_quaternion(&mut self, q: [f64; 4]) -> Option<Orientation> {
         let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
         if !q.iter().all(|v| v.is_finite()) || !norm.is_finite() || norm < 1e-9 { return None; }
-        let [x, y, z, w] = q.map(|v| v / norm);
-        // Same yaw(Z) * pitch(X) output convention as the packet provider.
-        let yaw = 2.0 * z.atan2(w);
-        let pitch = (2.0 * (w * x + y * z)).clamp(-1.0, 1.0).asin();
-        let previous = self.samples.last().copied().unwrap_or([0.0, pitch, yaw]);
-        let values = [0.0, previous[1] + angle_delta(previous[1], pitch),
-            previous[2] + angle_delta(previous[2], yaw)];
-        let neutral = match self.neutral {
-            Some(neutral) => neutral,
-            None => {
-                let max_step = CALIBRATION_MAX_STEP_COUNTS / 32_000.0 * std::f64::consts::PI;
-                if !self.samples.is_empty() && (1..3).any(|axis| (values[axis] - previous[axis]).abs() > max_step) {
-                    self.samples.clear();
-                }
-                self.samples.push(values);
-                if self.samples.len() == CALIBRATION_SAMPLES {
-                    let mut mean = [0.0; 3];
-                    for sample in &self.samples { for axis in 1..3 { mean[axis] += sample[axis] / CALIBRATION_SAMPLES as f64; } }
-                    self.neutral = Some(mean);
-                    self.orientation_samples = vec![self.continuity_origin; ORIENTATION_MEDIAN_SAMPLES - 1];
-                    self.last_orientation = Some(self.continuity_origin);
-                    self.stationary_samples = vec![self.continuity_origin; STATIONARY_WINDOW_SAMPLES];
-                    self.locked_orientation = Some(self.continuity_origin);
-                }
-                return None;
-            }
+        let q = q.map(|v| v / norm);
+        let Some(origin) = self.quaternion_origin else {
+            self.quaternion_origin = Some(q);
+            self.quaternion_yaw = Some(0.0);
+            return Some(Orientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 });
         };
-        self.samples.clear(); self.samples.push(values);
-        let [pitch, yaw] = self.filter_orientation([
-            self.continuity_origin[0] + values[1] - neutral[1],
-            self.continuity_origin[1] + values[2] - neutral[2],
-        ]);
-        let (sp, cp) = (pitch * 0.5).sin_cos();
-        let (sy, cy) = (yaw * 0.5).sin_cos();
-        Some(Orientation { x: cy * sp, y: sy * sp, z: sy * cp, w: cy * cp })
+        // Current * inverse(origin): world-up yaw, independent of the arbitrary
+        // initial pitch/roll. SDA's headphone renderer currently consumes yaw.
+        let [x, y, z, w] = q;
+        let [ox, oy, oz, ow] = origin;
+        let rz = -w * oz - x * oy + y * ox + z * ow;
+        let rw = w * ow + x * ox + y * oy + z * oz;
+        if rz.hypot(rw) < 1e-9 { return None; }
+        let raw_yaw = 2.0 * rz.atan2(rw);
+        let previous = self.quaternion_yaw.unwrap_or(0.0);
+        let yaw = previous + angle_delta(previous, raw_yaw);
+        self.quaternion_yaw = Some(yaw);
+        let (z, w) = (yaw * 0.5).sin_cos();
+        Some(Orientation { x: 0.0, y: 0.0, z, w })
     }
 
     pub fn begin_transport_session(&mut self) {
+        self.quaternion_origin = None; self.quaternion_yaw = None;
         self.continuity_origin = self
             .last_orientation
             .or(self.locked_orientation)
@@ -491,17 +482,70 @@ mod quaternion_provider_tests {
         [0.0,0.0,half.sin(),half.cos()]
     }
     #[test]
-    fn core_motion_calibrates_and_uses_shared_stationary_filter() {
+    fn core_motion_starts_immediately_without_packet_stationary_lock() {
         let mut tracker = HeadOrientation::default();
-        for _ in 0..10 { assert!(tracker.process_quaternion(yaw(30.0)).is_none()); }
-        let neutral = tracker.process_quaternion(yaw(30.0)).unwrap();
+        let neutral = tracker.process_quaternion(yaw(30.0)).expect("first valid sample starts tracking");
         assert!(neutral.z.abs() < 1e-9);
-        for _ in 0..20 { assert!(tracker.process_quaternion(yaw(30.1)).unwrap().z.abs() < 1e-9); }
+        for _ in 0..20 { let q=tracker.process_quaternion(yaw(30.1)).unwrap(); assert!((2.0*q.z.atan2(q.w)-0.1_f64.to_radians()).abs()<1e-9); }
         let mut last = neutral;
         for n in 0..40 { last = tracker.process_quaternion(yaw(30.0+n as f64)).unwrap(); }
         assert!(last.z > 0.1);
         for _ in 0..40 { last = tracker.process_quaternion(yaw(30.0)).unwrap(); }
         assert!(last.z.abs() < 0.02);
+    }
+    #[test]
+    fn moving_from_the_first_callback_keeps_the_initial_forward_origin() {
+        let mut tracker = HeadOrientation::default();
+        assert!(tracker.process_quaternion(yaw(15.0)).is_some());
+        for n in 1..=12 {
+            let q=tracker.process_quaternion(yaw(15.0+n as f64*10.0)).expect("moving startup is valid");
+            assert!((2.0*q.z.atan2(q.w)- (n as f64*10.0).to_radians()).abs()<1e-9);
+        }
+        let q=tracker.process_quaternion(yaw(15.0)).unwrap();
+        assert!(q.z.abs()<1e-9,"must return to the original forward, not the calibration-end direction");
+    }
+    #[test]
+    fn warm_origin_replay_and_quaternion_sign_changes_do_not_recenter_a_turned_listener() {
+        let mut original=HeadOrientation::default(); original.process_quaternion(yaw(20.0));
+        let expected=original.process_quaternion(yaw(70.0)).unwrap();
+        let mut replacement=HeadOrientation::default();
+        replacement.process_quaternion(yaw(20.0)); // Swift seeds the session origin.
+        let actual=replacement.process_quaternion(yaw(70.0).map(|v|-v)).unwrap();
+        assert!((expected.z-actual.z).abs()<1e-9 && (expected.w-actual.w).abs()<1e-9);
+        replacement.begin_transport_session();
+        assert!(replacement.process_quaternion(yaw(70.0)).unwrap().z.abs()<1e-9);
+    }
+    #[test]
+    fn native_turns_cross_the_half_turn_without_a_packet_discontinuity_gate() {
+        let mut tracker=HeadOrientation::default(); tracker.process_quaternion(yaw(170.0));
+        for degrees in [175.0,179.0,-179.0,-150.0,-90.0,0.0] {
+            let q=tracker.process_quaternion(yaw(degrees)).unwrap();
+            let delta=angle_delta(0.0,2.0*q.z.atan2(q.w));
+            assert!((angle_delta(170.0_f64.to_radians(),degrees.to_radians())-delta).abs()<1e-9);
+        }
+    }
+    #[test]
+    fn invalid_motion_after_a_turn_does_not_replace_the_session_reference() {
+        let mut tracker=HeadOrientation::default();
+        tracker.process_quaternion(yaw(-30.0)); tracker.process_quaternion(yaw(20.0));
+        assert!(tracker.process_quaternion([f64::NAN;4]).is_none());
+        let q=tracker.process_quaternion(yaw(-30.0)).unwrap(); assert!(q.z.abs()<1e-9);
+    }
+    #[test]
+    fn native_world_yaw_is_independent_of_initial_head_tilt_and_quaternion_scale() {
+        let origin=[0.18,-0.32,0.27,0.88];
+        let multiply=|a:[f64;4],b:[f64;4]|[
+            a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+            a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+            a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+            a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
+        let mut tracker=HeadOrientation::default(); tracker.process_quaternion(origin);
+        for degrees in [5.0,45.0,120.0,-45.0,0.0] {
+            let current=multiply(yaw(degrees),origin).map(|v|v*3.0);
+            let q=tracker.process_quaternion(current).unwrap();
+            assert!(angle_delta(degrees.to_radians(),2.0*q.z.atan2(q.w)).abs()<1e-9);
+            assert_eq!([q.x,q.y],[0.0,0.0]);
+        }
     }
     #[test]
     fn core_motion_rejects_invalid_samples() {

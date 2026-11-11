@@ -80,16 +80,18 @@ export function LyricsPanel({ player: p, active, compact = false }: { player: Pl
         const sounding = document.timed && p.positionMs >= line.startMs && p.positionMs < line.endMs;
         const tappable = document.timed && !!p.seekTo && !disabled && p.durationMs > 0;
         const alignment = { textAlign: line.agentIds?.length === 1 ? speakerAlignments.get(line.agentIds[0]!) ?? "left" : "left" };
+        const secondary = [line.translation, line.romanization].filter(Boolean).join("\n");
         const supporting = line.vocal === "background" || line.vocal === "chorus";
         return <Pressable key={line.id} testID={`lyric-line-${i}`} accessibilityRole={tappable ? "button" : "text"} accessibilityLabel={line.text ? `${line.text}${tappable ? `，跳转到 ${clock(line.startMs)}` : ""}` : "间奏"} accessibilityState={{ disabled: !tappable, selected: sounding }} disabled={!tappable} onPress={() => seek(line)} onLayout={e => follow.onLineLayout(i, e.nativeEvent.layout.y)} style={({ pressed }) => [styles.line, compact && styles.compactLine, compact && i === 0 && { paddingTop: 0 }, { opacity: pressed ? .55 : 1 }]}>
           {renderLyricText(line, sounding, `lyric-text-${i}`, [supporting ? styles.backingText : styles.lineText, alignment, { color: sounding || !document.timed ? "#ffffff" : "rgba(255,255,255,.38)" }])}
-          {!!line.translation && <Text testID={`lyric-translation-${i}`} style={[styles.translation, supporting && styles.backingTranslation, alignment, { color: sounding ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{line.translation}</Text>}
+          {!!secondary && <Text testID={line.translation ? `lyric-translation-${i}` : `lyric-romanization-${i}`} style={[styles.translation, supporting && styles.backingTranslation, alignment, { color: sounding ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{secondary}</Text>}
           {line.background?.map((backing, n) => {
             const singing = p.positionMs >= backing.startMs && p.positionMs < backing.endMs;
+            const secondary = [backing.translation, backing.romanization].filter(Boolean).join("\n");
             return <Pressable key={backing.id || n} testID={`lyric-backing-${i}-${n}`} accessibilityRole={tappable ? "button" : "text"} accessibilityLabel={`${backing.text}${tappable ? `，跳转到 ${clock(backing.startMs)}` : ""}`} accessibilityState={{ disabled: !tappable, selected: singing }} disabled={!tappable}
               onPress={event => { event.stopPropagation(); seek(backing); }} style={{ paddingTop: 10, minHeight: 44 }}>
               {renderLyricText(backing, singing, `lyric-backing-text-${i}-${n}`, [styles.backingText, alignment, { color: singing ? "#ffffff" : "rgba(255,255,255,.38)" }])}
-              {!!backing.translation && <Text style={[styles.translation, styles.backingTranslation, alignment, { color: singing ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{backing.translation}</Text>}
+              {!!secondary && <Text testID={backing.translation ? `lyric-backing-translation-${i}-${n}` : `lyric-backing-romanization-${i}-${n}`} style={[styles.translation, styles.backingTranslation, alignment, { color: singing ? "rgba(255,255,255,.8)" : "rgba(255,255,255,.35)" }]}>{secondary}</Text>}
             </Pressable>;
           })}
         </Pressable>;

@@ -27,7 +27,7 @@ assert.match(read('crates/sda-native/src/ios.rs'), /if tracking_pose_changed\(\*
 assert.match(read('crates/sda-native/src/ios.rs'), /e.set_head_orientation\(orientation\)/);
 assert.match(tracking, /handle != nil && !motionNeutralApplied/);
 assert.match(tracking, /systemUptime - self.motionLastSample > 1/);
-assert.match(tracking, /if motionWatchdog != nil \{ headphoneMotion.stopDeviceMotionUpdates\(\) \}/);
+assert.match(tracking, /if wasTracking \|\| headphoneMotion.isDeviceMotionActive \{ headphoneMotion.stopDeviceMotionUpdates\(\) \}/);
 assert.match(player, /lazy var headphoneMotion = CMHeadphoneMotionManager\(\)/);
 assert.match(tracking, /motionWatchdog\?\.cancel\(\)/);
 assert.match(tracking, /now >= self.motionRetryAfter/);
@@ -48,9 +48,10 @@ assert.ok(JSON.parse(read('apps/mobile/app.json')).expo.ios.infoPlist.NSMotionUs
 assert.match(read(root + 'SdaCore.podspec'), /'CoreMotion'/);
 const ui = read('apps/mobile/src/IOSPlayer.tsx');
 // The same actions move from the portrait header to the landscape side dock.
-const headerStart = ui.indexOf('const headerActions =');
-const headerEnd = ui.indexOf('const heading =', headerStart);
-assert.ok(headerStart >= 0 && headerEnd > headerStart, 'Shared header actions must exist');
+const headerStart = ui.indexOf('const sideActions =');
+const headerEnd = ui.indexOf('const headerActions =', headerStart);
+assert.ok(headerStart >= 0 && headerEnd > headerStart, 'Shared head-tracking/settings actions must exist');
+assert.match(ui.slice(headerEnd), /\{sideActions\}/);
 const header = ui.slice(headerStart, headerEnd);
 assert.match(ui, /!sideNavigationActive && headerActions/);
 assert.match(ui, /testID="landscape-side-actions-dock"/);
@@ -67,4 +68,15 @@ assert.match(settings, /onSelect\(value === "tracking"\)/);
 assert.doesNotMatch(settings, /后台头追实验/);
 assert.match(settings.slice(settings.indexOf('export function IOSHeadTrackingButton')), /buttonStyle\(settingsButtonStyle\)/);
 assert.ok(header.indexOf('p.setHeadTracking') < header.indexOf('<IOSSettingsButton'));
+
+
+assert.match(tracking,/guard motionWatchdog == nil else/);
+assert.doesNotMatch(tracking,/guard !headphoneMotion.isDeviceMotionActive/);
+assert.match(player,/var motionOriginPose: \[Double\]\?/);
+const prepare=tracking.slice(tracking.indexOf('func prepareHeadTrackingForPlayback'),tracking.indexOf('func recenterHeadTracking'));
+assert(prepare.indexOf('if let q = motionOriginPose')<prepare.indexOf('for sample in motionWarmSamples'),'seed retained origin before replaying recent turned poses');
+const recenter=tracking.slice(tracking.indexOf('func recenterHeadTracking'),tracking.indexOf('func applyNeutralHeadPose'));
+assert.match(recenter,/motionOriginPose = nil; motionWarmSamples.removeAll/);
+assert.match(recenter,/command\("pose"/);
+
 console.log('iOS head tracking source contracts passed; Xcode/AirPods verification remains required.');

@@ -11,10 +11,10 @@ extension SdaPlayer {
  func stopHeadTracking() {
   let wasTracking = motionWatchdog != nil
   motionSession += 1
-  if motionWatchdog != nil { headphoneMotion.stopDeviceMotionUpdates() }
+  if wasTracking || headphoneMotion.isDeviceMotionActive { headphoneMotion.stopDeviceMotionUpdates() }
   motionWatchdog?.cancel(); motionWatchdog = nil
   motionLastSample = 0; playbackYaw = 0
-  motionWarmSamples.removeAll()
+  motionWarmSamples.removeAll(); motionOriginPose = nil
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
   if wasTracking { applyNeutralHeadPose() }
   headTrackingDetail = inBackground ? "后台已归零" : "未启用"
@@ -25,11 +25,14 @@ extension SdaPlayer {
    if prefs.bool(forKey:"sda.headTracking") && systemSpatial != nil { headTrackingDetail = "系统输出由 Apple 控制" }
    return
   }
-  guard !headphoneMotion.isDeviceMotionActive else { return }
+  // Own the subscription by its watchdog/session, not Core Motion's active
+  // flag: that flag can lag during route reconfiguration and stall a restart.
+  guard motionWatchdog == nil else { return }
   guard CMHeadphoneMotionManager.authorizationStatus() != .denied,
         CMHeadphoneMotionManager.authorizationStatus() != .restricted else {
    headTrackingDetail = "运动权限未授权"; return
   }
+  if headphoneMotion.isDeviceMotionActive { headphoneMotion.stopDeviceMotionUpdates() }
   // The manager can wait for a compatible headset to connect on iOS.
   motionSession += 1
   let session = motionSession
@@ -38,6 +41,7 @@ extension SdaPlayer {
   motionLastSample = startedAt
   motionRetryAfter = startedAt + 3
   motionReferenceAfter = startedAt
+  motionOriginPose = nil
   if handle != nil { _ = try? command("trackingProviderReset") }
   applyNeutralHeadPose()
   if handle != nil { _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0]); motionNeutralApplied = false }
@@ -70,14 +74,15 @@ extension SdaPlayer {
       "background":self.inBackground]
     self.motionLastSample = ProcessInfo.processInfo.systemUptime
     self.motionRetryCount = 0
+    if self.motionOriginPose == nil { self.motionOriginPose = [current.imag.x,current.imag.y,current.imag.z,current.real] }
     self.motionWarmSamples.append((time:motion.timestamp,pose:[current.imag.x,current.imag.y,current.imag.z,current.real]))
     if self.motionWarmSamples.count > 12 { self.motionWarmSamples.removeFirst() }
     guard self.handle != nil, self.systemSpatial == nil else { return }
-    // Native callback -> Rust helper filter -> KU100 renderer, with no JS hop.
+    // Native callback -> Rust session-relative pose -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
       "y":current.imag.y,"z":current.imag.z,"w":current.real]) else { return }
     guard filtered is [Double] else {
-     self.headTrackingDetail = "姿态校准中"
+     self.headTrackingDetail = "等待有效姿态"
      return
     }
     self.diagnosticMotion["filtered"] = filtered
@@ -138,9 +143,14 @@ extension SdaPlayer {
   startHeadTracking()
   _ = try? command("trackingProviderReset")
   motionNeutralApplied = false
-  // Enter tracked rendering before PCM is queued, not after calibration.
+  // Enter tracked rendering before PCM is queued, while awaiting the first pose.
   // Identity is neutral; this only selects the short rendered-audio reserve.
   _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0])
+  // Retain the subscription's origin through track/engine replacement. Using
+  // only the latest warm frames would recenter a listener who is already turned.
+  if let q = motionOriginPose {
+   _ = try? command("trackingProvider",["x":q[0],"y":q[1],"z":q[2],"w":q[3]])
+  }
   let now=ProcessInfo.processInfo.systemUptime
   for sample in motionWarmSamples where now-sample.time <= 0.5 {
    let q=sample.pose
@@ -150,9 +160,12 @@ extension SdaPlayer {
 
  func recenterHeadTracking() {
   playbackYaw = 0
+  motionOriginPose = nil; motionWarmSamples.removeAll()
   motionReferenceAfter = ProcessInfo.processInfo.systemUptime
   if handle != nil { _ = try? command("trackingProviderReset") }
-  applyNeutralHeadPose()
+  if prefs.bool(forKey:"sda.headTracking"), handle != nil {
+   _ = try? command("pose",["x":0.0,"y":0.0,"z":0.0,"w":1.0]); motionNeutralApplied = false
+  } else { applyNeutralHeadPose() }
  }
 
  func applyNeutralHeadPose() {
