@@ -11,13 +11,12 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
     'mobile-object-activity.ts', 'cardboard-config.ts', 'cardboard-renderer.ts', 'cardboard-pose.ts', 'cardboard-session.ts', 'use-cardboard-session.ts', 'CardboardControls.tsx', 'ChannelSpeakers.tsx', 'MobileSceneCamera.tsx', 'scene-camera-input.ts', 'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
-           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'lyric-romanization-', b'ai-scene-settings-link', b'ai-scene-generate', b'folia-local-visualizer', b'folia-upstream-credit', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel', b'space-object-dots', b'space-object-glows']
-SOURCES += ['apps/mobile/src/' + name for name in ['ai-scene.ts', 'ai-scene-session.ts', 'ai-scene-context.tsx', 'ai-scene-layout.ts', 'AiSceneSettings.tsx', 'AiSceneEnvironment.tsx']]
+           b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'lyric-romanization-', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel', b'space-object-dots', b'space-object-glows']
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
-SOURCES += ['apps/mobile/src/FoliaCompositor.ts', 'apps/mobile/src/folia-shaders.ts', 'apps/mobile/src/folia-runtime.ts', 'vendor/folia/latent.generated.ts', 'vendor/folia/theme-prompt.generated.ts', 'vendor/folia/upstream.json', 'vendor/folia/notices.json', 'vendor/folia/paper-shaders/dist/vertex-shader.js', 'vendor/folia/paper-shaders/dist/shaders/mesh-gradient.js', 'vendor/folia/paper-shaders/dist/shaders/dithering.js']
-MARKERS += [b'ai-scene-settings-content', b'ai-scene-connection-group', b'folia-soft-gradient', b'SDA Spatial']
+MARKERS += [b'SDA Spatial', b'space-glass-fullscreen']
 SOURCES += ['apps/mobile/rendering-presets.json', 'apps/mobile/ios-experiments/active.json']
+SOURCES += ['apps/mobile/src/retired-ai-cleanup.ts','apps/mobile/src/scene-frame-guard.ts','apps/mobile/src/SpaceFullscreenButton.tsx','apps/mobile/src/AndroidGlassSettingsButton.tsx','apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaAndroidChromeModule.kt']
 IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])
@@ -48,10 +47,8 @@ def main():
         assert len(bundles) == 1, 'Missing packaged JavaScript bundle'
         bundle = archive.read(bundles[0])
         for marker in markers: assert marker in bundle or marker.decode().encode('utf-16-le') in bundle, 'Missing mobile UI: ' + marker.decode()
-        for license_title in ['GNU AFFERO GENERAL PUBLIC LICENSE', 'Apache License']:
-            assert license_title.encode() in bundle or license_title.encode('utf-16-le') in bundle, 'Missing upstream license: ' + license_title
-        for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://']:
-            assert marker.encode() not in bundle and marker.encode('utf-16-le') not in bundle, 'Development fixture shipped: ' + marker
+        for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://', 'ai-scene-settings-link', 'ai-scene-generate', 'folia-local-visualizer', '/chat/completions']:
+            assert marker.encode() not in bundle and marker.encode('utf-16-le') not in bundle, 'Removed feature or development fixture shipped: ' + marker
     result = {'platform': platform, 'version': config['version'], 'build': config['android']['versionCode'] if platform == 'Android' else config['ios']['buildNumber'],
               'sourceCommit': sha, 'file': package.name, 'bytes': package.stat().st_size, 'sha256': hashlib.sha256(package.read_bytes()).hexdigest(),
               'bundleEntry': bundles[0], 'bundleSha256': hashlib.sha256(bundle).hexdigest(), 'lyricsUiMarkers': [m.decode() for m in markers],

@@ -1,5 +1,3 @@
-import { useAiScene } from "./ai-scene-context";
-import { AiSceneSettingsLink } from "./AiSceneSettings";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { androidHeaderLayout } from "./android-chrome-model";
@@ -22,7 +20,6 @@ const compose: typeof import("@expo/ui/jetpack-compose") | null = Platform.OS ==
 
 export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions = true }: { player: PlayerProps; dark: boolean; onClose(): void; phoneLayoutOptions?: boolean }) {
   const appTheme = useAppTheme();
-  const aiScene = useAiScene();
   const insets = useSafeAreaInsets();
   const header = androidHeaderLayout(insets.top);
   const navigation = useNavigationPreferences();
@@ -115,8 +112,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           [{ id: "left", label: "左边" }, { id: "right", label: "右边" }], navigation.sideTabPosition,
           value => { if (value === "left" || value === "right") navigation.setSideTabPosition(value); })}
       </>, "横屏时将导航栏放在侧边；默认在右边，竖屏仍使用底部导航栏。")}
-      {section("空间视图", <>{toggle("炫彩风格", navigation.immersiveSpace, navigation.setImmersiveSpace, false)}{toggle("纸盒 VR", navigation.cardboard.enabled, enabled => navigation.setCardboard({ ...navigation.cardboard, enabled }), false, "空间全屏时横屏双眼显示，支持回中和镜片校准")}{toggle("显示声道音箱", navigation.showChannelSpeakers, navigation.setShowChannelSpeakers, false, "显示原有音箱模型，帮助辨认声道方位")}{toggle("120fps 空间视图", display.supports120 && navigation.space120Fps, navigation.setSpace120Fps, !display.supports120, display.supports120 ? "支持的设备可请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps 空间视图")}</>, "在空间标签页使用 Folia 本地可视化；保留旋转、缩放和对象显示操作。") }
-      {section("AI 场景", <AiSceneSettingsLink onPress={aiScene.openSettings} dark={dark} accent={appTheme.accent} />)}
+      {section("空间视图", <>{toggle("炫彩风格", navigation.immersiveSpace, navigation.setImmersiveSpace, false)}{toggle("纸盒 VR", navigation.cardboard.enabled, enabled => navigation.setCardboard({ ...navigation.cardboard, enabled }), false, "空间全屏时横屏双眼显示，支持回中和镜片校准")}{toggle("显示声道音箱", navigation.showChannelSpeakers, navigation.setShowChannelSpeakers, false, "显示原有音箱模型，帮助辨认声道方位")}{toggle("120fps 空间视图", display.supports120 && navigation.space120Fps, navigation.setSpace120Fps, !display.supports120, display.supports120 ? "支持的设备可请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps 空间视图")}</>, "在空间标签页使用 柔光背景与彩色声源标记；保留旋转、缩放和对象显示操作。") }
       {section("主题色", <AndroidThemeMenu dark={dark} onFallbackOpen={() => setSelection({ title: "主题色", options: CHARACTER_THEMES.map(item => ({ id: item.id, label: item.name })), selected: appTheme.id, choose: id => { const theme = CHARACTER_THEMES.find(item => item.id === id); if (theme) appTheme.setTheme(theme.id); } })} />)}
       {section("应用与输出", <>
         <View style={s.row}>{text("外观 · 跟随系统", false, s.title)}</View>{separator()}

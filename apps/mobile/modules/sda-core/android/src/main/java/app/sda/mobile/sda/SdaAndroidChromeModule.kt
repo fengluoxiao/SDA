@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.*
@@ -121,6 +123,8 @@ class SdaAndroidChromeModule : Module() {
             Prop("themeMenuRequest") { view: SdaAndroidChromeView, value: Int -> view.themeMenuRequest = value }
             OnViewDidUpdateProps { view: SdaAndroidChromeView -> view.showThemeMenuIfRequested() }
             Prop("compactButton") { view: SdaAndroidChromeView, value: Boolean -> view.compactButton = value }
+            Prop("fullscreenButton") { view: SdaAndroidChromeView, value: Boolean -> view.fullscreenButton = value }
+            Prop("fullscreenActive") { view: SdaAndroidChromeView, value: Boolean -> view.fullscreenActive = value }
             Prop("settingsButton") { view: SdaAndroidChromeView, value: Boolean -> view.settingsButton = value }
             Prop("backButton") { view: SdaAndroidChromeView, value: Boolean -> view.backButton = value }
             Prop("backgroundColorValue") { view: SdaAndroidChromeView, value: String -> view.surfaceColor = runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(Color(0xFFF2F2F7)) }
@@ -159,6 +163,8 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
     var playing by mutableStateOf(false)
     var busy by mutableStateOf(false)
     var compactButton by mutableStateOf(false)
+    var fullscreenButton by mutableStateOf(false)
+    var fullscreenActive by mutableStateOf(false)
     var settingsButton by mutableStateOf(false)
     var spatialButton by mutableStateOf(false)
     var spatialEnabled by mutableStateOf(false)
@@ -470,9 +476,9 @@ class SdaAndroidChromeView(context: Context, appContext: AppContext) : ExpoView(
                     } else onExpand(emptyMap<String, Any>())
                 }, backdrop = backdrop,
                     surfaceColor = navigationSurface, blurRadius = LiquidGlassBlurRadius,
-                    enabled = !busy, label = if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = actionSize, contentPadding = 0.dp,
+                    enabled = !busy, label = if (fullscreenButton) { if (fullscreenActive) "退出空间全屏" else "空间全屏" } else if (backButton) "返回" else if (spatialButton) "空间音频" else "更多设置", height = actionSize, contentPadding = 0.dp,
                     modifier = Modifier.width(actionSize).graphicsLayer { alpha = if (spatialMenuOpen && spatialButton) 0f else 1f }.drawWithContent { backgroundRevision; drawContent() }) {
-                    Icon(if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(actionIconSize).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
+                    Icon(if (fullscreenButton) { if (fullscreenActive) Icons.Default.FullscreenExit else Icons.Default.Fullscreen } else if (backButton) Icons.AutoMirrored.Filled.ArrowBack else if (spatialButton) Icons.Default.AccountCircle else Icons.Default.Settings, null, Modifier.size(actionIconSize).graphicsLayer { rotationY = headAngle }, tint = if (spatialButton && spatialEnabled) accent else ink)
                 }
                 if (spatialMenuOpen && spatialButton && !busy) {
                     var menuOffset by remember { mutableStateOf(IntOffset.Zero) }

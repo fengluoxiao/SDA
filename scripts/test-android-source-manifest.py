@@ -18,8 +18,6 @@ verify = load('mobile_package_verify', 'verify-mobile-lyrics-package.py')
 class AndroidSourceManifestTests(unittest.TestCase):
     def test_manifest_covers_every_required_packaged_source(self):
         names = list(verify.SOURCES)
-        names += ['vendor/folia/paper-shaders/dist/shader-sizing.js',
-                  'vendor/folia/paper-shaders/dist/shader-utils.js']
         hashes = record.source_hashes(names)
         self.assertEqual(set(names) - hashes.keys(), set(), 'Stage omitted required package sources')
         for name in names:

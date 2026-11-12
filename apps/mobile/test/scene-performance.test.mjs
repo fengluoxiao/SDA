@@ -166,3 +166,9 @@ test("the rendered instance positions follow changing native snapshots at 60/120
   for(const dispose of cleanup)dispose();
  }}finally{if(descriptor)Object.defineProperty(performance,"now",descriptor);else delete performance.now;}
 });
+
+test("a scene render failure is contained, reported once and reset by a fresh retry",()=>{
+ const{SceneFrameGuard}=load("apps/mobile/src/scene-frame-guard.ts"),guard=new SceneFrameGuard(),reports=[];let frames=0;const error=new Error("native draw failed");
+ assert.equal(guard.run(()=>{frames++;throw error;},e=>reports.push(e)),false);assert.equal(guard.run(()=>frames++),false);assert.equal(frames,1);assert.deepEqual(reports,[error]);
+ assert.equal(new SceneFrameGuard().run(()=>frames++),true);assert.equal(frames,2);
+});

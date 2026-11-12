@@ -25,7 +25,7 @@ def allocated_hashes(data):
     return {name: digest(sections[name]) for name in ['.text', '.rodata', '.data.rel.ro', '.dynsym', '.dynstr', '.eh_frame']}
 def git(*args): return subprocess.check_output(['git', *args], cwd=ROOT, encoding='utf-8').strip()
 def source_hashes(files):
-    prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'vendor/avs3a/', 'vendor/folia/', 'packages/core/', 'packages/player/', 'scripts/')
+    prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'vendor/avs3a/', 'packages/core/', 'packages/player/', 'scripts/')
     extensions = ('.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.js','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml','.source')
     return {name: digest((ROOT / name).read_bytes()) for name in files if name and name.startswith(prefixes) and name.endswith(extensions)}
 def main():

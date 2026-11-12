@@ -42,7 +42,8 @@ assert.doesNotMatch(settings, /<ToolbarItem/);
 assert.match(settings, /headerConfig=\{\{ hidden: true, title \}\}/);
 assert.match(ui, /<View style=\{\[s.header, compactLandscape && np\.compactHeader, iosLandscape && np\.iosLandscapeHeader/);
 assert.doesNotMatch(ui, /hasNativeIOSNavigation/);
-assert.match(settings, /systemName="gearshape" size=\{playerActionIconSize\}/);
+assert.match(settings, /IOSGlassIconButton\(\{ onPress, symbol: "gearshape", label: "更多设置" \}\)/);
+assert.match(settings, /systemName=\{symbol\} size=\{playerActionIconSize\}/);
 assert.match(settings, /<Form modifiers=\{\[[\s\S]*?tint\(appTheme.accent\)/);
 for (const callback of ['setVolumeBalance', 'setPlaybackMode', 'setSystemSpatial360RA', 'setRenderingPreset', 'setRendering']) assert.ok(settings.includes('p.' + callback));
 assert.match(ui, /settings && !hasNativeIOSSettings/);
@@ -213,7 +214,6 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
   const mockRequire = name => {
     if (name === 'react') return react;
     if (name === 'react-native') return { Animated: { Value: class {constructor(value){this.value=value;}}, timing:(value,config)=>({start(){assert.equal(config.useNativeDriver,true);value.value=config.toValue;}}) }, Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
-    if (name === './ai-scene-context') return { useAiScene: () => ({ openSettings() {} }) };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSNativePage') return {IOSNativePage:'NativePage',hasNativePageHeader:true};

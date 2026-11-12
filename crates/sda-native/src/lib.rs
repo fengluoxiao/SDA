@@ -126,7 +126,6 @@ pub struct DecodeStatus {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackStatus {
-    pub visualizer_bands: [f32;6],
     pub output_device: Option<sda_native_renderer::OutputDeviceStatus>,
     pub callback_missing_frames: u64,
     pub output_callbacks: u64,
@@ -713,7 +712,6 @@ impl MobileEngine {
             None => (0, 0, true),
         };
         PlaybackStatus {
-            visualizer_bands: if paused { [0.0;6] } else { self.pipeline.as_ref().map_or([0.0;6],|p|p.fifo.visualizer_bands()) },
             output_device: self.pipeline.as_ref().map(|p| p.telemetry.output_device_status()),
             callback_missing_frames: self.pipeline.as_ref().map_or(0,|p| p.telemetry.callback_missing_frames()),
             output_callbacks: self.pipeline.as_ref().map_or(0,|p|p.telemetry.callback_count.load(std::sync::atomic::Ordering::Relaxed)),

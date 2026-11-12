@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { buildSync } from "esbuild";
 const require = createRequire(import.meta.url);
 function moduleFor(path, mocks = {}) {
-  const result = buildSync({ entryPoints: [path], bundle: true, platform: "node", format: "cjs", write: false, external: ["react", "react-native"] });
+  const result = buildSync({ entryPoints: [path], bundle: true, platform: "node", format: "cjs", write: false, external: ["react", "react-native", "./SpaceFullscreenButton"] });
   const module = { exports: {} };
   new Function("require", "module", "exports", result.outputFiles[0].text)(name => mocks[name] ?? require(name), module, module.exports);
   return module.exports;
@@ -25,7 +25,7 @@ test("colors remain deterministic for every supported object id", () => {
 let measuredSize = { width: 430, height: 932 };
 const react = { useState: () => [measuredSize, () => {}], createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
 const native = { View: "View", Text: "Text", Image: "Image", Pressable: "Pressable", StyleSheet: { absoluteFill: {}, create: value => value } };
-const { SpaceVisualPage } = moduleFor("apps/mobile/src/SpaceVisualPage.tsx", { react, "react-native": native });
+const { SpaceVisualPage } = moduleFor("apps/mobile/src/SpaceVisualPage.tsx", { react, "react-native": native, "./SpaceFullscreenButton": { SpaceFullscreenButton: "NativeFullscreen" } });
 const nodes = tree => !tree || typeof tree !== "object" ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)];
 const canvas = { type: "existing-scene", props: { marker: "same-native-canvas" } };
 const props = { enabled: false, title: "当前歌曲", artist: "歌手", accent: "#7799CC", ink: "#111111", muted: "#888888", layout: "7.1.4", objectCount: 16, positionMs: 30000, durationMs: 90000, header: "header", footer: "existing-controls", viewportStyle: { flex: 1, maxHeight: 410 }, children: canvas };

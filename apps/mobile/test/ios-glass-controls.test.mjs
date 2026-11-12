@@ -27,8 +27,28 @@ for(const version of['26.2.1','27.0.1']){
 test('older iOS keeps its supported native bordered control',()=>render('IOSMetadataSheet','25.7.1',api=>{const host=api.IOSMetadataDoneButton({onPress(){},theme:'light',accent:'#7799CC'});assert.equal(modifier(host.props.children[0],'buttonStyle'),'bordered');}));
 test('glass capability gates share the version parser instead of Number on dotted strings',()=>{for(const file of['IOSMetadataSheet','IOSMiniPlayerBackdrop','IOSNativeSettings','IOSUIKitTabs','IOSVerticalTabBar','SideNavigationRail']){const text=readFileSync('apps/mobile/src/'+file+'.tsx','utf8');assert(!text.includes('Number(Platform.Version)'));assert(text.includes('supportsIOSGlass'));}const player=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');assert.match(player,/standaloneMiniGlass = sideNavigationActive \|\| supportsIOSGlass/);assert.match(player,/!environment && standaloneMiniGlass && <IOSMiniPlayerBackdrop/);});
 
-test('the shared native Done button supports AI drawer accessibility and blocks saving-time presses',()=>render('IOSMetadataSheet','26.2.1',api=>{
- let closed=0;const host=api.IOSMetadataDoneButton({onPress:()=>closed++,theme:'dark',accent:'#7799CC',accessibilityLabel:'关闭 AI 场景设置',disabled:true});
- const button=host.props.children[0];assert.equal(modifier(button,'accessibilityLabel'),'关闭 AI 场景设置');assert.equal(modifier(button,'disabled'),true);
+test('the shared native Done button supports custom accessibility and blocks saving-time presses',()=>render('IOSMetadataSheet','26.2.1',api=>{
+ let closed=0;const host=api.IOSMetadataDoneButton({onPress:()=>closed++,theme:'dark',accent:'#7799CC',accessibilityLabel:'关闭信息面板',disabled:true});
+ const button=host.props.children[0];assert.equal(modifier(button,'accessibilityLabel'),'关闭信息面板');assert.equal(modifier(button,'disabled'),true);
  button.props.onPress();assert.equal(closed,0);
 }));
+
+test('fullscreen reuses the actual settings glass control with only its icon and accessible action changed',()=>render('IOSNativeSettings','26.2.1',api=>{
+ const settings=api.IOSSettingsButton({onPress(){}});let called=0;
+ for(const symbol of ['arrow.up.left.and.arrow.down.right','arrow.down.right.and.arrow.up.left']){
+  const full=api.IOSGlassIconButton({symbol,label:'空间全屏',onPress:()=>called++});
+  assert.deepEqual(full.props.style,settings.props.style);const button=full.props.children[0];
+  assert.equal(modifier(button,'buttonStyle'),modifier(settings.props.children[0],'buttonStyle'));assert.equal(modifier(button,'buttonBorderShape'),'circle');
+  assert.equal(button.props.children[0].props.systemName,symbol);button.props.onPress();
+ }assert.equal(called,2);
+}));
+const androidGlassBundle=(await build({entryPoints:['apps/mobile/src/AndroidGlassSettingsButton.tsx'],bundle:true,platform:'node',format:'cjs',write:false,external:['*']})).outputFiles[0].text;
+test('Android fullscreen uses the same SdaAndroidChrome LiquidButton lane as settings',()=>{
+ const previous=globalThis.expo;globalThis.expo={modules:{SdaAndroidChrome:{}}};
+ try{const module={exports:{}},React={createElement:(type,props,...children)=>({type,props:{...props,children}})};
+ new Function('require','module','exports',androidGlassBundle)(name=>name==='react'?React:name==='react-native'?{Platform:{OS:'android'},useColorScheme:()=> 'light'}:name==='expo'?{requireNativeView:()=> 'SdaAndroidChrome'}:{spatialHeadIndicator:()=>({active:false,tracking:false,poseDegrees:0})},module,module.exports);
+ let pressed=0;const button=module.exports.AndroidGlassSettingsButton({fullscreen:true,expanded:true,onPress:()=>pressed++});
+ assert.equal(button.type,'SdaAndroidChrome');assert.equal(button.props.settingsButton,true);assert.equal(button.props.fullscreenButton,true);assert.equal(button.props.fullscreenActive,true);assert.equal(button.props.style.width,44);button.props.onExpand();assert.equal(pressed,1);
+ const kotlin=readFileSync('apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaAndroidChromeModule.kt','utf8');assert.match(kotlin,/Prop\("fullscreenButton"\)/);assert.match(kotlin,/Icons.Default.FullscreenExit/);assert.match(kotlin,/LiquidButton\(onClick/);
+ }finally{globalThis.expo=previous;}
+});

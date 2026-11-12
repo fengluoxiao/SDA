@@ -1,4 +1,3 @@
-import { useAiScene } from "./ai-scene-context";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
@@ -33,13 +32,17 @@ const settingsButtonStyle = supportsIOSGlass(Platform.OS, Platform.Version) ? "g
 const playerActionIconSize = 22;
 
 export function IOSSettingsButton({ onPress, sideDock = false }: { onPress(): void; sideDock?: boolean }) {
+  return IOSGlassIconButton({ onPress, symbol: "gearshape", label: "更多设置" });
+}
+
+export function IOSGlassIconButton({ onPress, symbol, label }: { onPress(): void; symbol: "gearshape" | "arrow.down.right.and.arrow.up.left" | "arrow.up.left.and.arrow.down.right"; label: string }) {
   if (!swiftUI || !hasView("Button")) return null;
   const { Host, Button } = swiftUI;
   const { accessibilityLabel, labelStyle, buttonStyle, buttonBorderShape, font } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
-  const image = hasView("ImageView") ? <swiftUI.Image systemName="gearshape" size={playerActionIconSize} /> : undefined;
+  const image = hasView("ImageView") ? <swiftUI.Image systemName={symbol} size={playerActionIconSize} /> : undefined;
   return <Host ignoreSafeArea="container" alignment="center" style={{ width: 44, height: 44 }}>
-    <Button label={image ? undefined : "更多设置"} systemImage={image ? undefined : "gearshape"} onPress={onPress}
-      modifiers={[labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel("更多设置")]}>{image}</Button>
+    <Button label={image ? undefined : label} systemImage={image ? undefined : symbol} onPress={onPress}
+      modifiers={[labelStyle("iconOnly"), ...(!image ? [font({ size: playerActionIconSize })] : []), buttonStyle(settingsButtonStyle), buttonBorderShape("circle"), accessibilityLabel(label)]}>{image}</Button>
   </Host>;
 }
 
@@ -159,7 +162,6 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
-  const aiScene = useAiScene();
   const display = sceneDisplayCapabilities();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
@@ -218,14 +220,13 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Text modifiers={[tag("right")]}>右边</Text>
       </Picker>
     </Section>
-    <Section title="空间视图" footer={<Text>开启纸盒 VR 后，空间全屏使用横屏双眼画面；回中和镜片校准在全屏内操作。 在空间标签页使用 Folia 本地可视化。默认以 60fps 显示。支持的设备可开启 120fps；实际刷新率由系统电源与温度策略决定。</Text>}>
+    <Section title="空间视图" footer={<Text>开启纸盒 VR 后，空间全屏使用横屏双眼画面；回中和镜片校准在全屏内操作。 在空间标签页使用 柔光背景与彩色声源标记。默认以 60fps 显示。支持的设备可开启 120fps；实际刷新率由系统电源与温度策略决定。</Text>}>
       <Toggle label="炫彩风格" isOn={navigationPreferences.immersiveSpace} onIsOnChange={navigationPreferences.setImmersiveSpace} />
       <Toggle label="纸盒 VR" isOn={navigationPreferences.cardboard.enabled} onIsOnChange={enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled })} />
       <Toggle label="显示声道音箱" isOn={navigationPreferences.showChannelSpeakers} onIsOnChange={navigationPreferences.setShowChannelSpeakers} />
       <Toggle label="120fps 空间视图" isOn={display.supports120 && navigationPreferences.space120Fps} onIsOnChange={navigationPreferences.setSpace120Fps} modifiers={[disabled(!display.supports120)]} />
       {!display.supports120 && <Text>此设备或当前版本仅支持 60fps 空间视图</Text>}
     </Section>
-    <Section title="AI 场景"><Button label="配置与生成" systemImage="sparkles" onPress={aiScene.openSettings} /></Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
     </Section>

@@ -118,8 +118,8 @@ jobs:
         run: node scripts/test-mobile-lyrics.mjs
       - name: Verify native head tracking startup and rendered audio
         run: node scripts/test-native-head-tracking.mjs
-      - name: Verify Folia consumed-audio visual meters
-        run: node scripts/test-native-folia.mjs
+      - name: Verify native output FIFO
+        run: node scripts/test-native-output-fifo.mjs
       - name: Build device Rust library
         run: |
           set -o pipefail
