@@ -41,7 +41,10 @@
             }
           }
         ],
-        "CADisableMinimumFrameDurationOnPhone": true
+        "CADisableMinimumFrameDurationOnPhone": true,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",
@@ -64,7 +67,8 @@
         {
           "motionPermission": "SDA 使用兼容耳机的头部运动数据控制空间音频方向，并在纸盒 VR 模式中读取手机姿态控制视角。"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "scheme": "sda",
     "icon": "./assets/app-icon.png",

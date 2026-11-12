@@ -204,7 +204,7 @@ console.log('Settings header checks passed: single inline title, no large Form t
 
 // Execute both capability paths rather than only matching source text. The
 // title must remain inline regardless of SwiftUI NavigationStack availability.
-const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSNativePage', './app-theme', './navigation-preferences', '@expo/ui/swift-ui/modifiers'] });
+const settingsBundle = await build({ entryPoints: ['apps/mobile/src/IOSNativeSettings.tsx'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['react', 'react-native', 'react-native-screens', './IOSSystemTabs', './IOSNativePage', './app-theme', './navigation-preferences', './ai-scene-context', '@expo/ui/swift-ui/modifiers'] });
 function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,height:844}) {
   const module = { exports: {} };
   const previousExpo = globalThis.expo;
@@ -213,6 +213,7 @@ function settingsAdapter(swiftNavigationAvailable, dimensions = {width:390,heigh
   const mockRequire = name => {
     if (name === 'react') return react;
     if (name === 'react-native') return { Animated: { Value: class {constructor(value){this.value=value;}}, timing:(value,config)=>({start(){assert.equal(config.useNativeDriver,true);value.value=config.toValue;}}) }, Platform: { OS: 'ios', Version: 26 }, UIManager: { hasViewManagerConfig: () => true }, StyleSheet: { absoluteFill: {} }, PlatformColor: name => name, useWindowDimensions: () => dimensions, View: 'View', Modal: 'Modal' };
+    if (name === './ai-scene-context') return { useAiScene: () => ({ openSettings() {} }) };
     if (name === './navigation-preferences') return { useNavigationPreferences: () => ({ landscapeSideTabs: false, setLandscapeSideTabs() {} }) };
     if (name === './app-theme') return { useAppTheme: () => ({id:'sakiko',accent:'#7799CC',setTheme() {}}), CHARACTER_THEMES: [], validTheme: () => true };
     if (name === './IOSNativePage') return {IOSNativePage:'NativePage',hasNativePageHeader:true};

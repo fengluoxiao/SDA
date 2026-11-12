@@ -1,3 +1,5 @@
+import { AiSceneEnvironment } from "./AiSceneEnvironment";
+import type { AiSceneDescription } from "./ai-scene";
 import { CARDBOARD_DEFAULTS, type CardboardConfig } from "./cardboard-config";
 import { CardboardRenderer, createSpaceRenderer, getSpaceRawDraw } from "./cardboard-renderer";
 import { CardboardControls } from "./CardboardControls";
@@ -34,7 +36,7 @@ interface ActivityProps {
 }
 
 function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
-  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, accent, reduceMotion, frameRate, firstPerson, showSpeakers, cardboard, vrPose }: ActivityProps & { cardboard?: CardboardConfig; vrPose?: CardboardPose; immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; showSpeakers: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
+  streamTimeSec = 0, sourceKey, onVisibleObjectCountChange, immersive, aiScene, accent, reduceMotion, frameRate, firstPerson, showSpeakers, cardboard, vrPose }: ActivityProps & { aiScene?: AiSceneDescription | null; cardboard?: CardboardConfig; vrPose?: CardboardPose; immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; showSpeakers: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
   const glow = useSpaceGlowTexture(immersive);
   const phase = useMemo(() => ({ current: 0 }), [sourceKey]);
   const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
@@ -54,7 +56,7 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
   useFrame(state => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, 1);
   return <>
     <MobileSceneCamera cardboard={cardboard} vrPose={vrPose} input={cameraInput} firstPerson={firstPerson} immersive={immersive} layout={layout} />
-    {immersive ? <ImmersiveSpaceEnvironment layout={layout} accent={accent} glow={glow} showListener={!firstPerson} /> : <>
+    {aiScene ? <AiSceneEnvironment key={sourceKey} description={aiScene} reduceMotion={reduceMotion} paused={paused} showListener={!firstPerson} /> : immersive ? <ImmersiveSpaceEnvironment layout={layout} accent={accent} glow={glow} showListener={!firstPerson} /> : <>
     <color attach="background" args={[PALETTE.dark.bg]} />
     <ambientLight intensity={0.75} /><directionalLight position={[2.5, 4, 2]} intensity={1.2} />
     {layout === "360RA-13" ? <SphericalRoom p={PALETTE.dark} /> : <Room p={PALETTE.dark} />}
@@ -73,7 +75,7 @@ class SceneBoundary extends React.Component<React.PropsWithChildren<{ onError: (
   render() { return this.state.error ? <Text accessibilityRole="alert" style={{ color: "#ffb4a8", padding: 12 }}>空间视图加载失败：{this.state.error}</Text> : this.props.children; }
 }
 
-export function MobileObjectScene({ objects, layout, active, displayActive, onInteractionChange, onTap, frameRate = 60, fullscreen = false, showSpeakers = false, cardboard = CARDBOARD_DEFAULTS, onCardboardChange, onVrExit, immersive = false, accent = "#7799CC", ...activityProps }: ActivityProps & { cardboard?: CardboardConfig; onCardboardChange?: (config: CardboardConfig) => void; onVrExit?: () => void; frameRate?: number; fullscreen?: boolean; showSpeakers?: boolean; displayActive?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
+export function MobileObjectScene({ objects, layout, active, displayActive, onInteractionChange, onTap, frameRate = 60, fullscreen = false, showSpeakers = false, cardboard = CARDBOARD_DEFAULTS, onCardboardChange, onVrExit, immersive = false, aiScene = null, accent = "#7799CC", ...activityProps }: ActivityProps & { aiScene?: AiSceneDescription | null; cardboard?: CardboardConfig; onCardboardChange?: (config: CardboardConfig) => void; onVrExit?: () => void; frameRate?: number; fullscreen?: boolean; showSpeakers?: boolean; displayActive?: boolean; immersive?: boolean; accent?: string; active: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; onInteractionChange?: (active: boolean) => void; onTap?: () => void }) {
   // Stop hidden/background GL on every platform; keep audio CPU capacity.
   // Retain the scene/camera so foreground return does not rebuild its assets.
   const [foreground, setForeground] = React.useState(AppState.currentState === "active");
@@ -292,7 +294,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
         }
       };
     }}>
-      <Scene cardboard={vrActive ? cardboard : undefined} vrPose={vrSession.pose.current} {...activityProps} immersive={immersive} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} showSpeakers={showSpeakers} layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene cardboard={vrActive ? cardboard : undefined} vrPose={vrSession.pose.current} {...activityProps} immersive={immersive} aiScene={aiScene} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} showSpeakers={showSpeakers} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>

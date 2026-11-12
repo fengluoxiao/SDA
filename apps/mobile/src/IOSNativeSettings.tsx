@@ -1,3 +1,4 @@
+import { useAiScene } from "./ai-scene-context";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
@@ -158,6 +159,7 @@ function IOSSettingsCompatibilityPage({ player, theme, onClose }: {
 function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClose(): void }) {
   const appTheme = useAppTheme();
   const navigationPreferences = useNavigationPreferences();
+  const aiScene = useAiScene();
   const display = sceneDisplayCapabilities();
   const { width } = useWindowDimensions();
   if (!swiftUI) return null;
@@ -223,6 +225,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       <Toggle label="120fps 空间视图" isOn={display.supports120 && navigationPreferences.space120Fps} onIsOnChange={navigationPreferences.setSpace120Fps} modifiers={[disabled(!display.supports120)]} />
       {!display.supports120 && <Text>此设备或当前版本仅支持 60fps 空间视图</Text>}
     </Section>
+    <Section title="AI 场景"><Button label="配置与生成" systemImage="sparkles" onPress={aiScene.openSettings} /></Section>
     <Section title="主题色">
       <Picker label="角色代表色" selection={appTheme.id} onSelectionChange={(value: string) => { if (validTheme(value)) appTheme.setTheme(value); }} modifiers={[pickerStyle("menu")]}>{CHARACTER_THEMES.map(t => <Text key={t.id} modifiers={[tag(t.id)]}>{t.name}</Text>)}</Picker>
     </Section>
