@@ -19,8 +19,8 @@ if(alpha < 0.001) discard; gl_FragColor=vec4(vColor,alpha);
 const declarations = `attribute vec3 instancePosition; attribute vec3 instanceColor; attribute float instanceOpacity;
 varying vec3 vColor; varying float vOpacity;`;
 /** One instanced dot pass and one billboard glow pass for any object count. */
-export function BatchedSpaceObjects({ objects, visibility, immersive, phase, reduceMotion, sourceKey, streamTimeSec, paused }: {
-  objects: readonly MobileObjectPoint[]; visibility: ReadonlyMap<number, number>; immersive: boolean;
+export function BatchedSpaceObjects({ objects, visibility, immersive, phase, reduceMotion, sourceKey, streamTimeSec, paused, lightBackground = false }: {
+  lightBackground?: boolean; objects: readonly MobileObjectPoint[]; visibility: ReadonlyMap<number, number>; immersive: boolean;
   phase: { current: number }; reduceMotion: boolean; sourceKey?: string; streamTimeSec: number; paused: boolean;
 }) {
   const motion = useMemo(() => new SceneObjectMotion(), [sourceKey]);
@@ -40,11 +40,11 @@ export function BatchedSpaceObjects({ objects, visibility, immersive, phase, red
     const dotMaterial = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, fragmentShader: fragment,
       vertexShader: declarations + `void main(){ vColor=instanceColor; vOpacity=instanceOpacity;
       gl_Position=projectionMatrix*modelViewMatrix*vec4(position+instancePosition,1.0); }` });
-    const glowMaterial = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, fragmentShader: glowFragment,
+    const glowMaterial = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, blending: lightBackground ? THREE.NormalBlending : THREE.AdditiveBlending, fragmentShader: glowFragment,
       vertexShader: declarations + `varying vec2 vUv; void main(){ vUv=uv; vColor=instanceColor; vOpacity=instanceOpacity;
       vec4 center=modelViewMatrix*vec4(instancePosition,1.0); center.xy+=position.xy; gl_Position=projectionMatrix*center; }` });
     return { position, color, opacity, glowOpacity, dotGeometry, glowGeometry, dotMaterial, glowMaterial, tint: new THREE.Color(), colorIds: new Int32Array(capacity).fill(-1), colorSource: null as readonly MobileObjectPoint[] | null };
-  }, [objects.length, immersive]);
+  }, [objects.length, immersive, lightBackground]);
   useEffect(() => () => { batch.dotGeometry.dispose(); batch.glowGeometry.dispose(); batch.dotMaterial.dispose(); batch.glowMaterial.dispose(); }, [batch]);
   useFrame(() => {
     const now = performance.now() / 1000;
@@ -59,7 +59,7 @@ export function BatchedSpaceObjects({ objects, visibility, immersive, phase, red
       batch.opacity.array[count] = Math.min(1, alpha);
       batch.glowOpacity.array[count] = immersive ? spaceGlowOpacity(alpha, phase.current + object.id * .43, reduceMotion) : alpha * .18;
       if (sourceChanged || batch.colorIds[count] !== object.id) {
-        if (immersive) batch.tint.set(spaceObjectColor(object.id)); else batch.tint.setHSL(.55 - object.pos[2] * .25, .9, .6);
+        if (immersive) { batch.tint.set(spaceObjectColor(object.id)); if (lightBackground) batch.tint.multiplyScalar(.32); } else batch.tint.setHSL(.55 - object.pos[2] * .25, .9, .6);
         batch.color.setXYZ(count, batch.tint.r, batch.tint.g, batch.tint.b);
         batch.colorIds[count] = object.id; colorsChanged = true;
       }

@@ -6,7 +6,10 @@ import { readFileSync } from "node:fs";
 const bundle = await build({ entryPoints: ["apps/mobile/src/ai-scene.ts", "apps/mobile/src/ai-scene-session.ts", "apps/mobile/src/ai-scene-layout.ts"], outdir: "unused", bundle: true, platform: "node", format: "esm", write: false });
 const load = async name => import("data:text/javascript;base64," + Buffer.from(bundle.outputFiles.find(f => f.path.endsWith(name + ".js")).text).toString("base64"));
 const ai = await load("ai-scene"), { AiSceneSession } = await load("ai-scene-session"), { aiSceneParticlePositions } = await load("ai-scene-layout");
-const composition = { version: 1, name: "潮汐折光", background: "#090c21", palette: ["#23376e", "#8e478e", "#7ba4b3"], field: { twist: 2 }, particles: { count: 120 }, elements: [{ shape: "box", position: [7, 1, -8], rotation: [0, .6, 0], scale: [1, 2, 1], color: "#a67aab" }, { shape: "plane", position: [-7, 1, -8], scale: [2, 1, 2] }] };
+const composition = { version: 2, name: "潮汐折光", themes: {
+  light: { backgroundColor: "#e8e0db", primaryColor: "#302c38", secondaryColor: "#534b59", accentColor: "#755674", colors: ["#b9c8cf", "#d9b2c6", "#acc7c1"] },
+  dark: { backgroundColor: "#252535", primaryColor: "#f3eef8", secondaryColor: "#cdc4dc", accentColor: "#c995c2", colors: ["#667dae", "#af729e", "#67a1a4"] }
+}, atmosphere: { diffusion: .8, flow: .05 }, particles: { count: 40 } };
 const song = { id: "file:///private/sensitive/path/music.m4a", title: "歌名", artist: "歌手", album: "专辑", year: "2026", coverUri: "file:///private/cover.jpg", lyrics: "PRIVATE LYRICS", audio: "PRIVATE AUDIO" };
 const settings = { ...ai.AI_SCENE_DEFAULTS, enabled: true, autoGenerate: false, baseUrl: "https://example.invalid/v1", model: "user-model", prompt: "空间自由些" };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -19,22 +22,35 @@ test("AI is opt-in and custom endpoints preserve prefixes and already-complete r
   for (const input of ["host.test/v1", "file:///tmp/key", "javascript:alert(1)", "https://user:secret@host.test/v1", "https://host.test/v1?key=secret", "https://host.test/v1#fragment"]) assert.throws(() => ai.aiSceneEndpoint(input));
   const clean = ai.normalizeAiSceneSettings({ ...settings, enabled: "true", apiKey: "PRIVATE" }); assert.equal(clean.enabled, false); assert.equal("apiKey" in clean, false);
 });
-test("scene compositions have no environment preset selector and cannot execute model code", () => {
-  const scene = ai.parseAiScene("```json\n" + JSON.stringify({ ...composition, script: "throw Error('run')", assetUrl: "https://example.test/download" }) + "\n```", 123);
-  assert.equal(scene.name, "潮汐折光"); assert.deepEqual(scene.elements.map(x => x.shape), ["box", "plane"]);
-  assert.equal("script" in scene, false); assert.equal("assetUrl" in scene, false); assert.equal("environment" in scene, false);
+test("AI generates dual visual themes instead of a mesh arrangement or executable code", () => {
+  const scene = ai.parseAiScene("```json\n" + JSON.stringify({ ...composition, script: "throw Error('run')", elements: [{ shape: "box" }], assetUrl: "https://bad.test" }) + "\n```", 123);
+  assert.equal(scene.name, "潮汐折光"); assert.equal(scene.version, 2);
+  for (const field of ["elements", "script", "assetUrl", "environment", "field"]) assert.equal(field in scene, false);
+  assert.notDeepEqual(scene.themes.light, scene.themes.dark);
   for (const input of ["not json", "{}", "[]", '{"version":2}', "x".repeat(48001)]) assert.throws(() => ai.parseAiScene(input, 1));
 });
-test("untrusted model data bounds geometry, coordinates, particle count and motion", () => {
-  const scene = ai.parseAiScene(JSON.stringify({ ...composition, background: "url(https://bad.test)", field: { flow: 500, twist: -100, intensity: 100 }, particles: { count: 1e9, size: 1e9, speed: 1e9, spread: [-1, 1e9, "wrong"] }, elements: Array.from({ length: 80 }, (_, i) => ({ shape: i === 0 ? "download-js" : "sphere", position: [0, 0, 0], scale: [1e9, -2, null], rotation: [1e9], spin: [90, -80, null], opacity: 1e8, float: 9 })) }), 1);
-  assert.equal(scene.elements.length, 23); assert.equal(scene.particles.count, 384); assert.equal(scene.field.flow, .5); assert.equal(scene.field.intensity, .65);
-  assert.match(scene.background, /^#[0-9a-f]{6}$/); assert.deepEqual(scene.particles.spread, [3, 20, 12]);
-  for (const e of scene.elements) { assert(Math.hypot(...e.position) >= 5); for (const x of [...e.position, ...e.scale, ...e.rotation, ...e.spin]) assert(Number.isFinite(x)); assert(e.scale.every(x => x >= .05 && x <= 4)); assert(e.spin.every(x => Math.abs(x) <= .15)); assert(e.float <= .4); }
+test("legacy responses migrate to color themes and discard every old decorative mesh", () => {
+  const old = { version: 1, name: "旧主题", background: "#000000", palette: ["#73486b", "#46939e", "#cf9865"], elements: Array.from({ length: 24 }, () => ({ shape: "sphere", scale: [4,4,4], position: [0,0,0] })) };
+  const scene = ai.parseAiScene(JSON.stringify(old), 7);
+  assert.equal(scene.version, 2); assert.equal("elements" in scene, false);
+  assert(scene.themes.dark.colors.some(c => c !== "#000000"));
+  assert.doesNotThrow(() => ai.selectAiSceneTheme({ ...old, seed: 7 }, "light"));
+});
+test("invalid model numbers stay bounded and bright/dark themes preserve readable contrast", () => {
+  const scene = ai.parseAiScene(JSON.stringify({ ...composition, atmosphere: { scale: 1e8, flow: 8, diffusion: -10, glow: 20, grain: 9 }, particles: { count: 1e9, size: 1e9, speed: 1e9, spread: [-1, 1e9, "wrong"] }, themes: {
+    light: { backgroundColor: "#000000", primaryColor: "#ffffff", secondaryColor: "#ffffff", colors: ["#000000", "#ffffff", "bad"] },
+    dark: { backgroundColor: "#ffffff", primaryColor: "#000000", secondaryColor: "#000000", colors: ["#000000", "#ffffff", "bad"] }
+  } }), 1);
+  assert.equal(scene.particles.count, 96); assert.equal(scene.atmosphere.flow, .16); assert.equal(scene.atmosphere.grain, .035); assert.equal(scene.atmosphere.diffusion, .35);
+  assert.deepEqual(scene.particles.spread, [6, 20, 12]);
+  for (const mode of ["light", "dark"]) { const theme = scene.themes[mode]; assert(ai.sceneColorContrast(theme.primaryColor, theme.backgroundColor) >= 4.5); assert(ai.sceneColorContrast(theme.secondaryColor, theme.backgroundColor) >= 4.5); }
+  assert(ai.sceneColorLuminance(scene.themes.light.backgroundColor) >= .54);
+  assert(ai.sceneColorLuminance(scene.themes.dark.backgroundColor) >= .017 && ai.sceneColorLuminance(scene.themes.dark.backgroundColor) <= .091);
 });
 test("particle geometry stays outside source positions and is stable for the current composition", () => {
   const scene = ai.parseAiScene(JSON.stringify(composition), ai.sceneSeed("song A"));
   const a = aiSceneParticlePositions(scene), b = aiSceneParticlePositions(scene);
-  assert.deepEqual(a, b); assert.equal(a.length, 360);
+  assert.deepEqual(a, b); assert.equal(a.length, 120);
   assert.notDeepEqual(a, aiSceneParticlePositions({ ...scene, seed: ai.sceneSeed("song B") }));
   for (let i = 0; i < a.length; i += 3) assert(Math.hypot(a[i], a[i + 1], a[i + 2]) >= 3.99999);
 });

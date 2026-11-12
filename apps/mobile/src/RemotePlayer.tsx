@@ -25,6 +25,7 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  visualizerBands?: readonly number[];
   previewMode?: boolean;
   attachLyrics?(uri: string, source: LyricSource): void;
   soundingObjectIds?: readonly number[];

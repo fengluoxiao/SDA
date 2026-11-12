@@ -1,3 +1,4 @@
+import foliaNotices from "../../../vendor/folia/notices.json";
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View, useColorScheme } from "react-native";
 import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
@@ -11,6 +12,7 @@ export function AiSceneSettingsLink({ onPress, dark = false, accent = "#7799CC" 
 }
 export function AiSceneSettingsModal({ value: v }: { value: AiSceneContextValue }) {
   const dark = useColorScheme() === "dark", theme = useAppTheme();
+  const [licensesOpen, setLicensesOpen] = useState(false);
   const [draft, setDraft] = useState(v.settings), [key, setKey] = useState("");
   useEffect(() => { if (v.settingsOpen) { setDraft(v.settings); setKey(""); } }, [v.settingsOpen, v.ready]);
   const ink = dark ? "#f5f5fa" : "#1b1b22", muted = dark ? "#a0a4b6" : "#666b7d", field = dark ? "#222631" : "#f0f1f6";
@@ -34,13 +36,13 @@ export function AiSceneSettingsModal({ value: v }: { value: AiSceneContextValue 
         <Pressable accessibilityRole="button" accessibilityLabel="关闭 AI 场景设置" onPress={v.closeSettings} disabled={v.saving} style={s.action}><Text style={{ color: theme.accent, fontSize: 17 }}>完成</Text></Pressable></View>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
-          <Text style={[s.description, { color: muted }]}>根据歌曲生成专属的色彩、光带、粒子与空间构图。开启后，歌曲信息会发送到你填写的 AI 服务；音频和封面留在本机。</Text>
+          <Text style={[s.description, { color: muted }]}>AI 提供歌曲主题，Folia 本地引擎负责可视化。开启“炫彩风格”也可直接使用本地引擎。开启后，歌曲信息会发送到你填写的 AI 服务；音频和封面留在本机。</Text>
           {toggle("开启 AI 场景", draft.enabled, enabled => setDraft({ ...draft, enabled }))}
           {toggle("切歌时自动生成", draft.autoGenerate, autoGenerate => setDraft({ ...draft, autoGenerate }))}
           {input("Base URL", draft.baseUrl, baseUrl => setDraft({ ...draft, baseUrl }), "https://你的服务地址/v1")}
           {input("API Key", key, setKey, v.hasApiKey ? "已安全保存；留空继续使用原 Key" : "填写你的 API Key", true)}
           {input("模型", draft.model, model => setDraft({ ...draft, model }), "填写服务支持的模型 ID")}
-          {input("场景偏好（可选）", draft.prompt, prompt => setDraft({ ...draft, prompt }), "例如：朦胧的胶片质感，冷色流光，结构自由一些", false, true)}
+          {input("场景偏好（可选）", draft.prompt, prompt => setDraft({ ...draft, prompt }), "例如：温暖胶片色、朦胧柔光，流动慢一些", false, true)}
           <Text style={[s.description, { color: muted }]}>兼容 Chat Completions 接口。只发送歌名、歌手、专辑、年份和场景偏好。Key 使用系统安全存储。生成期间照常播放，失败时保留原空间视图。</Text>
           {!!v.songTitle && <Text numberOfLines={2} style={{ color: muted }}>当前歌曲：{v.songTitle}</Text>}
           {v.pending ? <View style={s.pending}><ActivityIndicator color={theme.accent} /><Text style={{ color: muted }}>正在生成场景…</Text><Pressable onPress={v.cancel} accessibilityRole="button" style={s.action}><Text style={{ color: theme.accent }}>取消</Text></Pressable></View>
@@ -49,6 +51,10 @@ export function AiSceneSettingsModal({ value: v }: { value: AiSceneContextValue 
           <Pressable testID="ai-scene-save" accessibilityRole="button" disabled={locked} onPress={() => void save(false)} style={[s.primary, { backgroundColor: theme.accent, opacity: locked ? .5 : 1 }]}><Text style={s.primaryText}>{v.saving ? "正在保存…" : "保存设置"}</Text></Pressable>
           <Pressable testID="ai-scene-generate" accessibilityRole="button" disabled={locked || !draft.enabled || v.pending} onPress={() => void save(true)} style={[s.secondary, { opacity: locked || !draft.enabled || v.pending ? .4 : 1 }]}><Text style={{ color: theme.accent, fontSize: 17 }}>{v.scene ? "为当前歌曲重新生成" : "为当前歌曲生成"}</Text></Pressable>
           {v.hasApiKey && <Pressable accessibilityRole="button" disabled={locked} onPress={async () => { if (await v.save({ ...draft, enabled: false }, undefined, true)) { setKey(""); setDraft({ ...draft, enabled: false }); } }} style={s.secondary}><Text style={{ color: muted }}>清除已保存的 Key 并关闭 AI</Text></Pressable>}
+          <Text style={[s.description,{color:muted}]} testID="folia-upstream-credit">本地可视化：Folia Latent · Paper Shaders {foliaNotices.paperVersion}</Text>
+          <Pressable accessibilityRole="button" onPress={()=>setLicensesOpen(!licensesOpen)} style={s.secondary}><Text style={{color:theme.accent}}>开源代码与许可证</Text></Pressable>
+          {licensesOpen && <ScrollView nestedScrollEnabled style={{maxHeight:260}}><Text selectable style={{color:muted,fontSize:12,lineHeight:18}}>Folia {foliaNotices.commit}{"\n"}{foliaNotices.foliaLicense}{"\n"}{foliaNotices.paperLicense}{"\n"}{foliaNotices.paperNotice}</Text></ScrollView>}
+
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView></SafeAreaProvider>

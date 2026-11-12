@@ -6,6 +6,8 @@
 //! the Android/iOS audio engines. Process IO (stdin/stdout JSONL) stays in
 //! the binary.
 
+mod visual_signal;
+
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     io::{self, Read, Write},

@@ -87,6 +87,10 @@ jobs:
         run: |
           node scripts/test-native-head-tracking.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Native head tracking regression failed' }
+      - name: Verify Folia consumed-audio visual meters
+        run: |
+          node scripts/test-native-folia.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Folia native visual meter regression failed' }
       - name: Test ALAC file decoding and resampling
         run: |
           cargo test --manifest-path scripts/alac-file-regression/Cargo.toml --locked

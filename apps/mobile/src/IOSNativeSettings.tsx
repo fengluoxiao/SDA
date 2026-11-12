@@ -218,7 +218,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Text modifiers={[tag("right")]}>右边</Text>
       </Picker>
     </Section>
-    <Section title="空间视图" footer={<Text>开启纸盒 VR 后，空间全屏使用横屏双眼画面；回中和镜片校准在全屏内操作。 在空间标签页使用柔光音源和环形声场。默认以 60fps 显示。支持的设备可开启 120fps；实际刷新率由系统电源与温度策略决定。</Text>}>
+    <Section title="空间视图" footer={<Text>开启纸盒 VR 后，空间全屏使用横屏双眼画面；回中和镜片校准在全屏内操作。 在空间标签页使用 Folia 本地可视化。默认以 60fps 显示。支持的设备可开启 120fps；实际刷新率由系统电源与温度策略决定。</Text>}>
       <Toggle label="炫彩风格" isOn={navigationPreferences.immersiveSpace} onIsOnChange={navigationPreferences.setImmersiveSpace} />
       <Toggle label="纸盒 VR" isOn={navigationPreferences.cardboard.enabled} onIsOnChange={enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled })} />
       <Toggle label="显示声道音箱" isOn={navigationPreferences.showChannelSpeakers} onIsOnChange={navigationPreferences.setShowChannelSpeakers} />

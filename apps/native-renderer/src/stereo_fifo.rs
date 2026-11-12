@@ -5,14 +5,20 @@
 
 use std::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, AtomicU32, Ordering},
 };
 
 struct FrameCell(UnsafeCell<[f32; 2]>);
 
 unsafe impl Sync for FrameCell {}
 
+struct VisualCell(UnsafeCell<crate::visual_signal::VisualSignalMeter>);
+// Only the existing SPSC consumer touches this state. UI reads atomics below.
+unsafe impl Sync for VisualCell {}
+
 pub struct StereoFifo {
+    visual: VisualCell,
+    visual_levels: [AtomicU32;6],
     frames: Box<[FrameCell]>,
     capacity: usize,
     read: AtomicUsize,
@@ -31,6 +37,8 @@ impl StereoFifo {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self {
+            visual: VisualCell(UnsafeCell::new(Default::default())),
+            visual_levels: std::array::from_fn(|_| AtomicU32::new(0)),
             frames,
             capacity: capacity_frames,
             read: AtomicUsize::new(0),
@@ -57,6 +65,8 @@ impl StereoFifo {
         let read = self.effective_read(self.read.load(Ordering::Acquire), write);
         write.wrapping_sub(read).min(self.capacity)
     }
+
+    pub fn visualizer_bands(&self) -> [f32;6] { std::array::from_fn(|i| f32::from_bits(self.visual_levels[i].load(Ordering::Relaxed))) }
 
     pub fn available_write(&self) -> usize {
         self.capacity.saturating_sub(self.available_read())
@@ -113,6 +123,10 @@ impl StereoFifo {
         let read = self.effective_read(previous_read, write);
         self.read.store(read, Ordering::Release);
         self.flush_ack_epoch.store(epoch, Ordering::Release);
+        if changed || read != previous_read {
+            unsafe { (&mut *self.visual.0.get()).reset(); }
+            for level in &self.visual_levels { level.store(0,Ordering::Relaxed); }
+        }
         changed || read != previous_read
     }
 
@@ -125,10 +139,16 @@ impl StereoFifo {
         let read = self.read.load(Ordering::Relaxed);
         let write_cursor = self.write.load(Ordering::Acquire);
         let count = requested.min(write_cursor.wrapping_sub(read).min(self.capacity));
+        let visual = unsafe { &mut *self.visual.0.get() };
+        visual.begin();
         for offset in 0..count {
             let index = (read.wrapping_add(offset)) % self.capacity;
-            write(offset, unsafe { *self.frames[index].0.get() });
+            let frame = unsafe { *self.frames[index].0.get() };
+            visual.push(frame);
+            write(offset, frame);
         }
+        let levels=visual.finish(requested,count);
+        for (target,value) in self.visual_levels.iter().zip(levels) { target.store(value.to_bits(),Ordering::Relaxed); }
         self.read.store(read.wrapping_add(count), Ordering::Release);
         count
     }
@@ -272,4 +292,16 @@ mod tests {
         assert!(!fifo.apply_flush_from_consumer());
         assert_eq!(fifo.available_read(), 0);
     }
+    #[test]
+    fn visual_meter_reads_consumed_audio_without_changing_samples_or_queue() {
+        let fifo = StereoFifo::new(4096);
+        let pcm:Vec<f32>=(0..2048).flat_map(|i|{let x=(i as f32*0.031).sin()*0.2;[x,-x]}).collect();
+        assert_eq!(fifo.push(&pcm),2048);
+        assert_eq!(fifo.visualizer_bands(),[0.0;6],"render-ahead must not drive the visualizer");
+        let mut output=vec![0.0;pcm.len()];assert_eq!(fifo.pop_into_f32(&mut output,2),2048);
+        assert_eq!(output.iter().map(|v|v.to_bits()).collect::<Vec<_>>(),pcm.iter().map(|v|v.to_bits()).collect::<Vec<_>>());
+        assert_eq!(fifo.available_read(),0);assert!(fifo.visualizer_bands()[0]>100.0);
+        let epoch=fifo.clear_from_producer();fifo.apply_flush_from_consumer();assert!(fifo.flush_acknowledged(epoch));assert_eq!(fifo.visualizer_bands(),[0.0;6]);
+    }
+
 }
