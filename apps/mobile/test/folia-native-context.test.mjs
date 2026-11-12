@@ -35,3 +35,11 @@ test("the native shim matches the pinned Expo GL implementation rather than brow
  const unsupported=code.slice(code.indexOf("// Unimplemented..."),code.indexOf("// int",code.indexOf("// Unimplemented...")));
  assert.match(unsupported,/GL_DRAW_FRAMEBUFFER_BINDING/);assert.match(unsupported,/doesn't support gl/);assert.equal(0x8ca6,36006);
 });
+
+test("the live Folia backdrop has one smooth gradient pass and no dithering mesh or grain",()=>{
+ const c=new FoliaCompositor();
+ assert.equal(c.scene.children.length,1);assert.equal(c.scene.children[0].name,"folia-soft-gradient");
+ assert.equal(c.meshUniforms.u_grainMixer.value,0);assert.equal(c.meshUniforms.u_grainOverlay.value,0);
+ assert(c.meshUniforms.u_distortion.value<=.2);assert.equal(c.meshUniforms.u_swirl.value,0);
+ c.dispose();
+});

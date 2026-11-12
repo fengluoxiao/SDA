@@ -16,6 +16,8 @@ SOURCES += ['apps/mobile/src/' + name for name in ['ai-scene.ts', 'ai-scene-sess
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
 SOURCES += ['apps/mobile/src/FoliaCompositor.ts', 'apps/mobile/src/folia-shaders.ts', 'apps/mobile/src/folia-runtime.ts', 'vendor/folia/latent.generated.ts', 'vendor/folia/theme-prompt.generated.ts', 'vendor/folia/upstream.json', 'vendor/folia/notices.json', 'vendor/folia/paper-shaders/dist/vertex-shader.js', 'vendor/folia/paper-shaders/dist/shaders/mesh-gradient.js', 'vendor/folia/paper-shaders/dist/shaders/dithering.js']
+MARKERS += [b'ai-scene-settings-content', b'ai-scene-connection-group', b'folia-soft-gradient', b'SDA Spatial']
+SOURCES += ['apps/mobile/rendering-presets.json', 'apps/mobile/ios-experiments/active.json']
 IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])
@@ -45,7 +47,7 @@ def main():
         bundles = [name for name in archive.namelist() if name == 'assets/index.android.bundle' or name.startswith('Payload/') and name.endswith('.app/main.jsbundle')]
         assert len(bundles) == 1, 'Missing packaged JavaScript bundle'
         bundle = archive.read(bundles[0])
-        for marker in markers: assert marker in bundle, 'Missing lyrics UI: ' + marker.decode()
+        for marker in markers: assert marker in bundle or marker.decode().encode('utf-16-le') in bundle, 'Missing mobile UI: ' + marker.decode()
         for license_title in ['GNU AFFERO GENERAL PUBLIC LICENSE', 'Apache License']:
             assert license_title.encode() in bundle or license_title.encode('utf-16-le') in bundle, 'Missing upstream license: ' + license_title
         for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://']:

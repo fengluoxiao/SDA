@@ -99,7 +99,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
       {section("声音增强", toggle("空间平衡", p.authoredPlayback?false:p.spatialEnhancementEnabled, p.setSpatialEnhancement, audioDisabled),
         "根据前后层级和可用余量调整空间细节，开关共用同一响度基准；测量不足时不额外增强。")}
       {section("360 Reality Audio", <View style={s.row}><View style={s.copy}>{text("系统空间音频", false, s.title)}{text("Android 系统多声道输出尚未接通", true, s.subtitle)}</View></View>,
-        "360RA 文件仍可通过 SDA / HRTFHQ 双耳渲染播放。此项不是 Apple 系统空间音频的等价实现。")}
+        "360RA 文件仍可通过 SDA Spatial 双耳渲染播放。此项不是 Apple 系统空间音频的等价实现。")}
       {section("ALAC 立体声", toggle("立体声上混 · 7.1.4", p.alacStereoUpmix, p.setAlacStereoUpmix, audioDisabled),
         "直接使用 SDA 共享上混处理，经共享 HRTF 渲染为双声道。不是原生 Atmos 或独立对象；播放中平滑切换，已缓冲音频播完后生效。")}
       {section("空间渲染", <>

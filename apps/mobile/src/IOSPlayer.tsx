@@ -246,7 +246,7 @@ function ThemedPlayer(p: PlayerProps) {
     ["文件名", p.fileName || "—"], ["标题", p.metadata.title || "未写入"], ["艺人", p.metadata.artist || p.metadata.albumArtist || "未写入"], ["专辑", p.metadata.album || "未写入"],
     ["年份", p.metadata.year || "暂未读取"], ["曲目", p.metadata.track || "暂未读取"], ["容器（文件扩展名）", p.fileName.split(".").length > 1 ? p.fileName.split(".").pop()!.toUpperCase() : "未知"],
     ["编码", p.sourceCodec === "sdar" ? "SDA Renderer" : p.sourceCodec || "未知"], ["时长", p.durationMs > 0 ? time(p.durationMs) : "未知"], ["双耳／系统输出声道数（非源声道）", String(p.outputChannels)], ["播放器渲染布局（非源声道）", p.layout], ["已声明对象数（当前轨迹）", String(p.objects.length)],
-    ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA / HRTFHQ"],
+    ["播放路径", p.systemSpatial360RAActive ? "系统空间音频" : "SDA Spatial"],
   ];
   const audioOptionsDisabled = p.sourceCodec === "sdar" || p.systemSpatial360RAActive || p.busy;
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
@@ -492,7 +492,7 @@ function ThemedPlayer(p: PlayerProps) {
           <SpaceVisualPage vr={navigationPreferences.cardboard.enabled} enabled={immersiveScene} sceneTheme={aiTheme} compact={compactLandscape} accent={c.accent} objectCount={visibleObjectCount} fullscreenInsets={screenInsets ?? undefined} fullscreen={fullscreenSpace} onFullscreenChange={setSpaceFullscreen}
             viewportStyle={[s.scene, s.sceneViewport, compactLandscape && s.compactSceneViewport]}
             header={<View style={s.row}>{label(format, true, s.small)}{label(p.layout === "360RA-13" ? "360° 球形声场" : p.layout, true, s.small)}</View>}
-            footer={(stacked: boolean) => <><View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, navigationPreferences.immersiveSpace && { marginTop: 12 }, stacked && { flexDirection: "column", alignItems: "flex-start", gap: 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "HRTFHQ", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View></View>
+            footer={(stacked: boolean) => <><View style={[s.row, s.sceneInfo, compactLandscape && s.compactSceneInfo, navigationPreferences.immersiveSpace && { marginTop: 12 }, stacked && { flexDirection: "column", alignItems: "flex-start", gap: 12 }]}><View>{label(p.systemSpatial360RAActive ? "系统空间音频" : "SDA Spatial", false, s.settingTitle)}{label(p.systemSpatial360RAActive ? (p.outputChannels === 2 ? "2.0 系统输出" : "7.1.4 系统输出") : currentPreset?.label || "SDA 空间渲染", true, s.small)}</View><View style={{ alignItems: "flex-end" }}>{label(!showAllObjects ? `${visibleObjectCount} 显示 / ${p.objects.length} 对象` : p.objects.length + " 个对象", false, s.settingTitle)}<Pressable accessibilityRole="switch" accessibilityLabel="显示全部对象" accessibilityState={{ checked: showAllObjects }} onPress={() => setShowAllObjects(value => !value)}>{label(showAllObjects ? "仅显示发声对象" : "显示全部对象", true, s.small)}</Pressable></View></View>
           {label("轻点全屏 · 单指旋转 · 双指缩放", true, [s.sceneHint, compactLandscape && s.compactSceneHint, navigationPreferences.immersiveSpace && { marginTop: 8 }])}</>}>
             {sceneVisited && <MobileObjectScene layout={p.layout} objects={p.objects} cardboard={navigationPreferences.cardboard} onCardboardChange={navigationPreferences.setCardboard} onVrExit={() => setSpaceFullscreen(false)} showSpeakers={navigationPreferences.showChannelSpeakers} frameRate={navigationPreferences.space120Fps ? 120 : 60} fullscreen={fullscreenSpace} immersive={immersiveScene} aiScene={aiScene.scene} aiTheme={aiTheme} audioSignal={p.visualizerBands} accent={c.accent} active={page === 2 && !settings && layoutReady} displayActive={page === 2 && !settings} soundingIds={p.soundingObjectIds} paused={p.paused || !p.playing || p.ended} showAllObjects={showAllObjects} streamTimeSec={p.positionMs / 1000} sourceKey={p.selectedUri} onVisibleObjectCountChange={setVisibleObjectCount} onTap={() => setSpaceFullscreen(true)} />}
           </SpaceVisualPage>
@@ -523,7 +523,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {heading("360RA／Audio Vivid")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>{toggle("系统空间音频 · 7.1.4", "360RA / Audio Vivid：12 声道交给系统，旁路 KU100 直达渲染", p.systemSpatial360RA, p.setSystemSpatial360RA, p.busy)}</View>
-          {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA / HRTFHQ 空间渲染，并非普通立体声下混。", true, s.groupHint)}
+          {label("修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA Spatial 空间渲染，并非普通立体声下混。", true, s.groupHint)}
           {heading("ALAC 立体声")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {toggle("立体声上混 · 7.1.4", "由立体声生成环绕和高度声道，不是原生 Atmos 或独立对象", p.alacStereoUpmix, p.setAlacStereoUpmix, p.busy)}{divider()}

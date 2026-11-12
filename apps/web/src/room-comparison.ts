@@ -6,14 +6,14 @@ export type ReflectionStage="direct"|"early"|"full";
 
 export function comparisonGain(layout:string,simulation:RoomSimulation,mode:ComparisonMode,stage:ReflectionStage):number {
   if(simulation.hrtfProfile==="apple-hrtfhq-542-v1") {
-    if(mode!=="hrtfhq"&&mode!=="room")throw new Error("HRTFHQ 房间使用同一接收响应对照");
+    if(mode!=="hrtfhq"&&mode!=="room")throw new Error("SDA Spatial 房间使用同一接收响应对照");
     const values=simulation.comparison.energyDb;
     const key=mode==="hrtfhq"?"direct":stage==="full"?"room":stage;
     const energy=values[key],reference=Math.min(values.direct??Infinity,values.early??Infinity,values.room);
-    if(energy===undefined||!Number.isFinite(energy)||!Number.isFinite(reference))throw new Error("档案缺少 HRTFHQ 参考电平");
+    if(energy===undefined||!Number.isFinite(energy)||!Number.isFinite(reference))throw new Error("档案缺少 SDA Spatial 参考电平");
     return Math.max(-40,reference-energy);
   }
-  if(mode==="hrtfhq")throw new Error("旧房间档案没有 HRTFHQ 参考电平，请选择新版内置房间");
+  if(mode==="hrtfhq")throw new Error("旧房间档案没有 SDA Spatial 参考电平，请选择新版内置房间");
   const levels=ku100.layouts[layout as keyof typeof ku100.layouts];
   if(!levels)throw new Error("当前布局缺少 KU100 参考电平");
   const room=simulation.comparison.energyDb;

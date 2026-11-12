@@ -144,3 +144,25 @@ test("fullscreen intent ignores hidden-tab resume callbacks until the user expli
  setFullscreen(true);for(const index of [0,1,0,2,1])navigate(index);assert.equal(page,2);assert.equal(requested,true);
  setFullscreen(false);navigate(1);assert.equal(page,1);assert.equal(requested,false);navigate(2);assert.equal(page,2);
 });
+
+test("the rendered instance positions follow changing native snapshots at 60/120Hz and stay still for a stationary source",()=>{
+ const descriptor=Object.getOwnPropertyDescriptor(performance,"now");let now=0;
+ Object.defineProperty(performance,"now",{configurable:true,value:()=>now*1000});
+ try{for(const fps of [60,120]){
+  const memos=[],cleanup=[];let cursor=0,frame;
+  const react={createElement:(type,props,...children)=>({type,props:{...props,children}}),
+   useMemo:(fn,deps)=>{const index=cursor++,old=memos[index];if(old&&deps.every((d,i)=>d===old.deps[i]))return old.value;const value=fn();memos[index]={deps,value};return value;},useEffect:fn=>cleanup.push(fn())};
+  const{BatchedSpaceObjects}=load("apps/mobile/src/BatchedSpaceObjects.tsx",{react,"@react-three/fiber/native":{useFrame:fn=>{frame=fn;}}});
+  const visibility=new Map([[7,1]]),render=(x,stream,paused=false)=>{cursor=0;return BatchedSpaceObjects({objects:[point(7,x)],visibility,immersive:true,phase:{current:0},reduceMotion:false,sourceKey:"native-song",streamTimeSec:stream,paused});};
+  now=0;let tree=render(0,0);frame();const geometry=tree.props.children[1].props.geometry;
+  now=.125;tree=render(1,.125);assert.equal(tree.props.children[1].props.geometry,geometry);
+  let changes=0,previous=0;
+  for(let i=0;i<=fps/8;i++){now=.125+i/fps;frame();const x=geometry.getAttribute("instancePosition").array[0];assert(x>=previous&&x<=2);if(x>previous)changes++;previous=x;}
+  assert(changes>=fps/10,"GPU instance positions must change between metadata polls");
+  now=.5;render(1,.5);frame();const fixed=Array.from(geometry.getAttribute("instancePosition").array);
+  for(let i=1;i<=fps;i++){now=.5+i/fps;frame();assert.deepEqual(Array.from(geometry.getAttribute("instancePosition").array),fixed,"A fixed metadata position must not acquire decorative motion");}
+  now=2;render(-1,.1);frame();assert.equal(geometry.getAttribute("instancePosition").array[0],-2,"seek replaces the previous coordinates immediately");
+  visibility.clear();frame();for(const mesh of tree.props.children)assert.equal(mesh.props.geometry.instanceCount,0);
+  for(const dispose of cleanup)dispose();
+ }}finally{if(descriptor)Object.defineProperty(performance,"now",descriptor);else delete performance.now;}
+});

@@ -21,10 +21,13 @@ test("GL compatibility transforms syntax while preserving the upstream shader's 
  assert.match(shader.FOLIA_DITHER_FRAGMENT,/bayer4x4At\(index\)/);assert.doesNotMatch(shader.FOLIA_DITHER_FRAGMENT,/switch \(type\)|const int bayer/);
  assert.match(shader.FOLIA_DITHER_FRAGMENT,/u_sdaOpacity/);
 });
-test("actual measured energy changes Folia motion; missing/silent input does not invent a beat",()=>{
+test("measured audio changes slow gradient drift without patterned texture, swirls or brightness pulses",()=>{
  const silent=new native.FoliaLatentDriver(), loud=new native.FoliaLatentDriver();let a,b;
  for(let i=0;i<120;i++){a=silent.step(1/60,undefined,false,false);b=loud.step(1/60,[180,170,160,160,140,100],false,false);}
- assert(b.meshTime>a.meshTime);assert(b.distortion>a.distortion);assert(b.swirl>a.swirl);assert(b.pixelSize<a.pixelSize);assert.equal(a.power,0);
+ assert(b.meshTime>a.meshTime);assert(b.meshTime<=2*.075);assert.equal(a.power,0);
+ for(const v of [a,b]){assert(v.distortion<=.2);assert.equal(v.swirl,0);assert.equal(v.meshScale,1);assert.equal(v.brightness,1);assert.equal(v.saturation,1);}
+ const d=new native.FoliaLatentDriver();let previous=0;
+ for(let i=0;i<600;i++){const v=d.step(1/60,Array(6).fill(i%2?255:0),false,false);assert(v.meshTime-previous<=.075/60+1e-9);assert.equal(v.swirl,0);assert.equal(v.brightness,1);previous=v.meshTime;}
 });
 test("Folia's pause easing and reduced-motion policy stay bounded without touching audio playback",()=>{
  const d=new native.FoliaLatentDriver();for(let i=0;i<60;i++)d.step(1/60,[200,200,200,200,200,200],false,false);

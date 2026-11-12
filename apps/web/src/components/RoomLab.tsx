@@ -70,7 +70,7 @@ export default function RoomLab({layout,snapshot,onRecall,onCompare,onRestore,on
     {room&&!compatible&&<p className="cinema-warning">档案布局 {room.layout}，当前 {layout}</p>}
     {simulation&&(simulation.revision??1)<2&&<p className="cinema-warning">旧版音箱朝向档案，请重新生成房间。</p>}
     {view==="room"&&<>
-      <p className="cinema-status">{simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?"HRTFHQ · 理想全向声源 · 仿真房间":simulation?.sourceModel==="ideal-omnidirectional"?"旧版 KU100 · 理想全向声源 · 仿真房间":"Genelec 8020 实测方向性 + KU100 实测 HRIR"}</p>
+      <p className="cinema-status">{simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?"SDA Spatial · 理想全向声源 · 仿真房间":simulation?.sourceModel==="ideal-omnidirectional"?"旧版 KU100 · 理想全向声源 · 仿真房间":"Genelec 8020 实测方向性 + KU100 实测 HRIR"}</p>
       <div className="room-lab-fields">{numeric("length","前后长度 m",3,10,.1)}{numeric("width","左右宽度 m",3,8,.1)}{numeric("height","房间高度 m",2.2,4,.1)}{numeric("earHeight","耳部高度 m",.8,1.6,.1)}{(config.material!=="studio"||config.shape==="box")&&numeric("placement","音箱径向比例",.5,1,.05)}{numeric("order","反射阶数",1,12,1)}</div>
       <label className="cinema-profile">房间声学方案<Select value={config.material} disabled={busy||(room?.builtin&&!custom)} onChange={e=>setConfig(v=>({...v,material:e.target.value as RoomSimulationConfig["material"]}))}><option value="studio">录音棚控制室 · 分表面处理</option><option value="rockwool_50mm_80kgm3">岩棉 · 50 mm / 80 kg/m³</option><option value="plasterboard">双层石膏板 · 带矿棉空腔</option><option value="hard_surface">硬质表面 · 文献平均值</option>{["treated","living","reflective"].includes(config.material)&&<option value={config.material}>旧档案 · 未溯源系数</option>}</Select></label>
       <p className="cinema-source">材料系数来自声学文献；控制室采用等距近场监听和分表面处理，尺寸与覆盖比例为设计参数。</p>
@@ -86,10 +86,10 @@ export default function RoomLab({layout,snapshot,onRecall,onCompare,onRestore,on
       <p className="cinema-status">有限阶镜像声源仿真 · 非房间实测 · LFE 保留现有低频路径</p>
     </>}
     {view==="compare"&&<>
-      <div className="room-lab-compare">{(simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?([["hrtfhq","HRTFHQ 直达"],["room","HRTFHQ 房间"]] as const):([["raw","原始 KU100"],["calibrated","校准 KU100"],["room","虚拟房间"]] as const)).map(([mode,label])=><button key={mode} aria-pressed={comparison===mode} disabled={busy||!compatible||!simulation} onClick={()=>apply(mode)}>{label}{simulation&&<small>{gainFor(mode).toFixed(1)} dB</small>}</button>)}</div>
+      <div className="room-lab-compare">{(simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?([["hrtfhq","SDA Spatial 直达"],["room","SDA Spatial 房间"]] as const):([["raw","原始 KU100"],["calibrated","校准 KU100"],["room","虚拟房间"]] as const)).map(([mode,label])=><button key={mode} aria-pressed={comparison===mode} disabled={busy||!compatible||!simulation} onClick={()=>apply(mode)}>{label}{simulation&&<small>{gainFor(mode).toFixed(1)} dB</small>}</button>)}</div>
       <div className="room-lab-tabs room-lab-stages" role="group" aria-label="房间反射试听">{([["direct","仅直达"],["early","直达 + 早反射"],["full","完整房间"]] as const).map(([value,label])=><button key={value} aria-pressed={comparison!==null&&stage===value} disabled={busy||comparison===null||!compatible||!simulation||(simulation.revision??1)<2} onClick={()=>{if(comparison)apply(simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?"room":comparison,matched,value);}}>{label}</button>)}</div>
       <label className="settings-switch"><span>参考电平匹配</span><input type="checkbox" role="switch" aria-label="参考电平匹配" checked={matched} disabled={busy} onChange={e=>{const value=e.target.checked;if(comparison)apply(comparison,value);else onAudition({...audition,matched:value});}}/></label>
-      <p className="cinema-status">{simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?"同一 HRTFHQ 接收响应下对照直达声、早期反射和完整房间。":"旧版 KU100 房间对照。"}20 Hz–20 kHz 粉红噪声响应能量；不保证主观等响。</p>
+      <p className="cinema-status">{simulation?.hrtfProfile==="apple-hrtfhq-542-v1"?"同一 SDA Spatial 接收响应下对照直达声、早期反射和完整房间。":"旧版 KU100 房间对照。"}20 Hz–20 kHz 粉红噪声响应能量；不保证主观等响。</p>
       {simulation?.comparison.limited&&<p className="cinema-warning">补偿达到 −40 dB 下限，参考电平未完全匹配。</p>}
       <button disabled={busy||comparison===null} onClick={()=>void run(onRestore)}>退出对照并恢复</button>
     </>}

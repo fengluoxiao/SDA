@@ -34,7 +34,7 @@ function validateSimulation(value, speakers, layout) {
   if(value.hrtfProfile!==undefined){
     if(value.hrtfProfile!=="apple-hrtfhq-542-v1"||value.receiverPreparation!=="native-shared-clarity-v1"
       ||!/^[a-f0-9]{64}$/.test(value.hrtfSha256)||value.comparison.basis!=="native-mixed-speaker-v1"
-      ||!finite(value.comparison.energyDb.hrtfhq,-300,300)||!finite(value.comparison.gainDb.hrtfhq,-40,0))reject('HRTFHQ 房间接收响应记录无效');
+      ||!finite(value.comparison.energyDb.hrtfhq,-300,300)||!finite(value.comparison.gainDb.hrtfhq,-40,0))reject('SDA Spatial 房间接收响应记录无效');
   }
   if(value.revision>=5){
     const walls=['east','west','north','south','ceiling','floor'],d=value.studioDesign;

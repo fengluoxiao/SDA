@@ -26,3 +26,9 @@ for(const version of['26.2.1','27.0.1']){
 }
 test('older iOS keeps its supported native bordered control',()=>render('IOSMetadataSheet','25.7.1',api=>{const host=api.IOSMetadataDoneButton({onPress(){},theme:'light',accent:'#7799CC'});assert.equal(modifier(host.props.children[0],'buttonStyle'),'bordered');}));
 test('glass capability gates share the version parser instead of Number on dotted strings',()=>{for(const file of['IOSMetadataSheet','IOSMiniPlayerBackdrop','IOSNativeSettings','IOSUIKitTabs','IOSVerticalTabBar','SideNavigationRail']){const text=readFileSync('apps/mobile/src/'+file+'.tsx','utf8');assert(!text.includes('Number(Platform.Version)'));assert(text.includes('supportsIOSGlass'));}const player=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');assert.match(player,/standaloneMiniGlass = sideNavigationActive \|\| supportsIOSGlass/);assert.match(player,/!environment && standaloneMiniGlass && <IOSMiniPlayerBackdrop/);});
+
+test('the shared native Done button supports AI drawer accessibility and blocks saving-time presses',()=>render('IOSMetadataSheet','26.2.1',api=>{
+ let closed=0;const host=api.IOSMetadataDoneButton({onPress:()=>closed++,theme:'dark',accent:'#7799CC',accessibilityLabel:'关闭 AI 场景设置',disabled:true});
+ const button=host.props.children[0];assert.equal(modifier(button,'accessibilityLabel'),'关闭 AI 场景设置');assert.equal(modifier(button,'disabled'),true);
+ button.props.onPress();assert.equal(closed,0);
+}));

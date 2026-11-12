@@ -4,17 +4,19 @@ import React from "react";
 import { Modal, Platform, Pressable, Text, View } from "react-native";
 import { swiftUI } from "./IOSSystemTabs";
 
-export function IOSMetadataDoneButton({ onPress, theme, accent }: { onPress(): void; theme: "light" | "dark"; accent: string }) {
+export function IOSMetadataDoneButton({ onPress, theme, accent, accessibilityLabel: closeLabel = "关闭歌曲元数据", disabled = false }: {
+  onPress(): void; theme: "light" | "dark"; accent: string; accessibilityLabel?: string; disabled?: boolean;
+}) {
   if (swiftUI && !!(globalThis as any).expo?.getViewConfig?.("ExpoUI", "Button")) {
     const { Host, Button, Text: NativeText } = swiftUI;
-    const { buttonStyle, buttonBorderShape, accessibilityLabel, frame, font, foregroundColor } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
+    const { buttonStyle, buttonBorderShape, accessibilityLabel, frame, font, foregroundColor, disabled: disabledModifier } = require("@expo/ui/swift-ui/modifiers") as typeof import("@expo/ui/swift-ui/modifiers");
     return <Host testID="metadata-done-native-label" alignment="center" ignoreSafeArea="container" style={{ width: 76, height: 44 }} colorScheme={theme}>
-      <Button onPress={onPress} modifiers={[buttonStyle(supportsIOSGlass(Platform.OS, Platform.Version) ? "glass" : "bordered"), buttonBorderShape("capsule"), frame({ width: 76, height: 44, alignment: "center" }), accessibilityLabel("关闭歌曲元数据")]}>
+      <Button onPress={() => { if (!disabled) onPress(); }} modifiers={[disabledModifier(disabled), buttonStyle(supportsIOSGlass(Platform.OS, Platform.Version) ? "glass" : "bordered"), buttonBorderShape("capsule"), frame({ width: 76, height: 44, alignment: "center" }), accessibilityLabel(closeLabel)]}>
         <NativeText modifiers={[font({ size: 17, weight: "semibold" }), foregroundColor(accent), frame({ minWidth: 44, minHeight: 28, alignment: "center" })]}>完成</NativeText>
       </Button>
     </Host>;
   }
-  return <Pressable accessibilityRole="button" accessibilityLabel="关闭歌曲元数据" onPress={onPress} style={{ minWidth: 76, minHeight: 44, alignItems: "center", justifyContent: "center" }}><Text style={{ color: accent, fontSize: 17, fontWeight: "600" }}>完成</Text></Pressable>;
+  return <Pressable accessibilityRole="button" accessibilityLabel={closeLabel} disabled={disabled} onPress={onPress} style={{ minWidth: 76, minHeight: 44, alignItems: "center", justifyContent: "center" }}><Text style={{ color: accent, fontSize: 17, fontWeight: "600" }}>完成</Text></Pressable>;
 }
 
 export function IOSMetadataSheet({ open, onChange, children, theme }: {

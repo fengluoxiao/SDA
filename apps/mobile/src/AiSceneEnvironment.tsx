@@ -8,7 +8,7 @@ import { FOLIA_DEFAULTS, FoliaLatentDriver, FoliaFrameGuard, type FoliaAudioSign
 import { getSpaceRawDraw } from "./cardboard-renderer";
 import { SceneFrameClock } from "./scene-motion";
 // Only the final texture copy/solid overlay is SDA code. The image itself is
-// rendered by Folia's actual MeshGradient + Dithering shaders in FoliaCompositor.
+// rendered by Folia's actual MeshGradient shader in FoliaCompositor.
 const copyVertex = `attribute vec3 position;varying vec2 vUv;void main(){vUv=position.xy*.5+.5;gl_Position=vec4(position,1.);}`;
 const copyFragment = `precision mediump float;varying vec2 vUv;uniform sampler2D u_folia;uniform vec3 u_overlay;uniform float u_opacity;void main(){vec3 c=texture2D(u_folia,vUv).rgb;gl_FragColor=vec4(mix(c,u_overlay,u_opacity),1.);}`;
 const fallbackDescription = normalizeAiSceneDescription({ version: 2, name: "Folia", themes: { light: {}, dark: {} } }, 1);
@@ -41,10 +41,9 @@ export function AiSceneEnvironment({ description, theme: selected, reduceMotion,
   useEffect(() => () => compositor.dispose(), [compositor]);
   useFrame((_, dt) => { frameGuard.run(() => {
     const v = driver.step(dt, audioSignal, paused, reduceMotion);
-    const mesh = compositor.meshUniforms, dithering = compositor.ditheringUniforms;
+    const mesh = compositor.meshUniforms;
     mesh.u_time.value=v.meshTime;mesh.u_distortion.value=v.distortion;mesh.u_swirl.value=v.swirl;
     mesh.u_sdaScale.value=v.meshScale;mesh.u_sdaSaturation.value=v.saturation;mesh.u_sdaBrightness.value=v.brightness;
-    dithering.u_time.value=v.ditheringTime;dithering.u_pxSize.value=v.pixelSize;dithering.u_sdaOpacity.value=v.opacity;dithering.u_sdaScale.value=v.ditherScale;
     compositor.interpolate(reduceMotion ? 1 : 1-Math.exp(-Math.min(.05,Math.max(0,dt))*3.5));
     const staticKey = reduceMotion ? `${size.width}:${size.height}:${stereo}:${renderer.getPixelRatio()}:${themeRevision.current}` : "";
     if (reduceMotion && staticDrawKey.current === staticKey) return;

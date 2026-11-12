@@ -1,7 +1,7 @@
-import { defaultObjectSizing, defaultPatternSizing, ShaderFitOptions } from "../../../vendor/folia/paper-shaders/dist/shader-sizing.js";
+import { defaultObjectSizing, ShaderFitOptions } from "../../../vendor/folia/paper-shaders/dist/shader-sizing.js";
 import * as THREE from "three";
-import { FOLIA_VERTEX, FOLIA_MESH_FRAGMENT, FOLIA_DITHER_FRAGMENT } from "./folia-shaders";
-import { FOLIA_DEFAULTS, foliaColors } from "./folia-runtime";
+import { FOLIA_VERTEX, FOLIA_MESH_FRAGMENT } from "./folia-shaders";
+import { FOLIA_SPATIAL_TUNING, foliaColors } from "./folia-runtime";
 import { MAX_SHADER_PIXELS } from "../../../vendor/folia/latent.generated";
 import type { AiSceneTheme } from "./ai-scene";
 import type { DrawScene } from "./cardboard-renderer";
@@ -10,29 +10,29 @@ const sizing = (defaults = defaultObjectSizing) => ({ u_resolution: { value: new
 /** Original Folia/Paper shaders in a bounded offscreen surface. Main/VR presents once. */
 export class FoliaCompositor {
   readonly target = new THREE.WebGLRenderTarget(1,1,{ depthBuffer: false, stencilBuffer: false });
-  readonly meshUniforms = { ...sizing(), u_colors: { value: Array.from({ length: 10 }, () => new THREE.Vector4()) }, u_colorsCount: { value: 6 }, u_distortion: { value: FOLIA_DEFAULTS.meshDistortion as number }, u_swirl: { value: FOLIA_DEFAULTS.meshSwirl as number }, u_grainMixer: { value: 0 }, u_grainOverlay: { value: .01 }, u_sdaSaturation: { value: 1.04 }, u_sdaBrightness: { value: .94 } };
-  readonly ditheringUniforms = { ...sizing(defaultPatternSizing), u_scale: { value: .8 }, u_pxSize: { value: FOLIA_DEFAULTS.ditheringSize as number }, u_colorBack: { value: new THREE.Vector4() }, u_colorFront: { value: new THREE.Vector4() }, u_shape: { value: 2 }, u_type: { value: 3 }, u_sdaOpacity: { value: FOLIA_DEFAULTS.ditheringOpacity as number } };
+  readonly meshUniforms = { ...sizing(), u_colors: { value: Array.from({ length: 10 }, () => new THREE.Vector4()) }, u_colorsCount: { value: 6 }, u_distortion: { value: FOLIA_SPATIAL_TUNING.distortion as number }, u_swirl: { value: FOLIA_SPATIAL_TUNING.swirl as number }, u_grainMixer: { value: 0 }, u_grainOverlay: { value: 0 }, u_sdaSaturation: { value: 1 }, u_sdaBrightness: { value: 1 } };
   readonly scene = new THREE.Scene(); readonly camera = new THREE.Camera();
   private geometry = new THREE.PlaneGeometry(2,2);
   private meshMaterial = new THREE.RawShaderMaterial({ uniforms: this.meshUniforms, vertexShader: FOLIA_VERTEX, fragmentShader: FOLIA_MESH_FRAGMENT, depthTest: false, depthWrite: false });
-  private ditherMaterial = new THREE.RawShaderMaterial({ uniforms: this.ditheringUniforms, vertexShader: FOLIA_VERTEX, fragmentShader: FOLIA_DITHER_FRAGMENT, transparent: true, depthTest: false, depthWrite: false });
   private viewport = new THREE.Vector4(); private scissor = new THREE.Vector4();
-  private colorTargets: THREE.Vector4[] = []; private back = new THREE.Vector4(); private front = new THREE.Vector4(); private initialized = false;
-  constructor() { const mesh = new THREE.Mesh(this.geometry,this.meshMaterial), dither = new THREE.Mesh(this.geometry,this.ditherMaterial); mesh.frustumCulled = dither.frustumCulled = false; dither.renderOrder = 1; this.scene.add(mesh,dither); }
+  private colorTargets: THREE.Vector4[] = []; private initialized = false;
+  constructor() {
+    const mesh = new THREE.Mesh(this.geometry, this.meshMaterial);
+    mesh.name = "folia-soft-gradient"; mesh.frustumCulled = false; this.scene.add(mesh);
+  }
   setTheme(theme: AiSceneTheme) {
-    const colors = foliaColors(theme); this.colorTargets = colors.mesh.map(rgba); this.back.copy(rgba(colors.ditheringBack)); this.front.copy(rgba(colors.ditheringFront));
+    const colors = foliaColors(theme); this.colorTargets = colors.mesh.map(rgba);
     if (!this.initialized) { this.interpolate(1); this.initialized = true; }
   }
   interpolate(alpha: number) {
     for (let i=0;i<10;i++) { const target = this.colorTargets[i] || this.colorTargets[0]; if (target) this.meshUniforms.u_colors.value[i]!.lerp(target,alpha); }
-    this.ditheringUniforms.u_colorBack.value.lerp(this.back,alpha);this.ditheringUniforms.u_colorFront.value.lerp(this.front,alpha);
   }
   draw(renderer: THREE.WebGLRenderer, raw: DrawScene, width: number, height: number, pixelRatio: number) {
     if (width<=0 || height<=0) return;
     const scale=Math.min(pixelRatio,Math.sqrt(MAX_SHADER_PIXELS/(width*height)));
     const w=Math.max(1,Math.round(width*scale)), h=Math.max(1,Math.round(height*scale));
     if(this.target.width!==w||this.target.height!==h)this.target.setSize(w,h);
-    for(const u of [this.meshUniforms,this.ditheringUniforms]){u.u_resolution.value.set(w,h);u.u_pixelRatio.value=scale;}
+    for(const u of [this.meshUniforms]){u.u_resolution.value.set(w,h);u.u_pixelRatio.value=scale;}
     const target=renderer.getRenderTarget(), autoClear=renderer.autoClear, scissorTest=renderer.getScissorTest();
     renderer.getViewport(this.viewport);renderer.getScissor(this.scissor);
     // Expo GL rejects FRAMEBUFFER_BINDING (the DRAW_FRAMEBUFFER_BINDING alias).
@@ -40,5 +40,5 @@ export class FoliaCompositor {
     try { renderer.setRenderTarget(this.target);renderer.setViewport(0,0,w,h);renderer.setScissorTest(false);renderer.autoClear=true;raw(this.scene,this.camera); }
     finally {renderer.setRenderTarget(target);renderer.setViewport(this.viewport);renderer.setScissor(this.scissor);renderer.setScissorTest(scissorTest);renderer.autoClear=autoClear;}
   }
-  dispose() {this.target.dispose();this.geometry.dispose();this.meshMaterial.dispose();this.ditherMaterial.dispose();}
+  dispose() {this.target.dispose();this.geometry.dispose();this.meshMaterial.dispose();}
 }

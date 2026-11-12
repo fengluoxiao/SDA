@@ -324,7 +324,7 @@ function HeadTrackingTelemetryPanel({ samples, onClose, renderedPose }: { render
 
 /** 完整单一测量系统：每项的头部、耳道、耳廓与 BRIR 来自同一 subject。 */
 const BINAURAL_HEADS: ReadonlyArray<{ id: BinauralHead; label: string; description: string }> = [
-  ...(sharedHrtfActive ? [{id: "hrtfhq", label: "HRTFHQ（默认）", description: "四个平台共用的 HRTFHQ 响应，支持逐对象定位与头部追踪"}] : []),
+  ...(sharedHrtfActive ? [{id: "hrtfhq", label: "SDA Spatial（默认）", description: "四个平台共用的 SDA Spatial 响应，支持逐对象定位与头部追踪"}] : []),
   { id: "ku100", label: "KU100", description: "Neumann KU100 完整校准 HRTF/BRIR" },
   { id: "d2", label: "D2 假人头", description: "SADIE II D2 完整单一测量 HRTF/BRIR" },
   ...Array.from({ length: 18 }, (_, i) => ({
@@ -1769,7 +1769,7 @@ export function App() {
       if(!await api.nativeRendererLayout?.((layoutId==="auto"?detectedLayout??"7.1.4":layoutId) as LayoutId))throw new Error("对照布局设置失败");
       const hq=receiverProfile==="apple-hrtfhq-542-v1";
       const head:BinauralHead=hq?"hrtfhq":"ku100",calibrated=next!=="raw",dense=hq;
-      if(next==="hrtfhq"&&!hq)throw new Error("选择新版 HRTFHQ 房间后再对照");
+      if(next==="hrtfhq"&&!hq)throw new Error("选择新版 SDA Spatial 房间后再对照");
       if(!await api.nativeRendererHrtf?.(nativeHrtfSetName(head,dense,calibrated),.04))throw new Error("HRTF 对照切换失败");
       const settings:CinemaSettings={monitor:(await api.getCinemaSettings()).settings.monitor,enabled:true,reflectionMode:next==="hrtfhq"?"direct":stage,directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}};
       if(!await api.nativeRendererCinema?.(settings,hq||next==="room"?roomId:null)||!await api.nativeRendererComparisonGain?.(gainDb)||!await api.nativeRendererStereoMode?.("room"))throw new Error("房间对照设置失败");
@@ -1867,7 +1867,7 @@ export function App() {
     try {
       if (next === "hrtfhq" && api) {
         if (!await api.nativeRendererObjectRendering?.(true)) {
-          throw new Error("原生渲染器未接受共享 HRTFHQ 配置");
+          throw new Error("原生渲染器未接受共享 SDA Spatial 配置");
         }
       }
       await playerRef.current?.setDenseBinauralObjects(nextDense,denseBinauralBaseUrl(ku100Calibration,next));
@@ -2393,7 +2393,7 @@ export function App() {
             </div>
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"||track?.codec==="sdar"}>
-              <legend>HRTFHQ</legend>
+              <legend>SDA Spatial</legend>
               <label className="settings-switch" title="增强原有方向细节，不根据播放段落降低整个节目的音量。">
                 <span>空间平衡</span>
                 <input type="checkbox" role="switch" checked={track?.codec==="sdar"?false:spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />
@@ -2678,7 +2678,7 @@ export function App() {
                 onChange={event=>void changeKu100Calibration(event.target.checked)}/>
             </label>}
             <p className="settings-description">
-              每个档案独立使用自己的空间响应。默认 HRTFHQ 与移动端采用同一套响应，其他测量档案可用于个人对照。播放中切换实时生效。
+              每个档案独立使用自己的空间响应。默认 SDA Spatial 与移动端采用同一套响应，其他测量档案可用于个人对照。播放中切换实时生效。
             </p>
             <div className="pinna-list">
               {BINAURAL_HEADS.map((head) => (
@@ -2694,7 +2694,7 @@ export function App() {
                 </button>
               ))}
             </div>
-            <label className="settings-switch" title="使用当前档案的高解析方向集，HRTFHQ 为 542 个方向；关闭后可对照标准方向集。360RA 因含耳下层会在播放期间自动使用该网格；个人生成档案暂无独立高解析测量集。">
+            <label className="settings-switch" title="使用当前档案的高解析方向集，SDA Spatial 为 542 个方向；关闭后可对照标准方向集。360RA 因含耳下层会在播放期间自动使用该网格；个人生成档案暂无独立高解析测量集。">
               <span>高解析 HRTF</span>
               <input
                 type="checkbox"

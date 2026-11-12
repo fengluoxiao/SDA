@@ -58,18 +58,33 @@ test("clearing credentials disables generation and deletes the secure item", asy
   const h = storageHarness({ key: "old-key", settings }); h.render(); await tick(); const v = h.render();
   assert.equal(await v.save({ ...settings, enabled: false }, undefined, true), true); assert.equal(h.key, ""); assert.equal(h.render().hasApiKey, false); assert.equal(h.keys.at(-1).deleted, true);
 });
-test("both mobile systems use the same modal, conceal stored key and save drafts before generation", async () => {
+test("both mobile systems reuse the metadata drawer, conceal stored key and save drafts before generation", async () => {
   const h = hooks(), events = [];
   const native = Object.fromEntries(["Modal", "SafeAreaView", "KeyboardAvoidingView", "View", "Text", "TextInput", "Pressable", "ScrollView", "Switch", "ActivityIndicator"].map(name => [name, name]));
   Object.assign(native, { Platform: { OS: "ios" }, useColorScheme: () => "dark", StyleSheet: { create: x => x } });
-  const api = moduleFor(uiBundle, { react: h.react, "react-native": native, "./app-theme": { useAppTheme: () => ({ accent: "#7799CC" }) }, "react-native-safe-area-context": { SafeAreaProvider: "SafeAreaProvider", SafeAreaView: "SafeAreaView", initialWindowMetrics: {} } });
+  const api = moduleFor(uiBundle, { react: h.react, "react-native": native,
+    "./app-theme": { useAppTheme: () => ({ id: "sakiko", accent: "#7799CC" }) },
+    "./IOSMetadataSheet": { IOSMetadataSheet: "MetadataSheet", IOSMetadataDoneButton: "MetadataDone" },
+    "./AndroidChrome": { hasAndroidChrome: false, AndroidGlassAction: "AndroidDone" },
+    "./android-material-theme": { androidMaterialTheme: () => ({ ink: "#eee", muted: "#aaa", primary: "#7799CC", panel: "#222", bg: "#111" }) },
+    "./ai-scene": model,
+    "react-native-safe-area-context": { SafeAreaProvider: "SafeAreaProvider", SafeAreaView: "SafeAreaView", initialWindowMetrics: {} } });
   const value = { settings: { ...settings, enabled: true }, settingsOpen: true, ready: true, saving: false, hasApiKey: true, pending: false, scene: null, error: "", preferenceError: "", async save(draft, key) { events.push(["save", draft, key]); return true; }, regenerate() { events.push(["generate"]); }, closeSettings() { events.push(["close"]); }, cancel() {} };
-  const render = () => { h.begin(); const tree = api.AiSceneSettingsModal({ value }); h.flush(); return tree; };
+  const wrapper=api.AiSceneSettingsModal({ value });
+  const drawer=nodes(wrapper).find(n=>n.type==="MetadataSheet");assert(drawer);assert.equal(drawer.props.open,true);assert.equal(drawer.props.theme,"dark");
+  assert.equal(drawer.props.children[0].type,api.AiSceneSettingsContent);
+  const render = (onClose=value.closeSettings,sheet=true) => { h.begin(); const tree = api.AiSceneSettingsContent({ value, onClose, sheet }); h.flush(); return tree; };
   render(); let tree = render(), fields = nodes(tree).filter(n => n.type === "TextInput");
   const input = fields.find(n => n.props.accessibilityLabel === "API Key"); assert.equal(input.props.value, ""); assert.equal(input.props.secureTextEntry, true); assert.match(input.props.placeholder, /已安全保存/);
   input.props.onChangeText("new-secret"); tree = render(); nodes(tree).find(n => n.props.testID === "ai-scene-generate").props.onPress(); await tick();
   assert.deepEqual(events.map(e => e[0]), ["save", "generate"]); assert.equal(events[0][2], "new-secret");
-  native.Platform.OS = "android"; tree = render(); assert.equal(nodes(tree).filter(n => n.props?.testID === "ai-scene-generate").length, 1);
+  native.Platform.OS = "android"; tree = render(()=>events.push(["native-sheet-close"]));
+  assert.deepEqual(tree.props.edges,["bottom"]);assert.equal(nodes(tree).filter(n => n.props?.testID === "ai-scene-generate").length, 1);
+  nodes(tree).find(n=>n.props.testID==="ai-scene-save").props.onPress();await tick();
+  assert.equal(events.at(-1)[0],"native-sheet-close","save uses Android's supplied animated close callback");
+  value.saving=true;tree=render();assert.equal(nodes(tree).find(n=>n.type==="MetadataDone").props.disabled,true);
+  assert.equal(nodes(tree).find(n=>n.props.testID==="ai-scene-save").props.disabled,true);
+  assert.equal(nodes(tree).find(n=>n.props.testID==="ai-scene-generate").props.disabled,true);
 });
 
 test("saving changed credentials then generating manually survives the next React settings effect", async () => {

@@ -29,7 +29,7 @@ function createRoomLab({runtimeFile,storeRoot,assetsRoot,nativeRoot=()=>null,per
     const config=JSON.parse(fs.readFileSync(runtimeFile,'utf8'));
     const native=nativeRoot();
     if(native){config.source='ideal';config.hrtf=path.join(native,'room-hrtfhq','hrtf-set.json');config.roomReference=path.join(native,process.platform==='win32'?'SdaRoomReference.exe':'SdaRoomReference');config.liveHrtf=path.join(native,'hrtf-assets','hrtf-dense','hrtf-set.json');}
-    for(const key of ['roomReference','liveHrtf'])if(typeof config[key]!=='string'||!fs.existsSync(config[key]))throw new Error(`HRTFHQ 仿真工具缺失：${key}`);
+    for(const key of ['roomReference','liveHrtf'])if(typeof config[key]!=='string'||!fs.existsSync(config[key]))throw new Error(`SDA Spatial 仿真工具缺失：${key}`);
     for(const key of ['python','script','source','hrtf'])if(typeof config[key]!=='string'||(key==='source'&&config[key]==='ideal'?false:!fs.existsSync(config[key])))throw new Error(`仿真文件缺失：${key}`);
     return config;
   };
