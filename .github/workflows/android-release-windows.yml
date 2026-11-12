@@ -83,6 +83,8 @@ jobs:
         run: |
           node scripts/test-mobile-lyrics.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Shared lyrics UI regression failed' }
+          python scripts/test-android-source-manifest.py
+          if ($LASTEXITCODE -ne 0) { throw 'Android source manifest regression failed' }
       - name: Verify native head tracking startup and rendered audio
         run: |
           node scripts/test-native-head-tracking.mjs

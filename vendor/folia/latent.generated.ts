@@ -1,4 +1,4 @@
-// Generated from Folia GPL-3.0 source; see upstream.json and LICENSE. Do not edit function bodies.
+// Generated from Folia AGPL-3.0 source; see upstream.json and LICENSE. Do not edit function bodies.
 type Theme = { backgroundColor: string; primaryColor: string; secondaryColor: string; accentColor: string };
 type LatentBackgroundColorSource = "cover-only" | "cover-theme";
 export const DEFAULT_LATENT_BACKGROUND_TUNING = {

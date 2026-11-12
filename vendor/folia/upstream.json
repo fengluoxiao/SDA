@@ -2,7 +2,7 @@
   "folia": {
     "repository": "https://github.com/chthollyphile/folia-major",
     "commit": "a44758bbc02929225ca7304b5a4c4580d7b4e87b",
-    "license": "GPL-3.0",
+    "license": "AGPL-3.0",
     "files": {
       "upstream/LatentBackground.tsx.source": "1866c2e97659366c41bbf15f504de6388fd0e2fb5e4268d450372aa8bc09e4ef",
       "upstream/types.ts.source": "4cd0c54963feb9790c6d33d701e3dfa7666f53345c3dcbfb26cb87d8de16a41a",

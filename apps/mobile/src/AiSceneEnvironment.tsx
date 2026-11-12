@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { Listener } from "../../../packages/renderer/src/scene-models";
 import { normalizeAiSceneDescription, sceneColorLuminance, type AiSceneDescription, type AiSceneTheme } from "./ai-scene";
 import { FoliaCompositor } from "./FoliaCompositor";
-import { FOLIA_DEFAULTS, FoliaLatentDriver, type FoliaAudioSignal } from "./folia-runtime";
+import { FOLIA_DEFAULTS, FoliaLatentDriver, FoliaFrameGuard, type FoliaAudioSignal } from "./folia-runtime";
 import { getSpaceRawDraw } from "./cardboard-renderer";
 import { SceneFrameClock } from "./scene-motion";
 // Only the final texture copy/solid overlay is SDA code. The image itself is
@@ -19,12 +19,13 @@ export function localFoliaTheme(accent: string, mode: "light" | "dark"): AiScene
   } }, 1).themes[mode];
 }
 /** Direct native adapter for Folia Latent. One shared GL context, including VR. */
-export function AiSceneEnvironment({ description, theme: selected, reduceMotion, paused, showListener, audioSignal, stereo = false, frameRate = 60 }: {
+export function AiSceneEnvironment({ description, theme: selected, reduceMotion, paused, showListener, audioSignal, stereo = false, frameRate = 60, onRenderError }: {
   description?: AiSceneDescription | null; theme?: AiSceneTheme; reduceMotion: boolean; paused: boolean; showListener: boolean;
-  audioSignal?: FoliaAudioSignal; stereo?: boolean; frameRate?: number;
+  audioSignal?: FoliaAudioSignal; stereo?: boolean; frameRate?: number; onRenderError?: (error: unknown) => void;
 }) {
   const theme = selected || (description ? normalizeAiSceneDescription(description, description.seed).themes.dark : fallbackDescription.themes.dark);
   const [compositor, driver, clock] = useMemo(() => [new FoliaCompositor(), new FoliaLatentDriver(paused), new SceneFrameClock()] as const, []);
+  const frameGuard = useMemo(() => new FoliaFrameGuard(), []);
   const renderer = useThree(state => state.gl), size = useThree(state => state.size);
   const themeRevision = useRef(0), staticDrawKey = useRef("");
   const oldTheme = useRef<AiSceneTheme | null>(null), mode = useRef(sceneColorLuminance(theme.backgroundColor) > .3);
@@ -38,7 +39,7 @@ export function AiSceneEnvironment({ description, theme: selected, reduceMotion,
     copyUniforms.u_overlay.value.set(parseInt(theme.backgroundColor.slice(1,3),16)/255,parseInt(theme.backgroundColor.slice(3,5),16)/255,parseInt(theme.backgroundColor.slice(5,7),16)/255);
   }, [theme, compositor, copyUniforms]);
   useEffect(() => () => compositor.dispose(), [compositor]);
-  useFrame((_, dt) => {
+  useFrame((_, dt) => { frameGuard.run(() => {
     const v = driver.step(dt, audioSignal, paused, reduceMotion);
     const mesh = compositor.meshUniforms, dithering = compositor.ditheringUniforms;
     mesh.u_time.value=v.meshTime;mesh.u_distortion.value=v.distortion;mesh.u_swirl.value=v.swirl;
@@ -51,7 +52,7 @@ export function AiSceneEnvironment({ description, theme: selected, reduceMotion,
       compositor.draw(renderer,getSpaceRawDraw(renderer),size.width/(stereo?2:1),size.height,renderer.getPixelRatio());
       staticDrawKey.current = staticKey;
     }
-  });
+  }, onRenderError); });
   return <>
     <color attach="background" args={[theme.backgroundColor]} />
     <ambientLight intensity={1} /><directionalLight position={[2,4,3]} intensity={1.1} />

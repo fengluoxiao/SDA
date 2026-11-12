@@ -6,7 +6,7 @@
 - `latent.generated.ts` 由 `node scripts/sync-folia-runtime.mjs` 从上游 AST 提取默认参数及颜色、声音响应函数；函数体保持原样。
 - `paper-shaders/` 保存未修改的原始运行时代码；Three/Expo 兼容转换只在 SDA 适配层进行。
 - `upstream.json` 记录来源、版本、npm 完整性和原文件 SHA-256，验证脚本检查所有原文。
-- `LICENSE` 为 Folia 的 GPL-3.0；Paper Shaders 的 Apache-2.0 LICENSE 与 NOTICE 保存在对应目录。分发时应随附这些文件及对应源代码。
+- `LICENSE` 为 Folia 的 AGPL-3.0；Paper Shaders 的 Apache-2.0 LICENSE 与 NOTICE 保存在对应目录。分发时应随附这些文件及对应源代码。
 
 SDA 适配层负责共享 GL/VR 合成、尺寸、暂停与后台生命周期、主题数据输入。没有运行上游播放器 UI，没有向浏览器或 AI 发送音频。
 

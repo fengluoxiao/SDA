@@ -35,9 +35,10 @@ export class FoliaCompositor {
     for(const u of [this.meshUniforms,this.ditheringUniforms]){u.u_resolution.value.set(w,h);u.u_pixelRatio.value=scale;}
     const target=renderer.getRenderTarget(), autoClear=renderer.autoClear, scissorTest=renderer.getScissorTest();
     renderer.getViewport(this.viewport);renderer.getScissor(this.scissor);
-    const context=renderer.getContext(), framebuffer=context.getParameter(context.FRAMEBUFFER_BINDING);
+    // Expo GL rejects FRAMEBUFFER_BINDING (the DRAW_FRAMEBUFFER_BINDING alias).
+    // Three owns the target handles and restores the native drawable via null.
     try { renderer.setRenderTarget(this.target);renderer.setViewport(0,0,w,h);renderer.setScissorTest(false);renderer.autoClear=true;raw(this.scene,this.camera); }
-    finally {renderer.setRenderTarget(target);renderer.setViewport(this.viewport);renderer.setScissor(this.scissor);renderer.setScissorTest(scissorTest);renderer.autoClear=autoClear;context.bindFramebuffer(context.FRAMEBUFFER,framebuffer);}
+    finally {renderer.setRenderTarget(target);renderer.setViewport(this.viewport);renderer.setScissor(this.scissor);renderer.setScissorTest(scissorTest);renderer.autoClear=autoClear;}
   }
   dispose() {this.target.dispose();this.geometry.dispose();this.meshMaterial.dispose();this.ditherMaterial.dispose();}
 }

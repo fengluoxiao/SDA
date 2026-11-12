@@ -48,3 +48,19 @@ test("reduced motion freezes reactive deformation as well as shader time",()=>{
  const d=new native.FoliaLatentDriver();for(let i=0;i<30;i++)d.step(1/60,[200,200,200,200,200,200],false,false);
  const a=d.step(1/60,[255,255,255,255,255,255],false,true),b=d.step(1/60,[0,0,0,0,0,0],false,true);assert.deepEqual(a,b);assert.equal(a.power,0);
 });
+
+test("a native render-loop exception is reported once and does not escape to React Native fatal handling",()=>{
+ const guard=new native.FoliaFrameGuard(),reports=[];let calls=0;
+ const error=new Error("EXGL: getParameter() doesn't support gl.36006 yet!");
+ assert.equal(guard.run(()=>{calls++;throw error;},e=>reports.push(e)),false);
+ assert.equal(guard.run(()=>{calls++;},e=>reports.push(e)),false);
+ assert.equal(calls,1);assert.deepEqual(reports,[error]);assert.equal(guard.failed,true);
+ const world=new native.FoliaFrameGuard(),offscreen=new native.FoliaFrameGuard();let worldDraws=0;
+ offscreen.run(()=>{throw error;},e=>world.fail(e));world.run(()=>worldDraws++);assert.equal(worldDraws,0,"the main pass must not continue after an offscreen failure");
+ const retry=new native.FoliaFrameGuard();assert.equal(retry.run(()=>{calls++;}),true);assert.equal(calls,2);
+ const scene=readFileSync("apps/mobile/src/MobileObjectScene.tsx","utf8");assert.match(scene,/active && foreground && !failure/);assert.match(scene,/onRenderError=\{reportRenderError\}/);
+});
+test("Folia license metadata matches the actual upstream AGPL license shipped with the app",()=>{
+ const info=JSON.parse(readFileSync("vendor/folia/upstream.json","utf8")),notices=JSON.parse(readFileSync("vendor/folia/notices.json","utf8"));
+ assert.equal(info.folia.license,"AGPL-3.0");assert.match(notices.foliaLicense,/GNU AFFERO GENERAL PUBLIC LICENSE/);assert.equal(notices.foliaLicense,readFileSync("vendor/folia/LICENSE","utf8"));
+});

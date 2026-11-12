@@ -46,6 +46,8 @@ def main():
         assert len(bundles) == 1, 'Missing packaged JavaScript bundle'
         bundle = archive.read(bundles[0])
         for marker in markers: assert marker in bundle, 'Missing lyrics UI: ' + marker.decode()
+        for license_title in ['GNU AFFERO GENERAL PUBLIC LICENSE', 'Apache License']:
+            assert license_title.encode() in bundle or license_title.encode('utf-16-le') in bundle, 'Missing upstream license: ' + license_title
         for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://']:
             assert marker.encode() not in bundle and marker.encode('utf-16-le') not in bundle, 'Development fixture shipped: ' + marker
     result = {'platform': platform, 'version': config['version'], 'build': config['android']['versionCode'] if platform == 'Android' else config['ios']['buildNumber'],

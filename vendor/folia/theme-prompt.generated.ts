@@ -1,4 +1,4 @@
-// Generated from Folia GPL-3.0 source; see upstream.json and LICENSE.
+// Generated from Folia AGPL-3.0 source; see upstream.json and LICENSE.
 export const FOLIA_THEME_PROMPT = `Analyze the mood of the provided song source text and generate TWO visual theme configurations for a music player - one for LIGHT mode and one for DARK mode.
 
 DUAL THEME REQUIREMENTS:

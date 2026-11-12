@@ -20,7 +20,7 @@ const types = readFileSync(resolve(directory, "upstream/types.ts.source"), "utf8
 let defaults;
 for (const node of tree.statements) if (ts.isVariableStatement(node)) for (const d of node.declarationList.declarations) if (d.name.getText(tree) === "DEFAULT_LATENT_BACKGROUND_TUNING") defaults = d.initializer.getText(tree);
 if (!defaults) throw Error("Missing Folia tuning defaults");
-const output = '// Generated from Folia GPL-3.0 source; see upstream.json and LICENSE. Do not edit function bodies.\n' +
+const output = '// Generated from Folia AGPL-3.0 source; see upstream.json and LICENSE. Do not edit function bodies.\n' +
  'type Theme = { backgroundColor: string; primaryColor: string; secondaryColor: string; accentColor: string };\n' +
  'type LatentBackgroundColorSource = "cover-only" | "cover-theme";\n' +
  'export const DEFAULT_LATENT_BACKGROUND_TUNING = ' + defaults + ' as const;\n' + blocks.join('\n') + '\n';
@@ -33,6 +33,6 @@ const promptSource=readFileSync(resolve(directory,"upstream/aiThemePrompts.ts.so
 let prompt;
 for(const node of promptTree.statements)if(ts.isVariableStatement(node))for(const d of node.declarationList.declarations)if(d.name.getText(promptTree)==="THEME_GENERATION_PROMPT_PREFIX")prompt=d.initializer.getText(promptTree);
 if(!prompt)throw Error("Folia theme prompt missing");
-const promptOutput="// Generated from Folia GPL-3.0 source; see upstream.json and LICENSE.\nexport const FOLIA_THEME_PROMPT = "+prompt+";\n";
+const promptOutput="// Generated from Folia AGPL-3.0 source; see upstream.json and LICENSE.\nexport const FOLIA_THEME_PROMPT = "+prompt+";\n";
 const promptPath=resolve(directory,"theme-prompt.generated.ts");
 if(process.argv.includes("--check")){if(readFileSync(promptPath,"utf8")!==promptOutput)throw Error("Folia theme prompt differs from upstream");}else writeFileSync(promptPath,promptOutput);

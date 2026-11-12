@@ -1,3 +1,4 @@
+import { FoliaFrameGuard } from "./folia-runtime";
 import { AiSceneEnvironment } from "./AiSceneEnvironment";
 import { sceneColorLuminance } from "./ai-scene";
 import type { AiSceneDescription, AiSceneTheme } from "./ai-scene";
@@ -36,7 +37,7 @@ interface ActivityProps {
 }
 
 function Scene({ objects, cameraInput, layout, soundingIds, paused = false, showAllObjects = false,
-  streamTimeSec = 0, sourceKey, audioSignal, onVisibleObjectCountChange, immersive, aiScene, aiTheme, accent, reduceMotion, frameRate, firstPerson, showSpeakers, cardboard, vrPose }: ActivityProps & { aiScene?: AiSceneDescription | null; aiTheme?: AiSceneTheme; cardboard?: CardboardConfig; vrPose?: CardboardPose; immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; showSpeakers: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
+  streamTimeSec = 0, sourceKey, audioSignal, onVisibleObjectCountChange, immersive, aiScene, aiTheme, onRenderError, accent, reduceMotion, frameRate, firstPerson, showSpeakers, cardboard, vrPose }: ActivityProps & { aiScene?: AiSceneDescription | null; aiTheme?: AiSceneTheme; onRenderError?: (error: unknown) => void; cardboard?: CardboardConfig; vrPose?: CardboardPose; immersive: boolean; accent: string; reduceMotion: boolean; frameRate: number; firstPerson: boolean; showSpeakers: boolean; layout: "2.0" | "7.1.4" | "360RA-13"; objects: readonly MobileObjectPoint[]; cameraInput: SceneCameraInput }) {
   const phase = useMemo(() => ({ current: 0 }), [sourceKey]);
   const activity = useMemo(() => new MobileObjectActivity(), [sourceKey]);
   const visibility = useMemo(() => new Map<number, number>(), []);
@@ -52,10 +53,12 @@ function Scene({ objects, cameraInput, layout, soundingIds, paused = false, show
     }
   }, -1);
   const pacing = useMemo(() => new SceneFrameClock(), []);
-  useFrame(state => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, 1);
+  const frameGuard = useMemo(() => new FoliaFrameGuard(), []);
+  const handleRenderError = React.useCallback((error: unknown) => frameGuard.fail(error, onRenderError), [frameGuard, onRenderError]);
+  useFrame(state => { frameGuard.run(() => { if (pacing.due(performance.now() / 1000, frameRate)) state.gl.render(state.scene, state.camera); }, onRenderError); }, 1);
   return <>
     <MobileSceneCamera cardboard={cardboard} vrPose={vrPose} input={cameraInput} firstPerson={firstPerson} immersive={immersive} layout={layout} />
-    {aiScene || immersive ? <AiSceneEnvironment key={sourceKey} description={aiScene} theme={aiTheme} audioSignal={audioSignal} stereo={!!cardboard?.enabled} frameRate={frameRate} reduceMotion={reduceMotion} paused={paused} showListener={!firstPerson} /> : <>
+    {aiScene || immersive ? <AiSceneEnvironment key={sourceKey} description={aiScene} onRenderError={handleRenderError} theme={aiTheme} audioSignal={audioSignal} stereo={!!cardboard?.enabled} frameRate={frameRate} reduceMotion={reduceMotion} paused={paused} showListener={!firstPerson} /> : <>
     <color attach="background" args={[PALETTE.dark.bg]} />
     <ambientLight intensity={0.75} /><directionalLight position={[2.5, 4, 2]} intensity={1.2} />
     {layout === "360RA-13" ? <SphericalRoom p={PALETTE.dark} /> : <Room p={PALETTE.dark} />}
@@ -84,7 +87,8 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     setForeground(AppState.currentState === "active");
     return () => subscription.remove();
   }, []);
-  const renderActive = active && foreground;
+  const [failure, setFailure] = React.useState<string | null>(null);
+  const renderActive = active && foreground && !failure;
   const effectiveFrameRate = useSceneDisplayPolicy((displayActive ?? active) && foreground, frameRate, fullscreen);
   const view = useRef<React.ComponentRef<typeof View>>(null);
   const [reduceMotion, setReduceMotion] = React.useState(false);
@@ -125,10 +129,12 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
     return () => engine?.setSceneRenderingRequested?.(false);
   }, [renderActive, mounted]);
 
-  const [failure, setFailure] = React.useState<string | null>(null);
   const firstFrame = useRef(false);
   const alive = useRef(true);
   React.useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const reportRenderError = React.useCallback((error: unknown) => {
+    if (alive.current) setFailure(error instanceof Error ? error.message : String(error));
+  }, []);
   const currentAttempt = useRef(attempt);
   currentAttempt.current = attempt;
   // Avoid creating the first GL surface during an offscreen pager transition.
@@ -293,7 +299,7 @@ export function MobileObjectScene({ objects, layout, active, displayActive, onIn
         }
       };
     }}>
-      <Scene cardboard={vrActive ? cardboard : undefined} vrPose={vrSession.pose.current} {...activityProps} immersive={immersive} aiScene={aiScene} aiTheme={aiTheme} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} showSpeakers={showSpeakers} layout={layout} objects={objects} cameraInput={input.current} />
+      <Scene cardboard={vrActive ? cardboard : undefined} vrPose={vrSession.pose.current} {...activityProps} onRenderError={reportRenderError} immersive={immersive} aiScene={aiScene} aiTheme={aiTheme} accent={accent} reduceMotion={reduceMotion} frameRate={effectiveFrameRate} firstPerson={fullscreen} showSpeakers={showSpeakers} layout={layout} objects={objects} cameraInput={input.current} />
     </Canvas></SceneBoundary>}
     {(!ready || failure) && <View pointerEvents={failure ? "auto" : "none"} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ color: failure ? "#ffb4a8" : "#a8adb4", padding: 12 }}>{failure || "正在初始化 3D 空间视图…"}</Text>
