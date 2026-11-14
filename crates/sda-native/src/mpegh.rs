@@ -218,7 +218,7 @@ impl Drop for MpeghDecoder {
 fn cicp_label(c: i32) -> Option<&'static str> {
     Some(match c {
         0=>"L",1=>"R",2=>"C",3|26=>"LFE",4|13=>"Ls",5|14=>"Rs",6=>"Lc",7=>"Rc",8|41=>"Lb",9|42=>"Rb",10=>"Cb",
-        15=>"Lw",16=>"Rw",17|32=>"Tfl",18|33=>"Tfr",19=>"Tfc",20|30=>"Tbl",21|31=>"Tbr",22=>"Tbc",23=>"Tsl",24=>"Tsr",25=>"Tc",_=>return None,
+        15=>"Lw",16=>"Rw",17|32=>"Tfl",18|33=>"Tfr",19=>"Tfc",20|30=>"Tbl",21|31=>"Tbr",22=>"Tbc",23=>"Tsl",24=>"Tsr",25=>"Tc",27=>"I_L_L045",28=>"I_L_R045",29=>"I_L_000",_=>return None,
     })
 }
 // MHAS framing only, equivalent to Windows diagnostic-framing.ts. This prevents
@@ -254,6 +254,75 @@ fn access_unit(bytes: &[u8], start: usize) -> Result<Option<usize>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lower_cicp_channels_keep_distinct_negative_height_bed_labels() {
+        let expected = ["I_L_L045", "I_L_R045", "I_L_000"];
+        let labels: Vec<String> = [27, 28, 29]
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let label = cicp_label(id);
+                assert_eq!(
+                    label,
+                    Some(expected[i]),
+                    "lower CICP speaker {id} lost geometry"
+                );
+                label.unwrap().into()
+            })
+            .collect();
+        let frame = FrameData {
+            downmix_trims: vec![],
+            reference_loudness: None,
+            compatibility_bed: None,
+            codec: "mpegh",
+            sample_rate: 48000,
+            sample_pos: 0,
+            raw_bed_labels: labels.clone(),
+            channels: vec![vec![0.001; 1024], vec![0.002; 1024], vec![0.003; 1024]],
+            labels: labels.clone(),
+            events: vec![],
+            object_channels: vec![],
+            program_loudness: None,
+            ramp_duration: 0,
+        };
+        let mut router = crate::frame_router::FrameRouter::default();
+        let mut commands = router.route(frame).unwrap();
+        commands.extend(router.finish().unwrap());
+        assert_eq!(router.topology(), (labels.clone(), 0));
+        let declarations: Vec<_> = commands
+            .iter()
+            .filter_map(|c| match c {
+                crate::render_command::RenderCommand::Command(crate::Command::AddSource {
+                    id,
+                    bed_label,
+                    ..
+                }) => Some((id.clone(), bed_label.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(declarations.len(), 3);
+        for i in 0..3 {
+            assert_eq!(
+                declarations[i],
+                (format!("bed:{i}"), Some(labels[i].clone()))
+            );
+        }
+        let entries: Vec<_> = commands
+            .iter()
+            .filter_map(|c| match c {
+                crate::render_command::RenderCommand::PcmFrame { entries, .. } => Some(entries),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 3);
+        for (i, (_, pcm)) in entries.iter().enumerate() {
+            assert!(pcm
+                .iter()
+                .all(|v| (*v - 0.001 * (i + 1) as f32).abs() < 1e-8));
+        }
+    }
+
     fn capture(bytes: &[u8], chunk: usize) -> (Vec<f32>, Vec<String>, Vec<f32>) {
         let mut decoder = MpeghDecoder::new().unwrap();
         assert!(MpeghDecoder::new().is_err(), "singleton cannot acquire a second owner");

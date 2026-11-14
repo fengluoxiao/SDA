@@ -39,6 +39,12 @@ struct DiffuseField {
 // and listener changes still retarget immediately.
 const CONTINUOUS_DIRECTION_DEADBAND_COS: f32 = 0.999_847_7;
 const CONTINUOUS_GAIN_DEADBAND: f32 = 0.01;
+// Retain the existing immediate one-degree route policy. Quiet, slow rear
+// movement also refreshes after three rendered partitions once it has really
+// moved 0.2 degrees; sub-floor jitter and stationary sources do not rebuild.
+const REAR_SMALL_STEP_COS: f64 = 0.999_993_907_657_790_4;
+const REAR_MAX_HELD_BLOCKS: u8 = 3;
+
 
 /// Blend in the measured anchor continuously as coherent energy collapses.
 /// The 0.72..0.90 interval is an engineering guard transition, not a fitted
@@ -366,6 +372,7 @@ pub struct ContinuousSource {
     hardware: crate::hardware::Chain,
     convolver: crate::convolution::StereoPartitionedConvolver,
     route: Option<Route>,
+    route_age_blocks: u8,
     pending: Option<Route>,
     near: crate::near_field::Filter,
     /// Per-ear occlusion amounts for the current block (1 = open), applied to
@@ -398,6 +405,7 @@ impl ContinuousSource {
                 crate::convolution::DEFAULT_PARTITION,
             )?,
             route: None,
+            route_age_blocks: 0,
             pending: None,
             near: Default::default(),
             occlusion_targets: [1.0; 2],
@@ -426,12 +434,42 @@ impl ContinuousSource {
         let route = (direction, layout, gains, amounts);
         // Metadata may repeat before the next convolution block. An equivalent
         // pending target still needs to be applied; it is not the active filter.
-        if self.pending.as_ref().is_some_and(|pending| equivalent_route(pending, &route)) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| equivalent_route(pending, &route))
+        {
             return;
         }
-        self.pending = self.route.as_ref()
-            .is_none_or(|current| !equivalent_route(current, &route))
+        self.pending = self
+            .route
+            .as_ref()
+            .is_none_or(|current| {
+                !equivalent_route(current, &route) || self.slow_rear_update_due(direction)
+            })
             .then_some(route);
+    }
+    fn slow_rear_update_due(&self, target: Direction) -> bool {
+        if self.route_age_blocks < REAR_MAX_HELD_BLOCKS {
+            return false;
+        }
+        let Some((current, _, _, _)) = self.route else {
+            return false;
+        };
+        if current.position == target.position {
+            return false;
+        }
+        let a = current.position.map(f64::from);
+        let b = target.position.map(f64::from);
+        let aa = a.iter().map(|v| v * v).sum::<f64>();
+        let bb = b.iter().map(|v| v * v).sum::<f64>();
+        let norm = (aa * bb).sqrt();
+        // Include the exact side meridians symmetrically despite float noise,
+        // and compare bearings independently of normalized ADM radius.
+        let relative = spatial::head_relative_adm(target.position, target.head);
+        norm > 1e-12
+            && f64::from(relative[1]) <= bb.sqrt() * 1e-6
+            && a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>() / norm < REAR_SMALL_STEP_COS
     }
     fn finish(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
         self.finish_with_preparation(set, cfg!(all(target_os = "ios", feature = "async-filter-preparation")))
@@ -496,6 +534,7 @@ impl ContinuousSource {
                     );
                 }
                 self.route = Some((direction, layout, gains, amounts));
+                self.route_age_blocks = 0;
                 if cfg!(all(target_os = "ios", feature = "async-filter-preparation")) {
                     self.configure_preparation(set);
                     self.pending = None;
@@ -517,6 +556,7 @@ impl ContinuousSource {
             frame.near = [1.0; 2];
         }
         self.occlusion_targets = [1.0; 2];
+        self.route_age_blocks = self.route_age_blocks.saturating_add(1);
     }
     fn update_prepared_route(&mut self, set: &crate::hrtf::NativeHrtfSet) -> Result<(), String> {
         if self.preparation_set != set.preparation_id() {
@@ -548,6 +588,7 @@ impl ContinuousSource {
                     if self.route.is_none() { self.convolver.set_prepared_filter(filter); }
                     else { self.convolver.transition_to(filter, crate::convolution::DIRECTIONAL_FILTER_TRANSITION_SAMPLES); }
                     self.route = Some(route);
+                    self.route_age_blocks = 0;
                     self.last_preparation_error = None;
                     self.applied_preparation_version = version;
                     if target.as_ref().is_some_and(|target| equivalent_route(target, &route)) { self.pending = None; }
@@ -2220,6 +2261,62 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn rear_vertical_refresh_covers_every_meridian_without_static_or_front_work() {
+        let set = crate::hrtf::NativeHrtfSet::synthetic(12, 64, 0).unwrap();
+        let mut source = ContinuousSource::new(&set).unwrap();
+        let direction = |az: f64, el: f64| {
+            let a = az.to_radians();
+            let e = el.to_radians();
+            Direction {
+                position: [
+                    (-a.sin() * e.cos()) as f32,
+                    (a.cos() * e.cos()) as f32,
+                    e.sin() as f32,
+                ],
+                head: None,
+                width: 0.,
+                height: 0.,
+                depth: 0.,
+                diffuse: 0.,
+                horizontal_only: false,
+            }
+        };
+        let layout = crate::vbap::LayoutId::Sony360Ra13;
+        let gains = [0.; crate::vbap::MAX_BUS_COUNT];
+        for az in 90..=270 {
+            for elevation in -90..=90 {
+                let base = direction(az as f64, elevation as f64);
+                let target_elevation = if elevation == -90 { -89.75 } else { elevation as f64 - 0.25 };
+                let target = direction(az as f64, target_elevation);
+                source.route = Some((base, layout, gains, gains));
+                source.pending = None;
+                source.route_age_blocks = REAR_MAX_HELD_BLOCKS;
+                source.schedule(target, layout, gains, gains);
+                assert!(
+                    source.pending.is_some(),
+                    "rear meridian held: az={az} el={elevation}"
+                );
+                source.pending = None;
+                source.schedule(base, layout, gains, gains);
+                assert!(source.pending.is_none(), "static source rebuilt");
+                let jitter_elevation = if elevation == -90 { -89.99 } else { elevation as f64 - 0.01 };
+                let jitter = direction(az as f64, jitter_elevation);
+                source.schedule(jitter, layout, gains, gains);
+                assert!(source.pending.is_none(), "coordinate jitter rebuilt");
+            }
+        }
+        for az in -89..=89 {
+            let base = direction(az as f64, 0.);
+            let target = direction(az as f64, 0.25);
+            source.route = Some((base, layout, gains, gains));
+            source.pending = None;
+            source.route_age_blocks = 255;
+            source.schedule(target, layout, gains, gains);
+            assert!(source.pending.is_none(), "front policy changed az={az}");
+        }
+    }
 
     #[test]
     fn continuous_schedule_accumulates_subdegree_motion_but_keeps_explicit_changes() {
@@ -4601,5 +4698,91 @@ mod spectral_interpolation_audit {
         }}
         let path=std::env::var("SDA_SPECTRAL_AUDIT_OUT").unwrap();
         std::fs::write(path,serde_json::to_vec_pretty(&serde_json::json!({"frequencies":freq,"rows":rows})).unwrap()).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod rear_refresh_performance_tests {
+    use super::*;
+    #[test]
+    #[ignore = "optimized standalone rear filter/convolver performance comparison"]
+    fn benchmark_slow_rear_filter_refresh() {
+        let set = crate::hrtf::NativeHrtfSet::load_calibrated(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json"),
+        )
+        .unwrap();
+        let layout = crate::vbap::LayoutId::Sony360Ra13;
+        let solver = crate::vbap::VbapSolver::with_layout(layout);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let mut report = Vec::new();
+        for count in [1, 16, 64, 128] {
+            for round in 0..3 {
+                for policy in if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let mut sources: Vec<_> = (0..count)
+                        .map(|i| {
+                            let mut source = ContinuousSource::new(&set).unwrap();
+                            source.perf_id = format!("rear-{i}");
+                            source
+                        })
+                        .collect();
+                    let mut times = Vec::new();
+                    for block in 0..64 {
+                        let start = std::time::Instant::now();
+                        for (i, source) in sources.iter_mut().enumerate() {
+                            let a = (120.
+                                + i as f64 * 120. / count as f64
+                                + block as f64 * 5. * crate::convolution::DEFAULT_PARTITION as f64
+                                    / 48000.)
+                                .to_radians();
+                            let p = [-a.sin() as f32, a.cos() as f32, 0.];
+                            if !policy {
+                                source.route_age_blocks = 0;
+                            }
+                            source.schedule(
+                                Direction {
+                                    position: p,
+                                    head: None,
+                                    width: 0.,
+                                    height: 0.,
+                                    depth: 0.,
+                                    diffuse: 0.,
+                                    horizontal_only: false,
+                                },
+                                layout,
+                                solver.pan(p, 0.),
+                                [0.; crate::vbap::MAX_BUS_COUNT],
+                            );
+                            for (i, frame) in source.frames.iter_mut().enumerate() {
+                                frame.input = if i % 2 == 0 { 0.001 } else { -0.001 };
+                            }
+                        }
+                        pool.install(|| finish_sources(sources.iter_mut(), &set))
+                            .unwrap();
+                        if block >= 16 {
+                            times.push(start.elapsed().as_secs_f64() * 1000.);
+                        }
+                    }
+                    times.sort_by(f64::total_cmp);
+                    let mean = times.iter().sum::<f64>() / times.len() as f64;
+                    eprintln!("slow-rear bench count={count} policy={policy} round={round} mean={mean:.4} p95={:.4} max={:.4}ms",times[times.len()*95/100],times[times.len()-1]);
+                    report.push(serde_json::json!({"sources":count,"newPolicy":policy,"round":round,"meanMs":mean,"p95Ms":times[times.len()*95/100],"maxMs":times[times.len()-1]}));
+                }
+            }
+        }
+        let out = std::path::PathBuf::from(std::env::var_os("SDA_REAR_AUDIT_DIR").unwrap());
+        std::fs::write(
+            out.join("rear-refresh-performance.json"),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
     }
 }
