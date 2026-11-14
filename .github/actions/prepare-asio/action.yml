@@ -1,5 +1,5 @@
 name: Prepare Windows ASIO build
-description: LLVM libclang for the native ASIO bindings
+description: Validated ASIO SDK and LLVM libclang for native bindings
 runs:
   using: composite
   steps:
@@ -13,3 +13,8 @@ runs:
           $llvm = Join-Path $deps 'clang\native'
         }
         "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV
+    - name: Prepare validated ASIO SDK
+      shell: pwsh
+      run: |
+        python scripts/prepare-asio-sdk.py
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
