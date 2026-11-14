@@ -95,6 +95,9 @@ mod output_dynamics;
 mod auxiliary_balance;
 mod temporal_detail;
 mod directional_detail;
+#[cfg(test)]
+mod rear_motion_tests;
+
 pub use sda_render_metadata as dolby_trim;
 mod dolby_trim_render;
 #[cfg(test)]

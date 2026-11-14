@@ -4,6 +4,58 @@
 //! song identity, head pose, file scan, audio cache, allocation or latency.
 use crate::dsp::Biquad;
 
+// Preserve the source's body rather than spending it on a treble enhancement.
+// 0.45 dB leaves a small margin below the 0.5 dB regression limit between
+// sampled frequencies. This is a source-local spectral floor, not output gain.
+const BODY_FLOOR: f64 = 0.9495109992021984;
+
+#[derive(Default)]
+struct BodyProtection {
+    high_min: f64,
+    high_max: f64,
+    detail_min: f64,
+}
+impl BodyProtection {
+    fn new(high: &Biquad, detail: &Biquad, rate: u32) -> Self {
+        let mut guard = Self {
+            high_min: f64::INFINITY,
+            high_max: f64::NEG_INFINITY,
+            detail_min: f64::INFINITY,
+        };
+        // Only evaluated on rate configuration, never in the sample loop.
+        // Include bass and midrange; all references use the actual f32 filters.
+        for step in 0..=128 {
+            let frequency =
+                80.0 + (2000.0_f64.min(f64::from(rate) * 0.4) - 80.0) * step as f64 / 128.0;
+            let h = high.frequency_response(rate, frequency);
+            let d = detail.frequency_response(rate, frequency);
+            guard.high_min = guard.high_min.min(h[0]);
+            guard.high_max = guard.high_max.max(h[0]);
+            guard.detail_min = guard.detail_min.min(h[0] * d[0] - h[1] * d[1]);
+        }
+        guard
+    }
+    fn mix(&self, normalization: f64, amount: f64) -> f64 {
+        // y = x + (k-1)*high + k*amount*detail(high). Use conservative
+        // real-response bounds, so even phase rotation cannot hide a dip.
+        // Reducing the enhancement is preferable to restoring it with a
+        // source-wide gain. A convex blend also cannot add energy when both
+        // endpoints have the same energy; no second gain controller is added.
+        let change = normalization - 1.0;
+        let high = if change < 0.0 {
+            self.high_max
+        } else {
+            self.high_min
+        };
+        let lower = change * high + normalization * amount * self.detail_min;
+        if lower < BODY_FLOOR - 1.0 {
+            (1.0 - BODY_FLOOR) / -lower
+        } else {
+            1.0
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SourceState {
     rate: u32,
@@ -15,48 +67,81 @@ pub(crate) struct SourceState {
     normalization: f64,
     normalization_alpha: f64,
     amount: f32,
+    body_protection: BodyProtection,
 }
 impl SourceState {
     fn configure(&mut self, rate: u32) {
+        let body = Biquad::butterworth_highpass(rate, 250f32.min(rate as f32 * 0.1)).ok();
+        let detail = Biquad::butterworth_highpass(rate, 1800f32.min(rate as f32 * 0.2)).ok();
+        let body_protection = match (&body, &detail) {
+            (Some(h), Some(d)) => BodyProtection::new(h, d, rate),
+            _ => BodyProtection::default(),
+        };
         *self = Self {
             rate,
-            body: Biquad::butterworth_highpass(rate, 250f32.min(rate as f32*0.1)).ok(),
-            detail: Biquad::butterworth_highpass(rate, 1800f32.min(rate as f32*0.2)).ok(),
-            alpha: 1. - (-1./(f64::from(rate.max(1))*0.05)).exp(),
+            body,
+            detail,
+            body_protection,
+            alpha: 1. - (-1. / (f64::from(rate.max(1)) * 0.05)).exp(),
             normalization: 1.,
-            normalization_alpha: 1. - (-1./(f64::from(rate.max(1))*0.02)).exp(),
+            normalization_alpha: 1. - (-1. / (f64::from(rate.max(1)) * 0.02)).exp(),
             ..Default::default()
         };
     }
     pub fn process(&mut self, sample: f32, membership: f32, strength: f32, rate: u32) -> f32 {
-        if self.rate != rate { self.configure(rate); }
+        if self.rate != rate {
+            self.configure(rate);
+        }
         let x = if sample.is_finite() { sample } else { 0. };
         let high = self.body.as_mut().map_or(0., |f| f.process(x));
-        let low = x-high; // Complementary: unchanged reconstruction at bypass.
+        let low = x - high; // Complementary: unchanged reconstruction at bypass.
         let detail = self.detail.as_mut().map_or(0., |f| f.process(high));
         let target = if membership.is_finite() && strength.is_finite() {
-            membership.clamp(0.,1.) * strength.clamp(0.,1.)
-        } else { 0. };
-        self.amount += (target-self.amount).clamp(-1./(rate.max(1) as f32*0.03),1./(rate.max(1) as f32*0.03));
-        if (self.amount-target).abs()<1e-6 { self.amount=target; }
-        let shaped = high+self.amount*detail;
-        let [h,l,s] = [high,low,shaped].map(f64::from);
-        for (energy, value) in self.energy.iter_mut().zip([h*h,l*h,s*s,l*s]) {
-            *energy += self.alpha*(value-*energy);
+            membership.clamp(0., 1.) * strength.clamp(0., 1.)
+        } else {
+            0.
+        };
+        self.amount += (target - self.amount).clamp(
+            -1. / (rate.max(1) as f32 * 0.03),
+            1. / (rate.max(1) as f32 * 0.03),
+        );
+        if (self.amount - target).abs() < 1e-6 {
+            self.amount = target;
+        }
+        let shaped = high + self.amount * detail;
+        let [h, l, s] = [high, low, shaped].map(f64::from);
+        for (energy, value) in self.energy.iter_mut().zip([h * h, l * h, s * s, l * s]) {
+            *energy += self.alpha * (value - *energy);
         }
         // Solve E[(low + k*shape)^2] = E[(low + high)^2]. The
         // complementary low component is never multiplied by k. Cross terms
         // matter near the crossover; ignoring them can silently reduce bass.
-        let [hh,lh,ss,ls] = self.energy;
-        let discriminant = ls*ls+ss*(hh+2.*lh);
-        let norm = if ss>1e-24 && discriminant>=0. {
-            let k = (-ls+discriminant.sqrt())/ss;
-            if k.is_finite() && (0.25..=4.).contains(&k) { k } else { 1. }
-        } else { 1. };
-        self.normalization += self.normalization_alpha*(norm-self.normalization);
-        if self.amount==0. { return x; }
-        let out = l+self.normalization*s;
-        if out.is_finite() { out as f32 } else { x }
+        let [hh, lh, ss, ls] = self.energy;
+        let discriminant = ls * ls + ss * (hh + 2. * lh);
+        let norm = if ss > 1e-24 && discriminant >= 0. {
+            let k = (-ls + discriminant.sqrt()) / ss;
+            if k.is_finite() && (0.25..=4.).contains(&k) {
+                k
+            } else {
+                1.
+            }
+        } else {
+            1.
+        };
+        self.normalization += self.normalization_alpha * (norm - self.normalization);
+        if self.amount == 0. {
+            return x;
+        }
+        let enhanced = l + self.normalization * s;
+        let mix = self
+            .body_protection
+            .mix(self.normalization, f64::from(self.amount));
+        let out = f64::from(x) + mix * (enhanced - f64::from(x));
+        if out.is_finite() {
+            out as f32
+        } else {
+            x
+        }
     }
 }
 
@@ -102,9 +187,114 @@ mod tests {
             eprintln!("rate={rate} energy={db:.4} bass={bass:.4} detail={detail:.4}");
             assert!(db.abs()<0.15,"broadband drift {db}");
             assert!(bass.abs()<0.15,"bass changed {bass}");
-            assert!(detail>1.,"no useful contrast {detail}");
+            // The body floor withdraws large boosts that would thin the midrange.
+            assert!(detail>0.2,"no useful contrast {detail}");
         }
     }
+    #[test]
+    fn rear_body_is_preserved_for_bass_balanced_and_bright_sources() {
+        let frequencies = [80., 250., 500., 1000., 2000., 3000., 6000., 10000.];
+        let shapes = [
+            [1.; 8],
+            [1., 0.8, 0.4, 0.2, 0.1, 0.04, 0.015, 0.01],
+            [0.1, 0.15, 0.2, 0.3, 0.5, 0.8, 1., 1.],
+        ];
+        for rate in [44100, 48000, 96000] {
+            for (shape, levels) in shapes.iter().enumerate() {
+                let mut state = SourceState::default();
+                let (mut input, mut output) = (Vec::new(), Vec::new());
+                for i in 0..rate as usize * 2 {
+                    let x = frequencies
+                        .iter()
+                        .zip(levels)
+                        .enumerate()
+                        .map(|(j, (hz, level))| {
+                            (std::f64::consts::TAU * hz * i as f64 / f64::from(rate)
+                                + j as f64 * 0.17)
+                                .sin() as f32
+                                * *level
+                                * 0.004
+                        })
+                        .sum();
+                    let y = state.process(x, 1., 0.8, rate);
+                    if i >= rate as usize {
+                        input.push(x);
+                        output.push(y);
+                    }
+                }
+                let energy =
+                    |samples: &[f32]| samples.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+                let energy_db = 10. * (energy(&output) / energy(&input)).log10();
+                assert!(
+                    energy_db.abs() < 0.15,
+                    "source energy drift {energy_db}dB: rate={rate} shape={shape}"
+                );
+                for frequency in [80., 250., 500., 1000., 2000.] {
+                    let db = 20.
+                        * (amplitude(&output, frequency, rate)
+                            / amplitude(&input, frequency, rate))
+                        .log10();
+                    eprintln!("body rate={rate} shape={shape} hz={frequency} db={db:.4} energy={energy_db:.4}");
+                    assert!(
+                        (-0.5..=0.5).contains(&db),
+                        "body changed {db}dB at {frequency}Hz: rate={rate} shape={shape}"
+                    );
+                }
+                let detail_db = 20.
+                    * (amplitude(&output, 6000., rate) / amplitude(&input, 6000., rate)).log10();
+                let body_db = 20.
+                    * (amplitude(&output, 1000., rate) / amplitude(&input, 1000., rate)).log10();
+                assert!(detail_db-body_db>0.15,"lost directional contrast: detail={detail_db} body={body_db}: rate={rate} shape={shape}");
+            }
+        }
+    }
+
+    #[test]
+    fn protection_covers_the_band_between_its_configuration_points() {
+        for rate in [44100, 48000, 96000] {
+            let high = Biquad::butterworth_highpass(rate, 250.).unwrap();
+            let detail = Biquad::butterworth_highpass(rate, 1800.).unwrap();
+            let protection = BodyProtection::new(&high, &detail, rate);
+            for norm in [0.25, 0.5, 0.75, 1., 1.25, 2., 4.] {
+                for amount in [0., 0.1, 0.6, 1.] {
+                    let mix = protection.mix(norm, amount);
+                    assert!((0.0..=1.0).contains(&mix));
+                    for frequency in (80..=2000).step_by(3) {
+                        let h = high.frequency_response(rate, frequency as f64);
+                        let d = detail.frequency_response(rate, frequency as f64);
+                        let re = 1.
+                            + mix
+                                * ((norm - 1.) * h[0]
+                                    + norm * amount * (h[0] * d[0] - h[1] * d[1]));
+                        let im = mix
+                            * ((norm - 1.) * h[1] + norm * amount * (h[0] * d[1] + h[1] * d[0]));
+                        let db = 10. * (re * re + im * im).log10();
+                        assert!(db>=-0.5,"body protection missed {frequency}Hz: {db}dB rate={rate} k={norm} amount={amount}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_to_bypass_restores_samples_and_invalid_controls_stay_finite() {
+        for rate in [44100, 48000, 96000] {
+            let mut state = SourceState::default();
+            for i in 0..rate as usize {
+                let enabled = i < rate as usize / 2;
+                let x = signal(i, rate);
+                let y = state.process(x, 1., if enabled { 0.8 } else { 0. }, rate);
+                assert!(y.is_finite());
+                if i > rate as usize * 3 / 4 {
+                    assert_eq!(y, x, "bypass retained processing");
+                }
+            }
+            for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.] {
+                assert!(state.process(x, f32::NAN, f32::INFINITY, rate).is_finite());
+            }
+        }
+    }
+
     #[test]
     fn source_splitting_and_mirrored_gain_cannot_change_the_result() {
         let (mut single,mut left,mut right)=(SourceState::default(),SourceState::default(),SourceState::default());

@@ -31,6 +31,19 @@ impl Biquad {
             1.0 - alpha,
         ))
     }
+    /// Configuration-time complex response; does not advance the filter state.
+    pub(super) fn frequency_response(&self, rate: u32, frequency: f64) -> [f64; 2] {
+        let omega = -std::f64::consts::TAU * frequency / f64::from(rate);
+        let (s1, c1) = omega.sin_cos();
+        let (s2, c2) = (2.0 * omega).sin_cos();
+        let nr = f64::from(self.b0) + f64::from(self.b1) * c1 + f64::from(self.b2) * c2;
+        let ni = f64::from(self.b1) * s1 + f64::from(self.b2) * s2;
+        let dr = 1.0 + f64::from(self.a1) * c1 + f64::from(self.a2) * c2;
+        let di = f64::from(self.a1) * s1 + f64::from(self.a2) * s2;
+        let denominator = dr * dr + di * di;
+        [(nr * dr + ni * di) / denominator, (ni * dr - nr * di) / denominator]
+    }
+
     fn normalized(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Self {
         Self {
             b0: b0 / a0,
