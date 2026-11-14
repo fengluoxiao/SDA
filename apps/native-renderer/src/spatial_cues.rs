@@ -409,6 +409,9 @@ mod tests {
 /// Constants are listening-test tuning, not psychoacoustic thresholds.
 pub(crate) struct MotionCues {
     last: Option<([f64; 3], u64)>,
+    observed_at: Option<u64>,
+    latest_position: Option<([f32; 3], u64)>,
+    hold_until: u64,
     rate: u32,
     gain: f32,
     target: f32,
@@ -417,14 +420,26 @@ pub(crate) struct MotionCues {
 }
 impl Default for MotionCues {
     fn default() -> Self {
-        Self { last: None, rate: 0, gain: 1.0, target: 1.0, attack: 0.0, release: 0.0 }
+        Self {
+            last: None,
+            observed_at: None,
+            latest_position: None,
+            hold_until: 0,
+            rate: 0,
+            gain: 1.0,
+            target: 1.0,
+            attack: 0.0,
+            release: 0.0,
+        }
     }
 }
 impl MotionCues {
     // I listening candidate: only the residual floor differs from H (-9 dB).
     const MIN_RESIDUAL_GAIN: f32 = 0.17782794; // -15 dB
     #[cfg(test)]
-    pub(crate) fn gain(&self) -> f32 { self.gain }
+    pub(crate) fn gain(&self) -> f32 {
+        self.gain
+    }
     pub(crate) fn next(&mut self, position: [f32; 3], at: u64, rate: u32, enabled: bool) -> f32 {
         if !enabled || rate == 0 {
             *self = Self::default();
@@ -437,35 +452,81 @@ impl MotionCues {
             self.release = 1.0 - (-1.0 / (0.250 * rate as f32)).exp();
         }
         // ~375 Hz observation, independent of convolution or caller block size.
+        // A codec may hold one authored coordinate for 10-40 ms. Measure
+        // velocity between distinct coordinates, not between polling ticks;
+        // unchanged metadata is not evidence that the source has stopped.
         let quantum = (rate / 375).max(1) as u64;
-        if self.last.is_none_or(|(_, prev)| at < prev || at - prev >= quantum) {
+        if self.observed_at.is_some_and(|prev| at < prev)
+            || self.latest_position.is_some_and(|(_, time)| at < time)
+        {
+            self.last = None;
+            self.observed_at = None;
+            self.latest_position = None;
+            self.hold_until = 0;
+            self.target = 1.0;
+        }
+        // Record the exact incoming sample clock even when the next geometric
+        // observation is later. Polling timestamps would bias speed estimates
+        // when a metadata period is not divisible by the observation quantum.
+        if self
+            .latest_position
+            .is_none_or(|(previous, _)| previous != position)
+        {
+            self.latest_position = Some((position, at));
+        }
+        let authored_at = self.latest_position.expect("position recorded").1;
+        if self.observed_at.is_none_or(|prev| at - prev >= quantum) {
+            self.observed_at = Some(at);
             let p = position.map(f64::from);
-            let norm = p.iter().map(|v| v*v).sum::<f64>().sqrt();
+            let norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
             if norm.is_finite() && norm > 1e-6 {
                 let unit = p.map(|v| v / norm);
-                self.target = 1.0;
                 if let Some((prev, time)) = self.last {
-                    // A seek/suspension isn't a fast-moving sound source.
-                    let dt = at.saturating_sub(time);
-                    if dt > 0 && dt <= (rate / 10) as u64 {
-                        let cross = [prev[1]*unit[2]-prev[2]*unit[1],
-                            prev[2]*unit[0]-prev[0]*unit[2], prev[0]*unit[1]-prev[1]*unit[0]];
-                        let sin = cross.iter().map(|v| v*v).sum::<f64>().sqrt();
-                        let cos = prev.iter().zip(unit).map(|(a,b)| a*b).sum::<f64>();
-                        let speed = sin.atan2(cos).to_degrees() * rate as f64 / dt as f64;
-                        let t = ((speed - 10.0) / 35.0).clamp(0.0, 1.0) as f32;
-                        let motion = t*t*(3.0-2.0*t);
-                        // Keep a nonzero tail; do not alter the direct object signal.
-                        self.target = 1.0 - motion * (1.0 - Self::MIN_RESIDUAL_GAIN);
+                    let cross = [
+                        prev[1] * unit[2] - prev[2] * unit[1],
+                        prev[2] * unit[0] - prev[0] * unit[2],
+                        prev[0] * unit[1] - prev[1] * unit[0],
+                    ];
+                    let sin = cross.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    let cos = prev.iter().zip(unit).map(|(a, b)| a * b).sum::<f64>();
+                    let angle = sin.atan2(cos);
+                    // Ignore f32 unit-vector noise from radial-only movement.
+                    if angle > 1e-6 {
+                        self.target = 1.0;
+                        let dt = authored_at.saturating_sub(time);
+                        // A seek/suspension isn't a fast-moving sound source.
+                        if dt > 0 && dt <= (rate / 10) as u64 {
+                            let speed = angle.to_degrees() * rate as f64 / dt as f64;
+                            let t = ((speed - 10.0) / 35.0).clamp(0.0, 1.0) as f32;
+                            let motion = t * t * (3.0 - 2.0 * t);
+                            self.target = 1.0 - motion * (1.0 - Self::MIN_RESIDUAL_GAIN);
+                        }
+                        self.last = Some((unit, authored_at));
+                        // Hold only the residual-control estimate until the
+                        // existing 100 ms stale-metadata boundary. A longer
+                        // next metadata period must not look like a stop. No
+                        // audio, position, gain or HRTF target is predicted.
+                        self.hold_until =
+                            authored_at.saturating_add(u64::from(rate / 10).max(quantum));
+                    } else if at >= self.hold_until {
+                        self.target = 1.0;
                     }
+                } else {
+                    self.last = Some((unit, authored_at));
+                    self.hold_until = at;
+                    self.target = 1.0;
                 }
-                self.last = Some((unit, at));
             } else {
                 self.last = None;
+                self.hold_until = 0;
                 self.target = 1.0;
             }
         }
-        let coefficient = if self.target < self.gain { self.attack } else { self.release };
+        let coefficient = if self.target < self.gain {
+            self.attack
+        } else {
+            self.release
+        };
         self.gain += (self.target - self.gain) * coefficient;
         self.gain
     }
@@ -475,16 +536,22 @@ impl MotionCues {
 mod motion_tests {
     use super::MotionCues;
     fn position(degrees: f64, radius: f32) -> [f32; 3] {
-        [(degrees.to_radians().sin() as f32)*radius,
-         (degrees.to_radians().cos() as f32)*radius, 0.0]
+        [
+            (degrees.to_radians().sin() as f32) * radius,
+            (degrees.to_radians().cos() as f32) * radius,
+            0.0,
+        ]
     }
     #[test]
     fn stationary_radial_and_disabled_sources_keep_unity() {
         for enabled in [false, true] {
             let mut state = MotionCues::default();
             for n in 0..48000 {
-                let p = if enabled { [0.0, 1.0+n as f32/48000.0, 0.0] }
-                    else { position(n as f64/100.0, 1.0) };
+                let p = if enabled {
+                    [0.0, 1.0 + n as f32 / 48000.0, 0.0]
+                } else {
+                    position(n as f64 / 100.0, 1.0)
+                };
                 assert_eq!(state.next(p, n, 48000, enabled), 1.0);
             }
         }
@@ -495,31 +562,168 @@ mod motion_tests {
         for rate in [44100, 48000, 96000] {
             let mut state = MotionCues::default();
             let mut last = 1.0;
-            for n in 0..rate*2 {
+            for n in 0..rate * 2 {
                 // Cross the +/-180 seam: vector angle must not spike there.
-                let g = state.next(position(170.0 + 45.0*n as f64/rate as f64, 1.0), n as u64, rate, true);
+                let g = state.next(
+                    position(170.0 + 45.0 * n as f64 / rate as f64, 1.0),
+                    n as u64,
+                    rate,
+                    true,
+                );
                 assert!((MotionCues::MIN_RESIDUAL_GAIN - 1e-6..=1.0).contains(&g));
-                assert!((g-last).abs() < 0.0005);
+                assert!((g - last).abs() < 0.0005);
                 last = g;
             }
             values.push(last);
-            for n in rate*2..rate*4 {
+            for n in rate * 2..rate * 4 {
                 last = state.next(position(260.0, 1.0), n as u64, rate, true);
             }
             assert!(last > 0.999, "stopped object must recover depth: {last}");
         }
-        for v in values { assert!((v-MotionCues::MIN_RESIDUAL_GAIN).abs() < 0.001); }
+        for v in values {
+            assert!((v - MotionCues::MIN_RESIDUAL_GAIN).abs() < 0.001);
+        }
     }
+    fn settled_gain(rate: u32, cadence: u32, speed: f64) -> f32 {
+        let mut state = MotionCues::default();
+        let mut sum = 0.0f64;
+        for n in 0..rate * 3 {
+            let authored_at = n / cadence * cadence;
+            let g = state.next(
+                position(
+                    130.0 + speed * f64::from(authored_at) / f64::from(rate),
+                    1.0,
+                ),
+                u64::from(n),
+                rate,
+                true,
+            );
+            if n >= rate * 2 {
+                sum += f64::from(g);
+            }
+        }
+        (sum / f64::from(rate)) as f32
+    }
+    #[test]
+    fn held_metadata_keeps_the_same_motion_control_as_sampled_motion() {
+        for rate in [44100, 48000, 96000] {
+            for speed in [2.0, 20.0, 45.0, 90.0] {
+                let continuous = settled_gain(rate, 1, speed);
+                for hz in [100, 50, 25] {
+                    let held = settled_gain(rate, rate / hz, speed);
+                    eprintln!("rate={rate} speed={speed} metadataHz={hz} continuous={continuous:.6} held={held:.6}");
+                    assert!((held-continuous).abs()<0.015,"metadata cadence changed residual control: rate={rate} speed={speed} hz={hz}, {held} vs {continuous}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn held_motion_recovers_after_a_stop_without_pumping() {
+        for rate in [44100, 48000, 96000] {
+            for hz in [25, 50, 100] {
+                let cadence = rate / hz;
+                let mut state = MotionCues::default();
+                let mut previous = 1.0;
+                for n in 0..rate * 4 {
+                    let authored = (n / cadence * cadence).min(rate);
+                    let gain = state.next(
+                        position(170. + 45. * f64::from(authored) / f64::from(rate), 1.),
+                        u64::from(n),
+                        rate,
+                        true,
+                    );
+                    assert!(
+                        (gain - previous).abs() < 0.0005,
+                        "residual envelope jumped: rate={rate} hz={hz}"
+                    );
+                    previous = gain;
+                    if n == rate {
+                        assert!(gain < 0.19, "held motion did not settle: {gain}");
+                    }
+                }
+                assert!(
+                    previous > 0.999,
+                    "stopped metadata did not recover: rate={rate} hz={hz} gain={previous}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn metadata_phase_and_cadence_changes_do_not_change_motion_strength() {
+        for offset in [0u32, 31, 255] {
+            let mut state = MotionCues::default();
+            let mut changed = offset;
+            let mut input = position(130., 1.);
+            for n in offset..offset + 48000 * 4 {
+                let cadence = match (n - offset) / 48000 {
+                    0 => 480,
+                    1 => 1920,
+                    2 => 777,
+                    _ => 512,
+                };
+                if n >= changed {
+                    input = position(130. + 45. * f64::from(n - offset) / 48000., 1.);
+                    changed = n + cadence;
+                }
+                let gain = state.next(input, u64::from(n), 48000, true);
+                if n > offset + 48000 {
+                    assert!(
+                        (gain - MotionCues::MIN_RESIDUAL_GAIN).abs() < 0.002,
+                        "cadence/phase changed gain: offset={offset} at={n} gain={gain}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn radial_jitter_gaps_and_clock_resets_do_not_invent_motion() {
+        let mut state = MotionCues::default();
+        for n in 0..48000 {
+            let radius = 1. + n as f32 / 48000.;
+            assert_eq!(
+                state.next([0.2 * radius, 0.7 * radius, 0.6 * radius], n, 48000, true),
+                1.
+            );
+        }
+        for n in 48000..96000 {
+            state.next(
+                position((n - 48000) as f64 / 48000. * 90., 1.),
+                n,
+                48000,
+                true,
+            );
+        }
+        assert!(state.gain() < 0.19);
+        state.next(position(-90., 1.), 240000, 48000, true);
+        assert_eq!(
+            state.target, 1.,
+            "a suspension was interpreted as fast motion"
+        );
+        state.next(position(20., 1.), 0, 48000, true);
+        assert_eq!(state.target, 1., "old clock survived a seek");
+        assert_eq!(state.next(position(30., 1.), 128, 48000, false), 1.);
+        assert_eq!(state.next(position(30., 1.), 0, 48000, true), 1.);
+    }
+
     #[test]
     fn slow_wrap_and_discontinuities_do_not_create_false_motion() {
         let mut state = MotionCues::default();
         for n in 0..48000 {
-            assert_eq!(state.next(position(179.0+2.0*n as f64/48000.0, 1.0), n, 48000, true), 1.0);
+            assert_eq!(
+                state.next(
+                    position(179.0 + 2.0 * n as f64 / 48000.0, 1.0),
+                    n,
+                    48000,
+                    true
+                ),
+                1.0
+            );
         }
-        assert_eq!(state.next([1.0,0.0,0.0], 480000, 48000, true), 1.0);
-        assert_eq!(state.next([f32::NAN,0.0,0.0], 480128, 48000, true), 1.0);
-        assert_eq!(state.next([0.0;3], 480256, 48000, true), 1.0);
-        assert_eq!(state.next([0.0,1.0,0.0], 0, 48000, true), 1.0);
+        assert_eq!(state.next([1.0, 0.0, 0.0], 480000, 48000, true), 1.0);
+        assert_eq!(state.next([f32::NAN, 0.0, 0.0], 480128, 48000, true), 1.0);
+        assert_eq!(state.next([0.0; 3], 480256, 48000, true), 1.0);
+        assert_eq!(state.next([0.0, 1.0, 0.0], 0, 48000, true), 1.0);
     }
 }
 
