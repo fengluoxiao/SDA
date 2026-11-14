@@ -25,7 +25,6 @@ pub fn route(
     zones: &[adm_zone::Zone],
     settings: Settings,
 ) -> [f32; vbap::MAX_BUS_COUNT] {
-    let s = spatial::adm_to_spherical(position);
     let width = size[0].max(settings.width).clamp(0.0, 1.0) * 120.0;
     let height = if horizontal {
         0.0
@@ -58,12 +57,14 @@ pub fn route(
         (0.5, 0.0, 1.0 + depth * 0.5, 1.0 / 12.0),
     ] {
         // Depth adjusts apparent angular footprint, without inventing attenuation.
-        let az = (s.azimuth + da * width / radial.max(0.5)).to_radians();
-        let el = (s.elevation + de * height / radial.max(0.5))
-            .clamp(-89.9, 89.9)
-            .to_radians();
-        let p =
-            spatial::head_relative_adm([-az.sin() * el.cos(), az.cos() * el.cos(), el.sin()], head);
+        let p = spatial::head_relative_adm(
+            spatial::footprint_direction(
+                position,
+                da * width / radial.max(0.5),
+                de * height / radial.max(0.5),
+            ),
+            head,
+        );
         let gains = if horizontal {
             solver.pan_horizontal(p, 0.0)
         } else {

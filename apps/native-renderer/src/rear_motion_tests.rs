@@ -302,3 +302,312 @@ fn rear_motion_preserves_routes_and_ear_cues_in_both_mixers() {
         );
     }
 }
+
+#[test]
+#[ignore = "offline overhead HRTF audit; set SDA_REAR_AUDIT_DIR"]
+fn export_overhead_response_audit() {
+    let out = std::path::PathBuf::from(std::env::var_os("SDA_REAR_AUDIT_DIR").unwrap());
+    let mut rows = Vec::new();
+    for clarity in [false, true] {
+        let set = if clarity {
+            hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap()
+        } else {
+            hrtf::NativeHrtfSet::load_without_shared_clarity(&manifest()).unwrap()
+        };
+        for (mode, width, height, diffuse) in [
+            ("point", 0., 0., 0.),
+            ("wide", 30., 0., 0.),
+            ("tall", 0., 30., 0.),
+            ("square", 30., 30., 0.),
+            ("diffuse", 0., 0., 0.35),
+        ] {
+            let mut previous: Option<(f64, Vec<f32>, f64)> = None;
+            for theta in [
+                0.0f64, 30., 60., 75., 85., 89., 89.9, 89.99, 90., 90.01, 90.1, 91., 95., 105.,
+                120., 150., 180.,
+            ] {
+                let t = theta.to_radians();
+                let pos = [0., t.cos() as f32, t.sin() as f32];
+                let direction = directional::Direction {
+                    position: pos,
+                    head: None,
+                    width,
+                    height,
+                    depth: 0.,
+                    diffuse,
+                    horizontal_only: false,
+                };
+                let gains = bus_renderer::route(&vbap::VbapSolver::new(), pos, None, 0.);
+                let pair = set
+                    .directional_dry_compact(
+                        direction,
+                        vbap::LayoutId::Dolby7_1_4,
+                        gains,
+                        [0.; vbap::MAX_BUS_COUNT],
+                    )
+                    .unwrap();
+                let joined: Vec<_> = pair.0.iter().chain(&pair.1).copied().collect();
+                let energy = joined.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+                let neighbor=previous.as_ref().map(|(angle,old,old_energy)| {
+                    let n=joined.len().max(old.len());
+                    let delta=(0..n).map(|i|f64::from(joined.get(i).copied().unwrap_or(0.)-old.get(i).copied().unwrap_or(0.)).powi(2)).sum::<f64>();
+                    serde_json::json!({"from":angle,"relativeDifference":(delta/((energy+old_energy)*0.5)).sqrt()})
+                });
+                let bands:Vec<_>=[250.,1000.,2000.,3000.,6000.,10000.].into_iter().map(|hz| {
+                    let response=|ear:&[f32]| {
+                        let(mut re,mut im)=(0.,0.);for(i,x)in ear.iter().enumerate(){let p=std::f64::consts::TAU*hz*i as f64/f64::from(RATE);re+=f64::from(*x)*p.cos();im+=f64::from(*x)*p.sin();}(re*re+im*im).sqrt()
+                    };
+                    serde_json::json!({"hz":hz,"left":response(&pair.0),"right":response(&pair.1)})
+                }).collect();
+                assert!(joined.iter().all(|v| v.is_finite()));
+                rows.push(serde_json::json!({"clarity":clarity,"mode":mode,"theta":theta,"position":pos,"energy":energy,"neighbor":neighbor,"bands":bands}));
+                previous = Some((theta, joined, energy));
+            }
+        }
+    }
+    std::fs::write(
+        out.join("overhead-responses.json"),
+        serde_json::to_vec_pretty(&rows).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "offline overhead PCM audit; set SDA_REAR_AUDIT_DIR"]
+fn export_overhead_pcm_audit() {
+    use std::io::Write;
+    let out = std::path::PathBuf::from(std::env::var_os("SDA_REAR_AUDIT_DIR").unwrap());
+    let mut reports = Vec::new();
+    for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13] {
+        for depth in [false, true] {
+            for balance in [false, true] {
+                let mut e = Engine::new(RATE, 2);
+                e.set_layout(layout).unwrap();
+                let set = hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+                e.replace_hrtf(
+                    if depth {
+                        set
+                    } else {
+                        set.diagnostic_without_shared_depth()
+                    },
+                    0.,
+                )
+                .unwrap();
+                e.set_spatial_enhancement(balance).unwrap();
+                e.set_program_codec(
+                    if layout == vbap::LayoutId::Sony360Ra13 {
+                        "mpegh"
+                    } else {
+                        "eac3"
+                    }
+                    .into(),
+                );
+                e.set_direct_objects(true).unwrap();
+                e.set_directional_hrtf(true);
+                e.set_output_volume(1., true);
+                e.set_master_preamp_db(0.).unwrap();
+                e.direct_mix = 1.;
+                e.output_active = true;
+                e.paused = false;
+                e.sources.insert("top".into(), source([0., 0.8660254, 0.5]));
+                e.sources.insert("front".into(), source([0., 1., 0.]));
+                for id in ["top", "front"] {
+                    e.route_source_now(id, 0).unwrap();
+                }
+                let frames = RATE as usize * 4;
+                let mut pcm = vec![0.; frames * 2];
+                let block = convolution::DEFAULT_PARTITION;
+                let mut path = Vec::new();
+                for start in (0..frames).step_by(block) {
+                    let time = start as f64 / f64::from(RATE);
+                    let theta = 30. + 120. * ((time - 0.75) / 2.5).clamp(0., 1.);
+                    let t = theta.to_radians();
+                    let pos = [0., t.cos() as f32, t.sin() as f32];
+                    e.sources.get_mut("top").unwrap().position = pos;
+                    e.route_source_now("top", 0).unwrap();
+                    let count = (frames - start).min(block);
+                    for (id, frequencies, amplitude) in [
+                        ("top", &[250., 1000., 6000., 10000.][..], 0.0005),
+                        ("front", &[430., 1310., 4010.][..], 0.008),
+                    ] {
+                        let samples: Vec<f32> = (start..start + count)
+                            .map(|i| {
+                                frequencies
+                                    .iter()
+                                    .map(|hz| {
+                                        (std::f64::consts::TAU * hz * i as f64 / f64::from(RATE))
+                                            .sin() as f32
+                                            * amplitude
+                                    })
+                                    .sum()
+                            })
+                            .collect();
+                        e.sources.get_mut(id).unwrap().samples.write(
+                            start as u64,
+                            start as u64,
+                            &samples,
+                        );
+                    }
+                    e.render_into(&mut pcm[start * 2..(start + count) * 2], 2);
+                    let s = &e.sources["top"];
+                    let actual = s
+                        .continuous
+                        .as_ref()
+                        .unwrap()
+                        .effective_route()
+                        .unwrap()
+                        .0
+                        .position;
+                    let error = pos
+                        .iter()
+                        .zip(actual)
+                        .map(|(a, b)| f64::from(a - b).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    assert!(
+                        error < 0.025,
+                        "overhead route stopped following position: {theta} {actual:?}"
+                    );
+                    assert_eq!(s.distance_gain, 1.);
+                    assert_eq!(s.occlusion_targets, [1.; 2]);
+                    assert_eq!(e.peak_guard.diagnostic_gain(), 1.);
+                    path.push(serde_json::json!({"time":time,"theta":theta,"position":pos,"actual":actual,"motionResidualGain":s.motion_cues.gain(),"detailStrength":e.auxiliary_balance.directional_strength()}));
+                }
+                let name = format!("top-{}-depth{}-balance{}", layout.as_str(), depth, balance);
+                let mut f = std::io::BufWriter::new(
+                    std::fs::File::create(out.join(format!("{name}.f32"))).unwrap(),
+                );
+                for x in &pcm {
+                    f.write_all(&x.to_le_bytes()).unwrap();
+                }
+                f.flush().unwrap();
+                let windows:Vec<_>=(5..39).map(|i|{let chunk=&pcm[i*4800*2..(i+1)*4800*2];let bands:Vec<_>=[250.,1000.,6000.,10000.].into_iter().map(|hz|serde_json::json!({"hz":hz,"left":tone(chunk,hz,0),"right":tone(chunk,hz,1)})).collect();serde_json::json!({"time":i as f64/10.,"bands":bands})}).collect();
+                reports.push(serde_json::json!({"name":name,"layout":layout.as_str(),"depth":depth,"balance":balance,"path":path,"windows":windows}));
+                std::fs::write(
+                    out.join("overhead-pcm.json"),
+                    serde_json::to_vec_pretty(&reports).unwrap(),
+                )
+                .unwrap();
+                eprintln!("rendered {name}");
+            }
+        }
+    }
+}
+
+
+#[test]
+fn overhead_extent_and_diffuse_targets_cross_poles_continuously() {
+    let set = hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+    for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13] {
+        let solver = vbap::VbapSolver::with_layout(layout);
+        for pole in [90.0f64, -90.0] {
+            for (width, height, diffuse) in [
+                (0., 0., 0.),
+                (30., 0., 0.),
+                (0., 30., 0.),
+                (30., 30., 0.),
+                (0., 0., 0.35),
+                (30., 30., 0.35),
+            ] {
+                let pair = |theta: f64| {
+                    let t = theta.to_radians();
+                    let p = [0., t.cos() as f32, t.sin() as f32];
+                    set.directional_dry_compact(
+                        directional::Direction {
+                            position: p,
+                            head: None,
+                            width,
+                            height,
+                            depth: 0.,
+                            diffuse,
+                            horizontal_only: false,
+                        },
+                        layout,
+                        bus_renderer::route(&solver, p, None, 0.),
+                        [0.; vbap::MAX_BUS_COUNT],
+                    )
+                    .unwrap()
+                };
+                let a = pair(pole - 0.01);
+                let b = pair(pole + 0.01);
+                let energy = |p: &(Vec<f32>, Vec<f32>)| {
+                    p.0.iter()
+                        .chain(&p.1)
+                        .map(|v| f64::from(*v).powi(2))
+                        .sum::<f64>()
+                };
+                let ea = energy(&a);
+                let eb = energy(&b);
+                let delta =
+                    a.0.iter()
+                        .chain(&a.1)
+                        .zip(b.0.iter().chain(&b.1))
+                        .map(|(x, y)| f64::from(x - y).powi(2))
+                        .sum::<f64>();
+                let relative = (delta / ((ea + eb) * 0.5)).sqrt();
+                let db = 10. * (eb / ea).log10();
+                eprintln!("pole={pole} layout={} width={width} height={height} diffuse={diffuse} error={relative:.8} energyDb={db:.6}",layout.as_str());
+                assert!(relative<0.005 && db.abs()<0.02,"pole discontinuity: {} pole={pole} extent={width}/{height} diffuse={diffuse} delta={relative} db={db}",layout.as_str());
+            }
+        }
+    }
+}
+
+
+#[test]
+fn oblique_extents_retain_bearing_at_exact_poles() {
+    let set = hrtf::NativeHrtfSet::load_calibrated(&manifest()).unwrap();
+    for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13] {
+        let solver = vbap::VbapSolver::with_layout(layout);
+        for azimuth in [0.0f64, 45., 90., 135.] {
+            for (width, height) in [(30., 0.), (0., 30.), (30., 30.)] {
+                let mut previous: Option<(Vec<f32>, Vec<f32>)> = None;
+                for theta in [89.99f64, 90., 90.01, -89.99, -90., -90.01] {
+                    if theta == -89.99 {
+                        previous = None;
+                    }
+                    let t = theta.to_radians();
+                    let a = azimuth.to_radians();
+                    let p = [
+                        (-a.sin() * t.cos()) as f32,
+                        (a.cos() * t.cos()) as f32,
+                        t.sin() as f32,
+                    ];
+                    let pair = set
+                        .directional_dry_compact(
+                            directional::Direction {
+                                position: p,
+                                head: None,
+                                width,
+                                height,
+                                depth: 0.,
+                                diffuse: 0.,
+                                horizontal_only: false,
+                            },
+                            layout,
+                            bus_renderer::route(&solver, p, None, 0.),
+                            [0.; vbap::MAX_BUS_COUNT],
+                        )
+                        .unwrap();
+                    if let Some(old) = previous {
+                        let energy = old
+                            .0
+                            .iter()
+                            .chain(&old.1)
+                            .map(|v| f64::from(*v).powi(2))
+                            .sum::<f64>();
+                        let delta = old
+                            .0
+                            .iter()
+                            .chain(&old.1)
+                            .zip(pair.0.iter().chain(&pair.1))
+                            .map(|(x, y)| f64::from(x - y).powi(2))
+                            .sum::<f64>();
+                        assert!((delta/energy).sqrt()<0.005,"oblique pole jump: {} az={azimuth} theta={theta} extent={width}/{height} error={}",layout.as_str(),(delta/energy).sqrt());
+                    }
+                    previous = Some(pair);
+                }
+            }
+        }
+    }
+}

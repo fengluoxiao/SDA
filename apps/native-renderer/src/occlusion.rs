@@ -49,15 +49,44 @@ impl Shadow {
 }
 
 fn openness_for_lateral_shadow(lateral: f32, occluded: f32) -> [f32; 2] {
-    let mut openness = [1.0_f32; 2];
-    if lateral.abs() < 1e-4 {
-        let centred = 1.0 - 0.2 * occluded;
-        openness = [centred; 2];
-    } else {
-        let far = if lateral < 0.0 { 1 } else { 0 };
-        openness[far] = 1.0 - 0.4 * occluded;
+    // Lateral is the normalized head-relative component. Split the existing
+    // shadow continuously across ears instead of swapping the far ear at x=0.
+    // Centre, full lateral strength and total openness remain unchanged.
+    let side = lateral.clamp(-1., 1.);
+    [
+        1. - 0.2 * occluded * (1. + side),
+        1. - 0.2 * occluded * (1. - side),
+    ]
+}
+
+// A stable bearing angle is essential near alignment: acos of an f32 dot
+// product turns rounding into a false angular change even for collinear rays.
+fn obstruction(position: [f64; 3], norm: f64, other: [f32; 3], distance: f64) -> f64 {
+    let limit = f64::from(0.7_f32);
+    if distance >= norm * 0.6 || distance >= limit || distance < 1e-5 {
+        return 0.;
     }
-    openness
+    let other = other.map(f64::from);
+    let dot = position.iter().zip(other).map(|(a, b)| a * b).sum::<f64>();
+    if dot <= 0. {
+        return 0.;
+    }
+    let cross = [
+        position[1] * other[2] - position[2] * other[1],
+        position[2] * other[0] - position[0] * other[2],
+        position[0] * other[1] - position[1] * other[0],
+    ];
+    let angle = cross.iter().map(|v| v * v).sum::<f64>().sqrt().atan2(dot);
+    let maximum = 8.0f64.to_radians();
+    if angle >= maximum {
+        return 0.;
+    }
+    let bearing = 1. - angle / maximum;
+    let nearness = (1. - distance / (norm * 0.6)).clamp(0., 1.);
+    // Keep the existing near-source strength, but avoid a hard on/off step
+    // at its outer radius. Only the final 10% of that radius is tapered.
+    let edge = ((limit - distance) / (limit * 0.1)).clamp(0., 1.);
+    bearing * nearness * edge * edge * (3. - 2. * edge)
 }
 
 /// Pairwise occlusion amounts for one source against all others.
@@ -67,29 +96,14 @@ pub fn ear_openness(
     head: Option<[f32; 4]>,
     others: &[(f32, [f32; 3])],
 ) -> [f32; 2] {
-    let norm = position.iter().map(|a| a * a).sum::<f32>().sqrt();
-    if norm < 1e-5 {
-        return [1.0; 2];
+    let p = position.map(f64::from);
+    let norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 1e-5 {
+        return [1.; 2];
     }
-    let mut occluded = 0.0_f32;
-    for &(other_distance, other) in others {
-        let other_norm = other_distance;
-        if other_norm >= norm * 0.6 || other_norm >= 0.7 || other_norm < 1e-5 {
-            continue; // the other must sit clearly in front of this source
-        }
-        let dot = position.iter().zip(other).map(|(a, b)| a * b).sum::<f32>() / (norm * other_norm);
-        if dot <= 0.0 {
-            continue;
-        }
-        let angle = dot.clamp(-1.0, 1.0).acos();
-        if angle >= 8.0_f32.to_radians() {
-            continue;
-        }
-        // Deeper block when the occluder is closer to the bearing centre and
-        // much nearer to the listener than the occluded source.
-        let bearing = 1.0 - angle / 8.0_f32.to_radians();
-        let nearness = (1.0 - other_norm / (norm * 0.6)).clamp(0.0, 1.0);
-        occluded = occluded.max(bearing * nearness);
+    let mut occluded = 0.0f64;
+    for &(distance, other) in others {
+        occluded = occluded.max(obstruction(p, norm, other, f64::from(distance)));
     }
     if occluded <= 1e-3 {
         return [1.0; 2];
@@ -98,7 +112,7 @@ pub fn ear_openness(
     // a centred source has no lateral preference, so both ears get the same
     // attenuation. Treating x == 0 as one side made front objects lean left.
     let relative = crate::spatial::head_relative_adm(position, head);
-    openness_for_lateral_shadow(relative[0], occluded)
+    openness_for_lateral_shadow((f64::from(relative[0]) / norm) as f32, occluded as f32)
 }
 
 /// Allocation-free variant used by the render loop: the caller pre-rotates
@@ -110,45 +124,94 @@ pub fn ear_openness_prepared(
     _all_relative: &[[f32; 3]],
     self_index: usize,
 ) -> [f32; 2] {
-    let norm = position.iter().map(|a| a * a).sum::<f32>().sqrt();
-    if norm < 1e-5 {
-        return [1.0; 2];
+    let p = position.map(f64::from);
+    let norm = p.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 1e-5 {
+        return [1.; 2];
     }
-    let mut occluded = 0.0_f32;
-    for (other_index, other) in all_positions.iter().enumerate() {
-        if other_index == self_index {
+    let mut occluded = 0.0f64;
+    for (index, other) in all_positions.iter().enumerate() {
+        if index == self_index {
             continue;
         }
-        let other_norm = other.iter().map(|a| a * a).sum::<f32>().sqrt();
-        if other_norm >= norm * 0.6 || other_norm >= 0.7 || other_norm < 1e-5 {
-            continue;
-        }
-        let dot = position
+        let distance = other
             .iter()
-            .zip(other.iter())
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
-            / (norm * other_norm);
-        if dot <= 0.0 {
-            continue;
-        }
-        let angle = dot.clamp(-1.0, 1.0).acos();
-        if angle >= 8.0_f32.to_radians() {
-            continue;
-        }
-        let bearing = 1.0 - angle / 8.0_f32.to_radians();
-        let nearness = (1.0 - other_norm / (norm * 0.6)).clamp(0.0, 1.0);
-        occluded = occluded.max(bearing * nearness);
+            .map(|v| f64::from(*v).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        occluded = occluded.max(obstruction(p, norm, *other, distance));
     }
     if occluded <= 1e-3 {
         return [1.0; 2];
     }
-    openness_for_lateral_shadow(position_relative[0], occluded)
+    openness_for_lateral_shadow(
+        (f64::from(position_relative[0]) / norm) as f32,
+        occluded as f32,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn near_midline_shadow_targets_are_continuous_and_mirrored() {
+        for vertical in [false, true] {
+            let make = |x: f32| if vertical { [x, 0., 1.] } else { [x, -1., 0.] };
+            let mut previous = None;
+            for i in -100..=100 {
+                let p = make(i as f32 * 0.00001);
+                let near = p.map(|x| x * 0.2);
+                let shade = ear_openness(
+                    p,
+                    None,
+                    &[(near.iter().map(|v| v * v).sum::<f32>().sqrt(), near)],
+                );
+                if let Some(old) = previous {
+                    let old: [f32; 2] = old;
+                    assert!(
+                        (shade[0] - old[0]).abs() < 0.0001 && (shade[1] - old[1]).abs() < 0.0001,
+                        "midline shadow jumped: {old:?} -> {shade:?}"
+                    );
+                }
+                let mirrored = [-p[0], p[1], p[2]];
+                let closer = mirrored.map(|v| v * 0.2);
+                let mirror = ear_openness(
+                    mirrored,
+                    None,
+                    &[(closer.iter().map(|v| v * v).sum::<f32>().sqrt(), closer)],
+                );
+                assert!((shade[0] - mirror[1]).abs() < 1e-6 && (shade[1] - mirror[0]).abs() < 1e-6);
+                previous = Some(shade);
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_distance_gate_fades_and_prepared_path_matches() {
+        let target = [0.3f32, 2., 0.4];
+        let norm = target.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let mut previous = None;
+        for i in 0..=1000 {
+            let distance = 0.62 + i as f32 * 0.0001;
+            let closer = target.map(|v| v * distance / norm);
+            let shade = ear_openness(target, None, &[(distance, closer)]);
+            let positions = [target, closer];
+            let prepared = ear_openness_prepared(&target, &target, &positions, &positions, 0);
+            assert!((shade[0] - prepared[0]).abs() < 1e-6 && (shade[1] - prepared[1]).abs() < 1e-6);
+            if let Some(old) = previous {
+                let old: [f32; 2] = old;
+                assert!(
+                    (shade[0] - old[0]).abs() < 0.0005 && (shade[1] - old[1]).abs() < 0.0005,
+                    "distance gate jumped {old:?} -> {shade:?}"
+                );
+            }
+            previous = Some(shade);
+            if distance >= 0.7 {
+                assert_eq!(shade, [1.; 2]);
+            }
+        }
+    }
 
     #[test]
     fn near_same_bearing_object_shadows_far_ear() {

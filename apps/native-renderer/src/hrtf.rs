@@ -83,6 +83,11 @@ pub struct NativeHrtfSet {
     shared_depth_enabled: bool,
     shared_clarity_enabled: bool,
     shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
+    // Immutable response-energy coefficients, bounded by layout and 2D/3D
+    // policy. Shared by preparation snapshots; never stores programme audio.
+    diffuse_references: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<(&'static str, bool), std::sync::Arc<Vec<f64>>>>,
+    >,
     front_ear_isolation: bool,
     pub cinema: crate::cinema::Settings,
     pub room_profile: Option<std::sync::Arc<crate::cinema::RoomProfile>>,
@@ -135,6 +140,7 @@ impl NativeHrtfSet {
             shared_depth_enabled: self.shared_depth_enabled,
             shared_clarity_enabled: self.shared_clarity_enabled,
             shared_depth: self.shared_depth.clone(),
+            diffuse_references: self.diffuse_references.clone(),
             front_ear_isolation: self.front_ear_isolation,
             cinema: self.cinema.clone(),
             room_profile: self.room_profile.clone(),
@@ -234,6 +240,7 @@ impl NativeHrtfSet {
             shared_depth_enabled: false,
             shared_clarity_enabled: false,
             shared_depth: None,
+            diffuse_references: Default::default(),
             front_ear_isolation: false,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -449,6 +456,7 @@ impl NativeHrtfSet {
             shared_depth_enabled: manifest.shared_depth_version==Some(1),
             shared_clarity_enabled,
             shared_depth: None,
+            diffuse_references: Default::default(),
             front_ear_isolation: manifest.processing.front_ear_isolation,
             cinema: crate::cinema::Settings::default(),
             room_profile: None,
@@ -569,6 +577,91 @@ impl NativeHrtfSet {
         // fractional-delay support so shifted HRIR tails remain intact.
         base + 127 + calibration + self.output_max_delay() + 480
     }
+    fn diffuse_reference(
+        &self,
+        direction: crate::directional::Direction,
+        layout: crate::vbap::LayoutId,
+    ) -> Result<f64, String> {
+        let key = (layout.as_str(), direction.horizontal_only);
+        let prepared = self.diffuse_references.lock().unwrap().get(&key).cloned();
+        let field = if let Some(prepared) = prepared {
+            prepared
+        } else {
+            let solver = crate::vbap::VbapSolver::with_layout(layout);
+            let basis = crate::vbap::speakers(layout)
+                .iter()
+                .map(|speaker| self.nearest(speaker.azimuth as f64, speaker.elevation as f64))
+                .collect::<Result<Vec<_>, _>>()?;
+            let count = basis.len();
+            let mut gram = vec![vec![0.; count]; count];
+            for a in 0..count {
+                for b in 0..=a {
+                    let energy = basis[a]
+                        .dry
+                        .iter()
+                        .zip(&basis[b].dry)
+                        .map(|(x, y)| f64::from(*x) * f64::from(*y))
+                        .sum::<f64>();
+                    gram[a][b] = energy;
+                    gram[b][a] = energy;
+                }
+            }
+            let energies = self
+                .cache
+                .iter()
+                .map(|ir| {
+                    let (az, el) = (ir.azimuth.to_radians(), ir.elevation.to_radians());
+                    let position = if ir.elevation.abs() == 90. {
+                        [0., 0., ir.elevation.signum() as f32]
+                    } else {
+                        [
+                            (-az.sin() * el.cos()) as f32,
+                            (az.cos() * el.cos()) as f32,
+                            el.sin() as f32,
+                        ]
+                    };
+                    let gains = if direction.horizontal_only {
+                        solver.pan_horizontal(position, 0.)
+                    } else {
+                        solver.pan(position, 0.)
+                    };
+                    let norm = gains[..count]
+                        .iter()
+                        .map(|g| f64::from(*g).powi(2))
+                        .sum::<f64>();
+                    let mut energy = 0.;
+                    for a in 0..count {
+                        for b in 0..count {
+                            energy += f64::from(gains[a]) * f64::from(gains[b]) * gram[a][b];
+                        }
+                    }
+                    if norm > 1e-20 {
+                        (energy / norm).max(0.)
+                    } else {
+                        0.
+                    }
+                })
+                .collect();
+            let field = std::sync::Arc::new(energies);
+            self.diffuse_references
+                .lock()
+                .unwrap()
+                .entry(key)
+                .or_insert(field)
+                .clone()
+        };
+        let mut relative = crate::spatial::head_relative_adm(direction.position, direction.head);
+        // Horizontal routes depend on bearing alone. A vertical ray has no
+        // horizontal bus energy; treating that zero as a spherical anchor
+        // would attenuate otherwise valid routes as they approach the pole.
+        if direction.horizontal_only {
+            relative[2] = 0.;
+        }
+        Ok(self
+            .directional_grid
+            .interpolate_reference(&field, relative))
+    }
+
     pub fn directional_dry_compact(
         &self,
         direction: crate::directional::Direction,
@@ -599,19 +692,10 @@ impl NativeHrtfSet {
             return Ok(output);
         }
         if direction.diffuse > 0.0 {
-            // Preserve the existing authored diffuse level, using the old dry
-            // response only as a scalar calibration reference. No source PCM
-            // is sent to these speakers: it retains its own spatial filter.
-            let mut reference =
-                vec![0.0_f32; self.cache.iter().map(|ir| ir.dry.len()).max().unwrap_or(0)];
-            for (bus, speaker) in crate::vbap::speakers(layout).iter().enumerate() {
-                if let Ok(ir) = self.nearest(speaker.azimuth as f64, speaker.elevation as f64) {
-                    for (out, input) in reference.iter_mut().zip(&ir.dry) {
-                        *out += input * gains[bus] / norm;
-                    }
-                }
-            }
-            let old_energy: f64 = reference.iter().map(|v| (*v as f64).powi(2)).sum();
+            // Interpolate the old calibration at measured directions instead
+            // of changing its reference whenever the speaker triangulation
+            // selects another diagonal. No source/PCM gain controller is used.
+            let old_energy=self.diffuse_reference(direction,layout)?;
             let new_energy: f64 = pair
                 .0
                 .iter()
@@ -736,22 +820,53 @@ impl NativeHrtfSet {
     /// Fixed, explicitly opted-in short spatial cues are separate from user room
     /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
     pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
+        let reference = crate::directional::Direction {
+            position: [0., 1., 0.],
+            head: None,
+            width: 0.,
+            height: 0.,
+            depth: 0.,
+            diffuse: 0.,
+            horizontal_only: false,
+        };
+        self.diffuse_reference(reference, layout)?;
+        self.diffuse_reference(
+            crate::directional::Direction {
+                horizontal_only: true,
+                ..reference
+            },
+            layout,
+        )?;
         self.preparation_id = Self::next_preparation_id();
         self.spatial_cues_active = false;
-        self.shared_depth = if self.shared_depth_enabled && self.uses_shared_measured_response()
-            && !self.cinema.enabled && !self.cinema.monitor.enabled && self.room_profile.is_none() {
+        self.shared_depth = if self.shared_depth_enabled
+            && self.uses_shared_measured_response()
+            && !self.cinema.enabled
+            && !self.cinema.monitor.enabled
+            && self.room_profile.is_none()
+        {
             crate::shared_depth::bank(layout)?
-        } else { None };
+        } else {
+            None
+        };
         self.speaker_prepared.clear();
         self.prepared.clear();
-        if !self.spatial_cues { return Ok(()); }
+        if !self.spatial_cues {
+            return Ok(());
+        }
         self.cinema = crate::cinema::Settings::default();
         self.room_profile = None;
         if !(self.mobile_direct_only && self.subject_id.as_deref() == Some("ku100"))
-            && !self.historical_interpolation {
-            return Err("bundled spatial cues require a direct KU100 or historical calibrated KU100 set".into());
+            && !self.historical_interpolation
+        {
+            return Err(
+                "bundled spatial cues require a direct KU100 or historical calibrated KU100 set"
+                    .into(),
+            );
         }
-        if let Some(profile) = crate::spatial_cues::profile_with_window(layout, self.spatial_cue_window)? {
+        if let Some(profile) =
+            crate::spatial_cues::profile_with_window(layout, self.spatial_cue_window)?
+        {
             self.cinema = crate::spatial_cues::settings();
             self.room_profile = Some(profile);
             self.spatial_cues_active = true;
@@ -2277,5 +2392,182 @@ mod measured_response_tests {
             .map(|(a,b)|(*a-*b).abs()).fold(0.0f32,f32::max);
         assert!(error<1e-5);
         assert!(actual.0.iter().zip(&front.0).any(|(a,b)|(*a-*b).abs()>0.01));
+    }
+}
+
+
+#[cfg(test)]
+mod continuous_diffuse_reference_tests {
+    use super::*;
+    fn set()->NativeHrtfSet {NativeHrtfSet::load_calibrated(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json")).unwrap()}
+    #[test]
+    fn diffuse_reference_preserves_measured_anchor_levels() {
+        let set = set();
+        for layout in [
+            crate::vbap::LayoutId::Dolby7_1_4,
+            crate::vbap::LayoutId::Sony360Ra13,
+        ] {
+            let solver = crate::vbap::VbapSolver::with_layout(layout);
+            let basis: Vec<_> = crate::vbap::speakers(layout)
+                .iter()
+                .map(|s| set.nearest(s.azimuth as f64, s.elevation as f64).unwrap())
+                .collect();
+            for horizontal in [false, true] {
+                for ir in set.cache.iter() {
+                    let (a, e) = (ir.azimuth.to_radians(), ir.elevation.to_radians());
+                    let p = if ir.elevation.abs() == 90. {
+                        [0., 0., ir.elevation.signum() as f32]
+                    } else {
+                        [
+                            (-a.sin() * e.cos()) as f32,
+                            (a.cos() * e.cos()) as f32,
+                            e.sin() as f32,
+                        ]
+                    };
+                    let gains = if horizontal {
+                        solver.pan_horizontal(p, 0.)
+                    } else {
+                        solver.pan(p, 0.)
+                    };
+                    let norm = gains.iter().map(|g| g * g).sum::<f32>().sqrt();
+                    if norm < 1e-8 {
+                        let pair = set
+                            .directional_dry_compact(
+                                crate::directional::Direction {
+                                    position: p,
+                                    head: None,
+                                    width: 0.,
+                                    height: 0.,
+                                    depth: 0.,
+                                    diffuse: 0.35,
+                                    horizontal_only: horizontal,
+                                },
+                                layout,
+                                gains,
+                                [0.; crate::vbap::MAX_BUS_COUNT],
+                            )
+                            .unwrap();
+                        assert!(pair.0.iter().chain(&pair.1).all(|v| *v == 0.));
+                        continue;
+                    }
+                    let mut legacy =
+                        vec![0.0f32; set.cache.iter().map(|ir| ir.dry.len()).max().unwrap()];
+                    for (g, basis) in gains.iter().zip(&basis) {
+                        for (v, ir) in legacy.iter_mut().zip(&basis.dry) {
+                            *v += ir * g / norm;
+                        }
+                    }
+                    let expected = legacy.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+                    let got = set
+                        .diffuse_reference(
+                            crate::directional::Direction {
+                                position: p,
+                                head: None,
+                                width: 0.,
+                                height: 0.,
+                                depth: 0.,
+                                diffuse: 0.35,
+                                horizontal_only: horizontal,
+                            },
+                            layout,
+                        )
+                        .unwrap();
+                    assert!(
+                        (got / expected - 1.).abs() < 2e-5,
+                        "anchor calibration changed: {} az={} el={} expected={expected} got={got}",
+                        layout.as_str(),
+                        ir.azimuth,
+                        ir.elevation
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn horizontal_diffuse_reference_keeps_level_near_vertical_rays() {
+        let set = set();
+        for layout in [
+            crate::vbap::LayoutId::Dolby7_1_4,
+            crate::vbap::LayoutId::Sony360Ra13,
+        ] {
+            for azimuth in [20.0f64, 40., 70., 110., 150.] {
+                let a = azimuth.to_radians();
+                let make = |elevation: f64| {
+                    let e = elevation.to_radians();
+                    crate::directional::Direction {
+                        position: [
+                            (-a.sin() * e.cos()) as f32,
+                            (a.cos() * e.cos()) as f32,
+                            e.sin() as f32,
+                        ],
+                        head: None,
+                        width: 0.,
+                        height: 0.,
+                        depth: 0.,
+                        diffuse: 0.35,
+                        horizontal_only: true,
+                    }
+                };
+                let expected = set.diffuse_reference(make(0.), layout).unwrap();
+                for elevation in [-89.99, -80., -40., 40., 80., 89.99] {
+                    let actual = set.diffuse_reference(make(elevation), layout).unwrap();
+                    assert!((actual/expected-1.).abs()<2e-5,"horizontal reference sag: {} az={azimuth} el={elevation} actual={actual} expected={expected}",layout.as_str());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diffuse_manual_level_is_applied_once_and_mute_stays_silent() {
+        let set = set();
+        let layout = crate::vbap::LayoutId::Dolby7_1_4;
+        let solver = crate::vbap::VbapSolver::with_layout(layout);
+        let p = [0.3, 0.7, 0.6];
+        let gains = solver.pan(p, 0.);
+        let d = crate::directional::Direction {
+            position: p,
+            head: None,
+            width: 20.,
+            height: 30.,
+            depth: 0.,
+            diffuse: 0.35,
+            horizontal_only: false,
+        };
+        let render = |g| {
+            set.directional_dry_compact(d, layout, g, [0.; crate::vbap::MAX_BUS_COUNT])
+                .unwrap()
+        };
+        let a = render(gains);
+        let b = render(gains.map(|g| g * 0.5));
+        let silence = render([0.; crate::vbap::MAX_BUS_COUNT]);
+        for (x, y) in a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)) {
+            assert!((x * 0.5 - y).abs() < 1e-6);
+        }
+        assert!(silence.0.iter().chain(&silence.1).all(|v| *v == 0.));
+    }
+    #[test]
+    fn diffuse_reference_is_shared_safely_by_cold_preparation_snapshots() {
+        let set = set().preparation_snapshot();
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let set = set.clone();
+            workers.push(std::thread::spawn(move || {
+                set.diffuse_reference(
+                    crate::directional::Direction {
+                        position: [0., 0., 1.],
+                        head: None,
+                        width: 0.,
+                        height: 0.,
+                        depth: 0.,
+                        diffuse: 0.35,
+                        horizontal_only: false,
+                    },
+                    crate::vbap::LayoutId::Dolby7_1_4,
+                )
+                .unwrap()
+            }));
+        }
+        let result: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(result.iter().all(|v| v.to_bits() == result[0].to_bits()));
     }
 }

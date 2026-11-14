@@ -1385,6 +1385,14 @@ impl Grid {
         field
     }
 
+    pub(crate) fn interpolate_reference(&self, values: &[f64], position: [f32; 3]) -> f64 {
+        let direction = spatial::adm_to_spherical(position);
+        self.weights(direction.azimuth as f64, direction.elevation as f64)
+            .iter()
+            .map(|&(index, weight)| values[index] * weight)
+            .sum()
+    }
+
     fn weights(&self, az: f64, el: f64) -> Vec<(usize, f64)> {
         let u = unit(az, el);
         if let Some(support) = &self.triangle_support {
@@ -1800,18 +1808,18 @@ impl Grid {
 
     fn direct_footprint(&self, irs: &[StereoIr], direction: Direction) -> (Vec<f32>, Vec<f32>) {
         let s = spatial::adm_to_spherical(direction.position);
-        let at = |az: f64, el: f64| {
-            let p = unit(az, el).map(|x| x as f32);
+        let at = |p: [f32; 3]| {
             let relative = spatial::adm_to_spherical(spatial::head_relative_adm(p, direction.head));
             self.interpolate(irs, relative.azimuth as f64, relative.elevation as f64)
         };
-        let mut pair = at(s.azimuth as f64, s.elevation as f64);
+        let center = unit(s.azimuth as f64, s.elevation as f64).map(|v| v as f32);
+        let mut pair = at(center);
         if direction.width == 0.0 && direction.height == 0.0 {
             return pair;
         }
         // Zero height/depth often makes several quadrature points identical.
         // Merge their weights before interpolating; retain the same footprint.
-        let mut points = vec![(s.azimuth as f64, s.elevation as f64, 1.0_f32 / 3.0)];
+        let mut points = vec![(center, 1.0_f32 / 3.0)];
         for (da, de, r) in [
             (-0.5, 0.0, 1.0),
             (0.5, 0.0, 1.0),
@@ -1822,19 +1830,24 @@ impl Grid {
             (-0.5, 0.0, 1.0 + direction.depth * 0.5),
             (0.5, 0.0, 1.0 + direction.depth * 0.5),
         ] {
-            let az = (s.azimuth + da * direction.width / r) as f64;
-            let el = (s.elevation + de * direction.height / r).clamp(-89.9, 89.9) as f64;
-            if let Some(point) = points.iter_mut().find(|p| p.0 == az && p.1 == el) {
-                point.2 += 1.0 / 12.0;
+            let horizontal = da * direction.width / r;
+            let vertical = de * direction.height / r;
+            let p = if horizontal == 0. && vertical == 0. {
+                center
             } else {
-                points.push((az, el, 1.0 / 12.0));
+                spatial::footprint_direction(direction.position, horizontal, vertical)
+            };
+            if let Some(point) = points.iter_mut().find(|point| point.0 == p) {
+                point.1 += 1.0 / 12.0;
+            } else {
+                points.push((p, 1.0 / 12.0));
             }
         }
         for x in pair.0.iter_mut().chain(&mut pair.1) {
-            *x *= points[0].2;
+            *x *= points[0].1;
         }
-        for &(az, el, weight) in &points[1..] {
-            let next = at(az, el);
+        for &(p, weight) in &points[1..] {
+            let next = at(p);
             for (out, input) in [(&mut pair.0, next.0), (&mut pair.1, next.1)] {
                 for (a, b) in out.iter_mut().zip(input) {
                     *a += b * weight;

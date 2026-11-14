@@ -9,7 +9,8 @@ pub struct Spherical {
 
 pub fn adm_to_spherical(position: [f32; 3]) -> Spherical {
     let [x, y, z] = position;
-    let distance = (x * x + y * y + z * z).sqrt().min(4.0);
+    let radius = (x * x + y * y + z * z).sqrt();
+    let distance = radius.min(4.0);
     if distance < 1e-6 {
         return Spherical {
             azimuth: 0.0,
@@ -19,9 +20,53 @@ pub fn adm_to_spherical(position: [f32; 3]) -> Spherical {
     }
     Spherical {
         azimuth: -x.atan2(y).to_degrees(),
-        elevation: (z / distance).clamp(-1.0, 1.0).asin().to_degrees(),
+        // The display/range cap must not change the direction. Large ADM
+        // coordinates still use their actual vector length for elevation.
+        elevation: if radius.is_infinite() && position.iter().all(|v| v.is_finite()) {
+            let norm = position
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            (f64::from(z) / norm).clamp(-1., 1.).asin().to_degrees() as f32
+        } else {
+            (z / radius).clamp(-1.0, 1.0).asin().to_degrees()
+        },
         distance,
     }
+}
+
+/// Offset an angular footprint in its local tangent plane. Unlike adding
+/// azimuth/elevation and clamping, this crosses either pole without truncating
+/// half the source or collapsing its horizontal width. Does not change radius
+/// metadata: the returned value is only an HRTF/panner sample direction.
+pub(crate) fn footprint_direction(position: [f32; 3], horizontal: f32, vertical: f32) -> [f32; 3] {
+    let [x, y, z] = position.map(f64::from);
+    let radius = (x * x + y * y + z * z).sqrt();
+    let n = if radius.is_finite() && radius >= f64::from(1e-6_f32) {
+        [x / radius, y / radius, z / radius]
+    } else {
+        [0., 1., 0.]
+    };
+    // Even a tiny transverse component retains the authored bearing at a
+    // pole. Discarding it rotates anisotropic footprints for one frame.
+    let az = (-n[0]).atan2(n[1]);
+    let elevation = n[2].clamp(-1., 1.).asin();
+    let u = [-az.cos(), -az.sin(), 0.];
+    let v = [
+        az.sin() * elevation.sin(),
+        -az.cos() * elevation.sin(),
+        elevation.cos(),
+    ];
+    let a = f64::from(horizontal).to_radians();
+    let b = f64::from(vertical).to_radians();
+    let angle = a.hypot(b);
+    if angle < 1e-12 {
+        return n.map(|v| v as f32);
+    }
+    std::array::from_fn(|i| {
+        (n[i] * angle.cos() + (u[i] * a + v[i] * b) * angle.sin() / angle) as f32
+    })
 }
 
 pub fn spread_from_size(size: [f32; 3]) -> f32 {
@@ -131,6 +176,66 @@ mod tests {
         let half = std::f32::consts::FRAC_1_SQRT_2;
         let local = head_relative_adm([0.0, 1.0, 0.0], Some([half, 0.0, 0.0, half]));
         assert!((local[2] + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn local_footprint_crosses_poles_and_keeps_angular_width() {
+        for pole in [1.0f32, -1.0] {
+            for horizontal in [-60.0f32, -15., 0., 15., 60.] {
+                for vertical in [-60.0f32, -15., 0., 15., 60.] {
+                    let p = footprint_direction([0., 0., pole], horizontal, vertical);
+                    let norm = p.iter().map(|v| v * v).sum::<f32>().sqrt();
+                    assert!((norm - 1.).abs() < 1e-6);
+                    let angle = f64::from(horizontal)
+                        .hypot(f64::from(vertical))
+                        .to_radians();
+                    assert!((f64::from(p[2] * pole) - angle.cos()).abs() < 1e-6);
+                    let mirror = footprint_direction([0., 0., pole], -horizontal, -vertical);
+                    assert!((p[0] + mirror[0]).abs() < 1e-6 && (p[1] + mirror[1]).abs() < 1e-6);
+                }
+            }
+        }
+        let through = footprint_direction([0., 0., 1.], 0., 15.);
+        assert!(
+            through[1] < -0.25 && through[2] > 0.96,
+            "upper half was clipped: {through:?}"
+        );
+        for az in [-179.0f32, -45., 0., 45., 179.] {
+            let a = az.to_radians();
+            let p = [-a.sin(), a.cos(), 0.];
+            let q = footprint_direction(p, 15., 0.);
+            let b = (az + 15.).to_radians();
+            assert!((q[0] + b.sin()).abs() < 1e-6 && (q[1] - b.cos()).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn tiny_position_extent_uses_the_same_front_fallback_as_its_center() {
+        for position in [[0., 0., 0.], [1e-8, -3e-8, 4e-8], [0., 0., 1e-8]] {
+            assert_eq!(adm_to_spherical(position).azimuth, 0.);
+            assert_eq!(adm_to_spherical(position).elevation, 0.);
+            for (width, height) in [(0., 0.), (15., 0.), (0., -15.), (30., 30.)] {
+                assert_eq!(
+                    footprint_direction(position, width, height),
+                    footprint_direction([0., 1., 0.], width, height)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coordinate_scale_and_display_distance_cap_do_not_change_height() {
+        let expected = adm_to_spherical([0.3, 0.7, 0.6]);
+        for scale in [0.001f32, 0.5, 1., 4., 10., 1000., 1e20] {
+            let actual = adm_to_spherical([0.3 * scale, 0.7 * scale, 0.6 * scale]);
+            assert!((expected.azimuth - actual.azimuth).abs() < 0.0001);
+            assert!(
+                (expected.elevation - actual.elevation).abs() < 0.0001,
+                "scale={scale} expected={expected:?} actual={actual:?}"
+            );
+            assert!(actual.distance <= 4.);
+        }
+        assert!((adm_to_spherical([0., 8., 8.]).elevation - 45.).abs() < 1e-5);
     }
 
     #[test]
