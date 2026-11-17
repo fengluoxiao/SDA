@@ -189,6 +189,20 @@ mod tests {
         }
     }
     #[test]
+    fn reference_roundtrip_accepts_the_shared_seventeen_direction_speaker_bank() {
+        let bank=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf/hrtf-set.json");
+        let initial=PreparedCueUpdate::load_reference(bank.to_str().unwrap(),"7.1.4","",0.5011872).unwrap();
+        assert_eq!(initial.set.simulation_shape().0,17);
+        let mut engine=Engine::new(48000,2);engine.active_hrtf_set=Some(initial.set);engine.bus_renderer=Some(initial.bus);
+        engine.sample_pos=9876;engine.render_epoch=42;
+        for id in [crate::reference_room::ID,""] {
+            engine.apply_spatial_cue_update(PreparedCueUpdate::load_reference(bank.to_str().unwrap(),"7.1.4",id,0.5011872).unwrap()).unwrap();
+            assert_eq!(engine.active_hrtf_set.as_ref().unwrap().simulation_shape().0,17);
+            assert_eq!(engine.sample_pos,9876);assert_eq!(engine.render_epoch,42);
+            assert_eq!(engine.room_profile.is_some(),!id.is_empty());
+        }
+    }
+    #[test]
     fn live_cues_reject_invalid_gain() {
         for gain in [0.0,-1.0,2.0,f32::NAN,f32::INFINITY] { assert!(PreparedCueUpdate::load(&path(),"7.1.4",gain).is_err()); }
     }

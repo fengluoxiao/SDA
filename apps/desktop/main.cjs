@@ -1969,7 +1969,7 @@ ipcMain.handle("sda:native-renderer-cinema", async (event, settings, profileId) 
 })));
 function readReferenceMonitor() { return readSettings().referenceMonitor === "genelec-8351b" ? "genelec-8351b" : ""; }
 async function applyReferenceMonitor(id) {
-  return nativeRendererCommandAck({type:"setReferenceMonitor",id,layout:nativeRendererStatus.layout??"7.1.4"},"setReferenceMonitor",30000);
+  return nativeRendererCommandAck({type:"setReferenceMonitor",id,set:nativeRendererSelectedHrtf??"hrtf-dense",layout:nativeRendererStatus.layout??"7.1.4"},"setReferenceMonitor",30000);
 }
 ipcMain.on("sda:get-reference-monitor",event=>{event.returnValue=readReferenceMonitor();});
 ipcMain.handle("sda:native-renderer-reference-monitor",(event,id)=>exclusiveAudioUpdate(async()=>{

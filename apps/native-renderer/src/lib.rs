@@ -77,6 +77,7 @@ pub mod android_audio_cpu;
 pub mod nnapi_runtime;
 pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-detail-measured-headroom-v2";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
+fn default_reference_set() -> String { "hrtf-dense".into() }
 fn default_reference_gain() -> f32 { 0.5011872 }
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
@@ -206,7 +207,7 @@ pub enum Command {
         volume: f32,
     },
     SetSpatialEnhancement { enabled: bool },
-    SetReferenceMonitor { id: String, layout: String, #[serde(default = "default_reference_gain")] gain: f32 },
+    SetReferenceMonitor { id: String, layout: String, #[serde(default = "default_reference_set")] set: String, #[serde(default = "default_reference_gain")] gain: f32 },
     SetAuthoredProcessing { settings: authored::Processing },
     ConfigureAuthoredScene { scene: authored::Scene },
     SetSpatialLayerGain {

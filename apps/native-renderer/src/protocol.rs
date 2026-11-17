@@ -632,10 +632,8 @@ fn handle_command(
             let result=state.configure_authored_processing(settings);
             write_event(&Event::Ack {command:"setAuthoredProcessing",accepted:result.is_ok(),detail:result.err().as_deref()});
         }
-        Command::SetReferenceMonitor { id, layout, gain } => {
-            let path = Engine::hrtf_root().join("hrtf-dense/hrtf-set.json");
-            let result = crate::live_spatial_cues::PreparedCueUpdate::load_reference(
-                &path.to_string_lossy(), &layout, &id, gain)
+        Command::SetReferenceMonitor { id, layout, set, gain } => {
+            let result = prepare_reference_monitor(&set, &layout, &id, gain)
                 .and_then(|update| state.apply_spatial_cue_update(update));
             telemetry.publish_rendering_state(state);
             write_event(&Event::Ack { command: "setReferenceMonitor", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -1379,11 +1377,9 @@ fn read_frame(
                     });
                     return Ok(true);
                 }
-                if let Command::SetReferenceMonitor { id, layout, gain } = &command {
-                    let path = Engine::hrtf_root().join("hrtf-dense/hrtf-set.json");
+                if let Command::SetReferenceMonitor { id, layout, set, gain } = &command {
                     // Parse resources and build FFT banks on the protocol thread.
-                    let result = crate::live_spatial_cues::PreparedCueUpdate::load_reference(
-                        &path.to_string_lossy(), layout, id, *gain)
+                    let result = prepare_reference_monitor(set, layout, id, *gain)
                         .and_then(|update| commands.push(render_command::RenderCommand::ReferenceMonitor { update: Box::new(update) })
                             .map_err(|_| "render command queue is full".to_string()));
                     if let Err(error) = result { write_event(&Event::Ack { command:"setReferenceMonitor", accepted:false, detail:Some(&error) }); }
@@ -1550,6 +1546,12 @@ fn read_frame(
         }
         Ok(true)
     }
+}
+
+fn prepare_reference_monitor(set: &str, layout: &str, id: &str, gain: f32) -> Result<crate::live_spatial_cues::PreparedCueUpdate,String> {
+    if !matches!(set,"hrtf"|"hrtf-dense") { return Err("Reference monitor requires the shared HRTF profile".into()); }
+    let path=Engine::hrtf_root().join(set).join("hrtf-set.json");
+    crate::live_spatial_cues::PreparedCueUpdate::load_reference(&path.to_string_lossy(),layout,id,gain)
 }
 
 fn command_name(command: &Command) -> &'static str {
