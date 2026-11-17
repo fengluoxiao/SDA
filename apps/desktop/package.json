@@ -68,6 +68,7 @@
       "upmix-wav.cjs",
       "wav-metadata.cjs",
       "export-assets.cjs",
+      "reference-monitor.cjs",
       "authored-playback.cjs",
       "decoder-frames.cjs",
       "authored-master.cjs",

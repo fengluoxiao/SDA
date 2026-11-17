@@ -91,6 +91,8 @@ pub struct EngineConfig {
     /// simulation. Zero selects dry HRIR only; omitted retains legacy 0.04.
     #[serde(default = "default_hrtf_wet_weight")]
     pub hrtf_wet_weight: f32,
+    #[serde(default)]
+    pub reference_monitor: String,
 }
 
 fn default_binaural_enabled() -> bool { true }
@@ -103,7 +105,7 @@ fn default_layout() -> String {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { sample_rate: 48000, output_channels: 2, layout: default_layout(), direct_object_hrtf: false, directional_hrtf: false, binaural_enabled: true, object_rendering: true, hrtf_wet_weight: default_hrtf_wet_weight() }
+        Self { sample_rate: 48000, output_channels: 2, layout: default_layout(), direct_object_hrtf: false, directional_hrtf: false, binaural_enabled: true, object_rendering: true, hrtf_wet_weight: default_hrtf_wet_weight(), reference_monitor: String::new() }
     }
 }
 
@@ -140,6 +142,7 @@ pub struct PlaybackStatus {
     pub stereo_bass_preservation_algorithm: &'static str,
     pub renderer_revision: &'static str,
     pub spatial_balance_algorithm: &'static str,
+    pub reference_monitor_profile: &'static str,
     pub live_loudness_ducking: bool,
     pub sounding_object_ids: Vec<u32>,
     /// Codec clock consumed by the audio output (samples @ config.sample_rate).
@@ -274,6 +277,7 @@ impl MobileEngine {
     /// Create the engine. `hrtf_dir` is reserved for T1.12 (HRTF asset
     /// loading); the renderer's current defaults apply until then.
     pub fn new(config: EngineConfig, _hrtf_dir: Option<&str>) -> EngineResult<MobileEngine> {
+        if !config.reference_monitor.is_empty() && config.reference_monitor != sda_native_renderer::reference_room::ID { return Err("Unknown reference monitor".into()); }
         if !config.hrtf_wet_weight.is_finite() || !(0.0..=1.0).contains(&config.hrtf_wet_weight) {
             return Err("HRTF wet weight must be finite and in 0..=1".into());
         }
@@ -389,6 +393,7 @@ impl MobileEngine {
         let Some(renderer) = self.renderer.as_mut() else {
             return Err("engine already started".into());
         };
+        renderer.set_layout(sda_native_renderer::vbap::LayoutId::parse(&self.config.layout).ok_or("unknown layout")?)?;
         let path = std::path::Path::new(hrtf_json_path);
         let set = sda_native_renderer::hrtf::NativeHrtfSet::load_calibrated(path)
             .map_err(|error| format!("HRTF load failed: {error}"))?;
@@ -398,6 +403,10 @@ impl MobileEngine {
             .map_err(|error| format!("HRTF apply failed: {error}"))?;
         self.hrtf_directions = directions;
         self.hrtf_loaded = true;
+        if !self.config.reference_monitor.is_empty() {
+            let id = self.config.reference_monitor.clone();
+            self.set_reference_monitor(hrtf_json_path, &id, 0.5011872)?;
+        }
         Ok(())
     }
 
@@ -425,6 +434,7 @@ impl MobileEngine {
             self.renderer.as_mut().ok_or("renderer unavailable")?
                 .configure_hrtf_preset(set, wet, direct, directional)?;
         }
+        self.config.reference_monitor.clear();
         self.config.hrtf_wet_weight = wet;
         self.config.direct_object_hrtf = direct;
         self.config.directional_hrtf = directional;
@@ -437,13 +447,31 @@ impl MobileEngine {
     }
 
     /// Prepare filters away from the render worker, then crossfade in place.
+    /// Optional fixed listening-room reference. Prepare all coefficients on
+    /// the calling/control thread, then preserve native audio histories at apply.
+    pub fn set_reference_monitor(&mut self, path: &str, id: &str, gain: f32) -> EngineResult<()> {
+        if self.sdar_source.is_some() { return Ok(()); }
+        let update = sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load_reference(path, &self.config.layout, id, gain)?;
+        self.apply_spatial_cue_update(update)?;
+        self.config.reference_monitor = id.to_owned();
+        self.config.direct_object_hrtf = true;
+        self.config.directional_hrtf = true;
+        self.config.object_rendering = true;
+        self.decoder.set_object_rendering(true);
+        Ok(())
+    }
     pub fn set_spatial_cue_gain(&mut self, path: &str, gain: f32) -> EngineResult<()> {
         if self.sdar_source.is_some(){return Ok(());}
-        let update = sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(path, &self.config.layout, gain)?;
+        let update = if self.config.reference_monitor.is_empty() {
+            sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(path, &self.config.layout, gain)?
+        } else {
+            sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load_reference(path, &self.config.layout, &self.config.reference_monitor, gain)?
+        };
         self.apply_spatial_cue_update(update)
     }
     pub fn apply_spatial_cue_update(&mut self, update: sda_native_renderer::live_spatial_cues::PreparedCueUpdate) -> EngineResult<()> {
-        if self.sdar_source.is_some(){return Ok(());}
+        if self.sdar_source.is_some() { return Ok(()); }
+        let reference = update.reference_monitor_id().map(str::to_owned);
         if let Some(pipeline) = &self.pipeline {
             let (reply, received) = std::sync::mpsc::channel();
             pipeline.commands.push(render_command::RenderCommand::SpatialCueGain { update: Box::new(update), reply })
@@ -451,6 +479,13 @@ impl MobileEngine {
             received.recv_timeout(Duration::from_secs(30)).map_err(|_| "spatial cue acknowledgement timed out")??;
         } else {
             self.renderer.as_mut().ok_or("renderer unavailable")?.apply_spatial_cue_update(update)?;
+        }
+        if let Some(id) = reference {
+            self.config.reference_monitor = id;
+            self.config.direct_object_hrtf = true;
+            self.config.directional_hrtf = true;
+            self.config.object_rendering = true;
+            self.decoder.set_object_rendering(true);
         }
         Ok(())
     }
@@ -726,6 +761,7 @@ impl MobileEngine {
             stereo_bass_preservation_algorithm:sda_native_renderer::STEREO_BASS_PRESERVATION,
             renderer_revision: sda_native_renderer::BUILD_REVISION,
             spatial_balance_algorithm: sda_native_renderer::SPATIAL_BALANCE_ALGORITHM,
+            reference_monitor_profile: if self.pipeline.as_ref().is_some_and(|p| p.telemetry.reference_monitor_enabled.load(std::sync::atomic::Ordering::Acquire)) { sda_native_renderer::reference_room::ID } else { "" },
             live_loudness_ducking: false,
             sounding_object_ids: self.pipeline.as_ref().map_or_else(Vec::new, |p|p.telemetry.sounding_object_ids()),
             consumed_sample_pos: consumed,
@@ -1276,6 +1312,30 @@ mod tests {
         engine.set_paused(false).unwrap();
         wait_mobile_status(&engine, |s| !s.paused);
         engine.stop();
+    }
+
+    #[test]
+    fn native_reference_roundtrip_keeps_the_playing_pipeline_and_layout() {
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json");
+        for layout in ["7.1.4","360RA-13","2.0"] {
+            let mut e=MobileEngine::new(EngineConfig{layout:layout.into(),direct_object_hrtf:true,directional_hrtf:true,reference_monitor:sda_native_renderer::reference_room::ID.into(),..Default::default()},None).unwrap();
+            e.load_hrtf(path.to_str().unwrap()).unwrap();
+
+            e.feed(&joc_fixture()).unwrap();
+            let decoded=e.decoded_sample_pos();
+            e.start(Arc::new(MobileTestOutput)).unwrap();e.set_paused(true).unwrap();
+            wait_mobile_status(&e,|s|s.paused&&s.reference_monitor_profile==sda_native_renderer::reference_room::ID);
+            let commands=e.pipeline.as_ref().unwrap().commands.clone();let fifo=e.pipeline.as_ref().unwrap().fifo.clone();
+            for id in ["",sda_native_renderer::reference_room::ID,""] {
+                e.set_reference_monitor(path.to_str().unwrap(),id,0.5011872).unwrap();
+                assert!(Arc::ptr_eq(&commands,&e.pipeline.as_ref().unwrap().commands));assert!(Arc::ptr_eq(&fifo,&e.pipeline.as_ref().unwrap().fifo));
+                assert_eq!(e.config.reference_monitor,id);assert_eq!(e.config.layout,layout);assert_eq!(e.decoded_sample_pos(),decoded);
+                wait_mobile_status(&e,|s|s.paused&&s.reference_monitor_profile==id);
+            }
+            assert!(e.set_reference_monitor(path.to_str().unwrap(),"missing",0.5011872).is_err());
+            assert!(e.config.reference_monitor.is_empty());e.stop();
+        }
+        assert!(MobileEngine::new(EngineConfig{reference_monitor:"unknown".into(),..Default::default()},None).is_err());
     }
 
     #[test]

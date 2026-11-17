@@ -49,12 +49,14 @@ object SdaEngine {
     external fun nativeStereoReferenceClose(reference: Long)
     external fun nativeCompleteLoudness(ptr: Long): String
     external fun nativeSetVolume(ptr: Long, volume: Float): Int
+    external fun nativeSetReferenceMonitor(ptr: Long, path: String, id: String, gain: Float): String
     external fun nativeSetHrtfPreset(ptr: Long, path: String, wet: Float, direct: Boolean, directional: Boolean): String
     external fun nativeSetBinauralEnabled(ptr: Long, enabled: Boolean): Int
     external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
     external fun nativeSetRoom(ptr: Long, path: String): String
     external fun nativeSetNearField(ptr: Long, enabled: Boolean, metresPerUnit: Float): String
     external fun nativeSetSpatialEnhancement(ptr: Long, enabled: Boolean): String
+    external fun nativePrepareReferenceMonitor(path: String, layout: String, id: String, gain: Float): Long
     external fun nativePrepareSpatialCues(path: String, layout: String, gain: Float): Long
     external fun nativeApplySpatialCues(ptr: Long, prepared: Long): String
     external fun nativeFreeSpatialCues(prepared: Long)

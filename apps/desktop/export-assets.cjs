@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 /** Capture immutable, self-contained authored renderer assets, never pairing/network settings. */
-function captureExportAssets({snapshot,selectedHrtf,hrtfRoot,personalRoot,readRoom,readHeadphone}){
+function captureExportAssets({snapshot,selectedHrtf,hrtfRoot,personalRoot,readRoom,readHeadphone,referenceMonitor="",referenceRoot}){
  if(!snapshot)return null;
  const blobs=new Map();let total=0;
  const add=(data,mimeType,filename,kind)=>{data=Buffer.from(data);const sha256=crypto.createHash('sha256').update(data).digest('hex');if(!blobs.has(sha256)){total+=data.length;if(total>56*1024*1024)throw Error('当前渲染资源超过母版元数据容量');blobs.set(sha256,{sha256,data,mimeType,filename,kind});}return sha256;};
@@ -17,7 +17,13 @@ function captureExportAssets({snapshot,selectedHrtf,hrtfRoot,personalRoot,readRo
  hrtf={...captureHrtf(set),wetWeight:.04};
  const companion=set==='hrtf-dense'?'hrtf':set==='hrtf-ku100-reference-dense'?'hrtf-ku100-reference':set==='hrtf-dense-raw'?'hrtf-raw':set.endsWith('-dense')&&(set.startsWith('hrtf-h')||set==='hrtf-d2-dense')?set.slice(0,-6):null;
  if(companion)hrtf.companion=captureHrtf(companion);
- const cinema=snapshot.cinema;if(cinema?.settings?.enabled&&cinema.profileId){const profile=readRoom(cinema.profileId).profile;room={id:cinema.profileId,layout:profile.layout,profile:add(Buffer.from(JSON.stringify(profile)),'application/json','room.json','room-profile')};}
+ let referenceProfile=null;
+ if(referenceMonitor==='genelec-8351b'&&['hrtf','hrtf-dense'].includes(set)){
+  referenceProfile=require('./reference-monitor.cjs').readReferenceProfile(referenceRoot,snapshot.layout?.effective??'7.1.4');
+  snapshot.cinema={settings:{enabled:true,reflectionMode:'full',directDb:0,earlyDb:0,lateDb:0,earlyMs:50,bassEnabled:false,crossoverHz:80,bassDb:0,speakers:{}},profileId:'genelec-8351b'};
+  hrtf.wetWeight=.04;
+ }
+ const cinema=snapshot.cinema;if(cinema?.settings?.enabled&&cinema.profileId){const profile=referenceProfile??readRoom(cinema.profileId).profile;room={id:cinema.profileId,layout:profile.layout,profile:add(Buffer.from(JSON.stringify(profile)),'application/json','room.json','room-profile')};}
  const id=snapshot.equalizer?.headphoneProfileId;
  if(id){const profile=readHeadphone(id);headphone={id,preamp:profile.preamp??1,manifest:profile.manifest??profile.profile??null,left:add(profile.leftFir,'application/octet-stream','headphone-left.f32','headphone-fir'),right:add(profile.rightFir,'application/octet-stream','headphone-right.f32','headphone-fir')};}
  return {schema:'sda.render-assets',version:1,hrtf,room,headphone,blobs:[...blobs.values()]};

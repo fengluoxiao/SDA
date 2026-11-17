@@ -214,6 +214,7 @@ pub unsafe extern "C" fn sda_ios_command(
             "binaural" => e.set_binaural_enabled(boolean("enabled")?)?,
             "rendering" => e.set_object_rendering(boolean("direct")?, boolean("directional")?)?,
             "spatialCueGain" => e.set_spatial_cue_gain(str_arg("path")?, number("gain")?)?,
+            "referenceMonitor" => e.set_reference_monitor(str_arg("path")?, str_arg("id")?, number("gain")?)?,
             "preset" => e.set_hrtf_preset(
                 str_arg("path")?,
                 number("wet")?,
@@ -1022,6 +1023,16 @@ pub unsafe extern "C" fn sda_ios_prepare_cues(path: *const c_char, layout: *cons
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(unsafe { text(path)? }, unsafe { text(layout)? }, gain)
     })).unwrap_or_else(|_| Err("cue preparation panic".into()));
+    match result {
+        Ok(update) => Box::into_raw(Box::new(Some(update))).cast(),
+        Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_prepare_reference(path: *const c_char, layout: *const c_char, id: *const c_char, gain: f32, error: *mut *mut c_char) -> *mut std::ffi::c_void {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load_reference(unsafe { text(path)? }, unsafe { text(layout)? }, unsafe { text(id)? }, gain)
+    })).unwrap_or_else(|_| Err("reference-room preparation panic".into()));
     match result {
         Ok(update) => Box::into_raw(Box::new(Some(update))).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }

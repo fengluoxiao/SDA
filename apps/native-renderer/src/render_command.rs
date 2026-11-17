@@ -30,6 +30,7 @@ pub enum RenderCommand {
         directional: bool,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
+    ReferenceMonitor { update: Box<crate::live_spatial_cues::PreparedCueUpdate> },
     SpatialCueGain {
         update: Box<crate::live_spatial_cues::PreparedCueUpdate>,
         reply: std::sync::mpsc::Sender<Result<(), String>>,

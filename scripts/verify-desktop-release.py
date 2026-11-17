@@ -51,10 +51,16 @@ def verify_payload(app, platform, arch, commit, version):
         with path.open('rb') as f: data=f.read(65536)
         assert arch in architectures(data), f'{role}: wrong architecture {architectures(data)}, expected {arch}'
     info=json.loads((resources/'native-renderer/build-info.json').read_text(encoding='utf-8'))
+    assert info['referenceMonitorAlgorithm']=='genelec8351b-reference-room-v1'
+    assert info['referenceCoefficientsSha256']==sha(Path(os.environ.get('GITHUB_WORKSPACE',Path(__file__).resolve().parents[1]))/'apps/native-renderer/assets/genelec-reference/coefficients.f32')
+    reference=resources/'native-renderer/genelec-reference'
+    assert sha(reference/'coefficients.f32')==info['referenceCoefficientsSha256']
+    assert json.loads((reference/'manifest.json').read_text(encoding='utf-8'))['coefficientsSha256']==info['referenceCoefficientsSha256']
+    for name in ['coefficients.f32','manifest.json','NOTICE.md']:roles['reference/'+name]=reference/name
     assert info['sourceCommit']==commit,'Wrong native renderer source'
     assert info['sha256']==sha(roles['renderer']) and info['roomReferenceSha256']==sha(roles['room'])
     binary=roles['renderer'].read_bytes()
-    for marker in [commit.encode(),b'bedExportReady',b'SDAR Bed Channel with Objects',b'nativeFilePlayback',b'nativeProgrammeReference']:assert marker in binary,marker
+    for marker in [info['referenceMonitorAlgorithm'].encode(),commit.encode(),b'bedExportReady',b'SDAR Bed Channel with Objects',b'nativeFilePlayback',b'nativeProgrammeReference']:assert marker in binary,marker
     pkg=asar_package(resources/'app.asar');validate_package_metadata(pkg,version)
     if platform=='macOS':
         p=plistlib.loads((app/'Contents/Info.plist').read_bytes());assert p['CFBundleShortVersionString']==version

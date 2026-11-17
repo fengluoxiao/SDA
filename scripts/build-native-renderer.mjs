@@ -110,6 +110,8 @@ for(const entry of receiver.manifest.positions){
 }
 if(receiverHash.digest("hex")!==receiver.manifest.receiverSha256)throw new Error("Prepared room receiver checksum mismatch");
 await writeFile(join(roomReceiverRoot,"hrtf-set.json"),JSON.stringify(receiver.manifest,null,2)+"\n");
+await mkdir(join(destination,'genelec-reference'),{recursive:true});
+for(const name of ['coefficients.f32','manifest.json','NOTICE.md'])await copyFile(join(root,'apps/native-renderer/assets/genelec-reference',name),join(destination,'genelec-reference',name));
 console.log(`Native renderer: ${target} (bundled calibrated HRTF assets verified)`);
 
 const bytes = await readFile(target);
@@ -118,5 +120,7 @@ if(!bytes.includes(Buffer.from('nativeProgrammeReference')))throw new Error('Nat
 if(!bytes.includes(Buffer.from('nativeFilePlayback')))throw new Error('Native renderer lacks native file decoding and indexed seek');
 if(!bytes.includes(Buffer.from('setDownmixTrims')))throw new Error('Native renderer lacks file-owned Dolby downmix trims');
 const sourceCommit = process.env.SDA_SOURCE_COMMIT ?? execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
+const referenceMonitorAlgorithm='genelec8351b-reference-room-v1';
+if(!bytes.includes(Buffer.from(referenceMonitorAlgorithm)))throw Error('Reference room implementation missing from native renderer');
 if (!bytes.includes(Buffer.from(sourceCommit)) || !bytes.includes(Buffer.from('front-direct-mirror-lowband-v2'))) throw new Error('Staged renderer does not match the current source revision and stereo calibration');
-await writeFile(join(destination,'build-info.json'),JSON.stringify({sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,bedExportProtocol:1,nativeFilePlayback:true,nativeProgrammeReference:true,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');
+await writeFile(join(destination,'build-info.json'),JSON.stringify({referenceMonitorAlgorithm,referenceCoefficientsSha256:createHash('sha256').update(await readFile(join(root,'apps/native-renderer/assets/genelec-reference/coefficients.f32'))).digest('hex'),sourceCommit,target:targetTriple??process.platform,sha256:createHash('sha256').update(bytes).digest('hex'),hrtfProfile:experiment?.id??null,bedExportProtocol:1,nativeFilePlayback:true,nativeProgrammeReference:true,roomReferenceSha256:createHash('sha256').update(await readFile(roomHelper)).digest('hex'),stereoBassPreservation:'front-direct-mirror-lowband-v2'},null,2)+'\n');

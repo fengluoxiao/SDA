@@ -115,7 +115,7 @@ class MobileAssetsTest(unittest.TestCase):
         path = self.bundle / 'rendering-presets.json'
         presets = json.loads(path.read_text(encoding='utf-8'))
         path.write_text(json.dumps(presets * 2))
-        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+        with self.assertRaisesRegex(RuntimeError, 'exactly two'):
             verify_mobile_ios_assets(self.app)
 
 

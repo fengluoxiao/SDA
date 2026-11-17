@@ -113,7 +113,7 @@ android {
         // Both shared native ABIs link libaaudio (Android API 26+).
         minSdkVersion Math.max(26, rootProject.ext.minSdkVersion as int)
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 949
+        versionCode 950
         versionName "0.9.40"
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         // Keep generated React Native C++ object paths within Windows Ninja limits.
@@ -182,6 +182,7 @@ def syncSharedKu100Assets = tasks.register('syncSharedKu100Assets', SdaAssetSync
     inputs.files(sharedAbis.collect { file("src/main/jniLibs/${it}/libsda_native.so") })
     from(mobileAssets) { exclude 'hrtf*/**', 'rooms/**', 'rendering-presets.json' }
     from('../../rendering-presets.json')
+    from('../../../../apps/native-renderer/assets/genelec-reference') { include 'NOTICE.md', 'manifest.json'; into 'licenses/genelec-reference' }
     from('../../../../vendor/libmpegh') { include 'LICENSE', 'LICENSE2'; into 'licenses/libmpegh' }
     from('../../../../harletty-bridge/eac3') { include 'JOC_INPUT_CONDITIONING_LICENSE'; into 'licenses/joc-input-conditioning' }
     from(mobileHrtfAssets) { include 'hrtf-restored/**' }

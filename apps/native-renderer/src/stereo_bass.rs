@@ -50,7 +50,7 @@ pub(super) fn prepare(
     wet: f32,
 ) -> Result<Option<Responses>, String> {
     if !set.uses_shared_measured_response()
-        || set.cinema.enabled
+        || (set.cinema.enabled && !set.room_profile.as_deref().is_some_and(crate::reference_room::is_profile))
         || set.cinema.monitor.hardware.enabled
     {
         return Ok(None);

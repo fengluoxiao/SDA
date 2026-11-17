@@ -1,0 +1,1114 @@
+{
+  "version": 1,
+  "sampleRate": 48000,
+  "taps": 4608,
+  "model": "Genelec 8351B reference room",
+  "sourceModel": "genelec-8351b-normalized-directivity",
+  "preserveSelectedDirect": true,
+  "directivitySha256": "97f5fa34f0e3f10019153b3a8bd5e4565d5d3688e7c2b8dc4ae6bfc1e072e3a5",
+  "receiverSha256": "c5fa9eae812821db33b00fb0a2e2a2cfcf8509be3dd5653d9ff77fe7fadbda07",
+  "phaseModel": "minimum-phase approximation from normalized magnitude; not absolute measured system phase",
+  "room": {
+    "metres": [
+      6.0,
+      5.0,
+      3.2
+    ],
+    "listenerMetres": [
+      3.0,
+      2.5,
+      1.2
+    ],
+    "speakerRadiusMetres": 1.2,
+    "imageOrder": 2,
+    "absorptionFrequencyHz": [
+      50,
+      125,
+      250,
+      500,
+      1000,
+      2000,
+      4000,
+      8000,
+      16000
+    ],
+    "wallAbsorption": [
+      0.15,
+      0.24,
+      0.45,
+      0.68,
+      0.78,
+      0.83,
+      0.85,
+      0.86,
+      0.86
+    ],
+    "floorAbsorption": [
+      0.05,
+      0.08,
+      0.16,
+      0.3,
+      0.5,
+      0.62,
+      0.7,
+      0.75,
+      0.75
+    ],
+    "ceilingAbsorption": [
+      0.2,
+      0.3,
+      0.55,
+      0.75,
+      0.84,
+      0.87,
+      0.88,
+      0.9,
+      0.9
+    ],
+    "waveModes": false
+  },
+  "commonResidualGain": 0.05246158891708539,
+  "calibration": {
+    "scope": "native direct plus reference residual, 20-500 Hz, stereo energy",
+    "minimumNarrowbandChangeDb": -1.3098965468181536,
+    "maximumNarrowbandChangeDb": 0.58764935127918,
+    "minimumOctaveChangeDb": -0.9772236223382997,
+    "maximumOctaveChangeDb": 0.196217640809596,
+    "maximumResidualEnergyRatio": 0.00015745261799920816
+  },
+  "layouts": {
+    "2.0": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      }
+    ],
+    "2.1": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      }
+    ],
+    "5.1": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "110.0000,0.0000:d3780051086c"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-110.0000,0.0000:2e20eb0542be"
+      }
+    ],
+    "5.1.2": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "110.0000,0.0000:d3780051086c"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-110.0000,0.0000:2e20eb0542be"
+      },
+      {
+        "name": "TopMiddleLeft",
+        "key": "90.0000,45.0000:42a79942634c"
+      },
+      {
+        "name": "TopMiddleRight",
+        "key": "-90.0000,45.0000:ad54c1555d11"
+      }
+    ],
+    "5.1.4": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "110.0000,0.0000:d3780051086c"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-110.0000,0.0000:2e20eb0542be"
+      },
+      {
+        "name": "TopFrontLeft",
+        "key": "45.0000,45.0000:d225b64dc85a"
+      },
+      {
+        "name": "TopFrontRight",
+        "key": "-45.0000,45.0000:093fa48c49c9"
+      },
+      {
+        "name": "TopRearLeft",
+        "key": "135.0000,45.0000:db50787f5cac"
+      },
+      {
+        "name": "TopRearRight",
+        "key": "-135.0000,45.0000:f665cae14d25"
+      }
+    ],
+    "7.1": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      }
+    ],
+    "7.1.2": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopMiddleLeft",
+        "key": "90.0000,45.0000:42a79942634c"
+      },
+      {
+        "name": "TopMiddleRight",
+        "key": "-90.0000,45.0000:ad54c1555d11"
+      }
+    ],
+    "7.1.4": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopFrontLeft",
+        "key": "45.0000,45.0000:d225b64dc85a"
+      },
+      {
+        "name": "TopFrontRight",
+        "key": "-45.0000,45.0000:093fa48c49c9"
+      },
+      {
+        "name": "TopRearLeft",
+        "key": "135.0000,45.0000:db50787f5cac"
+      },
+      {
+        "name": "TopRearRight",
+        "key": "-135.0000,45.0000:f665cae14d25"
+      }
+    ],
+    "9.1": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "WideLeft",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "WideRight",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      }
+    ],
+    "9.1.2": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "WideLeft",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "WideRight",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopMiddleLeft",
+        "key": "90.0000,45.0000:42a79942634c"
+      },
+      {
+        "name": "TopMiddleRight",
+        "key": "-90.0000,45.0000:ad54c1555d11"
+      }
+    ],
+    "9.1.4": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "WideLeft",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "WideRight",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopFrontLeft",
+        "key": "45.0000,45.0000:d225b64dc85a"
+      },
+      {
+        "name": "TopFrontRight",
+        "key": "-45.0000,45.0000:093fa48c49c9"
+      },
+      {
+        "name": "TopRearLeft",
+        "key": "135.0000,45.0000:db50787f5cac"
+      },
+      {
+        "name": "TopRearRight",
+        "key": "-135.0000,45.0000:f665cae14d25"
+      }
+    ],
+    "9.1.6": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "WideLeft",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "WideRight",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopFrontLeft",
+        "key": "45.0000,45.0000:d225b64dc85a"
+      },
+      {
+        "name": "TopFrontRight",
+        "key": "-45.0000,45.0000:093fa48c49c9"
+      },
+      {
+        "name": "TopMiddleLeft",
+        "key": "90.0000,45.0000:42a79942634c"
+      },
+      {
+        "name": "TopMiddleRight",
+        "key": "-90.0000,45.0000:ad54c1555d11"
+      },
+      {
+        "name": "TopRearLeft",
+        "key": "135.0000,45.0000:db50787f5cac"
+      },
+      {
+        "name": "TopRearRight",
+        "key": "-135.0000,45.0000:f665cae14d25"
+      }
+    ],
+    "360RA-13": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "110.0000,0.0000:d3780051086c"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-110.0000,0.0000:2e20eb0542be"
+      },
+      {
+        "name": "UpperFrontLeft",
+        "key": "30.0000,30.0000:f119ce9ea2ff"
+      },
+      {
+        "name": "UpperFrontRight",
+        "key": "-30.0000,30.0000:f510d4db14a7"
+      },
+      {
+        "name": "UpperCenter",
+        "key": "0.0000,30.0000:80446cb025c9"
+      },
+      {
+        "name": "UpperRearLeft",
+        "key": "110.0000,30.0000:4465bf326e34"
+      },
+      {
+        "name": "UpperRearRight",
+        "key": "-110.0000,30.0000:3bd0b4065128"
+      },
+      {
+        "name": "LowerFrontLeft",
+        "key": "30.0000,-20.0000:4a2cb2fc1632"
+      },
+      {
+        "name": "LowerFrontRight",
+        "key": "-30.0000,-20.0000:4333d3d7c7fd"
+      },
+      {
+        "name": "LowerCenter",
+        "key": "0.0000,-20.0000:8139834615ca"
+      }
+    ],
+    "22.2": [
+      {
+        "name": "I_M_L060",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "I_M_R060",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "I_M_000",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "I_M_L135",
+        "key": "135.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "I_M_R135",
+        "key": "-135.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "I_M_L030",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "I_M_R030",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "I_M_180",
+        "key": "180.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "I_M_L090",
+        "key": "90.0000,0.0000:05149a6f3b8f"
+      },
+      {
+        "name": "I_M_R090",
+        "key": "-90.0000,0.0000:938f3ccfa96d"
+      },
+      {
+        "name": "I_U_L045",
+        "key": "45.0000,35.0000:d225b64dc85a"
+      },
+      {
+        "name": "I_U_R045",
+        "key": "-45.0000,35.0000:093fa48c49c9"
+      },
+      {
+        "name": "I_U_000",
+        "key": "0.0000,35.0000:11d0083b62aa"
+      },
+      {
+        "name": "I_T_000",
+        "key": "0.0000,90.0000:3a478bac7116"
+      },
+      {
+        "name": "I_U_L135",
+        "key": "135.0000,35.0000:db50787f5cac"
+      },
+      {
+        "name": "I_U_R135",
+        "key": "-135.0000,35.0000:f665cae14d25"
+      },
+      {
+        "name": "I_U_L090",
+        "key": "90.0000,35.0000:42a79942634c"
+      },
+      {
+        "name": "I_U_R090",
+        "key": "-90.0000,35.0000:ad54c1555d11"
+      },
+      {
+        "name": "I_U_180",
+        "key": "180.0000,35.0000:db50787f5cac"
+      },
+      {
+        "name": "I_L_000",
+        "key": "0.0000,-15.0000:7d8a43e425ba"
+      },
+      {
+        "name": "I_L_L045",
+        "key": "45.0000,-15.0000:cd5f4cfc6ca8"
+      },
+      {
+        "name": "I_L_R045",
+        "key": "-45.0000,-15.0000:c29cd6335943"
+      }
+    ],
+    "11.1.8": [
+      {
+        "name": "FrontLeft",
+        "key": "30.0000,0.0000:d7dc8403ff65"
+      },
+      {
+        "name": "FrontRight",
+        "key": "-30.0000,0.0000:b6e471a8d4a6"
+      },
+      {
+        "name": "Center",
+        "key": "0.0000,0.0000:11d0083b62aa"
+      },
+      {
+        "name": "WideLeft",
+        "key": "60.0000,0.0000:c464a8fabf70"
+      },
+      {
+        "name": "WideRight",
+        "key": "-60.0000,0.0000:03e4bfdb349d"
+      },
+      {
+        "name": "SurroundLeft",
+        "key": "100.0000,0.0000:b2518ca01328"
+      },
+      {
+        "name": "SurroundRight",
+        "key": "-100.0000,0.0000:ddc63e2b21af"
+      },
+      {
+        "name": "RearLeft",
+        "key": "140.0000,0.0000:158bf7d8ae33"
+      },
+      {
+        "name": "RearRight",
+        "key": "-140.0000,0.0000:1f07d4588a37"
+      },
+      {
+        "name": "TopFrontLeft",
+        "key": "45.0000,45.0000:d225b64dc85a"
+      },
+      {
+        "name": "TopFrontRight",
+        "key": "-45.0000,45.0000:093fa48c49c9"
+      },
+      {
+        "name": "TopRearLeft",
+        "key": "135.0000,45.0000:db50787f5cac"
+      },
+      {
+        "name": "TopRearRight",
+        "key": "-135.0000,45.0000:f665cae14d25"
+      },
+      {
+        "name": "Surround1Left",
+        "key": "122.0000,0.0000:3ce89af65ee5"
+      },
+      {
+        "name": "Surround1Right",
+        "key": "-122.0000,0.0000:5946ab000f25"
+      },
+      {
+        "name": "FrontHeightLeft",
+        "key": "30.0000,25.0000:d225b64dc85a"
+      },
+      {
+        "name": "FrontHeightRight",
+        "key": "-30.0000,25.0000:093fa48c49c9"
+      },
+      {
+        "name": "RearHeightLeft",
+        "key": "150.0000,25.0000:db50787f5cac"
+      },
+      {
+        "name": "RearHeightRight",
+        "key": "-150.0000,25.0000:f665cae14d25"
+      }
+    ]
+  },
+  "responses": [
+    {
+      "key": "30.0000,0.0000:d7dc8403ff65",
+      "azimuth": 30,
+      "elevation": 0,
+      "offsetFloats": 0,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-30.0000,0.0000:b6e471a8d4a6",
+      "azimuth": -30,
+      "elevation": 0,
+      "offsetFloats": 10496,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,0.0000:11d0083b62aa",
+      "azimuth": 0,
+      "elevation": 0,
+      "offsetFloats": 20992,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "110.0000,0.0000:d3780051086c",
+      "azimuth": 110,
+      "elevation": 0,
+      "offsetFloats": 31488,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-110.0000,0.0000:2e20eb0542be",
+      "azimuth": -110,
+      "elevation": 0,
+      "offsetFloats": 41984,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "90.0000,45.0000:42a79942634c",
+      "azimuth": 90,
+      "elevation": 45,
+      "offsetFloats": 52480,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-90.0000,45.0000:ad54c1555d11",
+      "azimuth": -90,
+      "elevation": 45,
+      "offsetFloats": 62976,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "45.0000,45.0000:d225b64dc85a",
+      "azimuth": 45,
+      "elevation": 45,
+      "offsetFloats": 73472,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-45.0000,45.0000:093fa48c49c9",
+      "azimuth": -45,
+      "elevation": 45,
+      "offsetFloats": 83968,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "135.0000,45.0000:db50787f5cac",
+      "azimuth": 135,
+      "elevation": 45,
+      "offsetFloats": 94464,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-135.0000,45.0000:f665cae14d25",
+      "azimuth": -135,
+      "elevation": 45,
+      "offsetFloats": 104960,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "100.0000,0.0000:b2518ca01328",
+      "azimuth": 100,
+      "elevation": 0,
+      "offsetFloats": 115456,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-100.0000,0.0000:ddc63e2b21af",
+      "azimuth": -100,
+      "elevation": 0,
+      "offsetFloats": 125952,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "140.0000,0.0000:158bf7d8ae33",
+      "azimuth": 140,
+      "elevation": 0,
+      "offsetFloats": 136448,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-140.0000,0.0000:1f07d4588a37",
+      "azimuth": -140,
+      "elevation": 0,
+      "offsetFloats": 146944,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "60.0000,0.0000:c464a8fabf70",
+      "azimuth": 60,
+      "elevation": 0,
+      "offsetFloats": 157440,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-60.0000,0.0000:03e4bfdb349d",
+      "azimuth": -60,
+      "elevation": 0,
+      "offsetFloats": 167936,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "30.0000,30.0000:f119ce9ea2ff",
+      "azimuth": 30,
+      "elevation": 30,
+      "offsetFloats": 178432,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-30.0000,30.0000:f510d4db14a7",
+      "azimuth": -30,
+      "elevation": 30,
+      "offsetFloats": 188928,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,30.0000:80446cb025c9",
+      "azimuth": 0,
+      "elevation": 30,
+      "offsetFloats": 199424,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "110.0000,30.0000:4465bf326e34",
+      "azimuth": 110,
+      "elevation": 30,
+      "offsetFloats": 209920,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-110.0000,30.0000:3bd0b4065128",
+      "azimuth": -110,
+      "elevation": 30,
+      "offsetFloats": 220416,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "30.0000,-20.0000:4a2cb2fc1632",
+      "azimuth": 30,
+      "elevation": -20,
+      "offsetFloats": 230912,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-30.0000,-20.0000:4333d3d7c7fd",
+      "azimuth": -30,
+      "elevation": -20,
+      "offsetFloats": 241408,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,-20.0000:8139834615ca",
+      "azimuth": 0,
+      "elevation": -20,
+      "offsetFloats": 251904,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "135.0000,0.0000:158bf7d8ae33",
+      "azimuth": 135,
+      "elevation": 0,
+      "offsetFloats": 262400,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-135.0000,0.0000:1f07d4588a37",
+      "azimuth": -135,
+      "elevation": 0,
+      "offsetFloats": 272896,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "180.0000,0.0000:158bf7d8ae33",
+      "azimuth": 180,
+      "elevation": 0,
+      "offsetFloats": 283392,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "90.0000,0.0000:05149a6f3b8f",
+      "azimuth": 90,
+      "elevation": 0,
+      "offsetFloats": 293888,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-90.0000,0.0000:938f3ccfa96d",
+      "azimuth": -90,
+      "elevation": 0,
+      "offsetFloats": 304384,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "45.0000,35.0000:d225b64dc85a",
+      "azimuth": 45,
+      "elevation": 35,
+      "offsetFloats": 314880,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-45.0000,35.0000:093fa48c49c9",
+      "azimuth": -45,
+      "elevation": 35,
+      "offsetFloats": 325376,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,35.0000:11d0083b62aa",
+      "azimuth": 0,
+      "elevation": 35,
+      "offsetFloats": 335872,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,90.0000:3a478bac7116",
+      "azimuth": 0,
+      "elevation": 90,
+      "offsetFloats": 346368,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "135.0000,35.0000:db50787f5cac",
+      "azimuth": 135,
+      "elevation": 35,
+      "offsetFloats": 356864,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-135.0000,35.0000:f665cae14d25",
+      "azimuth": -135,
+      "elevation": 35,
+      "offsetFloats": 367360,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "90.0000,35.0000:42a79942634c",
+      "azimuth": 90,
+      "elevation": 35,
+      "offsetFloats": 377856,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-90.0000,35.0000:ad54c1555d11",
+      "azimuth": -90,
+      "elevation": 35,
+      "offsetFloats": 388352,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "180.0000,35.0000:db50787f5cac",
+      "azimuth": 180,
+      "elevation": 35,
+      "offsetFloats": 398848,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "0.0000,-15.0000:7d8a43e425ba",
+      "azimuth": 0,
+      "elevation": -15,
+      "offsetFloats": 409344,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "45.0000,-15.0000:cd5f4cfc6ca8",
+      "azimuth": 45,
+      "elevation": -15,
+      "offsetFloats": 419840,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-45.0000,-15.0000:c29cd6335943",
+      "azimuth": -45,
+      "elevation": -15,
+      "offsetFloats": 430336,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "122.0000,0.0000:3ce89af65ee5",
+      "azimuth": 122,
+      "elevation": 0,
+      "offsetFloats": 440832,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-122.0000,0.0000:5946ab000f25",
+      "azimuth": -122,
+      "elevation": 0,
+      "offsetFloats": 451328,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "30.0000,25.0000:d225b64dc85a",
+      "azimuth": 30,
+      "elevation": 25,
+      "offsetFloats": 461824,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-30.0000,25.0000:093fa48c49c9",
+      "azimuth": -30,
+      "elevation": 25,
+      "offsetFloats": 472320,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "150.0000,25.0000:db50787f5cac",
+      "azimuth": 150,
+      "elevation": 25,
+      "offsetFloats": 482816,
+      "directTaps": 640,
+      "residualTaps": 4608
+    },
+    {
+      "key": "-150.0000,25.0000:f665cae14d25",
+      "azimuth": -150,
+      "elevation": 25,
+      "offsetFloats": 493312,
+      "directTaps": 640,
+      "residualTaps": 4608
+    }
+  ],
+  "coefficientsSha256": "90ee9f710608b76bfc56bfb16a2b60fd47d2664170cb6c30819c27cda4edfb5e"
+}

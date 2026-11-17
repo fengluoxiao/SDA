@@ -5,6 +5,7 @@
 #include <stdbool.h>
 void *sda_ios_create(const char *config, const char *hrtf, char **error);
 void *sda_ios_prepare_cues(const char *path, const char *layout, float gain, char **error);
+void *sda_ios_prepare_reference(const char *path, const char *layout, const char *id, float gain, char **error);
 char *sda_ios_apply_cues(void *engine, void *prepared);
 void sda_ios_free_cues(void *prepared);
 char *sda_ios_command(void *engine, const char *op, const char *args);

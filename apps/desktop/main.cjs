@@ -294,7 +294,7 @@ const upmixExport=require("./upmix-export.cjs").createUpmixExport({
   encoderPath:()=>require("./upmix-export.cjs").resolveEncoder(app.isPackaged?process.resourcesPath:__dirname),
   rendererPath:()=>bundledNativeRendererPath(),
   authoredState:(owner,file)=>authoredPlayback.exportState(owner,file),
-  captureAssets:snapshot=>require("./export-assets.cjs").captureExportAssets({snapshot,selectedHrtf:nativeRendererSelectedHrtf,hrtfRoot:path.join(path.dirname(bundledNativeRendererPath()),"hrtf-assets"),personalRoot:personalHrtfDirectory(),readRoom:readCinemaProfile,readHeadphone:id=>{
+  captureAssets:snapshot=>require("./export-assets.cjs").captureExportAssets({snapshot,referenceMonitor:readReferenceMonitor(),referenceRoot:path.dirname(bundledNativeRendererPath()),selectedHrtf:nativeRendererSelectedHrtf,hrtfRoot:path.join(path.dirname(bundledNativeRendererPath()),"hrtf-assets"),personalRoot:personalHrtfDirectory(),readRoom:readCinemaProfile,readHeadphone:id=>{
     if(id!==exclusiveHeadphoneId||!nativeRendererActiveHeadphoneFir)throw Error("耳机模拟切换尚未完成，请稍后导出");
     return {...nativeRendererActiveHeadphoneFir,manifest:{targetId:id,sourceId:readSettings().headphoneSimulationSource??"reference"}};
   }}),
@@ -379,6 +379,7 @@ function setNativeRendererStatus(running, detail, referenceMix = true, telemetry
       ? telemetry.programCodecSupported
       : nativeRendererProgramCodecSupported,
     rendererRevision: telemetry.rendererRevision,
+    layout: telemetry.layout ?? nativeRendererStatus.layout ?? "7.1.4",
     monitorEnabled: telemetry.monitorEnabled,
     hardwareSimulationEnabled: telemetry.hardwareSimulationEnabled,
     hardwareInputDb: telemetry.hardwareInputDb,
@@ -1811,19 +1812,24 @@ ipcMain.handle("sda:native-renderer-clear-pose", async () => {
   writeStartupLog(`clearHeadPose neutral -> ${accepted}`);
   return accepted;
 });
-ipcMain.handle("sda:native-renderer-hrtf", async (_event, set, wetWeight) => {
+ipcMain.handle("sda:native-renderer-hrtf", (_event, set, wetWeight) => exclusiveAudioUpdate(async () => {
   if ((!NATIVE_HRTF_SET_PATTERN.test(set ?? "") && !personalHrtf.PERSONAL_SET.test(set ?? "")) || !Number.isFinite(wetWeight)) return false;
+  const bypassReference=!["hrtf","hrtf-dense"].includes(set) && ["hrtf","hrtf-dense"].includes(nativeRendererSelectedHrtf) && readReferenceMonitor();
+  if(bypassReference) {
+    if(!await applyReferenceMonitor(""))return false;
+  }
   const accepted = await nativeRendererCommandAck({ type: "setHrtf", set, wetWeight }, "setHrtf", personalHrtf.PERSONAL_SET.test(set) ? 30000 : NATIVE_RENDERER_COMMAND_ACK_TIMEOUT_MS);
   writeStartupLog(`setHrtf ${set} wet=${wetWeight} -> ${accepted}`);
-  if (!accepted) return false;
+  if (!accepted) {if(bypassReference)await applyReferenceMonitor(bypassReference);return false;}
   nativeRendererSelectedHrtf = set;
   // HRTF loading reapplies presentation defaults. Restore the user preference
   // only for the shared mobile profile, leaving explicit personal heads alone.
   if (set === "hrtf" || set === "hrtf-dense") {
+    if(readReferenceMonitor() && !exclusiveHeadphoneId && !await applyReferenceMonitor(readReferenceMonitor()))return false;
     return nativeRendererCommandAck({ type: "setSpatialEnhancement", enabled: readSpatialBalanceEnabled() }, "setSpatialEnhancement");
   }
   return true;
-});
+}));
 ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusiveAudioUpdate(async () => {
   if (!new Set(["2.0", "2.1", "5.1", "5.1.2", "5.1.4", "7.1.2", "7.1.4", "9.1.2", "9.1.4", "9.1.6", "360RA-13", "22.2", "11.1.8"]).has(layout)) return false;
   const saved=readSettings().cinema;
@@ -1831,7 +1837,8 @@ ipcMain.handle("sda:native-renderer-layout", async (_event, layout) => exclusive
   const roomId=roomForLayout(saved,layout,readCinemaProfile,builtinRooms().list());
   const room=roomId?readCinemaProfile(roomId):null;
   const accepted = await nativeRendererCommandAck({ type: "setLayout", layout }, "setLayout");
-  if(accepted && room){
+  if(accepted)nativeRendererStatus.layout=layout;
+  if(accepted && room && !readReferenceMonitor()){
     const settings=cinemaProfiles.validateSettings({...saved.settings,speakers:{}});
     if(!await nativeRendererCommandAck({type:"setCinema",settings,profile:room.filePath},"setCinema",30000)) {
       const previousLayout=readCinemaProfile(saved.profileId).profile.layout;
@@ -1954,11 +1961,24 @@ ipcMain.handle("sda:native-renderer-cinema", async (event, settings, profileId) 
   if (accepted) {
     const previous=readSettings().cinema;
     const next={...previous,settings:normalized,profileId};
+    writeSettings({referenceMonitor:""});
     writeSettings({cinema:profileId?require("./room-layout-follow.cjs").rememberRoom(next,profileId,readCinemaProfile(profileId).profile.layout):next});
   }
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 })));
+function readReferenceMonitor() { return readSettings().referenceMonitor === "genelec-8351b" ? "genelec-8351b" : ""; }
+async function applyReferenceMonitor(id) {
+  return nativeRendererCommandAck({type:"setReferenceMonitor",id,layout:nativeRendererStatus.layout??"7.1.4"},"setReferenceMonitor",30000);
+}
+ipcMain.on("sda:get-reference-monitor",event=>{event.returnValue=readReferenceMonitor();});
+ipcMain.handle("sda:native-renderer-reference-monitor",(event,id)=>exclusiveAudioUpdate(async()=>{
+  if(id!==""&&id!=="genelec-8351b")return false;
+  if(authoredPlayback.mode(event.sender))return false;
+  if(exclusiveHeadphoneId || !["hrtf","hrtf-dense"].includes(nativeRendererSelectedHrtf))return false;
+  if(nativeRendererStatus.running&&!await applyReferenceMonitor(id))return false;
+  writeSettings({referenceMonitor:id});return true;
+}));
 ipcMain.on("sda:get-spatial-balance-enabled", (event) => { event.returnValue = readSpatialBalanceEnabled(); });
 ipcMain.handle("sda:native-renderer-spatial-balance", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;

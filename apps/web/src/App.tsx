@@ -455,6 +455,7 @@ export function App() {
   const [volume, setVolume] = useState(1);
   const [balanceAnalysisProgress, setBalanceAnalysisProgress] = useState<number | null>(null);
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(readVolumeBalanceEnabled);
+  const [referenceMonitor, setReferenceMonitor] = useState(() => window.sdaDesktop?.getReferenceMonitor?.() ?? "");
   const [spatialBalanceEnabled, setSpatialBalanceEnabled] = useState(() => window.sdaDesktop?.getSpatialBalanceEnabled?.() ?? true);
   const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
@@ -593,7 +594,7 @@ export function App() {
       if (!isNativeSessionCurrent()) throw new Error("native renderer replacement session expired");
       const hrtfQueued = await desktop.nativeRendererHrtf(nativeHrtfSetName(readBinauralHead()), 0.04);
       if(desktop.nativeRendererComparisonGain && !await desktop.nativeRendererComparisonGain(comparisonGain.current))throw new Error("参考电平设置失败");
-      if (desktop.getCinemaSettings && desktop.nativeRendererCinema) {
+      if (desktop.getCinemaSettings && desktop.nativeRendererCinema && !(desktop.getReferenceMonitor?.() && readBinauralHead() === "hrtfhq")) {
         const cinema = await desktop.getCinemaSettings();
         if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw new Error("影院设置未被原生渲染器接受");
       }
@@ -1262,7 +1263,7 @@ export function App() {
         const effectiveDense = effectiveDenseBinauralObjects(currentCodecRef.current, denseBinauralObjects, binauralHead);
         await desktop.nativeRendererHrtf?.(nativeHrtfSetName(binauralHead, effectiveDense, ku100Calibration), 0.04);
       }
-      if (next.running && desktop.getCinemaSettings && desktop.nativeRendererCinema) {
+      if (next.running && desktop.getCinemaSettings && desktop.nativeRendererCinema && !(desktop.getReferenceMonitor?.() && binauralHead === "hrtfhq")) {
         const cinema = await desktop.getCinemaSettings();
         if (!await desktop.nativeRendererCinema(cinema.settings, cinema.profileId)) throw new Error("影院设置恢复失败");
       }
@@ -1783,6 +1784,17 @@ export function App() {
     const stored=localStorage.getItem("sda-room-comparison-backup");
     if(stored){try{comparisonRestore.current=JSON.parse(stored);void restoreRoomComparison().catch(e=>setErrors(v=>[...v,`恢复对照前设置失败: ${String(e)}`]));}catch(e){setErrors(v=>[...v,String(e)]);}}
   },[]);
+
+  useEffect(() => {
+    setReferenceMonitor(window.sdaDesktop?.getReferenceMonitor?.() ?? "");
+  }, [settingsTab, floatPanel, binauralHead]);
+
+  const changeReferenceMonitor = useCallback(async (id: string) => {
+    try {
+      if (!await window.sdaDesktop?.nativeRendererReferenceMonitor?.(id)) throw new Error("参考监听室设置未被接受");
+      setReferenceMonitor(id);
+    } catch (error) { setErrors(previous => [...previous, String(error)]); }
+  }, []);
 
   const changeSpatialBalance = useCallback(async (enabled: boolean) => {
     try {
@@ -2394,6 +2406,14 @@ export function App() {
             <div className="settings-content" id="settings-content-spatial" role="tabpanel" aria-labelledby="settings-tab-spatial" hidden={settingsTab !== "spatial"}>
             {window.sdaDesktop?.nativeRendererSpatialBalance && <fieldset className="settings-group" disabled={binauralHead !== "hrtfhq"||track?.codec==="sdar"}>
               <legend>SDA Spatial</legend>
+              {window.sdaDesktop?.nativeRendererReferenceMonitor && <label className="settings-switch">
+                <span>监听预设</span>
+                <Select value={referenceMonitor} onChange={event => void changeReferenceMonitor(event.target.value)}>
+                  <option value="">SDA Spatial</option>
+                  <option value="genelec-8351b">8351B 参考监听室</option>
+                </Select>
+              </label>}
+              {referenceMonitor && <p className="settings-description">8351B 归一指向性与参考房间反射仿真，保留连续对象定位。非实测房间或 GLM 校准。</p>}
               <label className="settings-switch" title="增强原有方向细节，不根据播放段落降低整个节目的音量。">
                 <span>空间平衡</span>
                 <input type="checkbox" role="switch" checked={track?.codec==="sdar"?false:spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />

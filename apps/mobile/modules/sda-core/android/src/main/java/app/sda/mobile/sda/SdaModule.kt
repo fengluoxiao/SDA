@@ -76,6 +76,7 @@ class SdaModule : Module() {
         }, 0, 10, java.util.concurrent.TimeUnit.SECONDS)
     }
     private val nativeLock = Object()
+    private var renderingSelectionEpoch = 0L
     private val lifecycleLock = Object()
 
     private fun sha256(file: java.io.File): String {
@@ -100,13 +101,51 @@ class SdaModule : Module() {
     private fun restoreSpatialCues(ptr: Long, layout: String) {
         val db = spatialCueDb()
         // The packaged kernels already contain the shared default -6 dB cues.
-        if (db == -6.0) return
+        if (db == -6.0 && savedReferenceRoom().isEmpty()) return
         val context = appContext.reactContext ?: error("no react context")
         val path = java.io.File(context.filesDir, "hrtf-restored/hrtf-dense/hrtf-set.json").absolutePath
-        val prepared = SdaEngine.nativePrepareSpatialCues(path, layout, Math.pow(10.0, db / 20.0).toFloat())
+        val prepared = SdaEngine.nativePrepareReferenceMonitor(path, layout, savedReferenceRoom(), Math.pow(10.0, db / 20.0).toFloat())
         check(prepared != 0L) { "空间线索准备失败" }
         try { val error = SdaEngine.nativeApplySpatialCues(ptr, prepared); check(error.isEmpty()) { error } }
         finally { SdaEngine.nativeFreeSpatialCues(prepared) }
+    }
+
+    private fun savedReferenceRoom(): String {
+        val context = appContext.reactContext ?: error("no react context")
+        return context.getSharedPreferences("sda-rendering", 0).getString("roomId", "")
+            .orEmpty().takeIf { it == "genelec-8351b" }.orEmpty()
+    }
+    private data class RenderingSelection(val handle: Long, val generation: Long, val layout: String, val epoch: Long)
+    private fun selectReferenceRoom(id: String, db: Double? = null) {
+        require(id.isEmpty() || id == "genelec-8351b") { "未知参考监听室" }
+        val context = appContext.reactContext ?: error("no react context")
+        val preferences = context.getSharedPreferences("sda-rendering", 0)
+        val gainDb = db ?: spatialCueDb()
+        fun save() {
+            check(preferences.edit().putString("hrtfSet", "dense").putFloat("hrtfWetWeight", 0f)
+                .putBoolean("direct", true).putBoolean("directional", true).putBoolean("nearField", false)
+                .putString("roomId", id).putFloat("spatialCueDb", gainDb.toFloat()).commit()) { "无法保存空间渲染设置" }
+            hrtfLoadStatus = if (id.isEmpty()) "SDA Spatial · 实际方向定位" else "8351B 参考监听室 · 参考仿真 · 实际方向定位"
+        }
+        val snapshot = synchronized(nativeLock) {
+            renderingSelectionEpoch += 1
+            discardIdleRenderer()
+            if (handle == 0L) { save(); null }
+            else RenderingSelection(handle, generation, activeLayout, renderingSelectionEpoch)
+        } ?: return
+        val path = java.io.File(context.filesDir, "hrtf-restored/hrtf-dense/hrtf-set.json").absolutePath
+        // File parsing / FFT preparation never holds the feed lock.
+        val prepared = SdaEngine.nativePrepareReferenceMonitor(path, snapshot.layout, id, Math.pow(10.0, gainDb / 20.0).toFloat())
+        check(prepared != 0L) { "参考监听室准备失败" }
+        try {
+            synchronized(nativeLock) {
+                check(handle == snapshot.handle && generation == snapshot.generation && activeLayout == snapshot.layout &&
+                    renderingSelectionEpoch == snapshot.epoch) { "播放或渲染设置已切换，请重新选择预设" }
+                val error = SdaEngine.nativeApplySpatialCues(handle, prepared)
+                check(error.isEmpty()) { error }
+                save()
+            }
+        } finally { SdaEngine.nativeFreeSpatialCues(prepared) }
     }
 
     private fun canonicalReferenceHrtf(): String {
@@ -163,6 +202,7 @@ class SdaModule : Module() {
             .put("directionalHrtf", settings.getBoolean("directional"))
             .put("binauralEnabled", settings.optBoolean("binauralEnabled", true))
             .put("objectRendering", settings.getBoolean("direct") || settings.getBoolean("directional"))
+            .put("referenceMonitor", settings.getString("roomId"))
             .put("hrtfWetWeight", settings.getDouble("hrtfWetWeight")).toString()
         val assetDirectory = "hrtf-restored/hrtf-dense"
         val manifest = java.io.File(context.filesDir, "$assetDirectory/hrtf-set.json")
@@ -188,7 +228,7 @@ class SdaModule : Module() {
         }
         val flavor = if (settings.getString("hrtfSet") == "dense-raw") "原始测量" else "校准资产"
         val wet = if (settings.getDouble("hrtfWetWeight") == 0.0) "无附加 HRTF 混响" else "HRTF 混响 ${settings.getDouble("hrtfWetWeight") }"
-        hrtfLoadStatus = "已加载 $responseName · $directionCount 方向 · $flavor · $wet"
+        hrtfLoadStatus = if (settings.getString("roomId").isNotEmpty()) "8351B 参考监听室 · 参考仿真 · 实际方向定位" else "已加载 $responseName · $directionCount 方向 · $flavor · $wet"
         if (startPipeline) startPreparedEngine(ptr, layout)
         ptr
     }
@@ -871,65 +911,20 @@ class SdaModule : Module() {
 
         AsyncFunction("setSpatialCueDb") { db: Double ->
             require(db in listOf(0.0, -3.0, -6.0, -9.0, -12.0)) { "空间线索强度无效" }
-            val context = appContext.reactContext ?: error("no react context")
-            val preferences = context.getSharedPreferences("sda-rendering", 0)
-            val snapshot = synchronized(nativeLock) {
-                discardIdleRenderer()
-                if (handle == 0L) {
-                    check(preferences.edit().putFloat("spatialCueDb", db.toFloat()).commit()) { "无法保存空间线索设置" }
-                    null
-                } else Triple(handle, generation, activeLayout)
-            }
-            if (snapshot != null) {
-                val path = java.io.File(context.filesDir, "hrtf-restored/hrtf-dense/hrtf-set.json").absolutePath
-                // Disk IO / FFT preparation must not hold the decoder/feed lock.
-                val prepared = SdaEngine.nativePrepareSpatialCues(path, snapshot.third, Math.pow(10.0, db / 20.0).toFloat())
-                check(prepared != 0L) { "空间线索准备失败" }
-                try {
-                    synchronized(nativeLock) {
-                        check(handle == snapshot.first && generation == snapshot.second && activeLayout == snapshot.third) {
-                            "播放曲目已切换，请重新选择空间线索强度"
-                        }
-                        val error = SdaEngine.nativeApplySpatialCues(handle, prepared)
-                        check(error.isEmpty()) { error }
-                        check(preferences.edit().putFloat("spatialCueDb", db.toFloat()).commit()) { "无法保存空间线索设置" }
-                    }
-                } finally { SdaEngine.nativeFreeSpatialCues(prepared) }
-            }
+            selectReferenceRoom(savedReferenceRoom(), db)
         }
 
         Function("renderingSettings") { -> renderingSettings().toString() }
 
-        // Keep the live decoder and audio sink; acknowledge the new graph before saving.
         AsyncFunction("setRenderingPreset") { id: String ->
             val context = appContext.reactContext ?: error("no react context")
             val profiles = org.json.JSONArray(context.assets.open("rendering-presets.json").bufferedReader().use { it.readText() })
             val profile = (0 until profiles.length()).map { profiles.getJSONObject(it) }
                 .firstOrNull { it.getString("id") == id } ?: error("未知空间渲染预设")
-            val set = profile.getString("hrtfSet")
-            require(set == "dense") { "无效 HRTF 预设" }
-            val wetWeight = profile.getDouble("hrtfWetWeight")
-            require(wetWeight.isFinite() && wetWeight in 0.0..1.0) { "无效 HRTF 混响权重" }
-            synchronized(nativeLock) {
-                discardIdleRenderer()
-                require(!profile.getBoolean("nearField") && profile.getString("roomId").isEmpty()) { "不支持的预设房间配置" }
-                if (handle != 0L) {
-                    val directory = "hrtf-restored/hrtf-dense"
-                    val manifest = java.io.File(context.filesDir, "$directory/hrtf-set.json")
-                    val error = SdaEngine.nativeSetHrtfPreset(handle, manifest.absolutePath,
-                        wetWeight.toFloat(), profile.getBoolean("direct"), profile.getBoolean("directional"))
-                    check(error.isEmpty()) { error }
-                    restoreSpatialCues(handle, activeLayout)
-                }
-                check(context.getSharedPreferences("sda-rendering", 0).edit()
-                    .putString("hrtfSet", set)
-                    .putFloat("hrtfWetWeight", wetWeight.toFloat())
-                    .putBoolean("direct", profile.getBoolean("direct"))
-                    .putBoolean("directional", profile.getBoolean("directional"))
-                    .putBoolean("nearField", profile.getBoolean("nearField"))
-                    .putString("roomId", profile.getString("roomId")).commit()) { "无法保存空间渲染预设" }
-                hrtfLoadStatus = "${profile.getString("label")} · ${if (handle != 0L) "已加载" else "等待播放加载"}"
-            }
+            require(profile.getString("hrtfSet") == "dense" && profile.getBoolean("direct") &&
+                profile.getBoolean("directional") && !profile.getBoolean("nearField") &&
+                profile.getDouble("hrtfWetWeight") == 0.0) { "不支持的预设配置" }
+            selectReferenceRoom(profile.getString("roomId"))
         }
 
         AsyncFunction("setNearField") { enabled: Boolean, metresPerUnit: Double ->
@@ -946,22 +941,10 @@ class SdaModule : Module() {
             }
         }
 
-        Function("rooms") { -> "[]" }
+        Function("rooms") { -> org.json.JSONArray().put(JSONObject().put("id", "genelec-8351b")
+            .put("name", "8351B 参考监听室").put("layout", activeLayout)).toString() }
 
-        AsyncFunction("setRoom") { id: String ->
-            val context = appContext.reactContext ?: error("no react context")
-            require(id.isEmpty()) { "移动端已移除房间仿真" }
-            val path = ""
-            synchronized(nativeLock) {
-                discardIdleRenderer()
-                if (handle != 0L) {
-                    val error = SdaEngine.nativeSetRoom(handle, path)
-                    check(error.isEmpty()) { error }
-                }
-                val preferences = context.getSharedPreferences("sda-rendering", 0).edit().putString("roomId", id)
-                preferences.apply()
-            }
-        }
+        AsyncFunction("setRoom") { id: String -> selectReferenceRoom(id) }
 
         Function("setBinauralEnabled") { enabled: Boolean ->
             synchronized(nativeLock) {
@@ -1117,7 +1100,7 @@ class SdaModule : Module() {
             .put("spatialCueDb", spatialCueDb())
             .put("alacStereoUpmix", preferences.getBoolean("alacStereoUpmix", false))
             .put("directional", preferences.getBoolean("directional", true))
-            .put("roomId", "")
+            .put("roomId", savedReferenceRoom())
             .put("nearField", false)
             .put("metresPerUnit", preferences.getFloat("metresPerUnit", 1f).toDouble())
     }

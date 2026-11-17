@@ -86,6 +86,19 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetHrtfPreset(
     env.new_string(result.err().unwrap_or_default()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetReferenceMonitor(
+    mut env: JNIEnv, _class: JClass, ptr: jlong, path: JString, id: JString,
+    gain: jni::sys::jfloat,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<(), String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let id: String = env.get_string(&id).map_err(|e| e.to_string())?.into();
+        take_engine(ptr).ok_or("engine unavailable")?.set_reference_monitor(&path, &id, gain)
+    })();
+    env.new_string(result.err().unwrap_or_default()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// App-private, integrity-checked runtime directory; preparation never blocks rendering.
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeConfigureAcceleration(
@@ -455,6 +468,21 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePrepareSpatialC
         let layout: String = env.get_string(&layout).map_err(|e|e.to_string())?.into();
         sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load(&path, &layout, gain)
     })).unwrap_or_else(|_|Err("spatial cue preparation failed".into()));
+    match result {
+        Ok(update) => Box::into_raw(Box::new(Some(update))) as jlong,
+        Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); 0 }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativePrepareReferenceMonitor(
+    mut env: JNIEnv, _class: JClass, path: JString, layout: JString, id: JString, gain: jni::sys::jfloat,
+) -> jlong {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
+        let path: String = env.get_string(&path).map_err(|e|e.to_string())?.into();
+        let layout: String = env.get_string(&layout).map_err(|e|e.to_string())?.into();
+        let id: String = env.get_string(&id).map_err(|e|e.to_string())?.into();
+        sda_native_renderer::live_spatial_cues::PreparedCueUpdate::load_reference(&path, &layout, &id, gain)
+    })).unwrap_or_else(|_|Err("reference-room preparation failed".into()));
     match result {
         Ok(update) => Box::into_raw(Box::new(Some(update))) as jlong,
         Err(error) => { let _ = env.throw_new("java/lang/IllegalStateException", error); 0 }

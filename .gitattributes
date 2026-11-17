@@ -9,3 +9,9 @@ assets/hrtf/**/*.f32 binary
 
 # Signed catalog package bytes must not change with checkout line endings.
 apps/head-tracking-driver/package/* -text
+
+# Fixed reference filter bytes and provenance must survive every host checkout.
+apps/native-renderer/assets/genelec-reference/*.f32 binary
+apps/native-renderer/assets/genelec-reference/*.gz binary
+apps/native-renderer/assets/genelec-reference/*.json text eol=lf
+apps/native-renderer/assets/genelec-reference/*.md text eol=lf

@@ -15,7 +15,7 @@ def verify_mobile_ios_assets(app):
             raise RuntimeError('Simulator test audio must not ship in a physical-device IPA')
 
     presets = json.loads((bundle / 'rendering-presets.json').read_text(encoding='utf-8'))
-    direct_trial = len(presets) == 1 and presets[0].get('iosDirectReflectionTrial') is True
+    direct_trial = bool(presets) and presets[0].get('iosDirectReflectionTrial') is True
     marker = bundle / 'ios-experiment.json'
     experiment = json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else None
     supported = {'horizontal-support-218-v1': 218, 'fullheight-triangle-commonphase-542-v1': 542,
@@ -81,9 +81,14 @@ def verify_mobile_ios_assets(app):
     for old in ['hrtf', 'hrtf-dense', 'hrtf-raw', 'hrtf-dense-raw', 'rooms']:
         if (bundle / old).exists():
             raise RuntimeError('Unexpected legacy/room resource: ' + old)
-    if len(presets) != 1:
-        raise RuntimeError('Mobile must contain exactly one rendering preset')
+    if len(presets) != 2:
+        raise RuntimeError('Mobile must contain exactly two rendering presets')
     expected = dict(id='object-dense', assetDirectory='hrtf-restored/hrtf-dense', direct=True,
                     directional=True, nearField=False, roomId='', hrtfWetWeight=0)
     if any(presets[0].get(k) != v for k, v in expected.items()):
         raise RuntimeError('Invalid mobile direct-only rendering preset')
+
+    reference = dict(id='genelec-8351b-reference', assetDirectory='hrtf-restored/hrtf-dense', direct=True,
+                     directional=True, nearField=False, roomId='genelec-8351b', hrtfWetWeight=0)
+    if any(presets[1].get(k) != v for k, v in reference.items()):
+        raise RuntimeError('Invalid fixed reference-room preset')

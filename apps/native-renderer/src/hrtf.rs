@@ -81,6 +81,7 @@ pub struct NativeHrtfSet {
     spatial_cue_motion: SpatialCueMotion,
     spatial_cues_active: bool,
     shared_depth_enabled: bool,
+    speaker_tap_floor: usize,
     shared_clarity_enabled: bool,
     shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
     // Immutable response-energy coefficients, bounded by layout and 2D/3D
@@ -138,6 +139,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: self.spatial_cue_motion,
             spatial_cues_active: self.spatial_cues_active,
             shared_depth_enabled: self.shared_depth_enabled,
+            speaker_tap_floor: self.speaker_tap_floor,
             shared_clarity_enabled: self.shared_clarity_enabled,
             shared_depth: self.shared_depth.clone(),
             diffuse_references: self.diffuse_references.clone(),
@@ -238,6 +240,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: Default::default(),
             spatial_cues_active: false,
             shared_depth_enabled: false,
+            speaker_tap_floor: 0,
             shared_clarity_enabled: false,
             shared_depth: None,
             diffuse_references: Default::default(),
@@ -454,6 +457,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: manifest.processing.spatial_cue_motion,
             spatial_cues_active: false,
             shared_depth_enabled: manifest.shared_depth_version==Some(1),
+            speaker_tap_floor: 0,
             shared_clarity_enabled,
             shared_depth: None,
             diffuse_references: Default::default(),
@@ -961,6 +965,7 @@ impl NativeHrtfSet {
         }
     }
 
+    pub(crate) fn reserve_speaker_taps(&mut self, taps: usize) { self.speaker_tap_floor = self.speaker_tap_floor.max(taps); }
     pub fn speaker_filter_len(&self) -> usize {
         if self.mobile_direct_only && !self.spatial_cues_active {
             return self
@@ -984,7 +989,7 @@ impl NativeHrtfSet {
             );
         let monitor_delay = self.output_max_delay();
         if !self.cinema.enabled {
-            return (base + monitor_delay).max(self.shared_depth.as_ref().map_or(0,|bank|bank.max_taps()));
+            return (base + monitor_delay).max(self.shared_depth.as_ref().map_or(0,|bank|bank.max_taps())).max(self.speaker_tap_floor);
         }
         let room = self.room_profile.as_ref().map_or(0, |p| {
             p.speakers
@@ -1020,14 +1025,14 @@ impl NativeHrtfSet {
                         .as_ref()
                         .and_then(|v| v.get("sourceModel"))
                         .and_then(|v| v.as_str())
-                        == Some("ideal-omnidirectional")
+                        == Some("ideal-omnidirectional") || crate::reference_room::is_profile(p)
             });
         let length = if preserve_direct {
             base + room
         } else {
             base.max(room)
         };
-        length + delay + tail + monitor_delay
+        (length + delay + tail + monitor_delay).max(self.speaker_tap_floor)
     }
 
     pub fn mixed_speaker(
@@ -1070,7 +1075,7 @@ impl NativeHrtfSet {
                     .as_ref()
                     .and_then(|v| v.get("sourceModel"))
                     .and_then(|v| v.as_str())
-                    == Some("ideal-omnidirectional");
+                    == Some("ideal-omnidirectional") || crate::reference_room::is_profile(profile);
             if self.spatial_cues_active
                 || simulated_room
                 || self

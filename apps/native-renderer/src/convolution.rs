@@ -49,7 +49,10 @@ impl PreparedStereoFilter {
             (&mut self.filters_left, &other.filters_left),
             (&mut self.filters_right, &other.filters_right),
         ] {
-            assert_eq!(current.len(), target.len());
+            if target.len() > current.len() {
+                let bins = target.first().map_or(0, Vec::len);
+                current.resize_with(target.len(), || vec![Complex32::new(0., 0.); bins]);
+            }
             for (values, source) in current.iter_mut().zip(target) {
                 for (value, source) in values.iter_mut().zip(source) {
                     *value += *source * gain;
@@ -185,7 +188,9 @@ impl StereoPartitionedConvolver {
     }
     /// Reuses the convolver's allocated history/output state with a prepared
     /// direction filter, avoiding allocation while sources move.
-    pub fn set_prepared_filter(&mut self, filter: PreparedStereoFilter) {
+    pub fn set_prepared_filter(&mut self, mut filter: PreparedStereoFilter) {
+        self.extend_history(filter.filters_left.len());
+        self.pad_filter(&mut filter);
         self.transition = None;
         self.filters_left = filter.filters_left;
         self.filters_right = filter.filters_right;
@@ -221,10 +226,39 @@ impl StereoPartitionedConvolver {
             filters_right: std::mem::replace(&mut self.filters_right, filter.filters_right),
         });
     }
+    fn pad_filter(&self, filter: &mut PreparedStereoFilter) {
+        let bins = self.fft_len / 2 + 1;
+        for parts in [&mut filter.filters_left, &mut filter.filters_right] {
+            parts.resize_with(self.history.len(), || vec![Complex32::new(0., 0.); bins]);
+        }
+    }
+    /// Configuration changes may need longer fixed room filters. Keep every
+    /// available input spectrum at the same age, along with the overlap; older
+    /// unavailable room history starts silent and enters through the crossfade.
+    fn extend_history(&mut self, count: usize) {
+        if count <= self.history.len() { return; }
+        let bins = self.fft_len / 2 + 1;
+        let mut previous = std::mem::take(&mut self.history);
+        let old_count = previous.len();
+        let mut history = vec![vec![Complex32::new(0., 0.); self.fft_len]; count];
+        for age in 0..old_count {
+            let source = (self.history_cursor + old_count - 1 - age) % old_count;
+            history[count - 1 - age] = std::mem::take(&mut previous[source]);
+        }
+        self.history = history;
+        self.history_cursor = 0;
+        self.filters_left.resize_with(count, || vec![Complex32::new(0., 0.); bins]);
+        self.filters_right.resize_with(count, || vec![Complex32::new(0., 0.); bins]);
+        if let Some((filter, _, _)) = &mut self.transition {
+            filter.filters_left.resize_with(count, || vec![Complex32::new(0., 0.); bins]);
+            filter.filters_right.resize_with(count, || vec![Complex32::new(0., 0.); bins]);
+        }
+    }
     /// Retarget without discarding the overlap or the partition history.
-    pub fn transition_to(&mut self, filter: PreparedStereoFilter, samples: usize) {
+    pub fn transition_to(&mut self, mut filter: PreparedStereoFilter, samples: usize) {
         self.spectral_revision=self.spectral_revision.wrapping_add(1);
-        assert_eq!(filter.filters_left.len(), self.history.len());
+        self.extend_history(filter.filters_left.len());
+        self.pad_filter(&mut filter);
         if let Some((old, elapsed, duration)) = self.transition.take() {
             let mix = elapsed as f32 / duration as f32;
             for (current, target) in self
@@ -985,5 +1019,44 @@ mod tests {
             .unwrap();
         assert!(out_left.iter().all(|sample| (*sample - 0.5).abs() < 1e-5));
         assert!(out_right.iter().all(|sample| (*sample + 0.25).abs() < 1e-5));
+    }
+}
+
+#[cfg(test)]
+mod reference_history_tests {
+    use super::*;
+    #[test]
+    fn growing_to_a_real_delayed_tail_and_returning_to_dry_keeps_recent_history() {
+        let mut long=vec![0.;80];long[0]=1.;long[31]=0.2;long[73]=-0.1;
+        let half:Vec<_>=long.iter().map(|x|x*0.5).collect();
+        let mut dry=StereoPartitionedConvolver::new(&[1.],&[0.5],16).unwrap();
+        let mut wet=StereoPartitionedConvolver::new(&long,&half,16).unwrap();
+        let mut switched=StereoPartitionedConvolver::new(&[1.],&[0.5],16).unwrap();
+        for block in 0..22 {
+            if block==3 {let f=switched.prepare_pair(&long,&half);switched.transition_to(f,32);}
+            if block==13 {let f=switched.prepare_pair(&[1.],&[0.5]);switched.transition_to(f,32);}
+            let input:Vec<_>=(0..16).map(|i|((block*16+i)as f32*0.19).cos()*0.03).collect();
+            let mut outputs=Vec::new();
+            for c in [&mut dry,&mut wet,&mut switched] {
+                let(mut l,mut r)=(vec![0.;16],vec![0.;16]);c.process_block(&input,&mut l,&mut r).unwrap();outputs.push([l,r]);
+            }
+            let expected=if (9..13).contains(&block){Some(1)}else if block>=17{Some(0)}else{None};
+            if let Some(expected)=expected {for(a,b)in outputs[expected].iter().flatten().zip(outputs[2].iter().flatten()){assert!((a-b).abs()<1e-7,"delayed tail/overlap mismatch in block {block}");}}
+        }
+    }
+    #[test]
+    fn padded_room_filter_growth_and_return_keep_overlap_and_samples() {
+        let mut a=StereoPartitionedConvolver::new(&[1.],&[0.5],16).unwrap();
+        let mut b=StereoPartitionedConvolver::new(&[1.],&[0.5],16).unwrap();
+        let mut long=vec![0.;80];long[0]=1.;let mut half=long.clone();half[0]=0.5;
+        for block in 0..18 {
+            if block==3 {let f=b.prepare_pair(&long,&half);b.transition_to(f,32);}
+            if block==11 {let f=b.prepare_pair(&[1.],&[0.5]);b.transition_to(f,32);}
+            let x:Vec<_>=(0..16).map(|i|((block*16+i)as f32*0.13).sin()*0.1).collect();
+            let(mut al,mut ar,mut bl,mut br)=(vec![0.;16],vec![0.;16],vec![0.;16],vec![0.;16]);
+            a.process_block(&x,&mut al,&mut ar).unwrap();b.process_block(&x,&mut bl,&mut br).unwrap();
+            for (x,y) in al.iter().chain(&ar).zip(bl.iter().chain(&br)){assert!((x-y).abs()<1e-7,"history lost in block {block}: {x}/{y}");}
+        }
+        assert_eq!(b.history.len(),5);
     }
 }

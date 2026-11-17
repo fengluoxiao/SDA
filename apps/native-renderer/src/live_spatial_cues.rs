@@ -5,25 +5,51 @@ pub struct PreparedCueUpdate {
     bus: BusRenderer,
     layout: vbap::LayoutId,
     wet: f32,
+    reference_update: bool,
 }
 impl PreparedCueUpdate {
+    pub fn reference_monitor_id(&self) -> Option<&'static str> {
+        self.reference_update.then(|| if self.set.room_profile.as_deref().is_some_and(crate::reference_room::is_profile) { crate::reference_room::ID } else { "" })
+    }
+    /// Prepare the complete optional listening room before the render-worker
+    /// handoff. Both enabling and returning to standard use one transaction.
+    pub fn load_reference(path: &str, layout: &str, id: &str, gain: f32) -> Result<Self, String> {
+        if !id.is_empty() && id != crate::reference_room::ID { return Err("Unknown reference monitor".into()); }
+        let layout = vbap::LayoutId::parse(layout).ok_or("unknown layout")?;
+        let mut set = NativeHrtfSet::load_calibrated(std::path::Path::new(path))?;
+        if !id.is_empty() && !set.uses_shared_measured_response() { return Err("Reference monitor requires the shared HRTF profile".into()); }
+        set.set_spatial_cue_gain(gain)?;
+        let profile = if id.is_empty() { None } else {
+            Some(crate::reference_room::profile(layout, gain / 0.5011872)?)
+        };
+        let settings = crate::cinema::Settings { enabled: profile.is_some(), ..Default::default() };
+        set.configure_cinema(settings, profile);
+        set.reserve_speaker_taps(crate::reference_room::FILTER_CAPACITY);
+        set.configure_spatial_cues(layout)?;
+        let wet = if id.is_empty() { set.effective_wet(0.0) } else { 0.04 };
+        let solver = vbap::VbapSolver::with_layout(layout);
+        let bus = BusRenderer::new(&set, &solver, wet)?;
+        direct_renderer::warm_banks(&mut set, &solver, wet)?;
+        Ok(Self { set, bus, layout, wet, reference_update: true })
+    }
     pub fn load(path: &str, layout: &str, gain: f32) -> Result<Self, String> {
         let layout = vbap::LayoutId::parse(layout).ok_or("unknown layout")?;
         let mut set = NativeHrtfSet::load_calibrated(std::path::Path::new(path))?;
         set.set_spatial_cue_gain(gain)?;
+        if set.uses_shared_measured_response() { set.reserve_speaker_taps(crate::reference_room::FILTER_CAPACITY); }
         set.configure_spatial_cues(layout)?;
         let wet = set.effective_wet(0.0);
         let solver = vbap::VbapSolver::with_layout(layout);
         let bus = BusRenderer::new(&set, &solver, wet)?;
         direct_renderer::warm_banks(&mut set, &solver, wet)?;
-        Ok(Self { set, bus, layout, wet })
+        Ok(Self { set, bus, layout, wet, reference_update: false })
     }
 }
 impl Engine {
     pub fn apply_spatial_cue_update(&mut self, mut update: PreparedCueUpdate) -> Result<(), String> {
         if self.layout != update.layout { return Err("spatial cue layout changed; retry".into()); }
         let old = self.active_hrtf_set.as_ref().ok_or("HRTF not loaded")?;
-        if old.simulation_shape() != update.set.simulation_shape() || old.speaker_filter_len() != update.set.speaker_filter_len() { return Err("spatial cue asset shape changed".into()); }
+        if old.simulation_shape() != update.set.simulation_shape() || (!update.reference_update && !update.set.uses_shared_measured_response() && old.speaker_filter_len() != update.set.speaker_filter_len()) { return Err("spatial cue asset shape changed".into()); }
         // No graph replacement, transport operation, PCM flush, or clock reset.
         for source in self.sources.values_mut() {
             if let Some(direct) = source.direct.as_mut() {
@@ -31,6 +57,14 @@ impl Engine {
             }
         }
         if let Some(bus) = self.bus_renderer.as_mut() { bus.transition_filters_from(&update.bus); }
+        if update.reference_update {
+            self.cinema = update.set.cinema.clone();
+            self.room_profile = update.set.room_profile.clone();
+            self.near_field.enabled = false;
+            self.bed_compatibility = false;
+            self.direct_objects = true;
+            self.set_directional_hrtf(true);
+        }
         self.active_hrtf_set = Some(update.set);
         self.hrtf_wet_weight = update.wet;
         Ok(())
@@ -94,6 +128,64 @@ mod tests {
                 assert_eq!(engine.output_gain,0.72); assert!(engine.sources["obj"].direct.is_some());
                 assert!(engine.sources["obj"].samples.has_at(12345));
             }
+        }
+    }
+    fn shared_path() -> String { std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json").to_str().unwrap().into() }
+    #[test]
+    fn reference_roundtrip_keeps_pcm_clock_pose_and_direct_object_filters() {
+        for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13, vbap::LayoutId::parse("2.0").unwrap()] {
+            let mut initial=PreparedCueUpdate::load(&shared_path(),layout.as_str(),0.5011872).unwrap();
+            let mut e=Engine::new(48000,2); e.layout=layout;e.vbap=vbap::VbapSolver::with_layout(layout);
+            let direction=crate::directional::Direction { diffuse:0., horizontal_only:false, position:[0.4,0.6,0.7], head:None, width:0.,height:0.,depth:0. };
+            let gains=crate::bus_renderer::route(&e.vbap,direction.position,None,0.);
+            let amounts=[0.;vbap::MAX_BUS_COUNT];
+            let dry=initial.set.directional_dry_compact(direction,layout,gains,amounts).unwrap();
+            e.active_hrtf_set=Some(initial.set);e.bus_renderer=Some(initial.bus);
+            e.set_direct_objects(true).unwrap();e.set_directional_hrtf(true);
+            e.head_pose=Some([0.,0.258819,0.,0.9659258]);e.sample_pos=23456;e.render_epoch=81;
+            e.output_gain=0.73;e.paused=false;
+            let mut source=Source::default();source.samples.write(23456,23456,&[0.02,-0.03,0.04]);
+            e.sources.insert("obj:1".into(),source);
+            for id in [crate::reference_room::ID,"",crate::reference_room::ID,""] {
+                let prepared=PreparedCueUpdate::load_reference(&shared_path(),layout.as_str(),id,0.5011872).unwrap();
+                assert_eq!(prepared.reference_monitor_id(),Some(id));
+                assert_eq!(dry,prepared.set.directional_dry_compact(direction,layout,gains,amounts).unwrap());
+                e.apply_spatial_cue_update(prepared).unwrap();
+                assert_eq!(e.sample_pos,23456);assert_eq!(e.render_epoch,81);assert!(!e.paused);
+                assert_eq!(e.output_gain,0.73);assert_eq!(e.head_pose,Some([0.,0.258819,0.,0.9659258]));
+                assert!(e.sources["obj:1"].samples.has_at(23456));assert!(e.direct_objects&&e.directional_hrtf);
+                assert_eq!(e.room_profile.is_some(),!id.is_empty());assert_eq!(e.cinema.enabled,!id.is_empty());
+            }
+            assert!(PreparedCueUpdate::load_reference(&shared_path(),layout.as_str(),"not-a-room",0.5011872).is_err());
+            let other=if layout==vbap::LayoutId::Dolby7_1_4 {"360RA-13"}else{"7.1.4"};
+            let stale=PreparedCueUpdate::load_reference(&shared_path(),other,crate::reference_room::ID,0.5011872).unwrap();
+            assert!(e.apply_spatial_cue_update(stale).is_err());assert!(e.room_profile.is_none());
+            assert_eq!(e.sample_pos,23456);assert!(e.sources["obj:1"].samples.has_at(23456));
+            e.bed_compatibility=true;e.direct_objects=false;e.set_directional_hrtf(false);
+            e.apply_spatial_cue_update(PreparedCueUpdate::load_reference(&shared_path(),layout.as_str(),crate::reference_room::ID,0.5011872).unwrap()).unwrap();
+            assert!(!e.bed_compatibility&&e.direct_objects&&e.directional_hrtf);
+            for next in [vbap::LayoutId::parse(other).unwrap(),layout] {
+                e.set_layout(next).unwrap();
+                let profile=e.room_profile.as_ref().unwrap();assert_eq!(profile.layout,next.as_str());
+                assert_eq!(profile.speakers.len(),vbap::speakers(next).len());
+                assert_eq!(e.sample_pos,23456);assert_eq!(e.render_epoch,81);
+                assert!(e.sources["obj:1"].samples.has_at(23456));
+            }
+        }
+    }
+    #[test]
+    fn reference_bed_and_object_residual_filters_are_nonzero_and_stereo_calibration_survives() {
+        let standard=PreparedCueUpdate::load_reference(&shared_path(),"7.1.4","",0.5011872).unwrap();
+        let reference=PreparedCueUpdate::load_reference(&shared_path(),"7.1.4",crate::reference_room::ID,0.5011872).unwrap();
+        let solver=vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        assert!(crate::stereo_bass::prepare(&reference.set,&solver,reference.wet).unwrap().is_some());
+        for sp in vbap::speakers(solver.layout()) {
+            let (dl,dr)=reference.set.mixed_speaker(sp.name,"7.1.4",sp.azimuth as f64,sp.elevation as f64,0.).unwrap();
+            let (rl,rr)=reference.set.mixed_speaker(sp.name,"7.1.4",sp.azimuth as f64,sp.elevation as f64,reference.wet).unwrap();
+            let (sl,sr)=standard.set.mixed_speaker(sp.name,"7.1.4",sp.azimuth as f64,sp.elevation as f64,0.).unwrap();
+            assert_eq!(dl,sl);assert_eq!(dr,sr);
+            let difference=rl.iter().chain(&rr).zip(dl.iter().chain(&dr)).map(|(a,b)|(a-b).abs()).fold(0f32,f32::max);
+            assert!(difference>1e-7,"no reference contribution for {}",sp.name);
         }
     }
     #[test]

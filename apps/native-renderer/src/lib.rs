@@ -77,6 +77,7 @@ pub mod android_audio_cpu;
 pub mod nnapi_runtime;
 pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-detail-measured-headroom-v2";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
+fn default_reference_gain() -> f32 { 0.5011872 }
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
 mod filter_preparation;
@@ -141,6 +142,7 @@ mod output_pull;
 pub mod remote_sync;
 pub mod render_command;
 pub mod live_spatial_cues;
+pub mod reference_room;
 pub mod source_extent;
 pub mod spatial;
 pub mod stereo_fifo;
@@ -204,6 +206,7 @@ pub enum Command {
         volume: f32,
     },
     SetSpatialEnhancement { enabled: bool },
+    SetReferenceMonitor { id: String, layout: String, #[serde(default = "default_reference_gain")] gain: f32 },
     SetAuthoredProcessing { settings: authored::Processing },
     ConfigureAuthoredScene { scene: authored::Scene },
     SetSpatialLayerGain {
@@ -1005,6 +1008,7 @@ pub struct RuntimeTelemetry {
     pub direct_object_hrtf: AtomicBool,
     pub directional_hrtf: AtomicBool,
     pub near_field_enabled: AtomicBool,
+    pub reference_monitor_enabled: AtomicBool,
     pub room_enabled: AtomicBool,
     pub spatial_cues_enabled: AtomicBool,
     pub stereo_bass_preservation_active: AtomicBool,
@@ -1122,6 +1126,7 @@ impl RuntimeTelemetry {
             && (!engine.cinema.monitor.hardware.enabled || engine.directional_hrtf);
         self.near_field_enabled.store(near_active, Ordering::Release);
         self.room_enabled.store(engine.cinema.enabled, Ordering::Release);
+        self.reference_monitor_enabled.store(engine.room_profile.as_deref().is_some_and(reference_room::is_profile), Ordering::Release);
         self.spatial_cues_enabled.store(engine.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()), Ordering::Release);
         let active = engine.direct_objects || engine.directional_hrtf || near_active;
         self.object_convolver_count.store(if active {
@@ -1685,12 +1690,15 @@ impl Engine {
     /// Rebuilds the worker-owned physical virtual speaker graph, then routes
     /// every retained source into the selected room layout without clearing PCM
     /// rings, object state, output gain, or the codec clock.
-    fn set_layout(&mut self, layout: vbap::LayoutId) -> Result<(), String> {
+    pub fn set_layout(&mut self, layout: vbap::LayoutId) -> Result<(), String> {
         if layout == self.layout {
             return Ok(());
         }
+        let reference = self.room_profile.as_deref().filter(|p| reference_room::is_profile(p))
+            .map(|p| reference_room::profile(layout, reference_room::strength(p))).transpose()?;
         self.layout = layout;
         self.vbap = vbap::VbapSolver::with_layout(layout);
+        if let Some(profile) = reference { self.room_profile = Some(profile); }
         if self.active_hrtf_set.is_some() {
             self.rebuild_bus_renderer()?;
         }

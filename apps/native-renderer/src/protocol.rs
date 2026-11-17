@@ -45,7 +45,7 @@ fn handle_command(
     telemetry: &RuntimeTelemetry,
 ) -> bool {
     let _perf = crate::performance::span("native.command", command_name(&command), 1);
-    if state.authored.enabled && matches!(command_name(&command),"setHrtf"|"setCinema"|"setNearField"|"setSourceExtent"|"setObjectHrtf"|"setObjectRendering"|"setDirectionalHrtf"|"setStereoMode"|"setBinauralEq"|"clearHeadphoneCompensation"|"setMasterPreamp"|"setSpatialLayerGain"|"setComparisonGain"|"setSpeakerMutes"|"setMuted"|"setGain"|"setLfeMuted") {
+    if state.authored.enabled && matches!(command_name(&command),"setHrtf"|"setReferenceMonitor"|"setCinema"|"setNearField"|"setSourceExtent"|"setObjectHrtf"|"setObjectRendering"|"setDirectionalHrtf"|"setStereoMode"|"setBinauralEq"|"clearHeadphoneCompensation"|"setMasterPreamp"|"setSpatialLayerGain"|"setComparisonGain"|"setSpeakerMutes"|"setMuted"|"setGain"|"setLfeMuted") {
         write_event(&Event::Ack{command:command_name(&command),accepted:false,detail:Some("rendering is controlled by the current SDAR file")});return true;
     }
     match command {
@@ -632,6 +632,14 @@ fn handle_command(
             let result=state.configure_authored_processing(settings);
             write_event(&Event::Ack {command:"setAuthoredProcessing",accepted:result.is_ok(),detail:result.err().as_deref()});
         }
+        Command::SetReferenceMonitor { id, layout, gain } => {
+            let path = Engine::hrtf_root().join("hrtf-dense/hrtf-set.json");
+            let result = crate::live_spatial_cues::PreparedCueUpdate::load_reference(
+                &path.to_string_lossy(), &layout, &id, gain)
+                .and_then(|update| state.apply_spatial_cue_update(update));
+            telemetry.publish_rendering_state(state);
+            write_event(&Event::Ack { command: "setReferenceMonitor", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
         Command::SetSpatialEnhancement { enabled } => {
             let result = state.set_spatial_enhancement(enabled);
             write_event(&Event::Ack { command: "setSpatialEnhancement", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -859,8 +867,16 @@ pub(super) fn apply_render_command(
             let _ = reply.send(result);
             true
         }
+        render_command::RenderCommand::ReferenceMonitor { update } => {
+            let result = if state.authored.enabled { Err("rendering is controlled by the current SDAR file".into()) }
+                else { state.apply_spatial_cue_update(*update) };
+            telemetry.publish_rendering_state(state);
+            write_event(&Event::Ack { command: "setReferenceMonitor", accepted: result.is_ok(), detail: result.err().as_deref() });
+            true
+        }
         render_command::RenderCommand::SpatialCueGain { update, reply } => {
             let result = state.apply_spatial_cue_update(*update);
+            telemetry.publish_rendering_state(state);
             let _ = reply.send(result);
             true
         }
@@ -1363,6 +1379,16 @@ fn read_frame(
                     });
                     return Ok(true);
                 }
+                if let Command::SetReferenceMonitor { id, layout, gain } = &command {
+                    let path = Engine::hrtf_root().join("hrtf-dense/hrtf-set.json");
+                    // Parse resources and build FFT banks on the protocol thread.
+                    let result = crate::live_spatial_cues::PreparedCueUpdate::load_reference(
+                        &path.to_string_lossy(), layout, id, *gain)
+                        .and_then(|update| commands.push(render_command::RenderCommand::ReferenceMonitor { update: Box::new(update) })
+                            .map_err(|_| "render command queue is full".to_string()));
+                    if let Err(error) = result { write_event(&Event::Ack { command:"setReferenceMonitor", accepted:false, detail:Some(&error) }); }
+                    return Ok(true);
+                }
                 let name = command_name(&command);
                 let shutdown = matches!(command, Command::Shutdown);
                 if !enqueue(commands, render_command::RenderCommand::Command(command)) {
@@ -1552,6 +1578,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::ObjectEvents { .. } => "objectEvents",
         Command::HeadPose { .. } => "headPose",
         Command::SetHrtf { .. } => "setHrtf",
+        Command::SetReferenceMonitor { .. } => "setReferenceMonitor",
         Command::SetLayout { .. } => "setLayout",
         Command::SetProgramCodec { .. } => "setProgramCodec",
         Command::SetSourceExtent { .. } => "setSourceExtent",

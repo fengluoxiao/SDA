@@ -35,3 +35,6 @@ const vividNotices=join(out,"licenses/avs3a");
 mkdirSync(vividNotices,{recursive:true});
 cpSync(join(root,"vendor/avs3a/LICENSE"),join(vividNotices,"LICENSE"));
 cpSync(join(root,"vendor/avs3a/assets/README.md"),join(vividNotices,"ASSET-NOTICES.md"));
+
+const referenceNotices=join(out,'licenses/genelec-reference');mkdirSync(referenceNotices,{recursive:true});
+for (const name of ['NOTICE.md','manifest.json']) cpSync(join(root,'apps/native-renderer/assets/genelec-reference',name),join(referenceNotices,name));

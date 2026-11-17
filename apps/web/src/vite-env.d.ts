@@ -219,6 +219,8 @@ declare global {
       roomLabGenerate?: (config:RoomSimulationConfig) => Promise<CinemaRoomSummary>;
       roomLabCancel?: () => Promise<boolean>;
       nativeRendererComparisonGain?: (gainDb:number) => Promise<boolean>;
+      getReferenceMonitor?: () => string;
+      nativeRendererReferenceMonitor?: (id: string) => Promise<boolean>;
       getSpatialBalanceEnabled?: () => boolean;
       nativeRendererSpatialBalance?: (enabled: boolean) => Promise<boolean>;
       nativeRendererObjectRendering?: (enabled: boolean) => Promise<boolean>;

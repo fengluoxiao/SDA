@@ -14,6 +14,7 @@ enum SdaError: LocalizedError {
 }
 
 final class SdaPlayer {
+ var renderingSelectionEpoch = 0
  let lock = NSRecursiveLock()
  let feeder = DispatchQueue(label: "sda.ios.decode", qos: .userInitiated)
  var handle: UnsafeMutableRawPointer?
@@ -203,19 +204,20 @@ final class SdaPlayer {
  }
  func saveSpatialCueDb(_ db: Double) throws {
   guard [0.0, -3, -6, -9, -12].contains(db) else { throw SdaError.message("空间线索强度无效") }
-  let snapshot: (Int, String, String)? = try locked {
+  let snapshot: (Int, String, String, String, Int)? = try locked {
+   renderingSelectionEpoch += 1
    guard handle != nil && systemSpatial == nil else { prefs.set(db, forKey:"sda.spatialCueDb"); return nil }
-   return (generation, layout, try hrtfPath("dense"))
+   return (generation, layout, try hrtfPath("dense"),savedRoom(),renderingSelectionEpoch)
   }
   guard let snapshot else { return }
   // Do not hold the playback/decoder lock during disk IO or FFT preparation.
   var error: UnsafeMutablePointer<CChar>?
-  guard let prepared = sda_ios_prepare_cues(snapshot.2, snapshot.1, Float(pow(10.0, db / 20.0)), &error) else {
+  guard let prepared = sda_ios_prepare_reference(snapshot.2, snapshot.1, snapshot.3, Float(pow(10.0, db / 20.0)), &error) else {
    _ = try decodeReply(error); throw SdaError.message("空间线索准备失败")
   }
   defer { sda_ios_free_cues(prepared) }
   try locked {
-   guard generation == snapshot.0, layout == snapshot.1, let h = handle, systemSpatial == nil else {
+   guard generation == snapshot.0, layout == snapshot.1, renderingSelectionEpoch == snapshot.4, let h = handle, systemSpatial == nil else {
     throw SdaError.message("播放曲目已切换，请重新选择空间线索强度")
    }
    _ = try decodeReply(sda_ios_apply_cues(h, prepared))
@@ -251,7 +253,7 @@ final class SdaPlayer {
    "binauralEnabled": prefs.object(forKey:"sda.binauralEnabled") ?? true,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
-   "roomId": "", "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
+   "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
  }
  func hrtfPath(_ set: String) throws -> String {
   let directory = "hrtf-restored/hrtf-dense"
@@ -291,7 +293,7 @@ final class SdaPlayer {
   let sessionReady = try activatePlaybackSession()
   let s = settings()
   var configuration: [String:Any] = ["sampleRate":48000,"outputChannels":2,"layout":layout,
-   "objectRendering":(s["direct"] as? Bool ?? true),"binauralEnabled":s["binauralEnabled"]!,"directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!]
+   "objectRendering":(s["direct"] as? Bool ?? true),"binauralEnabled":s["binauralEnabled"]!,"directObjectHrtf":s["direct"]!,"directionalHrtf":s["directional"]!,"hrtfWetWeight":s["hrtfWetWeight"]!, "referenceMonitor":s["roomId"]!]
   // Bind the source before exposing the engine or starting an audio callback.
   if let codec { configuration["sourceCodec"]=codec }
   let config = try json(configuration)
@@ -312,8 +314,6 @@ final class SdaPlayer {
    _ = try command("volume", ["volume":1.0])
    _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
    if !sessionReady { _ = try command("pause", ["paused":true]) }
-   let room = s["roomId"] as! String
-   if !room.isEmpty { _ = try command("room",["path":try roomPath(room)]) }
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
    let experiment = try assetRoot().appendingPathComponent("ios-experiment.json")
    if FileManager.default.fileExists(atPath: experiment.path) {
@@ -321,6 +321,7 @@ final class SdaPlayer {
     let info = (try JSONSerialization.jsonObject(with:data)) as? [String:Any]
     let count = info?["directionCount"] as? Int ?? 0
     hrtfState = count > 0 ? "\(info?["userFacingName"] as? String ?? "高解析空间渲染") · 实际方向定位 · 前后／上下空间线索" : hrtfState
+    if !savedRoom().isEmpty { hrtfState = "8351B 参考监听室 · 参考仿真 · 实际方向定位" }
    }
   } catch { stopNative(); throw error }
  }
@@ -851,16 +852,49 @@ final class SdaPlayer {
   return true
  }
  func mediaDuration(_ url: URL) -> Double { let seconds = CMTimeGetSeconds(AVURLAsset(url:url).duration); return seconds.isFinite ? max(0,seconds*1000) : 0 }
- // Compatibility bridge: mobile builds have no room assets or selectable rooms.
- func roomCatalog() throws -> [[String:Any]] { [] }
- func savedRoom() -> String { "" }
- func saveRoom(_ id: String) throws {
-  guard id.isEmpty else { throw SdaError.message("移动端已移除房间仿真") }
-  if handle != nil { _ = try command("room",["path":""]) }
+ // Fixed coefficients are built into the native library, not unpacked song data.
+ func roomCatalog() throws -> [[String:Any]] { [["id":"genelec-8351b","name":"8351B 参考监听室","layout":layout]] }
+ func savedRoom() -> String {
+  let id = prefs.string(forKey:"sda.room") ?? ""
+  return id == "genelec-8351b" ? id : ""
  }
  func roomPath(_ id: String) throws -> String {
-  guard id.isEmpty else { throw SdaError.message("移动端已移除房间仿真") }
-  return ""
+  guard id.isEmpty || id == "genelec-8351b" else { throw SdaError.message("未知参考监听室") }
+  return id
+ }
+ func saveRoom(_ id: String) throws { try selectReferenceRoom(id) }
+ func selectRenderingPreset(_ id: String) throws {
+  let data = try Data(contentsOf:assetRoot().appendingPathComponent("rendering-presets.json"))
+  let presets = try JSONSerialization.jsonObject(with:data) as? [[String:Any]] ?? []
+  guard let p = presets.first(where:{$0["id"] as? String == id}),
+   p["hrtfSet"] as? String == "dense",p["direct"] as? Bool == true,p["directional"] as? Bool == true,
+   p["nearField"] as? Bool == false, let room = p["roomId"] as? String
+   else { throw SdaError.message("未知空间渲染预设") }
+  try selectReferenceRoom(room)
+ }
+ func selectReferenceRoom(_ id: String) throws {
+  _ = try roomPath(id)
+  let snapshot: (Int,String,String,Int,Float)? = try locked {
+   renderingSelectionEpoch += 1
+   guard handle != nil && systemSpatial == nil else { saveReferencePreferences(id); return nil }
+   return (generation,layout,try hrtfPath("dense"),renderingSelectionEpoch,Float(pow(10,spatialCueDb()/20)))
+  }
+  guard let snapshot else { return }
+  var error: UnsafeMutablePointer<CChar>?
+  guard let prepared = sda_ios_prepare_reference(snapshot.2,snapshot.1,id,snapshot.4,&error) else {
+   _ = try decodeReply(error);throw SdaError.message("参考监听室准备失败")
+  }
+  defer { sda_ios_free_cues(prepared) }
+  try locked {
+   guard generation == snapshot.0,layout == snapshot.1,renderingSelectionEpoch == snapshot.3,
+    let h = handle,systemSpatial == nil else { throw SdaError.message("播放或渲染设置已切换，请重新选择预设") }
+   _ = try decodeReply(sda_ios_apply_cues(h,prepared))
+   saveReferencePreferences(id)
+   hrtfState = id.isEmpty ? "SDA Spatial · 实际方向定位" : "8351B 参考监听室 · 参考仿真 · 实际方向定位"
+  }
+ }
+ private func saveReferencePreferences(_ id:String) {
+  for (k,v) in [("sda.hrtfSet","dense"),("sda.wet",0.0),("sda.direct",true),("sda.directional",true),("sda.near",false),("sda.room",id)] as [(String,Any)] {prefs.set(v,forKey:k)}
  }
 
  /// Only enabled by the explicit simulator CI environment; never on ordinary launch.

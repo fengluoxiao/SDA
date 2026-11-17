@@ -31,7 +31,7 @@ fn main() -> Result<(),Box<dyn std::error::Error>> {
     if !(args.len()==7 || args.len()==8) {return Err("INPUT.m4a HRTF.json OUTPUT.f32 stereo|upmix on|off [fresh-reference.json]".into());}
     let codec=args[4].as_str(); if !["eac3","av3a","mpegh"].contains(&codec) {return Err("invalid codec".into());}
     let balance=match args[5].as_str(){"on"=>true,"off"=>false,_=>return Err("invalid balance state".into())};
-    let mut engine=MobileEngine::new(EngineConfig {direct_object_hrtf:true,directional_hrtf:true,hrtf_wet_weight:0.0,..Default::default()},None)?;
+    let mut engine=MobileEngine::new(EngineConfig {direct_object_hrtf:true,directional_hrtf:true,hrtf_wet_weight:0.0,reference_monitor:std::env::var("SDA_AUDIT_REFERENCE_MONITOR").unwrap_or_default(),..Default::default()},None)?;
     engine.load_hrtf(&args[2])?;
     let sink=Arc::new(Capture{file:Mutex::new(BufWriter::new(File::create_new(&args[3])?)),frames:AtomicU64::new(0),done:AtomicBool::new(false)});
     engine.start(sink.clone())?;
