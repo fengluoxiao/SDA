@@ -31,7 +31,7 @@ fn render(args:&[String])->Result<(),String>{
     let parse=|i:usize|args[i].parse::<f32>().map_err(|_|"invalid gain".to_string());
     let spatial=match args[6].as_str(){"true"=>true,"false"=>false,_=>return Err("invalid spatial flag".into())};
     let mut processor=BedProcessor::new(parse(4)?,parse(5)?,spatial)?;
-    println!("{}",serde_json::json!({"type":"bedExportReady","protocol":1,"algorithm":"directional-spectral-redistribution-v1"}));
+    println!("{}",serde_json::json!({"type":"bedExportReady","protocol":1,"algorithm":crate::SPATIAL_BALANCE_ALGORITHM}));
     let input=std::fs::File::open(&args[2]).map_err(|e|e.to_string())?;
     let bytes=input.metadata().map_err(|e|e.to_string())?.len();if bytes==0||bytes%48!=0{return Err("invalid 12-channel float spool".into());}
     let mut input=BufReader::new(input);let mut output=BufWriter::new(OpenOptions::new().write(true).create_new(true).open(&args[3]).map_err(|e|e.to_string())?);

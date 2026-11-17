@@ -38,6 +38,9 @@ def main():
     algorithm_match = re.search(r'pub const STEREO_BASS_PRESERVATION\s*:\s*&str\s*=\s*"([^"]+)"', renderer)
     assert algorithm_match, 'Missing stereo front/bass algorithm'
     algorithm = algorithm_match.group(1)
+    spatial_match = re.search(r'pub const SPATIAL_BALANCE_ALGORITHM\s*:\s*&str\s*=\s*"([^"]+)"', renderer)
+    assert spatial_match, 'Missing spatial balance algorithm'
+    spatial_algorithm = spatial_match.group(1)
     policy_match = re.search(r'PROGRAMME_BALANCE_POLICY\s*:\s*&str\s*=\s*"([^"]+)"', (ROOT / 'crates/sda-native/src/balance.rs').read_text(encoding='utf-8'))
     assert policy_match, 'Missing programme balance policy'
     policy = policy_match.group(1)
@@ -47,7 +50,7 @@ def main():
         shader = (ROOT / 'apps/native-renderer/src/vulkan_resident.spv').read_bytes()
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
         info = {'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
-                'programmeOutputMakeupDb': float(makeup_match.group(1)), 'stereoProgrammeMakeupDb': 0, 'stereoProgrammeBalancePolicy': 'fresh-complete-stereo-reference-v1', 'stereoLoudnessUsesPersistentCache': False, 'sourceReferenceTargetLufs': -18, 'finalOutputLufsHardLimit': False, 'finalLufsControllerActive': False, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
+                'programmeOutputMakeupDb': float(makeup_match.group(1)), 'stereoProgrammeMakeupDb': 0, 'stereoProgrammeBalancePolicy': 'fresh-complete-stereo-reference-v1', 'stereoLoudnessUsesPersistentCache': False, 'sourceReferenceTargetLufs': -18, 'finalOutputLufsHardLimit': False, 'finalLufsControllerActive': False, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'spatialBalanceAlgorithm': spatial_algorithm, 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
                 'officialAndroidRelease': True, 'dolbyDownmixTrims': True, 'downmixTrimLayoutPolicy': 'surround-height-tier-v1', 'decoderSubmoduleCommit': git('-C', str(ROOT / 'harletty-bridge'), 'rev-parse', 'HEAD'), 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,
                 'sourceHashes': source_hashes(files),
@@ -55,7 +58,7 @@ def main():
         for abi, machine in ABIS.items():
             data = (ROOT / f'apps/mobile/android/app/src/main/jniLibs/{abi}/libsda_native.so').read_bytes()
             assert struct.unpack_from('<H', data, 18)[0] == machine
-            for marker in [sha.encode(), algorithm.encode(), policy.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', b'setDownmixTrims', b'fresh-complete-stereo-reference-v1', shader]: assert marker in data, abi
+            for marker in [sha.encode(), algorithm.encode(), spatial_algorithm.encode(), policy.encode(), b'android-system-vulkan-compute-1.0', b'aaudio-callback', b'setDownmixTrims', b'fresh-complete-stereo-reference-v1', shader]: assert marker in data, abi
             info['nativeLibraries'][abi] = {'sha256': digest(data), 'allocatedSectionHashes': allocated_hashes(data)}
         text = json.dumps(info, indent=2) + chr(10)
         (ROOT / 'apps/mobile/android/app/src/main/assets/sda-build-info.json').write_text(text, encoding='utf-8')

@@ -129,6 +129,7 @@ pub(crate) fn process_source_detail(
     temporal: Option<crate::temporal_detail::Control<'_>>,
     index: usize,
 ) -> f32 {
+    let directional_strength = temporal.and_then(|detail| detail.directional_strength);
     if source.auxiliary_route_at == u64::MAX || (source.kind == SourceKind::Object && at % 128 == 0)
     {
         let initial = source.auxiliary_route_at == u64::MAX;
@@ -138,7 +139,9 @@ pub(crate) fn process_source_detail(
             Route::bed(source, solver)
         };
         if initial {
-            source.auxiliary_protection = source.auxiliary_route.protection;
+            source.auxiliary_protection = if directional_strength.is_some() {
+                1. - source.auxiliary_route.auxiliary
+            } else { source.auxiliary_route.protection };
         }
         source.auxiliary_route_at = at;
     }
@@ -160,25 +163,37 @@ pub(crate) fn process_source_detail(
     } else {
         0.
     };
-    source.auxiliary_protection += (route.protection - source.auxiliary_protection).clamp(
+    // In the live directional policy the existing smooth geometry owns
+    // eligibility. The old forward-hemisphere veto excluded front heights
+    // and introduced a boundary at the zenith. Retain it only for the archived
+    // broadband controller. Ear-level front/lead positions keep zero weight.
+    let protection = if directional_strength.is_some() { 1. - route.auxiliary } else { route.protection };
+    source.auxiliary_protection += (protection - source.auxiliary_protection).clamp(
         -1. / (rate.max(1) as f32 * 0.03),
         1. / (rate.max(1) as f32 * 0.03),
     );
-    if (route.protection - source.auxiliary_protection).abs() < 1e-6 {
-        source.auxiliary_protection = route.protection;
+    if (protection - source.auxiliary_protection).abs() < 1e-6 {
+        source.auxiliary_protection = protection;
     }
-    // Foreground height/bottom sources are protected programme material. Do
-    // not count the same samples in the auxiliary reference as well: a loud
-    // forward layer would otherwise hide a weak rear/overhead deficit.
-    let auxiliary = source.auxiliary_weight * (1. - source.auxiliary_protection).clamp(0., 1.);
+    let auxiliary = if directional_strength.is_some() {
+        source.auxiliary_weight.clamp(0., 1.)
+    } else {
+        source.auxiliary_weight * (1. - source.auxiliary_protection).clamp(0., 1.)
+    };
+    // Complementary references avoid counting front heights in both groups.
+    // Use the same slewed weight for the detector and the audible correction.
+    let front = if directional_strength.is_some() { f64::from(1. - auxiliary) } else { route.front };
     for axis in 0..4 {
-        reference.groups[0][axis] += x * route.basis[axis] * route.front;
+        reference.groups[0][axis] += x * route.basis[axis] * front;
         reference.groups[1][axis] += x * route.basis[axis] * f64::from(auxiliary);
     }
-    if let Some(strength) = temporal.and_then(|detail| detail.directional_strength) {
-        // New presentation redistributes the existing auxiliary spectrum. No
-        // broadband group gain, cut, common-output feedback or cache is used.
-        return source.directional_detail.process(sample, auxiliary, strength[index], rate);
+    if let Some(strength) = directional_strength {
+        let shaped = source.directional_detail.process(sample, auxiliary, strength[index], rate);
+        // The retained spectral stage protects body and redistributes energy.
+        // A separate measured budget may lift the weak group, never cut its
+        // authored baseline. Both ears and all source sends share this gain.
+        let gain = if control.is_finite() { control.max(1.) } else { 1. };
+        return shaped * (1. + (gain - 1.) * auxiliary);
     }
     let control = if control.is_finite() {
         control.max(0.)
@@ -246,6 +261,8 @@ pub(crate) struct AuxiliaryBalance {
     temporal: crate::temporal_detail::Budget,
     temporal_detail_enabled: bool,
     directional: bool,
+    #[cfg(test)]
+    disable_measured_lift: bool,
     directional_strength: [f32; DEFAULT_PARTITION],
     strength: f64,
 }
@@ -273,6 +290,8 @@ impl AuxiliaryBalance {
             temporal: crate::temporal_detail::Budget::new(rate),
             temporal_detail_enabled: true,
             directional: false,
+            #[cfg(test)]
+            disable_measured_lift: false,
             directional_strength: [0.; DEFAULT_PARTITION],
             strength: 0.,
         }
@@ -280,13 +299,16 @@ impl AuxiliaryBalance {
     pub fn directional_detail(rate: u32) -> Self {
         let mut controller = Self::new(rate);
         controller.directional = true;
-        // Spectral redistribution does not raise the noise floor in bulk.
-        // Keep genuine quiet ambience eligible below the old lift gate.
+        // Keep the retained spectral stage eligible for genuine quiet ambience.
+        // Broadband lift additionally requires measured output room and a
+        // foreground/auxiliary deficit; missing room always withdraws it.
         controller.policy.reference_gate_db = -75.;
         controller
     }
     #[cfg(test)]
     pub fn directional_strength(&self) -> f32 { self.directional_strength[0] }
+    #[cfg(test)]
+    pub fn set_measured_lift_for_diagnostics(&mut self, enabled: bool) { self.disable_measured_lift = !enabled; }
     pub fn reset(&mut self) {
         self.filters = [[KWeight::new(self.rate); 4]; 2];
         self.energy = [0.; 2];
@@ -412,6 +434,21 @@ impl AuxiliaryBalance {
     pub fn headroom_db(&self) -> Option<f64> {
         self.headroom
     }
+    fn measured_lift_target_db(&self, desired_db: f64) -> f64 {
+        self.headroom.map_or(0., |h| {
+            // The detector observes the unattenuated processed mix. Convert
+            // its remaining dB room into incremental auxiliary gain using
+            // conservative amplitude sums and leave a 0.2 dB mix reserve.
+            let front = self.energy[0].max(0.).sqrt();
+            let auxiliary = self.energy[1].max(0.).sqrt() * 10f64.powf(self.gain_db / 20.);
+            let share = auxiliary / (front + auxiliary).max(1e-30);
+            if share <= 1e-12 { return 0.; }
+            let mix_ratio = 10f64.powf((h - 0.2) / 20.);
+            let source_ratio = (1. + (mix_ratio - 1.) / share).max(1e-12);
+            let source_budget = 20. * source_ratio.log10();
+            desired_db.min((self.gain_db.max(0.) + source_budget).max(0.))
+        })
+    }
     fn fill_from(&mut self, offset: usize) {
         self.refresh_goal();
         if self.directional {
@@ -422,13 +459,29 @@ impl AuxiliaryBalance {
             let rate = f64::from(self.rate.max(1));
             let attack = (-1. / (rate * 0.15)).exp();
             let release = (-1. / (rate * 0.05)).exp();
+            // This ceiling bounds a measured correction; it is not a static
+            // +6 dB recipe. Preserve foreground separation and the shared mix
+            // reserve, and never finance enhancement from common attenuation.
+            let lift_target = if self.enabled && self.policy.maximum_cut_db > 0. {
+                self.measured_lift_target_db(deficit.min(6.))
+            } else { 0. };
+            #[cfg(test)]
+            let lift_target = if self.disable_measured_lift { 0. } else { lift_target };
+            let withdrawal_ms = if self.enabled { 5. } else { 50. };
+            let gain_release = (-1000. / (rate * withdrawal_ms)).exp();
+            let gain_attack = (-1000. / (rate * self.policy.release_ms)).exp();
             for i in offset..DEFAULT_PARTITION {
-                self.gains[i] = 1.;
+                self.gains[i] = 10f64.powf(self.gain_db / 20.) as f32;
                 self.directional_strength[i] = self.strength as f32;
                 let coefficient = if target > self.strength { attack } else { release };
                 self.strength = target + (self.strength-target)*coefficient;
+                let coefficient = if lift_target < self.gain_db { gain_release } else { gain_attack };
+                let next = lift_target + (self.gain_db - lift_target) * coefficient;
+                self.gain_db = if next > self.gain_db {
+                    next.min(self.gain_db + 0.25 / rate)
+                } else { next.max(0.) };
+                if (self.gain_db - lift_target).abs() < 1e-8 { self.gain_db = lift_target; }
             }
-            self.gain_db = 0.;
             self.temporal.disable_immediately();
             return;
         }
@@ -440,21 +493,7 @@ impl AuxiliaryBalance {
             // Incremental headroom feedback uses already rendered output; the
             // growth rate is slow relative to the detector. Missing confidence
             // withdraws enhancement instead of falling back to a positive gain.
-            self.headroom.map_or(0., |h| {
-                // h is a whole-mix dB budget, not an auxiliary-source gain.
-                // Bound the incremental source lift using its current share
-                // of the summed amplitudes. This is more conservative than
-                // assuming uncorrelated powers and keeps a 0.2 dB mix reserve.
-                let front = self.energy[0].max(0.).sqrt();
-                let auxiliary = self.energy[1].max(0.).sqrt()
-                    * 10f64.powf(self.gain_db / 20.);
-                let share = auxiliary / (front + auxiliary).max(1e-30);
-                if share <= 1e-12 { return 0.; }
-                let mix_ratio = 10f64.powf((h - 0.2) / 20.);
-                let source_ratio = (1. + (mix_ratio - 1.) / share).max(1e-12);
-                let source_budget = 20. * source_ratio.log10();
-                self.goal_db.min((self.gain_db.max(0.) + source_budget).max(0.))
-            })
+            self.measured_lift_target_db(self.goal_db)
         };
         let initial_db = self.gain_db;
         for i in offset..DEFAULT_PARTITION {
@@ -941,6 +980,99 @@ mod lazy_control_tests {
                         assert_eq!(lazy.levels(),eager.levels());
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod directional_headroom_tests {
+    use super::*;
+    fn block(b:&mut AuxiliaryBalance, index:u64, front:f64, rear:f64, room:Option<f64>, peak:f64) {
+        for j in 0..DEFAULT_PARTITION {
+            let at=index*DEFAULT_PARTITION as u64+j as u64;
+            let mut r=Reference::default();
+            r.groups[0][0]=(at as f64*0.13).sin()*front;
+            r.groups[1][0]=(at as f64*0.17).sin()*rear;
+            b.mark_applied(j);b.observe(r,1.);b.observe_detail_output([peak,peak*0.8]);
+        }
+        b.set_output_headroom(room);b.finish_block();
+    }
+    fn enabled(rate:u32)->AuxiliaryBalance {let mut b=AuxiliaryBalance::directional_detail(rate);b.set_enabled(true,true,0);b}
+    #[test]
+    fn live_directional_lift_requires_both_a_deficit_and_real_output_room() {
+        for rate in [44100,48000,96000] {
+            for room in [None,Some(-8.),Some(0.),Some(0.8),Some(12.)] {
+                let mut b=enabled(rate);let mut previous=0.;
+                let blocks=rate as usize*4/DEFAULT_PARTITION;
+                for i in 0..blocks {
+                    block(&mut b,i as u64,0.1,0.01,room,0.02);
+                    assert!(b.gains.iter().all(|g|g.is_finite()&&*g>=1.));
+                    let db=20.*f64::from(b.gains[DEFAULT_PARTITION-1]).log10();
+                    assert!(db-previous <= 0.25*DEFAULT_PARTITION as f64/rate as f64+1e-5);
+                    previous=db;
+                }
+                if room.is_some_and(|v|v>0.) {assert!(previous>0.7,"no live lift: rate={rate} room={room:?} gain={previous}");}
+                else {assert_eq!(previous,0.);assert!(b.directional_strength()>0.4);}
+            }
+            let mut dominant=enabled(rate);
+            for i in 0..200 {block(&mut dominant,i,0.01,0.1,Some(12.),0.02);}
+            assert!(dominant.gains.iter().all(|g|*g==1.),"dominant auxiliary group must retain its baseline");
+        }
+    }
+    #[test]
+    fn missing_room_peaks_disable_and_reset_withdraw_only_added_gain() {
+        for mode in 0..4 {
+            let mut b=enabled(48000);
+            for i in 0..200 {block(&mut b,i,0.1,0.01,Some(12.),0.02);}
+            assert!(b.gains[0]>1.1);
+            if mode==2 {b.set_enabled(false,false,99);}
+            for i in 200..230 {
+                block(&mut b,i,0.1,0.01,if mode==0{None}else{Some(12.)},if mode==1{2.}else{0.02});
+                assert!(b.gains.iter().all(|g|*g>=1.));
+                if mode==3 {b.reset();break;}
+            }
+            if mode<3 {assert!((b.gains[DEFAULT_PARTITION-1]-1.).abs()<0.00001,"mode={mode}");}
+            else {assert!(b.gains.iter().all(|g|*g==1.));assert_eq!(b.headroom_db(),None);assert_eq!(b.directional_strength(),0.);}
+        }
+    }
+    #[test]
+    fn measured_lift_is_capped_and_cannot_turn_up_silence_or_foreground_only() {
+        let mut b=enabled(48000);
+        for i in 0..1500 {block(&mut b,i,0.1,0.0005,Some(50.),0.02);}
+        let db=20.*f64::from(b.gains[DEFAULT_PARTITION-1]).log10();
+        assert!(db>5.5&&db<=6.000001,"unexpected bound {db}");
+        for (front,rear)in [(0.,0.),(0.1,0.),(0.,0.01),(1e-8,1e-10)] {
+            let mut b=enabled(48000);for i in 0..250 {block(&mut b,i,front,rear,Some(40.),0.02);}
+            assert!(b.gains.iter().all(|g|*g==1.),"invented lift: {front}/{rear}");
+        }
+    }
+    #[test]
+    fn directional_references_partition_the_full_sphere_without_a_front_height_veto() {
+        let b=enabled(48000);let solver=vbap::VbapSolver::new();
+        let mut source=Source{kind:SourceKind::Object,..Default::default()};
+        for azimuth in -180_i32..=180 {for elevation in -90_i32..=90 {
+            let a=(azimuth as f64).to_radians();let e=(elevation as f64).to_radians();
+            let p=[(a.sin()*e.cos())as f32,(a.cos()*e.cos())as f32,e.sin()as f32];
+            let weight=crate::spatial_layer::weight_for(p,crate::spatial_layer::Geometry::Front45);
+            source.position=p;source.auxiliary_route_at=u64::MAX;source.auxiliary_weight=weight;
+            let mut r=Reference::default();
+            let y=process_source_detail(&mut source,0.1,0,1.5,&mut r,48000,&solver,Some(b.temporal_control()),0);
+            assert!((y-0.1*(1.+0.5*weight)).abs()<2e-7,"position={p:?}");
+            assert!((r.groups[0][0]+r.groups[1][0]-0.1*std::f64::consts::FRAC_1_SQRT_2).abs()<1e-8);
+            if elevation.abs()>=30 {assert!((weight-1.).abs()<1e-5,"height excluded {p:?}");}
+            if elevation==0&&azimuth.abs()<=45 {assert_eq!(y,0.1,"front baseline changed");}
+        }}
+    }
+    #[test]
+    fn live_beds_include_dolby_front_heights_and_sony_bottoms_but_exclude_lfe() {
+        let b=enabled(48000);
+        for (layout,labels)in [(vbap::LayoutId::Dolby7_1_4,&["Tfl","Tfr","Trl","Trr"][..]),(vbap::LayoutId::Sony360Ra13,&["I_L_000","I_L_L045","I_L_R045"][..])]{
+            let solver=vbap::VbapSolver::with_layout(layout);
+            for label in labels.iter().copied().chain(["LFE"]){
+                let mut s=Source{kind:SourceKind::Bed,bed_label:Some(label.into()),..Default::default()};let mut y=0.;
+                for at in 0..4096 {let mut r=Reference::default();y=process_source_detail(&mut s,0.1,at,1.5,&mut r,48000,&solver,Some(b.temporal_control()),at as usize%DEFAULT_PARTITION);}
+                if label=="LFE" {assert_eq!(y,0.1);}else {assert!(y>0.1001,"bed not eligible: {layout:?}/{label}: {y}");}
             }
         }
     }

@@ -75,7 +75,7 @@ pub mod spectral_accelerator;
 pub mod android_audio_cpu;
 #[cfg(target_os = "android")]
 pub mod nnapi_runtime;
-pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-spectral-redistribution-v1";
+pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-detail-measured-headroom-v2";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 #[cfg(target_vendor = "apple")]
 mod apple_fft;
@@ -2010,7 +2010,8 @@ impl Engine {
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
     /// Source-local directional contrast. The approved common 4 kHz shelf is
-    /// retained; layer-wide +2/+6 and common live loudness ducking are absent.
+    /// retained. Weak auxiliary material can use measured output headroom;
+    /// static layer-wide +2/+6 and common live loudness ducking remain absent.
     pub fn set_spatial_enhancement(&mut self, enabled: bool) -> Result<(), String> {
         if self.authored.enabled {return Ok(());}
         let clarity = dsp::Biquad::highshelf(self.output_sample_rate, 4000.0,
@@ -3518,7 +3519,9 @@ impl Engine {
             }
             self.advance_output_envelopes();
             if block_index + 1 == convolution::DEFAULT_PARTITION {
-                self.auxiliary_balance.set_output_headroom(self.output_dynamics.available_headroom_db());
+                let room = if self.peak_guard.is_limiting() { None }
+                    else { self.output_dynamics.available_headroom_db() };
+                self.auxiliary_balance.set_output_headroom(room);
                 self.auxiliary_balance.finish_block();
                 sample_micros = stage_started.elapsed().as_micros() as u64;
                 if let Some(set) = &mut self.active_hrtf_set {
@@ -4407,7 +4410,7 @@ mod tests {
     }
 
     #[test]
-    fn only_sounding_emitters_cast_default_occlusion_and_head_off_bypasses_it() {
+    fn only_sounding_emitters_cast_default_occlusion_and_binaural_off_bypasses_it() {
         let source = |position, pcm: Vec<f32>| {
             let mut source = Source {
                 kind: SourceKind::Object,
@@ -7060,3 +7063,6 @@ mod hrtfhq_depth_probe;
   e.sources.clear();e.sources.insert("obj:7".into(),Source{kind:SourceKind::Object,object_id:Some(7),..Default::default()});e.set_program_codec("av3a".into());e.refresh_programme_output_makeup(true);assert_eq!(e.programme_output_makeup.target_db(),1.8);
  }
 }
+
+#[cfg(test)]
+mod spatial_headroom_tests;

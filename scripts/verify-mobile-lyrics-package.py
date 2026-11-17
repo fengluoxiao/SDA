@@ -17,6 +17,7 @@ SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
 MARKERS += [b'SDA Spatial', b'space-glass-fullscreen']
 SOURCES += ['apps/mobile/rendering-presets.json', 'apps/mobile/ios-experiments/active.json']
 SOURCES += ['apps/mobile/src/retired-ai-cleanup.ts','apps/mobile/src/scene-frame-guard.ts','apps/mobile/src/SpaceFullscreenButton.tsx','apps/mobile/src/AndroidGlassSettingsButton.tsx','apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaAndroidChromeModule.kt']
+SOURCES += ['apps/native-renderer/src/auxiliary_balance.rs','apps/native-renderer/src/directional_detail.rs','apps/native-renderer/src/true_peak_guard.rs']
 IOS_GLASS_MARKERS = [b'space-fullscreen-controller', b'metadata-done-native-label', b'native-mini-player-content', b'mini-player-liquid-glass-backdrop']
 def main():
     platform, output = sys.argv[1], Path(sys.argv[2])
@@ -28,6 +29,11 @@ def main():
     sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, encoding='utf-8').strip()
     info = json.loads((output / 'build-info.json').read_text(encoding='utf-8'))
     assert info['sourceCommit'] == sha
+    import re
+    renderer = (ROOT / 'apps/native-renderer/src/lib.rs').read_text(encoding='utf-8')
+    algorithm = re.search(r'pub const SPATIAL_BALANCE_ALGORITHM\s*:\s*&str\s*=\s*"([^"]+)"', renderer)
+    assert algorithm and info['spatialBalanceAlgorithm'] == algorithm.group(1), 'Stale spatial balance implementation in installer metadata'
+
     hashes = info['sourceHashes' if platform == 'Android' else 'sources']
     verified_sources = SOURCES + (['apps/head-tracking-helper/src/orientation.rs', 'crates/sda-native/src/ios.rs', 'apps/mobile/modules/sda-core/ios/HeadphoneTracking.swift'] if platform == 'iOS' else [])
     for name in verified_sources:

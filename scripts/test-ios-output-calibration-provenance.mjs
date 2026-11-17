@@ -11,3 +11,12 @@ assert.equal('let db = if self.authored.enabled { 7.25 } else { 0.0 };'.match(pa
 assert.match(recorder,/stereoProgrammeMakeupDb:0[,}]/,'iOS must record zero extra stereo makeup');
 assert.match(readFileSync('scripts/record-android-release.py','utf8'),/'stereoProgrammeMakeupDb': 0[,}]/,'Android must record zero extra stereo makeup');
 console.log('Provenance records immersive calibration separately from unity stereo makeup and authored overrides.');
+
+const spatialExtractor=recorder.match(/const spatialBalanceAlgorithm=renderer\.match\((\/[^\n]+\/)\);/);
+assert(spatialExtractor,'spatial identity must come from the compiled renderer');
+const spatialPattern=new Function(`return ${spatialExtractor[1]}`)();
+const spatialIdentity=renderer.match(spatialPattern)?.[1];
+assert.equal(spatialIdentity,'directional-detail-measured-headroom-v2');
+assert.equal(renderer.replace(spatialIdentity,'future-measured-policy').match(spatialPattern)?.[1],'future-measured-policy');
+assert.match(recorder,/spatialBalanceAlgorithm:spatialBalanceAlgorithm\[1\]/,'record the extracted identity instead of a stale literal');
+console.log('Spatial balance provenance follows the native algorithm identity.');

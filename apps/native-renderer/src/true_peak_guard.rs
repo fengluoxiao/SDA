@@ -79,6 +79,11 @@ impl TruePeakGuard {
             ceiling: 10f64.powf(CEILING_DB / 20.),
         }
     }
+    /// Enhancement may withdraw while the linked guard is active; its
+    /// attenuation must never be interpreted as newly available headroom.
+    pub fn is_limiting(&self) -> bool {
+        self.gain < 1. - 1e-6 || self.target < 1. - 1e-6
+    }
     pub fn latency_frames(&self) -> usize {
         self.buffer.len()
     }
