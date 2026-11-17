@@ -16,8 +16,10 @@ for(const layout of Object.keys(manifest.layouts)){
 assert.throws(()=>readReferenceProfile(directory,'unknown'));assert.throws(()=>readReferenceProfile(directory,'7.1.4',NaN));
 const {captureExportAssets}=require('../../apps/desktop/export-assets.cjs');
 const snapshot={layout:{effective:'360RA-13'},cinema:{settings:{enabled:false}},equalizer:{}};
-const captured=captureExportAssets({snapshot,selectedHrtf:'hrtf-dense',hrtfRoot:path.join(root,'assets/hrtf/apple-hrtfhq-v1'),referenceRoot:directory,referenceMonitor:'genelec-8351b'});
-assert.equal(captured.room.layout,'360RA-13');assert.equal(snapshot.cinema.settings.enabled,true);
-const room=JSON.parse(captured.blobs.find(b=>b.sha256===captured.room.profile).data);assert.equal(room.speakers.length,13);assert.equal(room.simulation.referenceMonitor,'genelec-8351b');assert.equal(captured.hrtf.wetWeight,.04);
-assert(JSON.parse(fs.readFileSync(path.join(root,'apps/desktop/package.json'))).build.files.includes('reference-monitor.cjs'));
-console.log('All 15 fixed layouts and self-contained reference-room export retain direction, exact direct samples, lower channels and provenance.');
+const captured=captureExportAssets({snapshot,selectedHrtf:'hrtf-dense',hrtfRoot:path.join(root,'assets/hrtf/apple-hrtfhq-v1')});
+assert.equal(captured.room,null);
+const hrtf=JSON.parse(captured.blobs.find(b=>b.sha256===captured.hrtf.manifest).data);
+assert.equal(hrtf.sharedReferenceVersion,1);assert.equal(hrtf.sharedDepthVersion,1);
+const presets=JSON.parse(fs.readFileSync(path.join(root,'apps/mobile/rendering-presets.json')));
+assert.equal(presets.length,1);assert.equal(presets[0].label,'SDA Spatial');assert.equal(presets[0].roomId,'');
+console.log('One SDA Spatial preset, integrated manifest and authored assets preserve original depth plus fixed monitor reflections.');

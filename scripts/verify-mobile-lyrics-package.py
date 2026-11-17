@@ -10,12 +10,12 @@ SOURCES = ['apps/mobile/src/' + name for name in [
     'PhoneLandscapeBlur.tsx', 'phone-landscape-blur-model.ts', 'IOSUIKitTabs.tsx', 'IOSSystemTabs.tsx',
     'ios-platform-version.ts', 'IOSMetadataSheet.tsx', 'IOSNativeSettings.tsx', 'IOSMiniPlayerBackdrop.tsx', 'SideNavigationRail.tsx', 'IOSVerticalTabBar.tsx',
     'mobile-object-activity.ts', 'cardboard-config.ts', 'cardboard-renderer.ts', 'cardboard-pose.ts', 'cardboard-session.ts', 'use-cardboard-session.ts', 'CardboardControls.tsx', 'ChannelSpeakers.tsx', 'MobileSceneCamera.tsx', 'scene-camera-input.ts', 'BatchedSpaceObjects.tsx', 'scene-motion.ts', 'scene-display.ts', 'SpaceVisualPage.tsx', 'ImmersiveSpaceScene.tsx', 'space-visual-model.ts', 'MobileObjectScene.tsx', 'navigation-preferences.tsx']]
-SOURCES += ['apps/native-renderer/src/reference_room.rs', 'apps/native-renderer/src/live_spatial_cues.rs', 'apps/native-renderer/src/convolution.rs', 'apps/native-renderer/assets/genelec-reference/manifest.json', 'apps/native-renderer/assets/genelec-reference/coefficients.f32', 'apps/native-renderer/assets/genelec-reference/8351b-directivity.json.gz', 'apps/native-renderer/assets/genelec-reference/NOTICE.md', 'scripts/build-genelec-reference.py']
+SOURCES += ['assets/hrtf/apple-hrtfhq-v1/hrtf/hrtf-set.json','assets/hrtf/apple-hrtfhq-v1/hrtf-dense/hrtf-set.json','apps/native-renderer/src/shared_depth.rs','apps/native-renderer/src/reference_room.rs', 'apps/native-renderer/src/live_spatial_cues.rs', 'apps/native-renderer/src/convolution.rs', 'apps/native-renderer/assets/genelec-reference/manifest.json', 'apps/native-renderer/assets/genelec-reference/coefficients.f32', 'apps/native-renderer/assets/genelec-reference/8351b-directivity.json.gz', 'apps/native-renderer/assets/genelec-reference/NOTICE.md', 'scripts/build-genelec-reference.py']
 MARKERS = [b'portrait-lyrics-page', b'lyrics-scroll', b'lyric-backing-', b'landscape-lyrics-page', b'lyrics-track-header',
            b'tablet-landscape-lyrics', b'lyric-word-fill', b'lyric-held-note-glow', b'lyric-romanization-', b'immersive-space-page', b'space-scene-viewport', b'space-fullscreen-button', b'space120Fps', b'instancePosition', b'space-listener-view', b'channel-speaker-models', b'showChannelSpeakers', b'cardboard-vr-controls', b'cardboard-calibration-panel', b'space-object-dots', b'space-object-glows']
 SOURCES += ['apps/mobile/modules/sda-core/ios/SceneDisplayPolicy.swift',
             'apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SceneDisplayPolicy.kt']
-MARKERS += [b'SDA Spatial', b'space-glass-fullscreen', b'genelec-8351b-reference']
+MARKERS += [b'SDA Spatial', b'space-glass-fullscreen']
 SOURCES += ['apps/mobile/rendering-presets.json', 'apps/mobile/ios-experiments/active.json']
 SOURCES += ['apps/mobile/src/retired-ai-cleanup.ts','apps/mobile/src/scene-frame-guard.ts','apps/mobile/src/SpaceFullscreenButton.tsx','apps/mobile/src/AndroidGlassSettingsButton.tsx','apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaAndroidChromeModule.kt']
 SOURCES += ['apps/native-renderer/src/auxiliary_balance.rs','apps/native-renderer/src/directional_detail.rs','apps/native-renderer/src/true_peak_guard.rs']
@@ -35,6 +35,7 @@ def main():
     algorithm = re.search(r'pub const SPATIAL_BALANCE_ALGORITHM\s*:\s*&str\s*=\s*"([^"]+)"', renderer)
     assert algorithm and info['spatialBalanceAlgorithm'] == algorithm.group(1), 'Stale spatial balance implementation in installer metadata'
 
+    assert info['sdaSpatialIntegratedReference'] is True
     assert info['referenceMonitorAlgorithm'] == 'genelec8351b-reference-room-v1'
     assert info['referenceMonitorUsesSongCache'] is False
     hashes = info['sourceHashes' if platform == 'Android' else 'sources']
@@ -56,7 +57,7 @@ def main():
         assert len(bundles) == 1, 'Missing packaged JavaScript bundle'
         bundle = archive.read(bundles[0])
         for marker in markers: assert marker in bundle or marker.decode().encode('utf-16-le') in bundle, 'Missing mobile UI: ' + marker.decode()
-        for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://', 'ai-scene-settings-link', 'ai-scene-generate', 'folia-local-visualizer', '/chat/completions']:
+        for marker in ['preview://artwork/', 'expo-artwork-preview-', 'mock://', 'genelec-8351b-reference', '8351B 参考监听室', 'ai-scene-settings-link', 'ai-scene-generate', 'folia-local-visualizer', '/chat/completions']:
             assert marker.encode() not in bundle and marker.encode('utf-16-le') not in bundle, 'Removed feature or development fixture shipped: ' + marker
     result = {'platform': platform, 'version': config['version'], 'build': config['android']['versionCode'] if platform == 'Android' else config['ios']['buildNumber'],
               'sourceCommit': sha, 'file': package.name, 'bytes': package.stat().st_size, 'sha256': hashlib.sha256(package.read_bytes()).hexdigest(),

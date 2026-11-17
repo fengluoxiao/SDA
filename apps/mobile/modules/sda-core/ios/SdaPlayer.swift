@@ -321,7 +321,7 @@ final class SdaPlayer {
     let info = (try JSONSerialization.jsonObject(with:data)) as? [String:Any]
     let count = info?["directionCount"] as? Int ?? 0
     hrtfState = count > 0 ? "\(info?["userFacingName"] as? String ?? "高解析空间渲染") · 实际方向定位 · 前后／上下空间线索" : hrtfState
-    if !savedRoom().isEmpty { hrtfState = "8351B 参考监听室 · 参考仿真 · 实际方向定位" }
+
    }
   } catch { stopNative(); throw error }
  }
@@ -853,11 +853,8 @@ final class SdaPlayer {
  }
  func mediaDuration(_ url: URL) -> Double { let seconds = CMTimeGetSeconds(AVURLAsset(url:url).duration); return seconds.isFinite ? max(0,seconds*1000) : 0 }
  // Fixed coefficients are built into the native library, not unpacked song data.
- func roomCatalog() throws -> [[String:Any]] { [["id":"genelec-8351b","name":"8351B 参考监听室","layout":layout]] }
- func savedRoom() -> String {
-  let id = prefs.string(forKey:"sda.room") ?? ""
-  return id == "genelec-8351b" ? id : ""
- }
+ func roomCatalog() throws -> [[String:Any]] { [] }
+ func savedRoom() -> String { "" }
  func roomPath(_ id: String) throws -> String {
   guard id.isEmpty || id == "genelec-8351b" else { throw SdaError.message("未知参考监听室") }
   return id
@@ -873,7 +870,7 @@ final class SdaPlayer {
   try selectReferenceRoom(room)
  }
  func selectReferenceRoom(_ id: String) throws {
-  _ = try roomPath(id)
+  guard id.isEmpty else { throw SdaError.message("使用 SDA Spatial 统一渲染") }
   let snapshot: (Int,String,String,Int,Float)? = try locked {
    renderingSelectionEpoch += 1
    guard handle != nil && systemSpatial == nil else { saveReferencePreferences(id); return nil }
@@ -890,7 +887,7 @@ final class SdaPlayer {
     let h = handle,systemSpatial == nil else { throw SdaError.message("播放或渲染设置已切换，请重新选择预设") }
    _ = try decodeReply(sda_ios_apply_cues(h,prepared))
    saveReferencePreferences(id)
-   hrtfState = id.isEmpty ? "SDA Spatial · 实际方向定位" : "8351B 参考监听室 · 参考仿真 · 实际方向定位"
+   hrtfState = "SDA Spatial · 实际方向定位"
   }
  }
  private func saveReferencePreferences(_ id:String) {

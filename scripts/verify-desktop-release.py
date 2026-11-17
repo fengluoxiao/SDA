@@ -51,6 +51,9 @@ def verify_payload(app, platform, arch, commit, version):
         with path.open('rb') as f: data=f.read(65536)
         assert arch in architectures(data), f'{role}: wrong architecture {architectures(data)}, expected {arch}'
     info=json.loads((resources/'native-renderer/build-info.json').read_text(encoding='utf-8'))
+    assert info['sdaSpatialIntegratedReference'] is True
+    for family in ['hrtf','hrtf-dense']:
+        assert json.loads((resources/'native-renderer/hrtf-assets'/family/'hrtf-set.json').read_text(encoding='utf-8'))['sharedReferenceVersion']==1
     assert info['referenceMonitorAlgorithm']=='genelec8351b-reference-room-v1'
     assert info['referenceCoefficientsSha256']==sha(Path(os.environ.get('GITHUB_WORKSPACE',Path(__file__).resolve().parents[1]))/'apps/native-renderer/assets/genelec-reference/coefficients.f32')
     reference=resources/'native-renderer/genelec-reference'

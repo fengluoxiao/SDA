@@ -1,26 +1,14 @@
 [
   {
     "id": "object-dense",
-    "label": "SDA Spatial 空间渲染",
-    "description": "四个平台共用的空间响应，保留逐对象实际方向定位与头部追踪",
+    "label": "SDA Spatial",
+    "description": "统一的空间响应，保留逐对象实际方向定位与头部追踪",
     "hrtfSet": "dense",
     "assetDirectory": "hrtf-restored/hrtf-dense",
     "direct": true,
     "directional": true,
     "nearField": false,
     "roomId": "",
-    "hrtfWetWeight": 0
-  },
-  {
-    "id": "genelec-8351b-reference",
-    "label": "8351B 参考监听室",
-    "description": "8351B 归一指向性与参考房间反射，保留对象定位；非实测房间",
-    "hrtfSet": "dense",
-    "assetDirectory": "hrtf-restored/hrtf-dense",
-    "direct": true,
-    "directional": true,
-    "nearField": false,
-    "roomId": "genelec-8351b",
     "hrtfWetWeight": 0
   }
 ]

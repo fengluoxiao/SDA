@@ -25,7 +25,7 @@ def allocated_hashes(data):
     return {name: digest(sections[name]) for name in ['.text', '.rodata', '.data.rel.ro', '.dynsym', '.dynstr', '.eh_frame']}
 def git(*args): return subprocess.check_output(['git', *args], cwd=ROOT, encoding='utf-8').strip()
 def source_hashes(files):
-    prefixes = ('apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'vendor/avs3a/', 'packages/core/', 'packages/player/', 'scripts/')
+    prefixes = ('assets/hrtf/', 'apps/mobile/', 'apps/native-renderer/', 'crates/sda-native/', 'crates/sda-render-metadata/', 'vendor/truehd/', 'vendor/avs3a/', 'packages/core/', 'packages/player/', 'scripts/')
     extensions = ('.f32','.gz','.md','.rs','.cpp','.c','.h','.spv','.comp','.kt','.java','.swift','.tsx','.ts','.js','.mjs','.py','.ps1','.json','.gradle','.toml','.lock','.yaml','.yml','.xml','.source')
     return {name: digest((ROOT / name).read_bytes()) for name in files if name and name.startswith(prefixes) and name.endswith(extensions)}
 def main():
@@ -46,11 +46,11 @@ def main():
     policy = policy_match.group(1)
     makeup_match = re.search(r'\bif\s+self\.program_enabled\s*&&\s*\(named_format\s*\|\|\s*self\.dolby_spatial_programme_seen\)\s*\{\s*([\d.]+)\s*\}', renderer)
     assert makeup_match, 'Missing immersive programme calibration'
-    reference_algorithm = re.search(r'ALGORITHM:\s*&str\s*=\s*"([^"]+)"', (ROOT / 'apps/native-renderer/src/reference_room.rs').read_text()).group(1)
+    reference_algorithm = re.search(r'ALGORITHM:\s*&str\s*=\s*"([^"]+)"', (ROOT / 'apps/native-renderer/src/reference_room.rs').read_text(encoding='utf-8')).group(1)
     if sys.argv[1] == 'stage':
         shader = (ROOT / 'apps/native-renderer/src/vulkan_resident.spv').read_bytes()
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split(chr(0))
-        info = {'referenceMonitorAlgorithm': reference_algorithm, 'referenceMonitorUsesSongCache': False, 'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
+        info = {'sdaSpatialIntegratedReference': True, 'referenceMonitorAlgorithm': reference_algorithm, 'referenceMonitorUsesSongCache': False, 'sourceCommit': sha, 'packagingWorkflowCommit': os.environ.get('GITHUB_WORKFLOW_SHA', os.environ.get('GITHUB_SHA', sha)), 'appVersion': version, 'androidVersionCode': config['android']['versionCode'],
                 'programmeOutputMakeupDb': float(makeup_match.group(1)), 'stereoProgrammeMakeupDb': 0, 'stereoProgrammeBalancePolicy': 'fresh-complete-stereo-reference-v1', 'stereoLoudnessUsesPersistentCache': False, 'sourceReferenceTargetLufs': -18, 'finalOutputLufsHardLimit': False, 'finalLufsControllerActive': False, 'stereoCodecAnnouncement': 'common-pcm-queue-v1', 'spatialBalanceAlgorithm': spatial_algorithm, 'stereoBassPreservation': algorithm, 'programmeBalancePolicy': policy, 'nativeSdaUpmixTrimDb': float(re.search(r'SDA_UPMIX_LEVEL_TRIM_DB\s*:\s*f32\s*=\s*(-?\d+(?:\.\d+)?)', (ROOT / 'crates/sda-native/src/alac_pcm.rs').read_text(encoding='utf-8')).group(1)),
                 'officialAndroidRelease': True, 'dolbyDownmixTrims': True, 'downmixTrimLayoutPolicy': 'surround-height-tier-v1', 'decoderSubmoduleCommit': git('-C', str(ROOT / 'harletty-bridge'), 'rev-parse', 'HEAD'), 'signingCertificateSha256': CERT, 'buildHost': 'GitHub Actions windows-2022',
                 'workflowRunId': os.environ.get('GITHUB_RUN_ID'), 'physicalDeviceVerifiedForThisPackage': False,

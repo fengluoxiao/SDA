@@ -1,6 +1,7 @@
 # Genelec 8351B reference-room provenance
 
-This optional reference simulation combines numerical normalized directivity
+These fixed coefficients are integrated into SDA Spatial, together with the
+retained short residual and the current direct HRTF. They combine numerical normalized directivity
 from Genelec's publicly provided 8351B EASE GLL with an explicitly assumed
 6 x 5 x 3.2 metre room and the existing shared HRTFHQ receiving responses.
 It is not a measured personal room, a Genelec GLM profile, an Aural ID profile,

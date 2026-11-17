@@ -23,7 +23,7 @@ def verify_mobile_ios_assets(app):
     if experiment and (experiment.get('id') not in supported or experiment.get('directionCount') != supported[experiment['id']]):
         raise RuntimeError('Unknown iOS experiment')
     measured = experiment is not None and experiment['id'] == 'apple-hrtfhq-542-v1'
-    if measured and (experiment.get('measuredResponseVersion') != 3 or experiment.get('sharedDepthVersion') != 1 or experiment.get('sharedClarityVersion') != 1):
+    if measured and (experiment.get('measuredResponseVersion') != 3 or experiment.get('sharedDepthVersion') != 1 or experiment.get('sharedClarityVersion') != 1 or experiment.get('sharedReferenceVersion') != 1):
         raise RuntimeError('Approved render policy mismatch: depth selection')
     for directory, count in [('hrtf-dense', experiment['directionCount'] if experiment else 61), ('hrtf', 17)]:
         root = bundle / 'hrtf-restored' / directory
@@ -40,6 +40,7 @@ def verify_mobile_ios_assets(app):
                     or manifest.get('measuredResponseVersion') != 3
                     or manifest.get('sharedClarityVersion') != 1
                     or manifest.get('sharedDepthVersion') != 1
+                    or manifest.get('sharedReferenceVersion') != 1
                     or any(processing.get(k) is not v for k, v in expected.items())):
                 raise RuntimeError('Approved render policy mismatch: measured response')
         if experiment and directory == 'hrtf-dense':
@@ -81,14 +82,9 @@ def verify_mobile_ios_assets(app):
     for old in ['hrtf', 'hrtf-dense', 'hrtf-raw', 'hrtf-dense-raw', 'rooms']:
         if (bundle / old).exists():
             raise RuntimeError('Unexpected legacy/room resource: ' + old)
-    if len(presets) != 2:
-        raise RuntimeError('Mobile must contain exactly two rendering presets')
+    if len(presets) != 1:
+        raise RuntimeError('Mobile must contain exactly one rendering preset')
     expected = dict(id='object-dense', assetDirectory='hrtf-restored/hrtf-dense', direct=True,
                     directional=True, nearField=False, roomId='', hrtfWetWeight=0)
     if any(presets[0].get(k) != v for k, v in expected.items()):
         raise RuntimeError('Invalid mobile direct-only rendering preset')
-
-    reference = dict(id='genelec-8351b-reference', assetDirectory='hrtf-restored/hrtf-dense', direct=True,
-                     directional=True, nearField=False, roomId='genelec-8351b', hrtfWetWeight=0)
-    if any(presets[1].get(k) != v for k, v in reference.items()):
-        raise RuntimeError('Invalid fixed reference-room preset')

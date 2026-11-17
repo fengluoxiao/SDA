@@ -20,6 +20,8 @@ struct Manifest {
     measured_response_version: Option<u32>,
     shared_depth_version: Option<u32>,
     #[serde(default)]
+    shared_reference_version: Option<u32>,
+    #[serde(default)]
     shared_clarity_version: Option<u32>,
     processing: Processing,
     positions: Vec<Position>,
@@ -81,6 +83,7 @@ pub struct NativeHrtfSet {
     spatial_cue_motion: SpatialCueMotion,
     spatial_cues_active: bool,
     shared_depth_enabled: bool,
+    shared_reference_enabled: bool,
     speaker_tap_floor: usize,
     shared_clarity_enabled: bool,
     shared_depth: Option<std::sync::Arc<crate::shared_depth::Bank>>,
@@ -139,6 +142,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: self.spatial_cue_motion,
             spatial_cues_active: self.spatial_cues_active,
             shared_depth_enabled: self.shared_depth_enabled,
+            shared_reference_enabled: self.shared_reference_enabled,
             speaker_tap_floor: self.speaker_tap_floor,
             shared_clarity_enabled: self.shared_clarity_enabled,
             shared_depth: self.shared_depth.clone(),
@@ -240,6 +244,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: Default::default(),
             spatial_cues_active: false,
             shared_depth_enabled: false,
+            shared_reference_enabled: false,
             speaker_tap_floor: 0,
             shared_clarity_enabled: false,
             shared_depth: None,
@@ -457,6 +462,7 @@ impl NativeHrtfSet {
             spatial_cue_motion: manifest.processing.spatial_cue_motion,
             spatial_cues_active: false,
             shared_depth_enabled: manifest.shared_depth_version==Some(1),
+            shared_reference_enabled: manifest.shared_reference_version==Some(1),
             speaker_tap_floor: 0,
             shared_clarity_enabled,
             shared_depth: None,
@@ -849,7 +855,7 @@ impl NativeHrtfSet {
             && !self.cinema.monitor.enabled
             && self.room_profile.is_none()
         {
-            crate::shared_depth::bank(layout)?
+            if self.shared_reference_enabled {crate::shared_depth::merged_bank(layout)?} else {crate::shared_depth::bank(layout)?}
         } else {
             None
         };

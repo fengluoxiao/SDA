@@ -9798,5 +9798,7 @@
   "sharedRenderProfile": "apple-hrtfhq-542-v1",
   "triangleSupportFile": "triangle-grid.json",
   "sharedDepthVersion": 1,
-  "sharedClarityVersion": 1
+  "sharedClarityVersion": 1,
+  "sharedReferenceVersion": 1,
+  "userFacingName": "SDA Spatial"
 }

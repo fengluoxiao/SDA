@@ -48,7 +48,7 @@
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",
-      "buildNumber": "950"
+      "buildNumber": "951"
     },
     "android": {
       "package": "app.sda.mobile",
@@ -58,7 +58,7 @@
         "monochromeImage": "./assets/monochrome-icon.png",
         "backgroundColor": "#202223"
       },
-      "versionCode": 950
+      "versionCode": 951
     },
     "plugins": [
       "./plugins/with-ios-deployment",

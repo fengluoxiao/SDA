@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,readFileSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,sep,basename} from 'node:path';
 import {stageSharedExperiment,verifySharedExperiment,activeExperiment} from './stage-shared-render-experiment.mjs';
 const temporary=mkdtempSync(join(tmpdir(),'sda-shared-experiment-'));
 try {
@@ -26,6 +26,8 @@ try {
   assert.equal(fallback.measuredResponseVersion,3);
   assert.equal(fallback.sharedClarityVersion,1);
   assert.equal(manifest.sharedClarityVersion,1);
+  assert.equal(manifest.sharedReferenceVersion,1);assert.equal(fallback.sharedReferenceVersion,1);
+  assert.equal(activeExperiment().experiment.userFacingName,"SDA Spatial");
   assert.equal(fallback.sharedDepthVersion,1);
   assert.equal(manifest.processing.frontEarIsolation,false);
  }
@@ -37,6 +39,10 @@ try {
  assert.match(read('apps/mobile/android/app/build.gradle'),/stage-shared-render-experiment.mjs/);
  assert.match(read('scripts/build-native-renderer.mjs'),/stageSharedExperiment\(hrtfDestination\)/);
  assert.match(read('apps/desktop/package.json'),/"from": "native-renderer"/);
- assert.match(read('.github/workflows/release.yml'),/Build web \+ package Electron \(unsigned DMG\)[\s\S]*?node scripts\/build-native-renderer.mjs/);
+ assert.match(read('.github/workflows/release.yml'),/Build native components and package DMG[\s\S]*?node scripts\/build-native-renderer.mjs/);
  console.log('Shared experiment:4staged layouts byte-identical, fallback+triangle verified, corruption rejected; packaging entry contracts passed. Not4built artifacts.');
-} finally {rmSync(temporary,{recursive:true,force:true});}
+} finally {
+ const target=realpathSync(temporary),parent=realpathSync(tmpdir());
+ assert(target.startsWith(parent+sep)&&basename(target).startsWith('sda-shared-experiment-'),'Refuse cleanup outside the test temporary directory');
+ rmSync(target,{recursive:true,force:true});
+}

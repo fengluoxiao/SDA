@@ -110,14 +110,10 @@ class SdaModule : Module() {
         finally { SdaEngine.nativeFreeSpatialCues(prepared) }
     }
 
-    private fun savedReferenceRoom(): String {
-        val context = appContext.reactContext ?: error("no react context")
-        return context.getSharedPreferences("sda-rendering", 0).getString("roomId", "")
-            .orEmpty().takeIf { it == "genelec-8351b" }.orEmpty()
-    }
+    private fun savedReferenceRoom(): String = ""
     private data class RenderingSelection(val handle: Long, val generation: Long, val layout: String, val epoch: Long)
     private fun selectReferenceRoom(id: String, db: Double? = null) {
-        require(id.isEmpty() || id == "genelec-8351b") { "未知参考监听室" }
+        require(id.isEmpty()) { "使用 SDA Spatial 统一渲染" }
         val context = appContext.reactContext ?: error("no react context")
         val preferences = context.getSharedPreferences("sda-rendering", 0)
         val gainDb = db ?: spatialCueDb()
@@ -125,7 +121,7 @@ class SdaModule : Module() {
             check(preferences.edit().putString("hrtfSet", "dense").putFloat("hrtfWetWeight", 0f)
                 .putBoolean("direct", true).putBoolean("directional", true).putBoolean("nearField", false)
                 .putString("roomId", id).putFloat("spatialCueDb", gainDb.toFloat()).commit()) { "无法保存空间渲染设置" }
-            hrtfLoadStatus = if (id.isEmpty()) "SDA Spatial · 实际方向定位" else "8351B 参考监听室 · 参考仿真 · 实际方向定位"
+            hrtfLoadStatus = "SDA Spatial · 实际方向定位"
         }
         val snapshot = synchronized(nativeLock) {
             renderingSelectionEpoch += 1
@@ -228,7 +224,7 @@ class SdaModule : Module() {
         }
         val flavor = if (settings.getString("hrtfSet") == "dense-raw") "原始测量" else "校准资产"
         val wet = if (settings.getDouble("hrtfWetWeight") == 0.0) "无附加 HRTF 混响" else "HRTF 混响 ${settings.getDouble("hrtfWetWeight") }"
-        hrtfLoadStatus = if (settings.getString("roomId").isNotEmpty()) "8351B 参考监听室 · 参考仿真 · 实际方向定位" else "已加载 $responseName · $directionCount 方向 · $flavor · $wet"
+        hrtfLoadStatus = "SDA Spatial · $directionCount 方向 · 实际方向定位"
         if (startPipeline) startPreparedEngine(ptr, layout)
         ptr
     }
@@ -941,8 +937,7 @@ class SdaModule : Module() {
             }
         }
 
-        Function("rooms") { -> org.json.JSONArray().put(JSONObject().put("id", "genelec-8351b")
-            .put("name", "8351B 参考监听室").put("layout", activeLayout)).toString() }
+        Function("rooms") { -> "[]" }
 
         AsyncFunction("setRoom") { id: String -> selectReferenceRoom(id) }
 
