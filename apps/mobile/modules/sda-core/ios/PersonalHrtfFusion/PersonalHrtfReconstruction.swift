@@ -18,6 +18,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private var phase = Phase.idle
  private var cancelled = false
  private var lastTimestamp = -1.0
+ private var lastPoseTime = -1.0
  private var cameraPositions: [SIMD3<Float>] = []
  private let model: SCReconstructionManager
  private let motion = CMMotionManager()
@@ -82,16 +83,19 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
         CVPixelBufferGetWidth(depth.depthDataMap) <= 640,
         CVPixelBufferGetHeight(depth.depthDataMap) <= 640 else { return }
   lock.lock(); defer { lock.unlock() }
-  guard phase == .scanning, !cancelled, frame.timestamp - lastTimestamp >= 0.15 else { return }
+  guard phase == .scanning, !cancelled, frame.timestamp.isFinite, frame.timestamp > lastTimestamp else { return }
   lastTimestamp = frame.timestamp
   model.accumulate(depthBuffer:depth.depthDataMap,colorBuffer:frame.color,calibrationData:calibration)
  }
  func reconstructionManager(_ manager: SCReconstructionManager, didProcessWith metadata: SCAssimilatedFrameMetadata, statistics: SCReconstructionManagerStatistics) {
   lock.lock()
   guard phase == .scanning else { lock.unlock(); return }
-  let failed = metadata.result == .failed || statistics.consecutiveLostTrackingCount > 5
+  let failed = metadata.result == .failed
   let accepted = metadata.result == .succeeded || metadata.result == .poorTracking
-  if accepted {
+  // Keep coverage records bounded independently of the reconstruction cadence.
+  let now = ProcessInfo.processInfo.systemUptime
+  if accepted && now - lastPoseTime >= 0.15 {
+   lastPoseTime = now
    let p = simd_inverse(metadata.viewMatrix).columns.3
    if p.x.isFinite && p.y.isFinite && p.z.isFinite && cameraPositions.count < 600 {
     cameraPositions.append(SIMD3(p.x,p.y,p.z))
@@ -100,9 +104,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   let count = cameraPositions.count
   lock.unlock()
   if model.sdaSurfelCount > 500000 { fail("扫描点数达到本机处理上限，请收紧头部取景范围后重试"); return }
-  if failed { fail("跟踪丢失，请放慢扫描并重新采集；不会用猜测的耳廓替代"); return }
+  if failed { fail("连续 3 秒未能恢复跟踪，请重新采集；保持头部不动，让手机回到刚才能扫描的位置"); return }
   if count >= 600 { fail("扫描达到本机采集上限，请重新采集完整头耳覆盖"); return }
-  progress?(count,accepted ? "正在手机上实时配准头耳深度" : "请缓慢移动，保持与已扫描表面重叠")
+  progress?(count,accepted ? "正在手机上实时配准头耳深度" : "暂时失去跟踪：保持头部不动，将手机缓慢退回刚才的位置")
  }
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }
  func finish() {

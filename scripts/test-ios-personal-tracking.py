@@ -1,0 +1,18 @@
+"""Execute the native recovery gate; also test the reproducible upstream adapter."""
+from pathlib import Path
+import os,subprocess,tempfile,sys,hashlib
+root=Path(__file__).resolve().parents[1]
+with tempfile.TemporaryDirectory()as tmp:
+ exe=Path(tmp)/('tracking.exe'if os.name=='nt'else'tracking')
+ subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-I'+str(root/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative'),str(root/'scripts/test/personal-hrtf-tracking.cpp'),'-o',str(exe)],check=True)
+ subprocess.run([str(exe)],check=True)
+text=(root/'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/PersonalHrtfReconstruction.swift').read_text()
+assert 'timestamp - lastTimestamp >= 0.15'not in text
+assert 'frame.timestamp > lastTimestamp'in text
+assert 'now - lastPoseTime >= 0.15'in text
+assert 'consecutiveLostTrackingCount >'not in text
+patch=(root/'scripts/patch-ios-personal-scan-fusion.py').read_text()
+assert '_sdaTrackingRecovery.terminal(pbfMetadata.isMerged,'in patch
+assert 'terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking'in patch
+assert '_sdaTrackingRecovery.reset()'in patch
+print('PASS: native 6/15/30/60fps recovery, timeout, reset, invalid clock; full cadence and bounded records')

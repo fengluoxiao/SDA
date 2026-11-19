@@ -8,7 +8,7 @@ bash scripts/build-ios-personal-scan-fusion.sh "$out"
 module="$PWD/apps/mobile/modules/sda-core/ios"
 test ! -e "$module/StandardCyborgFusion.xcframework"
 cp -R "$out/StandardCyborgFusion.xcframework" "$module/StandardCyborgFusion.xcframework"
-python3 - "$out" "$module/Resources/licenses/standard-cyborg" <<'PY'
+python3 - "$out" "$module/Licenses/StandardCyborg" <<'PY'
 from pathlib import Path
 import sys,shutil,json,hashlib
 out,dest=map(Path,sys.argv[1:]);sources=list(out.glob('fusion-source.*'))

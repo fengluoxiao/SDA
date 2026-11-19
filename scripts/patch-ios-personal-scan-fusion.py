@@ -19,10 +19,11 @@ replace('header','/** The gravity vector of the current scan. */', '''/** SDA: m
 - (void)sdaResetWithCompletion:(nullable dispatch_block_t)completion NS_SWIFT_NAME(sdaReset(completion:));
 
 /** The gravity vector of the current scan. */''')
-replace('source','#import <iostream>','#import <iostream>\n#include <atomic>\n#include <mutex>')
+replace('source','#import <iostream>','#import <iostream>\n#include <atomic>\n#include <mutex>\n#include "SdaTrackingRecovery.hpp"')
 replace('source','    GravityEstimator _gravityEstimator;','''    GravityEstimator _gravityEstimator;
     std::mutex _sdaGravityMutex;
-    std::atomic<size_t> _sdaSurfelCount;''')
+    std::atomic<size_t> _sdaSurfelCount;
+    SdaTrackingRecovery _sdaTrackingRecovery;''')
 replace('source','        _wroteIntrinsicsToFile = NO;','        _wroteIntrinsicsToFile = NO;\n        _sdaSurfelCount.store(0, std::memory_order_relaxed);')
 replace('source','- (simd_float3)gravity\n{','''- (NSUInteger)sdaSurfelCount
 {
@@ -49,6 +50,13 @@ replace('source','    dispatch_async(_inputQueue, ^{\n        _inputQueue_stoppe
 replace('source','''                                                                                                        _inputQueue_statistics.consecutiveLostTrackingCount);
         
         if (_includesDepthBuffersInMetadata)''','''                                                                                                        _inputQueue_statistics.consecutiveLostTrackingCount);
+        // Upstream ends after 8 rejected frames (<0.3s at 30fps). Keep the
+        // exact ICP acceptance decision; only give rejected frames 3s to recover.
+        const bool terminalTracking = _sdaTrackingRecovery.terminal(pbfMetadata.isMerged,
+                                                                   NSProcessInfo.processInfo.systemUptime);
+        if (!pbfMetadata.isMerged) {
+            metadata.result = terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking;
+        }
         // Only the model queue reads the live vector. Stop on this frame;
         // at most one input depth frame can take the model past the quota.
         _sdaSurfelCount.store(_modelQueue_model->getSurfels().size(), std::memory_order_release);
@@ -66,8 +74,12 @@ replace('source','- (void)reset\n{','''- (void)reset
 {''')
 replace('source','            _modelQueue_model->reset();','''            _modelQueue_model->reset();
             _sdaSurfelCount.store(0, std::memory_order_release);
+            _sdaTrackingRecovery.reset();
             if (completion != nil) { dispatch_async(dispatch_get_main_queue(), completion); }''')
-record={}
+recovery=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaTrackingRecovery.hpp'
+recoveryTarget=root/Path(paths['source'][0]).parent/'SdaTrackingRecovery.hpp'
+recoveryTarget.write_bytes(recovery.read_bytes())
+record={str(recoveryTarget.relative_to(root)):hashlib.sha256(recovery.read_bytes()).hexdigest()}
 for key,(path,_)in paths.items():
  data=texts[key].encode();(root/path).write_bytes(data);record[path]=hashlib.sha256(data).hexdigest()
-(root.parent/'fusion-lifecycle-patch.json').write_text(json.dumps({'pinnedCommit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['atomic model-thread point-count snapshot','500000-point quota checked on producer/model queues with at most one depth frame overshoot','serialized gravity estimator access','model reset completion after memory release'],'sha256':record},indent=2)+'\n')
+(root.parent/'fusion-lifecycle-patch.json').write_text(json.dumps({'pinnedCommit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['atomic model-thread point-count snapshot','500000-point quota checked on producer/model queues with at most one depth frame overshoot','serialized gravity estimator access','3s monotonic recovery of rejected frames without relaxing ICP acceptance','model reset completion after memory release'],'sha256':record},indent=2)+'\n')

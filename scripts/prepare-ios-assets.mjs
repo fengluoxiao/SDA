@@ -31,10 +31,10 @@ cpSync(join(root,'crates/sda-native/tests/fixtures/ios-stereo-tones.m4a'),join(o
 cpSync(join(root,"packages/core/mpegh/fixtures/motion.mhas"),join(out,"ci-360ra.mhas"));
 
 // Preserve decoder and normative-asset notices in the installed iOS bundle.
-const vividNotices=join(out,"licenses/avs3a");
+const vividNotices=join(out,"../Licenses/avs3a");
 mkdirSync(vividNotices,{recursive:true});
 cpSync(join(root,"vendor/avs3a/LICENSE"),join(vividNotices,"LICENSE"));
 cpSync(join(root,"vendor/avs3a/assets/README.md"),join(vividNotices,"ASSET-NOTICES.md"));
 
-const referenceNotices=join(out,'licenses/genelec-reference');mkdirSync(referenceNotices,{recursive:true});
+const referenceNotices=join(out,'../Licenses/genelec-reference');mkdirSync(referenceNotices,{recursive:true});
 for (const name of ['NOTICE.md','manifest.json']) cpSync(join(root,'apps/native-renderer/assets/genelec-reference',name),join(referenceNotices,name));

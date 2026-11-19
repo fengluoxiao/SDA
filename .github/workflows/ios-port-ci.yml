@@ -82,6 +82,8 @@ jobs:
         run: python3 "$SDA_APPLE_TOOLCHAIN_SELECTOR" --xcode-version '${{ matrix.sdk }}' --ios-sdk-version '${{ matrix.sdk }}' --host-major 27 --record-dir ios-artifacts
       - name: Verify output callback recovery policy
         run: python3 scripts/test-ios-output-watchdog.py
+      - name: Verify personal scan tracking recovery
+        run: python3 scripts/test-ios-personal-tracking.py
       - name: Verify owned storage cleanup and legacy duplicate migration
         run: python3 scripts/test-ios-storage.py
       - name: Record build tools
@@ -189,7 +191,7 @@ jobs:
           printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; see build metadata for native startup tests; no installed-device or simulator acceptance. Requires signing for installation.\n' > ios-artifacts/README.txt
       - name: Verify personal measurement components in packaged IPA
         if: ${{ github.ref_name == 'codex/ios-personal-hrtf-local-20261119' }}
-        run: python3 scripts/verify-ios-personal-scan-package.py ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa
+        run: python3 scripts/verify-ios-personal-scan-package.py ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa --require-zip-notices
       - name: Verify lyrics UI in packaged IPA
         run: python3 scripts/verify-mobile-lyrics-package.py iOS ios-artifacts
       - name: Upload versioned package to requested draft release

@@ -23,8 +23,9 @@ with zipfile.ZipFile(ipa,'a',compression=zipfile.ZIP_DEFLATED)as z:
  for p in sorted(license_root.rglob('*')):
   if not p.is_file():continue
   name='Payload/SDA.app/SdaCoreAssets.bundle/Licenses/ZipArchive/'+p.relative_to(license_root).as_posix()
-  assert name not in z.namelist(),'Unexpected duplicate notice entry'
-  z.write(p,name)
+  if name in z.namelist():
+   assert z.read(name)==p.read_bytes(),'Conflicting existing dependency notice'
+  else:z.write(p,name)
 with zipfile.ZipFile(ipa)as z:
  for name,digest in original.items():assert hashlib.sha256(z.read(name)).hexdigest()==digest,name
 info.update(resourcePackagingCommit=os.environ['GITHUB_SHA'],baseIpaSha256=audit['sha256'],baseRunID=os.environ['SDA_BASE_RUN_ID'],resourceSupplementOnly=True)

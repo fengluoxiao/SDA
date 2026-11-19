@@ -14,7 +14,7 @@ with zipfile.ZipFile(ipa)as z:
     assert len(z.read(fw+'StandardCyborgFusion'))>100000
     metal=fw+'StandardCyborg_StandardCyborgFusion.bundle/default.metallib'
     assert len(z.read(metal))>1024
-    notice=next(p for p in names if p.endswith('/licenses/standard-cyborg/provenance.json'))
+    notice=app+'SdaCoreAssets.bundle/Licenses/StandardCyborg/provenance.json'
     provenance=json.loads(z.read(notice))
     assert provenance['commit']=='8c3bc698944ec41edaa6f627db15a6573e8e2af2'
     assert provenance['measurementOnly'] and not provenance['personalGenerationReady']

@@ -19,7 +19,7 @@ Pod::Spec.new do |s|
  s.header_mappings_dir = '.'
  s.public_header_files = 'SdaBridge.h', 'PersonalHrtfNative/SdaHrtfSolver.h', 'PersonalHrtfNative/SdaHrtfMesh.h', 'PersonalHrtfNative/SdaHrtfProject.h'
  s.vendored_frameworks = ['SdaNative.xcframework'] + (fusion ? ['StandardCyborgFusion.xcframework'] : [])
- s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-restored', 'Resources/rendering-presets.json', 'Resources/ios-experiment.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas', 'Resources/licenses', 'Licenses'] }
+ s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-restored', 'Resources/rendering-presets.json', 'Resources/ios-experiment.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas', 'Licenses'] }
  s.frameworks = 'AVFoundation', 'MediaPlayer', 'AudioToolbox', 'PHASE', 'CoreMotion', 'Network', 'Accelerate', 'CoreML', 'Metal', 'ARKit', 'SceneKit', 'CoreImage'
  s.libraries = 'c++', 'z'
  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17', 'GCC_ENABLE_CPP_EXCEPTIONS' => 'YES' }
