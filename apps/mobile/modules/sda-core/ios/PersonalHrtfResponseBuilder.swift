@@ -33,7 +33,7 @@ final class PersonalHrtfResponseBuilder {
   lock.lock(); let stopped = cancelled; lock.unlock()
   try require(!stopped,"已取消个人响应构建，未替换现有档案")
   let available = sda_hrtf_available_memory()
-  #if os(iOS)
+  #if os(iOS) && !targetEnvironment(simulator)
   try require(available > 0,"iPhone 当前没有可用的响应处理内存余量")
   #endif
   try require(available == 0 || available >= 128 * 1024 * 1024,"iPhone 当前可用内存不足以继续构建个人响应")

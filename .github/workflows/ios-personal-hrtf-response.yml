@@ -1,0 +1,30 @@
+name: iOS local HRTF response packaging
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+    paths:
+      - '.github/workflows/ios-personal-hrtf-response.yml'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfResponseBuilder.swift'
+      - 'scripts/check-ios-personal-hrtf-response.sh'
+      - 'scripts/test/personal-hrtf-response-builder.swift'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  response:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir response-build
+      - name: Check device Swift and run local response packaging in iOS Simulator
+        run: bash scripts/check-ios-personal-hrtf-response.sh response-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-personal-hrtf-response-evidence
+          path: |
+            response-build/*.json
+            response-build/*.log
+          retention-days: 7
