@@ -1,3 +1,4 @@
+# Register on the experiment branch; packaging runs only by manual dispatch.
 name: iPhone TrueDepth measurement IPA
 on:
   push:
