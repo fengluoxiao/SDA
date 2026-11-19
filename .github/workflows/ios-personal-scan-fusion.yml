@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/ios-personal-scan-fusion.yml'
       - 'scripts/build-ios-personal-scan-fusion.sh'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/**'
   workflow_dispatch:
 permissions:
   contents: read

@@ -3,6 +3,7 @@ set -euo pipefail
 out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
+adapter="$PWD/apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/PersonalHrtfReconstruction.swift"
 source="$(mktemp -d "$out/fusion-source.XXXXXX")"
 pin=8c3bc698944ec41edaa6f627db15a6573e8e2af2
 git init -q "$source"
@@ -34,3 +35,7 @@ cd "$source"
 xcodebuild archive -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$out/derived-device" -archivePath "$out/StandardCyborgFusion-ios.xcarchive" SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-ios-build.log" 2>&1 || { tail -100 "$out/fusion-ios-build.log"; exit 1; }
 find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' > "$out/fusion-products.txt"
 test -n "$(find "$out/StandardCyborgFusion-ios.xcarchive" -name StandardCyborgFusion.framework -print -quit)"
+
+frameworks="$out/derived-device/Build/Products/Release-iphoneos"
+sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$frameworks" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" "$adapter" 2>&1 | tee "$out/fusion-swift-typecheck.log"
