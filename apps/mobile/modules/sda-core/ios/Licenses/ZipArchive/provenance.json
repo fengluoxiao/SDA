@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/ZipArchive/ZipArchive",
+  "version": "2.6.0",
+  "commit": "df35718ea19a94e015b91dc4881dee028ce4cdba",
+  "files": {
+    "LICENSE.txt": "d02a57f131864af6c4c29de50f26d01098bed336277bbf1ae7b5d3d3c56d9f2d",
+    "SSZipArchive/minizip/LICENSE": "675181c03fc1302a1c8554c00f7be9bb420c5dbc9dcc2013433cec144413de03"
+  }
+}

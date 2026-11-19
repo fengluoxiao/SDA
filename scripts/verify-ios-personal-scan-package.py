@@ -22,6 +22,15 @@ with zipfile.ZipFile(ipa)as z:
     base=notice.rsplit('/',1)[0]+'/'
     for row in provenance['notices']:
         assert hashlib.sha256(z.read(base+row['path'])).hexdigest()==row['sha256']
+    zip_notice=app+'SdaCoreAssets.bundle/Licenses/ZipArchive/provenance.json'
+    zip_verified=False
+    if zip_notice in names:
+        dependency=json.loads(z.read(zip_notice))
+        assert dependency['commit']=='df35718ea19a94e015b91dc4881dee028ce4cdba'
+        for name,digest in dependency['files'].items():
+            assert hashlib.sha256(z.read(zip_notice.rsplit('/',1)[0]+'/'+name)).hexdigest()==digest
+        zip_verified=True
+    if '--require-zip-notices'in sys.argv:assert zip_verified,'Final package is missing ZipArchive notices'
     bundle=z.read(app+'main.jsbundle')
     assert '个人 HRTF'.encode()in bundle or b'personalHrtfAction'in bundle
     assert not any('/ci-stereo-tones.m4a'in p or '/ci-360ra.mhas'in p for p in names)
@@ -31,7 +40,7 @@ with zipfile.ZipFile(ipa)as z:
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
       'frontCameraPermission':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,
-      'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
+      'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))

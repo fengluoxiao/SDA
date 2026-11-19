@@ -1,0 +1,53 @@
+name: iPhone TrueDepth measurement IPA
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+    paths: ['.github/workflows/ios-personal-hrtf-package.yml']
+  workflow_dispatch:
+    inputs:
+      base_run_id:
+        description: Successful device package run to package
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Apple SDK for package audit
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir package-evidence
+      - name: Test resource-only IPA packaging
+        run: python3 scripts/test-ios-personal-scan-package.py
+      - name: Verify immutable native package input
+        uses: actions/github-script@v7
+        env:
+          BASE_RUN_ID: ${{ inputs.base_run_id }}
+        with:
+          script: |
+            const id=process.env.BASE_RUN_ID;
+            if(!/^[0-9]+$/.test(id))throw Error('Invalid base run ID');
+            const {data:run}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:Number(id)});
+            if(run.status!=='completed'||run.conclusion!=='success'||run.path!=='.github/workflows/ios-port-ci.yml'||run.head_branch!=='codex/ios-personal-hrtf-local-20261119')throw Error('Expected successful personal measurement device package');
+            core.exportVariable('SDA_BASE_SOURCE_COMMIT',run.head_sha);
+            core.exportVariable('SDA_BASE_RUN_ID',id);
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.base_run_id }}
+          pattern: SDA-iOS-*
+          merge-multiple: true
+          path: base-package
+      - name: Complete notices and preserve native package bytes
+        run: python3 scripts/supplement-ios-personal-scan-notices.py base-package personal-ipa
+      - name: Audit final iPhone IPA
+        run: python3 scripts/verify-ios-personal-scan-package.py personal-ipa/*.ipa --require-zip-notices
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SDA-iOS-TrueDepth-measurement
+          path: personal-ipa/
+          retention-days: 14
