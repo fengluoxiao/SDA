@@ -1,6 +1,8 @@
 import Foundation
 import Metal
 import CoreVideo
+import CoreML
+import Vision
 import ImageIO
 import simd
 import StandardCyborgFusion
@@ -53,16 +55,20 @@ struct FusionResourcesTest {
   let prefix = try file.read(upToCount:512) ?? Data()
   guard String(data:prefix.prefix(64),encoding:.ascii)?.contains("format binary_little_endian 1.0") == true else { throw Failure.invalid("Poisson mesh lost binary Float32 export") }
   guard let mesh = SCMesh(plyPath:output.path,jpegPath:""), mesh.vertexCount > 80000, mesh.faceCount > 160000 else { throw Failure.invalid("Actual Poisson surface is empty") }
+  print("SDA Poisson mesh readback: vertices=\(mesh.vertexCount), faces=\(mesh.faceCount)")
   guard mesh.texCoordData.isEmpty else { throw Failure.invalid("Absent UVs fabricated attribute bytes") }
+  print("SDA testing absent optional attributes")
   let minimal = folder.appendingPathComponent("no-optional-attributes.ply")
   let minimalHeader = "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 4\nproperty list uchar int vertex_indices\nend_header\n"
   try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:minimal,atomically:true,encoding:.ascii)
   guard let sparse = SCMesh(plyPath:minimal.path,jpegPath:""), sparse.vertexCount == 4, sparse.faceCount == 4,
         sparse.normalData.isEmpty, sparse.texCoordData.isEmpty else { throw Failure.invalid("Absent optional mesh attributes were read out of bounds") }
   guard SCMesh(plyPath:folder.appendingPathComponent("missing.ply").path,jpegPath:"") == nil else { throw Failure.invalid("Missing PLY was accepted") }
+  print("SDA testing truncated PLY rejection")
   let truncated = folder.appendingPathComponent("truncated.ply")
   try minimalHeader.write(to:truncated,atomically:true,encoding:.ascii)
   guard SCMesh(plyPath:truncated.path,jpegPath:"") == nil else { throw Failure.invalid("Truncated PLY was accepted") }
+  print("SDA testing non-triangle rejection")
   let badFace = folder.appendingPathComponent("two-index-face.ply")
   try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n2 0 2\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:badFace,atomically:true,encoding:.ascii)
   guard SCMesh(plyPath:badFace.path,jpegPath:"") == nil else { throw Failure.invalid("Non-triangle PLY was accepted") }
@@ -70,6 +76,19 @@ struct FusionResourcesTest {
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
+  print("SDA loading offline ear detector")
+  guard let bundle = SCFusionBundle.fusionBundle(), let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else { throw Failure.invalid("Compiled ear detector absent") }
+  let configuration = MLModelConfiguration(); configuration.computeUnits = .all
+  let visionModel = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:configuration))
+  var colorOptional: CVPixelBuffer?
+  guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,nil,&colorOptional) == kCVReturnSuccess,
+        let color = colorOptional else { throw Failure.invalid("Neutral inference buffer unavailable") }
+  CVPixelBufferLockBaseAddress(color,[])
+  memset(CVPixelBufferGetBaseAddress(color)!,0,CVPixelBufferGetDataSize(color))
+  CVPixelBufferUnlockBaseAddress(color,[])
+  let request = VNCoreMLRequest(model:visionModel); request.imageCropAndScaleOption = .scaleFill
+  try VNImageRequestHandler(cvPixelBuffer:color,orientation:.up).perform([request])
+  print("SDA offline ear detector inference completed on neutral input")
   var state = PersonalHrtfCaptureCoverage.State()
   let leftEarPoint = SIMD3<Float>(0.08,0,0), rightEarPoint = SIMD3<Float>(-0.08,0,0)
   state.observe(head:true,left:leftEarPoint,right:nil)
@@ -104,7 +123,7 @@ struct FusionResourcesTest {
   let projection = simd_float4x4(columns:(SIMD4(-2,0,0,0),SIMD4(0,-2,0,0),SIMD4(0,0,-1.02,-1),SIMD4(0,0,-0.202,0)))
   guard let world = PersonalHrtfCaptureCoverage.modelPoint(CGPoint(x:0.8,y:0.7),depth:0.3,orientation:.up,cameraToModel:matrix_identity_float4x4,projection:projection),
         abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
-  return ["stableRegionEvidencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
+  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
  }
  static func main() throws {
   installMeshCrashTrace()

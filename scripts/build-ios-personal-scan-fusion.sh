@@ -37,6 +37,9 @@ text=text[:begin]+segment+text[end:];path.write_text(text)
 PY
 if [ "${SDA_FUSION_DEVICE_ONLY:-0}" != "1" ]; then
 mkdir -p "$out/poisson-host"
+xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$source/CppDependencies/happly/include" "$PWD/scripts/test/personal-hrtf-ply-reader.cpp" -o "$out/ply-reader-test" > "$out/fusion-ply-reader-compile.log" 2>&1
+ASAN_OPTIONS=abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/ply-reader-test" > "$out/fusion-ply-reader-runtime.log" 2>&1 || { cat "$out/fusion-ply-reader-runtime.log"; exit 1; }
+
 xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer "-DSDA_PLY_SOURCE=\"$source/CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp\"" -I "$source/CppDependencies/PoissonRecon/Sources/include" "$PWD/scripts/test/personal-hrtf-ply-numeric.cpp" -o "$out/poisson-numeric-test" > "$out/fusion-ply-numeric-compile.log" 2>&1
 ASAN_OPTIONS=abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/poisson-numeric-test" > "$out/fusion-ply-numeric-runtime.log" 2>&1 || { cat "$out/fusion-ply-numeric-runtime.log"; exit 1; }
 

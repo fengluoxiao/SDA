@@ -60,7 +60,7 @@ final class PersonalHeadScanController: UIViewController {
   preview.layer.addSublayer(camera.previewLayer)
   message.textColor = .white; message.numberOfLines = 0; message.textAlignment = .center
   message.font = .preferredFont(forTextStyle:.body)
-  message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。需要他人协助：移开遮耳头发，保持头部和表情稳定；缓慢移动手机，保持相邻画面重叠，覆盖两耳、后脑、头顶和下方。保持约 25–60 厘米距离。"
+  message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。请他人协助：先正面对准脸部建立左右耳参考，再缓慢移动手机，覆盖两耳、后脑、头顶和下方。移开遮耳头发，头部和表情保持稳定，相邻画面保持重叠，距离约 25–60 厘米。"
   countLabel.textColor = .white; countLabel.textAlignment = .center; countLabel.numberOfLines = 0
   coverageLabel.textColor = .white; coverageLabel.textAlignment = .center; coverageLabel.numberOfLines = 0
   coverageLabel.font = .preferredFont(forTextStyle:.footnote)

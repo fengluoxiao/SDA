@@ -22,6 +22,7 @@ paths.update({'meshGeometry':('StandardCyborgFusion/Sources/StandardCyborgFusion
 paths.update({'meshFileIO':('StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SCMesh+FileIO.mm','549c91181745f71ea9cf495c504d0fda673bc3456c9d36b42934d539309833c7')})
 paths.update({'meshFileHeader':('StandardCyborgFusion/Sources/include/StandardCyborgFusion/SCMesh+FileIO.h','573591298053a8f72d2f9090a5ce80dc46e83300a3e6c067855ef0c6664fe0d3')})
 paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryFileIO_PLY.cpp','23a884d3f2fbd86e212e28a4182568ccc772d5e824cb6ed92e79052f38da33c4')})
+paths.update({'happly':('CppDependencies/happly/include/happly.h','f6bb34ad0102a3f12ef3389b4221af4020c5aed0938bf88b56ec9b00e13c4c35')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -207,6 +208,31 @@ replace('geometryPLY','''        for (auto faceList : faceData) {
             faces.push_back(Face3({faceList[0], faceList[1], faceList[2]}));''','''        for (auto faceList : faceData) {
             if (faceList.size() != 3) return false;
             faces.push_back(Face3({faceList[0], faceList[1], faceList[2]}));''')
+
+# Reject incomplete scalar/list records before indexing or resizing. Binary list
+# lengths are bounded before allocating; empty lists do not dereference front().
+assert texts['happly'].count("tokens[currEntry]") == 9
+texts['happly']=texts['happly'].replace("tokens[currEntry]","tokens.at(currEntry)")
+assert texts['happly'].count("iss >> count;") == 4
+texts['happly']=texts['happly'].replace("iss >> count;","if (!(iss >> count)) throw std::runtime_error(\"PLY parser: invalid element/list count\");")
+assert texts['happly'].count("iss >> intVal;") == 4
+texts['happly']=texts['happly'].replace("iss >> intVal;","if (!(iss >> intVal)) throw std::runtime_error(\"PLY parser: invalid integer value\");")
+assert texts['happly'].count("iss >> data.back();") == 1
+texts['happly']=texts['happly'].replace("iss >> data.back();","if (!(iss >> data.back())) throw std::runtime_error(\"PLY parser: invalid scalar value\");")
+assert texts['happly'].count("iss >> data.back()[iCount];") == 1
+texts['happly']=texts['happly'].replace("iss >> data.back()[iCount];","if (!(iss >> data.back()[iCount])) throw std::runtime_error(\"PLY parser: invalid list value\");")
+assert texts['happly'].count('    currEntry++;\n\n    data.emplace_back();') == 1
+texts['happly']=texts['happly'].replace('    currEntry++;\n\n    data.emplace_back();','    currEntry++;\n    if (count > tokens.size()-currEntry) throw std::runtime_error("PLY parser: incomplete list");\n\n    data.emplace_back();')
+assert texts['happly'].count('  currEntry++;\n\n  std::vector<') == 2
+texts['happly']=texts['happly'].replace('  currEntry++;\n\n  std::vector<','  currEntry++;\n  if (count > tokens.size()-currEntry) throw std::runtime_error("PLY parser: incomplete list");\n\n  std::vector<')
+assert texts['happly'].count("    stream.read((char*)&data.back(), sizeof(T));") == 2
+texts['happly']=texts['happly'].replace("    stream.read((char*)&data.back(), sizeof(T));","    stream.read((char*)&data.back(), sizeof(T));\n    if (!stream) throw std::runtime_error(\"PLY parser: truncated binary scalar\");")
+assert texts['happly'].count("    stream.read(((char*)&count), listCountBytes);") == 2
+texts['happly']=texts['happly'].replace("    stream.read(((char*)&count), listCountBytes);","    stream.read(((char*)&count), listCountBytes);\n    if (!stream) throw std::runtime_error(\"PLY parser: truncated binary list count\");")
+assert texts['happly'].count("    data.back().resize(count);\n    stream.read((char*)&data.back().front(), count * sizeof(T));") == 2
+texts['happly']=texts['happly'].replace("    data.back().resize(count);\n    stream.read((char*)&data.back().front(), count * sizeof(T));","    if (count > 1048576) throw std::runtime_error(\"PLY parser: binary list length exceeds local bound\");\n    data.back().resize(count);\n    if (count && !stream.read((char*)data.back().data(), count * sizeof(T))) throw std::runtime_error(\"PLY parser: truncated binary list\");")
+assert texts['happly'].count("        std::getline(inStream, line);") == 1
+texts['happly']=texts['happly'].replace("        std::getline(inStream, line);","        if (!std::getline(inStream, line)) throw std::runtime_error(\"PLY parser: truncated ASCII record\");")
 
 # Preserve operation state/cancellation and report actual solver/publication failures.
 for key in ['meshHeader','poissonHeader']:

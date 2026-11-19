@@ -24,9 +24,13 @@ enum PersonalHrtfMeshCheck {
   let needed = UInt64(header.vertices)*160 + UInt64(header.faces)*240 + UInt64(supportHeader.vertices)*64
   let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
   guard needed <= budget else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(budget/1024/1024) MiB；请关闭其他应用后重试") }
-  guard let mesh = SCMesh(plyPath:meshURL.path,jpegPath:""),
-        let support = SCPointCloud(plyPath:supportURL.path),
-        (4...1000000).contains(mesh.vertexCount), (4...2000000).contains(mesh.faceCount),
+  guard let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"") else {
+   throw PersonalHrtfError.message("候选网格无法读取，重建文件可能不完整或格式无效，请重新采集")
+  }
+  guard let support = SCPointCloud(plyPath:supportURL.path) else {
+   throw PersonalHrtfError.message("实测深度文件无法读取，请重新采集")
+  }
+  guard (4...1000000).contains(mesh.vertexCount), (4...2000000).contains(mesh.faceCount),
         (4...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(support.pointCount) else {
    throw PersonalHrtfError.message("候选网格或测量点数超出本机处理范围")
   }
