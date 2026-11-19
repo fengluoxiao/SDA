@@ -1457,34 +1457,20 @@ int NC_GetLine
 	string chterms[NTRM]	
 )
 {
-	int ii, len, nfi, ss, nn;
 
-	if(fgets(chinpline, SIZE, arg_inputFile_)==NULL) {
-	  runtime->quiet << "\nError parsing the input file\n";
-	  fail_exit(-1);
-	}
-	string inpline(chinpline);
+ if(!fgets(chinpline,SIZE,arg_inputFile_))throw Failure(1,"Unexpected end of acoustic input");
+ std::string line(chinpline);
+ if(line.size()>=SIZE-1 && line.back()!='\n')throw Failure(1,"Acoustic input line exceeds bound");
+ for(int i=0;i<NTRM;++i)chterms[i].clear();
+ std::istringstream tokens(line);tokens.imbue(std::locale::classic());
+ std::string token;int count=0;
+ while(tokens>>token){ checkpoint(); 
+  if(token.find('#')!=std::string::npos)break;
+  if(count==NTRM)throw Failure(1,"Too many acoustic input fields");
+  chterms[count++]=token;
+ }
+ return count;
 
-	nn=0,ss=0,ii=0;
-	len = (int)inpline.length()-1;
-	while (nn < len)
-	{ checkpoint(); 
-		nn = int(inpline.find(' ',ss));
-
-		if (nn==-1)
-		{
-			nn = len;
-		}
-		if (nn-ss > 0)
-		{
-			chterms[ii++] = inpline.substr(ss, nn-ss);
-		}
-		ss = nn+1;
-	}
-
-	nfi = int(chterms[0].find("#",0));
-	if(nfi >= 0) ii = 0;
-	return(ii);
 }
 
 
@@ -1494,21 +1480,12 @@ int NC_String2Integer
 	string Ori_Str		
 )
 {
-	int j = 0;
-	char chwk[15];
-	string chnu = " ";
 
-	if((int)Ori_Str.length() > 15)
-	{
-		runtime->quiet << "Length of the string > n_chwk!" << endl;
-		runtime->quiet << "The string: " << Ori_Str << endl;
-		fail_exit(1);
-	}
+ char *end=nullptr;errno=0;const char *text=Ori_Str.c_str();
+ long value=std::strtol(text,&end,10);
+ if(errno==ERANGE || end==text || *end!='\0' || value<std::numeric_limits<int>::min() || value>std::numeric_limits<int>::max())throw Failure(1,"Invalid bounded acoustic integer");
+ return int(value);
 
-	for(j=0; j<15; j++) chwk[j] = chnu[0];
-	Ori_Str.copy(chwk, 15, 0);
-
-	return(atoi(chwk));
 }
 
 
@@ -1518,18 +1495,12 @@ double NC_String2Double
 	string Ori_Str		
 )
 {
-  
 
-	if((int)Ori_Str.length() > 25)
-	{
-		runtime->quiet << "Length of the string > n_chwk!" << endl;
-		runtime->quiet << "The string: " << Ori_Str << endl;
-		fail_exit(1);
-	}
+ char *end=nullptr;errno=0;const char *text=Ori_Str.c_str();
+ double value=std::strtod(text,&end);
+ if(errno==ERANGE || end==text || *end!='\0' || !std::isfinite(value))throw Failure(1,"Invalid finite acoustic number");
+ return value;
 
-	return atof(Ori_Str.c_str());
-	
-	
 }
 
 

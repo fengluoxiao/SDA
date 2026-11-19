@@ -103,6 +103,43 @@ def rename_function(text,function,mapping):
         for old,new in mapping.items():chunk=re.sub(r'\b'+old+r'\b',new,chunk)
         return text[:m.start()]+chunk+text[end:]
     raise AssertionError(function)
+def replace_body(text,function,body):
+    match=re.search(r'\b'+function+r'\s*\([^;{}]*\)\s*\{',text)
+    assert match,function
+    begin=match.end();end=begin;depth=1
+    while depth:
+        if text[end]=='{':depth+=1
+        elif text[end]=='}':depth-=1
+        end+=1
+    return text[:begin]+'\n'+body+'\n'+text[end-1:]
+# Upstream assumes a Windows text stream strips CR from CRLF. Parse bounded
+# whitespace-separated tokens explicitly for iOS/POSIX, including tabs and EOF.
+files['NC_Input.cpp']=replace_body(files['NC_Input.cpp'],'NC_GetLine',r"""
+ if(!fgets(chinpline,SIZE,inputFile_))throw Failure(1,"Unexpected end of acoustic input");
+ std::string line(chinpline);
+ if(line.size()>=SIZE-1 && line.back()!='\n')throw Failure(1,"Acoustic input line exceeds bound");
+ for(int i=0;i<NTRM;++i)chterms[i].clear();
+ std::istringstream tokens(line);tokens.imbue(std::locale::classic());
+ std::string token;int count=0;
+ while(tokens>>token){
+  if(token.find('#')!=std::string::npos)break;
+  if(count==NTRM)throw Failure(1,"Too many acoustic input fields");
+  chterms[count++]=token;
+ }
+ return count;
+""")
+files['NC_Input.cpp']=replace_body(files['NC_Input.cpp'],'NC_String2Integer',r"""
+ char *end=nullptr;errno=0;const char *text=Ori_Str.c_str();
+ long value=std::strtol(text,&end,10);
+ if(errno==ERANGE || end==text || *end!='\0' || value<std::numeric_limits<int>::min() || value>std::numeric_limits<int>::max())throw Failure(1,"Invalid bounded acoustic integer");
+ return int(value);
+""")
+files['NC_Input.cpp']=replace_body(files['NC_Input.cpp'],'NC_String2Double',r"""
+ char *end=nullptr;errno=0;const char *text=Ori_Str.c_str();
+ double value=std::strtod(text,&end);
+ if(errno==ERANGE || end==text || *end!='\0' || !std::isfinite(value))throw Failure(1,"Invalid finite acoustic number");
+ return value;
+""")
 # Rename parameters that shadow former globals before qualifying global uses.
 # Keep C++ lexical shadowing intact (including NC_GetLine's temporary files).
 for filename,text in files.items():
