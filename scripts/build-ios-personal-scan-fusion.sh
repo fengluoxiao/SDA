@@ -4,7 +4,8 @@ out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
-adapter="$PWD/apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/PersonalHrtfReconstruction.swift"
+stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
+probe="$PWD/scripts/test/personal-hrtf-fusion-resources.swift"
 source="$(mktemp -d "$out/fusion-source.XXXXXX")"
 pin=8c3bc698944ec41edaa6f627db15a6573e8e2af2
 git init -q "$source"
@@ -47,29 +48,24 @@ xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardC
 # public module and resource bundle. Stage both explicitly for iOS consumers.
 framework="$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks/StandardCyborgFusion.framework"
 test -f "$framework/StandardCyborgFusion"
-python3 - "$source" "$framework" "$out/derived-device" <<'PY'
-from pathlib import Path
-import sys,shutil,plistlib
-source,framework,derived=map(Path,sys.argv[1:])
-# PointCloudIO asks NSBundle for this exact identifier and interpolates the
-# short version with fprintf(%s). SwiftPM does not supply these product keys.
-# Populate them so a local measured-support write cannot receive a nil version.
-info=framework/'Info.plist'
-with info.open('rb')as f:metadata=plistlib.load(f)
-metadata.update(CFBundleIdentifier='com.standardcyborg.StandardCyborgFusion',CFBundleShortVersionString='1.0.0',CFBundleVersion='1')
-with info.open('wb')as f:plistlib.dump(metadata,f)
-headers=framework/'Headers';headers.mkdir(exist_ok=True)
-for p in (source/'StandardCyborgFusion/Sources/include/StandardCyborgFusion').glob('*.h'):
-    shutil.copy2(p,headers/p.name)
-public=['SCFusionBundle.h','SCReconstructionManager.h','SCReconstructionManagerParameters.h','SCAssimilatedFrameMetadata.h','SCPointCloud.h','SCPointCloud+FileIO.h','SCMesh.h','SCMesh+FileIO.h','SCMeshingOperation.h']
-(headers/'SDAFusionPublic.h').write_text('\n'.join('#import <StandardCyborgFusion/'+p+'>'for p in public)+'\n')
-modules=framework/'Modules';modules.mkdir(exist_ok=True)
-(modules/'module.modulemap').write_text('framework module StandardCyborgFusion { umbrella header "SDAFusionPublic.h" export * }\n')
-bundles=[p for p in derived.rglob('StandardCyborg_StandardCyborgFusion.bundle')if (p/'default.metallib').is_file()]
-assert bundles,'Compiled TrueDepth Metal resource bundle is missing'
-shutil.copytree(bundles[0],framework/bundles[0].name,dirs_exist_ok=True)
-assert (framework/'StandardCyborg_StandardCyborgFusion.bundle/default.metallib').stat().st_size>1024
-PY
+python3 "$stage" "$source" "$framework" "$out/derived-device"
 find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' -o -name '*.metallib' -o -name '*.modulemap' > "$out/fusion-products.txt"
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
 xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios"/PersonalHrtfFusion/*.swift 2>&1 | tee "$out/fusion-swift-typecheck.log"
+
+# Exercise framework/resource discovery in an actual iOS Simulator process.
+# A runner without a Metal GPU reports that limitation explicitly in the JSON;
+# it never substitutes a host-side camera or synthetic ear scan.
+xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath "$out/derived-simulator" -archivePath "$out/StandardCyborgFusion-simulator.xcarchive" ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-simulator-build.log" 2>&1 || { tail -100 "$out/fusion-simulator-build.log"; exit 1; }
+sim_products="$out/StandardCyborgFusion-simulator.xcarchive/Products/Library/Frameworks"
+python3 "$stage" "$source" "$sim_products/StandardCyborgFusion.framework" "$out/derived-simulator"
+codesign --force --sign - "$sim_products/StandardCyborgFusion.framework"
+xcrun otool -L "$sim_products/StandardCyborgFusion.framework/StandardCyborgFusion" > "$out/fusion-linked-libraries.txt"
+sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+codesign --force --sign - "$out/fusion-resource-test"
+xcrun simctl list devices available -j > "$out/fusion-simulators.json"
+udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/fusion-simulators.json")"
+xcrun simctl boot "$udid" || true
+xcrun simctl bootstatus "$udid" -b
+xcrun simctl spawn "$udid" "$out/fusion-resource-test" | tee "$out/fusion-resource-result.json"
