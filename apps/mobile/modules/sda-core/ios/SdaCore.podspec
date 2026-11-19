@@ -14,7 +14,10 @@ Pod::Spec.new do |s|
  fusion = File.exist?(File.join(__dir__, 'StandardCyborgFusion.xcframework'))
  s.source_files = ['*.{h,swift}', 'PersonalHrtfNative/**/*.{h,hpp,cpp}'] + (fusion ? ['PersonalHrtfFusion/*.swift'] : [])
  s.preserve_paths = 'PersonalHrtfNative/Generated/**/*.inc', 'PersonalHrtfNative/NOTICE.txt'
- s.public_header_files = 'SdaBridge.h'
+ # The Swift umbrella must resolve the same nested C ABI headers as direct
+ # SDK typechecks; keep their paths and make them part of the public module.
+ s.header_mappings_dir = '.'
+ s.public_header_files = 'SdaBridge.h', 'PersonalHrtfNative/SdaHrtfSolver.h', 'PersonalHrtfNative/SdaHrtfMesh.h', 'PersonalHrtfNative/SdaHrtfProject.h'
  s.vendored_frameworks = ['SdaNative.xcframework'] + (fusion ? ['StandardCyborgFusion.xcframework'] : [])
  s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-restored', 'Resources/rendering-presets.json', 'Resources/ios-experiment.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas', 'Resources/licenses', 'Licenses'] }
  s.frameworks = 'AVFoundation', 'MediaPlayer', 'AudioToolbox', 'PHASE', 'CoreMotion', 'Network', 'Accelerate', 'CoreML', 'Metal', 'ARKit', 'SceneKit', 'CoreImage'
