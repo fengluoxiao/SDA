@@ -17,6 +17,7 @@ struct PersonalHeadMeshCandidate {
 }
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }
+ var captureReadiness: ((Bool, String) -> Void)? { get set }
  var captureLimit: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
  func accumulate(_ frame: PersonalHeadDepthFrame)
@@ -24,6 +25,7 @@ protocol PersonalHeadReconstructor: AnyObject {
  func cancel()
 }
 extension PersonalHeadReconstructor {
+ var captureReadiness: ((Bool, String) -> Void)? { get { nil } set {} }
  var captureLimit: ((Int, String) -> Void)? { get { nil } set {} }
 }
 // Front TrueDepth frames go straight to the on-device reconstruction engine.
@@ -39,7 +41,7 @@ final class PersonalHeadScanController: UIViewController {
  private let reconstruction: PersonalHeadReconstructor
  private let camera = PersonalHeadDepthCapture()
  private let preview = UIView(frame:.zero)
- private let message = UILabel(), countLabel = UILabel()
+ private let message = UILabel(), countLabel = UILabel(), coverageLabel = UILabel()
  private let finishButton = UIButton(type:.system)
  private let frameLock = NSLock()
  private var acceptingFrames = false // protected by frameLock
@@ -60,11 +62,14 @@ final class PersonalHeadScanController: UIViewController {
   message.font = .preferredFont(forTextStyle:.body)
   message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。需要他人协助：移开遮耳头发，保持头部和表情稳定；缓慢移动手机，保持相邻画面重叠，覆盖两耳、后脑、头顶和下方。保持约 25–60 厘米距离。"
   countLabel.textColor = .white; countLabel.textAlignment = .center; countLabel.numberOfLines = 0
+  coverageLabel.textColor = .white; coverageLabel.textAlignment = .center; coverageLabel.numberOfLines = 0
+  coverageLabel.font = .preferredFont(forTextStyle:.footnote)
+  coverageLabel.text = "头部：待采集 · 左耳：待采集 · 右耳：待采集\n区域识别不代表耳廓精度合格；仍需覆盖后脑和头顶"
   finishButton.setTitle("完成采集，在本机处理",for:.normal); finishButton.isEnabled = false
   finishButton.addTarget(self,action:#selector(finishScan),for:.touchUpInside)
   let cancel = UIButton(type:.system); cancel.setTitle("取消并删除",for:.normal)
   cancel.addTarget(self,action:#selector(cancelScan),for:.touchUpInside)
-  let stack = UIStackView(arrangedSubviews:[message,countLabel,finishButton,cancel]); stack.axis = .vertical; stack.spacing = 14
+  let stack = UIStackView(arrangedSubviews:[message,countLabel,coverageLabel,finishButton,cancel]); stack.axis = .vertical; stack.spacing = 14
   stack.backgroundColor = UIColor.black.withAlphaComponent(0.65); stack.isLayoutMarginsRelativeArrangement = true
   stack.layoutMargins = UIEdgeInsets(top:16,left:18,bottom:12,right:18); stack.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(stack)
   NSLayoutConstraint.activate([
@@ -79,8 +84,15 @@ final class PersonalHeadScanController: UIViewController {
    DispatchQueue.main.async {
     guard let self, !self.finished, !self.capturePaused || self.processing else { return }
     self.countLabel.text = "已配准 \(count) 帧 · \(text)"
+
+   }
+  }
+  reconstruction.captureReadiness = { [weak self] ready,text in
+   DispatchQueue.main.async {
+    guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
+    self.coverageLabel.text = text + "\n区域识别不代表耳廓精度合格；仍需覆盖后脑和头顶"
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
-    self.finishButton.isEnabled = scanning && !self.processing && count >= 72
+    self.finishButton.isEnabled = scanning && ready
    }
   }
   reconstruction.captureLimit = { [weak self] count,text in
@@ -136,7 +148,7 @@ final class PersonalHeadScanController: UIViewController {
  }
  private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   guard !finished else { return }; finished = true; permissionCancelled = true
-  stopFrames(); reconstruction.progress = nil; reconstruction.captureLimit = nil; UIApplication.shared.isIdleTimerDisabled = false
+  stopFrames(); reconstruction.progress = nil; reconstruction.captureLimit = nil; reconstruction.captureReadiness = nil; UIApplication.shared.isIdleTimerDisabled = false
   let answer: Result<PersonalHeadMeshCandidate,Error>
   if let reason {
    if case .success(let candidate) = result { try? FileManager.default.removeItem(at:candidate.directory) }

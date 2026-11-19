@@ -8,6 +8,13 @@ paths={
 paths.update({
  'fusionHeader':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/SurfelFusion.hpp','6d29ab53436844da86d57035b47c3f6c183569ad7491a110194e5bc81a34779c'),
  'fusionSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/SurfelFusion.cpp','e43dd7b8ab2ada15059edbafb9ea1cf09e546c6fbceffa52e158c0311501a28e')})
+paths.update({
+ 'meshHeader':('StandardCyborgFusion/Sources/include/StandardCyborgFusion/SCMeshingOperation.h','6bd85770a10690a591c4e4e67a16d5c36a5764a607d115ce3405811e3256abac'),
+ 'meshSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SCMeshingOperation.mm','e64ac9b0ee5ce62cec5e6f7fbfb71cfc14b8883ccc53b0a5eb85aaaf0a9fc740'),
+ 'poissonHeader':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/MeshingOperation.h','08b13e1113358ced36c341a8132c940dd6f997d07c4a20d673ada72424ab18b2'),
+ 'poissonSource':('CppDependencies/PoissonRecon/Sources/src/MeshingOperation.mm','e1c8920d10b74a7395b316b1162c99598b1fc94c830de6d32ad79b7c6937873e'),
+})
+paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusion/IO/PointCloudIO_PLY.mm','b6d3e5febf75beb4eef50315986af30a05d8102d1ebae62461095bb19f7e9b64')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -103,6 +110,52 @@ replace('source','            _modelQueue_model->reset();','''            _model
             _sdaSurfelCount.store(0, std::memory_order_release);
             _sdaTrackingRecovery.reset();
             if (completion != nil) { dispatch_async(dispatch_get_main_queue(), completion); }''')
+
+
+# Surfel normals encode a small metric radius. Four decimal places can erase
+# every component; preserve Float32 precision and reject truncated numeric rows.
+replace('pointCloudPLY','#define PLY_LINE_LENGTH 128','#define PLY_LINE_LENGTH 512')
+replace('pointCloudPLY','else if (sscanf(line, "%f %f %f %f %f %f %f %f %f %f", &x, &y, &z, &nx, &ny, &nz, &r, &g, &b, &surfelRadius)) {','else if (sscanf(line, "%f %f %f %f %f %f %f %f %f %f", &x, &y, &z, &nx, &ny, &nz, &r, &g, &b, &surfelRadius) == 10) {')
+replace('pointCloudPLY','            float scaleFactor = (normalizeNormals ? 1.0 : surfelRadius) / normalMagnitude;', '''            if (!std::isfinite(normalMagnitude) || normalMagnitude <= 0 || !std::isfinite(surfelRadius) || surfelRadius <= 0 || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                fclose(fileHandle); return false;
+            }
+            float scaleFactor = (normalizeNormals ? 1.0 : surfelRadius) / normalMagnitude;''')
+replace('pointCloudPLY','%.4f %.4f %.4f %.4f %.4f %.4f %d %d %d %f','%.9g %.9g %.9g %.9g %.9g %.9g %d %d %d %.9g')
+replace('pointCloudPLY','''    fclose(file);
+    
+    return true;
+}''','''    const bool complete = ferror(file) == 0;
+    const bool closed = fclose(file) == 0;
+    return complete && closed;
+}''')
+
+# Preserve operation state/cancellation and report actual solver/publication failures.
+for key in ['meshHeader','poissonHeader']:
+ replace(key,'@interface '+('SCMeshingOperation' if key=='meshHeader' else 'MeshingOperation')+' : NSOperation',
+              '@interface '+('SCMeshingOperation' if key=='meshHeader' else 'MeshingOperation')+' : NSOperation\n@property (atomic, readonly, nullable) NSError *sdaError;'.replace('\\n','\n'))
+replace('meshSource','- (void)main\n{','- (NSError *)sdaError { return _operation.sdaError; }\n\n- (void)main\n{')
+replace('meshSource','    [_operation cancel];','    [super cancel];\n    [_operation cancel];')
+replace('poissonSource','#import <PoissonRecon/ExecuteEntryFunctions.hpp>','#import <PoissonRecon/ExecuteEntryFunctions.hpp>\n#include <exception>')
+replace('poissonSource','@implementation MeshingOperation {','@interface MeshingOperation ()\n@property (atomic, readwrite, nullable) NSError *sdaError;\n@end\n\n@implementation MeshingOperation {')
+replace('poissonSource','    if (![weakSelf isCancelled]) {\n        PoissonReconExecute', '    try {\n    if (![weakSelf isCancelled]) {\n        PoissonReconExecute')
+replace('poissonSource','            [[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:NULL];', '''            NSError *error = nil;
+            if (![[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:&error]) {
+                self.sdaError = error;
+            }''')
+replace('poissonSource','    [[NSFileManager defaultManager] removeItemAtPath:tempPoissonOutputPathString error:NULL];', '''    } catch (const std::exception& error) {
+        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:1 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithUTF8String:error.what()] ?: @"Poisson exception"}];
+    } catch (...) {
+        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Poisson reconstruction failed"}];
+    }
+    if (!self.isCancelled && self.sdaError == nil) {
+        NSNumber *size = nil;
+        [[NSURL fileURLWithPath:_outputFilePath] getResourceValue:&size forKey:NSURLFileSizeKey error:NULL];
+        if (size == nil || size.unsignedLongLongValue < 128) {
+            self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Poisson produced no surface file"}];
+        }
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:tempPoissonOutputPathString error:NULL];''')
+
 recovery=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaTrackingRecovery.hpp'
 recoveryTarget=root/Path(paths['source'][0]).parent/'SdaTrackingRecovery.hpp'
 recoveryTarget.write_bytes(recovery.read_bytes())

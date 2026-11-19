@@ -1,6 +1,6 @@
 """Stage the pinned reconstruction product for an embedded iOS consumer."""
 from pathlib import Path
-import sys,shutil,plistlib
+import sys,shutil,plistlib,hashlib,subprocess
 source,framework,derived=map(Path,sys.argv[1:])
 # PointCloudIO asks NSBundle for this exact identifier and interpolates the
 # short version with fprintf(%s). SwiftPM does not supply these product keys.
@@ -20,3 +20,9 @@ bundles=[p for p in derived.rglob('StandardCyborg_StandardCyborgFusion.bundle')i
 assert bundles,'Compiled TrueDepth Metal resource bundle is missing'
 shutil.copytree(bundles[0],framework/bundles[0].name,dirs_exist_ok=True)
 assert (framework/'StandardCyborg_StandardCyborgFusion.bundle/default.metallib').stat().st_size>1024
+
+# Explicit native ear detector; bundled for offline capture evidence only.
+model=source/'StandardCyborgFusion/Sources/StandardCyborgFusion/Models/SCEarTrackingModel.mlmodel'
+assert hashlib.sha256(model.read_bytes()).hexdigest() == 'a844d2b035061deb6a8a92dca2b1326ba455a50eedabd67d4381f81fe1df79b0'
+subprocess.run(['xcrun','coremlcompiler','compile',str(model),str(framework/bundles[0].name)],check=True)
+assert (framework/bundles[0].name/'SCEarTrackingModel.mlmodelc').is_dir()

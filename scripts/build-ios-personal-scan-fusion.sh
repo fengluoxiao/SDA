@@ -69,7 +69,7 @@ python3 "$stage" "$source" "$sim_products/StandardCyborgFusion.framework" "$out/
 codesign --force --sign - "$sim_products/StandardCyborgFusion.framework"
 xcrun otool -L "$sim_products/StandardCyborgFusion.framework/StandardCyborgFusion" > "$out/fusion-linked-libraries.txt"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/fusion-simulators.json")"
@@ -82,6 +82,8 @@ import json,sys
 root=Path(sys.argv[1]);lines=(root/'fusion-resource-runtime.log').read_text().splitlines()
 result=json.loads(next(line for line in reversed(lines)if line.startswith('{')))
 assert result['bundleLocated']and result['versionMetadataValid']
+assert result['poissonRoundTrip']['vertices']>100 and result['poissonRoundTrip']['faces']>100
+assert result['captureCoverage']['earModelLoaded'] and result['captureCoverage']['invalidDepthRejected']
 assert result['physicalScanTested']is False and result['earAccuracyValidated']is False
 if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8 and result['atomicPointCountSnapshotValid']and result['resetCompletionPassed']
 (root/'fusion-resource-result.json').write_text(json.dumps(result,indent=2)+'\n')

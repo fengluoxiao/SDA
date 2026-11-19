@@ -3,6 +3,7 @@ import AVFoundation
 import CoreMotion
 import Metal
 import UIKit
+import ImageIO
 import StandardCyborgFusion
 
 // Native front-TrueDepth reconstruction. No ARFaceGeometry ears, photo export,
@@ -21,6 +22,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private var lastPoseTime = -1.0
  private var cameraPositions: [SIMD3<Float>] = []
  private let pointLimit: Int
+ private let coverage: PersonalHrtfCaptureCoverage
+ private var coverageStatus = "头部：待采集 · 左耳：待采集 · 右耳：待采集"
+ private var failureReason: String?
  private let model: SCReconstructionManager
  private let motion = CMMotionManager()
  private let motionQueue = OperationQueue()
@@ -29,6 +33,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private let directory: URL
  private var observers: [NSObjectProtocol] = []
  private var completion: ((Result<PersonalHeadMeshCandidate,Error>) -> Void)?
+ var captureReadiness: ((Bool, String) -> Void)?
  var captureLimit: ((Int, String) -> Void)?
  var progress: ((Int, String) -> Void)?
 
@@ -43,6 +48,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
   pointLimit = Int(sda_hrtf_scan_point_limit(budget))
   guard pointLimit > 0 else { throw Failure.message("当前可用内存不足以开始头耳采集，请稍后重试") }
+  coverage = try PersonalHrtfCaptureCoverage()
   model = SCReconstructionManager(device:device,commandQueue:queue,maxThreadCount:2)
   directory = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
@@ -50,8 +56,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   model.sdaMaximumSurfelCount = UInt(pointLimit)
   model.delegate = self
   model.flipsInputHorizontally = false
-  model.includesDepthBuffersInMetadata = false
-  model.includesColorBuffersInMetadata = false
+  model.includesDepthBuffersInMetadata = true
+  model.includesColorBuffersInMetadata = true
   model.minDepth = 0.15
   model.setMaxDepth(0.65)
   model.icpDownsampleFraction = 0.1
@@ -109,6 +115,26 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   let count = cameraPositions.count
   lock.unlock()
+  let ready = model.sdaSurfelCount >= 10000 && count > 0
+  captureReadiness?(ready,coverageStatus)
+  if accepted, let color = metadata.colorBuffer, let depth = metadata.depthBuffer {
+   let orientation: CGImagePropertyOrientation
+   switch UIDevice.current.orientation {
+   case .landscapeLeft: orientation = .up
+   case .landscapeRight: orientation = .down
+   case .portraitUpsideDown: orientation = .right
+   default: orientation = .left
+   }
+   coverage.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:orientation) { [weak self] state in
+    DispatchQueue.main.async {
+     guard let self else { return }
+     self.lock.lock(); let scanning = self.phase == .scanning; self.lock.unlock()
+     guard scanning else { return }
+     self.coverageStatus = state.status
+     self.captureReadiness?(self.model.sdaSurfelCount >= 10000,state.status)
+    }
+   }
+  }
   if model.sdaReachedSurfelLimit {
    lock.lock()
    guard phase == .scanning else { lock.unlock(); return }
@@ -124,7 +150,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  func finish() {
   lock.lock()
   guard phase == .scanning || phase == .paused else { lock.unlock(); return }
-  guard cameraPositions.count >= 72 || (phase == .paused && !cameraPositions.isEmpty) else { lock.unlock(); fail("有效扫描不足，请完成头部各方向的覆盖"); return }
+  guard !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("有效测量表面不足，请继续采集"); return }
   phase = .finalizing; lock.unlock()
   motion.stopDeviceMotionUpdates()
   model.finalize { [self] in meshQueue.addOperation { [self] in prepareMesh() } }
@@ -133,7 +159,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private func fail(_ message: String) {
   lock.lock()
   guard phase != .finished else { lock.unlock(); return }
-  cancelled = true
+  cancelled = true; failureReason = message
   let old = phase
   if phase == .scanning || phase == .paused || phase == .idle { phase = .finalizing }
   let operation = meshing
@@ -171,11 +197,17 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   // Capture is finalized, and measured support is on disk. Do not retain a
   // second full surfel model while Poisson and mesh validation allocate.
   operation.completionBlock = { [self, weak operation] in
-   lock.lock(); let stopped = cancelled; lock.unlock()
-   let size = (try? mesh.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
-   guard !stopped, operation?.isCancelled == false, (128...64 * 1024 * 1024).contains(size) else {
-    end(.failure(Failure.message(stopped ? "已取消头耳重建" : "本机候选网格未成功生成"))); return
+   lock.lock(); let stopped = cancelled; let reason = failureReason; lock.unlock()
+   if stopped || operation?.isCancelled == true {
+    end(.failure(Failure.message(reason ?? "已取消头耳重建"))); return
    }
+   if let cause = operation?.sdaError {
+    let error = cause as NSError
+    end(.failure(Failure.message("本机网格重建失败（\(error.domain)/\(error.code)）：\(error.localizedDescription)"))); return
+   }
+   let size = (try? mesh.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
+   guard size >= 128 else { end(.failure(Failure.message("Poisson 未输出有效网格（\(pointCount) 个测量点）"))); return }
+   guard size <= 256 * 1024 * 1024 else { end(.failure(Failure.message("候选网格文件超出本机读取范围（\(size / 1024 / 1024) MiB）"))); return }
    lock.lock(); phase = .checking; lock.unlock()
    do {
     let measured = try PersonalHrtfMeshCheck.load(mesh:mesh,support:support,cancelled:{ [self] in

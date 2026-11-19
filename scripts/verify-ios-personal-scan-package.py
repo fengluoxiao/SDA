@@ -14,6 +14,8 @@ with zipfile.ZipFile(ipa)as z:
     assert len(z.read(fw+'StandardCyborgFusion'))>100000
     metal=fw+'StandardCyborg_StandardCyborgFusion.bundle/default.metallib'
     assert len(z.read(metal))>1024
+    model=fw+'StandardCyborg_StandardCyborgFusion.bundle/SCEarTrackingModel.mlmodelc/'
+    assert sum(z.getinfo(p).file_size for p in names if p.startswith(model))>1000000,'Offline ear detector is missing'
     notice=app+'SdaCoreAssets.bundle/Licenses/StandardCyborg/provenance.json'
     provenance=json.loads(z.read(notice))
     assert provenance['commit']=='8c3bc698944ec41edaa6f627db15a6573e8e2af2'
@@ -39,7 +41,7 @@ with zipfile.ZipFile(ipa)as z:
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
-      'frontCameraPermission':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,
+      'frontCameraPermission':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
       'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))
