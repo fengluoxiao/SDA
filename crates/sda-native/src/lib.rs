@@ -32,6 +32,8 @@ mod frame_router;
 mod presentation_queue;
 #[cfg(feature = "ios-host")]
 pub mod ios;
+#[cfg(all(test, feature = "ios-host"))]
+mod ios_stack_tests;
 #[cfg(feature = "ios-host")]
 #[path = "../../../apps/head-tracking-helper/src/protocol.rs"]
 mod protocol;
@@ -240,7 +242,8 @@ pub struct MobileEngine {
     announced_codec: Option<String>,
     decoder: StreamingDecoder,
     compressed_input_bytes: u64,
-    renderer: Option<Engine>,
+    // Keep render state on the heap throughout the mobile factory/start path.
+    renderer: Option<Box<Engine>>,
     pipeline: Option<RenderPipeline>,
     startup: Mutex<StartupGate>,
     /// Decoded frames waiting to be handed to the renderer worker.
@@ -288,7 +291,7 @@ impl MobileEngine {
             ));
         }
         Ok(MobileEngine {
-            renderer: Some(Engine::new(config.sample_rate, config.output_channels)),
+            renderer: Some(Box::new(Engine::new(config.sample_rate, config.output_channels))),
             decoder: StreamingDecoder::new("auto")?,
             compressed_input_bytes: 0,
             config,

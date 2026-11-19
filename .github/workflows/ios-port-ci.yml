@@ -138,6 +138,14 @@ jobs:
         run: |
           set -o pipefail
           GITHUB_SHA="$SDA_SOURCE_COMMIT" bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+      - name: Verify native playback startup on the dispatch stack
+        run: |
+          set -o pipefail
+          if [[ -f crates/sda-native/src/ios_stack_tests.rs ]]; then
+            MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec" cargo test --manifest-path crates/sda-native/Cargo.toml --release --locked --no-default-features --features ios-host --lib ios_stack_tests -- --test-threads=1 --nocapture 2>&1 | tee ios-artifacts/dispatch-stack-regression.log
+          else
+            echo "Pinned source predates the native stack regression; see package provenance."
+          fi
       - name: Restore CocoaPods downloads
         uses: actions/cache@v4
         with:
@@ -173,7 +181,7 @@ jobs:
           cd ios-build/package
           zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
           cd ../..
-          printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; no automated test or simulator run. Requires signing for installation.\n' > ios-artifacts/README.txt
+          printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; see build metadata for native startup tests; no installed-device or simulator acceptance. Requires signing for installation.\n' > ios-artifacts/README.txt
       - name: Verify lyrics UI in packaged IPA
         run: python3 scripts/verify-mobile-lyrics-package.py iOS ios-artifacts
       - name: Upload versioned package to requested draft release

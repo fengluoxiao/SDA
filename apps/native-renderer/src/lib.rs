@@ -3811,11 +3811,16 @@ fn bed_route_custom(label:&str,solver:&vbap::VbapSolver,head:Option<[f32;4]>,aut
 
 
 pub fn spawn_render_worker(
-    mut engine: Engine,
+    engine: impl Into<Box<Engine>>,
     commands: Arc<render_command::RenderCommandQueue>,
     fifo: Arc<stereo_fifo::StereoFifo>,
     telemetry: Arc<RuntimeTelemetry>,
 ) {
+    // GCD/Expo callers have a ~512 KiB stack. Capturing Engine by value made
+    // thread creation materialize several ~68 KiB moves on that caller (203 KiB
+    // in the crashing arm64 release), on top of the factory's own frames.
+    // Convert before building the closure: the worker owns only a heap pointer.
+    let mut engine = engine.into();
     thread::Builder::new()
         .name("sda-native-render".into())
         .spawn(move || {
