@@ -2,6 +2,14 @@ name: iOS on-device personal HRTF native core
 on:
   push:
     branches: [codex/ios-personal-hrtf-local-20261119]
+    paths:
+      - '.github/workflows/ios-personal-hrtf-native.yml'
+      - 'apps/mobile/modules/sda-core/ios/**'
+      - 'scripts/generate-embedded-numcalc.py'
+      - 'scripts/check-ios-personal-hrtf-native.sh'
+      - 'scripts/test/personal-hrtf-native.cpp'
+      - 'scripts/test/fixtures/personal-hrtf-sphere/**'
+      - 'vendor/mesh2hrtf-numcalc/**'
   workflow_dispatch:
 permissions:
   contents: read

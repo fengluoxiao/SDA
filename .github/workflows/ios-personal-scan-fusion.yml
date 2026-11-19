@@ -1,0 +1,29 @@
+name: iOS front TrueDepth reconstruction core
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+    paths:
+      - '.github/workflows/ios-personal-scan-fusion.yml'
+      - 'scripts/build-ios-personal-scan-fusion.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fusion:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir personal-scan-build
+      - name: Compile front TrueDepth reconstruction for iPhone
+        run: bash scripts/build-ios-personal-scan-fusion.sh personal-scan-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-personal-scan-core-evidence
+          path: |
+            personal-scan-build/*.json
+            personal-scan-build/*.log
+            personal-scan-build/*.txt
+          retention-days: 7
