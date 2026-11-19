@@ -16,6 +16,7 @@ paths.update({
 })
 paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusion/IO/PointCloudIO_PLY.mm','b6d3e5febf75beb4eef50315986af30a05d8102d1ebae62461095bb19f7e9b64')})
 paths.update({'poissonAdapter':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PoissonReconExecute.hpp','4e4ef9bf0dff584cfeb3a1b51ce11ab69e1d4cd3a9311d59293615f7219eb441')})
+paths.update({'poissonPreprocessor':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PreProcessor.h','57a763b67cc432657261018e8f72b46104a6973b82e171ae64e85e1cd286ce33')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -24,6 +25,8 @@ for key,(path,digest) in paths.items():
 def replace(key,old,new):
  if texts[key].count(old)!=1:raise ValueError('Reconstruction patch anchor is not unique: '+old[:70])
  texts[key]=texts[key].replace(old,new)
+# Use upstream's checked arithmetic and atomic publication paths in every Poisson translation unit.
+replace('poissonPreprocessor','//#define SANITIZED_PR','#define SANITIZED_PR')
 replace('header','/** The gravity vector of the current scan. */', '''/** SDA: model-thread snapshot; does not borrow the live surfel vector. */
 @property (atomic, readonly) NSUInteger sdaSurfelCount;
 /** SDA: configure before the first camera frame, bounded by the local mesh reader. */
