@@ -49,8 +49,15 @@ framework="$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks/S
 test -f "$framework/StandardCyborgFusion"
 python3 - "$source" "$framework" "$out/derived-device" <<'PY'
 from pathlib import Path
-import sys,shutil
+import sys,shutil,plistlib
 source,framework,derived=map(Path,sys.argv[1:])
+# PointCloudIO asks NSBundle for this exact identifier and interpolates the
+# short version with fprintf(%s). SwiftPM does not supply these product keys.
+# Populate them so a local measured-support write cannot receive a nil version.
+info=framework/'Info.plist'
+with info.open('rb')as f:metadata=plistlib.load(f)
+metadata.update(CFBundleIdentifier='com.standardcyborg.StandardCyborgFusion',CFBundleShortVersionString='1.0.0',CFBundleVersion='1')
+with info.open('wb')as f:plistlib.dump(metadata,f)
 headers=framework/'Headers';headers.mkdir(exist_ok=True)
 for p in (source/'StandardCyborgFusion/Sources/include/StandardCyborgFusion').glob('*.h'):
     shutil.copy2(p,headers/p.name)

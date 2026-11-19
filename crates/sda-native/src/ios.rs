@@ -78,6 +78,15 @@ pub unsafe extern "C" fn sda_ios_string_free(p: *mut c_char) {
         drop(unsafe { CString::from_raw(p) });
     }
 }
+/// Validate response data using the playback loader without starting audio.
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_validate_hrtf(path: *const c_char) -> *mut c_char {
+    guarded(|| {
+        let set = NativeHrtfSetFacade::load_calibrated(std::path::Path::new(unsafe { text(path)? }))?;
+        drop(set);
+        Ok(json!({"validated":true}))
+    })
+}
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_create(
     config: *const c_char,
@@ -413,6 +422,31 @@ mod tests {
         assert_eq!(pull(&out, &mut l, &mut r), 0);
         assert!(fifo.flush_acknowledged(epoch));
         assert_eq!(l, [0.; 700]);
+    }
+    #[test]
+    fn personal_hrtf_validation_uses_playback_loader_without_audio() {
+        let directory = std::env::temp_dir().join(format!("sda-ios-personal-validation-{}",std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("hrtf-set.json");
+        let packed: Vec<u8> = [0.2_f32,0.,0.,0.,0.1,0.,0.,0.].into_iter().flat_map(f32::to_le_bytes).collect();
+        std::fs::write(directory.join("ir.f32"), &packed).unwrap();
+        let positions: Vec<Value> = (0..8).map(|i| json!({"azimuth":i as f32*45.,"elevation":0.,"dry":"ir.f32","wet":"ir.f32"})).collect();
+        std::fs::write(&path,json!({"schemaVersion":2,"personalSofaVersion":1,"sampleRate":48000,"completeSubject":true,
+            "subjectId":format!("personal-{}","a".repeat(64)),"processing":{"calibrated":false,"preserveMeasurements":true},"positions":positions}).to_string()).unwrap();
+        let cpath=CString::new(path.to_str().unwrap()).unwrap();
+        for (input,expected) in [(cpath.as_ptr(),true),(std::ptr::null(),false)] {
+            let response=unsafe{sda_ios_validate_hrtf(input)};
+            assert!(!response.is_null());
+            let reply:Value=serde_json::from_str(unsafe{CStr::from_ptr(response)}.to_str().unwrap()).unwrap();
+            unsafe{sda_ios_string_free(response)};
+            assert_eq!(reply["ok"],expected,"{reply}");
+        }
+        assert_eq!(std::fs::read(directory.join("ir.f32")).unwrap(),packed);
+        std::fs::write(&path,b"corrupt").unwrap();
+        let response=unsafe{sda_ios_validate_hrtf(cpath.as_ptr())};
+        let reply:Value=serde_json::from_str(unsafe{CStr::from_ptr(response)}.to_str().unwrap()).unwrap();
+        unsafe{sda_ios_string_free(response)};assert_eq!(reply["ok"],false);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn null_commands_return_owned_error_json() {
