@@ -59,6 +59,13 @@ int main(){try{
  require(sda_hrtf_screen_head_mesh(good.view(),[](void*){return 1;},nullptr).code==2,"Cancel before processing");
  int callbacks=0;require(sda_hrtf_screen_head_mesh(good.view(),[](void *p){return int(++*static_cast<int*>(p)>=3);},&callbacks).code==2,"Cancel during verification");
  check(good,0,"Recovery after rejected/cancelled meshes");
- std::cout<<"{\"scanBudgetTestsPassed\":true,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
+ // Actual arrays at the shared maximum: many measurements in the same cells
+ // used to exceed the work guard despite having valid nearby support.
+ auto dense=good;const auto originalSupport=good.support,originalNormals=good.normals;
+ dense.support.resize(3*size_t(SDA_HRTF_MAXIMUM_SUPPORT_POINTS));dense.normals.resize(dense.support.size());
+ for(size_t i=0;i<dense.support.size();++i){dense.support[i]=originalSupport[i%originalSupport.size()];dense.normals[i]=originalNormals[i%originalNormals.size()];}
+ check(dense,0,"Exact dense support search at maximum scan budget");
+ callbacks=0;require(sda_hrtf_screen_head_mesh(dense.view(),[](void *p){return int(++*static_cast<int*>(p)>=1500);},&callbacks).code==2,"Cancel dense support indexing");
+ std::cout<<"{\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

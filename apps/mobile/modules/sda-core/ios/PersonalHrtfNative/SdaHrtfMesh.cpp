@@ -6,7 +6,6 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
-#include <unordered_map>
 #include <vector>
 extern "C" size_t sda_hrtf_scan_point_limit(uint64_t budget) {
  const uint64_t points=std::min<uint64_t>(SDA_HRTF_MAXIMUM_SUPPORT_POINTS,budget/512);
@@ -94,6 +93,7 @@ bool intersection(const Triangle &a,const Triangle &b){
 struct Screen {
  SdaHrtfMeshView input;SdaHrtfMeshCancelled cancelled;void *context;SdaHrtfMeshResult reply{};
  std::vector<Triangle> faces;std::vector<uint32_t> parent,order;std::vector<Node> nodes;
+ std::vector<uint32_t> supportOrder;std::vector<Node> supportNodes;
  Screen(SdaHrtfMeshView i,SdaHrtfMeshCancelled c,void *p):input(i),cancelled(c),context(p){}
  uint64_t ticks=0,work=0;
  void check(){if((++ticks&1023)==0&&cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");}
@@ -119,10 +119,36 @@ struct Screen {
   if(a.left>=0&&(b.left<0||a.end-a.start>=b.end-b.start)){pair(a.left,y);pair(a.right,y);}else{pair(x,b.left);pair(x,b.right);}
  }
  void test(uint32_t x,uint32_t y){charge();if(faces[x].box.overlaps(faces[y].box)){++reply.intersection_pairs;if(intersection(faces[x],faces[y]))throw Error(1,"Reconstructed head surface intersects itself");}}
- static uint64_t cell(V p){
-  int64_t x=int64_t(std::floor(p.x/tolerance))+8192,y=int64_t(std::floor(p.y/tolerance))+8192,z=int64_t(std::floor(p.z/tolerance))+8192;
-  if(x<0||x>=16384||y<0||y>=16384||z<0||z>=16384)throw Error(1,"Measured support outside metre coordinate bound");
-  return (uint64_t(x)<<28)|(uint64_t(y)<<14)|uint64_t(z);
+ // Exact nearest support search; dense repeated measurements must not force
+ // every surface sample to walk all points in its spatial bucket.
+ int supportTree(int start,int end){
+  check();Node node;node.start=start;node.end=end;
+  for(int i=start;i<end;++i){check();node.box.add(load(input.support+3*supportOrder[i]));}
+  int index=int(supportNodes.size());supportNodes.push_back(node);
+  if(end-start>16){
+   V extent=node.box.high-node.box.low;int axis=0;for(int i=1;i<3;++i)if(extent[i]>extent[axis])axis=i;
+   int mid=(start+end)/2;
+   std::nth_element(supportOrder.begin()+start,supportOrder.begin()+mid,supportOrder.begin()+end,[&](uint32_t a,uint32_t b){return load(input.support+3*a)[axis]<load(input.support+3*b)[axis];});
+   int left=supportTree(start,mid),right=supportTree(mid,end);supportNodes[index].left=left;supportNodes[index].right=right;
+  }
+  return index;
+ }
+ static double boxDistance(const Box &box,V p){
+  double d=0;for(int i=0;i<3;++i){double gap=std::max({box.low[i]-p[i],p[i]-box.high[i],0.0});d+=gap*gap;}return d;
+ }
+ void nearestSupport(int index,V p,V normal,double &best,bool &found){
+  charge();const Node &node=supportNodes[index];double distance=boxDistance(node.box,p);
+  if(distance>best||(found&&distance>=best))return;
+  if(node.left<0){
+   for(int j=node.start;j<node.end;++j){
+    charge();uint32_t i=supportOrder[j];V delta=load(input.support+3*i)-p;double d=dot(delta,delta);
+    if(d<=best){V measuredNormal=load(input.support_normals+3*i);if(dot(measuredNormal,normal)>=0.5*norm(measuredNormal)){best=d;found=true;}}
+   }
+  }else{
+   int first=node.left,second=node.right;
+   if(boxDistance(supportNodes[second].box,p)<boxDistance(supportNodes[first].box,p))std::swap(first,second);
+   nearestSupport(first,p,normal,best,found);nearestSupport(second,p,normal,best,found);
+  }
  }
  void run(){
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
@@ -159,21 +185,14 @@ struct Screen {
   if(volume<=1e-8)throw Error(1,"Head mesh must enclose positive outward-oriented volume");
   reply.enclosed_volume=volume;
   order.resize(faces.size());std::iota(order.begin(),order.end(),0);nodes.reserve(faces.size()/2);tree(0,int(faces.size()));pair(0,0);
-  std::unordered_map<uint64_t,int> cells;cells.reserve(input.support_count);
-  std::vector<int> next(input.support_count,-1);
+  supportOrder.resize(input.support_count);std::iota(supportOrder.begin(),supportOrder.end(),0);
   for(size_t i=0;i<input.support_count;++i){check();V p=load(input.support+3*i),n=load(input.support_normals+3*i);
    if(!finite(p)||!finite(n)||norm(n)<1e-6)throw Error(1,"Invalid measured point/normal");
-   auto result=cells.emplace(cell(p),int(i));if(!result.second){next[i]=result.first->second;result.first->second=int(i);}
   }
+  supportTree(0,int(input.support_count));
   auto supported=[&](V p,V normal){
    ++reply.support_samples;double best=tolerance*tolerance;
-   bool found=false;
-   for(int x=-1;x<=1;++x)for(int y=-1;y<=1;++y)for(int z=-1;z<=1;++z){
-    charge();auto bucket=cells.find(cell(p+V{double(x),double(y),double(z)}*tolerance));if(bucket==cells.end())continue;
-    for(int i=bucket->second;i>=0;i=next[i]){charge();V delta=load(input.support+3*i)-p;double d=dot(delta,delta);
-     if(d<=best){V measuredNormal=load(input.support_normals+3*i);if(dot(measuredNormal,normal)>=0.5*norm(measuredNormal)){best=d;found=true;}}
-    }
-   }
+   bool found=false;nearestSupport(0,p,normal,best,found);
    if(!found)throw Error(1,"Mesh includes a surface without measured depth support");
    reply.support_distance=std::max(reply.support_distance,std::sqrt(best));
   };
