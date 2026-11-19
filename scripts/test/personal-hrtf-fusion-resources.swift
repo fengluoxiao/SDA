@@ -21,6 +21,7 @@ struct FusionResourcesTest {
     throw Failure.invalid("Reconstruction Metal functions/queue unavailable")
    }
    let model = SCReconstructionManager(device:device,commandQueue:queue,maxThreadCount:2)
+   guard model.sdaSurfelCount == 0 else { throw Failure.invalid("New model has stale point count") }
    let lock = NSLock(); var completed = false
    model.finalize { lock.lock(); completed = true; lock.unlock() }
    let deadline = Date().addingTimeInterval(20)
@@ -30,9 +31,19 @@ struct FusionResourcesTest {
     guard Date() < deadline else { throw Failure.invalid("Empty reconstruction failed to finalize") }
     RunLoop.current.run(until:Date().addingTimeInterval(0.02))
    }
-   model.reset(); initialized = true
+   lock.lock(); completed = false; lock.unlock()
+   model.sdaReset { lock.lock(); completed = true; lock.unlock() }
+   let resetDeadline = Date().addingTimeInterval(20)
+   while true {
+    lock.lock(); let done = completed; lock.unlock()
+    if done { break }
+    guard Date() < resetDeadline else { throw Failure.invalid("Model release completion timed out") }
+    RunLoop.current.run(until:Date().addingTimeInterval(0.02))
+   }
+   guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
+   initialized = true
   }
-  let result:[String:Any] = ["bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
+  let result:[String:Any] = ["bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

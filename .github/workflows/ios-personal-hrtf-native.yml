@@ -4,7 +4,14 @@ on:
     branches: [codex/ios-personal-hrtf-local-20261119]
     paths:
       - '.github/workflows/ios-personal-hrtf-native.yml'
-      - 'apps/mobile/modules/sda-core/ios/**'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/**'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadDepthCapture.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfStore.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfOnDeviceSolver.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfResponseBuilder.swift'
+      - 'apps/mobile/modules/sda-core/ios/SdaBridge.h'
       - 'scripts/generate-embedded-numcalc.py'
       - 'scripts/check-ios-personal-hrtf-native.sh'
       - 'scripts/test/personal-hrtf-native.cpp'

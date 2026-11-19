@@ -6,6 +6,7 @@ on:
       - '.github/workflows/ios-personal-scan-fusion.yml'
       - 'scripts/build-ios-personal-scan-fusion.sh'
       - 'scripts/stage-ios-personal-scan-fusion.py'
+      - 'scripts/patch-ios-personal-scan-fusion.py'
       - 'scripts/test/personal-hrtf-fusion-resources.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/**'
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'

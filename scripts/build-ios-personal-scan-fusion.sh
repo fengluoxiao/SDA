@@ -6,6 +6,7 @@ out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
 stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
 probe="$PWD/scripts/test/personal-hrtf-fusion-resources.swift"
+lifecycle="$PWD/scripts/patch-ios-personal-scan-fusion.py"
 source="$(mktemp -d "$out/fusion-source.XXXXXX")"
 pin=8c3bc698944ec41edaa6f627db15a6573e8e2af2
 git init -q "$source"
@@ -13,6 +14,7 @@ git -C "$source" remote add origin https://github.com/StandardCyborg/StandardCyb
 git -C "$source" fetch --depth 1 origin "$pin"
 GIT_LFS_SKIP_SMUDGE=1 git -C "$source" checkout --detach FETCH_HEAD
 test "$(git -C "$source" rev-parse HEAD)" = "$pin"
+python3 "$lifecycle" "$source"
 # The upstream package's bundle loader expects a resource bundle, but its
 # manifest omits shader resources. Package the Metal kernels explicitly. Ear
 # and foot ML models are excluded from this reconstruction-only build; no
@@ -76,6 +78,6 @@ root=Path(sys.argv[1]);lines=(root/'fusion-resource-runtime.log').read_text().sp
 result=json.loads(next(line for line in reversed(lines)if line.startswith('{')))
 assert result['bundleLocated']and result['versionMetadataValid']
 assert result['physicalScanTested']is False and result['earAccuracyValidated']is False
-if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8
+if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8 and result['atomicPointCountSnapshotValid']and result['resetCompletionPassed']
 (root/'fusion-resource-result.json').write_text(json.dumps(result,indent=2)+'\n')
 PY

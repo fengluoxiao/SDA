@@ -99,11 +99,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   let count = cameraPositions.count
   lock.unlock()
+  if model.sdaSurfelCount > 500000 { fail("扫描点数达到本机处理上限，请收紧头部取景范围后重试"); return }
   if failed { fail("跟踪丢失，请放慢扫描并重新采集；不会用猜测的耳廓替代"); return }
   if count >= 600 { fail("扫描达到本机采集上限，请重新采集完整头耳覆盖"); return }
-  if accepted && count % 24 == 0 {
-   guard model.buildPointCloud().pointCount <= 500000 else { fail("扫描点数达到本机处理上限，请收紧头部取景范围后重试"); return }
-  }
   progress?(count,accepted ? "正在手机上实时配准头耳深度" : "请缓慢移动，保持与已扫描表面重叠")
  }
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }
@@ -156,7 +154,6 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   let gravity = cloud.gravity
   // Capture is finalized, and measured support is on disk. Do not retain a
   // second full surfel model while Poisson and mesh validation allocate.
-  model.reset()
   operation.completionBlock = { [self, weak operation] in
    lock.lock(); let stopped = cancelled; lock.unlock()
    let size = (try? mesh.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
@@ -171,7 +168,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
     end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:1,maximumSupportDistance:distance)))
    } catch { end(.failure(error)) }
   }
-  meshQueue.addOperation(operation)
+  model.sdaReset { [self] in meshQueue.addOperation(operation) }
  }
  private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   lock.lock()
@@ -182,8 +179,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   phase = .finished; let callback = completion; completion = nil; meshing = nil
   lock.unlock()
   motion.stopDeviceMotionUpdates()
-  model.reset()
-  if case .failure = answer { try? FileManager.default.removeItem(at:directory) }
-  DispatchQueue.main.async { callback?(answer) }
+  model.sdaReset { [self] in
+   if case .failure = answer { try? FileManager.default.removeItem(at:directory) }
+   callback?(answer)
+  }
  }
 }
