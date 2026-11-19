@@ -20,17 +20,37 @@ mkdir -p "$app"
 xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-ios16.4-simulator" -sdk "$sim_sdk" "$geometry" "$controller" "$fixture" "$PWD/scripts/test/personal-hrtf-review-ui.swift" -o "$app/ReviewUITest" 2>&1 | tee "$out/review-ui-compile.log"
 python3 - "$app/Info.plist" <<'PY'
 import plistlib,sys
-with open(sys.argv[1],'wb')as f:plistlib.dump({'CFBundleIdentifier':'app.sda.hrtf-review-test','CFBundleExecutable':'ReviewUITest','CFBundleName':'ReviewUITest','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'16.4','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']},f)
+with open(sys.argv[1],'wb')as f:plistlib.dump({'CFBundleIdentifier':'app.sda.hrtf-review-test','CFBundleExecutable':'ReviewUITest','CFBundleName':'ReviewUITest','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'16.4','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UIDeviceFamily':[1,2],'CFBundleSupportedPlatforms':['iPhoneSimulator'],'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']},f)
 PY
 codesign --force --sign - "$out/review-simulator-test"
 codesign --force --sign - "$app"
 xcrun simctl list devices available -j > "$out/review-simulators.json"
-udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/review-simulators.json")"
+udid="$(python3 - "$out/review-simulators.json" "$out/review-runtime-choice.json" <<'PY'
+import json,sys,re
+from pathlib import Path
+d=json.load(open(sys.argv[1]))
+choices=[(tuple(map(int,k.rsplit('iOS-',1)[1].split('-'))),k,v)for k,vs in d['devices'].items()if re.fullmatch(r'com.apple.CoreSimulator.SimRuntime.iOS-[0-9]+-[0-9]+',k)for v in vs if v['name']=='iPhone 18 Pro Max'and v.get('isAvailable')]
+assert choices,'A standard iPhone simulator runtime is required; do not select a device-specific preview runtime'
+_,runtime,device=max(choices,key=lambda row:row[0])
+Path(sys.argv[2]).write_text(json.dumps({'runtime':runtime,'device':device['name'],'udid':device['udid'],'physicalDevice':False},indent=2))
+print(device['udid'])
+PY
+)"
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl spawn "$udid" "$out/review-simulator-test" | tee "$out/review-simulator-result.json"
-xcrun simctl install "$udid" "$app"
-xcrun simctl launch --console "$udid" app.sda.hrtf-review-test | tee "$out/review-ui-runtime.log"
+python3 - "$udid" "$app" "$out/review-ui-runtime.log" <<'PY'
+import subprocess,sys
+udid,app,log=sys.argv[1:]
+print('Installing measured-model review test on standard iPhone simulator',flush=True)
+subprocess.run(['xcrun','simctl','install',udid,app],check=True,timeout=120)
+print('Launching measured-model review layout and cancellation checks',flush=True)
+with open(log,'w')as output:
+ try:subprocess.run(['xcrun','simctl','launch','--console',udid,'app.sda.hrtf-review-test'],check=True,timeout=120,stdout=output,stderr=subprocess.STDOUT)
+ finally:
+  output.flush()
+  print(open(log).read(),flush=True)
+PY
 python3 - "$out" <<'PY'
 from pathlib import Path
 import json,sys
