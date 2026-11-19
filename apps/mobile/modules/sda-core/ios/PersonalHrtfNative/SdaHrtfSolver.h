@@ -23,6 +23,15 @@ SdaHrtfSolverResult sda_hrtf_solver_run(SdaHrtfSolver *job, const char *work,
  int first_frequency, int last_frequency, int estimate_only,
  SdaHrtfProgress progress, void *context);
 void sda_hrtf_solver_destroy(SdaHrtfSolver *job);
+// Equivalent to upstream reference_hrtfs + compute_hrirs, inside the app.
+// Positive bins f=(k+1)*48000/(2*bins). Input: [ear][bin][real,imag].
+// Output: planar [left 2*bins samples][right 2*bins samples]. Preserves
+// per-ear gains and phase; never performs per-ear peak normalization.
+SdaHrtfSolverResult sda_hrtf_make_hrir(SdaHrtfSolver *job,
+ const double *pressure, size_t pressure_values, size_t bins,
+ const double *source_area, double reference_radius, int shift,
+ float *output, size_t output_samples);
+
 #ifdef __cplusplus
 }
 #endif

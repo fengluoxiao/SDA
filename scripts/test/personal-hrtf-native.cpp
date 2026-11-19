@@ -9,6 +9,8 @@
 #include <vector>
 #include <cmath>
 #include <future>
+#include <algorithm>
+#include <limits>
 using Job=std::unique_ptr<SdaHrtfSolver,decltype(&sda_hrtf_solver_destroy)>;
 void require(bool good,const std::string &why){if(!good)throw std::runtime_error(why);}
 Job job(const std::filesystem::path &root,uint64_t bytes=128ull*1024*1024){
@@ -25,6 +27,25 @@ void check_result(SdaHrtfSolverResult r,int code,const std::string &label){
  require(r.code==code,label+": code="+std::to_string(r.code)+" "+r.message);
  require(r.remaining_array_bytes==0,label+": leaked native arrays");
 }
+void impulse_test(const std::filesystem::path &root,SdaHrtfSolver *job){
+ std::vector<double> pressure(3*2*256*2);
+ std::vector<float> expected(3*2*512),output(2*512);
+ std::ifstream a(root/"fft-pressure-f64.bin",std::ios::binary),b(root/"fft-expected-f32.bin",std::ios::binary);
+ require(bool(a)&&bool(b),"Missing independent HRIR reference fixtures");
+ a.read(reinterpret_cast<char*>(pressure.data()),pressure.size()*sizeof(double));
+ b.read(reinterpret_cast<char*>(expected.data()),expected.size()*sizeof(float));
+ require(bool(a)&&bool(b),"Truncated HRIR reference fixture");
+ double area[]={2.3e-5,3.1e-5};
+ for(int direction=0;direction<3;++direction){
+  auto r=sda_hrtf_make_hrir(job,pressure.data()+direction*1024,1024,256,area,1.2,32,output.data(),output.size());
+  check_result(r,0,"Native reference/HRIR conversion");
+  for(size_t i=0;i<output.size();++i)require(std::abs(output[i]-expected[direction*output.size()+i])<2e-7,"Native HRIR differs from upstream reference/FFT");
+ }
+ pressure[0]=std::numeric_limits<double>::quiet_NaN();
+ auto r=sda_hrtf_make_hrir(job,pressure.data(),1024,256,area,1.2,32,output.data(),output.size());
+ check_result(r,1,"Reject non-finite pressure");
+ require(std::all_of(output.begin(),output.end(),[](float x){return x==0;}),"Discard partial HRIR on failure");
+}
 void compare(const std::filesystem::path &root,int ear,int frequency=100){
  auto actual=pressure(root/("NumCalc/source_"+std::to_string(ear)+"/be.out/be."+std::to_string(frequency/100)+"/pEvalGrid"));
  auto golden=pressure(root/("expected/ear"+std::to_string(ear)+"-"+std::to_string(frequency)+"hz.txt"));
@@ -34,6 +55,7 @@ int main(int argc,char **argv){try{
  require(argc==2,"Pass a private COPY of the fixture root");
  std::filesystem::path root=std::filesystem::canonical(argv[1]);auto cwd=std::filesystem::current_path();
  uint64_t peak=0;auto j=job(root);
+ impulse_test(root,j.get());
  for(int repeat=0;repeat<2;++repeat)for(int ear=1;ear<=2;++ear){
   auto r=sda_hrtf_solver_run(j.get(),("NumCalc/source_"+std::to_string(ear)).c_str(),1,1,0,nullptr,nullptr);
   check_result(r,0,"Repeated ear solve");compare(root,ear);peak=std::max(peak,r.peak_array_bytes);
@@ -61,6 +83,6 @@ int main(int argc,char **argv){try{
  check_result(sda_hrtf_solver_run(right.get(),"NumCalc/source_2",1,1,0,nullptr,nullptr),0,"Concurrent right solve");
  check_result(future.get(),0,"Concurrent left solve");compare(root,1);compare(root,2);
  require(std::filesystem::current_path()==cwd,"Native library changed process cwd");
- std::cout<<"{\"passed\":true,\"upstreamPressureMatch\":true,\"repeatedEars\":4,\"concurrentJobs\":2,\"memoryLimit\":true,\"cancellation\":true,\"errorRecovery\":true,\"cwdUnchanged\":true,\"peakTrackedArrayBytes\":"<<peak<<",\"physicalScanTested\":false}"<<std::endl;
+ std::cout<<"{\"passed\":true,\"upstreamPressureMatch\":true,\"upstreamImpulseMatch\":true,\"repeatedEars\":4,\"concurrentJobs\":2,\"memoryLimit\":true,\"cancellation\":true,\"errorRecovery\":true,\"cwdUnchanged\":true,\"peakTrackedArrayBytes\":"<<peak<<",\"physicalScanTested\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

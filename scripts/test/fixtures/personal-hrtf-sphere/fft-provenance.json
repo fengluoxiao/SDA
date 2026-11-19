@@ -1,0 +1,13 @@
+{
+  "source": "unmodified Mesh2HRTF 1.3.0 reference_hrtfs + compute_hrirs",
+  "directions": 3,
+  "bins": 256,
+  "samplingRate": 48000,
+  "sourceArea": [
+    2.3e-05,
+    3.1e-05
+  ],
+  "radius": 1.2,
+  "circularShift": 32,
+  "syntheticOnly": true
+}

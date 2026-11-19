@@ -24,4 +24,5 @@ jobs:
             personal-hrtf-native-build/*.log
             personal-hrtf-native-build/*.txt
             personal-hrtf-native-build/*.a
+            personal-hrtf-native-build/**/NC*.out
           retention-days: 7

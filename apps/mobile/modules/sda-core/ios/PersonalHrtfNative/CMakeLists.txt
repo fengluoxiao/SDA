@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
 project(sda_personal_hrtf LANGUAGES CXX)
-add_library(sda_personal_hrtf STATIC SdaHrtfSolver.cpp)
+add_library(sda_personal_hrtf STATIC SdaHrtfSolver.cpp SdaHrtfImpulse.cpp)
 target_compile_features(sda_personal_hrtf PUBLIC cxx_std_17)
 target_include_directories(sda_personal_hrtf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

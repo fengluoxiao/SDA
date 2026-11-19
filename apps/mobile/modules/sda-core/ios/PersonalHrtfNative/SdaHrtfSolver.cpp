@@ -100,7 +100,14 @@ extern "C" SdaHrtfSolverResult sda_hrtf_solver_run(SdaHrtfSolver *job,const char
    int code=sda_numcalc::embedded_main(estimate?6:5,argv);
    if(code)throw sda_numcalc::Failure(1,"Native acoustic solver returned an error");
    sda_numcalc::frequency_progress(last,state->numFrequencies_);
-  }catch(const sda_numcalc::Failure &e){error(e.code,e.what());}
+  }catch(const sda_numcalc::Failure &e){
+    std::string message=e.what();
+    if(e.code==1){
+     std::ifstream log(actual/("NC"+std::to_string(first)+"-"+std::to_string(last)+".out"));
+     if(log){std::ostringstream contents;contents<<log.rdbuf();auto tail=contents.str();if(tail.size()>420)tail=tail.substr(tail.size()-420);message+="\n"+tail;}
+    }
+    error(e.code,message.c_str());
+   }
    catch(const std::bad_alloc &){error(3,"Insufficient memory for native acoustic solve");}
    catch(const std::exception &e){error(1,e.what());}
    catch(...){error(1,"Unknown native acoustic solver failure");}
