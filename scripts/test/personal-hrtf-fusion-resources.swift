@@ -52,9 +52,21 @@ struct FusionResourcesTest {
   let file = try FileHandle(forReadingFrom:output); defer { try? file.close() }
   let prefix = try file.read(upToCount:512) ?? Data()
   guard String(data:prefix.prefix(64),encoding:.ascii)?.contains("format binary_little_endian 1.0") == true else { throw Failure.invalid("Poisson mesh lost binary Float32 export") }
-  let mesh = SCMesh(plyPath:output.path,jpegPath:"")
-  guard mesh.vertexCount > 80000, mesh.faceCount > 160000 else { throw Failure.invalid("Actual Poisson surface is empty") }
-  return ["syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
+  guard let mesh = SCMesh(plyPath:output.path,jpegPath:""), mesh.vertexCount > 80000, mesh.faceCount > 160000 else { throw Failure.invalid("Actual Poisson surface is empty") }
+  guard mesh.texCoordData.isEmpty else { throw Failure.invalid("Absent UVs fabricated attribute bytes") }
+  let minimal = folder.appendingPathComponent("no-optional-attributes.ply")
+  let minimalHeader = "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 4\nproperty list uchar int vertex_indices\nend_header\n"
+  try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:minimal,atomically:true,encoding:.ascii)
+  guard let sparse = SCMesh(plyPath:minimal.path,jpegPath:""), sparse.vertexCount == 4, sparse.faceCount == 4,
+        sparse.normalData.isEmpty, sparse.texCoordData.isEmpty else { throw Failure.invalid("Absent optional mesh attributes were read out of bounds") }
+  guard SCMesh(plyPath:folder.appendingPathComponent("missing.ply").path,jpegPath:"") == nil else { throw Failure.invalid("Missing PLY was accepted") }
+  let truncated = folder.appendingPathComponent("truncated.ply")
+  try minimalHeader.write(to:truncated,atomically:true,encoding:.ascii)
+  guard SCMesh(plyPath:truncated.path,jpegPath:"") == nil else { throw Failure.invalid("Truncated PLY was accepted") }
+  let badFace = folder.appendingPathComponent("two-index-face.ply")
+  try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n2 0 2\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:badFace,atomically:true,encoding:.ascii)
+  guard SCMesh(plyPath:badFace.path,jpegPath:"") == nil else { throw Failure.invalid("Non-triangle PLY was accepted") }
+  return ["missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model

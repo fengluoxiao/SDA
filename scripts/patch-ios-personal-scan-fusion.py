@@ -18,6 +18,10 @@ paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusio
 paths.update({'poissonAdapter':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PoissonReconExecute.hpp','4e4ef9bf0dff584cfeb3a1b51ce11ab69e1d4cd3a9311d59293615f7219eb441')})
 paths.update({'poissonPreprocessor':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PreProcessor.h','57a763b67cc432657261018e8f72b46104a6973b82e171ae64e85e1cd286ce33')})
 paths.update({'poissonPLY':('CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp','70b36492100d3aec7fd9fdd3d1a510ce00fb698304a60dc371a6b42db8972a80')})
+paths.update({'meshGeometry':('StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SCMesh+Geometry.mm','1c6919d110f23858e2e65161ade73b3afabbb7f51eeea119d88227281247cd93')})
+paths.update({'meshFileIO':('StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SCMesh+FileIO.mm','549c91181745f71ea9cf495c504d0fda673bc3456c9d36b42934d539309833c7')})
+paths.update({'meshFileHeader':('StandardCyborgFusion/Sources/include/StandardCyborgFusion/SCMesh+FileIO.h','573591298053a8f72d2f9090a5ce80dc46e83300a3e6c067855ef0c6664fe0d3')})
+paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryFileIO_PLY.cpp','23a884d3f2fbd86e212e28a4182568ccc772d5e824cb6ed92e79052f38da33c4')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -175,6 +179,34 @@ replace('pointCloudPLY','''    fclose(file);
 replace('poissonAdapter','#include "PreProcessor.h"','#include "PreProcessor.h"\n#include "SdaPoissonMeshCleanup.hpp"')
 replace('poissonAdapter','    // Write the output PLY file','    sdaCleanPoissonMesh(vertexCollector.vertices, faceCollector.faces);\n\n    // Write the output PLY file')
 replace('poissonAdapter','PLY::DefaultFileType(), comments','PLY_BINARY_LE, comments')
+
+# Poisson surfaces have no UVs. Copy only present attributes rather than reading
+# vertexCount bytes from null/short optional vectors (observed simulator SIGSEGV).
+replace('meshGeometry','''return [NSData dataWithBytes:geo.getColors().data()
+                          length:geo.vertexCount() * sizeof(Vec3)];''','''return [NSData dataWithBytes:geo.getColors().data()
+                          length:geo.getColors().size() * sizeof(Vec3)];''')
+replace('meshGeometry','''return [NSData dataWithBytes:(const void *)normalizedNormals.data()
+                          length:geo.vertexCount() * sizeof(Vec3)];''','''return [NSData dataWithBytes:(const void *)normalizedNormals.data()
+                          length:normalizedNormals.size() * sizeof(Vec3)];''')
+replace('meshGeometry','''return [NSData dataWithBytes:(const void *)geo.getTexCoords().data()
+                          length:geo.vertexCount() * sizeof(Vec2)];''','''return [NSData dataWithBytes:(const void *)geo.getTexCoords().data()
+                          length:geo.getTexCoords().size() * sizeof(Vec2)];''')
+replace('meshFileHeader','- (instancetype)initWithPLYPath:','- (nullable instancetype)initWithPLYPath:')
+replace('meshFileIO','#import <vector>','#import <vector>\n#include <exception>')
+replace('meshFileIO','''    sc3d::Geometry geometry;
+    io::ply::ReadGeometryFromPLYFile(geometry, [PLYPath UTF8String]);
+    
+    return [SCMesh meshFromGeometry:geometry
+                    textureJPEGPath:JPEGPath];''','''    try {
+        sc3d::Geometry geometry;
+        if (!io::ply::ReadGeometryFromPLYFile(geometry, [PLYPath UTF8String])) return nil;
+        return [SCMesh meshFromGeometry:geometry textureJPEGPath:JPEGPath];
+    } catch (const std::exception&) { return nil; }
+      catch (...) { return nil; }''')
+replace('geometryPLY','''        for (auto faceList : faceData) {
+            faces.push_back(Face3({faceList[0], faceList[1], faceList[2]}));''','''        for (auto faceList : faceData) {
+            if (faceList.size() != 3) return false;
+            faces.push_back(Face3({faceList[0], faceList[1], faceList[2]}));''')
 
 # Preserve operation state/cancellation and report actual solver/publication failures.
 for key in ['meshHeader','poissonHeader']:
