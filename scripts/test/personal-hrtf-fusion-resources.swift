@@ -58,6 +58,18 @@ struct FusionResourcesTest {
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
+  var state = PersonalHrtfCaptureCoverage.State()
+  let left = SIMD3<Float>(0.08,0,0), right = SIMD3<Float>(-0.08,0,0)
+  state.observe(head:true,left:left,right:nil)
+  guard state.head == 1, state.leftEar == 1, state.rightEar == 0 else { throw Failure.invalid("A single frame qualified unobserved regions") }
+  state.observe(head:false,left:SIMD3<Float>(0.12,0,0),right:nil)
+  guard state.leftEar == 1 else { throw Failure.invalid("Unstable ear observations accumulated") }
+  for _ in 0..<3 { state.observe(head:true,left:left,right:nil) }
+  guard state.head == 3, state.leftEar == 3, state.rightEar == 0 else { throw Failure.invalid("Left-ear evidence counted as both ears") }
+  state.observe(head:false,left:SIMD3<Float>(0.15,0,0),right:right)
+  guard state.leftEar == 3, state.rightEar == 1 else { throw Failure.invalid("Completed region was lost while scanning the other ear") }
+  for _ in 0..<2 { state.observe(head:false,left:nil,right:right) }
+  guard state.rightEar == 3 else { throw Failure.invalid("Stable right-ear evidence was lost") }
   var optional: CVPixelBuffer?
   guard CVPixelBufferCreate(kCFAllocatorDefault,32,32,kCVPixelFormatType_DepthFloat32,nil,&optional) == kCVReturnSuccess,
         let buffer = optional else { throw Failure.invalid("Synthetic depth allocation failed") }
@@ -80,7 +92,7 @@ struct FusionResourcesTest {
   let projection = simd_float4x4(columns:(SIMD4(-2,0,0,0),SIMD4(0,-2,0,0),SIMD4(0,0,-1.02,-1),SIMD4(0,0,-0.202,0)))
   guard let world = PersonalHrtfCaptureCoverage.modelPoint(CGPoint(x:0.8,y:0.7),depth:0.3,orientation:.up,cameraToModel:matrix_identity_float4x4,projection:projection),
         abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
-  return ["earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
+  return ["stableRegionEvidencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
  }
  static func main() throws {
   installMeshCrashTrace()

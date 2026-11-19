@@ -11,6 +11,19 @@ import StandardCyborgFusion
 final class PersonalHrtfCaptureCoverage {
  struct State {
   var head = 0, leftEar = 0, rightEar = 0
+  private var lastLeft: SIMD3<Float>?, lastRight: SIMD3<Float>?
+  mutating func observe(head seenHead:Bool,left:SIMD3<Float>?,right:SIMD3<Float>?) {
+   if seenHead { head = min(3,head+1) }
+   // A region needs three separate accepted frames; once captured it stays marked.
+   if let left, leftEar < 3 {
+    if let previous = lastLeft, simd_distance(previous,left) > 0.025 { leftEar = 0 }
+    lastLeft = left; leftEar = min(3,leftEar+1)
+   }
+   if let right, rightEar < 3 {
+    if let previous = lastRight, simd_distance(previous,right) > 0.025 { rightEar = 0 }
+    lastRight = right; rightEar = min(3,rightEar+1)
+   }
+  }
   var status: String {
    func mark(_ n:Int) -> String { n >= 3 ? "区域已采集" : (n > 0 ? "继续缓慢扫描" : "待采集") }
    return "头部：\(mark(head)) · 左耳：\(mark(leftEar)) · 右耳：\(mark(rightEar))"
@@ -22,7 +35,6 @@ final class PersonalHrtfCaptureCoverage {
  private let earModel: VNCoreMLModel
  private var state = State()
  private var anchor: SIMD3<Float>?, subjectLeft: SIMD3<Float>?
- private var lastLeft: SIMD3<Float>?, lastRight: SIMD3<Float>?
  init() throws {
   guard let bundle = SCFusionBundle.fusionBundle(),
         let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else {
@@ -48,10 +60,12 @@ final class PersonalHrtfCaptureCoverage {
      guard let d = Self.depthMedian(depth,in:box,orientation:orientation) else { return nil }
      return Self.modelPoint(CGPoint(x:box.midX,y:box.midY),depth:d,orientation:orientation,cameraToModel:cameraToModel,projection:projection)
     }
+    var seenHead = false
+    var leftEvidence: (SIMD3<Float>,Float)?, rightEvidence: (SIMD3<Float>,Float)?
     if let face = faceRequest.results?.max(by: { $0.boundingBox.width*$0.boundingBox.height < $1.boundingBox.width*$1.boundingBox.height }),
        face.confidence >= 0.8, abs(face.yaw?.floatValue ?? 100) < 0.3,
        let center = measured(face.boundingBox) {
-     state.head = min(3,state.head+1)
+     seenHead = true
      if anchor == nil {
       let box = face.boundingBox
       let side = CGRect(x:box.midX+box.width*0.2,y:box.midY-box.height*0.05,width:box.width*0.1,height:box.height*0.1)
@@ -73,15 +87,15 @@ final class PersonalHrtfCaptureCoverage {
       // Require physically separate ear-side observations in the registered model.
       // Merely turning the phone does not count as a captured ear.
       guard distance >= 0.055, distance <= 0.19, abs(side) >= 0.045 else { continue }
+      // Multiple boxes from one frame must never satisfy stable-frame evidence.
       if side > 0 {
-       if let previous = lastLeft, simd_distance(previous,point) > 0.025 { state.leftEar = 0 }
-       lastLeft = point; state.leftEar = min(3,state.leftEar+1)
+       if ear.confidence > (leftEvidence?.1 ?? 0) { leftEvidence = (point,ear.confidence) }
       } else {
-       if let previous = lastRight, simd_distance(previous,point) > 0.025 { state.rightEar = 0 }
-       lastRight = point; state.rightEar = min(3,state.rightEar+1)
+       if ear.confidence > (rightEvidence?.1 ?? 0) { rightEvidence = (point,ear.confidence) }
       }
      }
     }
+    state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0)
    } catch { /* A failed inference never counts as measured coverage. */ }
    completion(state)
   }

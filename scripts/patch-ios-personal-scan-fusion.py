@@ -17,6 +17,7 @@ paths.update({
 paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusion/IO/PointCloudIO_PLY.mm','b6d3e5febf75beb4eef50315986af30a05d8102d1ebae62461095bb19f7e9b64')})
 paths.update({'poissonAdapter':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PoissonReconExecute.hpp','4e4ef9bf0dff584cfeb3a1b51ce11ab69e1d4cd3a9311d59293615f7219eb441')})
 paths.update({'poissonPreprocessor':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PreProcessor.h','57a763b67cc432657261018e8f72b46104a6973b82e171ae64e85e1cd286ce33')})
+paths.update({'poissonPLY':('CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp','70b36492100d3aec7fd9fdd3d1a510ce00fb698304a60dc371a6b42db8972a80')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -134,6 +135,25 @@ replace('source','''            if (metadata.colorBuffer != NULL) {
                 CVPixelBufferRelease(metadata.colorBuffer);
             }
             if (includeCoverage) _sdaCoverageMetadataPending.store(false, std::memory_order_release);''')
+
+# PLY float properties preserve double_val. Auxiliary integer representations must
+# not cast negative/out-of-range floats to unsigned or overflow signed integers.
+replace('poissonPLY','#include <math.h>','''#include <math.h>
+#include <limits>
+template<class Integer> static Integer sdaPlyInteger(double value) {
+    if (value != value) return 0;
+    if (value <= static_cast<double>(std::numeric_limits<Integer>::lowest())) return std::numeric_limits<Integer>::lowest();
+    if (value >= static_cast<double>(std::numeric_limits<Integer>::max())) return std::numeric_limits<Integer>::max();
+    return static_cast<Integer>(value);
+}''')
+assert texts['poissonPLY'].count('int_val = (int)double_val;') == 5
+texts['poissonPLY']=texts['poissonPLY'].replace('int_val = (int)double_val;','int_val = sdaPlyInteger<int>(double_val);')
+assert texts['poissonPLY'].count('uint_val = (unsigned int)double_val;') == 5
+texts['poissonPLY']=texts['poissonPLY'].replace('uint_val = (unsigned int)double_val;','uint_val = sdaPlyInteger<unsigned int>(double_val);')
+assert texts['poissonPLY'].count('longlong_val = (long long)double_val;') == 5
+texts['poissonPLY']=texts['poissonPLY'].replace('longlong_val = (long long)double_val;','longlong_val = sdaPlyInteger<long long>(double_val);')
+assert texts['poissonPLY'].count('ulonglong_val = (unsigned long long)double_val;') == 3
+texts['poissonPLY']=texts['poissonPLY'].replace('ulonglong_val = (unsigned long long)double_val;','ulonglong_val = sdaPlyInteger<unsigned long long>(double_val);')
 
 # Surfel normals encode a small metric radius. Four decimal places can erase
 # every component; preserve Float32 precision and reject truncated numeric rows.
