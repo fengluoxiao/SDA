@@ -12,6 +12,7 @@ on:
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadDepthCapture.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
   workflow_dispatch:
 permissions:
   contents: read

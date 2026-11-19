@@ -12,6 +12,7 @@ struct PersonalHeadMeshCandidate {
  let gravity: SIMD3<Float>
  let points: Int
  let geometryScreenVersion: Int
+ let surface: PersonalHrtfReviewGeometry
  let maximumSupportDistance: Double
 }
 protocol PersonalHeadReconstructor: AnyObject {

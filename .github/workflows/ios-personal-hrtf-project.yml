@@ -9,6 +9,7 @@ on:
       - 'scripts/check-ios-personal-hrtf-project.sh'
       - 'scripts/test/personal-hrtf-project.cpp'
       - 'scripts/test/personal-hrtf-project-builder.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
   workflow_dispatch:
 permissions:
   contents: read

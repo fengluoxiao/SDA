@@ -21,6 +21,7 @@ on:
       - 'scripts/test/personal-hrtf-response-builder.swift'
       - 'scripts/test/fixtures/personal-hrtf-sphere/**'
       - 'vendor/mesh2hrtf-numcalc/**'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
   workflow_dispatch:
 permissions:
   contents: read

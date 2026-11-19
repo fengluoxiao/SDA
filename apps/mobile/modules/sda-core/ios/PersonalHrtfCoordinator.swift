@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 // call completion only after all native writes/threads have stopped.
 protocol PersonalHrtfLocalPipeline: AnyObject {
  func makeReconstruction() throws -> PersonalHeadReconstructor
- func process(_ candidate: PersonalHeadMeshCandidate, completion: @escaping (Result<[String:Any],Error>) -> Void)
+ func process(_ candidate: PersonalHeadMeshCandidate, landmarks: PersonalHrtfReviewGeometry.Confirmation, completion: @escaping (Result<[String:Any],Error>) -> Void)
  func cancel()
 }
 
@@ -18,6 +18,7 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
  private var scanning: PersonalHeadScanController?
  private let localPipeline: PersonalHrtfLocalPipeline?
  private var processing = false
+ private var review: PersonalHrtfReviewController?
  static func topController() -> UIViewController? {
   let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.filter { $0.activationState == .foregroundActive }.flatMap { $0.windows }
   var root = windows.first(where:{$0.isKeyWindow})?.rootViewController
@@ -28,7 +29,8 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
   self.localPipeline = localPipeline; super.init(); PersonalHrtfStore.prepareForLaunch()
  }
  func cancel() {
-  if let scanning { scanning.cancel() }
+  if let review { review.cancel() }
+  else if let scanning { scanning.cancel() }
   else if processing { localPipeline?.cancel() }
   else { presenter?.presentedViewController?.dismiss(animated:false); finish(.failure(PersonalHrtfError.message("操作已取消"))) }
  }
@@ -48,14 +50,30 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
     switch result {
     case .failure(let error): self.finish(.failure(error))
     case .success(let candidate):
-     self.processing = true
-     localPipeline.process(candidate) { [self] result in
-      DispatchQueue.main.async {
-       // The pipeline has finished every writer before releasing its input.
-       try? FileManager.default.removeItem(at:candidate.directory)
-       self.processing = false; self.finish(result)
+     let review = PersonalHrtfReviewController(surface:candidate.surface)
+     review.modalPresentationStyle = .fullScreen; self.review = review
+     review.complete = { [self] result in
+      self.review = nil
+      switch result {
+      case .failure(let error):
+       try? FileManager.default.removeItem(at:candidate.directory); self.finish(.failure(error))
+      case .success(let landmarks):
+       self.processing = true
+       localPipeline.process(candidate,landmarks:landmarks) { [self] result in
+        DispatchQueue.main.async {
+         // The pipeline has finished every writer before releasing its input.
+         try? FileManager.default.removeItem(at:candidate.directory)
+         self.processing = false; self.finish(result)
+        }
+       }
       }
      }
+     guard let presenter = Self.topController(), presenter.viewIfLoaded?.window != nil else {
+      self.review = nil; review.complete = nil
+      try? FileManager.default.removeItem(at:candidate.directory)
+      self.finish(.failure(PersonalHrtfError.message("采集已结束，请回到应用重新确认测量位置"))); return
+     }
+     presenter.present(review,animated:true)
     }
    }
    presenter.present(scanner,animated:true)

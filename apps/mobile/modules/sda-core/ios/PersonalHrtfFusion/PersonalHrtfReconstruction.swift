@@ -162,10 +162,13 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    }
    lock.lock(); phase = .checking; lock.unlock()
    do {
-    let distance = try PersonalHrtfMeshCheck.screen(mesh:mesh,support:support,cancelled:{ [self] in
+    let measured = try PersonalHrtfMeshCheck.load(mesh:mesh,support:support,cancelled:{ [self] in
      lock.lock(); defer { lock.unlock() }; return cancelled
     })
-    end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:1,maximumSupportDistance:distance)))
+    let distance = try PersonalHrtfMeshCheck.screen(measured,cancelled:{ [self] in
+     lock.lock(); defer { lock.unlock() }; return cancelled
+    })
+    end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:1,surface:measured.surface,maximumSupportDistance:distance)))
    } catch { end(.failure(error)) }
   }
   model.sdaReset { [self] in meshQueue.addOperation(operation) }

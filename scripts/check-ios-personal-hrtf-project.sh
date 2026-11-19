@@ -6,7 +6,7 @@ out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
 native="$ios/PersonalHrtfNative"
 device_sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-swift=("$ios/PersonalHrtfResponseBuilder.swift" "$ios/PersonalHrtfProjectBuilder.swift" "$PWD/scripts/test/personal-hrtf-project-builder.swift")
+swift=("$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfResponseBuilder.swift" "$ios/PersonalHrtfProjectBuilder.swift" "$PWD/scripts/test/personal-hrtf-project-builder.swift")
 xcrun --sdk iphoneos swiftc -typecheck -parse-as-library -swift-version 5 -target arm64-apple-ios16.4 -sdk "$device_sdk" -import-objc-header "$ios/SdaBridge.h" "${swift[@]}" 2>&1 | tee "$out/project-device-typecheck.log"
 # Optimized + sanitizer builds catch native ABI, ownership, I/O and indexing
 # problems independently. Tiny synthetic geometry is not an ear accuracy test.

@@ -1,0 +1,30 @@
+name: iOS measured head and ear landmark review
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+    paths:
+      - '.github/workflows/ios-personal-hrtf-review.yml'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
+      - 'scripts/check-ios-personal-hrtf-review.sh'
+      - 'scripts/test/personal-hrtf-review*.swift'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir review-build
+      - name: Check measured landmark geometry and native review UI
+        run: bash scripts/check-ios-personal-hrtf-review.sh review-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-personal-hrtf-review-evidence
+          path: |
+            review-build/*.json
+            review-build/*.log
+          retention-days: 7

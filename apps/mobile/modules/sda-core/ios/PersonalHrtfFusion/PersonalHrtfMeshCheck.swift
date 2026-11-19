@@ -8,7 +8,14 @@ enum PersonalHrtfMeshCheck {
   let check: () -> Bool
   init(_ check: @escaping () -> Bool) { self.check = check }
  }
+ struct Loaded {
+  let surface: PersonalHrtfReviewGeometry
+  let support: [Float], normals: [Float]
+ }
  static func screen(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Double {
+  try screen(try load(mesh:meshURL,support:supportURL,cancelled:cancelled),cancelled:cancelled)
+ }
+ static func load(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Loaded {
   if cancelled() { throw PersonalHrtfError.message("已取消本机网格检查") }
   try preflight(meshURL,maximumVertices:80000,maximumFaces:160000)
   try preflight(supportURL,maximumVertices:500000,maximumFaces:0)
@@ -33,18 +40,23 @@ enum PersonalHrtfMeshCheck {
         support.pointsData.count == support.pointCount * pointStride else {
    throw PersonalHrtfError.message("本机测量点布局不一致")
   }
-  let token = Cancellation(cancelled)
   let vertices = try unpack(mesh.positionData,count:mesh.vertexCount,stride:16,offset:0,cancelled:cancelled)
   let positions = try unpack(support.pointsData,count:support.pointCount,stride:pointStride,offset:position,cancelled:cancelled)
   let normals = try unpack(support.pointsData,count:support.pointCount,stride:pointStride,offset:normal,cancelled:cancelled)
   let faces = mesh.facesData.withUnsafeBytes { raw in
    (0..<mesh.faceCount * 3).map { raw.loadUnaligned(fromByteOffset:$0 * 4,as:UInt32.self) }
   }
+  return Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals)
+ }
+ static func screen(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> Double {
+  let token = Cancellation(cancelled)
+  let vertices = loaded.surface.vertices, faces = loaded.surface.triangles
+  let positions = loaded.support, normals = loaded.normals
   var result = vertices.withUnsafeBufferPointer { v in
    faces.withUnsafeBufferPointer { f in
     positions.withUnsafeBufferPointer { p in
      normals.withUnsafeBufferPointer { n in
-      let input = SdaHrtfMeshView(vertices:v.baseAddress,vertex_count:mesh.vertexCount,triangles:f.baseAddress,triangle_count:mesh.faceCount,support:p.baseAddress,support_normals:n.baseAddress,support_count:support.pointCount)
+      let input = SdaHrtfMeshView(vertices:v.baseAddress,vertex_count:vertices.count/3,triangles:f.baseAddress,triangle_count:faces.count/3,support:p.baseAddress,support_normals:n.baseAddress,support_count:positions.count/3)
       return sda_hrtf_screen_head_mesh(input,{ pointer in
        guard let pointer else { return 1 }
        return Unmanaged<Cancellation>.fromOpaque(pointer).takeUnretainedValue().check() ? 1 : 0

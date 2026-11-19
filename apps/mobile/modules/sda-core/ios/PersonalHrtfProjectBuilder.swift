@@ -9,6 +9,13 @@ final class PersonalHrtfProjectBuilder {
   let leftFaces: [UInt32], rightFaces: [UInt32]
   let front: [Double], up: [Double]
  }
+ // Recheck the same immutable surface used by the review controller.
+ static func measurement(surface: PersonalHrtfReviewGeometry, support: [Float], normals: [Float],
+                         landmarks: PersonalHrtfReviewGeometry.Confirmation) throws -> Measurement {
+  let checked = try surface.confirm(leftFaces:landmarks.leftFaces,rightFaces:landmarks.rightFaces,nose:landmarks.nose,crown:landmarks.crown)
+  return Measurement(vertices:surface.vertices,triangles:surface.triangles,support:support,normals:normals,
+   leftFaces:checked.leftFaces,rightFaces:checked.rightFaces,front:checked.front,up:checked.up)
+ }
  struct PreparedInput {
   let project: URL
   let specification: PersonalHrtfResponseBuilder.Specification
