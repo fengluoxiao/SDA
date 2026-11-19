@@ -21,8 +21,8 @@ struct PersonalHrtfReviewGeometry {
   let front: [Double], up: [Double]
  }
  init(vertices: [Float], triangles: [UInt32]) throws {
-  guard vertices.count % 3 == 0, (12...240000).contains(vertices.count),
-        triangles.count % 3 == 0, (12...480000).contains(triangles.count),
+  guard vertices.count % 3 == 0, (12...3000000).contains(vertices.count),
+        triangles.count % 3 == 0, (12...6000000).contains(triangles.count),
         vertices.allSatisfy({ $0.isFinite && abs($0) < 100 }),
         triangles.allSatisfy({ Int($0) < vertices.count / 3 }) else {
    throw Failure(message:"测量模型尺寸或坐标无效")

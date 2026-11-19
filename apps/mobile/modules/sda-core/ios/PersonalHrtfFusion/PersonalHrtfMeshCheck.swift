@@ -17,11 +17,16 @@ enum PersonalHrtfMeshCheck {
  }
  static func load(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Loaded {
   if cancelled() { throw PersonalHrtfError.message("已取消本机网格检查") }
-  try preflight(meshURL,maximumVertices:80000,maximumFaces:160000)
-  try preflight(supportURL,maximumVertices:Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS),maximumFaces:0)
+  let header = try preflight(meshURL,maximumVertices:1000000,maximumFaces:2000000)
+  let supportHeader = try preflight(supportURL,maximumVertices:Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS),maximumFaces:0)
+  // Bound allocations from actual headers before invoking the upstream readers.
+  // Estimate includes geometry, topology/BVH, support search and copied buffers.
+  let needed = UInt64(header.vertices)*160 + UInt64(header.faces)*240 + UInt64(supportHeader.vertices)*64
+  let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+  guard needed <= budget else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(budget/1024/1024) MiB；请关闭其他应用后重试") }
   let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"")
   guard let support = SCPointCloud(plyPath:supportURL.path),
-        (4...80000).contains(mesh.vertexCount), (4...160000).contains(mesh.faceCount),
+        (4...1000000).contains(mesh.vertexCount), (4...2000000).contains(mesh.faceCount),
         (4...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(support.pointCount) else {
    throw PersonalHrtfError.message("候选网格或测量点数超出本机处理范围")
   }
@@ -76,7 +81,7 @@ enum PersonalHrtfMeshCheck {
  }
  // Reject oversized count declarations before the upstream PLY reader can
  // reserve a buffer. This also bounds failures if a private job is incomplete.
- private static func preflight(_ url:URL,maximumVertices:Int,maximumFaces:Int) throws {
+ private static func preflight(_ url:URL,maximumVertices:Int,maximumFaces:Int) throws -> (vertices:Int,faces:Int) {
   let size = try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
   guard (128...256 * 1024 * 1024).contains(size) else { throw PersonalHrtfError.message("本机测量文件尺寸无效") }
   let handle = try FileHandle(forReadingFrom:url); defer { try? handle.close() }
@@ -98,6 +103,7 @@ enum PersonalHrtfMeshCheck {
   guard let vertices, vertices >= 4, (maximumFaces == 0 || (faces ?? 0) >= 4) else {
    throw PersonalHrtfError.message("测量文件缺少有效表面")
   }
+  return (vertices,faces ?? 0)
  }
  private static func unpack(_ data: Data,count:Int,stride:Int,offset:Int,cancelled:() -> Bool) throws -> [Float] {
   try data.withUnsafeBytes { raw in

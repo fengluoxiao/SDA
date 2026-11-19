@@ -13,9 +13,9 @@ struct Fixture {
  SdaHrtfMeshView view(){return {vertices.data(),vertices.size()/3,triangles.data(),triangles.size()/3,support.data(),normals.data(),support.size()/3};}
 };
 void require(bool ok,const char *message){if(!ok)throw std::runtime_error(message);}
-Fixture cube(){
- Fixture f;std::map<std::array<int,3>,uint32_t> ids;constexpr int n=8;
- auto vertex=[&](std::array<int,3> p){auto result=ids.emplace(p,uint32_t(ids.size()));if(result.second)for(int v:p)f.vertices.push_back(float(v)*0.0025f-0.01f);return result.first->second;};
+Fixture cube(int n=8){
+ Fixture f;std::map<std::array<int,3>,uint32_t> ids;
+ auto vertex=[&](std::array<int,3> p){auto result=ids.emplace(p,uint32_t(ids.size()));if(result.second)for(int v:p)f.vertices.push_back(float(v)*(0.02f/n)-0.01f);return result.first->second;};
  for(int axis=0;axis<3;++axis)for(int side:{0,n})for(int i=0;i<n;++i)for(int j=0;j<n;++j){
   auto id=[&](int u,int v){std::array<int,3> p{};p[axis]=side;p[(axis+1)%3]=u;p[(axis+2)%3]=v;return vertex(p);};
   uint32_t a=id(i,j),b=id(i+1,j),c=id(i+1,j+1),d=id(i,j+1);
@@ -26,6 +26,10 @@ Fixture cube(){
   std::array<double,3> normal{};
   for(int j=0;j<3;++j)normal[j]=(v[1][(j+1)%3]-v[0][(j+1)%3])*(v[2][(j+2)%3]-v[0][(j+2)%3])-(v[1][(j+2)%3]-v[0][(j+2)%3])*(v[2][(j+1)%3]-v[0][(j+1)%3]);
   double length=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);
+  if(n>=64){
+   for(int j=0;j<3;j++){f.support.push_back(float((v[0][j]+v[1][j]+v[2][j])/3));f.normals.push_back(float(normal[j]/length));}
+   continue;
+  }
   for(int a=0;a<=3;++a)for(int b=0;b<=3-a;++b)for(int j=0;j<3;++j){
    f.support.push_back(float(v[0][j]+(v[1][j]-v[0][j])*a/3+(v[2][j]-v[0][j])*b/3));f.normals.push_back(float(normal[j]/length));
   }
@@ -66,6 +70,7 @@ int main(){try{
  for(size_t i=0;i<dense.support.size();++i){dense.support[i]=originalSupport[i%originalSupport.size()];dense.normals[i]=originalNormals[i%originalNormals.size()];}
  check(dense,0,"Exact dense support search at maximum scan budget");
  callbacks=0;require(sda_hrtf_screen_head_mesh(dense.view(),[](void *p){return int(++*static_cast<int*>(p)>=1500);},&callbacks).code==2,"Cancel dense support indexing");
- std::cout<<"{\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
+ auto largeMesh=cube(256);check(largeMesh,0,"Dense surface above legacy 80k vertex limit");
+ std::cout<<"{\"denseMeshCapacityPassed\":true,\"denseMeshVertices\":393218,\"denseMeshFaces\":786432,\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

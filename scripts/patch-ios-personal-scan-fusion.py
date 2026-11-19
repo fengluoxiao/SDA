@@ -15,6 +15,7 @@ paths.update({
  'poissonSource':('CppDependencies/PoissonRecon/Sources/src/MeshingOperation.mm','e1c8920d10b74a7395b316b1162c99598b1fc94c830de6d32ad79b7c6937873e'),
 })
 paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusion/IO/PointCloudIO_PLY.mm','b6d3e5febf75beb4eef50315986af30a05d8102d1ebae62461095bb19f7e9b64')})
+paths.update({'poissonAdapter':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PoissonReconExecute.hpp','4e4ef9bf0dff584cfeb3a1b51ce11ab69e1d4cd3a9311d59293615f7219eb441')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -129,6 +130,10 @@ replace('pointCloudPLY','''    fclose(file);
     return complete && closed;
 }''')
 
+replace('poissonAdapter','#include "PreProcessor.h"','#include "PreProcessor.h"\n#include "SdaPoissonMeshCleanup.hpp"')
+replace('poissonAdapter','    // Write the output PLY file','    sdaCleanPoissonMesh(vertexCollector.vertices, faceCollector.faces);\n\n    // Write the output PLY file')
+replace('poissonAdapter','PLY::DefaultFileType(), comments','PLY_BINARY_LE, comments')
+
 # Preserve operation state/cancellation and report actual solver/publication failures.
 for key in ['meshHeader','poissonHeader']:
  replace(key,'@interface '+('SCMeshingOperation' if key=='meshHeader' else 'MeshingOperation')+' : NSOperation',
@@ -160,6 +165,9 @@ recovery=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/P
 recoveryTarget=root/Path(paths['source'][0]).parent/'SdaTrackingRecovery.hpp'
 recoveryTarget.write_bytes(recovery.read_bytes())
 record={str(recoveryTarget.relative_to(root)):hashlib.sha256(recovery.read_bytes()).hexdigest()}
+cleanup=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaPoissonMeshCleanup.hpp'
+cleanupTarget=root/Path(paths['poissonAdapter'][0]).parent/cleanup.name
+cleanupTarget.write_bytes(cleanup.read_bytes());record[str(cleanupTarget.relative_to(root))]=hashlib.sha256(cleanup.read_bytes()).hexdigest()
 meshHeader=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaHrtfMesh.h'
 for key in ['fusionHeader']:
  target=root/Path(paths[key][0]).parent/'SdaHrtfMesh.h'

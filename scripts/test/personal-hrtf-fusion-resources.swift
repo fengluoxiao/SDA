@@ -18,7 +18,7 @@ struct FusionResourcesTest {
   let input = folder.appendingPathComponent("sphere.ply")
   let support = folder.appendingPathComponent("support.ply")
   let output = folder.appendingPathComponent("candidate.ply")
-  let count = 20000
+  let count = 100000
   var text = "ply\nformat ascii 1.0\ncomment StandardCyborgFusionVersion 1.0.0\nelement vertex \(count)\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float surfel_radius\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n"
   for i in 0..<count {
    let y = 1 - 2 * (Double(i) + 0.5) / Double(count)
@@ -46,9 +46,12 @@ struct FusionResourcesTest {
   let cancelled = SCMeshingOperation(inputPLYPath:support.path,outputPLYPath:folder.appendingPathComponent("cancelled.ply").path)
   cancelled.cancel(); queue.addOperation(cancelled); queue.waitUntilAllOperationsAreFinished()
   guard cancelled.isCancelled, !FileManager.default.fileExists(atPath:folder.appendingPathComponent("cancelled.ply").path) else { throw Failure.invalid("Cancelled reconstruction wrote an output") }
+  let file = try FileHandle(forReadingFrom:output); defer { try? file.close() }
+  let prefix = try file.read(upToCount:512) ?? Data()
+  guard String(data:prefix.prefix(64),encoding:.ascii)?.contains("format binary_little_endian 1.0") == true else { throw Failure.invalid("Poisson mesh lost binary Float32 export") }
   let mesh = SCMesh(plyPath:output.path,jpegPath:"")
-  guard mesh.vertexCount > 100, mesh.faceCount > 100 else { throw Failure.invalid("Actual Poisson surface is empty") }
-  return ["syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
+  guard mesh.vertexCount > 80000, mesh.faceCount > 160000 else { throw Failure.invalid("Actual Poisson surface is empty") }
+  return ["syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model

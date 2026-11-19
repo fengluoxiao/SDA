@@ -5,7 +5,7 @@ const model=await build({entryPoints:['apps/mobile/src/ios-ui-model.ts'],bundle:
 const {iosLeftLibraryGutter,iosRightLibraryGutter,rightSideDockInset,iosRightSideContentGap,leftSideDockInset,iosLeftContentOffset}=await import('data:text/javascript;base64,'+Buffer.from(model.outputFiles[0].text).toString('base64'));
 const source=readFileSync('apps/mobile/src/IOSPlayer.tsx','utf8');
 const expression=source.match(/scrollIndicatorInsets=\{(\{[^}]+\})\}/)[1];
-const indicator=new Function('iosRightSideContentGap','iosRightLibraryGutter','sideNavigationRight','SIDE_NAVIGATION_WIDTH','sideNavigationActive','p','screenInsets','nativeLibraryHeaderActive','cutoutSide','tabletSideNavigation = false','return '+expression).bind(null,iosRightSideContentGap,iosRightLibraryGutter);
+const indicator=new Function('iosRightSideContentGap','iosRightLibraryGutter','sideNavigationRight','SIDE_NAVIGATION_WIDTH','sideNavigationActive','p','screenInsets','nativeLibraryHeaderActive','cutoutSide','tabletSideNavigation = false','circularMiniPlayerActive = false','return '+expression).bind(null,iosRightSideContentGap,iosRightLibraryGutter);
 for(const safeRight of [0,44,59,62]) {
  const inset=indicator(true,48,true,{selectedUri:'mock'},{right:safeRight});
  assert.equal(inset.top,10);assert.equal(inset.bottom,62);
@@ -72,3 +72,5 @@ for(const safeLeft of [0,44,59,62]) for(const cutoutSide of ['left','right']) {
 }
 
 for(const right of [false,true])assert.equal(indicator(right,48,true,{selectedUri:'local'},{right:24},true,null,true).right,3,'tablet indicator stays inside the separately bounded page viewport');
+
+assert.equal(indicator(true,48,true,{selectedUri:"local"},{right:24},true,null,false,true).bottom,10,"circular mini player does not reserve the rectangular mini player gutter");

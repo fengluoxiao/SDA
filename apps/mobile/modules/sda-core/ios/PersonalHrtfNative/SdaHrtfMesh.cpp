@@ -97,7 +97,7 @@ struct Screen {
  Screen(SdaHrtfMeshView i,SdaHrtfMeshCancelled c,void *p):input(i),cancelled(c),context(p){}
  uint64_t ticks=0,work=0;
  void check(){if((++ticks&1023)==0&&cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");}
- void charge(){check();if(++work>100000000)throw Error(3,"Mesh verification exceeds local work bound");}
+ void charge(){check();if(++work>100000000 + std::min<size_t>(input.triangle_count,2000000)*200ULL)throw Error(3,"Mesh verification exceeds local work bound");}
  uint32_t root(uint32_t x){while(parent[x]!=x){parent[x]=parent[parent[x]];x=parent[x];}return x;}
  int tree(int start,int end){
   check();Node node;node.start=start;node.end=end;
@@ -153,7 +153,7 @@ struct Screen {
  void run(){
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
   if(!input.vertices||!input.triangles||!input.support||!input.support_normals||input.vertex_count<4||input.triangle_count<4||input.support_count<4)throw Error(1,"Incomplete measured mesh/support input");
-  if(input.vertex_count>80000||input.triangle_count>160000||input.support_count>SDA_HRTF_MAXIMUM_SUPPORT_POINTS)throw Error(3,"Measured geometry exceeds local processing bound");
+  if(input.vertex_count>1000000||input.triangle_count>2000000||input.support_count>SDA_HRTF_MAXIMUM_SUPPORT_POINTS)throw Error(3,"Measured geometry exceeds local processing bound");
   std::vector<Edge> edges;edges.reserve(3*input.triangle_count);faces.reserve(input.triangle_count);
   parent.resize(input.triangle_count);std::iota(parent.begin(),parent.end(),0);
   std::vector<bool> used(input.vertex_count,false);Box bounds;

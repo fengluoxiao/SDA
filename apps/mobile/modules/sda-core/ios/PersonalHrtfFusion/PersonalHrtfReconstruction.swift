@@ -117,7 +117,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   lock.unlock()
   let ready = model.sdaSurfelCount >= 10000 && count > 0
   captureReadiness?(ready,coverageStatus)
-  if accepted, let color = metadata.colorBuffer, let depth = metadata.depthBuffer {
+  if accepted, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
    let orientation: CGImagePropertyOrientation
    switch UIDevice.current.orientation {
    case .landscapeLeft: orientation = .up

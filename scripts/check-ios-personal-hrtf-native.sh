@@ -30,6 +30,10 @@ xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfResults.cpp" -o "$out/SdaHrtfResults-ios-arm64.o"
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfProject.cpp" -o "$out/SdaHrtfProject-ios-arm64.o"
 xcrun libtool -static -o "$out/libSdaPersonalHrtf-ios-arm64.a" "$out/SdaHrtfSolver-ios-arm64.o" "$out/SdaHrtfImpulse-ios-arm64.o" "$out/SdaHrtfMesh-ios-arm64.o" "$out/SdaHrtfResults-ios-arm64.o" "$out/SdaHrtfProject-ios-arm64.o"
+# Exercise the extractor's microscopic cleanup under memory/undefined-behavior sanitizers.
+xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$native" scripts/test/personal-hrtf-poisson-cleanup.cpp -o "$out/poisson-cleanup-host-test"
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/poisson-cleanup-host-test" | tee "$out/poisson-cleanup-host-result.json"
+
 # Run inside the iOS Simulator runtime as well. This verifies an iOS process,
 # while still being explicitly distinct from a physical TrueDepth scan/test.
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
