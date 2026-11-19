@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -38,13 +39,13 @@ struct Failure : std::runtime_error {
  Failure(int c, const std::string &s):std::runtime_error(s),code(c){}
 };
 struct NullBuffer:std::streambuf { int overflow(int c) override {return traits_type::not_eof(c);} };
-struct Allocation {uint64_t bytes; void (*dispose)(void *);};
+struct Allocation {uint64_t bytes; void (*dispose)(void *); std::list<void*>::iterator order;};
 struct Runtime {
  SdaHrtfSolver &owner;
  std::filesystem::path work;
  uint64_t used=0,peak=0,ticks=0;
  std::unordered_map<void*,Allocation> arrays;
- std::vector<void*> order;
+ std::list<void*> order;
  std::set<FILE*> files;
  SdaHrtfProgress progress=nullptr;
  void *callbackContext=nullptr;
@@ -65,15 +66,19 @@ template<class T> T *allocate_array(size_t count) {
  check_now();
  if(count>uint64_t(std::numeric_limits<int>::max()) || count>runtime->owner.budget/sizeof(T))
   throw Failure(3,"Native solver array exceeds memory budget");
- uint64_t bytes=count*sizeof(T);
+ // Charge bounded bookkeeping as well; never retain an ever-growing log of
+ // arrays that have already been freed during the many frequency solves.
+ uint64_t bytes=count*sizeof(T)+128;
  if(bytes>runtime->owner.budget-runtime->used) throw Failure(3,"Native solver reached memory budget");
- T *p=new T[count];
  runtime->used+=bytes;runtime->peak=std::max(runtime->peak,runtime->used);
+ T *p=nullptr;bool linked=false;
  try {
-  runtime->arrays.emplace(p,Allocation{bytes,[](void *q){delete[] static_cast<T*>(q);}});
-  runtime->order.push_back(p);
+  p=new T[count];
+  runtime->order.push_back(p);linked=true;
+  runtime->arrays.emplace(p,Allocation{bytes,[](void *q){delete[] static_cast<T*>(q);},std::prev(runtime->order.end())});
  } catch(...) {
-  runtime->arrays.erase(p);runtime->used-=bytes;delete[] p;throw;
+  if(linked)runtime->order.pop_back();
+  runtime->used-=bytes;delete[] p;throw;
  }
  return p;
 }
@@ -81,15 +86,16 @@ template<class T> void release_array(T *p) noexcept {
  if(!p) return;
  auto found=runtime->arrays.find(p);
  if(found==runtime->arrays.end()) std::terminate();
- auto a=found->second;runtime->arrays.erase(found);runtime->used-=a.bytes;a.dispose(p);
+ auto a=found->second;runtime->order.erase(a.order);runtime->arrays.erase(found);runtime->used-=a.bytes;a.dispose(p);
 }
 inline void Runtime::clear() noexcept {
- // Reverse creation order also handles partially constructed native arrays.
- for(auto p=order.rbegin();p!=order.rend();++p) {
-  auto found=arrays.find(*p);if(found==arrays.end())continue;
-  auto a=found->second;void *value=found->first;arrays.erase(found);used-=a.bytes;a.dispose(value);
+ // Only live arrays are recorded; cancellation/error cleanup is bounded by
+ // current allocations, independent of elapsed frequencies or iterations.
+ while(!order.empty()) {
+  void *value=order.back();auto found=arrays.find(value);
+  if(found==arrays.end())std::terminate();
+  auto a=found->second;order.pop_back();arrays.erase(found);used-=a.bytes;a.dispose(value);
  }
- order.clear();
  for(FILE *f:files)std::fclose(f);
  files.clear();
 }
