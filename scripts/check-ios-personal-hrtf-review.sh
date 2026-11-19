@@ -39,18 +39,30 @@ PY
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl spawn "$udid" "$out/review-simulator-test" | tee "$out/review-simulator-result.json"
-python3 - "$udid" "$app" "$out/review-ui-runtime.log" <<'PY'
-import subprocess,sys
-udid,app,log=sys.argv[1:]
+python3 - "$udid" "$app" "$out/review-ui-runtime.log" "$out/review-ui-result.json" <<'PY'
+import subprocess,sys,time,json
+from pathlib import Path
+udid,app,log,result_path=sys.argv[1:]
 print('Installing measured-model review test on standard iPhone simulator',flush=True)
 subprocess.run(['xcrun','simctl','install',udid,app],check=True,timeout=120)
+container=subprocess.check_output(['xcrun','simctl','get_app_container',udid,'app.sda.hrtf-review-test','data'],text=True,timeout=30).strip()
+result_file=Path(container)/'Documents/review-result.json'
+assert not result_file.exists(),'UI result must come from this fresh installation'
 print('Launching measured-model review layout and cancellation checks',flush=True)
-with open(log,'w')as output:
- try:subprocess.run(['xcrun','simctl','launch','--console',udid,'app.sda.hrtf-review-test'],check=True,timeout=120,stdout=output,stderr=subprocess.STDOUT)
- finally:
-  output.flush()
-  print(open(log).read(),flush=True)
-  subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == \"ReviewUITest\"'],stdout=output,stderr=subprocess.STDOUT,timeout=30)
+subprocess.run(['xcrun','simctl','launch',udid,'app.sda.hrtf-review-test'],check=True,timeout=60)
+deadline=time.monotonic()+100
+while time.monotonic()<deadline and not result_file.exists():time.sleep(.5)
+try:
+ assert result_file.exists(),'Review application did not produce a runtime result'
+ result=json.loads(result_file.read_text())
+ Path(result_path).write_text(json.dumps(result,indent=2)+'\n')
+ Path(log).write_text(json.dumps(result)+'\n')
+ print(json.dumps(result),flush=True)
+ assert result.get('passed'),result
+finally:
+ with open(log,'a')as output:
+  subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "ReviewUITest"'],stdout=output,stderr=subprocess.STDOUT,timeout=30)
+ subprocess.run(['xcrun','simctl','terminate',udid,'app.sda.hrtf-review-test'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
 PY
 python3 - "$out" <<'PY'
 from pathlib import Path

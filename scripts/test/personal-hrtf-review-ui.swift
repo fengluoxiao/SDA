@@ -1,11 +1,20 @@
 import UIKit
 import SceneKit
 
+enum ReviewResult {
+ static func write(_ result: [String:Any]) {
+  guard let directory = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first else { return }
+  try? FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+  if let data = try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]) {
+   try? data.write(to:directory.appendingPathComponent("review-result.json"),options:.atomic)
+  }
+ }
+}
 @objc(ReviewTestDelegate) final class ReviewTestDelegate: UIResponder, UIApplicationDelegate {
  func application(_ application: UIApplication,didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
   fputs("Review app launched\n",stderr)
   DispatchQueue.global().asyncAfter(deadline:.now()+90) {
-   fputs("Review app watchdog expired\n",stderr); exit(1)
+   ReviewResult.write(["passed":false,"error":"review app watchdog expired"]); fputs("Review app watchdog expired\n",stderr); exit(1)
   }
   return true
  }
@@ -34,6 +43,7 @@ import SceneKit
      guard case .failure = result, callbacks == 1 else { self.fail("cancel completion") }
      DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
       guard self.callbacks == 1, host.presentedViewController == nil else { self.fail("cancel dismissal") }
+      ReviewResult.write(["passed":true,"layoutSizesChecked":6,"cancelDismissedOnce":true,"cancelBeforePresentation":true,"physicalScanTested":false,"deviceVisualAcceptance":false])
       print("{\"passed\":true,\"layoutSizesChecked\":6,\"cancelDismissedOnce\":true,\"cancelBeforePresentation\":true,\"physicalScanTested\":false,\"deviceVisualAcceptance\":false}")
       fflush(stdout); exit(0)
      }
@@ -64,7 +74,7 @@ import SceneKit
    try ReviewFixture.require(segment.numberOfSegments == 4,"landmark steps missing")
   }
  }
- private func fail(_ message: String) -> Never { fputs("Review UI test: "+message+"\n",stderr); exit(1) }
+ private func fail(_ message: String) -> Never { ReviewResult.write(["passed":false,"error":message]); fputs("Review UI test: "+message+"\n",stderr); exit(1) }
 }
 @main struct ReviewUITest {
  static func main() { UIApplicationMain(CommandLine.argc,CommandLine.unsafeArgv,nil,NSStringFromClass(ReviewTestDelegate.self)) }
