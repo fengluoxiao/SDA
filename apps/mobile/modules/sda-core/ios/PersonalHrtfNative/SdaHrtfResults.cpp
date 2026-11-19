@@ -56,7 +56,7 @@ extern "C" SdaHrtfSolverResult sda_hrtf_read_pressure(SdaHrtfSolver *job,const i
   error(1,"Invalid local pressure dimensions");return reply;
  }
  std::fill(output,output+values,0);
- if(values>64ull*1024*1024/sizeof(double) || job->budget<2*1024*1024 || values>(job->budget-2*1024*1024)/sizeof(double)) { error(3,"Pressure bank exceeds local memory budget");return reply; }
+ if(values>64ull*1024*1024/sizeof(double) || job->budget<4*1024*1024 || values>(job->budget-4*1024*1024)/sizeof(double)) { error(3,"Pressure bank exceeds local memory budget");return reply; }
  if(sda_numcalc::runtime){error(1,"Cannot read pressure inside a solver callback");return reply;}
  std::lock_guard<std::mutex> guard(job->mutex);
  try {
@@ -83,7 +83,15 @@ extern "C" SdaHrtfSolverResult sda_hrtf_read_pressure(SdaHrtfSolver *job,const i
    }
   }
   // Caller-owned bank plus bounded per-file parsing and evaluation index.
-  reply.peak_array_bytes=values*sizeof(double)+2*1024*1024;
+  for(size_t d=0;d<directions;++d) {
+   check(job);
+   for(size_t ear=0;ear<2;++ear) {
+    bool nonzero=false;
+    for(size_t k=0;k<2*bins;++k)nonzero=nonzero || output[(d*2+ear)*2*bins+k]!=0;
+    if(!nonzero)throw Failure(1,"Acoustic direction has an entirely zero ear spectrum");
+   }
+  }
+  reply.peak_array_bytes=values*sizeof(double)+4*1024*1024;
  }catch(const Failure &e){error(e.code,e.what());}
  catch(const std::bad_alloc &){error(3,"Insufficient memory for acoustic results");}
  catch(const std::exception &){error(1,"Missing or unreadable acoustic result");}

@@ -63,7 +63,7 @@ final class PersonalHrtfResponseBuilder {
   try require(s.referenceRadius.isFinite && (0.25...10).contains(s.referenceRadius) && (0..<2*s.bins).contains(s.commonShift),"响应参考距离或共同延迟无效")
   let bytes = count * 4 * s.bins * MemoryLayout<Double>.size
   let assetBytes = count * 4 * s.bins * MemoryLayout<Float>.size
-  try require(bytes <= 64 * 1024 * 1024 && assetBytes <= 16 * 1024 * 1024 && numericalBudget >= UInt64(bytes + 2*1024*1024) && numericalBudget <= 768*1024*1024,"个人响应超过本机内存或档案尺寸上限")
+  try require(bytes <= 64 * 1024 * 1024 && assetBytes <= 16 * 1024 * 1024 && numericalBudget >= UInt64(bytes + 4*1024*1024) && numericalBudget <= 768*1024*1024,"个人响应超过本机内存或档案尺寸上限")
   var ids = Set<Int32>(), directions = Set<String>(), sectors = Set<Int>(), low = false, high = false
   let locale = Locale(identifier:"en_US_POSIX")
   var names: [String] = [], positions: [[String:Any]] = []
