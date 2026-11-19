@@ -113,6 +113,25 @@ replace('source','            _modelQueue_model->reset();','''            _model
             if (completion != nil) { dispatch_async(dispatch_get_main_queue(), completion); }''')
 
 
+
+# Inference is advisory and sampled. Do not attach raw buffers to every queued
+# main-thread callback: one outstanding metadata pair, at most twice a second.
+replace('source','    std::atomic<size_t> _sdaSurfelCount;','    std::atomic<size_t> _sdaSurfelCount;\n    std::atomic<bool> _sdaCoverageMetadataPending;\n    double _sdaLastCoverageMetadataTime;')
+replace('source','        _sdaSurfelCount.store(0, std::memory_order_relaxed);','        _sdaSurfelCount.store(0, std::memory_order_relaxed);\n        _sdaCoverageMetadataPending.store(false, std::memory_order_relaxed);\n        _sdaLastCoverageMetadataTime = 0;')
+replace('source','        if (_includesDepthBuffersInMetadata) {','''        const double coverageTime = NSProcessInfo.processInfo.systemUptime;
+        const bool includeCoverage = (_includesDepthBuffersInMetadata || _includesColorBuffersInMetadata)
+            && coverageTime - _sdaLastCoverageMetadataTime >= 0.5
+            && !_sdaCoverageMetadataPending.exchange(true, std::memory_order_acq_rel);
+        if (includeCoverage) _sdaLastCoverageMetadataTime = coverageTime;
+        if (_includesDepthBuffersInMetadata && includeCoverage) {''')
+replace('source','        if (_includesColorBuffersInMetadata) {','        if (_includesColorBuffersInMetadata && includeCoverage) {')
+replace('source','''            if (metadata.colorBuffer != NULL) {
+                CVPixelBufferRelease(metadata.colorBuffer);
+            }''','''            if (metadata.colorBuffer != NULL) {
+                CVPixelBufferRelease(metadata.colorBuffer);
+            }
+            if (includeCoverage) _sdaCoverageMetadataPending.store(false, std::memory_order_release);''')
+
 # Surfel normals encode a small metric radius. Four decimal places can erase
 # every component; preserve Float32 precision and reject truncated numeric rows.
 replace('pointCloudPLY','#define PLY_LINE_LENGTH 128','#define PLY_LINE_LENGTH 512')

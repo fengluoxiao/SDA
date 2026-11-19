@@ -35,6 +35,12 @@ segment=segment.replace(', "-ffast-math"','')
 text=text[:begin]+segment+text[end:];path.write_text(text)
 (root.parent/'fusion-provenance.json').write_text(json.dumps({'repository':'https://github.com/StandardCyborg/StandardCyborgCocoa','commit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['explicit on-device Metal resources','exclude unused ML models','preserve non-finite depth checks'],'packageSha256':hashlib.sha256(path.read_bytes()).hexdigest(),'deviceScanTested':False,'earAccuracyValidated':False},indent=2))
 PY
+if [ "${SDA_FUSION_DEVICE_ONLY:-0}" != "1" ]; then
+mkdir -p "$out/poisson-host"
+xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -DSTD_LIB_FLAG -I "$source/CppDependencies/PoissonRecon/Sources/include" -I "$source/CppDependencies/PoissonRecon/Sources/include/PoissonRecon" "$PWD/scripts/test/personal-hrtf-poisson.cpp" "$source/CppDependencies/PoissonRecon/Sources/src/ExecuteEntryFunctions.cpp" "$source/CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp" -o "$out/poisson-host-test" > "$out/fusion-poisson-host-compile.log" 2>&1
+(cd "$out/poisson-host" && ASAN_OPTIONS=abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/poisson-host-test" 100000) > "$out/fusion-poisson-host-runtime.log" 2>&1 || { cat "$out/fusion-poisson-host-runtime.log"; exit 1; }
+
+fi
 cd "$source"
 # The repository also contains an unrelated legacy Xcode project. Select the
 # Swift package explicitly through a dedicated workspace to avoid that project.
@@ -63,19 +69,43 @@ xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios1
 # Exercise framework/resource discovery in an actual iOS Simulator process.
 # A runner without a Metal GPU reports that limitation explicitly in the JSON;
 # it never substitutes a host-side camera or synthetic ear scan.
-xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath "$out/derived-simulator" -archivePath "$out/StandardCyborgFusion-simulator.xcarchive" ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-simulator-build.log" 2>&1 || { tail -100 "$out/fusion-simulator-build.log"; exit 1; }
+xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath "$out/derived-simulator" -archivePath "$out/StandardCyborgFusion-simulator.xcarchive" ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO STRIP_INSTALLED_PRODUCT=NO DEBUG_INFORMATION_FORMAT=dwarf > "$out/fusion-simulator-build.log" 2>&1 || { tail -100 "$out/fusion-simulator-build.log"; exit 1; }
 sim_products="$out/StandardCyborgFusion-simulator.xcarchive/Products/Library/Frameworks"
 python3 "$stage" "$source" "$sim_products/StandardCyborgFusion.framework" "$out/derived-simulator"
 codesign --force --sign - "$sim_products/StandardCyborgFusion.framework"
 xcrun otool -L "$sim_products/StandardCyborgFusion.framework/StandardCyborgFusion" > "$out/fusion-linked-libraries.txt"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+xcrun --sdk iphonesimulator clang++ -std=c++17 -g -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -c "$(dirname "$probe")/personal-hrtf-crash-trace.mm" -o "$out/fusion-crash-trace.o"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
-udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/fusion-simulators.json")"
+udid="$(python3 - "$out/fusion-simulators.json" <<'PY'
+import json,sys,re
+items=json.load(open(sys.argv[1]))['devices']
+choices=[(tuple(map(int,k.rsplit('iOS-',1)[1].split('-'))),v)for k,vs in items.items()if re.fullmatch(r'com.apple.CoreSimulator.SimRuntime.iOS-[0-9]+-[0-9]+',k)for v in vs if v['name']=='iPhone 18 Pro Max'and v.get('isAvailable')]
+assert choices,'Standard iPhone simulator is required'
+print(max(choices,key=lambda row:row[0])[1]['udid'])
+PY
+)"
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
-xcrun simctl spawn "$udid" "$out/fusion-resource-test" | tee "$out/fusion-resource-runtime.log"
+set +e
+xcrun simctl spawn "$udid" "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-runtime.log"
+probe_status=${PIPESTATUS[0]}
+set -e
+python3 - "$out/fusion-resource-runtime.log" "$out" "$sim_products" <<'PY'
+from pathlib import Path
+import sys,re,subprocess
+log,out,products=map(Path,sys.argv[1:])
+frames=re.findall(r'SDA_FRAME (\d+) address=(0x[0-9a-f]+) base=(0x[0-9a-f]+) image=(.*?) symbol=(.*)',log.read_text())
+with (out/'fusion-crash-symbols.log').open('w') as f:
+ for number,address,base,image,symbol in frames:
+  if 'StandardCyborgFusion' not in image:continue
+  binary=products/'StandardCyborgFusion.framework/StandardCyborgFusion'
+  result=subprocess.run(['xcrun','atos','-o',str(binary),'-l',base,address],capture_output=True,text=True)
+  f.write(f'{number}: {symbol}: {result.stdout}\n')
+PY
+if [ "$probe_status" -ne 0 ]; then cat "$out/fusion-crash-symbols.log"; exit "$probe_status"; fi
 python3 - "$out" <<'PY'
 from pathlib import Path
 import json,sys

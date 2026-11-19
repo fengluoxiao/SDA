@@ -7,6 +7,9 @@ import StandardCyborgFusion
 
 enum PersonalHrtfError: Error { case message(String) } // test-only bridge for the capture helper
 
+@_silgen_name("sdaInstallMeshCrashTrace")
+func installMeshCrashTrace()
+
 @main
 struct FusionResourcesTest {
  enum Failure: Error { case invalid(String) }
@@ -42,7 +45,7 @@ struct FusionResourcesTest {
   let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
   queue.addOperation(operation); queue.waitUntilAllOperationsAreFinished()
   let size = (try? output.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
-  guard operation.sdaError == nil, !operation.isCancelled, size >= 128 else { throw Failure.invalid("Actual Poisson operation produced no mesh; bytes=\(size)") }
+  guard operation.sdaError == nil, !operation.isCancelled, size >= 128 else { throw Failure.invalid("Actual Poisson operation produced no mesh; bytes=\(size), error=\(String(describing:operation.sdaError))") }
   let cancelled = SCMeshingOperation(inputPLYPath:support.path,outputPLYPath:folder.appendingPathComponent("cancelled.ply").path)
   cancelled.cancel(); queue.addOperation(cancelled); queue.waitUntilAllOperationsAreFinished()
   guard cancelled.isCancelled, !FileManager.default.fileExists(atPath:folder.appendingPathComponent("cancelled.ply").path) else { throw Failure.invalid("Cancelled reconstruction wrote an output") }
@@ -80,6 +83,7 @@ struct FusionResourcesTest {
   return ["earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
  }
  static func main() throws {
+  installMeshCrashTrace()
   let framework = Bundle(for:SCReconstructionManager.self)
   guard framework.bundleIdentifier == "com.standardcyborg.StandardCyborgFusion",
         framework.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String == "1.0.0",
@@ -126,8 +130,8 @@ struct FusionResourcesTest {
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
    initialized = true
   }
-  let coverage = try coverageResources()
   let roundTrip = try meshRoundTrip()
+  let coverage = try coverageResources()
   let result:[String:Any] = ["captureCoverage":coverage,"poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }

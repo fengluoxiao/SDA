@@ -22,7 +22,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private var lastPoseTime = -1.0
  private var cameraPositions: [SIMD3<Float>] = []
  private let pointLimit: Int
- private let coverage: PersonalHrtfCaptureCoverage
+ private var coverage: PersonalHrtfCaptureCoverage?
  private var coverageStatus = "头部：待采集 · 左耳：待采集 · 右耳：待采集"
  private var failureReason: String?
  private let model: SCReconstructionManager
@@ -45,10 +45,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
         (try? device.makeDefaultLibrary(bundle:resources)) != nil else {
    throw Failure.message("需要可用的前置 TrueDepth 相机和 Metal；没有后置相机回退")
   }
+  coverage = try PersonalHrtfCaptureCoverage()
   let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
   pointLimit = Int(sda_hrtf_scan_point_limit(budget))
   guard pointLimit > 0 else { throw Failure.message("当前可用内存不足以开始头耳采集，请稍后重试") }
-  coverage = try PersonalHrtfCaptureCoverage()
   model = SCReconstructionManager(device:device,commandQueue:queue,maxThreadCount:2)
   directory = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
@@ -125,7 +125,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    case .portraitUpsideDown: orientation = .right
    default: orientation = .left
    }
-   coverage.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:orientation) { [weak self] state in
+   coverage?.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:orientation) { [weak self] state in
     DispatchQueue.main.async {
      guard let self else { return }
      self.lock.lock(); let scanning = self.phase == .scanning; self.lock.unlock()
@@ -139,6 +139,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    lock.lock()
    guard phase == .scanning else { lock.unlock(); return }
    phase = .paused; lock.unlock()
+   releaseCaptureAnalysis()
    motion.stopDeviceMotionUpdates()
    captureLimit?(count,"本次采集预算已用满（最多 \(pointLimit) 个点），已暂停并保留测量。可尝试处理现有模型；未覆盖的区域仍会由几何检查拒绝。")
    return
@@ -152,10 +153,15 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   guard phase == .scanning || phase == .paused else { lock.unlock(); return }
   guard !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("有效测量表面不足，请继续采集"); return }
   phase = .finalizing; lock.unlock()
+  releaseCaptureAnalysis()
   motion.stopDeviceMotionUpdates()
   model.finalize { [self] in meshQueue.addOperation { [self] in prepareMesh() } }
  }
  func cancel() { fail("已取消本机头耳重建，未启用个人档案") }
+ private func releaseCaptureAnalysis() {
+  // The native metadata delegate runs on main; never race its optional model.
+  DispatchQueue.main.async { [weak self] in self?.coverage = nil }
+ }
  private func fail(_ message: String) {
   lock.lock()
   guard phase != .finished else { lock.unlock(); return }
@@ -164,6 +170,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   if phase == .scanning || phase == .paused || phase == .idle { phase = .finalizing }
   let operation = meshing
   lock.unlock()
+  releaseCaptureAnalysis()
   motion.stopDeviceMotionUpdates()
   if old == .scanning || old == .paused { model.finalize { [self] in end(.failure(Failure.message(message))) } }
   else if old == .idle { model.finalize { [self] in end(.failure(Failure.message(message))) } }

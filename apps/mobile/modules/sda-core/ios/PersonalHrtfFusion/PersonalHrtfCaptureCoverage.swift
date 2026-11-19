@@ -16,7 +16,7 @@ final class PersonalHrtfCaptureCoverage {
    return "头部：\(mark(head)) · 左耳：\(mark(leftEar)) · 右耳：\(mark(rightEar))"
   }
  }
- private let queue = DispatchQueue(label:"app.sda.capture-coverage",qos:.utility)
+ private let queue = DispatchQueue(label:"app.sda.capture-coverage",qos:.utility,autoreleaseFrequency:.workItem)
  private let lock = NSLock()
  private var busy = false, lastSample = -Double.infinity
  private let earModel: VNCoreMLModel
