@@ -140,6 +140,15 @@ files['NC_Input.cpp']=replace_body(files['NC_Input.cpp'],'NC_String2Double',r"""
  if(errno==ERANGE || end==text || *end!='\0' || !std::isfinite(value))throw Failure(1,"Invalid finite acoustic number");
  return value;
 """)
+# Bound dimension products before upstream signed-int FMM/BEM indexing. A
+# numerical budget alone cannot catch an already-wrapped rows*rows product.
+# Oversized scans need verified on-device mesh preparation, never unchecked
+# allocation or an automatic low-detail ear replacement.
+node_marker='numNodes_ = NC_String2Integer(chterms[2]);'
+assert node_marker in files['NC_Input.cpp']
+files['NC_Input.cpp']=files['NC_Input.cpp'].replace(node_marker,node_marker+"\n if(numElements_>20000 || numNodes_>20000 || numElementGroups_>128)throw Failure(3,\"Acoustic mesh dimensions exceed bounded native indexing\");",1)
+# Reporting multiple matrix counts must not silently wrap a 32-bit estimate.
+files['NC_Main.cpp']=files['NC_Main.cpp'].replace('uint nint = 0;','uint64_t nint = 0;').replace('uint ncmplx = 0;','uint64_t ncmplx = 0;')
 # Rename parameters that shadow former globals before qualifying global uses.
 # Keep C++ lexical shadowing intact (including NC_GetLine's temporary files).
 for filename,text in files.items():

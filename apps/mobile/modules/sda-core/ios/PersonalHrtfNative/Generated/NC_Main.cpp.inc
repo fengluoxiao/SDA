@@ -499,8 +499,8 @@ frequency_progress(state().currentFrequency_, state().numFrequencies_);
     if( estimate_ram ) {
       
       
-      uint nint = 0;
-      uint ncmplx = 0;
+      uint64_t nint = 0;
+      uint64_t ncmplx = 0;
       int i,j,nnonzers;
       Vector<bool> bneacluo(state().numOriginalClusters_);
       Vector<int> nclufar(state().numOriginalClusters_);

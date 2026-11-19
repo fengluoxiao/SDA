@@ -87,6 +87,13 @@ try{
  std::filesystem::create_directories(root/"bad-input");
  check_result(sda_hrtf_solver_run(j.get(),"bad-input",1,1,0,nullptr,nullptr),1,"Missing NC.inp returns error without exiting process");
  check_result(sda_hrtf_solver_run(j.get(),"NumCalc/source_1",1,1,1,nullptr,nullptr),0,"RAM estimate after prior failure");
+ // Reject an oversized dimension before upstream int matrix products/reads.
+ std::filesystem::create_directories(root/"oversized-input");
+ std::ifstream source(root/"NumCalc/source_1/NC.inp");std::ostringstream input;input<<source.rdbuf();auto oversized=input.str();
+ auto dimensions=oversized.find("2 2414 1212");require(dimensions!=std::string::npos,"Synthetic fixture dimensions changed");
+ oversized.replace(dimensions,std::string("2 2414 1212").size(),"2 65537 1212");
+ std::ofstream(root/"oversized-input/NC.inp")<<oversized;
+ check_result(sda_hrtf_solver_run(j.get(),"oversized-input",1,1,0,nullptr,nullptr),3,"Bound mesh products before signed indexing overflow");
  std::cerr<<"Testing cancellation"<<std::endl;
  auto cancelled=job(root);sda_hrtf_solver_cancel(cancelled.get());
  check_result(sda_hrtf_solver_run(cancelled.get(),"NumCalc/source_1",1,1,0,nullptr,nullptr),2,"Cancellation before run");

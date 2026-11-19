@@ -222,6 +222,7 @@ void NC_ReadBasicParametersB
 	state().numElementGroups_ = NC_String2Integer(chterms[0]);
 	state().numElements_ = NC_String2Integer(chterms[1]);
 	state().numNodes_ = NC_String2Integer(chterms[2]);
+ if(state().numElements_>20000 || state().numNodes_>20000 || state().numElementGroups_>128)throw Failure(3,"Acoustic mesh dimensions exceed bounded native indexing");
 	state().minExpansionTermsFMM_ = NC_String2Integer(chterms[3]);
 	state().numSymmetricPlanes_ = NC_String2Integer(chterms[4]);
 	state().methodBEM_ = NC_String2Integer(chterms[7]);
