@@ -85,7 +85,10 @@ template<class T> T *allocate_array(size_t count) {
 template<class T> void release_array_checked(T *p, const char *file, int line, const char *expression) {
  if(!p) return;
  auto found=runtime->arrays.find(p);
- if(found==runtime->arrays.end()) throw Failure(1,std::string("Untracked solver array: ")+expression+" at "+file+":"+std::to_string(line));
+ if(found==runtime->arrays.end()) {
+  std::fprintf(stderr,"Untracked solver array %s at %s:%d\n",expression,file,line);
+  throw Failure(1,std::string("Untracked solver array: ")+expression+" at "+file+":"+std::to_string(line));
+ }
  auto a=found->second;runtime->order.erase(a.order);runtime->arrays.erase(found);runtime->used-=a.bytes;a.dispose(p);
 }
 #define release_array(p) release_array_checked((p),__FILE__,__LINE__,#p)
@@ -94,7 +97,7 @@ inline void Runtime::clear() noexcept {
  // current allocations, independent of elapsed frequencies or iterations.
  while(!order.empty()) {
   void *value=order.back();auto found=arrays.find(value);
-  if(found==arrays.end())std::terminate();
+  if(found==arrays.end()){std::fprintf(stderr,"Native cleanup invariant failed: live map=%zu order=%zu bytes=%llu\n",arrays.size(),order.size(),(unsigned long long)used);std::terminate();}
   auto a=found->second;order.pop_back();arrays.erase(found);used-=a.bytes;a.dispose(value);
  }
  for(FILE *f:files)std::fclose(f);

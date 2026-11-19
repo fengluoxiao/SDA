@@ -56,7 +56,7 @@ void compare(const std::filesystem::path &root,int ear,int frequency=100){
 }
 int main(int argc,char **argv){
 #ifdef __APPLE__
- std::set_terminate([]{void *stack[64];int n=backtrace(stack,64);backtrace_symbols_fd(stack,n,2);std::_Exit(99);});
+ std::set_terminate([]{if(auto error=std::current_exception()){try{std::rethrow_exception(error);}catch(const std::exception &e){std::cerr<<"Terminating with exception: "<<e.what()<<std::endl;}catch(...){std::cerr<<"Terminating with non-standard exception"<<std::endl;}}void *stack[64];int n=backtrace(stack,64);backtrace_symbols_fd(stack,n,2);std::_Exit(99);});
 #endif
 try{
  require(argc==2 || (argc==3 && std::string(argv[2])=="--optimized-smoke"),"Pass a private COPY of the fixture root");
