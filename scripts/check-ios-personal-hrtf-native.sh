@@ -9,6 +9,10 @@ python3 scripts/generate-embedded-numcalc.py
 xcodebuild -version > "$out/xcode.txt"
 # Actual Apple compiler, first running the same embedded core on the Mac host.
 cp -R scripts/test/fixtures/personal-hrtf-sphere "$out/host-fixture"
+# Keep a release-optimized check separate from the sanitizer build: optimizer
+# dependent ownership/aliasing failures can disappear under instrumentation.
+xcrun clang++ -std=c++17 -O2 -g -fno-omit-frame-pointer -I "$native" "$native/SdaHrtfSolver.cpp" "$native/SdaHrtfImpulse.cpp" scripts/test/personal-hrtf-native.cpp -o "$out/native-host-optimized-test"
+"$out/native-host-optimized-test" "$out/host-fixture" --optimized-smoke | tee "$out/host-optimized-result.json"
 xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$native" "$native/SdaHrtfSolver.cpp" "$native/SdaHrtfImpulse.cpp" scripts/test/personal-hrtf-native.cpp -o "$out/native-host-test"
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/native-host-test" "$out/host-fixture" | tee "$out/host-result.json"
 # Compile for the physical iPhone ABI and typecheck the front TrueDepth / Swift

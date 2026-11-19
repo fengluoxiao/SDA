@@ -59,11 +59,16 @@ int main(int argc,char **argv){
  std::set_terminate([]{void *stack[64];int n=backtrace(stack,64);backtrace_symbols_fd(stack,n,2);std::_Exit(99);});
 #endif
 try{
- require(argc==2,"Pass a private COPY of the fixture root");
+ require(argc==2 || (argc==3 && std::string(argv[2])=="--optimized-smoke"),"Pass a private COPY of the fixture root");
  std::filesystem::path root=std::filesystem::canonical(argv[1]);auto cwd=std::filesystem::current_path();
  uint64_t peak=0;auto j=job(root);
  std::cerr<<"Testing pressure-to-HRIR conversion"<<std::endl;
  impulse_test(root,j.get());
+ if(argc==3){
+  auto r=sda_hrtf_solver_run(j.get(),"NumCalc/source_1",1,1,0,nullptr,nullptr);
+  check_result(r,0,"Optimized Apple ABI solve");compare(root,1);
+  std::cout<<"{\"optimizedSmokePassed\":true,\"physicalScanTested\":false}"<<std::endl;return 0;
+ }
  for(int repeat=0;repeat<2;++repeat)for(int ear=1;ear<=2;++ear){
   std::cerr<<"Testing repeated ear "<<ear<<" pass "<<repeat<<std::endl;
   auto r=sda_hrtf_solver_run(j.get(),("NumCalc/source_"+std::to_string(ear)).c_str(),1,1,0,nullptr,nullptr);
