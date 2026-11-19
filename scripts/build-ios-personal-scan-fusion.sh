@@ -42,9 +42,26 @@ Path(sys.argv[2]).write_text('<Workspace version="1.0"><FileRef location="absolu
 PY
 xcodebuild -workspace "$out/FusionPackage.xcworkspace" -list > "$out/fusion-schemes.txt" 2>&1
 xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$out/derived-device" -archivePath "$out/StandardCyborgFusion-ios.xcarchive" SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-ios-build.log" 2>&1 || { tail -100 "$out/fusion-ios-build.log"; exit 1; }
-find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' > "$out/fusion-products.txt"
-test -n "$(find "$out/StandardCyborgFusion-ios.xcarchive" -name StandardCyborgFusion.framework -print -quit)"
-
-frameworks="$out/derived-device/Build/Products/Release-iphoneos"
+# SwiftPM's dynamic product archive contains the binary but omits the target's
+# public module and resource bundle. Stage both explicitly for iOS consumers.
+framework="$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks/StandardCyborgFusion.framework"
+test -f "$framework/StandardCyborgFusion"
+python3 - "$source" "$framework" "$out/derived-device" <<'PY'
+from pathlib import Path
+import sys,shutil
+source,framework,derived=map(Path,sys.argv[1:])
+headers=framework/'Headers';headers.mkdir(exist_ok=True)
+for p in (source/'StandardCyborgFusion/Sources/include/StandardCyborgFusion').glob('*.h'):
+    shutil.copy2(p,headers/p.name)
+public=['SCFusionBundle.h','SCReconstructionManager.h','SCReconstructionManagerParameters.h','SCAssimilatedFrameMetadata.h','SCPointCloud.h','SCPointCloud+FileIO.h','SCMesh.h','SCMesh+FileIO.h','SCMeshingOperation.h']
+(headers/'SDAFusionPublic.h').write_text('\n'.join('#import <StandardCyborgFusion/'+p+'>'for p in public)+'\n')
+modules=framework/'Modules';modules.mkdir(exist_ok=True)
+(modules/'module.modulemap').write_text('framework module StandardCyborgFusion { umbrella header "SDAFusionPublic.h" export * }\n')
+bundles=[p for p in derived.rglob('StandardCyborg_StandardCyborgFusion.bundle')if (p/'default.metallib').is_file()]
+assert bundles,'Compiled TrueDepth Metal resource bundle is missing'
+shutil.copytree(bundles[0],framework/bundles[0].name,dirs_exist_ok=True)
+assert (framework/'StandardCyborg_StandardCyborgFusion.bundle/default.metallib').stat().st_size>1024
+PY
+find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' -o -name '*.metallib' -o -name '*.modulemap' > "$out/fusion-products.txt"
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$frameworks" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" "$adapter" 2>&1 | tee "$out/fusion-swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" "$adapter" 2>&1 | tee "$out/fusion-swift-typecheck.log"
