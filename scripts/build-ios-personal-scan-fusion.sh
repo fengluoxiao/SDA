@@ -68,4 +68,14 @@ xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/fusion-simulators.json")"
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
-xcrun simctl spawn "$udid" "$out/fusion-resource-test" | tee "$out/fusion-resource-result.json"
+xcrun simctl spawn "$udid" "$out/fusion-resource-test" | tee "$out/fusion-resource-runtime.log"
+python3 - "$out" <<'PY'
+from pathlib import Path
+import json,sys
+root=Path(sys.argv[1]);lines=(root/'fusion-resource-runtime.log').read_text().splitlines()
+result=json.loads(next(line for line in reversed(lines)if line.startswith('{')))
+assert result['bundleLocated']and result['versionMetadataValid']
+assert result['physicalScanTested']is False and result['earAccuracyValidated']is False
+if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8
+(root/'fusion-resource-result.json').write_text(json.dumps(result,indent=2)+'\n')
+PY
