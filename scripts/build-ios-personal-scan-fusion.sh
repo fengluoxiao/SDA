@@ -32,7 +32,16 @@ text=text[:begin]+segment+text[end:];path.write_text(text)
 (root.parent/'fusion-provenance.json').write_text(json.dumps({'repository':'https://github.com/StandardCyborg/StandardCyborgCocoa','commit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['explicit on-device Metal resources','exclude unused ML models','preserve non-finite depth checks'],'packageSha256':hashlib.sha256(path.read_bytes()).hexdigest(),'deviceScanTested':False,'earAccuracyValidated':False},indent=2))
 PY
 cd "$source"
-xcodebuild archive -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$out/derived-device" -archivePath "$out/StandardCyborgFusion-ios.xcarchive" SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-ios-build.log" 2>&1 || { tail -100 "$out/fusion-ios-build.log"; exit 1; }
+# The repository also contains an unrelated legacy Xcode project. Select the
+# Swift package explicitly through a dedicated workspace to avoid that project.
+mkdir -p "$out/FusionPackage.xcworkspace"
+python3 - "$source" "$out/FusionPackage.xcworkspace/contents.xcworkspacedata" <<'PY'
+import sys,xml.sax.saxutils
+from pathlib import Path
+Path(sys.argv[2]).write_text('<Workspace version="1.0"><FileRef location="absolute:'+xml.sax.saxutils.escape(sys.argv[1], {'"':'&quot;'})+'"></FileRef></Workspace>')
+PY
+xcodebuild -workspace "$out/FusionPackage.xcworkspace" -list > "$out/fusion-schemes.txt" 2>&1
+xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$out/derived-device" -archivePath "$out/StandardCyborgFusion-ios.xcarchive" SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO > "$out/fusion-ios-build.log" 2>&1 || { tail -100 "$out/fusion-ios-build.log"; exit 1; }
 find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' > "$out/fusion-products.txt"
 test -n "$(find "$out/StandardCyborgFusion-ios.xcarchive" -name StandardCyborgFusion.framework -print -quit)"
 
