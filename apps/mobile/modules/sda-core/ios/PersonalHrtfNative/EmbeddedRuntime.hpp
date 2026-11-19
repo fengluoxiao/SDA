@@ -43,7 +43,7 @@ struct Allocation {uint64_t bytes; void (*dispose)(void *); std::list<void*>::it
 struct Runtime {
  SdaHrtfSolver &owner;
  std::filesystem::path work;
- uint64_t used=0,peak=0,ticks=0;
+ uint64_t used=0,peak=0,ticks=0,memoryChecks=0;
  std::unordered_map<void*,Allocation> arrays;
  std::list<void*> order;
  std::set<FILE*> files;
@@ -60,6 +60,10 @@ extern thread_local Runtime *runtime;
 inline void check_now() {
  if (!runtime) throw Failure(1,"Missing native solver context");
  if (runtime->owner.cancelled.load(std::memory_order_relaxed)) throw Failure(2,"Calculation cancelled");
+ if((++runtime->memoryChecks&255)==0){
+  uint64_t available=sda_hrtf_available_memory();
+  if(available && available<128ull*1024*1024)throw Failure(3,"iPhone process memory headroom is low");
+ }
 }
 inline void checkpoint() {if ((++runtime->ticks & 1023)==0) check_now();}
 template<class T> T *allocate_array(size_t count) {
@@ -75,6 +79,10 @@ template<class T> T *allocate_array(size_t count) {
  // arrays that have already been freed during the many frequency solves.
  uint64_t bytes=count*sizeof(T)+128;
  if(bytes>runtime->owner.budget-runtime->used) throw Failure(3,"Native solver reached memory budget");
+ if(bytes>=8ull*1024*1024){
+  uint64_t available=sda_hrtf_available_memory();
+  if(available && (available<128ull*1024*1024 || bytes>available-128ull*1024*1024))throw Failure(3,"Insufficient iPhone headroom for next native array");
+ }
  runtime->used+=bytes;runtime->peak=std::max(runtime->peak,runtime->used);
  T *p=nullptr;bool linked=false;
  try {

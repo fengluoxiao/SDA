@@ -44,7 +44,8 @@
         "CADisableMinimumFrameDurationOnPhone": true,
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "NSCameraUsageDescription": "SDA 仅使用前置 TrueDepth 相机采集头部与耳部的深度和相机标定，在 iPhone 本机完成三维重建和个人 HRTF 计算。测量数据不会自动上传，临时数据在任务完成或取消后删除。"
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",

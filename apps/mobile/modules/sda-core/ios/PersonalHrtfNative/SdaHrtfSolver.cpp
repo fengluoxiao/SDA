@@ -1,5 +1,24 @@
 // Embedded Mesh2HRTF NumCalc v1.3.0 (EUPL-1.2); see vendor notice.
 #include "EmbeddedRuntime.hpp"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#include <os/proc.h>
+#endif
+#endif
+extern "C" uint64_t sda_hrtf_available_memory(void) {
+#if defined(__APPLE__) && TARGET_OS_IOS
+ return uint64_t(os_proc_available_memory());
+#else
+ return 0;
+#endif
+}
+extern "C" uint64_t sda_hrtf_recommended_budget(uint64_t headroom,uint64_t physical) {
+ constexpr uint64_t mib=1024*1024;
+ if(headroom<512*mib || physical<512*mib)return 0;
+ uint64_t budget=std::min({768*mib,physical/8,(headroom-256*mib)/5*3});
+ return budget>=64*mib?budget:0;
+}
 namespace sda_numcalc {
 thread_local Runtime *runtime=nullptr;
 static std::tm *local_walltime(std::time_t now) {
@@ -63,7 +82,7 @@ int local_mkdir(const char *name,int) {
 }
 extern "C" SdaHrtfSolver *sda_hrtf_solver_create(const char *path,uint64_t budget) {
  try {
-  if(!path || budget<1024*1024 || budget>512ull*1024*1024)return nullptr;
+  if(!path || budget<1024*1024 || budget>1024ull*1024*1024)return nullptr;
   auto root=std::filesystem::canonical(path);
   if(!std::filesystem::is_directory(root))return nullptr;
   std::unique_ptr<SdaHrtfSolver> job(new SdaHrtfSolver);

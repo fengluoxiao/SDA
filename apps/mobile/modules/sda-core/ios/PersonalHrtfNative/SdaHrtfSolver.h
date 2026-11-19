@@ -13,7 +13,12 @@ typedef struct {
  uint64_t remaining_array_bytes;
  char message[512];
 } SdaHrtfSolverResult;
-// root must be an existing, private job directory. Memory budget: 1-512 MiB.
+// iOS process headroom reported by the OS, or 0 on non-iOS test hosts.
+uint64_t sda_hrtf_available_memory(void);
+// Returns 0 if headroom is unknown/too low. Reserves app/audio/OS room, caps
+// numerical arrays at 768 MiB and at one eighth of physical memory.
+uint64_t sda_hrtf_recommended_budget(uint64_t headroom, uint64_t physical_memory);
+// root must be an existing, private job directory. Memory budget: 1-1024 MiB.
 SdaHrtfSolver *sda_hrtf_solver_create(const char *root, uint64_t memory_budget);
 // The owner keeps this handle alive until run returns. Cancellation is thread-safe.
 void sda_hrtf_solver_cancel(SdaHrtfSolver *job);

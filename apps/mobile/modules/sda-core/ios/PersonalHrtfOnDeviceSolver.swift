@@ -9,6 +9,7 @@ final class PersonalHrtfOnDeviceSolver {
   let project: URL
   let frequencies: Int
   let peakTrackedArrayBytes: UInt64
+  let numericalBudgetBytes: UInt64
  }
  private let lock = NSLock()
  private var handle: OpaquePointer?
@@ -49,8 +50,10 @@ final class PersonalHrtfOnDeviceSolver {
     let result: Result<Output, Error> = Result {
      // Budget is for all tracked numerical arrays; Foundation, input geometry,
      // audio playback and the application's other allocations also need room.
-     let mib: UInt64 = 1024 * 1024
-     let budget = min(UInt64(192) * mib, max(UInt64(64) * mib, ProcessInfo.processInfo.physicalMemory / 24))
+     let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+     guard budget > 0 else {
+      throw PersonalHrtfError.message("iPhone 当前可用内存不足以开始本机声学计算，请稍后重试；现有档案保持可用")
+     }
      guard let native = qualifiedProject.path.withCString({ sda_hrtf_solver_create($0,budget) }) else {
       throw PersonalHrtfError.message("无法创建 iPhone 本地声学计算任务")
      }
@@ -91,7 +94,7 @@ final class PersonalHrtfOnDeviceSolver {
       guard reply.remaining_array_bytes == 0 else { throw PersonalHrtfError.message("本地声学任务未正确释放资源") }
       peak = max(peak,reply.peak_array_bytes)
      }
-     return Output(project:qualifiedProject,frequencies:frequencies,peakTrackedArrayBytes:peak)
+     return Output(project:qualifiedProject,frequencies:frequencies,peakTrackedArrayBytes:peak,numericalBudgetBytes:budget)
     }
     DispatchQueue.main.async { [self] in
      for observer in observers { NotificationCenter.default.removeObserver(observer) }; observers.removeAll()

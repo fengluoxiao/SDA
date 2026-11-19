@@ -61,6 +61,13 @@ int main(int argc,char **argv){
 try{
  require(argc==2 || (argc==3 && std::string(argv[2])=="--optimized-smoke"),"Pass a private COPY of the fixture root");
  std::filesystem::path root=std::filesystem::canonical(argv[1]);auto cwd=std::filesystem::current_path();
+ constexpr uint64_t mib=1024*1024;
+ require(sda_hrtf_recommended_budget(0,6ull*1024*mib)==0,"Unknown headroom must not guess a budget");
+ require(sda_hrtf_recommended_budget(400*mib,6ull*1024*mib)==0,"Reserve low-memory app/audio headroom");
+ require(sda_hrtf_recommended_budget(2ull*1024*mib,6ull*1024*mib)==768*mib,"6 GiB device numerical cap");
+ require(sda_hrtf_recommended_budget(2ull*1024*mib,3ull*1024*mib)==384*mib,"Smaller device numerical cap");
+ require(sda_hrtf_recommended_budget(UINT64_MAX,UINT64_MAX)==768*mib,"Budget arithmetic must not overflow");
+ require(!sda_hrtf_solver_create(root.string().c_str(),1024ull*mib+1),"Reject budget above absolute cap");
  uint64_t peak=0;auto j=job(root);
  std::cerr<<"Testing pressure-to-HRIR conversion"<<std::endl;
  impulse_test(root,j.get());

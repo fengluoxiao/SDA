@@ -178,11 +178,14 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   lock.lock()
   guard phase != .finished else { lock.unlock(); return }
+  let answer: Result<PersonalHeadMeshCandidate,Error>
+  if cancelled, case .success = result { answer = .failure(Failure.message("已取消本机重建")) }
+  else { answer = result }
   phase = .finished; let callback = completion; completion = nil; meshing = nil
   lock.unlock()
   motion.stopDeviceMotionUpdates()
   model.reset()
-  if case .failure = result { try? FileManager.default.removeItem(at:directory) }
-  DispatchQueue.main.async { callback?(result) }
+  if case .failure = answer { try? FileManager.default.removeItem(at:directory) }
+  DispatchQueue.main.async { callback?(answer) }
  }
 }
