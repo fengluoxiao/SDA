@@ -1,0 +1,13 @@
+{
+  "upstreamCommit": "e45d0436a6fbeca3db13828cbae23ca109225be3",
+  "licence": "EUPL-1.2",
+  "generatedBy": "scripts/generate-embedded-numcalc.py",
+  "jobStateFields": 179,
+  "changes": [
+    "private per-invocation state",
+    "tracked native arrays",
+    "in-process errors and cancellation",
+    "job-relative file IO",
+    "no subprocess or cwd changes"
+  ]
+}

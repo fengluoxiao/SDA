@@ -1,8 +1,10 @@
 #ifndef SDA_BRIDGE_H
 #define SDA_BRIDGE_H
+#include "PersonalHrtfNative/SdaHrtfSolver.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+char *sda_ios_validate_hrtf(const char *path);
 void *sda_ios_create(const char *config, const char *hrtf, char **error);
 void *sda_ios_prepare_cues(const char *path, const char *layout, float gain, char **error);
 void *sda_ios_prepare_reference(const char *path, const char *layout, const char *id, float gain, char **error);

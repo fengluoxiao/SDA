@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/Any2HRTF/Mesh2HRTF",
+  "tag": "v1.3.0",
+  "commit": "e45d0436a6fbeca3db13828cbae23ca109225be3",
+  "license": "EUPL-1.2",
+  "files": {
+    "NC_3dFunctions.cpp": "d7414987de3818c2bb462693e386c7583d51929b8573d748ecc8b0db3349f56b",
+    "NC_Addresses.cpp": "d021e954e0672ce5100320b659eb0aee1a2aa74bd105603e3c8a9c2b80574dc3",
+    "NC_Arrays.h": "18a5ca62d10188b614e173a5faa722f9f7b475a1f2bef3109087047c819a3287",
+    "NC_CommonFunctions.cpp": "8e761c0fc6e862b1c4f52f811e3550cfbeff9c03a79aea46c61f4fe6a0c52ad5",
+    "NC_ConstantsVariables.h": "1b545f84d0c7d87efdc823e6844e6558be186a4d1051d21ebec486c6963e9211",
+    "NC_EquationSystem.cpp": "dd313dc4cf5fe0eef4e023018320e55ce52aef49ce5a2c4d2d797980a1271fd9",
+    "NC_Input.cpp": "e48cad8eec152c96becef948cf3deec4438052e1e1f4426d7612a9b1e87f0d5c",
+    "NC_IntegrationConstants.h": "523b62d5d7ebf46c86c53dbef77d2f50c9d8abd20f8f02734535d039adfcb67f",
+    "NC_Macros.h": "2faf0622d250734925aef1baec924f6882f3e9efc513bb0c72a4ffbfed59f309",
+    "NC_Main.cpp": "c914fb0ce5a6b7e8fecd452a42a588acdc68f9b454e9f1212c602980efc540a4",
+    "NC_PostProcessing.cpp": "36dfca9aba8099328d731086197a33e2cf4583d79c6ef5e469f633a671440aca",
+    "NC_TypeDefinition.h": "e903d6484dfb0a47d93e466ae73d0b004795f77f759000ca1523b2294a843cd8"
+  }
+}

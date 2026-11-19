@@ -1,0 +1,7 @@
+Mesh2HRTF NumCalc v1.3.0
+https://github.com/Any2HRTF/Mesh2HRTF
+Pinned upstream commit e45d0436a6fbeca3db13828cbae23ca109225be3.
+Original authors: H. Ziegelwanger, W. Kreuzer, Z.S. Chen and Mesh2HRTF contributors.
+Licensed under the EUPL-1.2; complete licence and original source in vendor/mesh2hrtf-numcalc.
+SDA adaptation: private job state; bounded native allocations; application-safe errors; cancellation; sandbox-relative file access; C ABI. Acoustic equations are unchanged.
+Generated adaptations are reproducible with scripts/generate-embedded-numcalc.py.

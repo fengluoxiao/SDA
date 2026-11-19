@@ -1,0 +1,27 @@
+name: iOS on-device personal HRTF native core
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir personal-hrtf-native-build
+      - name: Compile iPhone native core and test embedding lifecycle
+        run: bash scripts/check-ios-personal-hrtf-native.sh personal-hrtf-native-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-personal-hrtf-native-evidence
+          path: |
+            personal-hrtf-native-build/*.json
+            personal-hrtf-native-build/*.log
+            personal-hrtf-native-build/*.txt
+            personal-hrtf-native-build/*.a
+          retention-days: 7

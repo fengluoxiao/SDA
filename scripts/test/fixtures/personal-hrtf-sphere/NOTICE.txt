@@ -1,0 +1,5 @@
+Mesh2HRTF v1.3.0 upstream SHTF sphere fixture, EUPL-1.2.
+https://github.com/Any2HRTF/Mesh2HRTF/tree/v1.3.0/tests/resources/SHTF
+Original 60-frequency input. Native embedding regression runs selected steps at 100, 1000 and 6000 Hz.
+Expected complex pressures computed by the unmodified upstream NumCalc.
+Synthetic sphere only: this is not a real head, personal scan or listening profile.
