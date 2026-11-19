@@ -70,6 +70,7 @@ int main(int argc,char **argv)try {
  write(pressure,original+"unexpected\n");reject();fs::remove(pressure);reject();write(pressure,original);
  const auto nc=root/"NumCalc/source_1/NC.inp";auto bad=curve.str();auto at=bad.find("24000 0");require(at!=std::string::npos,"No final frequency");bad.replace(at,7,"23000 0");write(nc,bad);reject();
  bad=curve.str();at=bad.find("1 256 0.000001");bad.replace(at,14,"1 256 0.000002");write(nc,bad);reject();write(nc,curve.str());
+ std::string tooMany;for(int k=0;k<9000;++k)tooMany+="0\n";write(nc,tooMany);reject();write(nc,std::string(5000,'x'));reject();write(nc,curve.str());
  ids[2]=300000;reject();ids[2]=300002;require(run().code==0,"Reader did not recover after invalid result");
  std::vector<std::string> saved;
  for(size_t k=1;k<=bins;++k){auto file=root/("NumCalc/source_2/be.out/be."+std::to_string(k)+"/pEvalGrid");saved.push_back(read(file));write(file,"Mesh2HRTF 1.0.0\n1\n1 3\n300000 0 0\n300001 0 0\n300002 0 0\n");}

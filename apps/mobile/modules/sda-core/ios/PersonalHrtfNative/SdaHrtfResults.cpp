@@ -26,8 +26,12 @@ std::string read_file(SdaHrtfSolver *job,const std::string &relative) {
 std::vector<std::string> records(const std::string &data) {
  std::istringstream file(data);std::vector<std::string> lines;std::string line;
  while(std::getline(file,line)) {
+  if(line.size()>4096)throw Failure(1,"Oversized acoustic input record");
   auto first=line.find_first_not_of(" \t\r");
-  if(first!=std::string::npos && line[first]!='#')lines.push_back(line.substr(first));
+  if(first!=std::string::npos && line[first]!='#') {
+   if(lines.size()>=8192)throw Failure(1,"Too many acoustic input records");
+   lines.push_back(line.substr(first));
+  }
  }
  return lines;
 }
