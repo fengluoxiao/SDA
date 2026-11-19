@@ -52,8 +52,13 @@ framework="$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks/S
 test -f "$framework/StandardCyborgFusion"
 python3 "$stage" "$source" "$framework" "$out/derived-device"
 find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' -o -name '*.metallib' -o -name '*.modulemap' > "$out/fusion-products.txt"
+# Device packaging reuses the same pinned framework and resource staging.
+if [[ "${SDA_FUSION_DEVICE_ONLY:-0}" == 1 ]]; then
+  xcodebuild -create-xcframework -framework "$framework" -output "$out/StandardCyborgFusion.xcframework" > "$out/fusion-xcframework.log" 2>&1
+  exit 0
+fi
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift 2>&1 | tee "$out/fusion-swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfPipelineFactory.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift 2>&1 | tee "$out/fusion-swift-typecheck.log"
 
 # Exercise framework/resource discovery in an actual iOS Simulator process.
 # A runner without a Metal GPU reports that limitation explicitly in the JSON;

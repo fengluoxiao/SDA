@@ -75,3 +75,11 @@ Apple 工作流使用 Xcode 27.1 / iOS SDK 27.1，编译目标最低 iOS 16.4。
 - [StandardCyborgCocoa](https://github.com/StandardCyborg/StandardCyborgCocoa)：提交 `8c3bc698944ec41edaa6f627db15a6573e8e2af2`。发布前还需按实际进入二进制的子目录与依赖保留许可及版权声明；库编译通过不等于这一发布检查已完成。
 
 实验代码保留在独立开发分支，未合入正式 master / Release。
+
+## iPhone 测量测试 IPA 接线（2026-11-19）
+
+为真实设备验证接通原生入口：SdaModule 注入本机测量流程，CocoaPods 在存在固定版本重建 XCFramework 时编译适配器并嵌入框架。专用分支的 iOS device package 流程先构建框架，再安装 Pods 和归档；正式 master 不受影响。真实深度在手机上处理，取消／完成清理临时扫描。
+
+本包开放采集、三维重建和耳部位置确认，设置与结果均明确说明是测量验证。个人 HRTF 声学资格检查仍未完成，不调用求解器生成或安装未经验证的真人响应。已有个人档案导入与默认档案恢复接入原生播放路径。
+
+打包完成后审计实际 IPA 的前置相机说明、动态框架依赖、Metal 库、固定版本、上游许可校验和、JS 入口及正式包样例音频排除。包为用户自行侧载签名的未签名 arm64 IPA；构建、资源审计与真机验收分别记录。

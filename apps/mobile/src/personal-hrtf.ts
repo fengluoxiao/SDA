@@ -10,9 +10,9 @@ export function showPersonalHrtfSettings() {
    Alert.alert("个人 HRTF", result?.message || "设置已保存，下一次打开曲目时使用；当前播放不受影响。");
   } catch (e) { Alert.alert("个人 HRTF 未完成", String(e)); }
  };
- Alert.alert("个人 HRTF · 实验功能", `${status.name || "SDA Spatial · 默认档案"}\n仅使用前置 TrueDepth，需他人协助缓慢扫描完整头耳。头耳重建、质量检查和声学求解在 iPhone 本机执行；候选网格不能直接当作个人 HRTF。完整本机流程未通过验证的构建不会开放采集。已导入的响应由 SDA 自有引擎渲染；系统空间输出与文件调优播放使用各自路径。`, [
+ Alert.alert("个人 HRTF · 实验功能", `${status.name || "SDA Spatial · 默认档案"}\n仅使用前置 TrueDepth，需他人协助缓慢扫描完整头耳。当前测试版支持本机采集、三维重建与左右耳位置确认，用于验证实机测量。尚未开放从扫描生成个人 HRTF，候选网格不能直接当作声学响应。已有个人 .phrtf 档案仍可导入 SDA 自有引擎；系统空间输出与文件调优播放使用各自路径。`, [
   { text: "本机适配与档案", onPress: () => Alert.alert("头耳扫描与档案", "原始相机帧直接送入本机重建器，不保存整段扫描。临时网格在任务完成或取消后删除。单份个人档案最多 16 MiB，总存储上限 32 MiB。", [
-   { text: "前置 TrueDepth 扫描", onPress: () => { if (!status.scanSupported) { Alert.alert("无法采集", "此设备没有可用的前置 TrueDepth 相机。"); return; } void run("scan"); } },
+   { text: "前置 TrueDepth · 测量验证", onPress: () => { if (!status.scanSupported) { Alert.alert("无法采集", "此设备没有可用的前置 TrueDepth 相机。"); return; } void run("scan"); } },
    { text: "导入个人 .phrtf", onPress: () => void run("import") },
    { text: "取消", style: "cancel" },
   ]) },

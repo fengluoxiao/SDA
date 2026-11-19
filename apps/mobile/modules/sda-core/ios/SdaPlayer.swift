@@ -264,15 +264,20 @@ final class SdaPlayer {
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
    "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
  }
+ private var activeHrtfManifest: String?
  func hrtfPath(_ set: String) throws -> String {
+  if let path = activeHrtfManifest { return path }
+  if let path = try PersonalHrtfStore.selectedPath() { activeHrtfManifest = path; return path }
   let directory = "hrtf-restored/hrtf-dense"
   let path = try assetRoot().appendingPathComponent(directory).appendingPathComponent("hrtf-set.json")
   guard FileManager.default.fileExists(atPath: path.path) else { throw SdaError.message("HRTF 测量资源缺失") }
+  activeHrtfManifest = path.path
   return path.path
  }
  func stopNative(keepMotion: Bool = false) {
   if !keepMotion { stopHeadTracking() }
   generation += 1
+  activeHrtfManifest = nil
   finishPreparation(); interruptionWasPlaying = false; sessionInterrupted = false; sessionActivationPending = false
   systemSpatial?.close(); systemSpatial = nil
   alacActive = false; alacUpmixActive = false; sdarActive = false
@@ -332,6 +337,9 @@ final class SdaPlayer {
     let count = info?["directionCount"] as? Int ?? 0
     hrtfState = count > 0 ? "\(info?["userFacingName"] as? String ?? "高解析空间渲染") · 实际方向定位 · 前后／上下空间线索" : hrtfState
 
+   }
+   if (try PersonalHrtfStore.selectedPath()) != nil {
+    hrtfState = "SDA Spatial · 个人 HRTF · 原生渲染"
    }
   } catch { stopNative(); throw error }
  }

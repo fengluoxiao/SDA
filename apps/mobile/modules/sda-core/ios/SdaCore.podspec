@@ -11,10 +11,11 @@ Pod::Spec.new do |s|
  s.swift_version = '5.0'
  s.static_framework = true
  s.dependency 'ExpoModulesCore'
- s.source_files = '*.{h,swift}', 'PersonalHrtfNative/**/*.{h,hpp,cpp}'
+ fusion = File.exist?(File.join(__dir__, 'StandardCyborgFusion.xcframework'))
+ s.source_files = ['*.{h,swift}', 'PersonalHrtfNative/**/*.{h,hpp,cpp}'] + (fusion ? ['PersonalHrtfFusion/*.swift'] : [])
  s.preserve_paths = 'PersonalHrtfNative/Generated/**/*.inc', 'PersonalHrtfNative/NOTICE.txt'
  s.public_header_files = 'SdaBridge.h'
- s.vendored_frameworks = 'SdaNative.xcframework'
+ s.vendored_frameworks = ['SdaNative.xcframework'] + (fusion ? ['StandardCyborgFusion.xcframework'] : [])
  s.resource_bundles = { 'SdaCoreAssets' => ['Resources/hrtf-restored', 'Resources/rendering-presets.json', 'Resources/ios-experiment.json', 'Resources/ci-stereo-tones.m4a', 'Resources/ci-360ra.mhas', 'Resources/licenses', 'Licenses'] }
  s.frameworks = 'AVFoundation', 'MediaPlayer', 'AudioToolbox', 'PHASE', 'CoreMotion', 'Network', 'Accelerate', 'CoreML', 'Metal', 'ARKit', 'SceneKit', 'CoreImage'
  s.libraries = 'c++', 'z'

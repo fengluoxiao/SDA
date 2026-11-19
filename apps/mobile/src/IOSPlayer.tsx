@@ -1,3 +1,4 @@
+import { showPersonalHrtfSettings } from "./personal-hrtf";
 import { showListeningCalibration } from "./listening-calibration";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { SpaceVisualPage } from "./SpaceVisualPage";
@@ -513,6 +514,8 @@ function ThemedPlayer(p: PlayerProps) {
           {Platform.OS === "ios" && <>{heading("声音增强")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
+            {divider()}
+            {actionRow("person.crop.square", "个人 HRTF · 头耳扫描", "前置 TrueDepth", showPersonalHrtfSettings, p.busy || !!p.authoredPlayback)}
             {divider()}
             {actionRow("ear", "耳机与个人试听校准", "四步试听", () => showListeningCalibration(p), p.busy || !!p.authoredPlayback || p.systemSpatial360RAActive || !p.setListeningProfile)}
             {divider()}

@@ -1,0 +1,37 @@
+"""Audit the produced device IPA, not just build-directory sources."""
+from pathlib import Path
+import sys,zipfile,plistlib,json,hashlib,subprocess,tempfile
+ipa=Path(sys.argv[1])
+with zipfile.ZipFile(ipa)as z:
+    names=z.namelist();app='Payload/SDA.app/'
+    info=plistlib.loads(z.read(app+'Info.plist'))
+    assert info['CFBundleSupportedPlatforms']==['iPhoneOS']
+    assert 'TrueDepth' in info.get('NSCameraUsageDescription','')
+    fw=app+'Frameworks/StandardCyborgFusion.framework/'
+    metadata=plistlib.loads(z.read(fw+'Info.plist'))
+    assert metadata['CFBundleIdentifier']=='com.standardcyborg.StandardCyborgFusion'
+    assert metadata['CFBundleShortVersionString']=='1.0.0'
+    assert len(z.read(fw+'StandardCyborgFusion'))>100000
+    metal=fw+'StandardCyborg_StandardCyborgFusion.bundle/default.metallib'
+    assert len(z.read(metal))>1024
+    notice=next(p for p in names if p.endswith('/licenses/standard-cyborg/provenance.json'))
+    provenance=json.loads(z.read(notice))
+    assert provenance['commit']=='8c3bc698944ec41edaa6f627db15a6573e8e2af2'
+    assert provenance['measurementOnly'] and not provenance['personalGenerationReady']
+    assert len(provenance['notices'])>=1
+    base=notice.rsplit('/',1)[0]+'/'
+    for row in provenance['notices']:
+        assert hashlib.sha256(z.read(base+row['path'])).hexdigest()==row['sha256']
+    bundle=z.read(app+'main.jsbundle')
+    assert '个人 HRTF'.encode()in bundle or b'personalHrtfAction'in bundle
+    assert not any('/ci-stereo-tones.m4a'in p or '/ci-360ra.mhas'in p for p in names)
+    with tempfile.TemporaryDirectory()as tmp:
+        binary=Path(tmp)/'SDA';binary.write_bytes(z.read(app+info['CFBundleExecutable']))
+        links=subprocess.check_output(['otool','-L',str(binary)],text=True)
+        assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
+    report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
+      'frontCameraPermission':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,
+      'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
+      'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
+    ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))
+    print(json.dumps(report,indent=2))

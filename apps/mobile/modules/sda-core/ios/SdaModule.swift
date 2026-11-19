@@ -6,9 +6,18 @@ import CryptoKit
 
 public final class SdaModule: Module {
  private let player = SdaPlayer()
+ private let personalHrtf = PersonalHrtfCoordinator(localPipeline:PersonalHrtfPipelineFactory.make())
  public func definition() -> ModuleDefinition {
   let player = self.player
   Name("SdaEngine")
+  Function("personalHrtfStatus") { PersonalHrtfStore.status().merging(PersonalHrtfPipelineFactory.capabilities) { a,_ in a } }
+  AsyncFunction("personalHrtfAction") { (action:String,promise:Promise) in
+   self.personalHrtf.run(action) { result in
+    switch result { case .success(let value): promise.resolve(value)
+    case .failure(let error): promise.reject("ERR_PERSONAL_HRTF",error.localizedDescription) }
+   }
+  }.runOnQueue(.main)
+
   Function("sceneDisplayCapabilities") { SceneDisplayPolicy.capabilities() }
   Function("configureSceneDisplay") { (active:Bool,fps:Int,_:Bool) in SceneDisplayPolicy.configure(active:active,fps:fps) }
   #if targetEnvironment(simulator)
@@ -41,7 +50,7 @@ public final class SdaModule: Module {
    }
    #endif
   }
-  OnDestroy { SceneDisplayPolicy.configure(active:false,fps:60); player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for session in player.imports.values { session.discard() }; player.imports.removeAll() } }
+  OnDestroy { self.personalHrtf.cancel(); SceneDisplayPolicy.configure(active:false,fps:60); player.locked { player.clearPreparedStereoReferences(); player.diagnostics.configure(enabled:false) { [:] }; player.stopNative(); for o in player.observers { NotificationCenter.default.removeObserver(o) }; for (c,t) in player.remoteTargets { c.removeTarget(t) }; for session in player.imports.values { session.discard() }; player.imports.removeAll() } }
   Function("setAlacStereoUpmix") { (enabled: Bool) in player.locked { player.setAlacStereoUpmix(enabled); return true } }
   Function("setStereoSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatialStereo"); return true } }
   Function("set360RaSystemSpatialAudio") { (enabled: Bool) in player.locked { player.prefs.set(enabled,forKey:"sda.systemSpatial360RA"); return true } }
