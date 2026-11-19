@@ -509,7 +509,7 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeFreeSpatialCues
 #[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetListeningProfile(
     mut env: JNIEnv, _class: JClass, ptr: jlong, json: JString,
-) -> jstring {
+) -> jni::sys::jstring {
     let result=(|| {let json:String=env.get_string(&json).map_err(|e|e.to_string())?.into();take_engine(ptr).ok_or("engine unavailable".to_string())?.set_listening_profile(&json)})();
     env.new_string(result.err().unwrap_or_default()).unwrap().into_raw()
 }
