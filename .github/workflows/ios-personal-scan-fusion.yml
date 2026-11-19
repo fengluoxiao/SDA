@@ -6,6 +6,8 @@ on:
       - '.github/workflows/ios-personal-scan-fusion.yml'
       - 'scripts/build-ios-personal-scan-fusion.sh'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/**'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
   workflow_dispatch:
 permissions:
   contents: read

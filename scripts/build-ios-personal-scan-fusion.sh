@@ -3,6 +3,7 @@ set -euo pipefail
 out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
+ios="$PWD/apps/mobile/modules/sda-core/ios"
 adapter="$PWD/apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/PersonalHrtfReconstruction.swift"
 source="$(mktemp -d "$out/fusion-source.XXXXXX")"
 pin=8c3bc698944ec41edaa6f627db15a6573e8e2af2
@@ -64,4 +65,4 @@ assert (framework/'StandardCyborg_StandardCyborgFusion.bundle/default.metallib')
 PY
 find "$out/StandardCyborgFusion-ios.xcarchive" -name '*.framework' -o -name '*.bundle' -o -name '*.metallib' -o -name '*.modulemap' > "$out/fusion-products.txt"
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" "$adapter" 2>&1 | tee "$out/fusion-swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$adapter" 2>&1 | tee "$out/fusion-swift-typecheck.log"

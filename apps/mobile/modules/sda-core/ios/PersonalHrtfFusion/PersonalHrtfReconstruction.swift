@@ -9,18 +9,10 @@ import StandardCyborgFusion
 // Native front-TrueDepth reconstruction. No ARFaceGeometry ears, photo export,
 // cloud API, or external computer. Output is measured support plus a CANDIDATE
 // mesh: it still needs coverage, support, topology and ear-entrance validation.
-final class PersonalHrtfReconstruction: NSObject, SCReconstructionManagerDelegate {
+final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCReconstructionManagerDelegate {
  enum Failure: LocalizedError {
   case message(String)
   var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
- }
- struct Candidate {
-  let directory: URL
-  let support: URL
-  let mesh: URL
-  let cameraPositions: [SIMD3<Float>]
-  let gravity: SIMD3<Float>
-  let points: Int
  }
  private enum Phase: Equatable { case idle, scanning, finalizing, meshing, finished }
  private let lock = NSLock()
@@ -35,7 +27,7 @@ final class PersonalHrtfReconstruction: NSObject, SCReconstructionManagerDelegat
  private var meshing: SCMeshingOperation?
  private let directory: URL
  private var observers: [NSObjectProtocol] = []
- private var completion: ((Result<Candidate,Error>) -> Void)?
+ private var completion: ((Result<PersonalHeadMeshCandidate,Error>) -> Void)?
  var progress: ((Int, String) -> Void)?
 
  init(frontTrueDepth: Void) throws {
@@ -70,7 +62,7 @@ final class PersonalHrtfReconstruction: NSObject, SCReconstructionManagerDelegat
   motion.stopDeviceMotionUpdates()
   for observer in observers { NotificationCenter.default.removeObserver(observer) }
  }
- func start(completion: @escaping (Result<Candidate,Error>) -> Void) throws {
+ func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws {
   lock.lock(); defer { lock.unlock() }
   guard phase == .idle else { throw Failure.message("头耳重建任务不能重复启动") }
   phase = .scanning; self.completion = completion
@@ -152,7 +144,9 @@ final class PersonalHrtfReconstruction: NSObject, SCReconstructionManagerDelegat
   let operation = SCMeshingOperation(inputPLYPath:support.path,outputPLYPath:mesh.path)
   // Fine reconstruction is a candidate only. Poisson may close unmeasured
   // holes; the subsequent support validator MUST reject those closures.
-  operation.parameters.resolution = 9
+  // Upstream maps UI resolution 6 to actual Poisson octree depth 9.
+  // UI resolution 9 would mean depth 12, an unsuitable mobile allocation.
+  operation.parameters.resolution = 6
   operation.parameters.smoothness = 1
   operation.parameters.surfaceTrimmingAmount = 0
   operation.parameters.closed = true
@@ -168,11 +162,11 @@ final class PersonalHrtfReconstruction: NSObject, SCReconstructionManagerDelegat
    guard !stopped, operation?.isCancelled == false, (128...64 * 1024 * 1024).contains(size) else {
     end(.failure(Failure.message(stopped ? "已取消头耳重建" : "本机候选网格未成功生成"))); return
    }
-   end(.success(Candidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount)))
+   end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount)))
   }
   meshQueue.addOperation(operation)
  }
- private func end(_ result: Result<Candidate,Error>) {
+ private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   lock.lock()
   guard phase != .finished else { lock.unlock(); return }
   phase = .finished; let callback = completion; completion = nil; meshing = nil
