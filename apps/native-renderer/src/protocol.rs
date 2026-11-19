@@ -638,6 +638,10 @@ fn handle_command(
             telemetry.publish_rendering_state(state);
             write_event(&Event::Ack { command: "setReferenceMonitor", accepted: result.is_ok(), detail: result.err().as_deref() });
         }
+        Command::SetListeningProfile { settings } => {
+            let result = state.set_listening_profile(settings);
+            write_event(&Event::Ack { command: "setListeningProfile", accepted: result.is_ok(), detail: result.err().as_deref() });
+        }
         Command::SetSpatialEnhancement { enabled } => {
             let result = state.set_spatial_enhancement(enabled);
             write_event(&Event::Ack { command: "setSpatialEnhancement", accepted: result.is_ok(), detail: result.err().as_deref() });
@@ -1570,6 +1574,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetMasterPreamp { .. } => "setMasterPreamp",
         Command::SetSpatialLayerGain { .. } => "setSpatialLayerGain",
         Command::SetSpatialEnhancement { .. } => "setSpatialEnhancement",
+        Command::SetListeningProfile { .. } => "setListeningProfile",
         Command::SetAuthoredProcessing { .. } => "setAuthoredProcessing",
         Command::ConfigureAuthoredScene { .. } => "configureAuthoredScene",
         Command::SetComparisonGain { .. } => "setComparisonGain",

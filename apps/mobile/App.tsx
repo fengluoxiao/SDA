@@ -1,3 +1,4 @@
+import { listeningProfile, DEFAULT_LISTENING_PROFILE, type ListeningProfile } from "./src/listening-profile";
 import { cleanupRetiredAiSettings } from "./src/retired-ai-cleanup";
 import { readExternalLyric, releaseLyricPickerCopy, readFileLyrics } from "./src/lyric-files";
 import { lyricSources, type LyricSource } from "./src/mobile-lyrics";
@@ -75,6 +76,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setVolume(volume: number): void;
   setVolumeBalance(enabled: boolean): void;
   setSpatialEnhancement?(enabled: boolean): void;
+  setListeningProfile?(json: string): void;
   hrtfStatus(): string;
   renderingSettings(): string;
   set360RaSystemSpatialAudio?(enabled: boolean): boolean;
@@ -89,6 +91,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   setNearField(enabled: boolean, metresPerUnit: number): Promise<void>;
 }
 interface State {
+  listeningProfile: ListeningProfile;
   authoredPlayback:boolean;
   binauralEnabled: boolean;
   headTrackingEnabled: boolean;
@@ -143,6 +146,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     binauralEnabled: true,
     headTrackingEnabled: false, headTrackingStatus: "未启用",
     alacStereoUpmix: false, systemSpatialStereo: false, sourceCodec: "", alacUpmixActive: false, outputChannels: 2,
+    listeningProfile: { ...DEFAULT_LISTENING_PROFILE },
     spatialCueDb: -6, spatialCueBusy: false,
     systemSpatial360RA: false, systemSpatial360RAActive: false,
     layout: "7.1.4",
@@ -242,6 +246,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         binauralEnabled: settings.binauralEnabled !== false,
         headTrackingEnabled: settings.binauralEnabled !== false && settings.headTrackingEnabled === true,
         alacStereoUpmix: settings.alacStereoUpmix === true, systemSpatialStereo: settings.systemSpatialStereo === true,
+        listeningProfile: listeningProfile(settings.listeningProfile),
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
@@ -773,6 +778,15 @@ export default class App extends React.Component<Record<string, never>, State> {
     }
   };
 
+  private setListeningProfile = async (value: ListeningProfile) => {
+    if (this.state.busy || this.changingTrack || this.state.authoredPlayback || this.state.systemSpatial360RAActive) throw new Error("当前播放模式不能应用试听设置");
+    const profile = listeningProfile(value);
+    if (this.artworkPreview) { this.setState({ listeningProfile: profile }); return; }
+    if (!this.getEngine().setListeningProfile) throw new Error("请更新原生模块以使用试听校准");
+    this.getEngine().setListeningProfile!(JSON.stringify(profile));
+    this.setState({ listeningProfile: profile, error: null });
+  };
+
   private setSpatialEnhancement = (spatialEnhancementEnabled: boolean) => {
     if(this.state.authoredPlayback)return;
     if (this.changingTrack || this.state.busy || this.state.systemSpatial360RAActive) return;
@@ -824,6 +838,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} attachLyrics={this.attachLyrics} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       seekTo={this.seekTo} togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} listeningProfile={this.state.listeningProfile} setListeningProfile={this.setListeningProfile} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
   }
 }

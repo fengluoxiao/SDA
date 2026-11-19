@@ -188,12 +188,15 @@ pub(crate) fn process_source_detail(
         reference.groups[1][axis] += x * route.basis[axis] * f64::from(auxiliary);
     }
     if let Some(strength) = directional_strength {
-        let shaped = source.directional_detail.process(sample, auxiliary, strength[index], rate);
+        let detail = temporal.unwrap();
+        let bands = detail.masking.map_or([strength[index];2], |b| b[index]);
+        let preference = detail.listening.directional(source.render_position());
+        let shaped = source.directional_detail.process_bands(sample, auxiliary, bands.map(|s| (s*preference).min(1.)), rate);
         // The retained spectral stage protects body and redistributes energy.
         // A separate measured budget may lift the weak group, never cut its
         // authored baseline. Both ears and all source sends share this gain.
         let gain = if control.is_finite() { control.max(1.) } else { 1. };
-        return shaped * (1. + (gain - 1.) * auxiliary);
+        return shaped * (1. + (gain - 1.) * auxiliary * source.directional_detail.envelope_permission());
     }
     let control = if control.is_finite() {
         control.max(0.)
@@ -265,6 +268,10 @@ pub(crate) struct AuxiliaryBalance {
     disable_measured_lift: bool,
     directional_strength: [f32; DEFAULT_PARTITION],
     strength: f64,
+    masking: crate::perceptual_masking::Detector,
+    masking_gains: [[f32; 2]; DEFAULT_PARTITION],
+    masking_strength: [f32; 2],
+    pub listening: crate::listening_profile::Settings,
 }
 impl AuxiliaryBalance {
     pub fn new(rate: u32) -> Self {
@@ -294,6 +301,10 @@ impl AuxiliaryBalance {
             disable_measured_lift: false,
             directional_strength: [0.; DEFAULT_PARTITION],
             strength: 0.,
+            masking: crate::perceptual_masking::Detector::new(rate),
+            masking_gains: [[0.; 2]; DEFAULT_PARTITION],
+            masking_strength: [0.; 2],
+            listening: Default::default(),
         }
     }
     pub fn directional_detail(rate: u32) -> Self {
@@ -324,6 +335,9 @@ impl AuxiliaryBalance {
         self.temporal.reset();
         self.directional_strength.fill(0.);
         self.strength = 0.;
+        self.masking = crate::perceptual_masking::Detector::new(self.rate);
+        self.masking_gains.fill([0.; 2]);
+        self.masking_strength = [0.; 2];
     }
     pub fn set_enabled(&mut self, enabled: bool, immediate: bool, offset: usize) {
         if immediate && !enabled {
@@ -333,6 +347,9 @@ impl AuxiliaryBalance {
             self.temporal.disable_immediately();
             self.directional_strength.fill(0.);
             self.strength = 0.;
+            self.masking = crate::perceptual_masking::Detector::new(self.rate);
+            self.masking_gains.fill([0.; 2]);
+            self.masking_strength = [0.; 2];
             return;
         }
         if self.enabled == enabled {
@@ -365,7 +382,7 @@ impl AuxiliaryBalance {
     }
     #[cfg(test)]
     pub fn observe(&mut self, reference: Reference, programme_gain: f32) {self.observe_at(reference,programme_gain,self.observed);}
-    pub fn temporal_control(&self)->crate::temporal_detail::Control<'_>{crate::temporal_detail::Control{history:&self.temporal.history,gains:&self.temporal.gains,enabled:self.temporal_enabled(),directional_strength:self.directional.then_some(&self.directional_strength)}}
+    pub fn temporal_control(&self)->crate::temporal_detail::Control<'_>{crate::temporal_detail::Control{history:&self.temporal.history,gains:&self.temporal.gains,enabled:self.temporal_enabled(),directional_strength:self.directional.then_some(&self.directional_strength),masking:self.directional.then_some(&self.masking_gains),listening:self.listening}}
     pub fn temporal_enabled(&self)->bool{self.enabled&&!self.directional&&self.temporal_detail_enabled&&self.policy.maximum_cut_db>0.}
     #[cfg(test)]
     pub fn set_temporal_for_diagnostics(&mut self,enabled:bool){self.temporal_detail_enabled=enabled;if !enabled{self.temporal.disable_immediately();}}
@@ -377,6 +394,7 @@ impl AuxiliaryBalance {
         } else {
             0.
         };
+        if self.directional { self.masking.observe(reference.groups); }
         let mut front_power=0.;
         for group in 0..2 {
             let mut power = 0.;
@@ -456,6 +474,7 @@ impl AuxiliaryBalance {
             let target = if self.enabled && self.policy.maximum_cut_db > 0. {
                 deficit / (deficit + 6.)
             } else { 0. };
+            let band_target = if self.enabled { self.masking.targets(self.reference_gain) } else { [0.; 2] };
             let rate = f64::from(self.rate.max(1));
             let attack = (-1. / (rate * 0.15)).exp();
             let release = (-1. / (rate * 0.05)).exp();
@@ -473,6 +492,12 @@ impl AuxiliaryBalance {
             for i in offset..DEFAULT_PARTITION {
                 self.gains[i] = 10f64.powf(self.gain_db / 20.) as f32;
                 self.directional_strength[i] = self.strength as f32;
+                self.masking_gains[i] = self.masking_strength;
+                for band in 0..2 {
+                    let goal = band_target[band].min(target as f32);
+                    let c = if goal > self.masking_strength[band] { attack } else { release } as f32;
+                    self.masking_strength[band] = goal+(self.masking_strength[band]-goal)*c;
+                }
                 let coefficient = if target > self.strength { attack } else { release };
                 self.strength = target + (self.strength-target)*coefficient;
                 let coefficient = if lift_target < self.gain_db { gain_release } else { gain_attack };
@@ -1058,7 +1083,7 @@ mod directional_headroom_tests {
             source.position=p;source.auxiliary_route_at=u64::MAX;source.auxiliary_weight=weight;
             let mut r=Reference::default();
             let y=process_source_detail(&mut source,0.1,0,1.5,&mut r,48000,&solver,Some(b.temporal_control()),0);
-            assert!((y-0.1*(1.+0.5*weight)).abs()<2e-7,"position={p:?}");
+            assert!(y>=0.1-2e-7 && y<=0.1*(1.+0.5*weight)+2e-7,"onset must keep baseline and obey budget: position={p:?} y={y}");
             assert!((r.groups[0][0]+r.groups[1][0]-0.1*std::f64::consts::FRAC_1_SQRT_2).abs()<1e-8);
             if elevation.abs()>=30 {assert!((weight-1.).abs()<1e-5,"height excluded {p:?}");}
             if elevation==0&&azimuth.abs()<=45 {assert_eq!(y,0.1,"front baseline changed");}

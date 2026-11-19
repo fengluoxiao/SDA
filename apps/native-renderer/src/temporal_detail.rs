@@ -65,6 +65,8 @@ pub(crate) struct Control<'a> {
     pub gains: &'a [f32; DEFAULT_PARTITION],
     pub enabled: bool,
     pub directional_strength: Option<&'a [f32; DEFAULT_PARTITION]>,
+    pub masking: Option<&'a [[f32; 2]; DEFAULT_PARTITION]>,
+    pub listening: crate::listening_profile::Settings,
 }
 #[derive(Clone)]
 pub(crate) struct SourceState {

@@ -68,6 +68,7 @@ public final class SdaModule: Module {
   Function("diagnosticsStatus") { player.diagnostics.status }
   Function("diagnosticsEnabled") { player.prefs.bool(forKey:"sda.diagnostics.enabled") }
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
+  Function("setListeningProfile") { (json: String) in try player.locked { try player.saveListeningProfile(json) } }
   Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setBinauralEnabled") { (enabled: Bool) in try player.locked {

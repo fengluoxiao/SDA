@@ -75,7 +75,7 @@ pub mod spectral_accelerator;
 pub mod android_audio_cpu;
 #[cfg(target_os = "android")]
 pub mod nnapi_runtime;
-pub const SPATIAL_BALANCE_ALGORITHM: &str = "directional-detail-measured-headroom-v2";
+pub const SPATIAL_BALANCE_ALGORITHM: &str = "perceptual-mask-transient-measured-headroom-v3";
 pub const BUILD_REVISION: &str = env!("SDA_RENDERER_REVISION");
 fn default_reference_set() -> String { "hrtf-dense".into() }
 fn default_reference_gain() -> f32 { 0.5011872 }
@@ -97,6 +97,8 @@ mod output_dynamics;
 mod auxiliary_balance;
 mod temporal_detail;
 mod directional_detail;
+mod perceptual_masking;
+pub mod listening_profile;
 #[cfg(test)]
 mod rear_motion_tests;
 
@@ -207,6 +209,7 @@ pub enum Command {
         volume: f32,
     },
     SetSpatialEnhancement { enabled: bool },
+    SetListeningProfile { settings: listening_profile::Settings },
     SetReferenceMonitor { id: String, layout: String, #[serde(default = "default_reference_set")] set: String, #[serde(default = "default_reference_gain")] gain: f32 },
     SetAuthoredProcessing { settings: authored::Processing },
     ConfigureAuthoredScene { scene: authored::Scene },
@@ -1286,6 +1289,7 @@ pub struct Engine {
     peak_guard: true_peak_guard::TruePeakGuard,
     binaural_eq: StereoEq,
     output_clarity: [dsp::Biquad; 2],
+    listening: listening_profile::Processor,
     headphone: headphone::HeadphoneCompensation,
     block_offset: usize,
     output_active: bool,
@@ -1437,6 +1441,7 @@ impl Engine {
             peak_guard: true_peak_guard::TruePeakGuard::new(sample_rate),
             binaural_eq: StereoEq::new(sample_rate, [0.0; 3], false)
                 .expect("48 kHz must support final binaural EQ"),
+            listening: listening_profile::Processor::new(sample_rate),
             output_clarity: [dsp::Biquad::highshelf(sample_rate, 4000.0,
                 std::f32::consts::FRAC_1_SQRT_2, 0.0).expect("valid output shelf"); 2],
             headphone: headphone::HeadphoneCompensation::bypass()
@@ -2018,6 +2023,13 @@ impl Engine {
         Ok(())
     }
     pub fn spatial_layer_gain_db(&self) -> f32 { self.spatial_layer.db }
+    pub fn set_listening_profile(&mut self, settings: listening_profile::Settings) -> Result<(), String> {
+        let settings=settings.validate()?;
+        if self.authored.enabled { return Err("文件调优播放不允许覆盖试听参数".into()); }
+        self.listening.set(settings)?;
+        self.auxiliary_balance.listening=settings;
+        Ok(())
+    }
     /// Source-local directional contrast. The approved common 4 kHz shelf is
     /// retained. Weak auxiliary material can use measured output headroom;
     /// static layer-wide +2/+6 and common live loudness ducking remain absent.
@@ -2280,6 +2292,7 @@ impl Engine {
         self.peak_guard.reset();
         self.headphone.reset();
         for filter in &mut self.output_clarity { filter.reset(); }
+        self.listening.reset();
         if let Some(bus_renderer) = &mut self.bus_renderer {
             bus_renderer.reset();
         }
@@ -3506,6 +3519,7 @@ impl Engine {
             // Same shelf for both ears, complete mix before linked protection.
             let equalized = std::array::from_fn::<_, 2, _>(|ear|
                 self.output_clarity[ear].process(equalized[ear]) * self.spatial_preamp.gain());
+            let equalized = if !self.authored.enabled && !self.cinema.monitor.hardware.enabled { self.listening.process(equalized) } else { equalized };
             let plain = self.plain_delay[block_index];
             self.plain_delay[block_index] = self.compatible_pcm.as_mut()
                 .and_then(|plain| plain.take(at)).unwrap_or(plain_sum);

@@ -1820,7 +1820,8 @@ ipcMain.handle("sda:native-renderer-hrtf", (_event, set, wetWeight) => exclusive
   // HRTF loading reapplies presentation defaults. Restore the user preference
   // only for the shared mobile profile, leaving explicit personal heads alone.
   if (set === "hrtf" || set === "hrtf-dense") {
-    return nativeRendererCommandAck({ type: "setSpatialEnhancement", enabled: readSpatialBalanceEnabled() }, "setSpatialEnhancement");
+    if (!await nativeRendererCommandAck({ type: "setSpatialEnhancement", enabled: readSpatialBalanceEnabled() }, "setSpatialEnhancement")) return false;
+    return nativeRendererCommandAck({type:"setListeningProfile",settings:require("./listening-profile.cjs").read(readSettings().listeningProfile)},"setListeningProfile");
   }
   return true;
 }));
@@ -1959,6 +1960,14 @@ ipcMain.handle("sda:native-renderer-cinema", async (event, settings, profileId) 
   writeStartupLog(`setCinema enabled=${normalized.enabled} room=${profileId ?? "built-in"} ACK -> ${accepted}`);
   return accepted;
 })));
+ipcMain.on("sda:get-listening-profile", (event) => { event.returnValue = require("./listening-profile.cjs").read(readSettings().listeningProfile); });
+ipcMain.handle("sda:set-listening-profile", async (event, value) => exclusiveAudioUpdate(async () => {
+  if (authoredPlayback.mode(event.sender)) throw Error("文件调优播放不允许覆盖试听参数");
+  const settings = require("./listening-profile.cjs").validate(value);
+  if (nativeRendererStatus.running && !await nativeRendererCommandAck({type:"setListeningProfile", settings}, "setListeningProfile")) return false;
+  writeSettings({listeningProfile:settings});
+  return true;
+}));
 ipcMain.on("sda:get-spatial-balance-enabled", (event) => { event.returnValue = readSpatialBalanceEnabled(); });
 ipcMain.handle("sda:native-renderer-spatial-balance", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;

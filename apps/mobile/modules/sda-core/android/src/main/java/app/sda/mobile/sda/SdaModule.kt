@@ -245,6 +245,8 @@ class SdaModule : Module() {
             // 360RA-13 update cannot race the renderer's initial 7.1.4 layout.
             // No source PCM is submitted until ensureEngine returns.
             restoreSpatialCues(ptr, layout)
+            val listeningError = SdaEngine.nativeSetListeningProfile(ptr, renderingSettings().getString("listeningProfile"))
+            check(listeningError.isEmpty()) { listeningError }
             val error = SdaEngine.nativeSetSpatialEnhancement(ptr, renderingSettings().getBoolean("spatialEnhancementEnabled"))
             check(error.isEmpty()) { error }
         } catch (error: Throwable) {
@@ -893,6 +895,23 @@ class SdaModule : Module() {
             }
         }
 
+        Function("setListeningProfile") { json: String ->
+            synchronized(nativeLock) {
+                val value = org.json.JSONObject(json)
+                require(value.length() == 4 && listOf("rear", "height", "bassDb", "trebleDb").all { value.has(it) }) { "试听参数无效" }
+                for (key in listOf("rear", "height", "bassDb", "trebleDb")) {
+                    val v = value.getDouble(key)
+                    require(v.isFinite() && if (key == "rear" || key == "height") v in 0.5..1.5 else v in -3.0..3.0) { "试听参数超出范围" }
+                }
+                if (handle != 0L && pipelineHandle == handle) {
+                    val error = SdaEngine.nativeSetListeningProfile(handle, json)
+                    check(error.isEmpty()) { error }
+                }
+                val context = appContext.reactContext ?: error("no react context")
+                check(context.getSharedPreferences("sda-rendering", 0).edit().putString("listeningProfile", json).commit()) { "无法保存试听设置" }
+            }
+        }
+
         Function("setSpatialEnhancement") { enabled: Boolean ->
             synchronized(nativeLock) {
                 if (handle != 0L && pipelineHandle == handle) {
@@ -1091,6 +1110,7 @@ class SdaModule : Module() {
             .put("binauralEnabled", preferences.getBoolean("binauralEnabled", true))
             .put("direct", preferences.getBoolean("direct", true))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
+            .put("listeningProfile", preferences.getString("listeningProfile", "{"rear":1,"height":1,"bassDb":0,"trebleDb":0}"))
             .put("spatialEnhancementEnabled", preferences.getBoolean("spatialEnhancementEnabled", false))
             .put("spatialCueDb", spatialCueDb())
             .put("alacStereoUpmix", preferences.getBoolean("alacStereoUpmix", false))

@@ -1,3 +1,4 @@
+import { ListeningProfilePanel } from "./components/ListeningProfilePanel";
 import UpmixExport from "./components/UpmixExport";
 import { readObjectRendering, enableObjectRenderingDefaults } from "./object-rendering-preference";
 import sharedRenderProfile from "../../mobile/ios-experiments/active.json";
@@ -2399,6 +2400,7 @@ export function App() {
                 <input type="checkbox" role="switch" checked={track?.codec==="sdar"?false:spatialBalanceEnabled} onChange={(event) => void changeSpatialBalance(event.target.checked)} />
               </label>
             </fieldset>}
+            <fieldset disabled={binauralHead !== "hrtfhq" || track?.codec === "sdar"} style={{border:0,padding:0,margin:0}}><ListeningProfilePanel /></fieldset>
             {window.sdaDesktop?.startNativeRenderer && (
               <fieldset className="settings-group settings-section">
                 <legend>空间渲染</legend>

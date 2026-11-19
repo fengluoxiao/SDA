@@ -55,6 +55,7 @@ object SdaEngine {
     external fun nativeSetObjectRendering(ptr: Long, direct: Boolean, directional: Boolean): Int
     external fun nativeSetRoom(ptr: Long, path: String): String
     external fun nativeSetNearField(ptr: Long, enabled: Boolean, metresPerUnit: Float): String
+    external fun nativeSetListeningProfile(ptr: Long, json: String): String
     external fun nativeSetSpatialEnhancement(ptr: Long, enabled: Boolean): String
     external fun nativePrepareReferenceMonitor(path: String, layout: String, id: String, gain: Float): Long
     external fun nativePrepareSpatialCues(path: String, layout: String, gain: Float): Long

@@ -1,3 +1,4 @@
+import { showListeningCalibration } from "./listening-calibration";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
@@ -190,6 +191,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
       </Picker>
     </Section>
     <Section title="声音增强" footer={<Text>根据前后层级和可用余量调整空间细节，开关共用同一响度基准。测量不足时不额外增强，不识别人声。仅对 SDA 共享渲染生效，系统空间音频路径不应用。</Text>}>
+      <Button label="耳机与个人试听校准" systemImage="ear" onPress={() => showListeningCalibration(p)} modifiers={[disabled(audioDisabled || !p.setListeningProfile)]} />
       <Toggle label="空间平衡" isOn={p.authoredPlayback?false:p.spatialEnhancementEnabled} onIsOnChange={p.setSpatialEnhancement} modifiers={[tint(appTheme.accent), disabled(audioDisabled)]} />
     </Section>
     <Section title="360RA／Audio Vivid" footer={<Text>360RA / Audio Vivid：12 声道交给系统，旁路 SDA 共享渲染。修改后下一次播放生效，不中断当前歌曲。关闭后恢复 SDA Spatial 空间渲染，并非普通立体声下混。</Text>}>

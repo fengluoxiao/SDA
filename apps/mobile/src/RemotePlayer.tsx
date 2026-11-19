@@ -25,6 +25,8 @@ export interface QueueTrack {
   preparation?: { state: "loading" | "failed"; progress: number; stage: string; error?: string };
 }
 export interface PlayerProps {
+  listeningProfile?: import("./listening-profile").ListeningProfile;
+  setListeningProfile?(profile: import("./listening-profile").ListeningProfile): Promise<void>;
   previewMode?: boolean;
   attachLyrics?(uri: string, source: LyricSource): void;
   soundingObjectIds?: readonly number[];

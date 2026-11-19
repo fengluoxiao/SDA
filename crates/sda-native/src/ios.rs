@@ -199,6 +199,7 @@ pub unsafe extern "C" fn sda_ios_command(
             "volume" => e.set_volume(number("volume")?)?,
             "masterPreamp" => e.set_master_preamp_db(number("gainDb")?)?,
             "spatialLayerGain" => e.set_spatial_layer_gain_db(number("gainDb")?)?,
+            "listeningProfile" => e.set_listening_profile(str_arg("json")?)?,
             "spatialEnhancement" => e.set_spatial_enhancement(boolean("enabled")?)?,
             "balance" => e.set_volume_balance(boolean("enabled")?)?,
             "measured" => e.set_measured_loudness(str_arg("json")?)?,

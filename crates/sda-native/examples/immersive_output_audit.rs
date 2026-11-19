@@ -37,6 +37,7 @@ fn main() -> Result<(),Box<dyn std::error::Error>> {
     engine.start(sink.clone())?;
     engine.set_spatial_enhancement(args[6]=="spatial-on")?;
     engine.set_volume_balance(balance)?;
+    if let Ok(profile)=std::env::var("SDA_AUDIT_LISTENING_PROFILE") { engine.set_listening_profile(&profile)?; }
     if args[6]=="binaural-off" { engine.set_binaural_enabled(false)?; }
     if codec=="mpegh" {engine.open_mpegh()?;} else {engine.select_compressed_codec(codec)?;}
     if args.len()==8 {engine.set_measured_loudness(&std::fs::read_to_string(&args[7])?)?;}

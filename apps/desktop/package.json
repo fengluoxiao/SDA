@@ -51,6 +51,7 @@
       "preload.cjs",
       "cinema-profiles.cjs",
       "monitor-settings.cjs",
+      "listening-profile.cjs",
       "headphone-simulation.cjs",
       "builtin-rooms.cjs",
       "builtin-rooms/**",

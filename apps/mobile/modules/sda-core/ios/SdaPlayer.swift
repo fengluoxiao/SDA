@@ -224,6 +224,14 @@ final class SdaPlayer {
    prefs.set(db, forKey:"sda.spatialCueDb")
   }
  }
+ func saveListeningProfile(_ json: String) throws {
+  guard let data=json.data(using:.utf8), let values=try JSONSerialization.jsonObject(with:data) as? [String:Double],
+   Set(values.keys)==Set(["rear","height","bassDb","trebleDb"]),
+   ["rear","height"].allSatisfy({ values[$0]!.isFinite && (0.5...1.5).contains(values[$0]!) }),
+   ["bassDb","trebleDb"].allSatisfy({ values[$0]!.isFinite && (-3.0...3.0).contains(values[$0]!) }) else { throw SdaError.message("试听参数超出范围") }
+  if handle != nil && systemSpatial == nil { _ = try command("listeningProfile", ["json":json]) }
+  prefs.set(json,forKey:"sda.listeningProfile")
+ }
  func saveSpatialEnhancement(_ enabled: Bool) throws {
   if handle != nil && systemSpatial == nil { _ = try command("spatialEnhancement", ["enabled":enabled]) }
   prefs.set(enabled, forKey:"sda.spatialEnhancement")
@@ -248,6 +256,7 @@ final class SdaPlayer {
   }
   return ["alacStereoUpmix":prefs.bool(forKey:"sda.alacStereoUpmix"), "systemSpatialStereo":prefs.bool(forKey:"sda.systemSpatialStereo"), "systemSpatial360RA":prefs.bool(forKey:"sda.systemSpatial360RA"), "systemSpatial360RAActive":systemSpatial != nil, "layout": layout, "hrtfSet": "dense",
    "hrtfWetWeight": 0.0, "spatialCueDb": spatialCueDb(),
+   "listeningProfile": prefs.string(forKey:"sda.listeningProfile") ?? #"{"rear":1,"height":1,"bassDb":0,"trebleDb":0}"#,
    "spatialEnhancementEnabled": prefs.bool(forKey:"sda.spatialEnhancement"),
    "headTrackingEnabled": prefs.bool(forKey:"sda.headTracking"),
    "binauralEnabled": prefs.object(forKey:"sda.binauralEnabled") ?? true,
@@ -313,6 +322,7 @@ final class SdaPlayer {
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
    _ = try command("volume", ["volume":1.0])
    _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
+   _ = try command("listeningProfile", ["json":s["listeningProfile"]!])
    if !sessionReady { _ = try command("pause", ["paused":true]) }
    hrtfState = "KU100 · 61 方向 · 历史兼容插值 · 前后/上下空间线索 · iOS 原生输出"
    let experiment = try assetRoot().appendingPathComponent("ios-experiment.json")

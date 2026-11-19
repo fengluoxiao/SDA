@@ -133,6 +133,8 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   roomLabGenerate: (config) => ipcRenderer.invoke("sda:room-lab-generate", config),
   roomLabCancel: () => ipcRenderer.invoke("sda:room-lab-cancel"),
   nativeRendererComparisonGain: (gainDb) => ipcRenderer.invoke("sda:comparison-gain",gainDb),
+  getListeningProfile: () => ipcRenderer.sendSync("sda:get-listening-profile"),
+  setListeningProfile: (settings) => ipcRenderer.invoke("sda:set-listening-profile", settings),
   getSpatialBalanceEnabled: () => ipcRenderer.sendSync("sda:get-spatial-balance-enabled"),
   nativeRendererSpatialBalance: (enabled) => ipcRenderer.invoke("sda:native-renderer-spatial-balance", enabled),
   nativeRendererObjectRendering: (enabled) => ipcRenderer.invoke("sda:native-renderer-object-rendering", enabled),

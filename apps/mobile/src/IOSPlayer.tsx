@@ -1,3 +1,4 @@
+import { showListeningCalibration } from "./listening-calibration";
 import { sceneDisplayCapabilities } from "./scene-display";
 import { SpaceVisualPage } from "./SpaceVisualPage";
 import { supportsIOSGlass } from "./ios-platform-version";
@@ -512,6 +513,8 @@ function ThemedPlayer(p: PlayerProps) {
           {Platform.OS === "ios" && <>{heading("声音增强")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {actionRow("scope", "头部方向归中", "", p.resetYaw, !p.headTrackingEnabled || p.systemSpatial360RAActive)}
+            {divider()}
+            {actionRow("ear", "耳机与个人试听校准", "四步试听", () => showListeningCalibration(p), p.busy || !!p.authoredPlayback || p.systemSpatial360RAActive || !p.setListeningProfile)}
             {divider()}
             {toggle("空间平衡", "按位置平滑调整辅助声部，保留前方基准电平；可单独开启或配合音量平衡", p.spatialEnhancementEnabled, p.setSpatialEnhancement, p.busy || p.systemSpatial360RAActive)}
           </View>

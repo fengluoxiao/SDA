@@ -883,6 +883,14 @@ impl MobileEngine {
     }
 
     /// Selected spatial recipe and source-group control; independent of programme volume balance.
+    pub fn set_listening_profile(&self, json: &str) -> EngineResult<()> {
+        let settings: sda_native_renderer::listening_profile::Settings = serde_json::from_str(json).map_err(|e|e.to_string())?;
+        let settings=settings.validate()?;
+        if self.sdar_source.is_some(){return Err("文件调优播放不允许覆盖试听参数".into());}
+        let pipeline=self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::Command(Command::SetListeningProfile {settings})).map_err(|_|"command queue full".into())
+    }
+
     pub fn set_spatial_enhancement(&self, enabled: bool) -> EngineResult<()> {
         if self.sdar_source.is_some(){return Ok(());}
         let pipeline = self.pipeline.as_ref().ok_or("engine not started")?;

@@ -16,7 +16,7 @@ const spatialExtractor=recorder.match(/const spatialBalanceAlgorithm=renderer\.m
 assert(spatialExtractor,'spatial identity must come from the compiled renderer');
 const spatialPattern=new Function(`return ${spatialExtractor[1]}`)();
 const spatialIdentity=renderer.match(spatialPattern)?.[1];
-assert.equal(spatialIdentity,'directional-detail-measured-headroom-v2');
+assert.equal(spatialIdentity,'perceptual-mask-transient-measured-headroom-v3');
 assert.equal(renderer.replace(spatialIdentity,'future-measured-policy').match(spatialPattern)?.[1],'future-measured-policy');
 assert.match(recorder,/spatialBalanceAlgorithm:spatialBalanceAlgorithm\[1\]/,'record the extracted identity instead of a stale literal');
 console.log('Spatial balance provenance follows the native algorithm identity.');
