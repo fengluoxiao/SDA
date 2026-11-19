@@ -8,6 +8,7 @@ on:
       - 'scripts/generate-embedded-numcalc.py'
       - 'scripts/check-ios-personal-hrtf-native.sh'
       - 'scripts/test/personal-hrtf-native.cpp'
+      - 'scripts/test/personal-hrtf-mesh.cpp'
       - 'scripts/test/fixtures/personal-hrtf-sphere/**'
       - 'vendor/mesh2hrtf-numcalc/**'
   workflow_dispatch:

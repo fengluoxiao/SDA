@@ -13,6 +13,8 @@ struct PersonalHeadMeshCandidate {
  let cameraPositions: [SIMD3<Float>]
  let gravity: SIMD3<Float>
  let points: Int
+ let geometryScreenVersion: Int
+ let maximumSupportDistance: Double
 }
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }

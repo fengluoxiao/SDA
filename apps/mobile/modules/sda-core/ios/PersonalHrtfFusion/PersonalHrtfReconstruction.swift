@@ -14,7 +14,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   case message(String)
   var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
  }
- private enum Phase: Equatable { case idle, scanning, finalizing, meshing, finished }
+ private enum Phase: Equatable { case idle, scanning, finalizing, meshing, checking, finished }
  private let lock = NSLock()
  private var phase = Phase.idle
  private var cancelled = false
@@ -155,14 +155,23 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   lock.lock(); meshing = operation; phase = .meshing; let stop = cancelled; lock.unlock()
   if stop { operation.cancel() }
-  let gravity = model.gravity
+  let gravity = cloud.gravity
+  // Capture is finalized, and measured support is on disk. Do not retain a
+  // second full surfel model while Poisson and mesh validation allocate.
+  model.reset()
   operation.completionBlock = { [self, weak operation] in
    lock.lock(); let stopped = cancelled; lock.unlock()
    let size = (try? mesh.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
    guard !stopped, operation?.isCancelled == false, (128...64 * 1024 * 1024).contains(size) else {
     end(.failure(Failure.message(stopped ? "已取消头耳重建" : "本机候选网格未成功生成"))); return
    }
-   end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount)))
+   lock.lock(); phase = .checking; lock.unlock()
+   do {
+    let distance = try PersonalHrtfMeshCheck.screen(mesh:mesh,support:support,cancelled:{ [self] in
+     lock.lock(); defer { lock.unlock() }; return cancelled
+    })
+    end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:1,maximumSupportDistance:distance)))
+   } catch { end(.failure(error)) }
   }
   meshQueue.addOperation(operation)
  }

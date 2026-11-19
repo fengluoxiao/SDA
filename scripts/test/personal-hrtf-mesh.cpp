@@ -1,0 +1,59 @@
+// Synthetic geometry regression only. These are NOT human scans or HRTFs.
+#include "SdaHrtfMesh.h"
+#include <array>
+#include <cmath>
+#include <iostream>
+#include <map>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+struct Fixture {
+ std::vector<float> vertices,support,normals;std::vector<uint32_t> triangles;
+ SdaHrtfMeshView view(){return {vertices.data(),vertices.size()/3,triangles.data(),triangles.size()/3,support.data(),normals.data(),support.size()/3};}
+};
+void require(bool ok,const char *message){if(!ok)throw std::runtime_error(message);}
+Fixture cube(){
+ Fixture f;std::map<std::array<int,3>,uint32_t> ids;constexpr int n=8;
+ auto vertex=[&](std::array<int,3> p){auto result=ids.emplace(p,uint32_t(ids.size()));if(result.second)for(int v:p)f.vertices.push_back(float(v)*0.0025f-0.01f);return result.first->second;};
+ for(int axis=0;axis<3;++axis)for(int side:{0,n})for(int i=0;i<n;++i)for(int j=0;j<n;++j){
+  auto id=[&](int u,int v){std::array<int,3> p{};p[axis]=side;p[(axis+1)%3]=u;p[(axis+2)%3]=v;return vertex(p);};
+  uint32_t a=id(i,j),b=id(i+1,j),c=id(i+1,j+1),d=id(i,j+1);
+  if(side==n)f.triangles.insert(f.triangles.end(),{a,b,c,a,c,d});else f.triangles.insert(f.triangles.end(),{a,c,b,a,d,c});
+ }
+ for(size_t i=0;i<f.triangles.size();i+=3){
+  std::array<std::array<double,3>,3> v{};for(int k=0;k<3;++k)for(int j=0;j<3;++j)v[k][j]=f.vertices[3*f.triangles[i+k]+j];
+  std::array<double,3> normal{};
+  for(int j=0;j<3;++j)normal[j]=(v[1][(j+1)%3]-v[0][(j+1)%3])*(v[2][(j+2)%3]-v[0][(j+2)%3])-(v[1][(j+2)%3]-v[0][(j+2)%3])*(v[2][(j+1)%3]-v[0][(j+1)%3]);
+  double length=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);
+  for(int a=0;a<=3;++a)for(int b=0;b<=3-a;++b)for(int j=0;j<3;++j){
+   f.support.push_back(float(v[0][j]+(v[1][j]-v[0][j])*a/3+(v[2][j]-v[0][j])*b/3));f.normals.push_back(float(normal[j]/length));
+  }
+ }
+ return f;
+}
+void check(Fixture &f,int code,const char *name,const char *message=nullptr){auto r=sda_hrtf_screen_head_mesh(f.view(),nullptr,nullptr);if(r.code!=code||(message&&std::string(r.message).find(message)==std::string::npos)){std::cerr<<name<<": "<<r.code<<" "<<r.message<<std::endl;throw std::runtime_error(name);}}
+int main(){try{
+ auto good=cube();check(good,0,"Closed supported synthetic cube");
+ auto disconnected=good;uint32_t offset=uint32_t(good.vertices.size()/3);
+ for(size_t i=0;i<good.vertices.size();++i)disconnected.vertices.push_back(good.vertices[i]+(i%3==0?0.05f:0.0f));
+ for(uint32_t i:good.triangles)disconnected.triangles.push_back(i+offset);
+ check(disconnected,1,"Reject disconnected surfaces","disconnected");
+ auto nonmanifold=good;nonmanifold.triangles.insert(nonmanifold.triangles.end(),good.triangles.begin(),good.triangles.begin()+3);check(nonmanifold,1,"Reject three-face edge","two-manifold");
+ auto open=good;open.triangles.resize(open.triangles.size()-3);check(open,1,"Reject open mesh","two-manifold");
+ auto winding=good;std::swap(winding.triangles[0],winding.triangles[1]);check(winding,1,"Reject reversed face","winding");
+ auto reversed=good;for(size_t i=0;i<reversed.triangles.size();i+=3)std::swap(reversed.triangles[i],reversed.triangles[i+1]);check(reversed,1,"Reject inward surface","positive");
+ auto invalid=good;invalid.triangles[0]=uint32_t(invalid.vertices.size());check(invalid,1,"Reject out-of-range face","index");
+ auto nan=good;nan.vertices[0]=std::numeric_limits<float>::quiet_NaN();check(nan,1,"Reject non-finite geometry","coordinates");
+ auto fold=good;bool moved=false;for(size_t i=0;i<fold.vertices.size();i+=3)if(std::abs(fold.vertices[i])<0.0001&&std::abs(fold.vertices[i+1])<0.0001&&fold.vertices[i+2]>0.009){fold.vertices[i]+=0.006f;moved=true;break;}require(moved,"No synthetic fold vertex");check(fold,1,"Reject self-intersecting folded surface","intersects");
+ auto holes=good;holes.support.clear();holes.normals.clear();
+ for(size_t i=0;i<good.support.size();i+=3)if(!(good.support[i+2]>0.009&&std::hypot(good.support[i],good.support[i+1])<0.005))for(int j=0;j<3;++j){holes.support.push_back(good.support[i+j]);holes.normals.push_back(good.normals[i+j]);}
+ check(holes,1,"Reject unmeasured Poisson closure","measured depth support");
+ auto badNormals=good;for(float &v:badNormals.normals)v=-v;check(badNormals,1,"Reject unsupported orientation","measured depth support");
+ auto huge=good.view();huge.support_count=500001;require(sda_hrtf_screen_head_mesh(huge,nullptr,nullptr).code==3,"Enforce input bounds before reading");
+ require(sda_hrtf_screen_head_mesh(good.view(),[](void*){return 1;},nullptr).code==2,"Cancel before processing");
+ int callbacks=0;require(sda_hrtf_screen_head_mesh(good.view(),[](void *p){return int(++*static_cast<int*>(p)>=3);},&callbacks).code==2,"Cancel during verification");
+ check(good,0,"Recovery after rejected/cancelled meshes");
+ std::cout<<"{\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
+ return 0;
+}catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

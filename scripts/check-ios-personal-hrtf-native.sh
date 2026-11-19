@@ -6,6 +6,8 @@ out="$(cd "$out" && pwd)"
 native="$PWD/apps/mobile/modules/sda-core/ios/PersonalHrtfNative"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
 python3 scripts/generate-embedded-numcalc.py
+xcrun clang++ -std=c++17 -O2 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$native" "$native/SdaHrtfMesh.cpp" scripts/test/personal-hrtf-mesh.cpp -o "$out/mesh-host-test"
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/mesh-host-test" | tee "$out/mesh-host-result.json"
 xcodebuild -version > "$out/xcode.txt"
 # Actual Apple compiler, first running the same embedded core on the Mac host.
 cp -R scripts/test/fixtures/personal-hrtf-sphere "$out/host-fixture"
@@ -20,7 +22,8 @@ UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/native-host-test" "$out/h
 device_sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfSolver.cpp" -o "$out/SdaHrtfSolver-ios-arm64.o"
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfImpulse.cpp" -o "$out/SdaHrtfImpulse-ios-arm64.o"
-xcrun libtool -static -o "$out/libSdaPersonalHrtf-ios-arm64.a" "$out/SdaHrtfSolver-ios-arm64.o" "$out/SdaHrtfImpulse-ios-arm64.o"
+xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfMesh.cpp" -o "$out/SdaHrtfMesh-ios-arm64.o"
+xcrun libtool -static -o "$out/libSdaPersonalHrtf-ios-arm64.a" "$out/SdaHrtfSolver-ios-arm64.o" "$out/SdaHrtfImpulse-ios-arm64.o" "$out/SdaHrtfMesh-ios-arm64.o"
 xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$device_sdk" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfOnDeviceSolver.swift" 2>&1 | tee "$out/swift-typecheck.log"
 # Run inside the iOS Simulator runtime as well. This verifies an iOS process,
 # while still being explicitly distinct from a physical TrueDepth scan/test.
@@ -34,3 +37,6 @@ xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 cp -R scripts/test/fixtures/personal-hrtf-sphere "$out/simulator-fixture"
 xcrun simctl spawn "$udid" "$out/native-simulator-test" "$out/simulator-fixture" | tee "$out/simulator-result.json"
+xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -target "$arch-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$native" "$native/SdaHrtfMesh.cpp" scripts/test/personal-hrtf-mesh.cpp -o "$out/mesh-simulator-test"
+codesign --force --sign - "$out/mesh-simulator-test"
+xcrun simctl spawn "$udid" "$out/mesh-simulator-test" | tee "$out/mesh-simulator-result.json"
