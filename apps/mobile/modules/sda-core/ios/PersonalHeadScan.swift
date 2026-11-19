@@ -17,10 +17,14 @@ struct PersonalHeadMeshCandidate {
 }
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }
+ var captureLimit: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
  func accumulate(_ frame: PersonalHeadDepthFrame)
  func finish()
  func cancel()
+}
+extension PersonalHeadReconstructor {
+ var captureLimit: ((Int, String) -> Void)? { get { nil } set {} }
 }
 // Front TrueDepth frames go straight to the on-device reconstruction engine.
 // ARFaceGeometry is never substituted for measured head or ear surfaces.
@@ -40,6 +44,7 @@ final class PersonalHeadScanController: UIViewController {
  private let frameLock = NSLock()
  private var acceptingFrames = false // protected by frameLock
  private var finished = false, permissionCancelled = false // main queue
+ private var capturePaused = false, processing = false // main queue
  private var reason: Error?
  var complete: ((Result<PersonalHeadMeshCandidate,Error>) -> Void)?
  init(reconstruction: PersonalHeadReconstructor) {
@@ -72,10 +77,21 @@ final class PersonalHeadScanController: UIViewController {
   isModalInPresentation = true; UIApplication.shared.isIdleTimerDisabled = true
   reconstruction.progress = { [weak self] count,text in
    DispatchQueue.main.async {
-    guard let self, !self.finished else { return }
+    guard let self, !self.finished, !self.capturePaused || self.processing else { return }
     self.countLabel.text = "已配准 \(count) 帧 · \(text)"
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
-    self.finishButton.isEnabled = scanning && count >= 72
+    self.finishButton.isEnabled = scanning && !self.processing && count >= 72
+   }
+  }
+  reconstruction.captureLimit = { [weak self] count,text in
+   DispatchQueue.main.async {
+    guard let self, !self.finished, !self.processing else { return }
+    self.capturePaused = true
+    self.stopFrames()
+    self.message.text = text
+    self.countLabel.text = "已保留本次测量，可处理现有模型或取消删除"
+    self.finishButton.setTitle("处理已采集的模型",for:.normal)
+    self.finishButton.isEnabled = count > 0
    }
   }
   do { try reconstruction.start { [weak self] result in
@@ -109,7 +125,7 @@ final class PersonalHeadScanController: UIViewController {
   frameLock.lock(); acceptingFrames = false; frameLock.unlock(); camera.stop()
  }
  @objc private func finishScan() {
-  guard !finished else { return }; permissionCancelled = true; stopFrames()
+  guard !finished, !processing else { return }; processing = true; permissionCancelled = true; stopFrames()
   finishButton.isEnabled = false; message.text = "正在 iPhone 上完成配准与重建，请保持应用在前台。"
   reconstruction.finish()
  }
@@ -120,7 +136,7 @@ final class PersonalHeadScanController: UIViewController {
  }
  private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   guard !finished else { return }; finished = true; permissionCancelled = true
-  stopFrames(); reconstruction.progress = nil; UIApplication.shared.isIdleTimerDisabled = false
+  stopFrames(); reconstruction.progress = nil; reconstruction.captureLimit = nil; UIApplication.shared.isIdleTimerDisabled = false
   let answer: Result<PersonalHeadMeshCandidate,Error>
   if let reason {
    if case .success(let candidate) = result { try? FileManager.default.removeItem(at:candidate.directory) }

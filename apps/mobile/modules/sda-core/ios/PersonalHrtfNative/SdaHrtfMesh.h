@@ -4,6 +4,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+// One shared downstream bound; live capture may use a smaller memory budget.
+enum { SDA_HRTF_MAXIMUM_SUPPORT_POINTS = 1500000 };
+// Conservative working-space allowance (512 bytes/point), not a measured peak.
+// Budget must already reserve room for the app, audio and OS. Zero means no scan.
+size_t sda_hrtf_scan_point_limit(uint64_t working_budget);
 // Coordinates are measured metres in one rigid reconstruction frame. Normals
 // are measured outward normals; no inferred pinna/face geometry is accepted.
 typedef struct {

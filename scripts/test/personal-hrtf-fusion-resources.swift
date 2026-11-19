@@ -21,6 +21,15 @@ struct FusionResourcesTest {
     throw Failure.invalid("Reconstruction Metal functions/queue unavailable")
    }
    let model = SCReconstructionManager(device:device,commandQueue:queue,maxThreadCount:2)
+   model.sdaMaximumSurfelCount = 1234567
+   guard model.sdaMaximumSurfelCount == 1234567, !model.sdaReachedSurfelLimit else {
+    throw Failure.invalid("Configured scan budget did not reach native reconstruction")
+   }
+   model.sdaMaximumSurfelCount = UInt.max
+   guard model.sdaMaximumSurfelCount == 1500000 else { throw Failure.invalid("Native scan budget did not clamp") }
+   model.sdaMaximumSurfelCount = 0
+   guard model.sdaMaximumSurfelCount == 10000 else { throw Failure.invalid("Native minimum budget did not clamp") }
+   model.sdaMaximumSurfelCount = 1234567
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("New model has stale point count") }
    let lock = NSLock(); var completed = false
    model.finalize { lock.lock(); completed = true; lock.unlock() }
@@ -43,7 +52,7 @@ struct FusionResourcesTest {
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
    initialized = true
   }
-  let result:[String:Any] = ["bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
+  let result:[String:Any] = ["bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

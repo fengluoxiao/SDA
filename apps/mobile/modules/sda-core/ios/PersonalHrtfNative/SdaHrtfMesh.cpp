@@ -8,6 +8,10 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+extern "C" size_t sda_hrtf_scan_point_limit(uint64_t budget) {
+ const uint64_t points=std::min<uint64_t>(SDA_HRTF_MAXIMUM_SUPPORT_POINTS,budget/512);
+ return points>=100000?size_t(points):0;
+}
 namespace {
 constexpr double tolerance=0.0015, maxEdge=0.012, epsilon=1e-10;
 struct Error:std::runtime_error {int code;Error(int c,const char *s):std::runtime_error(s),code(c){}};
@@ -123,7 +127,7 @@ struct Screen {
  void run(){
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
   if(!input.vertices||!input.triangles||!input.support||!input.support_normals||input.vertex_count<4||input.triangle_count<4||input.support_count<4)throw Error(1,"Incomplete measured mesh/support input");
-  if(input.vertex_count>80000||input.triangle_count>160000||input.support_count>500000)throw Error(3,"Measured geometry exceeds local processing bound");
+  if(input.vertex_count>80000||input.triangle_count>160000||input.support_count>SDA_HRTF_MAXIMUM_SUPPORT_POINTS)throw Error(3,"Measured geometry exceeds local processing bound");
   std::vector<Edge> edges;edges.reserve(3*input.triangle_count);faces.reserve(input.triangle_count);
   parent.resize(input.triangle_count);std::iota(parent.begin(),parent.end(),0);
   std::vector<bool> used(input.vertex_count,false);Box bounds;

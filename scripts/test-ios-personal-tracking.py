@@ -16,3 +16,10 @@ assert '_sdaTrackingRecovery.terminal(pbfMetadata.isMerged,'in patch
 assert 'terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking'in patch
 assert '_sdaTrackingRecovery.reset()'in patch
 print('PASS: native 6/15/30/60fps recovery, timeout, reset, invalid clock; full cadence and bounded records')
+
+assert 'count >= 600 { fail'not in text
+assert 'if model.sdaReachedSurfelLimit'in text and 'phase = .paused'in text
+assert 'sda_hrtf_scan_point_limit(budget)'in text
+assert 'maximumSurfelCount) continue'in patch
+assert 'metadata.result = SCAssimilatedFrameResultFailed;\n        }'not in patch
+print('PASS: quota has a strict insertion bound and paused capture retains its measured model')

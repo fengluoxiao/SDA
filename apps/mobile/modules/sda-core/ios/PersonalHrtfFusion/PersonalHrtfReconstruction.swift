@@ -13,13 +13,14 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   case message(String)
   var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
  }
- private enum Phase: Equatable { case idle, scanning, finalizing, meshing, checking, finished }
+ private enum Phase: Equatable { case idle, scanning, paused, finalizing, meshing, checking, finished }
  private let lock = NSLock()
  private var phase = Phase.idle
  private var cancelled = false
  private var lastTimestamp = -1.0
  private var lastPoseTime = -1.0
  private var cameraPositions: [SIMD3<Float>] = []
+ private let pointLimit: Int
  private let model: SCReconstructionManager
  private let motion = CMMotionManager()
  private let motionQueue = OperationQueue()
@@ -28,6 +29,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private let directory: URL
  private var observers: [NSObjectProtocol] = []
  private var completion: ((Result<PersonalHeadMeshCandidate,Error>) -> Void)?
+ var captureLimit: ((Int, String) -> Void)?
  var progress: ((Int, String) -> Void)?
 
  init(frontTrueDepth: Void) throws {
@@ -38,10 +40,14 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
         (try? device.makeDefaultLibrary(bundle:resources)) != nil else {
    throw Failure.message("需要可用的前置 TrueDepth 相机和 Metal；没有后置相机回退")
   }
+  let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+  pointLimit = Int(sda_hrtf_scan_point_limit(budget))
+  guard pointLimit > 0 else { throw Failure.message("当前可用内存不足以开始头耳采集，请稍后重试") }
   model = SCReconstructionManager(device:device,commandQueue:queue,maxThreadCount:2)
   directory = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
   super.init()
+  model.sdaMaximumSurfelCount = UInt(pointLimit)
   model.delegate = self
   model.flipsInputHorizontally = false
   model.includesDepthBuffersInMetadata = false
@@ -103,19 +109,25 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   let count = cameraPositions.count
   lock.unlock()
-  if model.sdaSurfelCount > 500000 { fail("扫描点数达到本机处理上限，请收紧头部取景范围后重试"); return }
+  if model.sdaReachedSurfelLimit {
+   lock.lock()
+   guard phase == .scanning else { lock.unlock(); return }
+   phase = .paused; lock.unlock()
+   motion.stopDeviceMotionUpdates()
+   captureLimit?(count,"本次采集预算已用满（最多 \(pointLimit) 个点），已暂停并保留测量。可尝试处理现有模型；未覆盖的区域仍会由几何检查拒绝。")
+   return
+  }
   if failed { fail("连续 3 秒未能恢复跟踪，请重新采集；保持头部不动，让手机回到刚才能扫描的位置"); return }
-  if count >= 600 { fail("扫描达到本机采集上限，请重新采集完整头耳覆盖"); return }
-  progress?(count,accepted ? "正在手机上实时配准头耳深度" : "暂时失去跟踪：保持头部不动，将手机缓慢退回刚才的位置")
+  progress?(count,accepted ? "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" : "暂时失去跟踪：保持头部不动，将手机缓慢退回刚才的位置")
  }
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }
  func finish() {
   lock.lock()
-  guard phase == .scanning else { lock.unlock(); return }
-  guard cameraPositions.count >= 72 else { lock.unlock(); fail("有效扫描不足，请完成头部各方向的覆盖"); return }
+  guard phase == .scanning || phase == .paused else { lock.unlock(); return }
+  guard cameraPositions.count >= 72 || (phase == .paused && !cameraPositions.isEmpty) else { lock.unlock(); fail("有效扫描不足，请完成头部各方向的覆盖"); return }
   phase = .finalizing; lock.unlock()
   motion.stopDeviceMotionUpdates()
-  model.finalize { [self] in prepareMesh() }
+  model.finalize { [self] in meshQueue.addOperation { [self] in prepareMesh() } }
  }
  func cancel() { fail("已取消本机头耳重建，未启用个人档案") }
  private func fail(_ message: String) {
@@ -123,11 +135,11 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   guard phase != .finished else { lock.unlock(); return }
   cancelled = true
   let old = phase
-  if phase == .scanning || phase == .idle { phase = .finalizing }
+  if phase == .scanning || phase == .paused || phase == .idle { phase = .finalizing }
   let operation = meshing
   lock.unlock()
   motion.stopDeviceMotionUpdates()
-  if old == .scanning { model.finalize { [self] in end(.failure(Failure.message(message))) } }
+  if old == .scanning || old == .paused { model.finalize { [self] in end(.failure(Failure.message(message))) } }
   else if old == .idle { model.finalize { [self] in end(.failure(Failure.message(message))) } }
   else if old == .meshing { operation?.cancel() } // completion owns cleanup after writes stop
   // A finalize already in flight observes cancelled in prepareMesh.
@@ -137,7 +149,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   if stopped { end(.failure(Failure.message("已取消头耳重建"))); return }
   let cloud = model.buildPointCloud()
   let pointCount = cloud.pointCount
-  guard (10000...500000).contains(cloud.pointCount) else { end(.failure(Failure.message("有效头耳表面不足或超出处理上限"))); return }
+  guard (10000...pointLimit).contains(cloud.pointCount) else { end(.failure(Failure.message("有效头耳表面不足或超出处理上限"))); return }
   let support = directory.appendingPathComponent("measured-support.ply")
   let mesh = directory.appendingPathComponent("candidate-head.ply")
   guard cloud.writeToPLY(atPath:support.path) else { end(.failure(Failure.message("无法写入本机临时测量表面"))); return }

@@ -18,11 +18,11 @@ enum PersonalHrtfMeshCheck {
  static func load(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Loaded {
   if cancelled() { throw PersonalHrtfError.message("已取消本机网格检查") }
   try preflight(meshURL,maximumVertices:80000,maximumFaces:160000)
-  try preflight(supportURL,maximumVertices:500000,maximumFaces:0)
+  try preflight(supportURL,maximumVertices:Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS),maximumFaces:0)
   let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"")
   guard let support = SCPointCloud(plyPath:supportURL.path),
         (4...80000).contains(mesh.vertexCount), (4...160000).contains(mesh.faceCount),
-        (4...500000).contains(support.pointCount) else {
+        (4...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(support.pointCount) else {
    throw PersonalHrtfError.message("候选网格或测量点数超出本机处理范围")
   }
   // Pinned upstream Vec3 is aligned/padded to 16 bytes; Face3 is three Int32.
@@ -78,7 +78,7 @@ enum PersonalHrtfMeshCheck {
  // reserve a buffer. This also bounds failures if a private job is incomplete.
  private static func preflight(_ url:URL,maximumVertices:Int,maximumFaces:Int) throws {
   let size = try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
-  guard (128...64 * 1024 * 1024).contains(size) else { throw PersonalHrtfError.message("本机测量文件尺寸无效") }
+  guard (128...256 * 1024 * 1024).contains(size) else { throw PersonalHrtfError.message("本机测量文件尺寸无效") }
   let handle = try FileHandle(forReadingFrom:url); defer { try? handle.close() }
   let prefix = try handle.read(upToCount:16384) ?? Data()
   let marker = prefix.range(of:Data("end_header\n".utf8)) ?? prefix.range(of:Data("end_header\r\n".utf8))

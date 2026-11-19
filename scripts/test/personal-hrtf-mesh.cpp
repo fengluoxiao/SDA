@@ -34,6 +34,11 @@ Fixture cube(){
 }
 void check(Fixture &f,int code,const char *name,const char *message=nullptr){auto r=sda_hrtf_screen_head_mesh(f.view(),nullptr,nullptr);if(r.code!=code||(message&&std::string(r.message).find(message)==std::string::npos)){std::cerr<<name<<": "<<r.code<<" "<<r.message<<std::endl;throw std::runtime_error(name);}}
 int main(){try{
+ require(sda_hrtf_scan_point_limit(0)==0,"Unknown scan budget must not allocate");
+ require(sda_hrtf_scan_point_limit(100000*uint64_t(512)-1)==0,"Reject too-small scan budget");
+ require(sda_hrtf_scan_point_limit(256*uint64_t(1024)*1024)==524288,"Derive points from working memory");
+ require(sda_hrtf_scan_point_limit(768*uint64_t(1024)*1024)==SDA_HRTF_MAXIMUM_SUPPORT_POINTS,"Bound large device budget");
+ require(sda_hrtf_scan_point_limit(UINT64_MAX)==SDA_HRTF_MAXIMUM_SUPPORT_POINTS,"No overflow on large reported budget");
  auto good=cube();check(good,0,"Closed supported synthetic cube");
  auto disconnected=good;uint32_t offset=uint32_t(good.vertices.size()/3);
  for(size_t i=0;i<good.vertices.size();++i)disconnected.vertices.push_back(good.vertices[i]+(i%3==0?0.05f:0.0f));
@@ -50,10 +55,10 @@ int main(){try{
  for(size_t i=0;i<good.support.size();i+=3)if(!(good.support[i+2]>0.009&&std::hypot(good.support[i],good.support[i+1])<0.005))for(int j=0;j<3;++j){holes.support.push_back(good.support[i+j]);holes.normals.push_back(good.normals[i+j]);}
  check(holes,1,"Reject unmeasured Poisson closure","measured depth support");
  auto badNormals=good;for(float &v:badNormals.normals)v=-v;check(badNormals,1,"Reject unsupported orientation","measured depth support");
- auto huge=good.view();huge.support_count=500001;require(sda_hrtf_screen_head_mesh(huge,nullptr,nullptr).code==3,"Enforce input bounds before reading");
+ auto huge=good.view();huge.support_count=SDA_HRTF_MAXIMUM_SUPPORT_POINTS+size_t(1);require(sda_hrtf_screen_head_mesh(huge,nullptr,nullptr).code==3,"Enforce input bounds before reading");
  require(sda_hrtf_screen_head_mesh(good.view(),[](void*){return 1;},nullptr).code==2,"Cancel before processing");
  int callbacks=0;require(sda_hrtf_screen_head_mesh(good.view(),[](void *p){return int(++*static_cast<int*>(p)>=3);},&callbacks).code==2,"Cancel during verification");
  check(good,0,"Recovery after rejected/cancelled meshes");
- std::cout<<"{\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
+ std::cout<<"{\"scanBudgetTestsPassed\":true,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}
