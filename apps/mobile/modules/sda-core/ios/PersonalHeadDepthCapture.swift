@@ -70,6 +70,8 @@ final class PersonalHeadDepthCapture: NSObject, AVCaptureDataOutputSynchronizerD
    throw PersonalHrtfError.message("此设备没有可用的前置 TrueDepth 相机")
   }
   let input = try AVCaptureDeviceInput(device:device)
+  // This video/depth-only session must not reconfigure music playback audio.
+  session.automaticallyConfiguresApplicationAudioSession = false
   session.beginConfiguration(); defer { session.commitConfiguration() }
   guard session.canSetSessionPreset(.hd1280x720), session.canAddInput(input) else {
    throw PersonalHrtfError.message("无法配置前置 TrueDepth 视频输入")
@@ -92,6 +94,8 @@ final class PersonalHeadDepthCapture: NSObject, AVCaptureDataOutputSynchronizerD
    CMVideoFormatDescriptionGetDimensions($0.formatDescription).width < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
   }) else { throw PersonalHrtfError.message("缺少可用的 30 fps 前置标定深度格式") }
   try device.lockForConfiguration()
+  device.activeVideoMinFrameDuration = CMTime(value:1,timescale:30)
+  device.activeVideoMaxFrameDuration = CMTime(value:1,timescale:30)
   device.activeDepthDataFormat = format
   device.activeDepthDataMinFrameDuration = CMTime(value:1,timescale:30)
   device.isSubjectAreaChangeMonitoringEnabled = false

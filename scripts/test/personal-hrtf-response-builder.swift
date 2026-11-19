@@ -49,6 +49,7 @@ import zlib
   let json = try inflate(archiveBytes)
   let payload = try JSONSerialization.jsonObject(with:json) as! [String:Any]
   let manifest = payload["manifest"] as! [String:Any], files = payload["files"] as! [[String:Any]], positions = manifest["positions"] as! [[String:Any]]
+  try require(payload["name"] as? String == "个人头耳 · 本机计算" && payload["assessment"] is NSNull,"Archive library metadata")
   try require(payload["format"] as? String == "sda-phrtf" && files.count == count && positions.count == count,"Archive structure")
   let processing = manifest["processing"] as! [String:Any]
   try require(processing["normalization"] as? Bool == false && processing["preserveMeasurements"] as? Bool == true && processing["commonDelaySamples"] as? Int == 32,"Processing must preserve ear response")

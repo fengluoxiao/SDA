@@ -128,7 +128,7 @@ final class PersonalHrtfResponseBuilder {
    "source":["name":"个人头耳 · 本机计算","method":"front-truedepth-local-mesh2hrtf-experimental","convention":"SimpleFreeFieldHRIR","cameraPolicy":"front-truedepth-only","mesh2hrtfVersion":"1.3.0","physicalAccuracyValidated":false],
    "azimuthConvention":"positive left, degrees; elevation positive up",
    "processing":["calibrated":false,"preserveMeasurements":true,"commonDelaySamples":s.commonShift,"delayApplied":true,"normalization":false,"roomResponse":false],"positions":positions]
-  let json = try JSONSerialization.data(withJSONObject:["format":"sda-phrtf","version":1,"manifest":manifest,"files":files],options:[.sortedKeys])
+  let json = try JSONSerialization.data(withJSONObject:["format":"sda-phrtf","version":1,"name":"个人头耳 · 本机计算","assessment":NSNull(),"manifest":manifest,"files":files],options:[.sortedKeys])
   try require(json.count <= 24*1024*1024,"个人响应档案展开尺寸超出上限")
   let archive = try gzip(json)
   let target = project.appendingPathComponent("local-personal.phrtf")
