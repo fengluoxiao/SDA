@@ -2,6 +2,7 @@
 #define SDA_BRIDGE_H
 #include "PersonalHrtfNative/SdaHrtfSolver.h"
 #include "PersonalHrtfNative/SdaHrtfMesh.h"
+#include "PersonalHrtfNative/SdaHrtfProject.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>

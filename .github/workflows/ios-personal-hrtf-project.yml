@@ -1,0 +1,34 @@
+name: iOS local HRTF acoustic input preparation
+on:
+  push:
+    branches: [codex/ios-personal-hrtf-local-20261119]
+    paths:
+      - '.github/workflows/ios-personal-hrtf-project.yml'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaHrtfProject.*'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfProjectBuilder.swift'
+      - 'scripts/check-ios-personal-hrtf-project.sh'
+      - 'scripts/test/personal-hrtf-project.cpp'
+      - 'scripts/test/personal-hrtf-project-builder.swift'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  project:
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir project-build
+      - name: Validate generated acoustic inputs on host and iOS
+        run: bash scripts/check-ios-personal-hrtf-project.sh project-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-personal-hrtf-project-evidence
+          path: |
+            project-build/*.json
+            project-build/*.log
+            project-build/*.a
+            project-build/**/sda-project.json
+          retention-days: 7

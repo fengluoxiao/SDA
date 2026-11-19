@@ -11,6 +11,7 @@ on:
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfOnDeviceSolver.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfResponseBuilder.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfProjectBuilder.swift'
       - 'apps/mobile/modules/sda-core/ios/SdaBridge.h'
       - 'scripts/generate-embedded-numcalc.py'
       - 'scripts/check-ios-personal-hrtf-native.sh'
