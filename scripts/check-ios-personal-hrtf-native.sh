@@ -24,7 +24,7 @@ xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfImpulse.cpp" -o "$out/SdaHrtfImpulse-ios-arm64.o"
 xcrun --sdk iphoneos clang++ -std=c++17 -O2 -fexceptions -target arm64-apple-ios16.4 -isysroot "$device_sdk" -I "$native" -c "$native/SdaHrtfMesh.cpp" -o "$out/SdaHrtfMesh-ios-arm64.o"
 xcrun libtool -static -o "$out/libSdaPersonalHrtf-ios-arm64.a" "$out/SdaHrtfSolver-ios-arm64.o" "$out/SdaHrtfImpulse-ios-arm64.o" "$out/SdaHrtfMesh-ios-arm64.o"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$device_sdk" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfOnDeviceSolver.swift" 2>&1 | tee "$out/swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$device_sdk" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfOnDeviceSolver.swift" 2>&1 | tee "$out/swift-typecheck.log"
 # Run inside the iOS Simulator runtime as well. This verifies an iOS process,
 # while still being explicitly distinct from a physical TrueDepth scan/test.
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"

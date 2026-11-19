@@ -1,7 +1,5 @@
 import UIKit
-import ARKit
 import AVFoundation
-import SceneKit
 import simd
 
 // A candidate is NOT an acoustic head mesh or an installable HRTF. The local
@@ -19,25 +17,23 @@ struct PersonalHeadMeshCandidate {
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
- func accumulate(_ frame: ARFrame)
+ func accumulate(_ frame: PersonalHeadDepthFrame)
  func finish()
  func cancel()
 }
 // Front TrueDepth frames go straight to the on-device reconstruction engine.
 // ARFaceGeometry is never substituted for measured head or ear surfaces.
-final class PersonalHeadScanController: UIViewController, ARSessionDelegate {
+final class PersonalHeadScanController: UIViewController {
  static func supported() -> Bool {
-  ARFaceTrackingConfiguration.isSupported &&
-   AVCaptureDevice.default(.builtInTrueDepthCamera,for:.video,position:.front) != nil
+  AVCaptureDevice.default(.builtInTrueDepthCamera,for:.video,position:.front) != nil
  }
  static func discardAbandonedScans() {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true)
   try? FileManager.default.removeItem(at:root)
  }
  private let reconstruction: PersonalHeadReconstructor
- private let session = ARSession()
- private let worker = DispatchQueue(label:"app.sda.headscan",qos:.userInitiated)
- private let preview = ARSCNView(frame:.zero)
+ private let camera = PersonalHeadDepthCapture()
+ private let preview = UIView(frame:.zero)
  private let message = UILabel(), countLabel = UILabel()
  private let finishButton = UIButton(type:.system)
  private let frameLock = NSLock()
@@ -52,7 +48,8 @@ final class PersonalHeadScanController: UIViewController, ARSessionDelegate {
  func cancel() { stop("已取消，临时头耳测量将被删除") }
  override func viewDidLoad() {
   super.viewDidLoad(); view.backgroundColor = .black
-  preview.session = session; preview.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(preview)
+  preview.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(preview)
+  preview.layer.addSublayer(camera.previewLayer)
   message.textColor = .white; message.numberOfLines = 0; message.textAlignment = .center
   message.font = .preferredFont(forTextStyle:.body)
   message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。需要他人协助：移开遮耳头发，保持头部和表情稳定；缓慢移动手机，保持相邻画面重叠，覆盖两耳、后脑、头顶和下方。保持约 25–60 厘米距离。"
@@ -72,7 +69,6 @@ final class PersonalHeadScanController: UIViewController, ARSessionDelegate {
    stack.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor,constant:-8)
   ])
   isModalInPresentation = true; UIApplication.shared.isIdleTimerDisabled = true
-  session.delegate = self; session.delegateQueue = worker
   reconstruction.progress = { [weak self] count,text in
    DispatchQueue.main.async {
     guard let self, !self.finished else { return }
@@ -84,15 +80,22 @@ final class PersonalHeadScanController: UIViewController, ARSessionDelegate {
   do { try reconstruction.start { [weak self] result in
    DispatchQueue.main.async { self?.end(result) }
   } } catch { end(.failure(error)); return }
-  AVCaptureDevice.requestAccess(for:.video) { [weak self] allowed in
-   DispatchQueue.main.async {
-    guard let self, !self.permissionCancelled, !self.finished else { return }
-    guard allowed else { self.stop("需要相机权限才能采集头耳几何，可以在系统设置中开启"); return }
-    guard Self.supported() else { self.stop("此设备没有可用的前置 TrueDepth 深度相机"); return }
-    let config = ARFaceTrackingConfiguration(); config.isWorldTrackingEnabled = false
-    config.isLightEstimationEnabled = false; config.maximumNumberOfTrackedFaces = 1
-    self.frameLock.lock(); self.acceptingFrames = true; self.frameLock.unlock()
-    self.session.run(config,options:[.resetTracking,.removeExistingAnchors])
+  guard Self.supported() else { stop("此设备没有可用的前置 TrueDepth 深度相机"); return }
+  frameLock.lock(); acceptingFrames = true; frameLock.unlock()
+  camera.start(frame:{ [weak self] frame in
+   guard let self else { return }; self.frameLock.lock(); let accept = self.acceptingFrames; self.frameLock.unlock()
+   if accept { self.reconstruction.accumulate(frame) }
+  },failure:{ [weak self] error in self?.stop(error.localizedDescription) })
+ }
+ override func viewDidLayoutSubviews() {
+  super.viewDidLayoutSubviews(); camera.previewLayer.frame = preview.bounds
+  if let connection = camera.previewLayer.connection, connection.isVideoOrientationSupported,
+     let orientation = view.window?.windowScene?.interfaceOrientation {
+   switch orientation {
+   case .landscapeLeft: connection.videoOrientation = .landscapeLeft
+   case .landscapeRight: connection.videoOrientation = .landscapeRight
+   case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
+   default: connection.videoOrientation = .portrait
    }
   }
  }
@@ -102,17 +105,7 @@ final class PersonalHeadScanController: UIViewController, ARSessionDelegate {
   if !finished { reconstruction.cancel() }
  }
  private func stopFrames() {
-  frameLock.lock(); acceptingFrames = false; frameLock.unlock(); session.pause()
- }
- func session(_ session: ARSession,didUpdate frame: ARFrame) {
-  frameLock.lock(); let accept = acceptingFrames; frameLock.unlock()
-  if accept { reconstruction.accumulate(frame) }
- }
- func session(_ session: ARSession,didFailWithError error: Error) {
-  DispatchQueue.main.async { [weak self] in self?.stop("前置深度采集失败：\(error.localizedDescription)") }
- }
- func sessionWasInterrupted(_ session: ARSession) {
-  DispatchQueue.main.async { [weak self] in self?.stop("采集已中断，请保持应用在前台重新采集") }
+  frameLock.lock(); acceptingFrames = false; frameLock.unlock(); camera.stop()
  }
  @objc private func finishScan() {
   guard !finished else { return }; permissionCancelled = true; stopFrames()

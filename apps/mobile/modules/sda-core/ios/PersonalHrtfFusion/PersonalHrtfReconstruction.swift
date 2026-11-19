@@ -1,5 +1,4 @@
 import Foundation
-import ARKit
 import AVFoundation
 import CoreMotion
 import Metal
@@ -73,11 +72,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    }
   }
  }
- // Called directly from the ARSession frame callback. No unbounded dispatch
+ // Called directly from the synchronized AVFoundation frame callback. No unbounded dispatch
  // queue of retained images: the native reconstructor drops frames under load.
- func accumulate(_ frame: ARFrame) {
-  guard let raw = frame.capturedDepthData,
-        abs(frame.capturedDepthDataTimestamp - frame.timestamp) < 0.1 else { return }
+ func accumulate(_ frame: PersonalHeadDepthFrame) {
+  let raw = frame.depth
   let depth = raw.converting(toDepthDataType:kCVPixelFormatType_DepthFloat32)
   guard let calibration = depth.cameraCalibrationData,
         let distortion = calibration.lensDistortionLookupTable, !distortion.isEmpty,
@@ -86,7 +84,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   lock.lock(); defer { lock.unlock() }
   guard phase == .scanning, !cancelled, frame.timestamp - lastTimestamp >= 0.15 else { return }
   lastTimestamp = frame.timestamp
-  model.accumulate(depthBuffer:depth.depthDataMap,colorBuffer:frame.capturedImage,calibrationData:calibration)
+  model.accumulate(depthBuffer:depth.depthDataMap,colorBuffer:frame.color,calibrationData:calibration)
  }
  func reconstructionManager(_ manager: SCReconstructionManager, didProcessWith metadata: SCAssimilatedFrameMetadata, statistics: SCReconstructionManagerStatistics) {
   lock.lock()

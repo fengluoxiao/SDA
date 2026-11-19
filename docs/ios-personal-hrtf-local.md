@@ -6,7 +6,7 @@
 
 ## 已有代码
 
-- `PersonalHeadScan.swift` 只启用前置 TrueDepth。同步的深度、颜色和标定直接送入本机重建器，不保存整段原始相机帧，不再导出扫描供电脑处理。
+- `PersonalHeadDepthCapture.swift` 使用 AVFoundation 的原生视频／深度同步输出，只启用前置 TrueDepth，关闭深度平滑并要求绝对深度与相机标定。侧面及后脑采集不依赖 ARKit 人脸锚点持续有效。`PersonalHeadScan.swift` 将同步的深度、颜色和标定直接送入本机重建器，不保存整段原始相机帧，不再导出扫描供电脑处理。
 - `PersonalHrtfFusion/PersonalHrtfReconstruction.swift` 使用固定版本 StandardCyborgFusion 在 iOS 本机执行配准、surfel 融合和 Poisson 候选表面重建。不用 ARFaceGeometry 代替耳廓。
 - 重建器关闭原始帧保留，限制输入规模，前后台切换、取消及内存告警会中止任务；临时测量表面在写入后释放一份重复的融合模型。上游分辨率 6 对应实际八叉树深度 9。Poisson 的精确峰值内存仍需实机测量，当前不宣称有完整的硬内存限制。
 - `PersonalHrtfMeshCheck.swift` 与 `SdaHrtfMesh.cpp` 检查有限坐标、缓冲区布局、面索引、退化三角形、闭合流形、面朝向、连通性、自相交和实测深度支持。检查面内部采样点，避免只检查顶点而放过大块补洞。检查可取消，并限制输入和计算工作量。

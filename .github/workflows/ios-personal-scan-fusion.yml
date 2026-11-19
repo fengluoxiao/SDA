@@ -9,6 +9,7 @@ on:
       - 'scripts/test/personal-hrtf-fusion-resources.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/**'
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadDepthCapture.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
   workflow_dispatch:
 permissions:
