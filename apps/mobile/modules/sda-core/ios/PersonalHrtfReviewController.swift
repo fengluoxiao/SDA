@@ -116,6 +116,7 @@ final class PersonalHrtfReviewController: UIViewController {
  private func finish(_ result: Result<PersonalHrtfReviewGeometry.Confirmation,Error>) {
   guard !ended else { return }; ended = true
   let callback = complete; complete = nil; sceneView.isPlaying = false
-  dismiss(animated:true) { callback?(result) }
+  if presentingViewController != nil { dismiss(animated:true) { callback?(result) } }
+  else { callback?(result) }
  }
 }

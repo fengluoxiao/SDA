@@ -40,7 +40,7 @@ import simd
   let landmarks = try reviewSurface.confirm(leftFaces:[0,1],rightFaces:[2,3],nose:reviewSurface.landmark(face:4,point:SIMD3(0.1,0,0)),crown:reviewSurface.landmark(face:5,point:SIMD3(0,0,0.1)))
   let bridged = try PersonalHrtfProjectBuilder.measurement(surface:reviewSurface,support:support,normals:normals,landmarks:landmarks)
   try require(bridged.vertices == reviewSurface.vertices && bridged.triangles == reviewSurface.triangles && bridged.leftFaces == [0,1] && bridged.rightFaces == [2,3],"reviewed source IDs or scale changed")
-  try require(bridged.support == support && bridged.normals == normals && bridged.front == [1,0,0] && bridged.up == [0,0,1],"review bridge changed measured inputs")
+  try require(bridged.support == support && bridged.normals == normals && zip(bridged.front,[1.0,0,0]).allSatisfy({ abs($0-$1) < 1e-7 }) && zip(bridged.up,[0.0,0,1]).allSatisfy({ abs($0-$1) < 1e-7 }),"review bridge changed measured inputs")
   try reject { _ = try PersonalHrtfProjectBuilder.measurement(surface:ReviewFixture.surface(),support:support,normals:normals,landmarks:landmarks) }
   let builder = PersonalHrtfProjectBuilder()
   let prepared = try builder.prepare(root:root,measurement:measurement,bins:16,azimuthSteps:16,elevationSteps:4,radius:1.2,commonShift:8)

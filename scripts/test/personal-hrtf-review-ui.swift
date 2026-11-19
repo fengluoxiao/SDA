@@ -7,8 +7,14 @@ import SceneKit
  func application(_ application: UIApplication,didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
   let window = UIWindow(frame:UIScreen.main.bounds), host = UIViewController()
   window.rootViewController = host; self.window = window; window.makeKeyAndVisible()
+  DispatchQueue.main.asyncAfter(deadline:.now()+30) { self.fail("review UI timed out") }
   DispatchQueue.main.async {
    do {
+    var earlyCallbacks = 0
+    let early = PersonalHrtfReviewController(surface:try ReviewFixture.surface())
+    early.complete = { _ in earlyCallbacks += 1 }
+    early.cancel(); early.cancel()
+    try ReviewFixture.require(earlyCallbacks == 1,"cancel before presentation")
     let controller = PersonalHrtfReviewController(surface:try ReviewFixture.surface())
     controller.modalPresentationStyle = .fullScreen
     controller.complete = { [self] result in
@@ -16,7 +22,7 @@ import SceneKit
      guard case .failure = result, callbacks == 1 else { self.fail("cancel completion") }
      DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
       guard self.callbacks == 1, host.presentedViewController == nil else { self.fail("cancel dismissal") }
-      print("{\"passed\":true,\"layoutSizesChecked\":6,\"cancelDismissedOnce\":true,\"physicalScanTested\":false,\"deviceVisualAcceptance\":false}")
+      print("{\"passed\":true,\"layoutSizesChecked\":6,\"cancelDismissedOnce\":true,\"cancelBeforePresentation\":true,\"physicalScanTested\":false,\"deviceVisualAcceptance\":false}")
       fflush(stdout); exit(0)
      }
     }
