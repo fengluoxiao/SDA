@@ -64,6 +64,11 @@ inline void check_now() {
 inline void checkpoint() {if ((++runtime->ticks & 1023)==0) check_now();}
 template<class T> T *allocate_array(size_t count) {
  check_now();
+ // Upstream allocates zero-length incident-source arrays when a reciprocal
+ // ear source is used. They have no elements and must not enter the ownership
+ // registry: optimized Apple new[] may fold these empty allocations. Keeping
+ // an order entry for an already-present address corrupts cleanup bookkeeping.
+ if(count==0)return nullptr;
  if(count>uint64_t(std::numeric_limits<int>::max()) || count>runtime->owner.budget/sizeof(T))
   throw Failure(3,"Native solver array exceeds memory budget");
  // Charge bounded bookkeeping as well; never retain an ever-growing log of
@@ -75,7 +80,8 @@ template<class T> T *allocate_array(size_t count) {
  try {
   p=new T[count];
   runtime->order.push_back(p);linked=true;
-  runtime->arrays.emplace(p,Allocation{bytes,[](void *q){delete[] static_cast<T*>(q);},std::prev(runtime->order.end())});
+  auto inserted=runtime->arrays.emplace(p,Allocation{bytes,[](void *q){delete[] static_cast<T*>(q);},std::prev(runtime->order.end())});
+  if(!inserted.second)throw Failure(1,"Duplicate live solver allocation");
  } catch(...) {
   if(linked)runtime->order.pop_back();
   runtime->used-=bytes;delete[] p;throw;
