@@ -2,10 +2,21 @@ import UIKit
 import SceneKit
 
 @objc(ReviewTestDelegate) final class ReviewTestDelegate: UIResponder, UIApplicationDelegate {
+ func application(_ application: UIApplication,didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
+  fputs("Review app launched\n",stderr)
+  DispatchQueue.global().asyncAfter(deadline:.now()+90) {
+   fputs("Review app watchdog expired\n",stderr); exit(1)
+  }
+  return true
+ }
+}
+@objc(ReviewSceneDelegate) final class ReviewSceneDelegate: UIResponder, UIWindowSceneDelegate {
  var window: UIWindow?
  private var callbacks = 0
- func application(_ application: UIApplication,didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
-  let window = UIWindow(frame:UIScreen.main.bounds), host = UIViewController()
+ func scene(_ scene: UIScene,willConnectTo session: UISceneSession,options: UIScene.ConnectionOptions) {
+  guard let scene = scene as? UIWindowScene else { fail("missing window scene") }
+  fputs("Review window scene connected\n",stderr)
+  let window = UIWindow(windowScene:scene), host = UIViewController()
   window.rootViewController = host; self.window = window; window.makeKeyAndVisible()
   DispatchQueue.main.asyncAfter(deadline:.now()+30) { self.fail("review UI timed out") }
   DispatchQueue.main.async {
@@ -15,6 +26,7 @@ import SceneKit
     early.complete = { _ in earlyCallbacks += 1 }
     early.cancel(); early.cancel()
     try ReviewFixture.require(earlyCallbacks == 1,"cancel before presentation")
+    fputs("Creating measured review controller\n",stderr)
     let controller = PersonalHrtfReviewController(surface:try ReviewFixture.surface())
     controller.modalPresentationStyle = .fullScreen
     controller.complete = { [self] result in
@@ -27,12 +39,12 @@ import SceneKit
      }
     }
     host.present(controller,animated:false) {
+     fputs("Review controller presented\n",stderr)
      do { try self.check(controller) } catch { self.fail(error.localizedDescription) }
      controller.cancel(); controller.cancel()
     }
    } catch { self.fail(error.localizedDescription) }
   }
-  return true
  }
  private func descendants(_ view: UIView) -> [UIView] { [view]+view.subviews.flatMap(descendants) }
  private func check(_ controller: PersonalHrtfReviewController) throws {

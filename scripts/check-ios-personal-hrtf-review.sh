@@ -20,7 +20,7 @@ mkdir -p "$app"
 xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-ios16.4-simulator" -sdk "$sim_sdk" "$geometry" "$controller" "$fixture" "$PWD/scripts/test/personal-hrtf-review-ui.swift" -o "$app/ReviewUITest" 2>&1 | tee "$out/review-ui-compile.log"
 python3 - "$app/Info.plist" <<'PY'
 import plistlib,sys
-with open(sys.argv[1],'wb')as f:plistlib.dump({'CFBundleIdentifier':'app.sda.hrtf-review-test','CFBundleExecutable':'ReviewUITest','CFBundleName':'ReviewUITest','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'16.4','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UIDeviceFamily':[1,2],'CFBundleSupportedPlatforms':['iPhoneSimulator'],'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']},f)
+with open(sys.argv[1],'wb')as f:plistlib.dump({'CFBundleIdentifier':'app.sda.hrtf-review-test','CFBundleExecutable':'ReviewUITest','CFBundleName':'ReviewUITest','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'16.4','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneConfigurationName':'Review','UISceneDelegateClassName':'ReviewSceneDelegate'}]}},'UIDeviceFamily':[1,2],'CFBundleSupportedPlatforms':['iPhoneSimulator'],'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']},f)
 PY
 codesign --force --sign - "$out/review-simulator-test"
 codesign --force --sign - "$app"
@@ -50,6 +50,7 @@ with open(log,'w')as output:
  finally:
   output.flush()
   print(open(log).read(),flush=True)
+  subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == \"ReviewUITest\"'],stdout=output,stderr=subprocess.STDOUT,timeout=30)
 PY
 python3 - "$out" <<'PY'
 from pathlib import Path
