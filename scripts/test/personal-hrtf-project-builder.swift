@@ -34,6 +34,14 @@ import simd
    } }
   }
   let measurement = PersonalHrtfProjectBuilder.Measurement(vertices:vertices,triangles:faces,support:support,normals:normals,leftFaces:[24,25],rightFaces:[16],front:[1,0,0],up:[0,0,1])
+  // The reviewed IDs/coordinates pass through the production bridge without
+  // replacing the surface, scaling it or reusing another scan's confirmation.
+  let reviewSurface = try ReviewFixture.surface()
+  let landmarks = try reviewSurface.confirm(leftFaces:[0,1],rightFaces:[2,3],nose:reviewSurface.landmark(face:4,point:SIMD3(0.1,0,0)),crown:reviewSurface.landmark(face:5,point:SIMD3(0,0,0.1)))
+  let bridged = try PersonalHrtfProjectBuilder.measurement(surface:reviewSurface,support:support,normals:normals,landmarks:landmarks)
+  try require(bridged.vertices == reviewSurface.vertices && bridged.triangles == reviewSurface.triangles && bridged.leftFaces == [0,1] && bridged.rightFaces == [2,3],"reviewed source IDs or scale changed")
+  try require(bridged.support == support && bridged.normals == normals && bridged.front == [1,0,0] && bridged.up == [0,0,1],"review bridge changed measured inputs")
+  try reject { _ = try PersonalHrtfProjectBuilder.measurement(surface:ReviewFixture.surface(),support:support,normals:normals,landmarks:landmarks) }
   let builder = PersonalHrtfProjectBuilder()
   let prepared = try builder.prepare(root:root,measurement:measurement,bins:16,azimuthSteps:16,elevationSteps:4,radius:1.2,commonShift:8)
   let spec = prepared.specification
@@ -56,7 +64,7 @@ import simd
   let archive = try PersonalHrtfResponseBuilder().build(project:source,specification:spec,numericalBudget:32*1024*1024)
   let size = try archive.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
   try require(size > 0 && size <= 16*1024*1024,"Actual solved response archive missing")
-  let result: [String:Any] = ["passed":true,"swiftNativeDirectionMatch":true,"actualSolvedResponseArchived":true,"directions":50,"cancellation":true,"overwriteRejected":true,"physicalScanTested":false,"acousticAccuracyValidated":false]
+  let result: [String:Any] = ["passed":true,"reviewMeasurementBridgeChecked":true,"swiftNativeDirectionMatch":true,"actualSolvedResponseArchived":true,"directions":50,"cancellation":true,"overwriteRejected":true,"physicalScanTested":false,"acousticAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

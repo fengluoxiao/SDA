@@ -10,6 +10,7 @@ on:
       - 'scripts/test/personal-hrtf-project.cpp'
       - 'scripts/test/personal-hrtf-project-builder.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
+      - 'scripts/test/personal-hrtf-review-fixture.swift'
   workflow_dispatch:
 permissions:
   contents: read

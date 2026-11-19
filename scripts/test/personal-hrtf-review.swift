@@ -8,7 +8,9 @@ import simd
   let checked = try mesh.confirm(leftFaces:[1,0],rightFaces:[3,2],nose:nose,crown:crown)
   try ReviewFixture.require(checked.leftFaces == [0,1] && checked.rightFaces == [2,3],"source face IDs changed")
   try ReviewFixture.require(abs(checked.front[0]-1) < 1e-7 && abs(checked.up[2]-1) < 1e-7,"measured coordinate axes")
+  _ = try mesh.revalidate(checked)
   let reject = ReviewFixture.reject
+  try reject { _ = try ReviewFixture.surface().revalidate(checked) }
   try reject { _ = try mesh.confirm(leftFaces:[2,3],rightFaces:[0,1],nose:nose,crown:crown) }
   try reject { _ = try mesh.confirm(leftFaces:[0,0],rightFaces:[2,3],nose:nose,crown:crown) }
   try reject { _ = try mesh.confirm(leftFaces:[0],rightFaces:[0],nose:nose,crown:crown) }

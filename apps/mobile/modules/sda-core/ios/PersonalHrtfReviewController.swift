@@ -8,7 +8,7 @@ final class PersonalHrtfReviewController: UIViewController {
  private let surface: PersonalHrtfReviewGeometry
  private let sceneView = SCNView(), model = SCNNode(), selection = SCNNode()
  private let step = UISegmentedControl(items:["左耳","右耳","鼻尖","头顶"])
- private let message = UILabel(), next = UIButton(type:.system)
+ private let message = UILabel(), advanceButton = UIButton(type:.system)
  private var left = Set<UInt32>(), right = Set<UInt32>()
  private var nose: PersonalHrtfReviewGeometry.Landmark?, crown: PersonalHrtfReviewGeometry.Landmark?
  private var ended = false
@@ -49,10 +49,10 @@ final class PersonalHrtfReviewController: UIViewController {
   sceneView.addGestureRecognizer(UITapGestureRecognizer(target:self,action:#selector(selectSurface(_:))))
   step.selectedSegmentIndex = 0; step.addTarget(self,action:#selector(changeStep),for:.valueChanged)
   message.numberOfLines = 0; message.font = .preferredFont(forTextStyle:.body); message.adjustsFontForContentSizeCategory = true; message.textColor = .label
-  next.setTitle("下一步",for:.normal); next.addTarget(self,action:#selector(advance),for:.touchUpInside)
+  advanceButton.setTitle("下一步",for:.normal); advanceButton.addTarget(self,action:#selector(advance),for:.touchUpInside)
   let reset = UIButton(type:.system); reset.setTitle("清除此项",for:.normal); reset.addTarget(self,action:#selector(clearStep),for:.touchUpInside)
   let cancel = UIButton(type:.system); cancel.setTitle("取消并删除采集",for:.normal); cancel.addTarget(self,action:#selector(cancelReview),for:.touchUpInside)
-  let buttons = UIStackView(arrangedSubviews:[reset,next]); buttons.distribution = .fillEqually; buttons.spacing = 12
+  let buttons = UIStackView(arrangedSubviews:[reset,advanceButton]); buttons.distribution = .fillEqually; buttons.spacing = 12
   let controls = UIStackView(arrangedSubviews:[step,message,buttons,cancel]); controls.axis = .vertical; controls.spacing = 10
   // Keep confirm and cancel reachable in landscape and at large text sizes.
   let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scroll)
@@ -67,7 +67,7 @@ final class PersonalHrtfReviewController: UIViewController {
  @objc private func changeStep() {
   let descriptions = ["按本人左右选择左耳入口附近实测三角面（蓝色）。轻点增删；多面需相邻且无孔。", "选择右耳入口附近实测三角面（橙色）。不能用未测量补洞或耳后表面代替。", "旋转模型，轻点鼻尖，确认头部前方。", "轻点头顶，确认向上方向。"]
   message.text = descriptions[step.selectedSegmentIndex]+" 双指缩放、拖动旋转。人工确认不代表扫描精度已合格。"
-  next.setTitle(step.selectedSegmentIndex == 3 ? "确认测量位置" : "下一步",for:.normal)
+  advanceButton.setTitle(step.selectedSegmentIndex == 3 ? "确认测量位置" : "下一步",for:.normal)
   updateSelection()
  }
  @objc private func selectSurface(_ gesture: UITapGestureRecognizer) {
@@ -99,7 +99,7 @@ final class PersonalHrtfReviewController: UIViewController {
    guard let landmark else { continue }; let geometry = SCNSphere(radius:0.0015); geometry.firstMaterial?.diffuse.contents = color
    let node = SCNNode(geometry:geometry); node.simdPosition = landmark.point; selection.addChildNode(node)
   }
-  next.isEnabled = [!left.isEmpty,!right.isEmpty,nose != nil,crown != nil][step.selectedSegmentIndex]
+  advanceButton.isEnabled = [!left.isEmpty,!right.isEmpty,nose != nil,crown != nil][step.selectedSegmentIndex]
   sceneView.setNeedsDisplay()
  }
  @objc private func clearStep() {

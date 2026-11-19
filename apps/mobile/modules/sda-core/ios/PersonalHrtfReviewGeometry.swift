@@ -5,6 +5,7 @@ import simd
 // ears, repair missing anatomy or establish acoustic accuracy.
 struct PersonalHrtfReviewGeometry {
  let vertices: [Float], triangles: [UInt32]
+ private let identity = UUID()
  struct Failure: LocalizedError {
   let message: String
   var errorDescription: String? { message }
@@ -14,6 +15,7 @@ struct PersonalHrtfReviewGeometry {
   let point: SIMD3<Float>
  }
  struct Confirmation {
+  fileprivate let surfaceID: UUID
   let leftFaces: [UInt32], rightFaces: [UInt32]
   let nose: Landmark, crown: Landmark
   let front: [Double], up: [Double]
@@ -79,6 +81,10 @@ struct PersonalHrtfReviewGeometry {
   guard reached.count == boundary.count else { throw Failure(message:"耳入口选择含多条边界") }
   return (center/area,normal/area)
  }
+ func revalidate(_ confirmation: Confirmation) throws -> Confirmation {
+  guard confirmation.surfaceID == identity else { throw Failure(message:"确认位置与当前扫描模型不匹配，请重新确认") }
+  return try confirm(leftFaces:confirmation.leftFaces,rightFaces:confirmation.rightFaces,nose:confirmation.nose,crown:confirmation.crown)
+ }
  func confirm(leftFaces: [UInt32], rightFaces: [UInt32], nose: Landmark, crown: Landmark) throws -> Confirmation {
   _ = try landmark(face:nose.face,point:nose.point); _ = try landmark(face:crown.face,point:crown.point)
   guard Set(leftFaces).isDisjoint(with:rightFaces) else { throw Failure(message:"左右耳测量面不能重叠") }
@@ -96,7 +102,7 @@ struct PersonalHrtfReviewGeometry {
   guard simd_dot(l.normal,left) > 0.2, simd_dot(r.normal,left) < -0.2 else {
    throw Failure(message:"耳入口测量面需分别朝向左右外侧，不能选择耳后或相反表面")
   }
-  return Confirmation(leftFaces:leftFaces.sorted(),rightFaces:rightFaces.sorted(),nose:nose,crown:crown,
+  return Confirmation(surfaceID:identity,leftFaces:leftFaces.sorted(),rightFaces:rightFaces.sorted(),nose:nose,crown:crown,
    front:[front.x,front.y,front.z],up:[up.x,up.y,up.z])
  }
 }
