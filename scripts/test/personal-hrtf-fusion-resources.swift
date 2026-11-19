@@ -5,6 +5,39 @@ import StandardCyborgFusion
 @main
 struct FusionResourcesTest {
  enum Failure: Error { case invalid(String) }
+ // Real upstream PLY export and Poisson operation, not a stubbed geometry check.
+ static func meshRoundTrip() throws -> [String:Any] {
+  let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sda-mesh-probe-" + UUID().uuidString)
+  try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+  defer { try? FileManager.default.removeItem(at:folder) }
+  let input = folder.appendingPathComponent("sphere.ply")
+  let support = folder.appendingPathComponent("support.ply")
+  let output = folder.appendingPathComponent("candidate.ply")
+  let count = 20000
+  var text = "ply\nformat ascii 1.0\ncomment StandardCyborgFusionVersion 1.0.0\nelement vertex \(count)\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float surfel_radius\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n"
+  for i in 0..<count {
+   let y = 1 - 2 * (Double(i) + 0.5) / Double(count)
+   let r = sqrt(1 - y*y), phi = Double(i) * 2.399963229728653
+   let x = cos(phi)*r, z = sin(phi)*r
+   text += "\(x*0.09) \(y*0.12) \(z*0.10) \(x*0.001/0.09) \(y*0.001/0.12) \(z*0.001/0.10) 128 128 128 0.001\n"
+  }
+  try text.write(to:input,atomically:true,encoding:.utf8)
+  guard let cloud = SCPointCloud(plyPath:input.path), cloud.pointCount == count,
+        cloud.writeToPLY(atPath:support.path) else { throw Failure.invalid("Actual point-cloud PLY round trip failed") }
+  let operation = SCMeshingOperation(inputPLYPath:support.path,outputPLYPath:output.path)
+  operation.parameters.resolution = 6
+  operation.parameters.smoothness = 1
+  operation.parameters.surfaceTrimmingAmount = 0
+  operation.parameters.closed = true
+  operation.progressHandler = { print("SDA real meshing progress: \($0)") }
+  let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+  queue.addOperation(operation); queue.waitUntilAllOperationsAreFinished()
+  let size = (try? output.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
+  guard !operation.isCancelled, size >= 128 else { throw Failure.invalid("Actual Poisson operation produced no mesh; bytes=\(size)") }
+  let mesh = SCMesh(plyPath:output.path,jpegPath:"")
+  guard mesh.vertexCount > 100, mesh.faceCount > 100 else { throw Failure.invalid("Actual Poisson surface is empty") }
+  return ["syntheticOnly":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
+ }
  static func main() throws {
   let framework = Bundle(for:SCReconstructionManager.self)
   guard framework.bundleIdentifier == "com.standardcyborg.StandardCyborgFusion",
@@ -52,7 +85,8 @@ struct FusionResourcesTest {
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
    initialized = true
   }
-  let result:[String:Any] = ["bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
+  let roundTrip = try meshRoundTrip()
+  let result:[String:Any] = ["poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }
