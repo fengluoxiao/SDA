@@ -37,6 +37,9 @@ text=text[:begin]+segment+text[end:];path.write_text(text)
 PY
 if [ "${SDA_FUSION_DEVICE_ONLY:-0}" != "1" ]; then
 mkdir -p "$out/poisson-host"
+xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer "-DSDA_PLY_SOURCE=\"$source/CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp\"" -I "$source/CppDependencies/PoissonRecon/Sources/include" "$PWD/scripts/test/personal-hrtf-ply-numeric.cpp" -o "$out/poisson-numeric-test" > "$out/fusion-ply-numeric-compile.log" 2>&1
+ASAN_OPTIONS=abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/poisson-numeric-test" > "$out/fusion-ply-numeric-runtime.log" 2>&1 || { cat "$out/fusion-ply-numeric-runtime.log"; exit 1; }
+
 xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -DSTD_LIB_FLAG -I "$source/CppDependencies/PoissonRecon/Sources/include" -I "$source/CppDependencies/PoissonRecon/Sources/include/PoissonRecon" "$PWD/scripts/test/personal-hrtf-poisson.cpp" "$source/CppDependencies/PoissonRecon/Sources/src/ExecuteEntryFunctions.cpp" "$source/CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp" -o "$out/poisson-host-test" > "$out/fusion-poisson-host-compile.log" 2>&1
 (cd "$out/poisson-host" && ASAN_OPTIONS=abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 "$out/poisson-host-test" 100000) > "$out/fusion-poisson-host-runtime.log" 2>&1 || { cat "$out/fusion-poisson-host-runtime.log"; exit 1; }
 
