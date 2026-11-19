@@ -26,7 +26,7 @@
 
 Apple 工作流使用 Xcode 27.1 / iOS SDK 27.1，编译目标最低 iOS 16.4。GitHub 的 Apple 构建机器只用于构建和测试，不参与用户的采集、重建或计算。
 
-已验证的原生核心与结果链路见 [iOS 原生核心运行 44491766865](https://github.com/fengluoxiao/SDA/actions/runs/44491766865)：
+已验证的原生核心与结果链路见 [iOS 原生核心运行 44497311982](https://github.com/fengluoxiao/SDA/actions/runs/44497311982)：
 
 - Apple 主机优化构建运行；ASan / UBSan 主机构建运行；实际 iPhone arm64 静态库编译；Swift 类型检查；iOS 模拟器进程内运行。
 - 与未改动的上游 NumCalc 对比 100、1000、6000 Hz 的合成球面参考声压，与上游 Python 数值例程对比 HRIR。
