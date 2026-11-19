@@ -46,7 +46,7 @@ extern "C" SdaHrtfSolverResult sda_hrtf_make_hrir(SdaHrtfSolver *job,const doubl
     if(!std::isfinite(pressure[offset]) || !std::isfinite(pressure[offset+1]))throw sda_numcalc::Failure(1,"Non-finite acoustic pressure");
     const double frequency=double(k)*48000.0/double(n);
     // Upstream reciprocity source: 0.1 m/s on the measured ear triangle.
-    const std::complex<double> freeField=std::complex<double>(0,-1)*1.1839*2*pi*frequency*(.1*areas[ear])/(4*pi)*std::polar(1.0,2*pi*frequency/343.0*radius)/radius;
+    const std::complex<double> freeField=std::complex<double>(0,-1)*(1.1839*2*pi*frequency*(.1*areas[ear])/(4*pi))*std::polar(1.0,2*pi*frequency/343.0*radius)/radius;
     const auto h=std::complex<double>(pressure[offset],pressure[offset+1])/freeField;
     if(!std::isfinite(h.real()) || !std::isfinite(h.imag()))throw sda_numcalc::Failure(1,"Invalid referenced transfer function");
     if(k==bins)spectrum[k]=std::abs(h);
