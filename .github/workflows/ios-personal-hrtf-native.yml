@@ -9,6 +9,8 @@ on:
       - 'scripts/check-ios-personal-hrtf-native.sh'
       - 'scripts/test/personal-hrtf-native.cpp'
       - 'scripts/test/personal-hrtf-mesh.cpp'
+      - 'scripts/test/personal-hrtf-results.cpp'
+      - 'scripts/test/personal-hrtf-response-builder.swift'
       - 'scripts/test/fixtures/personal-hrtf-sphere/**'
       - 'vendor/mesh2hrtf-numcalc/**'
   workflow_dispatch:

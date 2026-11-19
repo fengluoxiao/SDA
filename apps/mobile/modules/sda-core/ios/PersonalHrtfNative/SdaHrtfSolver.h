@@ -28,6 +28,14 @@ SdaHrtfSolverResult sda_hrtf_solver_run(SdaHrtfSolver *job, const char *work,
  int first_frequency, int last_frequency, int estimate_only,
  SdaHrtfProgress progress, void *context);
 void sda_hrtf_solver_destroy(SdaHrtfSolver *job);
+// Read both ears' completed evaluation pressure files into caller-owned memory.
+// Validates the NC input's uniform positive FFT frequencies through 24 kHz and
+// every evaluation ID exactly once. Output: [direction][ear][bin][real,imag].
+// Caller keeps output alive; <=64 MiB and within job budget. Zeroed on failure.
+// Does not certify the input head mesh, ear entrances, or spatial coordinates.
+SdaHrtfSolverResult sda_hrtf_read_pressure(SdaHrtfSolver *job,
+ const int32_t *node_ids, size_t directions, size_t bins,
+ double *output, size_t output_values);
 // Equivalent to upstream reference_hrtfs + compute_hrirs, inside the app.
 // Positive bins f=(k+1)*48000/(2*bins). Input: [ear][bin][real,imag].
 // Output: planar [left 2*bins samples][right 2*bins samples]. Preserves
