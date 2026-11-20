@@ -147,7 +147,7 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
 
 
 # Internal registration strategies permit controlled same-engine comparisons.
-replace('pbfConfig','struct PBFConfiguration {','struct PBFConfiguration {\n    bool sdaMotionPrediction = true;\n    bool sdaDistributedSamples = true;')
+replace('pbfConfig','struct PBFConfiguration {','struct PBFConfiguration {\n    bool sdaMotionPrediction = true;\n    bool sdaDistributedSamples = true;\n    bool sdaDenseTarget = true;')
 # Point-to-point RMS can oscillate tangentially despite stable point-to-plane
 # geometry. Stop only after three tiny rigid updates with sufficient close support.
 replace('icpHeader','struct ICPConfiguration {','struct ICPConfiguration {\n    bool sdaGeometricConvergence = true;')
@@ -160,6 +160,27 @@ replace('icpSource','        relativeError = fabsf(rmsError - previousError) / r
 # the original convergence or velocity checks reject it; never fuse a guess.
 replace('pbfSource','        ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n\n        Matrix4f extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;','        const Matrix4f acceptedPose = _extrinsicMatrix;\n        Matrix4f prediction = acceptedPose;\n        const auto older = _nthMostRecentValidFrameMetadata(1);\n        const bool predict = pbfConfig.sdaMotionPrediction && previousFrameMeta && older &&\n            sdaPredictTrackingPose(older->viewMatrix,previousFrameMeta->viewMatrix,\n                                   older->timestamp,previousFrameMeta->timestamp,currentTime,prediction);\n        Matrix4f extrinsicMatrixTmp = acceptedPose;\n        ICPResult icpResult;\n        for (int attempt=0; attempt<(predict ? 2 : 1); ++attempt) {\n        _extrinsicMatrix = predict && attempt==0 ? prediction : acceptedPose;\n        icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n        extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;')
 replace('pbfSource','        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;','        if (frameMeta.icpUnusedIterationFraction > 0) break;\n        }\n        _extrinsicMatrix = acceptedPose;\n        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;')
+
+# Keep ear detail in the ICP reference cloud independently of source sampling.
+# A 10% source fraction should not discard 90% of a small measured reference.
+# Cap the target strictly and refresh it while the camera reveals new surfaces.
+replace('pbfSource','    if (shouldRebuildPointCloud) {\n        _ICPTargetCloud = buildPointCloud(pbfConfig.icpDownsampleFraction);\n    }', '''    if (pbfConfig.sdaDenseTarget && _assimilatedFrameMetadatas.size() % 3 == 0) shouldRebuildPointCloud = true;
+    if (shouldRebuildPointCloud) {
+        if (pbfConfig.sdaDenseTarget) {
+            const size_t count = std::min<size_t>(_surfels.size(),12000);
+            std::vector<math::Vec3> positions, normals, colors;
+            positions.reserve(count); normals.reserve(count); colors.reserve(count);
+            for (size_t i=0;i<count;++i) {
+                const auto& s = _surfels[i*_surfels.size()/count];
+                positions.push_back(toVec3(s.position));
+                normals.push_back(toVec3(s.normal));
+                colors.push_back(toVec3(s.color));
+            }
+            _ICPTargetCloud = std::make_shared<sc3d::Geometry>(positions,normals,colors);
+        } else {
+            _ICPTargetCloud = buildPointCloud(pbfConfig.icpDownsampleFraction);
+        }
+    }''')
 
 # The original raster walk stops at maxCount, often before reaching the lower
 # part of the ear. Preserve its weighting and sample count, but distribute the

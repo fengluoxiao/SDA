@@ -193,10 +193,10 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
         return SideResult{merged,longestLoss,maxPositionError,maxAngleError};
     };
     icp.sdaGeometricConvergence=false;
-    pbf.sdaMotionPrediction=false; pbf.sdaDistributedSamples=false;
+    pbf.sdaMotionPrediction=false; pbf.sdaDistributedSamples=false; pbf.sdaDenseTarget=false;
     const auto baselineLeft=scanSide(1), baselineRight=scanSide(-1);
     icp.sdaGeometricConvergence=true;
-    pbf.sdaMotionPrediction=true; pbf.sdaDistributedSamples=true;
+    pbf.sdaMotionPrediction=true; pbf.sdaDistributedSamples=true; pbf.sdaDenseTarget=true;
     const auto left=scanSide(1), right=scanSide(-1);
     // Never count increased acceptance as an improvement unless the recovered
     // pose agrees with the known camera path as well.
