@@ -157,6 +157,7 @@ replace('pbfSource','    if (_surfels.size() > 0) {','''    if (_surfels.empty()
     }
     if (_surfels.size() > 0) {''')
 
+replace('pbfSource',"        DEBUG_LOG(\"Frame couldn't be fused.\");","        _extrinsicMatrix = previousFrameMeta ? previousFrameMeta->viewMatrix : Matrix4f::Identity();\n        DEBUG_LOG(\"Frame couldn't be fused.\");")
 # Borrowed vector storage is not a VM-backed Metal allocation contract. Own
 # bounded working buffers and copy only valid bytes, never padded vector pages.
 replace('depthDataHeader','    size_t width;','    bool sdaCompleted = false;\n    size_t width;')
