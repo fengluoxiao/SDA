@@ -106,9 +106,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   }
   lock.lock(); needsVertices = fusion.needsFaceVertices; lock.unlock()
   guard !isCancelled else { return }
-  let left = acceptedPose != nil && fusion.counts.left > old.left, right = acceptedPose != nil && fusion.counts.right > old.right
-  if independent && left { leftSupport = true }; if independent && right { rightSupport = true }
-  coverage.observe(status:status,leftAdvanced:left,rightAdvanced:right,pixels:color,pose:acceptedPose)
+  let side = PersonalHeadEarView.side(advanced:fusion.counts.left > old.left || fusion.counts.right > old.right,
+                                      pose:acceptedPose,eyes:fusion.eyes)
+  if independent && side == .left { leftSupport = true }; if independent && side == .right { rightSupport = true }
+  coverage.observe(status:status,side:side,pixels:color,pose:acceptedPose)
   let guide = coverage.guide
   let statusText: String
   if guide.complete { statusText = "FaceFrame · 双耳侧面已记录" }
@@ -144,7 +145,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   fusion = nil
   let available = min(budget,sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory))
   guard available >= 64*1024*1024 else { throw PersonalHrtfError.message("当前内存不足以检查实测表面") }
-  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
+  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,currentBudget:{ sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory) },cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
    lock.lock(); meshing = operation; let stop = cancelled; lock.unlock(); if stop { operation?.cancel() }
   })
   return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance)

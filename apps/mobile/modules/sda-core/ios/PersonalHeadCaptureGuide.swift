@@ -17,8 +17,8 @@ struct PersonalHeadCaptureGuide: Equatable {
  var instruction: String {
   switch stage {
   case .face: return "手机保持在正前方，平视前置相机。"
-  case .leftEar: return "手机不动，慢慢向自己的右边转头，让左耳朝向相机。"
-  case .rightEar: return "左耳已记录。手机不动，经过正面慢慢向左转头，让右耳朝向相机。"
+  case .leftEar: return "手机不动，鼻尖慢慢转向自己的右肩，让镜头看到左耳。"
+  case .rightEar: return "左耳已记录。手机不动，鼻尖经过正面转向自己的左肩，让镜头看到右耳。"
   case .complete: return "可以继续检查头耳的实测表面。"
   }
  }

@@ -15,25 +15,25 @@ enum PersonalHrtfMeshCheck {
   let support: [Float], normals: [Float]
  }
  #if canImport(StandardCyborgFusion)
- static func poissonMeasurement(positions:[Float],normals:[Float],budget:UInt64,cancelled:@escaping()->Bool,operationChanged:(SCMeshingOperation?)->Void) throws -> (surface:PersonalHrtfReviewGeometry,distance:Double) {
-  guard positions.count == normals.count, positions.count.isMultiple(of:3), (10000...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(positions.count/3), UInt64(positions.count/3)*64 <= budget else { throw PersonalHrtfError.message("原始测量点不足或超出本机预算") }
+ static func poissonMeasurement(positions:[Float],normals:[Float],budget:UInt64,currentBudget:(()->UInt64)? = nil,cancelled:@escaping()->Bool,operationChanged:(SCMeshingOperation?)->Void,startOperation:(SCMeshingOperation)throws->Void = { $0.start() }) throws -> (surface:PersonalHrtfReviewGeometry,distance:Double) {
+  guard positions.count == normals.count, positions.count.isMultiple(of:3), (10000...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(positions.count/3) else { throw PersonalHrtfError.message("原始测量点不足或超出本机预算") }
+  let pointBytes = UInt64(positions.count/3)*64
+  func available() -> UInt64 { min(budget,currentBudget?() ?? budget) }
+  func requireBudget() throws {
+   guard available() >= max(pointBytes,64*1024*1024) else { throw PersonalHrtfError.message("当前内存不足以检查实测表面") }
+  }
+  if cancelled() { throw CancellationError() }; try requireBudget()
   let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
   defer { try? FileManager.default.removeItem(at:directory) }
-  let input = directory.appendingPathComponent("measured.ply"), meshURL = directory.appendingPathComponent("candidate.ply")
+  let input = directory.appendingPathComponent("measured.ply")
   try PersonalHeadMeasuredSupport.writePLY(to:input,positions:positions,normals:normals,cancelled:cancelled)
-  let operation = SCMeshingOperation(inputPLYPath:input.path,outputPLYPath:meshURL.path)
-  operation.parameters.resolution = 6; operation.parameters.smoothness = 1; operation.parameters.closed = false; operation.parameters.surfaceTrimmingAmount = 0
-  operationChanged(operation); defer { operationChanged(nil) }
-  if cancelled() { throw CancellationError() }
-  operation.start()
-  if let error = operation.sdaError { throw error }
-  if cancelled() { throw PersonalHrtfError.message("已取消本机网格检查") }
+  let meshURL = try extractSurface(input:input,cancelled:cancelled,requireBudget:requireBudget,operationChanged:operationChanged,start:startOperation)
   let header = try preflight(meshURL,maximumVertices:1000000,maximumFaces:2000000)
   // Bound allocations from actual headers before invoking the upstream readers.
   // Estimate includes geometry, topology/BVH, support search and copied buffers.
-  let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + UInt64(positions.count/3)*64
-  guard needed <= budget else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(budget/1024/1024) MiB；请关闭其他应用后重试") }
+  let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + pointBytes, remaining = available()
+  guard needed <= remaining else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(remaining/1024/1024) MiB；请关闭其他应用后重试") }
   guard let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"") else {
    throw PersonalHrtfError.message("候选网格无法读取，重建文件可能不完整或格式无效，请重新采集")
   }
@@ -51,6 +51,33 @@ enum PersonalHrtfMeshCheck {
    (0..<mesh.faceCount * 3).map { raw.loadUnaligned(fromByteOffset:$0 * 4,as:UInt32.self) }
   }
   return try measurement(Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals),cancelled:cancelled)
+ }
+ private static func extractSurface(input:URL,cancelled:()->Bool,requireBudget:()throws->Void,operationChanged:(SCMeshingOperation?)->Void,start:(SCMeshingOperation)throws->Void) throws -> URL {
+  // Retry only the pinned extractor's missing-edge error. Keep the same
+  // absolute-depth points, independent output files, and the same final screen.
+  for resolution:Int32 in [6,5] {
+   if cancelled() { throw CancellationError() }; try requireBudget()
+   let output = input.deletingLastPathComponent().appendingPathComponent("surface-\(resolution).ply")
+   do {
+    try autoreleasepool {
+     let operation = SCMeshingOperation(inputPLYPath:input.path,outputPLYPath:output.path)
+     operation.parameters.resolution = resolution; operation.parameters.smoothness = resolution == 6 ? 1 : 2
+     operation.parameters.closed = false; operation.parameters.surfaceTrimmingAmount = 0
+     operationChanged(operation); defer { operationChanged(nil) }
+     if cancelled() { throw CancellationError() }
+     try start(operation)
+     if cancelled() || operation.isCancelled { throw CancellationError() }
+     if let error = operation.sdaError { throw error }
+    }
+    return output
+   } catch {
+    if cancelled() || error is CancellationError { throw CancellationError() }
+    let failure = error as NSError
+    guard failure.domain == "SDA.Poisson" else { throw error }
+    guard failure.code == 4 else { throw PersonalHrtfError.message("本次头耳测量未能重建出可检查的表面。") }
+   }
+  }
+  throw PersonalHrtfError.message("双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。")
  }
  #endif
  // The measurement build reviews only measured triangles. Poisson's inferred

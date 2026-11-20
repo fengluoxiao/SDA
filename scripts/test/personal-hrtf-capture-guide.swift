@@ -16,6 +16,29 @@ enum ReplayFailure: Error { case invalid(String) }
   matrix.columns.3 = SIMD4(center+matrix.transformDirection(Vec3(0,0,0.36)),1)
   return matrix
  }
+ static func fixedPhoneChecks() throws {
+  // World axes at neutral: +X is the person's left, +Z is their nose
+  // (ARFaceAnchor). Hold the phone fixed; rotate the FACE in world space.
+  var phone = matrix_identity_float4x4; phone.columns.3.z = 0.36
+  let eyes = (left:Vec3(0.032,0,0),right:Vec3(-0.032,0,0))
+  func rotation(_ r:Float,_ axis:Vec3) -> simd_float4x4 { simd_float4x4(simd_quatf(angle:r * .pi / 180,axis:axis)) }
+  for sign:Float in [-1,1] {
+   let face = rotation(sign*65,Vec3(0,1,0)), expected:PersonalHeadCaptureGuide.EarSide = sign < 0 ? .left : .right
+   let heading = face.transformDirection(Vec3(0,0,1))
+   guard heading.x * sign > 0.8 else { throw ReplayFailure.invalid("Invalid fixture nose direction") }
+   for roll:Float in [0,90,180,-90] {
+    let view = face.inverse * phone * rotation(roll,Vec3(0,0,1))
+    guard PersonalHeadEarView.side(advanced:true,pose:view,eyes:eyes) == expected,
+          PersonalHeadEarView.side(advanced:false,pose:view,eyes:eyes) == nil,
+          PersonalHeadEarView.side(advanced:true,pose:view,eyes:nil) == nil,
+          PersonalHeadEarView.side(advanced:true,pose:view,eyes:(eyes.right,eyes.left)) != expected,
+          PersonalHeadEarView.side(advanced:true,pose:view,eyes:(eyes.left,eyes.left)) == nil else { throw ReplayFailure.invalid("Wrong anatomical side on fixed-phone head turn") }
+   }
+   var shifted = matrix_identity_float4x4; shifted.columns.3.x = sign * 0.6
+   let translation = shifted.inverse * phone
+   guard PersonalHeadEarView.side(advanced:true,pose:translation,eyes:eyes) == nil else { throw ReplayFailure.invalid("Translation credited an ear") }
+  }
+ }
  static func image(_ pose:simd_float4x4) -> [Float] {
   var depths = [Float](repeating:0,count:width*height)
   for row in 0..<height { for column in 0..<width {
@@ -32,6 +55,7 @@ enum ReplayFailure: Error { case invalid(String) }
   return depths
  }
  static func main() throws {
+  try fixedPhoneChecks()
   let directory = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
   let engine = FusionEngine(), front = pose(0), frontalDepth = image(front)
   let intrinsic = simd_float3x3(columns:(SIMD3(focal,0,0),SIMD3(0,focal,0),SIMD3(Float(width)/2,Float(height)/2,1)))
@@ -53,7 +77,9 @@ enum ReplayFailure: Error { case invalid(String) }
    let faceLost = angle == -64 || angle == -66
    let frame = FusionFrame(time:Double(index)/15,width:width,height:height,depth:depths,calibrationK:intrinsic,calibrationReference:SIMD2(Float(width),Float(height)),intrinsics:intrinsic,imageResolution:SIMD2(Float(width),Float(height)),arPose:faceLost ? nil : camera,motion:index == 0 ? 0 : Float(abs(angle-angles[index-1]))*15,leftEye:faceLost ? nil : Vec3(0.032,0,0),rightEye:faceLost ? nil : Vec3(-0.032,0,0),faceVertices:engine.needsFaceVertices && !faceLost ? vertices : nil)
    let before = engine.counts; acceptedPose = nil
-   let status = engine.process(frame), left = engine.counts.left > before.left, right = engine.counts.right > before.right
+   let status = engine.process(frame)
+   let side = PersonalHeadEarView.side(advanced:engine.counts.left > before.left || engine.counts.right > before.right,pose:acceptedPose,eyes:engine.eyes)
+   let left = side == .left, right = side == .right
    guard !(left && right), !invalid || (acceptedPose == nil && !left && !right), !left || angle > 40, !right || angle < -40 else { throw ReplayFailure.invalid("Unexpected side on depth frame \(index), yaw=\(angle)") }
    observedLeft = observedLeft || left; observedRight = observedRight || right
    if faceLost && right && status.tracking == .geometry { geometryRight += 1 }
@@ -66,7 +92,7 @@ enum ReplayFailure: Error { case invalid(String) }
   try support.positions.withUnsafeBytes { try Data($0).write(to:directory.appendingPathComponent("replay-points.f32")) }
   try support.normals.withUnsafeBytes { try Data($0).write(to:directory.appendingPathComponent("replay-normals.f32")) }
   try JSONSerialization.data(withJSONObject:trace).write(to:directory.appendingPathComponent("faceframe-sweep.json"))
-  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"supportPoints":support.count,"syntheticDepth":true,"physicalScanTested":false]
+  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"fixedPhoneNoseTurnsPassed":true,"translationOnlyRejected":true,"rollInvariant":true,"leftFrames":trace.filter { $0["left"] as? Bool == true }.count,"rightFrames":trace.filter { $0["right"] as? Bool == true }.count,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"supportPoints":support.count,"syntheticDepth":true,"physicalScanTested":false]
   print(String(decoding:try JSONSerialization.data(withJSONObject:result),as:UTF8.self))
  }
 }

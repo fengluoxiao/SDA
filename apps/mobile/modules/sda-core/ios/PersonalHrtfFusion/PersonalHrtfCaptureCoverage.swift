@@ -23,8 +23,7 @@ final class PersonalHrtfCaptureCoverage {
   return (request.results as? [VNRecognizedObjectObservation] ?? []).contains(where:Self.isEar)
  }
  func reset() { guide = PersonalHeadCaptureGuide() }
- func observe(status:ScanStatus,leftAdvanced:Bool,rightAdvanced:Bool,pixels:CVPixelBuffer?,pose:simd_float4x4?) {
-  let side: PersonalHeadCaptureGuide.EarSide? = leftAdvanced != rightAdvanced ? (leftAdvanced ? .left : .right) : nil
+ func observe(status:ScanStatus,side:PersonalHeadCaptureGuide.EarSide?,pixels:CVPixelBuffer?,pose:simd_float4x4?) {
   var ear: PersonalHeadCaptureGuide.EarSide?
   if let side, side == guide.targetEar, let pixels, let pose {
    let rotations: [CGImagePropertyOrientation] = [.up,.right,.down,.left]

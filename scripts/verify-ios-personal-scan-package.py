@@ -46,8 +46,9 @@ with zipfile.ZipFile(ipa)as z:
         binary=Path(tmp)/'SDA';runtime=z.read(app+info['CFBundleExecutable']);binary.write_bytes(runtime)
         for title in ['1 / 3  扫描正脸','2 / 3  扫描左耳','3 / 3  扫描右耳']:
             assert title.encode('utf8') in runtime,'Guided capture stage absent from compiled device executable: '+title
-        for cue in ['手机不动，慢慢向自己的右边转头，让左耳朝向相机。','左耳已记录。手机不动，经过正面慢慢向左转头，让右耳朝向相机。','FaceFrame · 双耳侧面已记录']:
+        for cue in ['手机不动，鼻尖慢慢转向自己的右肩，让镜头看到左耳。','左耳已记录。手机不动，鼻尖经过正面转向自己的左肩，让镜头看到右耳。','FaceFrame · 双耳侧面已记录','双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。']:
             assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue
+        assert b'Incomplete surface edge' in z.read(fw+'StandardCyborgFusion'), 'Missing native Poisson edge-error classification'
         assert '尚未获得当前侧的有效三维视角'.encode() not in runtime
         assert '已对准右耳'.encode() not in runtime
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)

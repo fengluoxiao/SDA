@@ -162,16 +162,16 @@ struct FusionResourcesTest {
     let before = coverage.guide.stage
     if frame.left && !blankLeft {
      context.render(CIImage(color:.black).cropped(to:CGRect(x:0,y:0,width:448,height:448)),to:color)
-     coverage.observe(status:status,leftAdvanced:true,rightAdvanced:false,pixels:color,pose:pose)
+     coverage.observe(status:status,side:.left,pixels:color,pose:pose)
      guard coverage.guide.stage == before else { throw Failure.invalid("Side pose alone credited an invisible ear") }
      blankLeft = true; photo = ""; continue
     }
     if frame.right && !missingRight {
-     coverage.observe(status:status,leftAdvanced:false,rightAdvanced:true,pixels:nil,pose:pose)
+     coverage.observe(status:status,side:.right,pixels:nil,pose:pose)
      guard coverage.guide.stage == before else { throw Failure.invalid("Reused stale image on opposite side") }
      missingRight = true; continue
     }
-    coverage.observe(status:status,leftAdvanced:frame.left,rightAdvanced:frame.right,pixels:color,pose:pose)
+    coverage.observe(status:status,side:frame.left ? .left : (frame.right ? .right : nil),pixels:color,pose:pose)
     if before == .leftEar, before != coverage.guide.stage, frame.yaw < 40 { throw Failure.invalid("Frontal view credited left ear") }
     if before == .rightEar, coverage.guide.complete, frame.yaw > -40 { throw Failure.invalid("Wrong side credited right ear") }
     if frame.invalidDepth && before != coverage.guide.stage { throw Failure.invalid("Empty depth changed coverage") }
@@ -186,7 +186,35 @@ struct FusionResourcesTest {
   let positions = try samples("replay-points.f32"), normals = try samples("replay-normals.f32")
   let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:positions,normals:normals,budget:512*1024*1024,cancelled:{false},operationChanged:{_ in})
   guard measured.surface.triangles.count > 3000, measured.distance <= 0.0015 else { throw Failure.invalid("FaceFrame scan did not reach strict measured review") }
-  return ["earModelLoaded":true,"frontalPositiveIgnored":true,"bothAnatomicalSidesCompleted":true,"blankEarAndMissingImageRejected":true,"positiveEarImageInference":try positiveEarResources(),"measuredReviewFaces":measured.surface.triangles.count/3,"maximumSupportDistance":measured.distance,"physicalEarCaptureValidated":false]
+  let recovery = try meshRecovery(positions,normals)
+  return ["earModelLoaded":true,"frontalPositiveIgnored":true,"bothAnatomicalSidesCompleted":true,"blankEarAndMissingImageRejected":true,"positiveEarImageInference":try positiveEarResources(),"measuredReviewFaces":measured.surface.triangles.count/3,"maximumSupportDistance":measured.distance,"missingEdgeRegression":recovery,"physicalEarCaptureValidated":false]
+ }
+ static func meshRecovery(_ points:[Float],_ normals:[Float]) throws -> [String:Any] {
+  let missing = NSError(domain:"SDA.Poisson",code:4), budget:UInt64 = 512*1024*1024
+  var attempts = [Int32](), published = [Bool](), faces = 0, distance = Double.infinity
+  for scenario in ["recover","repeat","other","cancel","budget"] {
+   attempts.removeAll(); published.removeAll(); var stopped = false, remaining = budget
+   do {
+    let result = try PersonalHrtfMeshCheck.poissonMeasurement(positions:points,normals:normals,budget:budget,currentBudget:{ remaining },cancelled:{ stopped },operationChanged:{ published.append($0 != nil) },startOperation:{ op in
+     attempts.append(op.parameters.resolution)
+     if scenario == "other" { throw NSError(domain:"SDA.Poisson",code:1) }
+     if scenario == "cancel" { stopped = true }
+     if scenario == "budget" { remaining = 1 }
+     if attempts.count == 1 || scenario == "repeat" { throw missing }
+     op.start() // Real fallback solver, PLY reader and strict geometry checks.
+    })
+    guard scenario == "recover", result.surface.triangles.count > 3000, result.distance <= 0.0015 else { throw Failure.invalid("Unexpected recovery success: \(scenario)") }
+    faces = result.surface.triangles.count/3; distance = result.distance
+   } catch is CancellationError {
+    guard scenario == "cancel" else { throw Failure.invalid("Unexpected cancellation: \(scenario)") }
+   } catch PersonalHrtfError.message(let message) {
+    let token = ["repeat":"两次重建","other":"未能重建","budget":"内存不足"][scenario]
+    guard let token, message.contains(token), !message.contains("/Users/") else { throw Failure.invalid("Unexpected geometry error: \(scenario): \(message)") }
+   }
+   let retry = scenario == "recover" || scenario == "repeat"
+   guard attempts == (retry ? [6,5] : [6]), published == (retry ? [true,false,true,false] : [true,false]) else { throw Failure.invalid("Wrong operation lifetime: \(scenario)") }
+  }
+  return ["firstErrorInjected":true,"fallbackMeasuredFaces":faces,"fallbackSupportDistance":distance,"cancelAndBudgetRespected":true,"unrelatedErrorNotRetried":true,"retryBounded":true]
  }
  static func main() {
   do { try run() }

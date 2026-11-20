@@ -16,6 +16,7 @@ paths.update({
 })
 paths.update({'pointCloudPLY':('StandardCyborgFusion/Sources/StandardCyborgFusion/IO/PointCloudIO_PLY.mm','b6d3e5febf75beb4eef50315986af30a05d8102d1ebae62461095bb19f7e9b64')})
 paths.update({'poissonAdapter':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PoissonReconExecute.hpp','4e4ef9bf0dff584cfeb3a1b51ce11ab69e1d4cd3a9311d59293615f7219eb441')})
+paths.update({'poissonLevelSet':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/FEMTree.LevelSet.3D.inl','b1e06bc9cbe27738814d425918e7976f2ddb6a5173f7126d8a9949e64fe2a456')})
 paths.update({'poissonPreprocessor':('CppDependencies/PoissonRecon/Sources/include/PoissonRecon/PreProcessor.h','57a763b67cc432657261018e8f72b46104a6973b82e171ae64e85e1cd286ce33')})
 paths.update({'poissonPLY':('CppDependencies/PoissonRecon/Sources/src/PlyFile.cpp','70b36492100d3aec7fd9fdd3d1a510ce00fb698304a60dc371a6b42db8972a80')})
 paths.update({'meshGeometry':('StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SCMesh+Geometry.mm','1c6919d110f23858e2e65161ade73b3afabbb7f51eeea119d88227281247cd93')})
@@ -44,7 +45,16 @@ def replace(key,old,new):
  if texts[key].count(old)!=1:raise ValueError('Reconstruction patch anchor is not unique: '+old[:70])
  texts[key]=texts[key].replace(old,new)
 # Use upstream's checked arithmetic and atomic publication paths in every Poisson translation unit.
-replace('poissonPreprocessor','//#define SANITIZED_PR','#define SANITIZED_PR')
+replace('poissonPreprocessor','//#define SANITIZED_PR','#include <memory>\n#define SANITIZED_PR')
+# These are one-shot ownership claims, not retry loops. A spurious weak CAS
+# failure can leave an edge without an owner even when there is no contention.
+edge_claim='edgeSet.compare_exchange_weak( expected , desired )'
+if texts['poissonLevelSet'].count(edge_claim)!=2:raise ValueError('Unexpected number of slice/slab edge claims')
+texts['poissonLevelSet']=texts['poissonLevelSet'].replace(edge_claim,'edgeSet.compare_exchange_strong( expected , desired )')
+evaluator='typename FEMIntegrator::template PointEvaluator< IsotropicUIntPack< Dim , DataSig > , ZeroUIntPack< Dim > >'
+replace('poissonLevelSet',evaluator+'* pointEvaluator = NULL;\n\t\tif constexpr( HasData ) if( data ) pointEvaluator = new '+evaluator+'( tree._maxDepth );',
+        'using Evaluator = '+evaluator+';\n\t\tstd::unique_ptr< Evaluator > owner;\n\t\tif constexpr( HasData ) if( data ) owner = std::make_unique< Evaluator >( tree._maxDepth );\n\t\tauto *pointEvaluator = owner.get();')
+replace('poissonLevelSet','if( pointEvaluator ) delete pointEvaluator;','')
 replace('header','/** The gravity vector of the current scan. */', '''/** SDA: model-thread snapshot; does not borrow the live surfel vector. */
 @property (atomic, readonly) NSUInteger sdaSurfelCount;
 /** SDA: configure before the first camera frame, bounded by the local mesh reader. */
@@ -418,6 +428,12 @@ replace('pointCloudPLY','''    fclose(file);
 }''')
 
 replace('poissonAdapter','#include "PreProcessor.h"','#include "PreProcessor.h"\n#include "SdaPoissonMeshCleanup.hpp"')
+# Release the solved octree when extraction throws, before any second attempt.
+replace('poissonAdapter','auto *implicit = Poisson::Solver','std::unique_ptr<Implicit<float, 3, UIntPack<FEMSigs...>, ColorType>> implicit(Poisson::Solver')
+replace('poissonAdapter','pointStream, solverParams, zeroColor);','pointStream, solverParams, zeroColor));')
+replace('poissonAdapter','if (progressHandler(0.5) == false) { delete implicit; return; }','if (!progressHandler(0.5)) return;')
+replace('poissonAdapter','if (progressHandler(0.8) == false) { delete implicit; return; }','if (!progressHandler(0.8)) return;')
+replace('poissonAdapter','    delete implicit;','    implicit.reset();')
 replace('poissonAdapter','    // Write the output PLY file','    sdaCleanPoissonMesh(vertexCollector.vertices, faceCollector.faces);\n\n    // Write the output PLY file')
 replace('poissonAdapter','PLY::DefaultFileType(), comments','PLY_BINARY_LE, comments')
 
@@ -480,7 +496,7 @@ for key in ['meshHeader','poissonHeader']:
               '@interface '+('SCMeshingOperation' if key=='meshHeader' else 'MeshingOperation')+' : NSOperation\n@property (atomic, readonly, nullable) NSError *sdaError;'.replace('\\n','\n'))
 replace('meshSource','- (void)main\n{','- (NSError *)sdaError { return _operation.sdaError; }\n\n- (void)main\n{')
 replace('meshSource','    [_operation cancel];','    [super cancel];\n    [_operation cancel];')
-replace('poissonSource','#import <PoissonRecon/ExecuteEntryFunctions.hpp>','#import <PoissonRecon/ExecuteEntryFunctions.hpp>\n#include <exception>')
+replace('poissonSource','#import <PoissonRecon/ExecuteEntryFunctions.hpp>','#import <PoissonRecon/ExecuteEntryFunctions.hpp>\n#include <exception>\n#include <cstring>')
 replace('poissonSource','@implementation MeshingOperation {','@interface MeshingOperation ()\n@property (atomic, readwrite, nullable) NSError *sdaError;\n@end\n\n@implementation MeshingOperation {')
 replace('poissonSource','    if (![weakSelf isCancelled]) {\n        PoissonReconExecute', '    try {\n    if (![weakSelf isCancelled]) {\n        PoissonReconExecute')
 replace('poissonSource','            [[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:NULL];', '''            NSError *error = nil;
@@ -488,7 +504,8 @@ replace('poissonSource','            [[NSFileManager defaultManager] moveItemAtP
                 self.sdaError = error;
             }''')
 replace('poissonSource','    [[NSFileManager defaultManager] removeItemAtPath:tempPoissonOutputPathString error:NULL];', '''    } catch (const std::exception& error) {
-        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:1 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithUTF8String:error.what()] ?: @"Poisson exception"}];
+        const bool missingEdge = std::strstr(error.what(), "FEMTree.LevelSet.3D.inl") && std::strstr(error.what(), "Edge not set:");
+        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:(missingEdge ? 4 : 1) userInfo:@{NSLocalizedDescriptionKey:missingEdge ? @"Incomplete surface edge" : @"Surface extraction failed"}];
     } catch (...) {
         self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Poisson reconstruction failed"}];
     }

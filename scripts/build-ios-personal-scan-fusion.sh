@@ -14,7 +14,7 @@ if [[ "${SDA_FUSION_USE_PREFLIGHT:-0}" == 1 ]]; then
  test "$(cat "$out/faceframe-preflight-source.txt")" = "$(git rev-parse HEAD)"
 elif [[ "${SDA_FUSION_DEVICE_ONLY:-0}" != 1 ]]; then
  python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
- xcrun swiftc -O -parse-as-library "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
+ xcrun swiftc -O -parse-as-library "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHeadEarView.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
  "$out/capture-guide-test" "$out/ear-positive-fixtures" | tee "$out/capture-guide-result.json"
  git rev-parse HEAD > "$out/faceframe-preflight-source.txt"
 fi
