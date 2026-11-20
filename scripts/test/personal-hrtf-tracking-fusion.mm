@@ -11,12 +11,15 @@
 
 extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion() {
  @autoreleasepool {
+    printf("SDA tracking fixture: creating Metal resources\n");
     auto device = MTLCreateSystemDefaultDevice();
     NSError *error = nil;
     auto library = [device newDefaultLibraryWithBundle:[SCFusionBundle fusionBundle] error:&error];
     auto queue = [device newCommandQueue];
     if (!device || !library || !queue) return 1;
+    printf("SDA tracking fixture: creating index map\n");
     auto index = std::make_shared<MetalSurfelIndexMap>(device, library, queue);
+    printf("SDA tracking fixture: creating depth processor\n");
     MetalDepthProcessor processor(device, library, queue);
     PBFModel model(index, 937);
     PBFConfiguration pbf;
@@ -34,6 +37,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     sc3d::PerspectiveCamera camera;
     camera.setIntrinsicMatrixReferenceSize(math::Vec2(width,height));
     camera.setNominalIntrinsicMatrix(math::Mat3x3(160,0,80, 0,160,60, 0,0,1));
+    printf("SDA tracking fixture: allocating calibrated frame\n");
     auto frame = std::make_unique<ProcessedFrame>(camera,width,height);
     auto prepare = [&](bool visible) {
         for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
@@ -46,7 +50,9 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
         }
         processor.computeFrameValues(*frame,frame->rawFrame);
     };
+    printf("SDA tracking fixture: processing visible depth\n");
     prepare(true);
+    printf("SDA tracking fixture: fusing initial depth\n");
     auto first=model.assimilate(*frame,pbf,icp,fusion,1.0);
     printf("SDA tracking fixture initial: merged=%d points=%zu\n",first.isMerged,model.getSurfels().size());
     if(!first.isMerged || model.getSurfels().size()<1000) return 2;

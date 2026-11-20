@@ -15,5 +15,5 @@ static void meshCrash(int signal){
 }
 extern "C" void sdaInstallMeshCrashTrace(){
  setbuf(stdout,NULL);setbuf(stderr,NULL);
- signal(SIGSEGV,meshCrash);signal(SIGBUS,meshCrash);signal(SIGABRT,meshCrash);signal(SIGILL,meshCrash);
+ signal(SIGSEGV,meshCrash);signal(SIGBUS,meshCrash);signal(SIGABRT,meshCrash);signal(SIGILL,meshCrash);signal(SIGTRAP,meshCrash);
 }
