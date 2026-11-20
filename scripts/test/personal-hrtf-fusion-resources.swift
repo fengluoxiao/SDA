@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import CoreVideo
+import CoreImage
 import CoreML
 import Vision
 import ImageIO
@@ -113,11 +114,31 @@ struct FusionResourcesTest {
   guard SCMesh(plyPath:badFace.path,jpegPath:"") == nil else { throw Failure.invalid("Non-triangle PLY was accepted") }
   return ["deviceMemoryPreflightTested":false,"noRearInput":partial,"partialMeasurementFaces":reviewFaces,"missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
  }
+ static func positiveEarResources() throws -> [[String:Any]] {
+  guard CommandLine.arguments.count == 2 else { throw Failure.invalid("Positive ear image folder required") }
+  let folder = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
+  guard let bundle = SCFusionBundle.fusionBundle(), let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else { throw Failure.invalid("Ear model absent") }
+  let config = MLModelConfiguration(); config.computeUnits = .cpuAndGPU
+  let model = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:config))
+  var results = [[String:Any]]()
+  for name in ["caucasian-left_medium.jpg","caucasian-right_medium.jpg","asian-left_medium.jpg","asian-right_medium.jpg"] {
+   guard let image = CIImage(contentsOf:folder.appendingPathComponent(name),options:[.applyOrientationProperty:true]) else { throw Failure.invalid("Positive ear fixture could not load: \(name)") }
+   let orientations: [(CGImagePropertyOrientation,CGImagePropertyOrientation)] = [(.up,.up),(.down,.down),(.right,.left),(.left,.right)]
+   for pair in orientations {
+    let request = VNCoreMLRequest(model:model); request.imageCropAndScaleOption = .scaleFill
+    try VNImageRequestHandler(ciImage:image.oriented(pair.0),orientation:pair.1).perform([request])
+    let ears = (request.results as? [VNRecognizedObjectObservation] ?? []).filter { PersonalHrtfCaptureCoverage.isEar($0) }
+    guard let ear = ears.max(by: { $0.confidence < $1.confidence }) else { throw Failure.invalid("Real ear not detected: \(name), orientation=\(pair.1.rawValue), results=\(String(describing:request.results))") }
+    results.append(["image":name,"orientation":pair.1.rawValue,"confidence":ear.confidence,"label":ear.labels.first?.identifier ?? "", "acceptedByEarFilter":true])
+   }
+  }
+  return results
+ }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
   print("SDA loading offline ear detector")
   guard let bundle = SCFusionBundle.fusionBundle(), let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else { throw Failure.invalid("Compiled ear detector absent") }
-  let configuration = MLModelConfiguration(); configuration.computeUnits = .all
+  let configuration = MLModelConfiguration(); configuration.computeUnits = .cpuAndGPU
   let visionModel = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:configuration))
   var colorOptional: CVPixelBuffer?
   guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,nil,&colorOptional) == kCVReturnSuccess,
@@ -151,7 +172,7 @@ struct FusionResourcesTest {
   observe(false,nil,rightEarPoint)
   state.observe(head:false,left:nil,right:rightEarPoint,camera:SIMD3<Float>(0.1,0,0),time:clock-0.31)
   guard state.rightEar == 1 else { throw Failure.invalid("Duplicate callback counted as evidence") }
-  for _ in 0..<5 { observe() }
+  for _ in 0..<10 { observe() }
   guard state.rightEar == 0 else { throw Failure.invalid("Occlusion did not clear incomplete step evidence") }
   for i in 0..<7 { observe(false,nil,rightEarPoint,SIMD3<Float>(Float(i)*0.002,0,0)) }
   guard state.complete, state.head == 4, state.leftEar == 6, state.rightEar == 6 else { throw Failure.invalid("Valid sequential capture failed to complete") }
@@ -194,6 +215,30 @@ struct FusionResourcesTest {
    for y in 0..<128 { for x in 0..<128 { if p.load(fromByteOffset:y*stride+x*4,as:Float.self).isFinite { count += 1 } } }
    return count
   }
+  // Reproduce detector boxes with missing hair/background depth: the old
+  // full-box requirement rejected these even with a measured ear centre.
+  let earBox = CGRect(x:0.2,y:0.2,width:0.6,height:0.6)
+  for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
+   CVPixelBufferLockBaseAddress(large,[])
+   for y in 0..<128 { for x in 0..<128 {
+    let valid = x >= 42 && x <= 85 && y >= 42 && y <= 85
+    source.storeBytes(of:valid ? Float(0.3) : Float.nan,toByteOffset:y*sourceStride+x*4,as:Float.self)
+   } }
+   CVPixelBufferUnlockBaseAddress(large,[])
+   guard PersonalHrtfCaptureCoverage.depthMedian(large,in:earBox,orientation:orientation) == nil,
+         PersonalHrtfCaptureCoverage.earDepthMedian(large,in:earBox,orientation:orientation) == 0.3 else { throw Failure.invalid("Measured ear centre still rejected by surrounding missing depth") }
+  }
+  CVPixelBufferLockBaseAddress(large,[])
+  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(x)*0.004+0.15,toByteOffset:y*sourceStride+x*4,as:Float.self) } }
+  CVPixelBufferUnlockBaseAddress(large,[])
+  guard PersonalHrtfCaptureCoverage.earDepthMedian(large,in:earBox,orientation:.up) == nil else { throw Failure.invalid("Discontinuous ear depth qualified") }
+  for bad in [Float.nan,0,0.1,0.8] {
+   fill(bad)
+   guard PersonalHrtfCaptureCoverage.earDepthMedian(buffer,in:box,orientation:.up) == nil else { throw Failure.invalid("Missing/background ear depth qualified") }
+  }
+  CVPixelBufferLockBaseAddress(large,[])
+  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(0.3),toByteOffset:y*sourceStride+x*4,as:Float.self) } }
+  CVPixelBufferUnlockBaseAddress(large,[])
   for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
    let seed = PersonalHrtfCaptureCoverage.Seed(box:CGRect(x:0.35,y:0.3,width:0.3,height:0.4),depth:0.3)
    guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(large,seed:seed,orientation:orientation,region:nil), validCount(masked) >= 1000, validCount(masked) < 8000, validCount(large) == 128*128 else { throw Failure.invalid("Frontal seed retained background or modified borrowed depth") }
@@ -206,7 +251,7 @@ struct FusionResourcesTest {
   var neutralSeedRejected = false
   initial.prepareInitial(color:color,depth:large,orientation:.up) { seed in neutralSeedRejected = seed == nil; semaphore.signal() }
   guard semaphore.wait(timeout:.now()+10) == .success, neutralSeedRejected else { throw Failure.invalid("Neutral/background image bootstrapped reconstruction") }
-  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"sequentialTargetGatePassed":true,"wrongEarAndDuplicateRejected":true,"multiViewEarRequired":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"realEarDetectionValidated":false]
+  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"sequentialTargetGatePassed":true,"wrongEarAndDuplicateRejected":true,"multiViewEarRequired":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"partialEarDepthRegressionPassed":true,"positiveEarImageInference":try positiveEarResources(),"physicalEarCaptureValidated":false]
  }
  static func main() {
   do { try run() }

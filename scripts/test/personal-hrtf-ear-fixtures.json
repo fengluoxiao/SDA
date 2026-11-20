@@ -1,0 +1,30 @@
+{
+  "repository": "UniData-Biometrics/ear-detection-dataset",
+  "commit": "d120664ed14c49a7be56f71e3c98f7e94e1cb28c",
+  "images": [
+    {
+      "path": "Caucasian/5/left_medium.jpg",
+      "filename": "caucasian-left_medium.jpg",
+      "sha256": "855864e75c366b7277b7bb527b991fb96156eade03415678f2e7a94af76234e7",
+      "bytes": 2233498
+    },
+    {
+      "path": "Caucasian/5/right_medium.jpg",
+      "filename": "caucasian-right_medium.jpg",
+      "sha256": "a581561d2974b23d979c9525aa38c3c6f4c2761aa86b32a9d276185078969456",
+      "bytes": 4995691
+    },
+    {
+      "path": "East_SouthEast Asian/10/left_medium.jpeg",
+      "filename": "asian-left_medium.jpg",
+      "sha256": "fecc987a66519bff5752f478175b7026e940f8aaa7d627058fb97dcea1491ec4",
+      "bytes": 2133206
+    },
+    {
+      "path": "East_SouthEast Asian/10/right_medium.jpeg",
+      "filename": "asian-right_medium.jpg",
+      "sha256": "1850f42b6d9c029a70adc7f5a75f62bf7c5ea2afa60342a477765cf2e44acbcc",
+      "bytes": 1949771
+    }
+  ]
+}

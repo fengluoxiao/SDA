@@ -106,7 +106,8 @@ PY
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 set +e
-xcrun simctl spawn "$udid" "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-runtime.log"
+python3 scripts/test/fetch-personal-hrtf-ear-fixtures.py "$out/ear-positive-fixtures"
+xcrun simctl spawn "$udid" "$out/fusion-resource-test" "$out/ear-positive-fixtures" 2>&1 | tee "$out/fusion-resource-runtime.log"
 probe_status=${PIPESTATUS[0]}
 set -e
 python3 - "$out/fusion-resource-runtime.log" "$out" "$sim_products" <<'PY'

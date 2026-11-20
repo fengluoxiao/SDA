@@ -151,7 +151,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   let count = cameraPositions.count
   lock.unlock()
   captureReadiness?(guide.complete && model.sdaSurfelCount >= 10000 && count > 0,guide.status)
-  if metadata.result == .succeeded, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
+  if accepted { coverage?.updatePose(view:metadata.viewMatrix,projection:metadata.projectionMatrix) }
+  if accepted, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
    coverage?.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:Self.imageOrientation) { [weak self] state in
     DispatchQueue.main.async {
      guard let self else { return }

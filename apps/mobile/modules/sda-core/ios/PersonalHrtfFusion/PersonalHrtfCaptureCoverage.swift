@@ -7,7 +7,7 @@ import simd
 import StandardCyborgFusion
 
 // Advisory capture evidence, not an acoustic qualification or an ear-canal detector.
-// Only successfully registered frames count toward steps; at most one analysis frame is retained.
+// Only accepted registered frames count toward steps; at most one analysis frame is retained.
 final class PersonalHrtfCaptureCoverage {
  typealias State = PersonalHeadCaptureGuide
  struct Seed { let box: CGRect; let depth: Float }
@@ -38,7 +38,7 @@ final class PersonalHrtfCaptureCoverage {
         let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else {
    throw PersonalHrtfError.message("本机耳部识别模型缺失，请重新安装测量包")
   }
-  let configuration = MLModelConfiguration(); configuration.computeUnits = .all
+  let configuration = MLModelConfiguration(); configuration.computeUnits = .cpuAndGPU
   earModel = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:configuration))
  }
  func offer(color:CVPixelBuffer,depth:CVPixelBuffer,view:simd_float4x4,projection:simd_float4x4,
@@ -54,8 +54,9 @@ final class PersonalHrtfCaptureCoverage {
    do {
     try VNImageRequestHandler(cvPixelBuffer:color,orientation:orientation).perform([faceRequest,ears])
     let cameraToModel = simd_inverse(view)
-    func measured(_ box:CGRect) -> SIMD3<Float>? {
-     guard let d = Self.depthMedian(depth,in:box,orientation:orientation) else { return nil }
+    func measured(_ box:CGRect, ear: Bool = false) -> SIMD3<Float>? {
+     let value = ear ? Self.earDepthMedian(depth,in:box,orientation:orientation) : Self.depthMedian(depth,in:box,orientation:orientation)
+     guard let d = value else { return nil }
      return Self.modelPoint(CGPoint(x:box.midX,y:box.midY),depth:d,orientation:orientation,cameraToModel:cameraToModel,projection:projection)
     }
     let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
@@ -80,8 +81,7 @@ final class PersonalHrtfCaptureCoverage {
     }
     if let anchor, let axis = subjectLeft {
      for ear in (ears.results as? [VNRecognizedObjectObservation]) ?? [] {
-      guard ear.confidence >= 0.8, ear.labels.contains(where: { $0.identifier == "ear" && $0.confidence >= 0.8 }),
-            let point = measured(ear.boundingBox) else { continue }
+      guard Self.isEar(ear), let point = measured(ear.boundingBox,ear:true) else { continue }
       let side = PersonalHeadCaptureGuide.qualifiedEarSide(point:point,center:anchor,subjectLeft:axis,camera:camera)
       guard side != 0 else { continue }
       // Multiple boxes from one frame must never satisfy stable-frame evidence.
@@ -94,11 +94,48 @@ final class PersonalHrtfCaptureCoverage {
     }
     state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0,camera:camera,time:now)
     if let anchor {
-     lock.lock(); region = Region(center:anchor,view:view,projection:projection); lock.unlock()
+     lock.lock(); if region == nil { region = Region(center:anchor,view:view,projection:projection) }; lock.unlock()
     }
    } catch { /* A failed inference never counts as measured coverage. */ }
    completion(state)
   }
+ }
+ // Refresh masking from EVERY accepted registration, not the throttled ML
+ // callback. A stale side-view pose can cut the ear out before detection.
+ func updatePose(view: simd_float4x4, projection: simd_float4x4) {
+  lock.lock(); defer { lock.unlock() }
+  if let previous = region { region = Region(center:previous.center,view:view,projection:projection) }
+ }
+ static func isEar(_ observation: VNRecognizedObjectObservation) -> Bool {
+  // The pinned detector's NMS threshold is 0.4; upstream uses its results
+  // directly. Do not impose a second 0.8 threshold that drops visible ears.
+  observation.confidence >= 0.45 && observation.labels.contains { $0.identifier == "ear" && $0.confidence >= 0.45 }
+ }
+ // Ear boxes include hair and empty background. Measure the CENTRAL ear patch
+ // instead of requiring 60/81 valid depths across the whole detector box.
+ // This is only semantic evidence; acoustic geometry keeps its own strict gates.
+ static func earDepthMedian(_ buffer:CVPixelBuffer,in box:CGRect,orientation:CGImagePropertyOrientation) -> Float? {
+  guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_DepthFloat32,
+        box.width > 0.02, box.height > 0.02,
+        box.minX >= 0, box.minY >= 0, box.maxX <= 1, box.maxY <= 1 else { return nil }
+  let patch = box.insetBy(dx:box.width*0.2,dy:box.height*0.2)
+  CVPixelBufferLockBaseAddress(buffer,.readOnly); defer { CVPixelBufferUnlockBaseAddress(buffer,.readOnly) }
+  guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+  let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer), stride = CVPixelBufferGetBytesPerRow(buffer)
+  var values = [Float](); values.reserveCapacity(25)
+  var pixels = Set<Int>()
+  for y in 0..<5 { for x in 0..<5 {
+   let p = rawPoint(CGPoint(x:patch.minX+patch.width*(Double(x)+0.5)/5,y:patch.minY+patch.height*(Double(y)+0.5)/5),orientation:orientation)
+   let column = min(width-1,max(0,Int(p.x*Double(width)))), row = min(height-1,max(0,Int((1-p.y)*Double(height))))
+   guard pixels.insert(row*width+column).inserted else { continue }
+   let d = base.load(fromByteOffset:row*stride+column*4,as:Float.self)
+   if d.isFinite && d >= 0.15 && d <= 0.65 { values.append(d) }
+  } }
+  guard values.count >= 12 else { return nil }
+  values.sort(); let median = values[values.count/2]
+  let support = values.filter { abs($0-median) <= 0.025 }
+  guard support.count >= 12, support.count*4 >= values.count*3 else { return nil }
+  return support[support.count/2]
  }
  // A fresh depth buffer is required: never modify AVFoundation-owned or retained metadata.
  // Face seed removes the room/torso before ICP; subsequent masks follow the last

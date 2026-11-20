@@ -38,8 +38,8 @@ struct PersonalHeadCaptureGuide: Equatable {
         viewLength.isFinite, viewLength >= 0.15 else { return 0 }
   let side = simd_dot(offset,subjectLeft), cameraSide = simd_dot(view/viewLength,subjectLeft)
   guard abs(side) >= 0.045 else { return 0 }
-  if side > 0 && cameraSide >= 0.55 { return 1 }
-  if side < 0 && cameraSide <= -0.55 { return -1 }
+  if side > 0 && cameraSide >= 0.2 { return 1 }
+  if side < 0 && cameraSide <= -0.2 { return -1 }
   return 0
  }
  // A wrong/missing target never advances this step. Completed steps survive the
@@ -50,10 +50,10 @@ struct PersonalHeadCaptureGuide: Equatable {
   let point = stage == .face ? (seenHead ? SIMD3<Float>.zero : nil) : (stage == .leftEar ? left : right)
   let gap = time-lastEvidenceTime; lastTime = time
   guard let point, point.x.isFinite, point.y.isFinite, point.z.isFinite else {
-   if gap > 1.2 { resetCurrent() }
+   if gap > 2.5 { resetCurrent() }
    return
   }
-  if gap > 1.2 || (lastPoint.map { simd_distance($0,point) > 0.025 } ?? false) { resetCurrent() }
+  if gap > 2.5 || (lastPoint.map { simd_distance($0,point) > 0.025 } ?? false) { resetCurrent() }
   if firstCamera == nil { firstCamera = camera; firstTime = time }
   lastEvidenceTime = time; lastPoint = point
   baseline = max(baseline,simd_distance(firstCamera!,camera))

@@ -20,6 +20,11 @@ enum Failure: Error { case invalid(String) }
   guard state.stage == .leftEar, !state.complete else { throw Failure.invalid("One frozen ear view qualified multi-view capture") }
   observe(false,SIMD3<Float>(0.15,0,0))
   guard state.leftEar == 1 else { throw Failure.invalid("Unstable ear evidence accumulated") }
+  // A skipped ML frame at ~2 Hz must not repeatedly zero the ear step.
+  observe(false,leftEarPoint,nil,SIMD3<Float>(0.001,0,0))
+  clock += 1.5
+  observe(false,leftEarPoint,nil,SIMD3<Float>(0.002,0,0))
+  guard state.leftEar >= 2 else { throw Failure.invalid("Ordinary skipped inference reset the ear") }
   for i in 0..<7 { observe(false,leftEarPoint,nil,SIMD3<Float>(Float(i)*0.002,0,0)) }
   guard state.stage == .rightEar, state.leftEar == 6 else { throw Failure.invalid("Measured left-ear views did not advance") }
   for _ in 0..<20 { observe(true,leftEarPoint,nil) }
@@ -27,7 +32,7 @@ enum Failure: Error { case invalid(String) }
   observe(false,nil,rightEarPoint)
   state.observe(head:false,left:nil,right:rightEarPoint,camera:SIMD3<Float>(0.1,0,0),time:clock-0.31)
   guard state.rightEar == 1 else { throw Failure.invalid("Duplicate callback counted as evidence") }
-  for _ in 0..<5 { observe() }
+  for _ in 0..<10 { observe() }
   guard state.rightEar == 0 else { throw Failure.invalid("Occlusion did not clear incomplete step evidence") }
   for i in 0..<7 { observe(false,nil,rightEarPoint,SIMD3<Float>(Float(i)*0.002,0,0)) }
   guard state.complete, state.head == 4, state.leftEar == 6, state.rightEar == 6 else { throw Failure.invalid("Valid sequential capture failed to complete") }
@@ -52,7 +57,7 @@ enum Failure: Error { case invalid(String) }
    for sign:Float in [-1,1] {
     let camera = SIMD3<Float>(sign*sin(angle)*0.3,0,cos(angle)*0.3)
     let point = SIMD3<Float>(sign*0.08,0,0)
-    let expected = sin(angle) >= 0.55 ? Int(sign) : 0
+    let expected = sin(angle) >= 0.2 ? Int(sign) : 0
     guard side(point,camera) == expected else { throw Failure.invalid("Viewpoint angle or side symmetry failed") }
    }
   }
