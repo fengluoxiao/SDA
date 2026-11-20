@@ -60,11 +60,31 @@ struct FusionResourcesTest {
   print("SDA Poisson mesh readback: vertices=\(mesh.vertexCount), faces=\(mesh.faceCount)")
   var reviewFaces = 0
   if partial {
-   let loaded = try PersonalHrtfMeshCheck.load(mesh:output,support:support,cancelled:{ false })
+   // os_proc_available_memory reports zero in this standalone simulator process.
+   // Do not weaken the device budget gate to accommodate the test environment.
+   // Decode this bounded synthetic fixture, then run the real measurement path.
+   guard mesh.positionData.count == mesh.vertexCount*16,
+         mesh.facesData.count == mesh.faceCount*12 else { throw Failure.invalid("Fixture mesh buffer layout changed") }
+   let vertices = mesh.positionData.withUnsafeBytes { raw in
+    (0..<mesh.vertexCount*3).map { raw.loadUnaligned(fromByteOffset:($0/3)*16+($0%3)*4,as:Float.self) }
+   }
+   let faces = mesh.facesData.withUnsafeBytes { raw in
+    (0..<mesh.faceCount*3).map { raw.loadUnaligned(fromByteOffset:$0*4,as:UInt32.self) }
+   }
+   let stride = Int(SCPointCloud.pointStride()), position = Int(SCPointCloud.positionOffset()), normal = Int(SCPointCloud.normalOffset())
+   guard (24...128).contains(stride), position >= 0, normal >= 0,
+         position+12 <= stride, normal+12 <= stride, cloud.pointsData.count == count*stride else { throw Failure.invalid("Fixture support buffer layout changed") }
+   let positions = cloud.pointsData.withUnsafeBytes { raw in
+    (0..<count*3).map { raw.loadUnaligned(fromByteOffset:($0/3)*stride+position+($0%3)*4,as:Float.self) }
+   }
+   let normals = cloud.pointsData.withUnsafeBytes { raw in
+    (0..<count*3).map { raw.loadUnaligned(fromByteOffset:($0/3)*stride+normal+($0%3)*4,as:Float.self) }
+   }
+   let loaded = PersonalHrtfMeshCheck.Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals)
    let measured = try PersonalHrtfMeshCheck.measurement(loaded,cancelled:{ false })
    reviewFaces = measured.surface.triangles.count/3
    guard reviewFaces > 1000, reviewFaces <= mesh.faceCount, measured.distance <= 0.0015,
-         stride(from:2,to:measured.surface.vertices.count,by:3).allSatisfy({ measured.surface.vertices[$0] >= -0.0015 }) else {
+         Swift.stride(from:2,to:measured.surface.vertices.count,by:3).allSatisfy({ measured.surface.vertices[$0] >= -0.0015 }) else {
     throw Failure.invalid("No-rear Poisson measurement did not retain supported front surface")
    }
    var acousticRejected = false
@@ -88,7 +108,7 @@ struct FusionResourcesTest {
   let badFace = folder.appendingPathComponent("two-index-face.ply")
   try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n2 0 2\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:badFace,atomically:true,encoding:.ascii)
   guard SCMesh(plyPath:badFace.path,jpegPath:"") == nil else { throw Failure.invalid("Non-triangle PLY was accepted") }
-  return ["noRearInput":partial,"partialMeasurementFaces":reviewFaces,"missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
+  return ["deviceMemoryPreflightTested":false,"noRearInput":partial,"partialMeasurementFaces":reviewFaces,"missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
