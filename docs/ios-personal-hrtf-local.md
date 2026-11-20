@@ -152,7 +152,7 @@ build 960 的实际 Metal 回归另外复现上游用标准 vector 作为无拷�
 
 ### 左右耳侧面切换与提示节流（build 961）
 
-**当前测量包（build 966）：** 扫描改用 [FaceFrame](https://github.com/YannisDC/FaceFrame/tree/122fdc04ae2070991c82bf31d2c3c07b7f158d0b) 的 `FusionEngine`、`PoseHistory`、`SDFAligner` 和 `SurfaceNets`。手机在正前方，先向右转头露出左耳，再向左转头露出右耳。正脸耳框不代表侧面已采集。SDA 从上游每个新融合帧的左右覆盖增量取得侧别，配合同一时间的离线耳部检测推进；不看屏幕左右、不使用手动换边锁。ARKit 失去人脸时由上游的深度几何尝试继续跟踪；失败的帧不计数。固定源码哈希、有限内存适配和 Apache-2.0 许可证见 `scripts/stage-faceframe-scan.py` 及包内 `Licenses/FaceFrame`。不引入推测耳廓、图像存储或个人 HRTF 激活。下文 build 961、965 为历史行为。
+**当前测量包（build 966）：** 扫描改用 [FaceFrame](https://github.com/YannisDC/FaceFrame/tree/122fdc04ae2070991c82bf31d2c3c07b7f158d0b) 的 `FusionEngine`、`PoseHistory` 和 `SDFAligner`。手机在正前方，先向右转头露出左耳，再向左转头露出右耳。正脸耳框不代表侧面已采集。SDA 从上游每个新融合帧的左右覆盖增量取得侧别，配合同一时间的离线耳部检测推进；不看屏幕左右、不使用手动换边锁。ARKit 失去人脸时由上游的深度几何尝试继续跟踪；失败的帧不计数。固定源码哈希、有限内存适配和 Apache-2.0 许可证见 `scripts/stage-faceframe-scan.py` 及包内 `Licenses/FaceFrame`。原始深度点交给已有的 PoissonRecon 重建；只展示有独立测量支持并通过几何检查的表面。不引入推测耳廓、图像存储或个人 HRTF 激活。下文 build 961、965 为历史行为。
 
 以下为历史行为。自 build 965 起，原有跟踪门槛只属于深度测量，不是耳部识别条件。前置彩色画面第一次检测到目标耳即可记录；未同步到深度也能识别。L、R 按本人左右。识别与深度不镜像，自拍预览单独镜像；有可靠的二维人体耳标记时用于区分两侧，近拍缺少标记则沿用当前提示。持续看到同一耳不会自动记成另一耳；必要时点“已对准左耳／右耳”确认当前目标，新帧仍必须检测到耳朵。识别完成后可继续检查，深度重建和声学几何验证独立，不生成替代耳廓。
 

@@ -8,6 +8,28 @@ struct PersonalHeadMeasuredSupport {
  var count: Int { positions.count / 3 }
  init(limit:Int) { self.limit = limit }
 
+ static func writePLY(to url:URL,positions:[Float],normals:[Float],cancelled:()->Bool) throws {
+  guard positions.count == normals.count, positions.count.isMultiple(of:3) else { throw CocoaError(.fileWriteUnknown) }
+  let header = "ply\nformat binary_little_endian 1.0\nelement vertex \(positions.count/3)\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n"
+  try Data(header.utf8).write(to:url)
+  let handle = try FileHandle(forWritingTo:url); defer { try? handle.close() }; try handle.seekToEnd()
+  var data = Data(); data.reserveCapacity(8192*27)
+  func append(_ value:Float) {
+   var bits = value.bitPattern.littleEndian
+   withUnsafeBytes(of:&bits) { data.append(contentsOf:$0) }
+  }
+  for start in stride(from:0,to:positions.count,by:3) {
+   if start.isMultiple(of:8192*3) {
+    if cancelled() { throw CancellationError() }
+    try handle.write(contentsOf:data); data.removeAll(keepingCapacity:true)
+   }
+   for axis in 0..<3 { append(positions[start+axis]) }
+   for axis in 0..<3 { append(normals[start+axis]) }
+   data.append(contentsOf:[128,128,128])
+  }
+  try handle.write(contentsOf:data)
+ }
+
  mutating func append(image:DepthImage,weights:[UInt8],pose:simd_float4x4,volume:TSDFVolume,frame:Int) {
   guard weights.count == image.width*image.height, image.width > 4, image.height > 4, count < limit else { return }
   let high = volume.origin + Vec3(volume.dims)*volume.voxelSize

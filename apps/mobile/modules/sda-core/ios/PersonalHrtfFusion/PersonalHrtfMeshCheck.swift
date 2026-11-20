@@ -15,26 +15,29 @@ enum PersonalHrtfMeshCheck {
   let support: [Float], normals: [Float]
  }
  #if canImport(StandardCyborgFusion)
- static func screen(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Double {
-  try screen(try load(mesh:meshURL,support:supportURL,cancelled:cancelled),cancelled:cancelled)
- }
- static func load(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Loaded {
+ static func poissonMeasurement(positions:[Float],normals:[Float],budget:UInt64,cancelled:@escaping()->Bool,operationChanged:(SCMeshingOperation?)->Void) throws -> (surface:PersonalHrtfReviewGeometry,distance:Double) {
+  guard positions.count == normals.count, positions.count.isMultiple(of:3), (10000...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(positions.count/3), UInt64(positions.count/3)*64 <= budget else { throw PersonalHrtfError.message("原始测量点不足或超出本机预算") }
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
+  try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+  defer { try? FileManager.default.removeItem(at:directory) }
+  let input = directory.appendingPathComponent("measured.ply"), meshURL = directory.appendingPathComponent("candidate.ply")
+  try PersonalHeadMeasuredSupport.writePLY(to:input,positions:positions,normals:normals,cancelled:cancelled)
+  let operation = SCMeshingOperation(inputPLYPath:input.path,outputPLYPath:meshURL.path)
+  operation.parameters.resolution = 6; operation.parameters.smoothness = 1; operation.parameters.closed = false; operation.parameters.surfaceTrimmingAmount = 0
+  operationChanged(operation); defer { operationChanged(nil) }
+  if cancelled() { throw CancellationError() }
+  operation.start()
+  if let error = operation.sdaError { throw error }
   if cancelled() { throw PersonalHrtfError.message("已取消本机网格检查") }
   let header = try preflight(meshURL,maximumVertices:1000000,maximumFaces:2000000)
-  let supportHeader = try preflight(supportURL,maximumVertices:Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS),maximumFaces:0)
   // Bound allocations from actual headers before invoking the upstream readers.
   // Estimate includes geometry, topology/BVH, support search and copied buffers.
-  let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + UInt64(supportHeader.vertices)*64
-  let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+  let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + UInt64(positions.count/3)*64
   guard needed <= budget else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(budget/1024/1024) MiB；请关闭其他应用后重试") }
   guard let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"") else {
    throw PersonalHrtfError.message("候选网格无法读取，重建文件可能不完整或格式无效，请重新采集")
   }
-  guard let support = SCPointCloud(plyPath:supportURL.path) else {
-   throw PersonalHrtfError.message("实测深度文件无法读取，请重新采集")
-  }
-  guard (4...1000000).contains(mesh.vertexCount), (4...2000000).contains(mesh.faceCount),
-        (4...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(support.pointCount) else {
+  guard mesh.vertexCount == header.vertices, mesh.faceCount == header.faces else {
    throw PersonalHrtfError.message("候选网格或测量点数超出本机处理范围")
   }
   // Pinned upstream Vec3 is aligned/padded to 16 bytes; Face3 is three Int32.
@@ -43,22 +46,11 @@ enum PersonalHrtfMeshCheck {
         mesh.facesData.count == mesh.faceCount * 12 else {
    throw PersonalHrtfError.message("本机网格布局与固定版本重建器不一致")
   }
-  let pointStride = Int(SCPointCloud.pointStride())
-  let position = Int(SCPointCloud.positionOffset()), normal = Int(SCPointCloud.normalOffset())
-  guard pointStride >= 24, pointStride <= 128,
-        position >= 0, normal >= 0, position + 12 <= pointStride, normal + 12 <= pointStride,
-        SCPointCloud.positionComponentCount() == 3, SCPointCloud.positionComponentSize() == 4,
-        SCPointCloud.normalComponentCount() == 3, SCPointCloud.normalComponentSize() == 4,
-        support.pointsData.count == support.pointCount * pointStride else {
-   throw PersonalHrtfError.message("本机测量点布局不一致")
-  }
   let vertices = try unpack(mesh.positionData,count:mesh.vertexCount,stride:16,offset:0,cancelled:cancelled)
-  let positions = try unpack(support.pointsData,count:support.pointCount,stride:pointStride,offset:position,cancelled:cancelled)
-  let normals = try unpack(support.pointsData,count:support.pointCount,stride:pointStride,offset:normal,cancelled:cancelled)
   let faces = mesh.facesData.withUnsafeBytes { raw in
    (0..<mesh.faceCount * 3).map { raw.loadUnaligned(fromByteOffset:$0 * 4,as:UInt32.self) }
   }
-  return Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals)
+  return try measurement(Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals),cancelled:cancelled)
  }
  #endif
  // The measurement build reviews only measured triangles. Poisson's inferred

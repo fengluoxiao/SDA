@@ -178,7 +178,15 @@ struct FusionResourcesTest {
    }
    guard blankLeft, missingRight, coverage.guide.complete else { throw Failure.invalid("FaceFrame sweep did not finish both ears: \(prefix)") }
   }
-  return ["earModelLoaded":true,"frontalPositiveIgnored":true,"bothAnatomicalSidesCompleted":true,"blankEarAndMissingImageRejected":true,"positiveEarImageInference":try positiveEarResources(),"physicalEarCaptureValidated":false]
+  func samples(_ name:String) throws -> [Float] {
+   let bytes = try Data(contentsOf:folder.appendingPathComponent(name))
+   guard bytes.count.isMultiple(of:12), (120000...6000000).contains(bytes.count) else { throw Failure.invalid("Invalid replay support file") }
+   return bytes.withUnsafeBytes { raw in (0..<bytes.count/4).map { raw.loadUnaligned(fromByteOffset:4*$0,as:Float.self) } }
+  }
+  let positions = try samples("replay-points.f32"), normals = try samples("replay-normals.f32")
+  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:positions,normals:normals,budget:512*1024*1024,cancelled:{false},operationChanged:{_ in})
+  guard measured.surface.triangles.count > 3000, measured.distance <= 0.0015 else { throw Failure.invalid("FaceFrame scan did not reach strict measured review") }
+  return ["earModelLoaded":true,"frontalPositiveIgnored":true,"bothAnatomicalSidesCompleted":true,"blankEarAndMissingImageRejected":true,"positiveEarImageInference":try positiveEarResources(),"measuredReviewFaces":measured.surface.triangles.count/3,"maximumSupportDistance":measured.distance,"physicalEarCaptureValidated":false]
  }
  static func main() {
   do { try run() }

@@ -1,6 +1,7 @@
 import ARKit
 import AVFoundation
 import Foundation
+import StandardCyborgFusion
 import UIKit
 import simd
 
@@ -12,6 +13,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
  private var poses = PoseHistory(), colors = [(time:Double,image:CVPixelBuffer)]()
  private var lastTimestamp = -Double.infinity, lastDepthTime = -Double.infinity
  private var observers = [NSObjectProtocol]()
+ private var meshing: SCMeshingOperation?
  private let coverage: PersonalHrtfCaptureCoverage
  private var fusion: FusionEngine? = FusionEngine()
  private var support: PersonalHeadMeasuredSupport
@@ -136,22 +138,20 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   }
  }
  private func measuredCandidate() throws -> PersonalHeadMeshCandidate {
-  guard !isCancelled, let volume = fusion?.volume, leftSupport, rightSupport, support.count >= 10000 else {
+  guard !isCancelled, fusion?.volume != nil, leftSupport, rightSupport, support.count >= 10000 else {
    throw PersonalHrtfError.message("已识别双耳，但无足够的原始绝对深度支持实测表面，未生成个人档案")
   }
+  fusion = nil
   let available = min(budget,sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory))
   guard available >= 64*1024*1024 else { throw PersonalHrtfError.message("当前内存不足以检查实测表面") }
-  let result = SurfaceNets.extract(volume,maximumVertices:min(1000000,Int(available/768)),maximumTriangles:min(2000000,Int(available/512)))
-  fusion = nil
-  guard !isCancelled, !result.vertices.isEmpty, !result.triangles.isEmpty else { throw PersonalHrtfError.message("没有可检查的实测表面或超出本机预算") }
-  let needed = UInt64(result.vertices.count)*192 + UInt64(result.triangles.count)*256 + UInt64(support.count)*64
-  guard needed <= available else { throw PersonalHrtfError.message("实测表面超出本机检查预算") }
-  let geometry = try PersonalHrtfReviewGeometry(vertices:result.vertices.flatMap { [$0.x,$0.y,$0.z] },triangles:result.triangles.flatMap { [$0.x,$0.y,$0.z] })
-  let measured = try PersonalHrtfMeshCheck.measurement(.init(surface:geometry,support:support.positions,normals:support.normals),cancelled:{ [self] in isCancelled })
+  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
+   lock.lock(); meshing = operation; let stop = cancelled; lock.unlock(); if stop { operation?.cancel() }
+  })
   return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance)
  }
  func cancel() {
-  lock.lock(); guard phase != .finished, !cancelled else { lock.unlock(); return }; cancelled = true; lock.unlock()
+  lock.lock(); guard phase != .finished, !cancelled else { lock.unlock(); return }; cancelled = true; let operation = meshing; lock.unlock()
+  operation?.cancel()
   worker.async { [self] in end(.failure(PersonalHrtfError.message("已取消本机测量"))) }
  }
  private func end(_ result:Result<PersonalHeadMeshCandidate,Error>) {

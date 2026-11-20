@@ -17,9 +17,7 @@ BLOBS = {
     'FaceFrame/Core/PoseCorrection.swift': '7a1bd37f9a0d1226555bfbb2d622fa0b1209d731',
     'FaceFrame/Core/RigidMath.swift': 'aeb6c0673fc92374282a722ffc3a8f8783b8419a',
     'FaceFrame/Core/SDFAligner.swift': '21a5df54890bfcd3fc6cae576100824cd9e1e460',
-    'FaceFrame/Core/SurfaceNets.swift': '093663599315b53e1fe1d16209e8555cd5f69925',
     'FaceFrame/Core/TSDFVolume.swift': 'ef4b4d6a095fec5490372ed4dd46fc3cd69562b1',
-    'FaceFrame/Core/TriMesh.swift': 'f81df3e56c8561a9aa08d44fb3be55a82f36461e',
     'FaceFrame/Scan/DepthConversion.swift': '72ea92e4499c69c5d5d8832b664442fc7b292ce1',
     'FaceFrame/Scan/PhotoObservations.swift': 'affec2978a329b76d734a4cc5dc81b2b8c73df58',
     'LICENSE': '0843f3b52f1bbbe9ee596e5f40a91b3ead38dab7',
@@ -28,7 +26,6 @@ MODIFICATIONS = {
     'FusionFrame.swift': 'Omit the optional disk recorder and replay format; keep the upstream in-memory frame type.',
     'FusionEngine.swift': 'Expose accepted-frame coverage counts and measured depth for independent support verification. Apply the caller\'s block budget. Upstream view selection, pose recovery, and registration are unchanged.',
     'TSDFVolume.swift': 'Enforce a maximum number of allocated blocks before insertion; skip updates for unallocated blocks at the limit.',
-    'SurfaceNets.swift': 'Limit cell and triangle allocations during mesh extraction; return no mesh on overflow.',
     'PhotoObservations.swift': 'Use only the upstream upright quarter-turn calculation for the ear detector, without loading the GNM photo fitting models.',
 }
 
@@ -52,10 +49,6 @@ def adapt(name, data):
         source = replace_once(source, '        updateCoverage(view)', '        updateCoverage(view)\n        onMeasuredFrame?(img, quality, pose)')
         source = replace_once(source, '        counts = (0, 0, 0, 0, 0)', '        volume?.maximumBlocks = maximumBlocks\n        counts = (0, 0, 0, 0, 0)')
         source = replace_once(source, '        return status(.arkit, pose: arPose)\n    }\n\n    /// Constant-velocity', '        volume?.maximumBlocks = maximumBlocks\n        return status(.arkit, pose: arPose)\n    }\n\n    /// Constant-velocity')
-    elif name == 'SurfaceNets.swift':
-        source = replace_once(source, 'minWeight: UInt8 = 3) -> TriMesh', 'minWeight: UInt8 = 3, maximumVertices: Int, maximumTriangles: Int) -> TriMesh')
-        source = replace_once(source, '                cellVertex[key(c)] =', '                guard mesh.vertices.count < maximumVertices else { return TriMesh() }\n                cellVertex[key(c)] =')
-        source = replace_once(source, '                appendQuad(&mesh, quad)', '                guard mesh.triangles.count + 2 <= maximumTriangles else { return TriMesh() }\n                appendQuad(&mesh, quad)')
     elif name == 'PhotoObservations.swift':
         start = source.index('        let camFromHead = frame.arPose.inverse')
         end = source.index('        let K = frame.intrinsics', start)

@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select pinned Apple SDK
         run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir personal-scan-build
-      - name: Replay frontal and bilateral FaceFrame depth through the measurement screen
+      - name: Replay frontal and bilateral FaceFrame depth and collect independent support
         run: SDA_FUSION_PREFLIGHT_ONLY=1 bash scripts/build-ios-personal-scan-fusion.sh personal-scan-build
       - name: Compile front TrueDepth reconstruction for iPhone
         run: SDA_FUSION_USE_PREFLIGHT=1 bash scripts/build-ios-personal-scan-fusion.sh personal-scan-build
@@ -38,4 +38,5 @@ jobs:
             personal-scan-build/*.json
             personal-scan-build/*.log
             personal-scan-build/*.txt
+            personal-scan-build/ear-positive-fixtures/replay-*.f32
           retention-days: 7

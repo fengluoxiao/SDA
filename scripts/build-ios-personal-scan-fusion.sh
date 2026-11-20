@@ -14,8 +14,7 @@ if [[ "${SDA_FUSION_USE_PREFLIGHT:-0}" == 1 ]]; then
  test "$(cat "$out/faceframe-preflight-source.txt")" = "$(git rev-parse HEAD)"
 elif [[ "${SDA_FUSION_DEVICE_ONLY:-0}" != 1 ]]; then
  python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
- xcrun clang++ -std=c++17 -O2 -c "$ios/PersonalHrtfNative/SdaHrtfMesh.cpp" -o "$out/faceframe-measurement.o"
- xcrun swiftc -O -parse-as-library -import-objc-header "$ios/SdaBridge.h" "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" "$out/faceframe-measurement.o" -Xlinker -lc++ -o "$out/capture-guide-test"
+ xcrun swiftc -O -parse-as-library "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
  "$out/capture-guide-test" "$out/ear-positive-fixtures" | tee "$out/capture-guide-result.json"
  git rev-parse HEAD > "$out/faceframe-preflight-source.txt"
 fi
@@ -106,7 +105,7 @@ python3 "$generator"
 for unit in SdaHrtfMesh SdaHrtfSolver; do
  xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -fexceptions -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$ios/PersonalHrtfNative" -c "$ios/PersonalHrtfNative/$unit.cpp" -o "$out/$unit-fusion-simulator.o"
 done
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "${faceframe[@]}" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "${faceframe[@]}" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 - "$out/fusion-simulators.json" <<'PY'

@@ -2,7 +2,6 @@ import Foundation
 import simd
 
 enum ReplayFailure: Error { case invalid(String) }
-enum PersonalHrtfError: Error { case message(String) }
 
 @main struct FaceFrameDepthReplay {
  static let width = 144, height = 120
@@ -63,14 +62,11 @@ enum PersonalHrtfError: Error { case message(String) }
    let matrix = acceptedPose.map { pose in [pose.columns.0,pose.columns.1,pose.columns.2,pose.columns.3].flatMap { [$0.x,$0.y,$0.z,$0.w] } } ?? []
    trace.append(["yaw":angle,"front":status.coverage.front,"left":left,"right":right,"pose":matrix,"invalidDepth":invalid])
   }
-  guard observedLeft, observedRight, guide.complete, geometryRight > 0, let volume = engine.volume else { throw ReplayFailure.invalid("FaceFrame did not register both sides: \(engine.counts), geometry right frames=\(geometryRight)") }
-  let surface = SurfaceNets.extract(volume,maximumVertices:1000000,maximumTriangles:2000000)
-  guard surface.triangles.count > 1000, SurfaceNets.extract(volume,maximumVertices:4,maximumTriangles:8).vertices.isEmpty else { throw ReplayFailure.invalid("Unbounded or empty upstream surface extraction") }
-  let geometry = try PersonalHrtfReviewGeometry(vertices:surface.vertices.flatMap { [$0.x,$0.y,$0.z] },triangles:surface.triangles.flatMap { [$0.x,$0.y,$0.z] })
-  let measured = try PersonalHrtfMeshCheck.measurement(.init(surface:geometry,support:support.positions,normals:support.normals),cancelled:{false})
-  guard support.count >= 10000, measured.surface.triangles.count/3 > 1000, measured.distance <= 0.0015 else { throw ReplayFailure.invalid("FaceFrame surface did not pass independent depth support") }
+  guard observedLeft, observedRight, guide.complete, geometryRight > 0, support.count >= 10000 else { throw ReplayFailure.invalid("FaceFrame did not register both sides: \(engine.counts), geometry right frames=\(geometryRight)") }
+  try support.positions.withUnsafeBytes { try Data($0).write(to:directory.appendingPathComponent("replay-points.f32")) }
+  try support.normals.withUnsafeBytes { try Data($0).write(to:directory.appendingPathComponent("replay-normals.f32")) }
   try JSONSerialization.data(withJSONObject:trace).write(to:directory.appendingPathComponent("faceframe-sweep.json"))
-  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"surfaceFaces":surface.triangles.count,"measuredReviewFaces":measured.surface.triangles.count/3,"supportPoints":support.count,"maximumSupportDistance":measured.distance,"syntheticDepth":true,"physicalScanTested":false]
+  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"supportPoints":support.count,"syntheticDepth":true,"physicalScanTested":false]
   print(String(decoding:try JSONSerialization.data(withJSONObject:result),as:UTF8.self))
  }
 }
