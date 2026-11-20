@@ -4,6 +4,9 @@ out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
+# Fetch before changing into the pinned framework checkout; fail before builds
+# if fixtures cannot be verified, rather than silently skipping positive input.
+python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
 xcrun swiftc -O -parse-as-library "$ios/PersonalHeadCaptureGuide.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
 "$out/capture-guide-test" | tee "$out/capture-guide-result.json"
 stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
@@ -106,7 +109,6 @@ PY
 xcrun simctl boot "$udid" || true
 xcrun simctl bootstatus "$udid" -b
 set +e
-python3 scripts/test/fetch-personal-hrtf-ear-fixtures.py "$out/ear-positive-fixtures"
 xcrun simctl spawn "$udid" "$out/fusion-resource-test" "$out/ear-positive-fixtures" 2>&1 | tee "$out/fusion-resource-runtime.log"
 probe_status=${PIPESTATUS[0]}
 set -e

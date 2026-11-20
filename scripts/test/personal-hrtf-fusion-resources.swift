@@ -148,6 +148,7 @@ struct FusionResourcesTest {
   CVPixelBufferUnlockBaseAddress(color,[])
   let request = VNCoreMLRequest(model:visionModel); request.imageCropAndScaleOption = .scaleFill
   try VNImageRequestHandler(cvPixelBuffer:color,orientation:.up).perform([request])
+  guard ((request.results as? [VNRecognizedObjectObservation]) ?? []).allSatisfy({ !PersonalHrtfCaptureCoverage.isEar($0) }) else { throw Failure.invalid("Neutral image produced a qualifying ear") }
   print("SDA offline ear detector inference completed on neutral input")
   var state = PersonalHeadCaptureGuide()
   let leftEarPoint = SIMD3<Float>(0.08,0,0), rightEarPoint = SIMD3<Float>(-0.08,0,0)
