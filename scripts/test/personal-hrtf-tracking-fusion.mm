@@ -146,7 +146,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
         prepare(true);
         std::vector<Eigen::Vector3f> calibratedRays;
         for(const auto &p : frame->positions) {
-            const Eigen::Vector3f v=standard_cyborg::toVector3f(p);
+            const Eigen::Vector3f v(p.x,p.y,p.z);
             calibratedRays.push_back(v / -v.z());
         }
         int merged=0, rejectedRun=0, longestLoss=0;

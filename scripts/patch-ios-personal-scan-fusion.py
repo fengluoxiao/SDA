@@ -143,6 +143,17 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
     ICPResult icpResult = ICP::run(icpConfig,''')
 
 
+# The original raster walk stops at maxCount, often before reaching the lower
+# part of the ear. Preserve its weighting and sample count, but distribute the
+# visited pixels over the entire image before applying the stochastic filters.
+replace('pbfSource','        for (off_t i = 0; i < pointCount && filteredCount < maxCount; ++i) {','''        size_t stride = std::max<size_t>(1, size_t(pointCount * 0.6180339887498948));
+        auto gcd = [](size_t a, size_t b) { while (b) { size_t r=a%b; a=b; b=r; } return a; };
+        while (pointCount > 1 && gcd(stride,pointCount) != 1) ++stride;
+        size_t sampleIndex = 0;
+        for (size_t visited = 0; visited < pointCount && filteredCount < maxCount; ++visited) {
+            const size_t i = sampleIndex;
+            sampleIndex = (sampleIndex + stride) % pointCount;''')
+
 # Side/grazing depth may contain NaNs: comparisons with NaN are false,
 # so upstream's range and stochastic weight checks alone admit invalid points.
 # Use only finite, positive-weight samples meeting the existing fusion confidence.
