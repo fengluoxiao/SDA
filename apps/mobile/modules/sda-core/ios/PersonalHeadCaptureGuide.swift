@@ -28,6 +28,20 @@ struct PersonalHeadCaptureGuide: Equatable {
   let marks = [head >= 4, leftEar >= 6, rightEar >= 6]
   return zip(["正脸","左耳","右耳"],marks).map { "\($0.0) \($0.1 ? "✓" : "○")" }.joined(separator:"    ")
  }
+ // Semantic location alone is insufficient: frontal views can detect both
+ // ears. The camera must actually be on the corresponding anatomical side.
+ static func qualifiedEarSide(point: SIMD3<Float>, center: SIMD3<Float>, subjectLeft: SIMD3<Float>, camera: SIMD3<Float>) -> Int {
+  let offset = point-center, distance = simd_length(offset)
+  let axisLength = simd_length(subjectLeft), view = camera-center, viewLength = simd_length(view)
+  guard distance.isFinite, distance >= 0.055, distance <= 0.19,
+        axisLength.isFinite, axisLength > 0.99, axisLength < 1.01,
+        viewLength.isFinite, viewLength >= 0.15 else { return 0 }
+  let side = simd_dot(offset,subjectLeft), cameraSide = simd_dot(view/viewLength,subjectLeft)
+  guard abs(side) >= 0.045 else { return 0 }
+  if side > 0 && cameraSide >= 0.55 { return 1 }
+  if side < 0 && cameraSide <= -0.55 { return -1 }
+  return 0
+ }
  // A wrong/missing target never advances this step. Completed steps survive the
  // journey across the face. Duplicate/stale callbacks cannot satisfy evidence.
  mutating func observe(head seenHead: Bool, left: SIMD3<Float>?, right: SIMD3<Float>?, camera: SIMD3<Float>, time: Double) {

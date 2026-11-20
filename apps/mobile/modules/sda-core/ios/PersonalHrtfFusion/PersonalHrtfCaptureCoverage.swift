@@ -58,6 +58,7 @@ final class PersonalHrtfCaptureCoverage {
      guard let d = Self.depthMedian(depth,in:box,orientation:orientation) else { return nil }
      return Self.modelPoint(CGPoint(x:box.midX,y:box.midY),depth:d,orientation:orientation,cameraToModel:cameraToModel,projection:projection)
     }
+    let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
     var seenHead = false
     var leftEvidence: (SIMD3<Float>,Float)?, rightEvidence: (SIMD3<Float>,Float)?
     if let face = faceRequest.results?.max(by: { $0.boundingBox.width*$0.boundingBox.height < $1.boundingBox.width*$1.boundingBox.height }),
@@ -81,10 +82,8 @@ final class PersonalHrtfCaptureCoverage {
      for ear in (ears.results as? [VNRecognizedObjectObservation]) ?? [] {
       guard ear.confidence >= 0.8, ear.labels.contains(where: { $0.identifier == "ear" && $0.confidence >= 0.8 }),
             let point = measured(ear.boundingBox) else { continue }
-      let offset = point-anchor, side = simd_dot(offset,axis), distance = simd_length(offset)
-      // Require physically separate ear-side observations in the registered model.
-      // Merely turning the phone does not count as a captured ear.
-      guard distance >= 0.055, distance <= 0.19, abs(side) >= 0.045 else { continue }
+      let side = PersonalHeadCaptureGuide.qualifiedEarSide(point:point,center:anchor,subjectLeft:axis,camera:camera)
+      guard side != 0 else { continue }
       // Multiple boxes from one frame must never satisfy stable-frame evidence.
       if side > 0 {
        if ear.confidence > (leftEvidence?.1 ?? 0) { leftEvidence = (point,ear.confidence) }
@@ -93,7 +92,6 @@ final class PersonalHrtfCaptureCoverage {
       }
      }
     }
-    let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
     state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0,camera:camera,time:now)
     if let anchor {
      lock.lock(); region = Region(center:anchor,view:view,projection:projection); lock.unlock()
