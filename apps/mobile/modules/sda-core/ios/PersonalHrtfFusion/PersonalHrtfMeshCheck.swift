@@ -21,7 +21,7 @@ enum PersonalHrtfMeshCheck {
   let supportHeader = try preflight(supportURL,maximumVertices:Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS),maximumFaces:0)
   // Bound allocations from actual headers before invoking the upstream readers.
   // Estimate includes geometry, topology/BVH, support search and copied buffers.
-  let needed = UInt64(header.vertices)*160 + UInt64(header.faces)*240 + UInt64(supportHeader.vertices)*64
+  let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + UInt64(supportHeader.vertices)*64
   let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
   guard needed <= budget else { throw PersonalHrtfError.message("当前候选表面检查预计需要 \(needed/1024/1024) MiB，本机本次可用预算为 \(budget/1024/1024) MiB；请关闭其他应用后重试") }
   guard let mesh = SCMesh(plyPath:meshURL.path,jpegPath:"") else {
@@ -57,7 +57,51 @@ enum PersonalHrtfMeshCheck {
   }
   return Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals)
  }
+ // The measurement build reviews only measured triangles. Poisson's inferred
+ // closures never appear in review or satisfy the measurement gate.
+ static func measurement(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> (surface: PersonalHrtfReviewGeometry, distance: Double) {
+  let token = Cancellation(cancelled)
+  let vertices = loaded.surface.vertices, faces = loaded.surface.triangles
+  var mask = [UInt8](repeating:0,count:faces.count/3)
+  let selected = vertices.withUnsafeBufferPointer { v in
+   faces.withUnsafeBufferPointer { f in
+    loaded.support.withUnsafeBufferPointer { p in
+     loaded.normals.withUnsafeBufferPointer { n in
+      mask.withUnsafeMutableBufferPointer { m in
+       sda_hrtf_select_measured_faces(SdaHrtfMeshView(vertices:v.baseAddress,vertex_count:vertices.count/3,triangles:f.baseAddress,triangle_count:faces.count/3,support:p.baseAddress,support_normals:n.baseAddress,support_count:loaded.support.count/3),m.baseAddress,m.count,{ pointer in
+        guard let pointer else { return 1 }
+        return Unmanaged<Cancellation>.fromOpaque(pointer).takeUnretainedValue().check() ? 1 : 0
+       },Unmanaged.passUnretained(token).toOpaque())
+      }
+     }
+    }
+   }
+  }
+  try requirePassed(selected)
+  // Compact used vertices so discarded closures are not retained in the review
+  // surface, and every displayed face uses the original measured coordinates.
+  var remap = [UInt32](repeating:UInt32.max,count:vertices.count/3)
+  var retainedVertices = [Float](), retainedFaces = [UInt32]()
+  for face in mask.indices where mask[face] != 0 {
+   if face % 1024 == 0 && cancelled() { throw PersonalHrtfError.message("已取消测量表面检查") }
+   for j in 0..<3 {
+    let old = Int(faces[3*face+j])
+    if remap[old] == UInt32.max {
+     remap[old] = UInt32(retainedVertices.count/3)
+     retainedVertices.append(contentsOf:vertices[3*old..<3*old+3])
+    }
+    retainedFaces.append(remap[old])
+   }
+  }
+  if cancelled() { throw PersonalHrtfError.message("已取消测量表面检查") }
+  let surface = try PersonalHrtfReviewGeometry(vertices:retainedVertices,triangles:retainedFaces)
+  let distance = try screen(Loaded(surface:surface,support:loaded.support,normals:loaded.normals),measurementOnly:true,cancelled:cancelled)
+  return (surface,distance)
+ }
  static func screen(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> Double {
+  try screen(loaded,measurementOnly:false,cancelled:cancelled)
+ }
+ private static func screen(_ loaded: Loaded, measurementOnly:Bool, cancelled: @escaping () -> Bool) throws -> Double {
   let token = Cancellation(cancelled)
   let vertices = loaded.surface.vertices, faces = loaded.surface.triangles
   let positions = loaded.support, normals = loaded.normals
@@ -66,7 +110,8 @@ enum PersonalHrtfMeshCheck {
     positions.withUnsafeBufferPointer { p in
      normals.withUnsafeBufferPointer { n in
       let input = SdaHrtfMeshView(vertices:v.baseAddress,vertex_count:vertices.count/3,triangles:f.baseAddress,triangle_count:faces.count/3,support:p.baseAddress,support_normals:n.baseAddress,support_count:positions.count/3)
-      return sda_hrtf_screen_head_mesh(input,{ pointer in
+      let screen = measurementOnly ? sda_hrtf_screen_measured_surface : sda_hrtf_screen_head_mesh
+      return screen(input,{ pointer in
        guard let pointer else { return 1 }
        return Unmanaged<Cancellation>.fromOpaque(pointer).takeUnretainedValue().check() ? 1 : 0
       },Unmanaged.passUnretained(token).toOpaque())
@@ -74,6 +119,11 @@ enum PersonalHrtfMeshCheck {
     }
    }
   }
+  try requirePassed(result)
+  return result.support_distance
+ }
+ private static func requirePassed(_ value:SdaHrtfMeshResult) throws {
+  var result = value
   guard result.code == 0 else {
    if result.code == 2 { throw PersonalHrtfError.message("已取消本机网格检查") }
    let detail = withUnsafePointer(to:&result.message) { p in
@@ -81,7 +131,6 @@ enum PersonalHrtfMeshCheck {
    }
    throw PersonalHrtfError.message("头耳表面未通过本机几何检查：\(detail)")
   }
-  return result.support_distance
  }
  // Reject oversized count declarations before the upstream PLY reader can
  // reserve a buffer. This also bounds failures if a private job is incomplete.

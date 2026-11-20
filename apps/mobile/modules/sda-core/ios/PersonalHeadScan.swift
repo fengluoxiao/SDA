@@ -60,11 +60,11 @@ final class PersonalHeadScanController: UIViewController {
   preview.layer.addSublayer(camera.previewLayer)
   message.textColor = .white; message.numberOfLines = 0; message.textAlignment = .center
   message.font = .preferredFont(forTextStyle:.body)
-  message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。请他人协助：先正面对准脸部建立左右耳参考，再缓慢移动手机，覆盖两耳、后脑、头顶和下方。移开遮耳头发，头部和表情保持稳定，相邻画面保持重叠，距离约 25–60 厘米。"
+  message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。请他人协助：先正面对准脸部建立左右耳参考，再缓慢移动手机，采集头部正面和两耳（无需扫描后脑），头顶只需保留可确认向上的测量位置。移开遮耳头发，头部和表情保持稳定，相邻画面保持重叠，距离约 25–60 厘米。"
   countLabel.textColor = .white; countLabel.textAlignment = .center; countLabel.numberOfLines = 0
   coverageLabel.textColor = .white; coverageLabel.textAlignment = .center; coverageLabel.numberOfLines = 0
   coverageLabel.font = .preferredFont(forTextStyle:.footnote)
-  coverageLabel.text = "头部：待采集 · 左耳：待采集 · 右耳：待采集\n区域识别不代表耳廓精度合格；仍需覆盖后脑和头顶"
+  coverageLabel.text = "头部：待采集 · 左耳：待采集 · 右耳：待采集\n无需扫描后脑；区域识别不代表耳廓精度合格"
   finishButton.setTitle("完成采集，在本机处理",for:.normal); finishButton.isEnabled = false
   finishButton.addTarget(self,action:#selector(finishScan),for:.touchUpInside)
   let cancel = UIButton(type:.system); cancel.setTitle("取消并删除",for:.normal)
@@ -90,7 +90,7 @@ final class PersonalHeadScanController: UIViewController {
   reconstruction.captureReadiness = { [weak self] ready,text in
    DispatchQueue.main.async {
     guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
-    self.coverageLabel.text = text + "\n区域识别不代表耳廓精度合格；仍需覆盖后脑和头顶"
+    self.coverageLabel.text = text + "\n无需扫描后脑；区域识别不代表耳廓精度合格"
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
     self.finishButton.isEnabled = scanning && ready
    }

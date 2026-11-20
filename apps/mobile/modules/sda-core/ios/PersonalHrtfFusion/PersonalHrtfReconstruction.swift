@@ -188,13 +188,13 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   guard cloud.writeToPLY(atPath:support.path) else { end(.failure(Failure.message("无法写入本机临时测量表面"))); return }
   let operation = SCMeshingOperation(inputPLYPath:support.path,outputPLYPath:mesh.path)
   // Fine reconstruction is a candidate only. Poisson may close unmeasured
-  // holes; the subsequent support validator MUST reject those closures.
+  // holes; measurement review MUST discard those unmeasured closures.
   // Upstream maps UI resolution 6 to actual Poisson octree depth 9.
   // UI resolution 9 would mean depth 12, an unsuitable mobile allocation.
   operation.parameters.resolution = 6
   operation.parameters.smoothness = 1
   operation.parameters.surfaceTrimmingAmount = 0
-  operation.parameters.closed = true
+  operation.parameters.closed = false
   operation.progressHandler = { [weak self] value in
    DispatchQueue.main.async { self?.progress?(poses.count,"正在手机上重建头耳表面 \(Int(value * 100))%") }
   }
@@ -220,10 +220,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
     let measured = try PersonalHrtfMeshCheck.load(mesh:mesh,support:support,cancelled:{ [self] in
      lock.lock(); defer { lock.unlock() }; return cancelled
     })
-    let distance = try PersonalHrtfMeshCheck.screen(measured,cancelled:{ [self] in
+    let checked = try PersonalHrtfMeshCheck.measurement(measured,cancelled:{ [self] in
      lock.lock(); defer { lock.unlock() }; return cancelled
     })
-    end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:1,surface:measured.surface,maximumSupportDistance:distance)))
+    end(.success(PersonalHeadMeshCandidate(directory:directory,support:support,mesh:mesh,cameraPositions:poses,gravity:gravity,points:pointCount,geometryScreenVersion:2,surface:checked.surface,maximumSupportDistance:checked.distance)))
    } catch { end(.failure(error)) }
   }
   model.sdaReset { [self] in meshQueue.addOperation(operation) }

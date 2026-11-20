@@ -82,7 +82,11 @@ codesign --force --sign - "$sim_products/StandardCyborgFusion.framework"
 xcrun otool -L "$sim_products/StandardCyborgFusion.framework/StandardCyborgFusion" > "$out/fusion-linked-libraries.txt"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun --sdk iphonesimulator clang++ -std=c++17 -g -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -c "$(dirname "$probe")/personal-hrtf-crash-trace.mm" -o "$out/fusion-crash-trace.o"
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" "$probe" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+python3 scripts/generate-embedded-numcalc.py
+for unit in SdaHrtfMesh SdaHrtfSolver; do
+ xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -fexceptions -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$ios/PersonalHrtfNative" -c "$ios/PersonalHrtfNative/$unit.cpp" -o "$out/$unit-fusion-simulator.o"
+done
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 - "$out/fusion-simulators.json" <<'PY'
@@ -119,6 +123,7 @@ root=Path(sys.argv[1]);lines=(root/'fusion-resource-runtime.log').read_text().sp
 result=json.loads(next(line for line in reversed(lines)if line.startswith('{')))
 assert result['bundleLocated']and result['versionMetadataValid']
 assert result['poissonRoundTrip']['vertices']>100 and result['poissonRoundTrip']['faces']>100
+assert result['partialNoRearRoundTrip']['noRearInput'] and result['partialNoRearRoundTrip']['partialMeasurementFaces']>1000
 assert result['captureCoverage']['earModelLoaded'] and result['captureCoverage']['invalidDepthRejected']
 assert result['physicalScanTested']is False and result['earAccuracyValidated']is False
 if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8 and result['atomicPointCountSnapshotValid']and result['resetCompletionPassed']

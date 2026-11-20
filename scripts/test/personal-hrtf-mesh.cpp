@@ -37,13 +37,60 @@ Fixture cube(int n=8){
  return f;
 }
 void check(Fixture &f,int code,const char *name,const char *message=nullptr){auto r=sda_hrtf_screen_head_mesh(f.view(),nullptr,nullptr);if(r.code!=code||(message&&std::string(r.message).find(message)==std::string::npos)){std::cerr<<name<<": "<<r.code<<" "<<r.message<<std::endl;throw std::runtime_error(name);}}
+Fixture selected(Fixture &input, const std::vector<uint8_t> &mask){
+ Fixture out;out.support=input.support;out.normals=input.normals;
+ std::vector<uint32_t> remap(input.vertices.size()/3,UINT32_MAX);
+ for(size_t f=0;f<mask.size();++f)if(mask[f])for(int j=0;j<3;++j){
+  uint32_t old=input.triangles[3*f+j];
+  if(remap[old]==UINT32_MAX){remap[old]=uint32_t(out.vertices.size()/3);out.vertices.insert(out.vertices.end(),input.vertices.begin()+3*old,input.vertices.begin()+3*old+3);}
+  out.triangles.push_back(remap[old]);
+ }
+ return out;
+}
+void measurementTests(Fixture &good){
+ auto noRear=good;noRear.support.clear();noRear.normals.clear();
+ // Remove ALL measurements of the synthetic rear face, leaving the candidate
+ // closure intact. This specifically models a scan without rear coverage.
+ for(size_t i=0;i<good.support.size();i+=3)if(good.normals[i+2]>-0.5){
+  noRear.support.insert(noRear.support.end(),good.support.begin()+i,good.support.begin()+i+3);
+  noRear.normals.insert(noRear.normals.end(),good.normals.begin()+i,good.normals.begin()+i+3);
+ }
+ std::vector<uint8_t> mask(noRear.triangles.size()/3);
+ auto select=sda_hrtf_select_measured_faces(noRear.view(),mask.data(),mask.size(),nullptr,nullptr);
+ require(select.code==0,"No-rear scan must allow measured face selection");
+ auto partial=selected(noRear,mask);
+ require(partial.triangles.size()==good.triangles.size()*5/6,"Rear fill must be discarded, front/sides retained");
+ for(size_t f=0;f<mask.size();++f)if(mask[f]){
+  bool rear=true;for(int j=0;j<3;++j)rear=rear&&noRear.vertices[3*noRear.triangles[3*f+j]+2]<-0.009f;
+  require(!rear,"Unmeasured rear closure must never appear in review");
+ }
+ auto measured=sda_hrtf_screen_measured_surface(partial.view(),nullptr,nullptr);
+ require(measured.code==0&&measured.enclosed_volume==0&&measured.support_distance<=0.0015,"Partial measured review must succeed without acoustic volume");
+ check(partial,1,"Partial measurement must not pass acoustic gate","two-manifold");
+ require(sda_hrtf_screen_measured_surface(noRear.view(),nullptr,nullptr).code==1,"Measurement gate must reject untrimmed unsupported rear");
+ auto winding=partial;std::swap(winding.triangles[0],winding.triangles[1]);
+ require(sda_hrtf_screen_measured_surface(winding.view(),nullptr,nullptr).code==1,"Measurement gate must retain winding checks");
+ auto nonmanifold=partial;nonmanifold.triangles.insert(nonmanifold.triangles.end(),partial.triangles.begin(),partial.triangles.begin()+3);
+ require(sda_hrtf_screen_measured_surface(nonmanifold.view(),nullptr,nullptr).code==1,"Measurement gate must retain manifold checks");
+ auto bad=partial;bad.support[0]=std::numeric_limits<float>::quiet_NaN();
+ require(sda_hrtf_screen_measured_surface(bad.view(),nullptr,nullptr).code==1,"Partial review must reject invalid support");
+ require(sda_hrtf_select_measured_faces(noRear.view(),mask.data(),mask.size()-1,nullptr,nullptr).code==1,"Selection must bound mask writes");
+ require(sda_hrtf_select_measured_faces(noRear.view(),mask.data(),mask.size(),[](void*){return 1;},nullptr).code==2,"Cancel partial selection");
+ int calls=0;require(sda_hrtf_select_measured_faces(noRear.view(),mask.data(),mask.size(),[](void *p){return int(++*static_cast<int*>(p)>=3);},&calls).code==2,"Cancel selection during work");
+ require(sda_hrtf_screen_measured_surface(partial.view(),[](void*){return 1;},nullptr).code==2,"Cancel partial screen");
+ require(sda_hrtf_screen_measured_surface(partial.view(),nullptr,nullptr).code==0,"Recover after cancelled partial screen");
+ auto invalid=noRear;invalid.triangles[0]=UINT32_MAX;
+ require(sda_hrtf_select_measured_faces(invalid.view(),mask.data(),mask.size(),nullptr,nullptr).code==1,"Selection must reject invalid face indices");
+ auto opposing=noRear;for(float &n:opposing.normals)n=-n;
+ require(sda_hrtf_select_measured_faces(opposing.view(),mask.data(),mask.size(),nullptr,nullptr).code==1,"Selection must not accept opposite measured normals");
+}
 int main(){try{
  require(sda_hrtf_scan_point_limit(0)==0,"Unknown scan budget must not allocate");
  require(sda_hrtf_scan_point_limit(100000*uint64_t(512)-1)==0,"Reject too-small scan budget");
  require(sda_hrtf_scan_point_limit(256*uint64_t(1024)*1024)==524288,"Derive points from working memory");
  require(sda_hrtf_scan_point_limit(768*uint64_t(1024)*1024)==SDA_HRTF_MAXIMUM_SUPPORT_POINTS,"Bound large device budget");
  require(sda_hrtf_scan_point_limit(UINT64_MAX)==SDA_HRTF_MAXIMUM_SUPPORT_POINTS,"No overflow on large reported budget");
- auto good=cube();check(good,0,"Closed supported synthetic cube");
+ auto good=cube();check(good,0,"Closed supported synthetic cube");measurementTests(good);
  auto disconnected=good;uint32_t offset=uint32_t(good.vertices.size()/3);
  for(size_t i=0;i<good.vertices.size();++i)disconnected.vertices.push_back(good.vertices[i]+(i%3==0?0.05f:0.0f));
  for(uint32_t i:good.triangles)disconnected.triangles.push_back(i+offset);
@@ -71,6 +118,6 @@ int main(){try{
  check(dense,0,"Exact dense support search at maximum scan budget");
  callbacks=0;require(sda_hrtf_screen_head_mesh(dense.view(),[](void *p){return int(++*static_cast<int*>(p)>=1500);},&callbacks).code==2,"Cancel dense support indexing");
  auto largeMesh=cube(256);check(largeMesh,0,"Dense surface above legacy 80k vertex limit");
- std::cout<<"{\"denseMeshCapacityPassed\":true,\"denseMeshVertices\":393218,\"denseMeshFaces\":786432,\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
+ std::cout<<"{\"partialMeasuredNoRearPassed\":true,\"acousticClosedGatePreserved\":true,\"denseMeshCapacityPassed\":true,\"denseMeshVertices\":393218,\"denseMeshFaces\":786432,\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

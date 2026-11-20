@@ -28,6 +28,16 @@ typedef struct {
 // real person's HRTF. It never repairs holes or installs/activates a profile.
 SdaHrtfMeshResult sda_hrtf_screen_head_mesh(SdaHrtfMeshView input,
  SdaHrtfMeshCancelled cancelled, void *context);
+// Measurement/review only: retain triangles with measured depth and aligned
+// normals over their entire sampled area. Unmeasured closures are discarded.
+// face_mask has one byte per input triangle; output is valid only on success.
+SdaHrtfMeshResult sda_hrtf_select_measured_faces(SdaHrtfMeshView input,
+ uint8_t *face_mask, size_t mask_count, SdaHrtfMeshCancelled cancelled, void *context);
+// Allows open boundaries and separate measured patches. Retains finite/index,
+// size, winding, non-manifold-edge, intersection and 1.5 mm support checks.
+// NEVER use this measurement screen for the closed acoustic solver input.
+SdaHrtfMeshResult sda_hrtf_screen_measured_surface(SdaHrtfMeshView input,
+ SdaHrtfMeshCancelled cancelled, void *context);
 #ifdef __cplusplus
 }
 #endif

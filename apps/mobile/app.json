@@ -49,7 +49,7 @@
       },
       "supportsTablet": true,
       "icon": "./assets/app-icon.png",
-      "buildNumber": "957"
+      "buildNumber": "958"
     },
     "android": {
       "package": "app.sda.mobile",

@@ -16,7 +16,7 @@ func installMeshCrashTrace()
 struct FusionResourcesTest {
  enum Failure: Error { case invalid(String) }
  // Real upstream PLY export and Poisson operation, not a stubbed geometry check.
- static func meshRoundTrip() throws -> [String:Any] {
+ static func meshRoundTrip(partial:Bool = false) throws -> [String:Any] {
   let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sda-mesh-probe-" + UUID().uuidString)
   try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
   defer { try? FileManager.default.removeItem(at:folder) }
@@ -27,9 +27,11 @@ struct FusionResourcesTest {
   var text = "ply\nformat ascii 1.0\ncomment StandardCyborgFusionVersion 1.0.0\nelement vertex \(count)\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float surfel_radius\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n"
   for i in 0..<count {
    let y = 1 - 2 * (Double(i) + 0.5) / Double(count)
-   let r = sqrt(1 - y*y), phi = Double(i) * 2.399963229728653
-   let x = cos(phi)*r, z = sin(phi)*r
-   text += String(format:"%.8g %.8g %.8g %.8g %.8g %.8g 128 128 128 0.001\n",locale:Locale(identifier:"en_US_POSIX"),x*0.09,y*0.12,z*0.10,x*0.001/0.09,y*0.001/0.12,z*0.001/0.10)
+   let phi = Double(i) * 2.399963229728653
+   let z = partial ? (Double(i)+0.5)/Double(count) : sin(phi)*sqrt(1-y*y)
+   let x = partial ? cos(phi)*sqrt(1-z*z) : cos(phi)*sqrt(1-y*y)
+   let measuredY = partial ? sin(phi)*sqrt(1-z*z) : y
+   text += String(format:"%.8g %.8g %.8g %.8g %.8g %.8g 128 128 128 0.001\n",locale:Locale(identifier:"en_US_POSIX"),x*0.09,measuredY*0.12,z*0.10,x*0.001/0.09,measuredY*0.001/0.12,z*0.001/0.10)
   }
   try text.write(to:input,atomically:true,encoding:.utf8)
   guard let cloud = SCPointCloud(plyPath:input.path), cloud.pointCount == count,
@@ -42,7 +44,7 @@ struct FusionResourcesTest {
   operation.parameters.resolution = 6
   operation.parameters.smoothness = 1
   operation.parameters.surfaceTrimmingAmount = 0
-  operation.parameters.closed = true
+  operation.parameters.closed = !partial
   operation.progressHandler = { print("SDA real meshing progress: \($0)") }
   let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
   queue.addOperation(operation); queue.waitUntilAllOperationsAreFinished()
@@ -56,6 +58,20 @@ struct FusionResourcesTest {
   guard String(data:prefix.prefix(64),encoding:.ascii)?.contains("format binary_little_endian 1.0") == true else { throw Failure.invalid("Poisson mesh lost binary Float32 export") }
   guard let mesh = SCMesh(plyPath:output.path,jpegPath:""), mesh.vertexCount > 80000, mesh.faceCount > 160000 else { throw Failure.invalid("Actual Poisson surface is empty") }
   print("SDA Poisson mesh readback: vertices=\(mesh.vertexCount), faces=\(mesh.faceCount)")
+  var reviewFaces = 0
+  if partial {
+   let loaded = try PersonalHrtfMeshCheck.load(mesh:output,support:support,cancelled:{ false })
+   let measured = try PersonalHrtfMeshCheck.measurement(loaded,cancelled:{ false })
+   reviewFaces = measured.surface.triangles.count/3
+   guard reviewFaces > 1000, reviewFaces <= mesh.faceCount, measured.distance <= 0.0015,
+         stride(from:2,to:measured.surface.vertices.count,by:3).allSatisfy({ measured.surface.vertices[$0] >= -0.0015 }) else {
+    throw Failure.invalid("No-rear Poisson measurement did not retain supported front surface")
+   }
+   var acousticRejected = false
+   do { _ = try PersonalHrtfMeshCheck.screen(PersonalHrtfMeshCheck.Loaded(surface:measured.surface,support:loaded.support,normals:loaded.normals),cancelled:{ false }) }
+   catch { acousticRejected = true }
+   guard acousticRejected else { throw Failure.invalid("Partial surface passed acoustic closed-mesh screen") }
+  }
   guard mesh.texCoordData.isEmpty else { throw Failure.invalid("Absent UVs fabricated attribute bytes") }
   print("SDA testing absent optional attributes")
   let minimal = folder.appendingPathComponent("no-optional-attributes.ply")
@@ -72,7 +88,7 @@ struct FusionResourcesTest {
   let badFace = folder.appendingPathComponent("two-index-face.ply")
   try (minimalHeader+"0 0 0\n1 0 0\n0 1 0\n0 0 1\n2 0 2\n3 0 1 3\n3 0 3 2\n3 1 2 3\n").write(to:badFace,atomically:true,encoding:.ascii)
   guard SCMesh(plyPath:badFace.path,jpegPath:"") == nil else { throw Failure.invalid("Non-triangle PLY was accepted") }
-  return ["missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
+  return ["noRearInput":partial,"partialMeasurementFaces":reviewFaces,"missingOptionalAttributesSafe":true,"malformedMeshRejected":true,"syntheticOnly":true,"cancelledOutputAbsent":true,"smallNormalsPreserved":true,"binaryMeshExport":true,"inputPoints":count,"outputBytes":size,"vertices":mesh.vertexCount,"faces":mesh.faceCount]
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
@@ -174,8 +190,9 @@ struct FusionResourcesTest {
    initialized = true
   }
   let roundTrip = try meshRoundTrip()
+  let partialRoundTrip = try meshRoundTrip(partial:true)
   let coverage = try coverageResources()
-  let result:[String:Any] = ["captureCoverage":coverage,"poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
+  let result:[String:Any] = ["partialNoRearRoundTrip":partialRoundTrip,"captureCoverage":coverage,"poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

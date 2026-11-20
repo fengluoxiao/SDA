@@ -150,10 +150,52 @@ struct Screen {
    nearestSupport(first,p,normal,best,found);nearestSupport(second,p,normal,best,found);
   }
  }
- void run(){
+ void prepareSupport(){
+  supportOrder.resize(input.support_count);std::iota(supportOrder.begin(),supportOrder.end(),0);
+  for(size_t i=0;i<input.support_count;++i){check();V p=load(input.support+3*i),n=load(input.support_normals+3*i);
+   if(!finite(p)||!finite(n)||norm(n)<1e-6)throw Error(1,"Invalid measured point/normal");
+  }
+  supportTree(0,int(input.support_count));
+ }
+ bool measured(const Triangle &t){
+  int steps=std::max(1,int(std::ceil(std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})/tolerance)));
+  auto sample=[&](V p){
+   ++reply.support_samples;double best=tolerance*tolerance;bool found=false;
+   nearestSupport(0,p,t.n,best,found);
+   if(found)reply.support_distance=std::max(reply.support_distance,std::sqrt(best));
+   return found;
+  };
+  for(int i=0;i<=steps;++i)for(int j=0;j<=steps-i;++j)
+   if(!sample(t.a+(t.b-t.a)*(double(i)/steps)+(t.c-t.a)*(double(j)/steps)))return false;
+  return sample(t.center);
+ }
+ void validateInput(){
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
   if(!input.vertices||!input.triangles||!input.support||!input.support_normals||input.vertex_count<4||input.triangle_count<4||input.support_count<4)throw Error(1,"Incomplete measured mesh/support input");
   if(input.vertex_count>1000000||input.triangle_count>2000000||input.support_count>SDA_HRTF_MAXIMUM_SUPPORT_POINTS)throw Error(3,"Measured geometry exceeds local processing bound");
+ }
+ void select(uint8_t *mask,size_t count){
+  validateInput();
+  if(!mask||count!=input.triangle_count)throw Error(1,"Invalid measured face mask capacity");
+  std::fill(mask,mask+count,0);
+  for(size_t i=0;i<input.vertex_count;++i){check();if(!finite(load(input.vertices+3*i)))throw Error(1,"Invalid mesh coordinates");}
+  prepareSupport();size_t retained=0;
+  for(size_t f=0;f<input.triangle_count;++f){
+   check();Triangle t;
+   for(int j=0;j<3;++j){t.i[j]=input.triangles[3*f+j];if(t.i[j]>=input.vertex_count)throw Error(1,"Invalid mesh index");}
+   t.a=load(input.vertices+3*t.i[0]);t.b=load(input.vertices+3*t.i[1]);t.c=load(input.vertices+3*t.i[2]);
+   V normal=cross(t.b-t.a,t.c-t.a);double magnitude=norm(normal);
+   if(magnitude<1e-12)throw Error(1,"Degenerate mesh triangle");
+   // Large unsupported Poisson fill cannot force a costly sampling lattice.
+   if(std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})>maxEdge)continue;
+   t.n=normal*(1/magnitude);t.center=(t.a+t.b+t.c)*(1.0/3);
+   if(measured(t)){mask[f]=1;++retained;}
+  }
+  if(retained<4)throw Error(1,"Too little measured surface remains for review");
+  if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
+ }
+ void run(bool partial=false){
+  validateInput();
   std::vector<Edge> edges;edges.reserve(3*input.triangle_count);faces.reserve(input.triangle_count);
   parent.resize(input.triangle_count);std::iota(parent.begin(),parent.end(),0);
   std::vector<bool> used(input.vertex_count,false);Box bounds;
@@ -177,32 +219,17 @@ struct Screen {
   if(std::find(used.begin(),used.end(),false)!=used.end())throw Error(1,"Unreferenced vertices in reconstructed mesh");
   std::sort(edges.begin(),edges.end());
   for(size_t i=0;i<edges.size();){check();size_t end=i+1;while(end<edges.size()&&edges[i].lo==edges[end].lo&&edges[i].hi==edges[end].hi)++end;
+   if(partial&&end-i==1){i=end;continue;}
    if(end-i!=2)throw Error(1,"Head surface must be a closed two-manifold mesh");
    if(edges[i].sign+edges[i+1].sign!=0)throw Error(1,"Inconsistent mesh face winding");
    uint32_t a=root(edges[i].face),b=root(edges[i+1].face);parent[a]=b;i=end;
   }
-  for(size_t i=1;i<faces.size();++i)if(root(uint32_t(i))!=root(0))throw Error(1,"Head mesh contains disconnected surfaces");
-  if(volume<=1e-8)throw Error(1,"Head mesh must enclose positive outward-oriented volume");
-  reply.enclosed_volume=volume;
+  for(size_t i=1;!partial&&i<faces.size();++i)if(root(uint32_t(i))!=root(0))throw Error(1,"Head mesh contains disconnected surfaces");
+  if(!partial&&volume<=1e-8)throw Error(1,"Head mesh must enclose positive outward-oriented volume");
+  reply.enclosed_volume=partial?0:volume;
   order.resize(faces.size());std::iota(order.begin(),order.end(),0);nodes.reserve(faces.size()/2);tree(0,int(faces.size()));pair(0,0);
-  supportOrder.resize(input.support_count);std::iota(supportOrder.begin(),supportOrder.end(),0);
-  for(size_t i=0;i<input.support_count;++i){check();V p=load(input.support+3*i),n=load(input.support_normals+3*i);
-   if(!finite(p)||!finite(n)||norm(n)<1e-6)throw Error(1,"Invalid measured point/normal");
-  }
-  supportTree(0,int(input.support_count));
-  auto supported=[&](V p,V normal){
-   ++reply.support_samples;double best=tolerance*tolerance;
-   bool found=false;nearestSupport(0,p,normal,best,found);
-   if(!found)throw Error(1,"Mesh includes a surface without measured depth support");
-   reply.support_distance=std::max(reply.support_distance,std::sqrt(best));
-  };
-  for(const Triangle &t:faces){
-   // Sampling every <=1.5 mm along the barycentric lattice also probes large
-   // Poisson-filled triangle interiors, rather than checking vertices only.
-   int steps=int(std::ceil(std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})/tolerance));
-   for(int i=0;i<=steps;++i)for(int j=0;j<=steps-i;++j)supported(t.a+(t.b-t.a)*(double(i)/steps)+(t.c-t.a)*(double(j)/steps),t.n);
-   supported(t.center,t.n);
-  }
+  prepareSupport();
+  for(const Triangle &t:faces)if(!measured(t))throw Error(1,"Mesh includes a surface without measured depth support");
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
  }
 };
@@ -213,5 +240,24 @@ extern "C" SdaHrtfMeshResult sda_hrtf_screen_head_mesh(SdaHrtfMeshView input,Sda
  catch(const Error &e){screen.reply.code=e.code;std::snprintf(screen.reply.message,sizeof screen.reply.message,"%s",e.what());}
  catch(const std::bad_alloc &){screen.reply.code=3;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Insufficient memory for bounded mesh check");}
  catch(...){screen.reply.code=1;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Local mesh check failed");}
+ return screen.reply;
+}
+
+// Distinct entry points keep partial measurement acceptance out of the acoustic
+// qualification path. Recheck the compacted output after trimming unsupported faces.
+extern "C" SdaHrtfMeshResult sda_hrtf_select_measured_faces(SdaHrtfMeshView input,uint8_t *mask,size_t count,SdaHrtfMeshCancelled cancelled,void *context){
+ Screen screen{input,cancelled,context};
+ try{screen.select(mask,count);std::snprintf(screen.reply.message,sizeof screen.reply.message,"Measured face selection completed; not acoustic qualification");}
+ catch(const Error &e){screen.reply.code=e.code;std::snprintf(screen.reply.message,sizeof screen.reply.message,"%s",e.what());}
+ catch(const std::bad_alloc &){screen.reply.code=3;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Insufficient memory for measured face selection");}
+ catch(...){screen.reply.code=1;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Measured face selection failed");}
+ return screen.reply;
+}
+extern "C" SdaHrtfMeshResult sda_hrtf_screen_measured_surface(SdaHrtfMeshView input,SdaHrtfMeshCancelled cancelled,void *context){
+ Screen screen{input,cancelled,context};
+ try{screen.run(true);std::snprintf(screen.reply.message,sizeof screen.reply.message,"Measured surface passed; open boundaries allowed for review only");}
+ catch(const Error &e){screen.reply.code=e.code;std::snprintf(screen.reply.message,sizeof screen.reply.message,"%s",e.what());}
+ catch(const std::bad_alloc &){screen.reply.code=3;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Insufficient memory for measured surface check");}
+ catch(...){screen.reply.code=1;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Measured surface check failed");}
  return screen.reply;
 }
