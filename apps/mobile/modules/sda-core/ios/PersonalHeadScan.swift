@@ -1,16 +1,11 @@
 import UIKit
+import ARKit
 import AVFoundation
 import simd
 
 // A candidate is NOT an acoustic head mesh or an installable HRTF. The local
 // pipeline owns its temporary directory after successful reconstruction.
 struct PersonalHeadMeshCandidate {
- let directory: URL
- let support: URL
- let mesh: URL
- let cameraPositions: [SIMD3<Float>]
- let gravity: SIMD3<Float>
- let points: Int
  let geometryScreenVersion: Int
  let surface: PersonalHrtfReviewGeometry
  let maximumSupportDistance: Double
@@ -22,7 +17,6 @@ protocol PersonalHeadReconstructor: AnyObject {
  var captureLimit: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
  func accumulate(_ frame: PersonalHeadDepthFrame)
- func confirmEarView(_ target:PersonalHeadCaptureGuide.EarSide)
  func finish()
  func cancel()
 }
@@ -35,7 +29,7 @@ extension PersonalHeadReconstructor {
 // ARFaceGeometry is never substituted for measured head or ear surfaces.
 final class PersonalHeadScanController: UIViewController {
  static func supported() -> Bool {
-  AVCaptureDevice.default(.builtInTrueDepthCamera,for:.video,position:.front) != nil
+  ARFaceTrackingConfiguration.isSupported && AVCaptureDevice.default(.builtInTrueDepthCamera,for:.video,position:.front) != nil
  }
  static func discardAbandonedScans() {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true)
@@ -49,7 +43,6 @@ final class PersonalHeadScanController: UIViewController {
  private let stageTitle = UILabel(), targetIcon = UIImageView(), stageProgress = UIProgressView(progressViewStyle:.default)
  private let speaker = AVSpeechSynthesizer()
  private var shownStage: PersonalHeadCaptureGuide.Stage?
- private var confirmationTarget: PersonalHeadCaptureGuide.EarSide?
  private let feedback = UINotificationFeedbackGenerator()
  private let frameLock = NSLock()
  private var acceptingFrames = false // protected by frameLock
@@ -65,7 +58,7 @@ final class PersonalHeadScanController: UIViewController {
  override func viewDidLoad() {
   super.viewDidLoad(); view.backgroundColor = .black
   preview.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(preview)
-  preview.layer.addSublayer(camera.previewLayer)
+  camera.preview.frame = preview.bounds; camera.preview.autoresizingMask = [.flexibleWidth,.flexibleHeight]; preview.addSubview(camera.preview)
   message.textColor = .white; message.numberOfLines = 0; message.textAlignment = .center
   message.font = .preferredFont(forTextStyle:.body)
   message.text = PersonalHeadCaptureGuide().instruction
@@ -121,7 +114,7 @@ final class PersonalHeadScanController: UIViewController {
     guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
     self.coverageLabel.text = text
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
-    self.finishButton.isEnabled = (self.confirmationTarget != nil && scanning) || (ready && (scanning || self.shownStage == .complete))
+    self.finishButton.isEnabled = ready && (scanning || self.shownStage == .complete)
     if ready { self.stopFrames() }
    }
   }
@@ -148,8 +141,7 @@ final class PersonalHeadScanController: UIViewController {
   },failure:{ [weak self] error in self?.stop(error.localizedDescription) })
  }
  private func showGuide(_ state: PersonalHeadCaptureGuide) {
-  confirmationTarget = state.canConfirmEar ? state.targetEar : nil
-  let title = confirmationTarget.map { $0 == .left ? "已对准左耳" : "已对准右耳" } ?? (state.complete ? "继续检查测量结果" : "识别完成后继续")
+  let title = state.complete ? "继续检查测量结果" : "识别完成后继续"
   finishButton.setTitle(title,for:.normal)
   stageTitle.text = state.title; message.text = state.instruction
   coverageLabel.text = state.status; stageProgress.setProgress(state.fraction,animated:true)
@@ -167,18 +159,6 @@ final class PersonalHeadScanController: UIViewController {
    speaker.speak(utterance)
   }
  }
- override func viewDidLayoutSubviews() {
-  super.viewDidLayoutSubviews(); camera.previewLayer.frame = preview.bounds
-  if let connection = camera.previewLayer.connection, connection.isVideoOrientationSupported,
-     let orientation = view.window?.windowScene?.interfaceOrientation {
-   switch orientation {
-   case .landscapeLeft: connection.videoOrientation = .landscapeLeft
-   case .landscapeRight: connection.videoOrientation = .landscapeRight
-   case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
-   default: connection.videoOrientation = .portrait
-   }
-  }
- }
  override func viewDidDisappear(_ animated: Bool) {
   super.viewDidDisappear(animated); speaker.stopSpeaking(at:.immediate); permissionCancelled = true; stopFrames()
   UIApplication.shared.isIdleTimerDisabled = false
@@ -189,7 +169,6 @@ final class PersonalHeadScanController: UIViewController {
  }
  @objc private func finishScan() {
   guard !finished, !processing, !capturePaused else { return }
-  if let target = confirmationTarget { reconstruction.confirmEarView(target); return }
   guard shownStage == .complete else { return }
   processing = true; permissionCancelled = true; stopFrames()
   speaker.stopSpeaking(at:.immediate); finishButton.isEnabled = false; message.text = "正在 iPhone 上完成配准与重建，请保持应用在前台。"
@@ -205,7 +184,6 @@ final class PersonalHeadScanController: UIViewController {
   stopFrames(); speaker.stopSpeaking(at:.immediate); reconstruction.captureGuide = nil; reconstruction.progress = nil; reconstruction.captureLimit = nil; reconstruction.captureReadiness = nil; UIApplication.shared.isIdleTimerDisabled = false
   let answer: Result<PersonalHeadMeshCandidate,Error>
   if let reason {
-   if case .success(let candidate) = result { try? FileManager.default.removeItem(at:candidate.directory) }
    answer = .failure(reason)
   } else { answer = result }
   let done = complete; complete = nil

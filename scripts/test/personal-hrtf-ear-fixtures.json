@@ -3,6 +3,15 @@
   "commit": "d120664ed14c49a7be56f71e3c98f7e94e1cb28c",
   "images": [
     {
+      "repository": "scikit-image/scikit-image",
+      "commit": "e8a42ba85aaf5fd9322ef9ca51bc21063b22fcae",
+      "path": "skimage/data/astronaut.png",
+      "filename": "frontal-control.png",
+      "source": "NASA astronaut photograph distributed with scikit-image; CI-only frontal control",
+      "sha256": "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5",
+      "bytes": 791555
+    },
+    {
       "path": "Caucasian/5/left_medium.jpg",
       "filename": "caucasian-left_medium.jpg",
       "sha256": "855864e75c366b7277b7bb527b991fb96156eade03415678f2e7a94af76234e7",

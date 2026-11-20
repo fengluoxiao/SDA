@@ -12,7 +12,7 @@ Pod::Spec.new do |s|
  s.static_framework = true
  s.dependency 'ExpoModulesCore'
  fusion = File.exist?(File.join(__dir__, 'StandardCyborgFusion.xcframework'))
- s.source_files = ['*.{h,swift}', 'PersonalHrtfNative/**/*.{h,hpp,cpp}'] + (fusion ? ['PersonalHrtfFusion/*.swift'] : [])
+ s.source_files = ['*.{h,swift}', 'PersonalHrtfNative/**/*.{h,hpp,cpp}'] + (fusion ? ['PersonalHrtfFusion/**/*.swift'] : [])
  s.preserve_paths = 'PersonalHrtfNative/Generated/**/*.inc', 'PersonalHrtfNative/NOTICE.txt'
  # The Swift umbrella must resolve the same nested C ABI headers as direct
  # SDK typechecks; keep their paths and make them part of the public module.

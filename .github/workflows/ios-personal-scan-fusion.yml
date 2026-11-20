@@ -6,6 +6,8 @@ on:
       - '.github/workflows/ios-personal-scan-fusion.yml'
       - 'scripts/build-ios-personal-scan-fusion.sh'
       - 'scripts/stage-ios-personal-scan-fusion.py'
+      - 'scripts/stage-faceframe-scan.py'
+      - 'scripts/test/personal-hrtf-capture-guide.swift'
       - 'scripts/patch-ios-personal-scan-fusion.py'
       - 'scripts/test/personal-hrtf-fusion-resources.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/**'
@@ -19,7 +21,7 @@ permissions:
 jobs:
   fusion:
     runs-on: xcode-27
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Select pinned Apple SDK

@@ -73,3 +73,5 @@ apps/mobile/.expo/
 
 # Generated metadata-only desktop BWF parser.
 /apps/desktop/bwf-metadata.cjs
+/apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/FaceFrame/
+/apps/mobile/modules/sda-core/ios/Licenses/FaceFrame/

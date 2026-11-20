@@ -4,11 +4,16 @@ out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
+python3 "$PWD/scripts/stage-faceframe-scan.py" "$ios" "$out/faceframe-source"
+faceframe=("$ios"/PersonalHrtfFusion/FaceFrame/*.swift)
+cp "$ios/Licenses/FaceFrame/provenance.json" "$out/faceframe-provenance.json"
 # Fetch before changing into the pinned framework checkout; fail before builds
 # if fixtures cannot be verified, rather than silently skipping positive input.
 python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
-xcrun swiftc -O -parse-as-library "$ios/PersonalHeadCaptureGuide.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
-"$out/capture-guide-test" | tee "$out/capture-guide-result.json"
+if [[ "${SDA_FUSION_DEVICE_ONLY:-0}" != 1 ]]; then
+ xcrun swiftc -O -parse-as-library "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
+ "$out/capture-guide-test" "$out/ear-positive-fixtures" | tee "$out/capture-guide-result.json"
+fi
 stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
 probe="$PWD/scripts/test/personal-hrtf-fusion-resources.swift"
 lifecycle="$PWD/scripts/patch-ios-personal-scan-fusion.py"
@@ -78,7 +83,7 @@ if [[ "${SDA_FUSION_DEVICE_ONLY:-0}" == 1 ]]; then
   exit 0
 fi
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfPipelineFactory.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift 2>&1 | tee "$out/fusion-swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfPipelineFactory.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift "${faceframe[@]}" 2>&1 | tee "$out/fusion-swift-typecheck.log"
 
 # Exercise framework/resource discovery in an actual iOS Simulator process.
 # A runner without a Metal GPU reports that limitation explicitly in the JSON;
@@ -95,7 +100,7 @@ python3 "$generator"
 for unit in SdaHrtfMesh SdaHrtfSolver; do
  xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -fexceptions -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$ios/PersonalHrtfNative" -c "$ios/PersonalHrtfNative/$unit.cpp" -o "$out/$unit-fusion-simulator.o"
 done
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "${faceframe[@]}" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 - "$out/fusion-simulators.json" <<'PY'
@@ -133,7 +138,7 @@ result=json.loads(next(line for line in reversed(lines)if line.startswith('{')))
 assert result['bundleLocated']and result['versionMetadataValid']
 assert result['poissonRoundTrip']['vertices']>100 and result['poissonRoundTrip']['faces']>100
 assert result['partialNoRearRoundTrip']['noRearInput'] and result['partialNoRearRoundTrip']['partialMeasurementFaces']>1000
-assert result['captureCoverage']['earModelLoaded'] and result['captureCoverage']['invalidDepthRejected']
+assert result['captureCoverage']['earModelLoaded'] and result['captureCoverage']['frontalPositiveIgnored'] and result['captureCoverage']['bothAnatomicalSidesCompleted']
 assert result['physicalScanTested']is False and result['earAccuracyValidated']is False
 if result['metalGPUAvailable']:assert result['reconstructionInitialized']and result['metalFunctions']>=8 and result['atomicPointCountSnapshotValid']and result['resetCompletionPassed']
 (root/'fusion-resource-result.json').write_text(json.dumps(result,indent=2)+'\n')

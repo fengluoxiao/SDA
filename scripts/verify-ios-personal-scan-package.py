@@ -24,6 +24,12 @@ with zipfile.ZipFile(ipa)as z:
     base=notice.rsplit('/',1)[0]+'/'
     for row in provenance['notices']:
         assert hashlib.sha256(z.read(base+row['path'])).hexdigest()==row['sha256']
+    ff=app+'SdaCoreAssets.bundle/Licenses/FaceFrame/'
+    faceframe=json.loads(z.read(ff+'provenance.json'))
+    assert faceframe['commit']=='122fdc04ae2070991c82bf31d2c3c07b7f158d0b' and faceframe['license']=='Apache-2.0'
+    assert hashlib.sha256(z.read(ff+'LICENSE')).hexdigest()==faceframe['files']['LICENSE']['upstreamSHA256']
+    assert 'FaceFrame/Core/FusionEngine.swift' in faceframe['files'] and 'FaceFrame/Core/SDFAligner.swift' in faceframe['files']
+    assert not any('GNMFrames/' in name or name.endswith(('frontal-control.png','faceframe-sweep.json','_medium.jpg')) for name in names)
     zip_notice=app+'SdaCoreAssets.bundle/Licenses/ZipArchive/provenance.json'
     zip_verified=False
     if zip_notice in names:
@@ -40,13 +46,15 @@ with zipfile.ZipFile(ipa)as z:
         binary=Path(tmp)/'SDA';runtime=z.read(app+info['CFBundleExecutable']);binary.write_bytes(runtime)
         for title in ['1 / 3  扫描正脸','2 / 3  扫描左耳','3 / 3  扫描右耳']:
             assert title.encode('utf8') in runtime,'Guided capture stage absent from compiled device executable: '+title
-        for cue in ['请将前置相机移到你左手这一侧，对准左耳。','左耳已记录。请将前置相机移到你右手这一侧，对准右耳。','正脸与双耳已识别']:
+        for cue in ['手机不动，慢慢向自己的右边转头，让左耳朝向相机。','左耳已记录。手机不动，经过正面慢慢向左转头，让右耳朝向相机。','FaceFrame · 双耳侧面已记录']:
             assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue
         assert '尚未获得当前侧的有效三维视角'.encode() not in runtime
+        assert '已对准右耳'.encode() not in runtime
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
       'frontCameraPermission':True,'guidedCaptureEmbedded':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
+      'scanEngine':'FaceFrame','faceFrameRevision':faceframe['commit'],
       'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))

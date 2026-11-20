@@ -134,153 +134,51 @@ struct FusionResourcesTest {
   }
   return results
  }
- static func rawCoverageResources() throws -> [String:Any] {
+ static func coverageResources() throws -> [String:Any] {
+  struct Frame: Decodable { let yaw:Int, front:Float, left:Bool, right:Bool, pose:[Float], invalidDepth:Bool }
   let folder = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
-  var colorOptional:CVPixelBuffer?, depthOptional:CVPixelBuffer?
-  guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&colorOptional) == kCVReturnSuccess,
-        CVPixelBufferCreate(kCFAllocatorDefault,128,128,kCVPixelFormatType_DepthFloat32,nil,&depthOptional) == kCVReturnSuccess,
-        let color = colorOptional, let depth = depthOptional else { throw Failure.invalid("Raw pipeline buffers unavailable") }
+  let trace = try JSONDecoder().decode([Frame].self,from:Data(contentsOf:folder.appendingPathComponent("faceframe-sweep.json")))
+  guard trace.count >= 100 else { throw Failure.invalid("No registered FaceFrame sweep") }
+  var optional:CVPixelBuffer?
+  guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&optional) == kCVReturnSuccess, let color = optional else { throw Failure.invalid("No test image buffer") }
   let context = CIContext(options:[.useSoftwareRenderer:false])
-  func render(_ filename:String) throws {
-   guard let image = CIImage(contentsOf:folder.appendingPathComponent(filename),options:[.applyOrientationProperty:true]) else { throw Failure.invalid("Ear fixture absent: \(filename)") }
+  func render(_ name:String) throws {
+   guard let image = CIImage(contentsOf:folder.appendingPathComponent(name),options:[.applyOrientationProperty:true]) else { throw Failure.invalid(name) }
    let scaled = image.transformed(by:CGAffineTransform(translationX:-image.extent.minX,y:-image.extent.minY)).transformed(by:CGAffineTransform(scaleX:448/image.extent.width,y:448/image.extent.height))
    context.render(scaled,to:color)
   }
-  func fill(_ value:Float) {
-   CVPixelBufferLockBaseAddress(depth,[]); defer { CVPixelBufferUnlockBaseAddress(depth,[]) }
-   let base = CVPixelBufferGetBaseAddress(depth)!, stride = CVPixelBufferGetBytesPerRow(depth)
-   for y in 0..<128 { for x in 0..<128 { base.storeBytes(of:value,toByteOffset:y*stride+x*4,as:Float.self) } }
-  }
-  var afterFace = PersonalHeadCaptureGuide()
-  for frameID in UInt64(1)...4 { afterFace.observeFace(measured:true,time:Double(frameID),frameID:frameID) }
-  func offer(_ coverage:PersonalHrtfCaptureCoverage,_ frameID:UInt64,_ depthMap:CVPixelBuffer?) throws -> PersonalHrtfCaptureCoverage.Update {
-   let semaphore = DispatchSemaphore(value:0)
-   var result: PersonalHrtfCaptureCoverage.Update?
-   coverage.offerRaw(color:color,depth:depthMap,frameID:frameID,orientation:.up,force:true) { update in result = update; semaphore.signal() }
-   guard semaphore.wait(timeout:.now()+20) == .success, let result, result.frameID == frameID else { throw Failure.invalid("Raw ear step waited for registration") }
-   return result
-  }
-  for prefix in ["caucasian","asian"] {
-   let coverage = try PersonalHrtfCaptureCoverage(initialGuide:afterFace)
-   try render(prefix+"-left_medium.jpg")
-   let left = try offer(coverage,5,nil)
-   guard left.detectedEars > 0, left.state.stage == .rightEar, !left.state.leftDepthSeen else { throw Failure.invalid("First anatomical left photo didn't advance without a depth frame: \(prefix)") }
-   coverage.register(frameID:5,accepted:false,view:matrix_identity_float4x4,projection:matrix_identity_float4x4) { _ in fatalError("Ear progress was driven by a pose callback") }
-   let held = try offer(coverage,6,nil)
-   guard !held.state.complete else { throw Failure.invalid("Same ear marked both sides") }
-   if prefix == "asian" { coverage.confirmEarView(.right,after:6); fill(0.3) }
-   else {
-    context.render(CIImage(color:.black).cropped(to:CGRect(x:0,y:0,width:448,height:448)),to:color)
-    _ = try offer(coverage,7,nil); _ = try offer(coverage,8,nil); fill(.nan)
+  for prefix in ["asian","caucasian"] {
+   let coverage = try PersonalHrtfCaptureCoverage()
+   var photo = "", blankLeft = false, missingRight = false
+   for (index,frame) in trace.enumerated() {
+    let name = index < 28 ? "frontal-control.png" : prefix+(frame.yaw >= 0 ? "-left_medium.jpg" : "-right_medium.jpg")
+    if name != photo { try render(name); photo = name }
+    var pose:simd_float4x4?
+    if frame.pose.count == 16 {
+     func column(_ index:Int) -> SIMD4<Float> { SIMD4(frame.pose[index],frame.pose[index+1],frame.pose[index+2],frame.pose[index+3]) }
+     pose = simd_float4x4(columns:(column(0),column(4),column(8),column(12)))
+    }
+    var status = ScanStatus(); status.coverage.front = frame.front
+    let before = coverage.guide.stage
+    if frame.left && !blankLeft {
+     context.render(CIImage(color:.black).cropped(to:CGRect(x:0,y:0,width:448,height:448)),to:color)
+     coverage.observe(status:status,leftAdvanced:true,rightAdvanced:false,pixels:color,pose:pose)
+     guard coverage.guide.stage == before else { throw Failure.invalid("Side pose alone credited an invisible ear") }
+     blankLeft = true; photo = ""; continue
+    }
+    if frame.right && !missingRight {
+     coverage.observe(status:status,leftAdvanced:false,rightAdvanced:true,pixels:nil,pose:pose)
+     guard coverage.guide.stage == before else { throw Failure.invalid("Reused stale image on opposite side") }
+     missingRight = true; continue
+    }
+    coverage.observe(status:status,leftAdvanced:frame.left,rightAdvanced:frame.right,pixels:color,pose:pose)
+    if before == .leftEar, before != coverage.guide.stage, frame.yaw < 40 { throw Failure.invalid("Frontal view credited left ear") }
+    if before == .rightEar, coverage.guide.complete, frame.yaw > -40 { throw Failure.invalid("Wrong side credited right ear") }
+    if frame.invalidDepth && before != coverage.guide.stage { throw Failure.invalid("Empty depth changed coverage") }
    }
-   try render(prefix+"-right_medium.jpg")
-   let right = try offer(coverage,9,depth)
-   guard right.detectedEars > 0, right.state.complete, !right.registered, right.state.rightDepthSeen == (prefix == "asian"), !right.state.leftDepthSeen else { throw Failure.invalid("Anatomical right photo or its depth assigned to wrong side: \(prefix)") }
+   guard blankLeft, missingRight, coverage.guide.complete else { throw Failure.invalid("FaceFrame sweep did not finish both ears: \(prefix)") }
   }
-  let leftJoint = CGPoint(x:0.84,y:0.46), rightJoint = CGPoint(x:0.13,y:0.52)
-  for orientation in [CGImagePropertyOrientation.up,.right,.down,.left] {
-   let left = PersonalHrtfCaptureCoverage.rawPoint(leftJoint,orientation:orientation), right = PersonalHrtfCaptureCoverage.rawPoint(rightJoint,orientation:orientation)
-   for mirrored in [false,true] {
-    func mapped(_ point:CGPoint) -> CGPoint { CGPoint(x:mirrored ? 1-point.x : point.x,y:point.y) }
-    let subjectLeft = mapped(left), subjectRight = mapped(right)
-    func box(_ point:CGPoint) -> CGRect { CGRect(x:point.x-0.04,y:point.y-0.04,width:0.08,height:0.08) }
-    guard PersonalHrtfCaptureCoverage.earSide(in:box(subjectLeft),left:subjectLeft,right:subjectRight) == .left,
-          PersonalHrtfCaptureCoverage.earSide(in:box(subjectRight),left:subjectLeft,right:subjectRight) == .right,
-          PersonalHrtfCaptureCoverage.earSide(in:box(subjectLeft),left:nil,right:nil) == nil else { throw Failure.invalid("Ear identity inferred from screen position") }
-   }
-  }
-  return ["twoSubjectEarPairsPassed":true,"earStepsWithoutRegistrationPassed":true,"missingDepthNotQualified":true,"anatomicalSidesAcrossDisplayTransforms":true,"physicalScanTested":false]
- }
- static func coverageResources() throws -> [String:Any] {
-  _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
-  print("SDA loading offline ear detector")
-  guard let bundle = SCFusionBundle.fusionBundle(), let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else { throw Failure.invalid("Compiled ear detector absent") }
-  let configuration = MLModelConfiguration(); configuration.computeUnits = .cpuAndGPU
-  let visionModel = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:configuration))
-  var colorOptional: CVPixelBuffer?
-  guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,nil,&colorOptional) == kCVReturnSuccess,
-        let color = colorOptional else { throw Failure.invalid("Neutral inference buffer unavailable") }
-  CVPixelBufferLockBaseAddress(color,[])
-  memset(CVPixelBufferGetBaseAddress(color)!,0,CVPixelBufferGetDataSize(color))
-  CVPixelBufferUnlockBaseAddress(color,[])
-  let request = VNCoreMLRequest(model:visionModel); request.imageCropAndScaleOption = .scaleFill
-  try VNImageRequestHandler(cvPixelBuffer:color,orientation:.up).perform([request])
-  guard ((request.results as? [VNRecognizedObjectObservation]) ?? []).allSatisfy({ !PersonalHrtfCaptureCoverage.isEar($0) }) else { throw Failure.invalid("Neutral image produced a qualifying ear") }
-  print("SDA offline ear detector inference completed on neutral input")
-  var optional: CVPixelBuffer?
-  guard CVPixelBufferCreate(kCFAllocatorDefault,32,32,kCVPixelFormatType_DepthFloat32,nil,&optional) == kCVReturnSuccess,
-        let buffer = optional else { throw Failure.invalid("Synthetic depth allocation failed") }
-  func fill(_ value:Float) {
-   CVPixelBufferLockBaseAddress(buffer,[]); defer { CVPixelBufferUnlockBaseAddress(buffer,[]) }
-   let base = CVPixelBufferGetBaseAddress(buffer)!, stride = CVPixelBufferGetBytesPerRow(buffer)
-   for y in 0..<32 { for x in 0..<32 { base.storeBytes(of:value,toByteOffset:y*stride+x*4,as:Float.self) } }
-  }
-  let box = CGRect(x:0.2,y:0.2,width:0.6,height:0.6)
-  for bad in [Float.nan,0,0.1,0.8] {
-   fill(bad)
-   guard PersonalHrtfCaptureCoverage.depthMedian(buffer,in:box,orientation:.up) == nil else { throw Failure.invalid("Invalid/background depth counted as captured") }
-  }
-  fill(0.3)
-  for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
-   guard PersonalHrtfCaptureCoverage.depthMedian(buffer,in:box,orientation:orientation) == 0.3 else { throw Failure.invalid("Valid oriented depth evidence lost") }
-  }
-  let left = PersonalHrtfCaptureCoverage.rawPoint(CGPoint(x:0.2,y:0.7),orientation:.left)
-  guard abs(left.x-0.7)<1e-6, abs(left.y-0.8)<1e-6 else { throw Failure.invalid("Portrait ROI did not map to raw depth") }
-  let projection = simd_float4x4(columns:(SIMD4(-2,0,0,0),SIMD4(0,-2,0,0),SIMD4(0,0,-1.02,-1),SIMD4(0,0,-0.202,0)))
-  guard let world = PersonalHrtfCaptureCoverage.modelPoint(CGPoint(x:0.8,y:0.7),depth:0.3,orientation:.up,cameraToModel:matrix_identity_float4x4,projection:projection),
-        abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
-  // Exercise the same foreground buffer path used before native ICP. Do not
-  // accept torso/background depth or mutate borrowed AVFoundation buffers.
-  var largeOptional: CVPixelBuffer?
-  guard CVPixelBufferCreate(kCFAllocatorDefault,128,128,kCVPixelFormatType_DepthFloat32,nil,&largeOptional) == kCVReturnSuccess, let large = largeOptional else { throw Failure.invalid("Mask test allocation failed") }
-  CVPixelBufferLockBaseAddress(large,[])
-  let source = CVPixelBufferGetBaseAddress(large)!, sourceStride = CVPixelBufferGetBytesPerRow(large)
-  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(0.3),toByteOffset:y*sourceStride+x*4,as:Float.self) } }
-  CVPixelBufferUnlockBaseAddress(large,[])
-  func validCount(_ b:CVPixelBuffer) -> Int {
-   CVPixelBufferLockBaseAddress(b,.readOnly); defer { CVPixelBufferUnlockBaseAddress(b,.readOnly) }
-   let p = CVPixelBufferGetBaseAddress(b)!, stride = CVPixelBufferGetBytesPerRow(b)
-   var count = 0
-   for y in 0..<128 { for x in 0..<128 { if p.load(fromByteOffset:y*stride+x*4,as:Float.self).isFinite { count += 1 } } }
-   return count
-  }
-  // Reproduce detector boxes with missing hair/background depth: the old
-  // full-box requirement rejected these even with a measured ear centre.
-  let earBox = CGRect(x:0.2,y:0.2,width:0.6,height:0.6)
-  for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
-   CVPixelBufferLockBaseAddress(large,[])
-   for y in 0..<128 { for x in 0..<128 {
-    let valid = x >= 42 && x <= 85 && y >= 42 && y <= 85
-    source.storeBytes(of:valid ? Float(0.3) : Float.nan,toByteOffset:y*sourceStride+x*4,as:Float.self)
-   } }
-   CVPixelBufferUnlockBaseAddress(large,[])
-   guard PersonalHrtfCaptureCoverage.depthMedian(large,in:earBox,orientation:orientation) == nil,
-         PersonalHrtfCaptureCoverage.earDepthMedian(large,in:earBox,orientation:orientation) == 0.3 else { throw Failure.invalid("Measured ear centre still rejected by surrounding missing depth") }
-  }
-  CVPixelBufferLockBaseAddress(large,[])
-  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(x)*0.004+0.15,toByteOffset:y*sourceStride+x*4,as:Float.self) } }
-  CVPixelBufferUnlockBaseAddress(large,[])
-  guard PersonalHrtfCaptureCoverage.earDepthMedian(large,in:earBox,orientation:.up) == nil else { throw Failure.invalid("Discontinuous ear depth qualified") }
-  for bad in [Float.nan,0,0.1,0.8] {
-   fill(bad)
-   guard PersonalHrtfCaptureCoverage.earDepthMedian(buffer,in:box,orientation:.up) == nil else { throw Failure.invalid("Missing/background ear depth qualified") }
-  }
-  CVPixelBufferLockBaseAddress(large,[])
-  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(0.3),toByteOffset:y*sourceStride+x*4,as:Float.self) } }
-  CVPixelBufferUnlockBaseAddress(large,[])
-  for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
-   let seed = PersonalHrtfCaptureCoverage.Seed(box:CGRect(x:0.35,y:0.3,width:0.3,height:0.4),depth:0.3)
-   guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(large,seed:seed,orientation:orientation,region:nil), validCount(masked) >= 1000, validCount(masked) < 8000, validCount(large) == 128*128 else { throw Failure.invalid("Frontal seed retained background or modified borrowed depth") }
-  }
-  let foreground = PersonalHrtfCaptureCoverage.Region(center:SIMD3<Float>(0,0,-0.3),view:matrix_identity_float4x4,projection:projection)
-  guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(large,seed:nil,orientation:.up,region:foreground), validCount(masked) > 1000 else { throw Failure.invalid("Head-sized mask lost measured overlap") }
-  let background = PersonalHrtfCaptureCoverage.Region(center:SIMD3<Float>(0,0,-0.6),view:matrix_identity_float4x4,projection:projection)
-  guard PersonalHrtfCaptureCoverage.maskedDepth(large,seed:nil,orientation:.up,region:background) == nil else { throw Failure.invalid("Unrelated depth admitted to head model") }
-  let initial = try PersonalHrtfCaptureCoverage(), semaphore = DispatchSemaphore(value:0)
-  var neutralSeedRejected = false
-  initial.prepareInitial(color:color,depth:large,orientation:.up) { seed in neutralSeedRejected = seed == nil; semaphore.signal() }
-  guard semaphore.wait(timeout:.now()+10) == .success, neutralSeedRejected else { throw Failure.invalid("Neutral/background image bootstrapped reconstruction") }
-  return ["neutralVisionInferencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"partialEarDepthRegressionPassed":true,"positiveEarImageInference":try positiveEarResources(),"rawCameraPipeline":try rawCoverageResources(),"physicalEarCaptureValidated":false]
+  return ["earModelLoaded":true,"frontalPositiveIgnored":true,"bothAnatomicalSidesCompleted":true,"blankEarAndMissingImageRejected":true,"positiveEarImageInference":try positiveEarResources(),"physicalEarCaptureValidated":false]
  }
  static func main() {
   do { try run() }

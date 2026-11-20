@@ -56,13 +56,12 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
       self.review = nil
       switch result {
       case .failure(let error):
-       try? FileManager.default.removeItem(at:candidate.directory); self.finish(.failure(error))
+       self.finish(.failure(error))
       case .success(let landmarks):
        self.processing = true
        localPipeline.process(candidate,landmarks:landmarks) { [self] result in
         DispatchQueue.main.async {
          // The pipeline has finished every writer before releasing its input.
-         try? FileManager.default.removeItem(at:candidate.directory)
          self.processing = false; self.finish(result)
         }
        }
@@ -70,7 +69,6 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
      }
      guard let presenter = Self.topController(), presenter.viewIfLoaded?.window != nil else {
       self.review = nil; review.complete = nil
-      try? FileManager.default.removeItem(at:candidate.directory)
       self.finish(.failure(PersonalHrtfError.message("采集已结束，请回到应用重新确认测量位置"))); return
      }
      presenter.present(review,animated:true)

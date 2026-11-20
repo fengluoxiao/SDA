@@ -1,62 +1,68 @@
 import Foundation
+import simd
 
-enum Failure: Error { case invalid(String) }
-@main struct CaptureGuideRegression {
+enum ReplayFailure: Error { case invalid(String) }
+
+@main struct FaceFrameDepthReplay {
+ static let width = 144, height = 120
+ static let focal: Float = 194, center = Vec3(0,-0.006,-0.06)
+ static let shapes: [(Vec3,Vec3)] = [
+  (center,Vec3(0.082,0.108,0.092)),(Vec3(0.002,-0.017,0.028),Vec3(0.022,0.031,0.027)),
+  (Vec3(0.081,-0.006,-0.062),Vec3(0.014,0.029,0.017)),(Vec3(-0.081,-0.003,-0.062),Vec3(0.013,0.027,0.018))
+ ]
+ static func pose(_ degrees:Int) -> simd_float4x4 {
+  let radians = Float(degrees)*Float.pi/180
+  var matrix = simd_float4x4(simd_quatf(angle:radians,axis:Vec3(0,1,0)))
+  matrix.columns.3 = SIMD4(center+matrix.transformDirection(Vec3(0,0,0.36)),1)
+  return matrix
+ }
+ static func image(_ pose:simd_float4x4) -> [Float] {
+  var depths = [Float](repeating:0,count:width*height)
+  for row in 0..<height { for column in 0..<width {
+   let ray = pose.transformDirection(Vec3((Float(column)-Float(width)/2)/focal,-(Float(row)-Float(height)/2)/focal,-1))
+   var nearest = Float.infinity
+   for (origin,radius) in shapes {
+    let offset = (pose.translation-origin)/radius, direction = ray/radius
+    let quadratic = simd_dot(direction,direction), linear = simd_dot(offset,direction)
+    let discriminant = linear*linear-quadratic*(simd_dot(offset,offset)-1)
+    if discriminant >= 0 { let hit = (-linear-sqrt(discriminant))/quadratic; if hit > 0 { nearest = min(nearest,hit) } }
+   }
+   if nearest.isFinite { depths[row*width+column] = nearest }
+  } }
+  return depths
+ }
  static func main() throws {
-  var guide = PersonalHeadCaptureGuide()
-  guide.observeEar(visible:true,hasDepth:true,frameID:1)
-  guide.observeFace(measured:false,time:1,frameID:1)
-  for frameID in UInt64(2)...4 { guide.observeFace(measured:true,time:Double(frameID)/3,frameID:frameID) }
-  guide.observeFace(measured:true,time:2,frameID:4)
-  guard guide.stage == .face, guide.head == 3 else { throw Failure.invalid("Unmeasured or duplicate frame advanced face setup") }
-  guide.observeFace(measured:true,time:5,frameID:5)
-  guard guide.head == 1 else { throw Failure.invalid("A gap accumulated face measurements") }
-  for frameID in UInt64(6)...8 { guide.observeFace(measured:true,time:Double(frameID),frameID:frameID) }
-  guide.observeEar(visible:true,hasDepth:false,frameID:8)
-  guide.observeEar(visible:false,hasDepth:true,frameID:9)
-  guard guide.stage == .leftEar else { throw Failure.invalid("A face frame or blank image was counted as an ear") }
-  var sided = guide
-  guard sided.symbol == "l.circle.fill", sided.targetEar == .left else { throw Failure.invalid("Subject left cue reversed") }
-  sided.observeEar(visible:true,hasDepth:true,frameID:10,side:.right)
-  guard sided.stage == .leftEar, sided.canConfirmEar else { throw Failure.invalid("An identified right ear was recorded as left") }
-  sided.observeEar(visible:true,hasDepth:false,frameID:11,side:.left)
-  guard sided.stage == .rightEar, sided.symbol == "r.circle.fill", !sided.leftDepthSeen else { throw Failure.invalid("Subject left evidence or right cue reversed") }
-  sided.observeEar(visible:true,hasDepth:true,frameID:12,side:.left)
-  guard !sided.complete else { throw Failure.invalid("An identified left ear was recorded as right") }
-  sided.observeEar(visible:true,hasDepth:true,frameID:13,side:.right)
-  guard sided.complete, sided.rightDepthSeen else { throw Failure.invalid("Opposite anatomical ear required an empty frame") }
-  guide.observeEar(visible:true,hasDepth:false,frameID:10)
-  guard guide.stage == .rightEar, guide.needsNewEarView, !guide.leftDepthSeen else { throw Failure.invalid("First visible ear required depth or a second frame") }
-  for frameID in UInt64(11)...120 { guide.observeEar(visible:true,hasDepth:true,frameID:frameID) }
-  guide.observeEar(visible:false,hasDepth:false,frameID:121)
-  guide.observeEar(visible:true,hasDepth:true,frameID:122)
-  guard !guide.complete, guide.needsNewEarView else { throw Failure.invalid("Continuous visibility or one missed inference counted the first ear twice") }
-  var manual = guide
-  manual.confirmEarView(.right,after:130)
-  manual.observeEar(visible:true,hasDepth:false,frameID:130)
-  manual.observeEar(visible:false,hasDepth:false,frameID:131)
-  guard !manual.complete else { throw Failure.invalid("Manual handoff counted an old frame or a blank view") }
-  manual.observeEar(visible:true,hasDepth:false,frameID:132)
-  guard manual.complete, !manual.rightDepthSeen, manual.reviewStatus.contains("左耳、右耳") else { throw Failure.invalid("Right ear required geometry or fabricated depth") }
-  guide.observeEar(visible:false,hasDepth:false,frameID:123)
-  guide.observeEar(visible:false,hasDepth:false,frameID:124)
-  guide.observeEar(visible:true,hasDepth:true,frameID:125)
-  guard guide.complete, guide.rightDepthSeen, !guide.leftDepthSeen else { throw Failure.invalid("First detection after automatic handoff did not complete") }
-
-  var join = PersonalHeadFrameJoin<String,Bool>(capacity:4)
-  guard join.observe("one",frameID:1) == nil, join.register(true,frameID:2) == nil,
-        let first = join.register(false,frameID:1), first.0 == "one", !first.1,
-        join.observe("duplicate",frameID:1) == nil,
-        let second = join.observe("two",frameID:2), second.0 == "two", second.1 else { throw Failure.invalid("Face pose paired with the wrong observation") }
-  guard join.observe("dropped",frameID:3) == nil, join.register(true,frameID:4) == nil,
-        let fourth = join.observe("four",frameID:4), fourth.0 == "four",
-        join.register(true,frameID:3) == nil else { throw Failure.invalid("Reused stale face pose") }
-  for frameID in UInt64(5)...10000 {
-   _ = join.register(true,frameID:frameID)
-   guard join.count <= 4 else { throw Failure.invalid("Unbounded frame join") }
+  let directory = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
+  let engine = FusionEngine(), front = pose(0), frontalDepth = image(front)
+  let intrinsic = simd_float3x3(columns:(SIMD3(focal,0,0),SIMD3(0,focal,0),SIMD3(Float(width)/2,Float(height)/2,1)))
+  let frontalImage = DepthImage(width:width,height:height,values:frontalDepth,fx:focal,fy:focal,cx:Float(width)/2,cy:Float(height)/2)
+  var vertices = [Vec3]()
+  for row in stride(from:4,to:height-4,by:3) { for column in stride(from:4,to:width-4,by:3) {
+   let depth = frontalDepth[row*width+column]; if depth > 0 { vertices.append(front.transformPoint(frontalImage.cameraPoint(x:column,y:row,depth:depth))) }
+  } }
+  let angles = Array(repeating:0,count:36) + Array(stride(from:2,through:70,by:2)) + Array(repeating:70,count:4) + Array(stride(from:68,through:-70,by:-2)) + Array(repeating:-70,count:4)
+  var trace = [[String:Any]](), guide = PersonalHeadCaptureGuide(), acceptedPose:simd_float4x4?, observedLeft = false, observedRight = false, geometryRight = 0
+  engine.onMeasuredFrame = { _,_,pose in acceptedPose = pose }
+  for (index,angle) in angles.enumerated() {
+   let camera = pose(angle), invalid = index == 33 || index == angles.count-3
+   let depths = invalid ? [Float](repeating:0,count:width*height) : (angle == 0 ? frontalDepth : image(camera))
+   let faceLost = angle == -64 || angle == -66
+   let frame = FusionFrame(time:Double(index)/15,width:width,height:height,depth:depths,calibrationK:intrinsic,calibrationReference:SIMD2(Float(width),Float(height)),intrinsics:intrinsic,imageResolution:SIMD2(Float(width),Float(height)),arPose:faceLost ? nil : camera,motion:index == 0 ? 0 : Float(abs(angle-angles[index-1]))*15,leftEye:faceLost ? nil : Vec3(0.032,0,0),rightEye:faceLost ? nil : Vec3(-0.032,0,0),faceVertices:engine.needsFaceVertices && !faceLost ? vertices : nil)
+   let before = engine.counts; acceptedPose = nil
+   let status = engine.process(frame), left = engine.counts.left > before.left, right = engine.counts.right > before.right
+   guard !(left && right), !invalid || (acceptedPose == nil && !left && !right), !left || angle > 40, !right || angle < -40 else { throw ReplayFailure.invalid("Unexpected side on depth frame \(index), yaw=\(angle)") }
+   observedLeft = observedLeft || left; observedRight = observedRight || right
+   if faceLost && right && status.tracking == .geometry { geometryRight += 1 }
+   guide.show(front:status.coverage.front,measuredEar:left ? .left : (right ? .right : nil))
+   if angle == 0 && index < 36 && (guide.stage == .rightEar || guide.complete) { throw ReplayFailure.invalid("Frontal frame credited an ear") }
+   let matrix = acceptedPose.map { pose in [pose.columns.0,pose.columns.1,pose.columns.2,pose.columns.3].flatMap { [$0.x,$0.y,$0.z,$0.w] } } ?? []
+   trace.append(["yaw":angle,"front":status.coverage.front,"left":left,"right":right,"pose":matrix,"invalidDepth":invalid])
   }
-  guard join.observe("expired",frameID:9996) == nil, join.observe("last",frameID:10000)?.1 == true,
-        join.observe("zero",frameID:0) == nil else { throw Failure.invalid("Incorrect registration eviction") }
-  print("{\"singleDetectionPerEar\":true,\"repeatedViewNotDoubleCounted\":true,\"automaticAndManualHandoff\":true,\"missingDepthNotFabricated\":true,\"exactFrameJoinPassed\":true,\"sparseJoinBounded\":true,\"physicalScanTested\":false}")
+  guard observedLeft, observedRight, guide.complete, geometryRight > 0, let volume = engine.volume else { throw ReplayFailure.invalid("FaceFrame did not register both sides: \(engine.counts), geometry right frames=\(geometryRight)") }
+  let surface = SurfaceNets.extract(volume,maximumVertices:1000000,maximumTriangles:2000000)
+  guard surface.triangles.count > 1000, SurfaceNets.extract(volume,maximumVertices:4,maximumTriangles:8).vertices.isEmpty else { throw ReplayFailure.invalid("Unbounded or empty upstream surface extraction") }
+  try JSONSerialization.data(withJSONObject:trace).write(to:directory.appendingPathComponent("faceframe-sweep.json"))
+  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"surfaceFaces":surface.triangles.count,"syntheticDepth":true,"physicalScanTested":false]
+  print(String(decoding:try JSONSerialization.data(withJSONObject:result),as:UTF8.self))
  }
 }
