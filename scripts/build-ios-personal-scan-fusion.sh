@@ -7,6 +7,7 @@ ios="$PWD/apps/mobile/modules/sda-core/ios"
 stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
 probe="$PWD/scripts/test/personal-hrtf-fusion-resources.swift"
 lifecycle="$PWD/scripts/patch-ios-personal-scan-fusion.py"
+generator="$PWD/scripts/generate-embedded-numcalc.py"
 source="$(mktemp -d "$out/fusion-source.XXXXXX")"
 pin=8c3bc698944ec41edaa6f627db15a6573e8e2af2
 git init -q "$source"
@@ -82,7 +83,7 @@ codesign --force --sign - "$sim_products/StandardCyborgFusion.framework"
 xcrun otool -L "$sim_products/StandardCyborgFusion.framework/StandardCyborgFusion" > "$out/fusion-linked-libraries.txt"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun --sdk iphonesimulator clang++ -std=c++17 -g -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -c "$(dirname "$probe")/personal-hrtf-crash-trace.mm" -o "$out/fusion-crash-trace.o"
-python3 scripts/generate-embedded-numcalc.py
+python3 "$generator"
 for unit in SdaHrtfMesh SdaHrtfSolver; do
  xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -fexceptions -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$ios/PersonalHrtfNative" -c "$ios/PersonalHrtfNative/$unit.cpp" -o "$out/$unit-fusion-simulator.o"
 done
