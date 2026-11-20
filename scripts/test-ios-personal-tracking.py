@@ -29,3 +29,7 @@ assert 'sda_hrtf_scan_point_limit(budget)'in text
 assert 'maximumSurfelCount) continue'in patch
 assert 'metadata.result = SCAssimilatedFrameResultFailed;\n        }'not in patch
 print('PASS: quota has a strict insertion bound and paused capture retains its measured model')
+
+assert "config.sdaGeometricConvergence" in patch
+assert "sdaMotionPrediction && previousFrameMeta" in patch
+print('PASS: geometric convergence requires three tiny rigid updates, measured overlap and low plane residual; poor support/large updates reset the gate')
