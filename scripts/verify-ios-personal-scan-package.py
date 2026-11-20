@@ -40,6 +40,9 @@ with zipfile.ZipFile(ipa)as z:
         binary=Path(tmp)/'SDA';runtime=z.read(app+info['CFBundleExecutable']);binary.write_bytes(runtime)
         for title in ['1 / 3  扫描正脸','2 / 3  扫描左耳','3 / 3  扫描右耳']:
             assert title.encode('utf8') in runtime,'Guided capture stage absent from compiled device executable: '+title
+        for cue in ['请将前置相机移到你左手这一侧，对准左耳。','左耳已记录。请将前置相机移到你右手这一侧，对准右耳。','正脸与双耳已识别']:
+            assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue
+        assert '尚未获得当前侧的有效三维视角'.encode() not in runtime
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),

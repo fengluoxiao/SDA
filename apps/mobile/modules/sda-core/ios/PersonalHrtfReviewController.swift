@@ -65,7 +65,7 @@ final class PersonalHrtfReviewController: UIViewController {
   ]); changeStep()
  }
  @objc private func changeStep() {
-  let descriptions = ["按本人左右选择左耳入口附近实测三角面（蓝色）。轻点增删；多面需相邻且无孔。", "选择右耳入口附近实测三角面（橙色）。不能用未测量补洞或耳后表面代替。", "旋转模型，轻点鼻尖，确认头部前方。", "轻点头顶，确认向上方向。"]
+  let descriptions = ["选择本人左耳入口的实测面（蓝色 L）。模型正面朝向你时，它在画面右边。", "选择本人右耳入口的实测面（橙色 R）。模型正面朝向你时，它在画面左边。", "旋转模型，轻点鼻尖，确认头部前方。", "轻点头顶，确认向上方向。"]
   message.text = descriptions[step.selectedSegmentIndex]+" 双指缩放、拖动旋转。人工确认不代表扫描精度已合格。"
   advanceButton.setTitle(step.selectedSegmentIndex == 3 ? "确认测量位置" : "下一步",for:.normal)
   updateSelection()

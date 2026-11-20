@@ -22,6 +22,7 @@ protocol PersonalHeadReconstructor: AnyObject {
  var captureLimit: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
  func accumulate(_ frame: PersonalHeadDepthFrame)
+ func confirmEarView(_ target:PersonalHeadCaptureGuide.EarSide)
  func finish()
  func cancel()
 }
@@ -48,6 +49,7 @@ final class PersonalHeadScanController: UIViewController {
  private let stageTitle = UILabel(), targetIcon = UIImageView(), stageProgress = UIProgressView(progressViewStyle:.default)
  private let speaker = AVSpeechSynthesizer()
  private var shownStage: PersonalHeadCaptureGuide.Stage?
+ private var confirmationTarget: PersonalHeadCaptureGuide.EarSide?
  private let feedback = UINotificationFeedbackGenerator()
  private let frameLock = NSLock()
  private var acceptingFrames = false // protected by frameLock
@@ -119,7 +121,7 @@ final class PersonalHeadScanController: UIViewController {
     guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
     self.coverageLabel.text = text
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
-    self.finishButton.isEnabled = ready && (scanning || self.shownStage == .complete)
+    self.finishButton.isEnabled = (self.confirmationTarget != nil && scanning) || (ready && (scanning || self.shownStage == .complete))
     if ready { self.stopFrames() }
    }
   }
@@ -146,14 +148,15 @@ final class PersonalHeadScanController: UIViewController {
   },failure:{ [weak self] error in self?.stop(error.localizedDescription) })
  }
  private func showGuide(_ state: PersonalHeadCaptureGuide) {
+  confirmationTarget = state.canConfirmEar ? state.targetEar : nil
+  let title = confirmationTarget.map { $0 == .left ? "已对准左耳" : "已对准右耳" } ?? (state.complete ? "继续检查测量结果" : "识别完成后继续")
+  finishButton.setTitle(title,for:.normal)
   stageTitle.text = state.title; message.text = state.instruction
   coverageLabel.text = state.status; stageProgress.setProgress(state.fraction,animated:true)
-  targetIcon.image = UIImage(systemName:state.complete ? "checkmark.circle.fill" : (state.stage == .face ? "faceid" : "ear"))
-  targetIcon.transform = state.stage == .rightEar ? CGAffineTransform(scaleX:-1,y:1) : .identity
+  targetIcon.image = UIImage(systemName:state.symbol)
   guard shownStage != state.stage else { return }
   if shownStage != nil { feedback.notificationOccurred(.success) }
   shownStage = state.stage
-  if state.complete { finishButton.setTitle("继续检查测量结果",for:.normal) }
   UIAccessibility.post(notification:.announcement,argument:state.title+"。"+state.instruction)
   // Speak only on a step change, never on every depth/tracking callback.
   // VoiceOver already provides the accessibility announcement.
@@ -185,7 +188,10 @@ final class PersonalHeadScanController: UIViewController {
   frameLock.lock(); acceptingFrames = false; frameLock.unlock(); camera.stop()
  }
  @objc private func finishScan() {
-  guard !finished, !processing else { return }; processing = true; permissionCancelled = true; stopFrames()
+  guard !finished, !processing, !capturePaused else { return }
+  if let target = confirmationTarget { reconstruction.confirmEarView(target); return }
+  guard shownStage == .complete else { return }
+  processing = true; permissionCancelled = true; stopFrames()
   speaker.stopSpeaking(at:.immediate); finishButton.isEnabled = false; message.text = "正在 iPhone 上完成配准与重建，请保持应用在前台。"
   reconstruction.finish()
  }

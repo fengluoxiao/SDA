@@ -1,73 +1,72 @@
 import Foundation
-import simd
 
 // Capture evidence only. This does not certify an acoustic mesh or locate an ear canal.
 struct PersonalHeadCaptureGuide: Equatable {
+ enum EarSide { case left, right }
  enum Stage: Int { case face, leftEar, rightEar, complete }
  private(set) var stage = Stage.face
- private(set) var head = 0, leftEar = 0, rightEar = 0
- private var lastTime = -Double.infinity, lastEvidenceTime = -Double.infinity, firstTime = 0.0
- private var lastPoint: SIMD3<Float>?, firstCamera: SIMD3<Float>?
- private var baseline: Float = 0
+ private(set) var head = 0
+ private(set) var needsNewEarView = false
+ private var emptyViewCount = 0
+ private var oppositeVisible = false, subjectConfirmed = false
+ private var previousSide: EarSide?
+ private(set) var leftDepthSeen = false, rightDepthSeen = false
+ private var lastFrameID: UInt64 = 0
+ private var lastFaceTime = -Double.infinity, firstFaceTime = 0.0
  var complete: Bool { stage == .complete }
- var samples: Int { stage == .face ? head : (stage == .leftEar ? leftEar : (stage == .rightEar ? rightEar : 6)) }
- var required: Int { stage == .face ? 4 : 6 }
- var fraction: Float { complete ? 1 : min(0.95,Float(samples)/Float(required)) }
+ var targetEar: EarSide? { stage == .leftEar ? .left : (stage == .rightEar ? .right : nil) }
+ var canConfirmEar: Bool { targetEar != nil && (oppositeVisible || needsNewEarView) }
+ var symbol: String {
+  switch stage { case .face: return "faceid"; case .leftEar: return "l.circle.fill"; case .rightEar: return "r.circle.fill"; case .complete: return "checkmark.circle.fill" }
+ }
+ var fraction: Float { complete ? 1 : (stage == .face ? min(0.95,Float(head)/4) : 0) }
  var title: String {
-  switch stage { case .face: return "1 / 3  扫描正脸"; case .leftEar: return "2 / 3  扫描左耳"; case .rightEar: return "3 / 3  扫描右耳"; case .complete: return "三个部位已采集" }
+  switch stage { case .face: return "1 / 3  扫描正脸"; case .leftEar: return "2 / 3  扫描左耳"; case .rightEar: return "3 / 3  扫描右耳"; case .complete: return "正脸与双耳已识别" }
  }
  var instruction: String {
   switch stage {
   case .face: return "将前置相机正对脸部，保持头部和表情不动，距离约 25–50 厘米。识别到正脸和有效深度后开始。"
-  case .leftEar: return "保持头部不动，将手机从正面沿脸侧缓慢移向本人的左耳。露出耳廓，保留一点脸侧，在耳旁小幅移动手机。"
-  case .rightEar: return "左耳已保留。将手机沿原路缓慢回到正面，再移向本人的右耳；露出耳廓，在耳旁小幅移动手机。"
-  case .complete: return "正脸、左耳、右耳已依次记录，可以继续检查测量结果。无需扫描后脑。"
+  case .leftEar: return "请将前置相机移到你左手这一侧，对准左耳。"
+  case .rightEar: return "左耳已记录。请将前置相机移到你右手这一侧，对准右耳。"
+  case .complete: return "可以继续检查实测深度。无需扫描后脑。"
   }
  }
  var status: String {
-  let marks = [head >= 4, leftEar >= 6, rightEar >= 6]
+  let marks = [stage != .face, stage == .rightEar || complete, complete]
   return zip(["正脸","左耳","右耳"],marks).map { "\($0.0) \($0.1 ? "✓" : "○")" }.joined(separator:"    ")
  }
- // Semantic location alone is insufficient: frontal views can detect both
- // ears. The camera must actually be on the corresponding anatomical side.
- static func qualifiedEarSide(point: SIMD3<Float>, center: SIMD3<Float>, subjectLeft: SIMD3<Float>, camera: SIMD3<Float>) -> Int {
-  let offset = point-center, distance = simd_length(offset)
-  let axisLength = simd_length(subjectLeft), view = camera-center, viewLength = simd_length(view)
-  guard distance.isFinite, distance >= 0.055, distance <= 0.19,
-        axisLength.isFinite, axisLength > 0.99, axisLength < 1.01,
-        viewLength.isFinite, viewLength >= 0.15 else { return 0 }
-  let side = simd_dot(offset,subjectLeft), cameraSide = simd_dot(view/viewLength,subjectLeft)
-  guard abs(side) >= 0.045 else { return 0 }
-  if side > 0 && cameraSide >= 0.2 { return 1 }
-  if side < 0 && cameraSide <= -0.2 { return -1 }
-  return 0
+ var reviewStatus: String {
+  let missing = [("左耳",leftDepthSeen),("右耳",rightDepthSeen)].compactMap { $0.1 ? nil : $0.0 }
+  return missing.isEmpty ? status : "双耳已识别；\(missing.joined(separator:"、"))识别时没有有效深度。"
  }
- // A wrong/missing target never advances this step. Completed steps survive the
- // journey across the face. Duplicate/stale callbacks cannot satisfy evidence.
- mutating func observe(head seenHead: Bool, left: SIMD3<Float>?, right: SIMD3<Float>?, camera: SIMD3<Float>, time: Double) {
-  guard !complete, time.isFinite, time > lastTime,
-        camera.x.isFinite, camera.y.isFinite, camera.z.isFinite else { return }
-  let point = stage == .face ? (seenHead ? SIMD3<Float>.zero : nil) : (stage == .leftEar ? left : right)
-  let gap = time-lastEvidenceTime; lastTime = time
-  guard let point, point.x.isFinite, point.y.isFinite, point.z.isFinite else {
-   if gap > 2.5 { resetCurrent() }
+ mutating func observeFace(measured: Bool, time: Double, frameID: UInt64) {
+  guard stage == .face, frameID > lastFrameID, time.isFinite, time > lastFaceTime else { return }
+  lastFrameID = frameID
+  if time-lastFaceTime > 2.5 { head = 0 }
+  guard measured else { return }
+  if head == 0 { firstFaceTime = time }
+  lastFaceTime = time; head = min(4,head+1)
+  if head == 4 && time-firstFaceTime >= 0.8 { stage = .leftEar }
+ }
+ mutating func observeEar(visible: Bool, hasDepth: Bool, frameID: UInt64, side: EarSide? = nil, singleEar: Bool = true) {
+  guard let target = targetEar, frameID > lastFrameID else { return }
+  lastFrameID = frameID
+  oppositeVisible = false
+  guard visible else {
+   if needsNewEarView { emptyViewCount += 1; if emptyViewCount >= 2 { needsNewEarView = false } }
    return
   }
-  if gap > 2.5 || (lastPoint.map { simd_distance($0,point) > 0.025 } ?? false) { resetCurrent() }
-  if firstCamera == nil { firstCamera = camera; firstTime = time }
-  lastEvidenceTime = time; lastPoint = point
-  baseline = max(baseline,simd_distance(firstCamera!,camera))
-  switch stage { case .face: head = min(4,head+1); case .leftEar: leftEar = min(5,leftEar+1); case .rightEar: rightEar = min(5,rightEar+1); case .complete: break }
-  let ready = stage == .face ? head >= 4 && time-firstTime >= 0.8 : samples >= 5 && time-firstTime >= 1.2 && baseline >= 0.008
-  if ready {
-   if stage == .leftEar { leftEar = 6 }; if stage == .rightEar { rightEar = 6 }
-   stage = Stage(rawValue:stage.rawValue+1)!
-   lastPoint = nil; firstCamera = nil; baseline = 0; firstTime = 0; lastEvidenceTime = -Double.infinity
-  }
+  emptyViewCount = 0
+  if let side, side != target, !subjectConfirmed { oppositeVisible = true; return }
+  if singleEar, side == .right, previousSide == .left { needsNewEarView = false }
+  guard !needsNewEarView else { return }
+  if stage == .leftEar { leftDepthSeen = hasDepth; previousSide = side; stage = .rightEar; needsNewEarView = true }
+  else { rightDepthSeen = hasDepth; stage = .complete }
+  subjectConfirmed = false
  }
- private mutating func resetCurrent() {
-  switch stage { case .face: head = 0; case .leftEar: leftEar = 0; case .rightEar: rightEar = 0; case .complete: break }
-  lastPoint = nil; firstCamera = nil; baseline = 0; firstTime = 0
+ mutating func confirmEarView(_ target: EarSide, after frameID: UInt64) {
+  guard targetEar == target, canConfirmEar else { return }
+  lastFrameID = max(lastFrameID,frameID); needsNewEarView = false; oppositeVisible = false; subjectConfirmed = true
  }
 }
 

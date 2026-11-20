@@ -7,8 +7,6 @@ import simd
 import StandardCyborgFusion
 
 // Advisory capture evidence, not an acoustic qualification or an ear-canal detector.
-// Raw RGB/depth inference runs before fusion. Only exact-frame accepted poses
-// count toward steps; at most one analysis frame is retained.
 final class PersonalHrtfCaptureCoverage {
  typealias State = PersonalHeadCaptureGuide
  struct Seed { let box: CGRect; let depth: Float }
@@ -32,21 +30,20 @@ final class PersonalHrtfCaptureCoverage {
  private let lock = NSLock()
  private var busy = false, lastSample = -Double.infinity
  private let earModel: VNCoreMLModel
- private var state = State()
- private var anchor: SIMD3<Float>?, subjectLeft: SIMD3<Float>?
+ private var state: State
  struct Update {
   let state: State; let message: String; let registered: Bool
   var frameID: UInt64 = 0, detectedEars = 0, depthSupportedEars = 0
  }
- private struct Patch { let box: CGRect; let depth: Float?; let confidence: Float }
  private struct Observation {
   let frameID: UInt64; let time: Double; let orientation: CGImagePropertyOrientation
-  let face: Patch?; let ears: [Patch]
+  let face: Seed?
  }
  private struct Registration { let accepted: Bool; let view: simd_float4x4; let projection: simd_float4x4 }
  private var frames = PersonalHeadFrameJoin<Observation,Registration>()
 
- init() throws {
+ init(initialGuide: State = State()) throws {
+  state = initialGuide
   guard let bundle = SCFusionBundle.fusionBundle(),
         let url = bundle.url(forResource:"SCEarTrackingModel",withExtension:"mlmodelc") else {
    throw PersonalHrtfError.message("本机耳部识别模型缺失，请重新安装测量包")
@@ -55,7 +52,7 @@ final class PersonalHrtfCaptureCoverage {
   earModel = try VNCoreMLModel(for:MLModel(contentsOf:url,configuration:configuration))
  }
  // Reserve before dispatching: never queue camera buffers behind a slow model.
- func offerRaw(color:CVPixelBuffer,depth:CVPixelBuffer,frameID:UInt64,
+ func offerRaw(color:CVPixelBuffer,depth:CVPixelBuffer?,frameID:UInt64,
                orientation:CGImagePropertyOrientation,force:Bool = false,
                completion:@escaping(Update)->Void) {
   let now = ProcessInfo.processInfo.systemUptime
@@ -63,88 +60,81 @@ final class PersonalHrtfCaptureCoverage {
   guard !busy, force || now-lastSample >= 0.3 else { lock.unlock(); return }
   busy = true; lastSample = now; lock.unlock()
   queue.async { [self] in
-   defer { lock.lock(); busy = false; lock.unlock() }
-   let faceRequest = VNDetectFaceRectanglesRequest()
-   let ears = VNCoreMLRequest(model:earModel); ears.imageCropAndScaleOption = .scaleFill
-   do {
-    try VNImageRequestHandler(cvPixelBuffer:color,orientation:orientation).perform([faceRequest,ears])
-    var facePatch: Patch?
-    if let face = faceRequest.results?.max(by: { $0.boundingBox.width*$0.boundingBox.height < $1.boundingBox.width*$1.boundingBox.height }),
-       face.confidence >= 0.8, abs(face.yaw?.floatValue ?? 100) < 0.3 {
-     facePatch = Patch(box:face.boundingBox,depth:Self.depthMedian(depth,in:face.boundingBox,orientation:orientation),confidence:face.confidence)
-    }
-    let patches = ((ears.results as? [VNRecognizedObjectObservation]) ?? [])
-     .filter { Self.isEar($0) }.sorted { $0.confidence > $1.confidence }.prefix(8).map {
-      Patch(box:$0.boundingBox,depth:Self.earDepthMedian(depth,in:$0.boundingBox,orientation:orientation),confidence:$0.confidence)
-     }
-    let observation = Observation(frameID:frameID,time:now,orientation:orientation,face:facePatch,ears:patches)
-    if let pair = frames.observe(observation,frameID:frameID) { completion(consume(pair.0,pair.1)) }
-    else { completion(update(observation,message:rawMessage(observation),registered:false)) }
-   } catch {
-    // Complete the identity join even on inference failure. In particular, the
-    // initial accepted seed must be released for retry instead of waiting forever.
-    let missing = Observation(frameID:frameID,time:now,orientation:orientation,face:nil,ears:[])
-    if let pair = frames.observe(missing,frameID:frameID) { completion(consume(pair.0,pair.1)) }
-    else { completion(update(missing,message:"相机画面识别暂未成功，正在继续采集",registered:false)) }
+   func publish(_ update:Update) {
+    lock.lock(); busy = false; lock.unlock()
+    completion(update)
    }
+   let handler = VNImageRequestHandler(cvPixelBuffer:color,orientation:orientation)
+   if state.stage != .face {
+    guard !state.complete else { publish(Update(state:state,message:state.reviewStatus,registered:false,frameID:frameID)); return }
+    let request = VNCoreMLRequest(model:earModel); request.imageCropAndScaleOption = .scaleFill
+    do {
+     try handler.perform([request])
+     let boxes = (request.results as? [VNRecognizedObjectObservation] ?? []).filter(Self.isEar).sorted { $0.confidence > $1.confidence }.map(\.boundingBox)
+     let joints = boxes.isEmpty ? (nil,nil) : Self.earJoints(handler)
+     let sides = boxes.map { Self.earSide(in:$0,left:joints.0,right:joints.1) }
+     let selected = sides.firstIndex(of:state.targetEar) ?? sides.firstIndex(of:nil) ?? boxes.indices.first
+     let earDepth = selected.flatMap { index in depth.flatMap { Self.earDepthMedian($0,in:boxes[index],orientation:orientation) } }
+     state.observeEar(visible:selected != nil,hasDepth:earDepth != nil,frameID:frameID,side:selected.flatMap { sides[$0] },singleEar:boxes.count == 1)
+     publish(Update(state:state,message:state.complete ? state.reviewStatus : state.status,registered:false,frameID:frameID,detectedEars:boxes.count,depthSupportedEars:earDepth == nil ? 0 : 1))
+    } catch { publish(Update(state:state,message:state.status,registered:false,frameID:frameID)) }
+    return
+   }
+   let request = VNDetectFaceRectanglesRequest()
+   var seed: Seed?
+   if let depth, (try? handler.perform([request])) != nil,
+      let faces = request.results, faces.count == 1, let face = faces.first,
+      face.confidence >= 0.8, abs(face.yaw?.floatValue ?? 100) < 0.3,
+      let distance = Self.depthMedian(depth,in:face.boundingBox,orientation:orientation) {
+    seed = Seed(box:face.boundingBox,depth:distance)
+   }
+   let observation = Observation(frameID:frameID,time:now,orientation:orientation,face:seed)
+   if let pair = frames.observe(observation,frameID:frameID) { publish(consume(pair.0,pair.1)) }
+   else { publish(Update(state:state,message:state.instruction,registered:false,frameID:frameID)) }
   }
+ }
+ private static func earJoints(_ handler:VNImageRequestHandler) -> (CGPoint?,CGPoint?) {
+  let request = VNDetectHumanBodyPoseRequest()
+  guard (try? handler.perform([request])) != nil, let bodies = request.results, bodies.count == 1, let body = bodies.first else { return (nil,nil) }
+  func joint(_ name:VNHumanBodyPoseObservation.JointName) -> CGPoint? {
+   guard let point = try? body.recognizedPoint(name), point.confidence >= 0.6 else { return nil }
+   return point.location
+  }
+  return (joint(.leftEar),joint(.rightEar))
+ }
+ static func earSide(in box:CGRect,left:CGPoint?,right:CGPoint?) -> State.EarSide? {
+  let hasLeft = left.map { box.contains($0) } ?? false, hasRight = right.map { box.contains($0) } ?? false
+  guard hasLeft != hasRight else { return nil }
+  return hasLeft ? .left : .right
+ }
+ func confirmEarView(_ target:State.EarSide,after frameID:UInt64) {
+  queue.async { self.state.confirmEarView(target,after:frameID) }
  }
  // Native metadata carries identity even when RGB/depth metadata retention is off.
  // Late or dropped frames are never paired with the latest available camera pose.
  func register(frameID:UInt64,accepted:Bool,view:simd_float4x4,projection:simd_float4x4,
                completion:@escaping(Update)->Void) {
   queue.async { [self] in
+   guard state.stage == .face else { return }
    if let pair = frames.register(Registration(accepted:accepted,view:view,projection:projection),frameID:frameID) {
     completion(consume(pair.0,pair.1))
    }
   }
  }
- private func update(_ observation:Observation,message:String,registered:Bool) -> Update {
-  Update(state:state,message:message,registered:registered,frameID:observation.frameID,detectedEars:observation.ears.count,depthSupportedEars:observation.ears.filter { $0.depth != nil }.count)
- }
- private func rawMessage(_ observation:Observation) -> String {
-  if state.stage == .face {
-   return observation.face?.depth != nil ? "已识别正脸和原始深度，正在对齐" : "将前置相机正对脸部，保持在有效深度范围内"
-  }
-  if observation.ears.isEmpty { return "正在识别耳廓，请让当前侧耳朵完整进入画面" }
-  return observation.ears.contains { $0.depth != nil } ? "已识别耳廓和原始深度，正在对齐" : "已识别耳廓，等待该区域的有效 TrueDepth 深度"
- }
  private func consume(_ observation:Observation,_ registration:Registration) -> Update {
-  guard registration.accepted else {
-   return update(observation,message:observation.ears.isEmpty ? rawMessage(observation) : "已识别耳廓，三维跟踪尚未恢复",registered:false)
-  }
-  let view = registration.view, projection = registration.projection
-  let cameraToModel = simd_inverse(view)
-  func measured(_ patch:Patch,_ point:CGPoint? = nil) -> SIMD3<Float>? {
-   guard let depth = patch.depth else { return nil }
-   return Self.modelPoint(point ?? CGPoint(x:patch.box.midX,y:patch.box.midY),depth:depth,orientation:observation.orientation,cameraToModel:cameraToModel,projection:projection)
-  }
-  let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
-  var seenHead = false
-  var leftEvidence: (SIMD3<Float>,Float)?, rightEvidence: (SIMD3<Float>,Float)?
-  if let face = observation.face, let center = measured(face) {
-   seenHead = true
-   if anchor == nil, let left = measured(face,CGPoint(x:face.box.midX+face.box.width*0.25,y:face.box.midY)), simd_length(left-center) > 0.01 {
-    anchor = center + simd_normalize(center-camera)*0.05
-    // An unmirrored frontal image's right is the subject's anatomical left.
-    subjectLeft = simd_normalize(left-center)
+  var measured = false
+  if registration.accepted, let face = observation.face {
+   let cameraToModel = simd_inverse(registration.view)
+   let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
+   if let center = Self.modelPoint(CGPoint(x:face.box.midX,y:face.box.midY),depth:face.depth,orientation:observation.orientation,cameraToModel:cameraToModel,projection:registration.projection), simd_length(center-camera) > 0.01 {
+    measured = true
+    lock.lock()
+    if region == nil { region = Region(center:center+simd_normalize(center-camera)*0.05,view:registration.view,projection:registration.projection) }
+    lock.unlock()
    }
   }
-  if let anchor, let axis = subjectLeft {
-   for ear in observation.ears {
-    guard let point = measured(ear) else { continue }
-    let side = PersonalHeadCaptureGuide.qualifiedEarSide(point:point,center:anchor,subjectLeft:axis,camera:camera)
-    if side > 0 && ear.confidence > (leftEvidence?.1 ?? 0) { leftEvidence = (point,ear.confidence) }
-    if side < 0 && ear.confidence > (rightEvidence?.1 ?? 0) { rightEvidence = (point,ear.confidence) }
-   }
-  }
-  state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0,camera:camera,time:observation.time)
-  if let anchor {
-   lock.lock(); if region == nil { region = Region(center:anchor,view:view,projection:projection) }; lock.unlock()
-  }
-  let hasTarget = state.stage == .face ? seenHead : (state.stage == .leftEar ? leftEvidence != nil : rightEvidence != nil)
-  let message = state.complete || hasTarget ? state.status : (observation.ears.isEmpty ? rawMessage(observation) : "已识别耳廓，尚未获得当前侧的有效三维视角")
-  return update(observation,message:message,registered:true)
+  state.observeFace(measured:measured,time:observation.time,frameID:observation.frameID)
+  return Update(state:state,message:state.status,registered:registration.accepted,frameID:observation.frameID)
  }
  // Refresh masking from EVERY accepted registration, not the throttled ML
  // callback. A stale side-view pose can cut the ear out before detection.

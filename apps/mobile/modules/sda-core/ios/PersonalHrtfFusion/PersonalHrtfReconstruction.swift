@@ -92,42 +92,48 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  // Called directly from the synchronized AVFoundation frame callback. No unbounded dispatch
  // queue of retained images: the native reconstructor drops frames under load.
  func accumulate(_ frame: PersonalHeadDepthFrame) {
-  let raw = frame.depth
-  let depth = raw.converting(toDepthDataType:kCVPixelFormatType_DepthFloat32)
-  guard let calibration = depth.cameraCalibrationData,
-        let distortion = calibration.lensDistortionLookupTable, !distortion.isEmpty,
-        CVPixelBufferGetWidth(depth.depthDataMap) <= 640,
-        CVPixelBufferGetHeight(depth.depthDataMap) <= 640 else { return }
+  let depth = frame.depth?.converting(toDepthDataType:kCVPixelFormatType_DepthFloat32)
+  let depthMap = depth?.depthDataMap
+  let calibration = depth?.cameraCalibrationData
+  let boundedDepth = depthMap.flatMap { CVPixelBufferGetWidth($0) <= 640 && CVPixelBufferGetHeight($0) <= 640 ? $0 : nil }
   lock.lock()
   guard phase == .scanning, !cancelled, frame.timestamp.isFinite, frame.timestamp > lastTimestamp,
         !bootstrapPending, let analysis = coverage else { lock.unlock(); return }
   lastTimestamp = frame.timestamp
   nextFrameID += 1; let frameID = nextFrameID
-  let orientation = Self.imageOrientation
+  let orientation = frame.orientation
   let region = analysis.captureRegion
   if region == nil {
    let now = ProcessInfo.processInfo.systemUptime
-   guard now-lastBootstrapAttempt >= 0.3 else { lock.unlock(); return }
+   guard now-lastBootstrapAttempt >= 0.3, let boundedDepth, let calibration,
+         calibration.lensDistortionLookupTable?.isEmpty == false else { lock.unlock(); return }
    lastBootstrapAttempt = now; bootstrapPending = true; lock.unlock()
-   analysis.prepareInitial(color:frame.color,depth:depth.depthDataMap,orientation:orientation) { [weak self] seed in
+   analysis.prepareInitial(color:frame.color,depth:boundedDepth,orientation:orientation) { [weak self] seed in
     guard let self else { return }
-    let masked = seed.flatMap { PersonalHrtfCaptureCoverage.maskedDepth(depth.depthDataMap,seed:$0,orientation:orientation,region:nil) }
+    let masked = seed.flatMap { PersonalHrtfCaptureCoverage.maskedDepth(boundedDepth,seed:$0,orientation:orientation,region:nil) }
     self.lock.lock(); defer { self.lock.unlock() }
     guard self.phase == .scanning, !self.cancelled else { self.bootstrapPending = false; return }
     guard let masked else { self.bootstrapPending = false; return }
     // Until this seed is registered AND its reference is measured, retain only
     // this one frame. No inference backlog and no arbitrary background seed.
-    self.coverage?.offerRaw(color:frame.color,depth:depth.depthDataMap,frameID:frameID,orientation:orientation,force:true) { [weak self] update in self?.receiveCoverage(update) }
+    analysis.offerRaw(color:frame.color,depth:boundedDepth,frameID:frameID,orientation:orientation,force:true) { [weak self] update in self?.receiveCoverage(update) }
     self.model.sdaAccumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration,frameID:frameID)
    }
    return
   }
   lock.unlock()
-  analysis.offerRaw(color:frame.color,depth:depth.depthDataMap,frameID:frameID,orientation:orientation) { [weak self] update in self?.receiveCoverage(update) }
-  guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(depth.depthDataMap,seed:nil,orientation:orientation,region:region) else { return }
+  defer { analysis.offerRaw(color:frame.color,depth:boundedDepth,frameID:frameID,orientation:orientation) { [weak self] update in self?.receiveCoverage(update) } }
+  guard !model.sdaReachedSurfelLimit, let boundedDepth, let calibration,
+        calibration.lensDistortionLookupTable?.isEmpty == false,
+        let masked = PersonalHrtfCaptureCoverage.maskedDepth(boundedDepth,seed:nil,orientation:orientation,region:region) else { return }
   lock.lock(); defer { lock.unlock() }
   guard phase == .scanning, !cancelled else { return }
   model.sdaAccumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration,frameID:frameID)
+ }
+ func confirmEarView(_ target:PersonalHeadCaptureGuide.EarSide) {
+  lock.lock(); defer { lock.unlock() }
+  guard phase == .scanning, guide.targetEar == target, guide.canConfirmEar else { return }
+  coverage?.confirmEarView(target,after:nextFrameID)
  }
  private func receiveCoverage(_ update:PersonalHrtfCaptureCoverage.Update) {
   DispatchQueue.main.async { [weak self] in
@@ -136,7 +142,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    guard self.phase == .scanning else { self.lock.unlock(); return }
    if update.registered { self.bootstrapPending = false }
    self.guide = update.state
-   let ready = update.state.complete && self.model.sdaSurfelCount >= 10000
+   let ready = update.state.complete
    if ready { self.phase = .captured }
    self.lock.unlock()
    self.captureGuide?(update.state)
@@ -144,15 +150,6 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    if ready { self.motion.stopDeviceMotionUpdates() }
   }
  }
- private static var imageOrientation: CGImagePropertyOrientation {
-  switch UIDevice.current.orientation {
-  case .landscapeLeft: return .up
-  case .landscapeRight: return .down
-  case .portraitUpsideDown: return .right
-  default: return .left
-  }
- }
-
  func reconstructionManager(_ manager: SCReconstructionManager, didProcessWith metadata: SCAssimilatedFrameMetadata, statistics: SCReconstructionManagerStatistics) {
   lock.lock()
   guard phase == .scanning else { lock.unlock(); return }
@@ -168,6 +165,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    }
   }
   let count = cameraPositions.count
+  let recognizingEars = guide.stage != .face
   lock.unlock()
   if accepted { coverage?.updatePose(view:metadata.viewMatrix,projection:metadata.projectionMatrix) }
   coverage?.register(frameID:metadata.sdaFrameID,accepted:accepted,view:metadata.viewMatrix,projection:metadata.projectionMatrix) { [weak self] update in self?.receiveCoverage(update) }
@@ -175,6 +173,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   if model.sdaReachedSurfelLimit {
    lock.lock()
    guard phase == .scanning else { lock.unlock(); return }
+   if guide.stage != .face {
+    lock.unlock(); progress?(count,"本次深度已保留，可继续识别耳朵"); return
+   }
    phase = .paused; lock.unlock()
    releaseCaptureAnalysis()
    motion.stopDeviceMotionUpdates()
@@ -183,7 +184,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   if failed { fail("配准器发生内部错误，无法继续本次采集"); return }
   let hint: String
-  if accepted { hint = "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" }
+  if recognizingEars { hint = "已记录 \(model.sdaSurfelCount) 个测量点" }
+  else if accepted { hint = "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" }
   else if manager.sdaNeedsTrackingRecovery {
    hint = "已采集区域已保留：保持头部不动，将手机小幅移回刚才能采集的位置，自动接续；无需重新正面校准或重扫已采集的耳朵"
   } else if manager.sdaIsAligning {
@@ -195,7 +197,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  func finish() {
   lock.lock()
   guard phase == .scanning || phase == .captured || phase == .paused else { lock.unlock(); return }
-  guard guide.complete, !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("正脸和两耳尚未全部采集，或有效测量表面不足"); return }
+  guard guide.complete else { lock.unlock(); fail("正脸与双耳尚未全部识别"); return }
+  guard !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("双耳已识别，但本次实测深度不足以重建表面，未生成个人档案"); return }
   phase = .finalizing; lock.unlock()
   releaseCaptureAnalysis()
   motion.stopDeviceMotionUpdates()
@@ -204,7 +207,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  func cancel() { fail("已取消本机头耳重建，未启用个人档案") }
  private func releaseCaptureAnalysis() {
   // The native metadata delegate runs on main; never race its optional model.
-  DispatchQueue.main.async { [weak self] in self?.coverage = nil }
+  DispatchQueue.main.async { [weak self] in
+   guard let self else { return }; self.lock.lock(); self.coverage = nil; self.lock.unlock()
+  }
  }
  private func fail(_ message: String) {
   lock.lock()

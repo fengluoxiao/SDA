@@ -1,85 +1,62 @@
 import Foundation
-import simd
 
 enum Failure: Error { case invalid(String) }
 @main struct CaptureGuideRegression {
  static func main() throws {
-  var state = PersonalHeadCaptureGuide()
-  let leftEarPoint = SIMD3<Float>(0.08,0,0), rightEarPoint = SIMD3<Float>(-0.08,0,0)
-  var clock = 1.0
-  func observe(_ head:Bool = false,_ left:SIMD3<Float>? = nil,_ right:SIMD3<Float>? = nil,_ camera:SIMD3<Float> = .zero) {
-   state.observe(head:head,left:left,right:right,camera:camera,time:clock); clock += 0.31
-  }
-  for _ in 0..<10 { observe(false,leftEarPoint,rightEarPoint) }
-  guard state.stage == .face, state.head == 0, state.leftEar == 0, state.rightEar == 0 else { throw Failure.invalid("Ears skipped the required face setup") }
-  for _ in 0..<4 { observe(true,leftEarPoint,rightEarPoint) }
-  guard state.stage == .leftEar, state.head == 4, state.leftEar == 0 else { throw Failure.invalid("Face did not advance alone") }
-  for _ in 0..<10 { observe(true,nil,rightEarPoint) }
-  guard state.stage == .leftEar, state.leftEar == 0, state.rightEar == 0 else { throw Failure.invalid("Wrong ear advanced the current step") }
-  for _ in 0..<10 { observe(false,leftEarPoint) }
-  guard state.stage == .leftEar, !state.complete else { throw Failure.invalid("One frozen ear view qualified multi-view capture") }
-  observe(false,SIMD3<Float>(0.15,0,0))
-  guard state.leftEar == 1 else { throw Failure.invalid("Unstable ear evidence accumulated") }
-  // A skipped ML frame at ~2 Hz must not repeatedly zero the ear step.
-  observe(false,leftEarPoint,nil,SIMD3<Float>(0.001,0,0))
-  clock += 1.5
-  observe(false,leftEarPoint,nil,SIMD3<Float>(0.002,0,0))
-  guard state.leftEar >= 2 else { throw Failure.invalid("Ordinary skipped inference reset the ear") }
-  for i in 0..<7 { observe(false,leftEarPoint,nil,SIMD3<Float>(Float(i)*0.002,0,0)) }
-  guard state.stage == .rightEar, state.leftEar == 6 else { throw Failure.invalid("Measured left-ear views did not advance") }
-  for _ in 0..<20 { observe(true,leftEarPoint,nil) }
-  guard state.stage == .rightEar, state.head == 4, state.leftEar == 6, state.rightEar == 0 else { throw Failure.invalid("Journey through the face reset a completed step") }
-  observe(false,nil,rightEarPoint)
-  state.observe(head:false,left:nil,right:rightEarPoint,camera:SIMD3<Float>(0.1,0,0),time:clock-0.31)
-  guard state.rightEar == 1 else { throw Failure.invalid("Duplicate callback counted as evidence") }
-  for _ in 0..<10 { observe() }
-  guard state.rightEar == 0 else { throw Failure.invalid("Occlusion did not clear incomplete step evidence") }
-  for i in 0..<7 { observe(false,nil,rightEarPoint,SIMD3<Float>(Float(i)*0.002,0,0)) }
-  guard state.complete, state.head == 4, state.leftEar == 6, state.rightEar == 6 else { throw Failure.invalid("Valid sequential capture failed to complete") }
-  for _ in 0..<2000 { observe() }
-  guard state.complete else { throw Failure.invalid("Completed capture was lost") }
-  let center = SIMD3<Float>.zero, axis = SIMD3<Float>(1,0,0)
-  func side(_ point:SIMD3<Float>,_ camera:SIMD3<Float>) -> Int {
-   PersonalHeadCaptureGuide.qualifiedEarSide(point:point,center:center,subjectLeft:axis,camera:camera)
-  }
-  guard side(leftEarPoint,SIMD3<Float>(0,0,0.3)) == 0,
-        side(rightEarPoint,SIMD3<Float>(0,0,0.3)) == 0 else { throw Failure.invalid("Frontal ear boxes qualified side capture") }
-  guard side(leftEarPoint,SIMD3<Float>(0.25,0,0.25)) == 1,
-        side(rightEarPoint,SIMD3<Float>(-0.25,0,0.25)) == -1 else { throw Failure.invalid("Anatomical side views were rejected") }
-  guard side(leftEarPoint,SIMD3<Float>(-0.25,0,0.25)) == 0,
-        side(rightEarPoint,SIMD3<Float>(0.25,0,0.25)) == 0 else { throw Failure.invalid("Opposite camera side qualified the ear") }
-  guard side(SIMD3<Float>(0.01,0,0),SIMD3<Float>(0.25,0,0.25)) == 0,
-        side(SIMD3<Float>(0.3,0,0),SIMD3<Float>(0.25,0,0.25)) == 0,
-        side(SIMD3<Float>(.nan,0,0),SIMD3<Float>(0.25,0,0.25)) == 0,
-        side(leftEarPoint,SIMD3<Float>(0.1,0,0)) == 0 else { throw Failure.invalid("Invalid or unrelated measurements qualified the ear") }
-  for degrees in stride(from:0,through:90,by:5) {
-   let angle = Float(degrees)*Float.pi/180
-   for sign:Float in [-1,1] {
-    let camera = SIMD3<Float>(sign*sin(angle)*0.3,0,cos(angle)*0.3)
-    let point = SIMD3<Float>(sign*0.08,0,0)
-    let expected = sin(angle) >= 0.2 ? Int(sign) : 0
-    guard side(point,camera) == expected else { throw Failure.invalid("Viewpoint angle or side symmetry failed") }
-   }
-  }
-  // Pair by source identity, never by arrival time or the latest pose.
+  var guide = PersonalHeadCaptureGuide()
+  guide.observeEar(visible:true,hasDepth:true,frameID:1)
+  guide.observeFace(measured:false,time:1,frameID:1)
+  for frameID in UInt64(2)...4 { guide.observeFace(measured:true,time:Double(frameID)/3,frameID:frameID) }
+  guide.observeFace(measured:true,time:2,frameID:4)
+  guard guide.stage == .face, guide.head == 3 else { throw Failure.invalid("Unmeasured or duplicate frame advanced face setup") }
+  guide.observeFace(measured:true,time:5,frameID:5)
+  guard guide.head == 1 else { throw Failure.invalid("A gap accumulated face measurements") }
+  for frameID in UInt64(6)...8 { guide.observeFace(measured:true,time:Double(frameID),frameID:frameID) }
+  guide.observeEar(visible:true,hasDepth:false,frameID:8)
+  guide.observeEar(visible:false,hasDepth:true,frameID:9)
+  guard guide.stage == .leftEar else { throw Failure.invalid("A face frame or blank image was counted as an ear") }
+  var sided = guide
+  guard sided.symbol == "l.circle.fill", sided.targetEar == .left else { throw Failure.invalid("Subject left cue reversed") }
+  sided.observeEar(visible:true,hasDepth:true,frameID:10,side:.right)
+  guard sided.stage == .leftEar, sided.canConfirmEar else { throw Failure.invalid("An identified right ear was recorded as left") }
+  sided.observeEar(visible:true,hasDepth:false,frameID:11,side:.left)
+  guard sided.stage == .rightEar, sided.symbol == "r.circle.fill", !sided.leftDepthSeen else { throw Failure.invalid("Subject left evidence or right cue reversed") }
+  sided.observeEar(visible:true,hasDepth:true,frameID:12,side:.left)
+  guard !sided.complete else { throw Failure.invalid("An identified left ear was recorded as right") }
+  sided.observeEar(visible:true,hasDepth:true,frameID:13,side:.right)
+  guard sided.complete, sided.rightDepthSeen else { throw Failure.invalid("Opposite anatomical ear required an empty frame") }
+  guide.observeEar(visible:true,hasDepth:false,frameID:10)
+  guard guide.stage == .rightEar, guide.needsNewEarView, !guide.leftDepthSeen else { throw Failure.invalid("First visible ear required depth or a second frame") }
+  for frameID in UInt64(11)...120 { guide.observeEar(visible:true,hasDepth:true,frameID:frameID) }
+  guide.observeEar(visible:false,hasDepth:false,frameID:121)
+  guide.observeEar(visible:true,hasDepth:true,frameID:122)
+  guard !guide.complete, guide.needsNewEarView else { throw Failure.invalid("Continuous visibility or one missed inference counted the first ear twice") }
+  var manual = guide
+  manual.confirmEarView(.right,after:130)
+  manual.observeEar(visible:true,hasDepth:false,frameID:130)
+  manual.observeEar(visible:false,hasDepth:false,frameID:131)
+  guard !manual.complete else { throw Failure.invalid("Manual handoff counted an old frame or a blank view") }
+  manual.observeEar(visible:true,hasDepth:false,frameID:132)
+  guard manual.complete, !manual.rightDepthSeen, manual.reviewStatus.contains("左耳、右耳") else { throw Failure.invalid("Right ear required geometry or fabricated depth") }
+  guide.observeEar(visible:false,hasDepth:false,frameID:123)
+  guide.observeEar(visible:false,hasDepth:false,frameID:124)
+  guide.observeEar(visible:true,hasDepth:true,frameID:125)
+  guard guide.complete, guide.rightDepthSeen, !guide.leftDepthSeen else { throw Failure.invalid("First detection after automatic handoff did not complete") }
+
   var join = PersonalHeadFrameJoin<String,Bool>(capacity:4)
-  guard join.observe("ear-1",frameID:1) == nil, join.register(true,frameID:2) == nil,
-        let first = join.register(false,frameID:1), first.0 == "ear-1", first.1 == false,
+  guard join.observe("one",frameID:1) == nil, join.register(true,frameID:2) == nil,
+        let first = join.register(false,frameID:1), first.0 == "one", !first.1,
         join.observe("duplicate",frameID:1) == nil,
-        let second = join.observe("ear-2",frameID:2), second.0 == "ear-2", second.1 == true else {
-   throw Failure.invalid("Source identity lost across reordered/rejected/duplicate registrations")
-  }
-  // A dropped native input must not consume a different frame's measurement.
+        let second = join.observe("two",frameID:2), second.0 == "two", second.1 else { throw Failure.invalid("Face pose paired with the wrong observation") }
   guard join.observe("dropped",frameID:3) == nil, join.register(true,frameID:4) == nil,
-        let fourth = join.observe("ear-4",frameID:4), fourth.0 == "ear-4",
-        join.register(true,frameID:3) == nil else { throw Failure.invalid("Dropped or stale frame reused a pose") }
-  for id in UInt64(5)...10000 {
-   _ = join.register(id.isMultiple(of:2),frameID:id)
-   guard join.count <= 4 else { throw Failure.invalid("Sparse join exceeded its fixed capacity") }
+        let fourth = join.observe("four",frameID:4), fourth.0 == "four",
+        join.register(true,frameID:3) == nil else { throw Failure.invalid("Reused stale face pose") }
+  for frameID in UInt64(5)...10000 {
+   _ = join.register(true,frameID:frameID)
+   guard join.count <= 4 else { throw Failure.invalid("Unbounded frame join") }
   }
-  guard join.observe("expired",frameID:9996) == nil,
-        let last = join.observe("ear-10000",frameID:10000), last.1,
-        join.observe("zero",frameID:0) == nil else { throw Failure.invalid("Evicted or zero frame ID was revived") }
-  print("{\"sequentialCapturePassed\":true,\"wrongTargetRejected\":true,\"duplicateRejected\":true,\"occlusionAndCompletedStatePassed\":true,\"earMultiViewRequired\":true,\"frontalEarViewsRejected\":true,\"anatomicalViewpointAngleSweepPassed\":true,\"exactFrameJoinPassed\":true,\"sparseJoinBounded\":true,\"physicalScanTested\":false}")
+  guard join.observe("expired",frameID:9996) == nil, join.observe("last",frameID:10000)?.1 == true,
+        join.observe("zero",frameID:0) == nil else { throw Failure.invalid("Incorrect registration eviction") }
+  print("{\"singleDetectionPerEar\":true,\"repeatedViewNotDoubleCounted\":true,\"automaticAndManualHandoff\":true,\"missingDepthNotFabricated\":true,\"exactFrameJoinPassed\":true,\"sparseJoinBounded\":true,\"physicalScanTested\":false}")
  }
 }

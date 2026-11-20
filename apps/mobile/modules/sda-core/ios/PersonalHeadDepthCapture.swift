@@ -1,11 +1,13 @@
 import Foundation
 import AVFoundation
 import UIKit
+import ImageIO
 
 struct PersonalHeadDepthFrame {
  let color: CVPixelBuffer
- let depth: AVDepthData
+ let depth: AVDepthData?
  let timestamp: TimeInterval
+ let orientation: CGImagePropertyOrientation
 }
 // A synchronized native front TrueDepth stream, including views without a
 // tracked face. Capture does not use face geometry or a rear-camera fallback.
@@ -15,6 +17,14 @@ final class PersonalHeadDepthCapture: NSObject, AVCaptureDataOutputSynchronizerD
  private let outputQueue = DispatchQueue(label:"app.sda.head-depth-frames",qos:.userInitiated)
  private let video = AVCaptureVideoDataOutput(), depth = AVCaptureDepthDataOutput()
  private var synchronizer: AVCaptureDataOutputSynchronizer?
+ private var frameOrientation: () -> CGImagePropertyOrientation = {
+  switch UIDevice.current.orientation {
+  case .landscapeLeft: return .up
+  case .landscapeRight: return .down
+  case .portraitUpsideDown: return .right
+  default: return .left
+  }
+ }
  private let lock = NSLock()
  private var cancelled = false, started = false
  private var frameCallback: ((PersonalHeadDepthFrame) -> Void)?
@@ -107,22 +117,38 @@ final class PersonalHeadDepthCapture: NSObject, AVCaptureDataOutputSynchronizerD
    connection.isEnabled = true
    if connection.isVideoMirroringSupported { connection.automaticallyAdjustsVideoMirroring = false; connection.isVideoMirrored = false }
   }
+  if let preview = previewLayer.connection, preview.isVideoMirroringSupported {
+   preview.automaticallyAdjustsVideoMirroring = false; preview.isVideoMirrored = true
+  }
+  if #available(iOS 17.0, *) {
+   let rotation = AVCaptureDevice.RotationCoordinator(device:device,previewLayer:nil)
+   frameOrientation = {
+    let degrees = rotation.videoRotationAngleForHorizonLevelCapture - videoConnection.videoRotationAngle
+    switch (Int((degrees/90).rounded()) % 4 + 4) % 4 {
+    case 1: return .right
+    case 2: return .down
+    case 3: return .left
+    default: return .up
+    }
+   }
+  }
   if videoConnection.isCameraIntrinsicMatrixDeliverySupported { videoConnection.isCameraIntrinsicMatrixDeliveryEnabled = true }
   let sync = AVCaptureDataOutputSynchronizer(dataOutputs:[video,depth]); synchronizer = sync
   sync.setDelegate(self,queue:outputQueue)
  }
  func dataOutputSynchronizer(_ synchronizer:AVCaptureDataOutputSynchronizer,didOutput data:AVCaptureSynchronizedDataCollection) {
   guard let color = data.synchronizedData(for:video) as? AVCaptureSynchronizedSampleBufferData,
-        let distance = data.synchronizedData(for:depth) as? AVCaptureSynchronizedDepthData,
-        !color.sampleBufferWasDropped, !distance.depthDataWasDropped,
+        !color.sampleBufferWasDropped,
         let buffer = CMSampleBufferGetImageBuffer(color.sampleBuffer) else { return }
-  let timestamp = CMTimeGetSeconds(color.timestamp), depthTime = CMTimeGetSeconds(distance.timestamp)
-  guard timestamp.isFinite, depthTime.isFinite, abs(timestamp - depthTime) <= 0.04 else { return }
-  let measured = distance.depthData
-  guard !measured.isDepthDataFiltered, measured.depthDataAccuracy == .absolute, measured.cameraCalibrationData != nil else {
-   sessionQueue.async { [weak self] in self?.report("前置深度缺少未平滑的绝对距离或相机标定，不能用于头耳测量") }; return
+  let timestamp = CMTimeGetSeconds(color.timestamp)
+  guard timestamp.isFinite else { return }
+  var measured: AVDepthData?
+  if let distance = data.synchronizedData(for:depth) as? AVCaptureSynchronizedDepthData,
+     !distance.depthDataWasDropped, abs(timestamp-CMTimeGetSeconds(distance.timestamp)) <= 0.04 {
+   let candidate = distance.depthData
+   if !candidate.isDepthDataFiltered, candidate.depthDataAccuracy == .absolute, candidate.cameraCalibrationData != nil { measured = candidate }
   }
   lock.lock(); let callback = cancelled ? nil : frameCallback; lock.unlock()
-  callback?(PersonalHeadDepthFrame(color:buffer,depth:measured,timestamp:timestamp))
+  callback?(PersonalHeadDepthFrame(color:buffer,depth:measured,timestamp:timestamp,orientation:frameOrientation()))
  }
 }
