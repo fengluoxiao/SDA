@@ -129,7 +129,7 @@ final class PersonalHeadScanController: UIViewController {
     self.capturePaused = true
     self.stopFrames()
     self.message.text = text
-    self.countLabel.text = "已保留本次测量，可处理现有模型或取消删除"
+    self.countLabel.text = "采集已暂停；三个步骤未完成，请取消后重新采集"
     self.speaker.stopSpeaking(at:.immediate)
     self.finishButton.setTitle("三个步骤未完成，请重新采集",for:.normal)
     self.finishButton.isEnabled = false

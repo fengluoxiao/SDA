@@ -37,11 +37,13 @@ with zipfile.ZipFile(ipa)as z:
     assert '个人 HRTF'.encode()in bundle or b'personalHrtfAction'in bundle
     assert not any('/ci-stereo-tones.m4a'in p or '/ci-360ra.mhas'in p for p in names)
     with tempfile.TemporaryDirectory()as tmp:
-        binary=Path(tmp)/'SDA';binary.write_bytes(z.read(app+info['CFBundleExecutable']))
+        binary=Path(tmp)/'SDA';runtime=z.read(app+info['CFBundleExecutable']);binary.write_bytes(runtime)
+        for title in ['1 / 3  扫描正脸','2 / 3  扫描左耳','3 / 3  扫描右耳']:
+            assert title.encode('utf8') in runtime,'Guided capture stage absent from compiled device executable: '+title
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
-      'frontCameraPermission':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
+      'frontCameraPermission':True,'guidedCaptureEmbedded':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
       'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))
