@@ -116,6 +116,45 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     if(!model.getCurrentExtrinsicMatrix().isApprox(savedPose,0.001f)) return 10;
     model.reset();
     if(!model.getSurfels().empty()) return 11;
+    // Ray-cast a fixed asymmetric phantom while the camera moves to each side.
+    // This tests registration against a known pose; it is not a human ear scan.
+    auto scanSide = [&](float sign) {
+        model.reset(937);
+        int merged=0, rejectedRun=0, longestLoss=0;
+        float maxPositionError=0, maxAngleError=0;
+        const Eigen::Vector3f center(0,0,-0.4f);
+        const Eigen::Vector3f radii[] = {{0.082f,0.112f,0.097f},{0.024f,0.030f,0.027f},
+                                       {0.014f,0.030f,0.023f},{0.014f,0.028f,0.022f}};
+        const Eigen::Vector3f centers[] = {center,center+Eigen::Vector3f(0.004f,-0.004f,0.095f),
+                                          center+Eigen::Vector3f(0.084f,-0.004f,0),center+Eigen::Vector3f(-0.084f,0.002f,0)};
+        for(int step=0;step<=100;step++) {
+            const float angle=sign*step*0.7f*float(M_PI)/180;
+            const Eigen::Matrix3f rotation=Eigen::AngleAxisf(angle,Eigen::Vector3f::UnitY()).toRotationMatrix();
+            const Eigen::Vector3f origin=center+rotation*Eigen::Vector3f(0,0,0.4f);
+            for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
+                const Eigen::Vector3f ray=rotation*Eigen::Vector3f((x-80)/160.0f,-(y-60)/160.0f,-1);
+                float nearest=1;
+                for(int shape=0;shape<4;shape++) {
+                    const Eigen::Vector3f o=(origin-centers[shape]).cwiseQuotient(radii[shape]);
+                    const Eigen::Vector3f d=ray.cwiseQuotient(radii[shape]);
+                    const float a=d.dot(d), b=o.dot(d), c=o.dot(o)-1, disc=b*b-a*c;
+                    if(disc>=0) { const float t=(-b-std::sqrt(disc))/a; if(t>0 && t<nearest) nearest=t; }
+                }
+                frame->rawFrame.depths[y*width+x]=nearest;
+            }
+            processor.computeFrameValues(*frame,frame->rawFrame);
+            const auto result=model.assimilate(*frame,pbf,icp,fusion,20+step/15.0);
+            if(!result.isMerged) { longestLoss=std::max(longestLoss,++rejectedRun); continue; }
+            merged++; rejectedRun=0;
+            const auto pose=model.getCurrentExtrinsicMatrix();
+            maxPositionError=std::max(maxPositionError,(pose.block<3,1>(0,3)-origin).norm());
+            maxAngleError=std::max(maxAngleError,Eigen::AngleAxisf(pose.block<3,3>(0,0).transpose()*rotation).angle());
+        }
+        printf("SDA side trajectory sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
+               sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
+        return merged;
+    };
+    scanSide(1); scanSide(-1);
     printf("SDA tracking fixture: 10s blank rejected, surfels/pose unchanged, return-to-view recovered, reset passed\n");
     return 0;
  }
