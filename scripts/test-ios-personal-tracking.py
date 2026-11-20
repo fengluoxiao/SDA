@@ -16,6 +16,8 @@ assert '_sdaTrackingRecovery.terminal(pbfMetadata.isMerged,'in patch
 assert 'terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking'in patch
 assert '_sdaTrackingRecovery.reset()'in patch
 assert 'manager.sdaNeedsTrackingRecovery'in text
+assert 'manager.sdaIsAligning'in text
+assert '_sdaIsAligning.store(_sdaTrackingRecovery.needsAlignment('in patch
 assert '连续 3 秒未能恢复跟踪'not in text
 assert 'break; // Recoverable loss' in patch
 assert 'SdaTrackingRecovery::axisAngle' in patch

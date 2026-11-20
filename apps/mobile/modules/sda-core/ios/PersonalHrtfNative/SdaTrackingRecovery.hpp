@@ -16,6 +16,11 @@ public:
         if (lostSince < 0 || now < lostSince) lostSince = now;
         return false;
     }
+    // A single rejected frame is normal at a view transition; give native ICP
+    // time to reconnect before asking the person to change their capture.
+    bool needsAlignment(double now) const {
+        return !ended && lostSince >= 0 && std::isfinite(now) && now - lostSince >= 0.75;
+    }
     bool needsReturnToView(double now) const {
         return !ended && lostSince >= 0 && std::isfinite(now) && now - lostSince >= 3.0;
     }

@@ -148,8 +148,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   let hint: String
   if accepted { hint = "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" }
   else if manager.sdaNeedsTrackingRecovery {
-   hint = "测量已保留：请保持头部不动，把手机退回上次对准的位置，重新对齐后会自动继续；也可处理已采集部分"
-  } else { hint = "正在重新对齐：保持头部不动，缓慢移回上一视角，不用重新采集" }
+   hint = "已采集区域已保留：保持头部不动，将手机小幅移回刚才能采集的位置，自动接续；无需重新正面校准或重扫已采集的耳朵"
+  } else if manager.sdaIsAligning {
+   hint = "正在自动接续：保持头部不动，让耳部与脸侧保留重叠，不用重新校准"
+  } else { hint = "正在采集头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" }
   progress?(count,hint)
  }
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }

@@ -11,9 +11,18 @@ int main() {
             const double now = 10.0+double(i)/fps;
             assert(!gate.terminal(false, now));
             assert(gate.needsReturnToView(now) == (now >= 13.0));
+            assert(gate.needsAlignment(now) == (now >= 10.75));
         }
         assert(!gate.terminal(true, 1810));
         assert(!gate.needsReturnToView(1810));
+        assert(!gate.needsAlignment(1810));
+        // A brief dropout at each side transition never requests alignment.
+        for(int i=0;i<200;i++) {
+            const double t=1811+i*0.04;
+            assert(!gate.terminal(false,t));
+            assert(!gate.needsAlignment(t+0.02));
+            assert(!gate.terminal(true,t+0.03));
+        }
         assert(!gate.terminal(false, 1820));
         assert(!gate.needsReturnToView(1822.99));
         assert(!gate.terminal(false, 1823));
@@ -23,6 +32,7 @@ int main() {
         assert(!gate.needsReturnToView(2000));
         gate.reset();
         assert(!gate.needsReturnToView(5000));
+        assert(!gate.needsAlignment(5000));
         assert(!gate.terminal(false, 5000));
         assert(!gate.terminal(false, 10)); // clock rolls back; restart guidance timer.
         assert(!gate.needsReturnToView(12.99));

@@ -140,6 +140,10 @@ struct FusionResourcesTest {
   guard state.leftEar == 3, state.rightEar == 1 else { throw Failure.invalid("Completed region was lost while scanning the other ear") }
   for _ in 0..<2 { state.observe(head:false,left:nil,right:rightEarPoint) }
   guard state.rightEar == 3 else { throw Failure.invalid("Stable right-ear evidence was lost") }
+  // Turning away from a frontal face and brief missing detections do not reset
+  // any region that was already measured in the registered coordinate system.
+  for _ in 0..<2000 { state.observe(head:false,left:nil,right:nil) }
+  guard state.head == 3, state.leftEar == 3, state.rightEar == 3 else { throw Failure.invalid("A view transition reset completed coverage") }
   var optional: CVPixelBuffer?
   guard CVPixelBufferCreate(kCFAllocatorDefault,32,32,kCVPixelFormatType_DepthFloat32,nil,&optional) == kCVReturnSuccess,
         let buffer = optional else { throw Failure.invalid("Synthetic depth allocation failed") }
@@ -162,7 +166,7 @@ struct FusionResourcesTest {
   let projection = simd_float4x4(columns:(SIMD4(-2,0,0,0),SIMD4(0,-2,0,0),SIMD4(0,0,-1.02,-1),SIMD4(0,0,-0.202,0)))
   guard let world = PersonalHrtfCaptureCoverage.modelPoint(CGPoint(x:0.8,y:0.7),depth:0.3,orientation:.up,cameraToModel:matrix_identity_float4x4,projection:projection),
         abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
-  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
+  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
  }
  static func main() {
   do { try run() }
@@ -194,6 +198,7 @@ struct FusionResourcesTest {
    model.sdaMaximumSurfelCount = 0
    guard model.sdaMaximumSurfelCount == 10000 else { throw Failure.invalid("Native minimum budget did not clamp") }
    model.sdaMaximumSurfelCount = 1234567
+   guard !model.sdaIsAligning, !model.sdaNeedsTrackingRecovery else { throw Failure.invalid("New manager has stale alignment guidance") }
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("New model has stale point count") }
    let lock = NSLock(); var completed = false
    print("SDA resource fixture: finalizing empty manager")
@@ -215,6 +220,7 @@ struct FusionResourcesTest {
     guard Date() < resetDeadline else { throw Failure.invalid("Model release completion timed out") }
     RunLoop.current.run(until:Date().addingTimeInterval(0.02))
    }
+   guard !model.sdaIsAligning, !model.sdaNeedsTrackingRecovery else { throw Failure.invalid("New manager has stale alignment guidance") }
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
    initialized = true
   }

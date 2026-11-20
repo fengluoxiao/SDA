@@ -120,6 +120,12 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     // This tests registration against a known pose; it is not a human ear scan.
     auto scanSide = [&](float sign) {
         model.reset(937);
+        prepare(true);
+        std::vector<Eigen::Vector3f> calibratedRays;
+        for(const auto &p : frame->positions) {
+            const Eigen::Vector3f v=standard_cyborg::toVector3f(p);
+            calibratedRays.push_back(v / -v.z());
+        }
         int merged=0, rejectedRun=0, longestLoss=0;
         float maxPositionError=0, maxAngleError=0;
         const Eigen::Vector3f center(0,0,-0.4f);
@@ -132,7 +138,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
             const Eigen::Matrix3f rotation=Eigen::AngleAxisf(angle,Eigen::Vector3f::UnitY()).toRotationMatrix();
             const Eigen::Vector3f origin=center+rotation*Eigen::Vector3f(0,0,0.4f);
             for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
-                const Eigen::Vector3f ray=rotation*Eigen::Vector3f((x-80)/160.0f,-(y-60)/160.0f,-1);
+                const Eigen::Vector3f ray=rotation*calibratedRays[y*width+x];
                 float nearest=1;
                 for(int shape=0;shape<4;shape++) {
                     const Eigen::Vector3f o=(origin-centers[shape]).cwiseQuotient(radii[shape]);
@@ -150,10 +156,12 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
             maxPositionError=std::max(maxPositionError,(pose.block<3,1>(0,3)-origin).norm());
             maxAngleError=std::max(maxAngleError,Eigen::AngleAxisf(pose.block<3,3>(0,0).transpose()*rotation).angle());
         }
-        printf("SDA side trajectory sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
-               sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
+        printf("SDA side trajectory iterations=%d sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
+               icp.maxIterations,sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
         return merged;
     };
+    scanSide(1); scanSide(-1);
+    icp.maxIterations=64;
     scanSide(1); scanSide(-1);
     printf("SDA tracking fixture: 10s blank rejected, surfels/pose unchanged, return-to-view recovered, reset passed\n");
     return 0;

@@ -49,6 +49,7 @@ replace('header','/** The gravity vector of the current scan. */', '''/** SDA: m
 @property (atomic, readonly) BOOL sdaReachedSurfelLimit;
 /** SDA: sustained loss asks the user to return to the last view; does not discard the model. */
 @property (atomic, readonly) BOOL sdaNeedsTrackingRecovery;
+@property (atomic, readonly) BOOL sdaIsAligning;
 /** SDA: completion runs on main after the model queue has released its state. */
 - (void)sdaResetWithCompletion:(nullable dispatch_block_t)completion NS_SWIFT_NAME(sdaReset(completion:));
 
@@ -59,8 +60,9 @@ replace('source','    GravityEstimator _gravityEstimator;','''    GravityEstimat
     std::atomic<size_t> _sdaSurfelCount;
     std::atomic<size_t> _sdaMaximumSurfelCount;
     SdaTrackingRecovery _sdaTrackingRecovery;
+    std::atomic<bool> _sdaIsAligning;
     std::atomic<bool> _sdaNeedsTrackingRecovery;''')
-replace('source','        _wroteIntrinsicsToFile = NO;','        _wroteIntrinsicsToFile = NO;\n        _sdaSurfelCount.store(0, std::memory_order_relaxed);\n        _sdaNeedsTrackingRecovery.store(false, std::memory_order_relaxed);\n        _sdaMaximumSurfelCount.store(500000, std::memory_order_relaxed);')
+replace('source','        _wroteIntrinsicsToFile = NO;','        _wroteIntrinsicsToFile = NO;\n        _sdaSurfelCount.store(0, std::memory_order_relaxed);\n        _sdaNeedsTrackingRecovery.store(false, std::memory_order_relaxed);\n        _sdaIsAligning.store(false, std::memory_order_relaxed);\n        _sdaMaximumSurfelCount.store(500000, std::memory_order_relaxed);')
 replace('source','- (simd_float3)gravity\n{','''- (NSUInteger)sdaMaximumSurfelCount
 {
     return _sdaMaximumSurfelCount.load(std::memory_order_acquire);
@@ -72,6 +74,10 @@ replace('source','- (simd_float3)gravity\n{','''- (NSUInteger)sdaMaximumSurfelCo
 - (BOOL)sdaReachedSurfelLimit
 {
     return _sdaSurfelCount.load(std::memory_order_acquire) >= _sdaMaximumSurfelCount.load(std::memory_order_acquire);
+}
+- (BOOL)sdaIsAligning
+{
+    return _sdaIsAligning.load(std::memory_order_acquire);
 }
 - (BOOL)sdaNeedsTrackingRecovery
 {
@@ -108,6 +114,7 @@ replace('source','''                                                            
         const bool terminalTracking = _sdaTrackingRecovery.terminal(pbfMetadata.isMerged,
                                                                    NSProcessInfo.processInfo.systemUptime);
         _sdaNeedsTrackingRecovery.store(_sdaTrackingRecovery.needsReturnToView(NSProcessInfo.processInfo.systemUptime), std::memory_order_release);
+        _sdaIsAligning.store(_sdaTrackingRecovery.needsAlignment(NSProcessInfo.processInfo.systemUptime), std::memory_order_release);
         if (!pbfMetadata.isMerged) {
             metadata.result = terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking;
         }
@@ -243,6 +250,7 @@ replace('source','            _modelQueue_model->reset();','''            _model
             _sdaSurfelCount.store(0, std::memory_order_release);
             _sdaTrackingRecovery.reset();
             _sdaNeedsTrackingRecovery.store(false, std::memory_order_release);
+            _sdaIsAligning.store(false, std::memory_order_release);
             if (completion != nil) { dispatch_async(dispatch_get_main_queue(), completion); }''')
 
 
