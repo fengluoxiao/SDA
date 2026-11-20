@@ -79,6 +79,15 @@ void measurementTests(Fixture &good){
  int calls=0;require(sda_hrtf_select_measured_faces(noRear.view(),mask.data(),mask.size(),[](void *p){return int(++*static_cast<int*>(p)>=3);},&calls).code==2,"Cancel selection during work");
  require(sda_hrtf_screen_measured_surface(partial.view(),[](void*){return 1;},nullptr).code==2,"Cancel partial screen");
  require(sda_hrtf_screen_measured_surface(partial.view(),nullptr,nullptr).code==0,"Recover after cancelled partial screen");
+ auto sliver=noRear;
+ sliver.triangles.insert(sliver.triangles.end(),{0,0,1});
+ std::vector<uint8_t> sliverMask(sliver.triangles.size()/3);
+ require(sda_hrtf_select_measured_faces(sliver.view(),sliverMask.data(),sliverMask.size(),nullptr,nullptr).code==0,"Selection must discard unusable extractor triangles without filling them");
+ require(sliverMask.back()==0,"Degenerate triangle must not enter preview");
+ auto usable=selected(sliver,sliverMask);
+ require(sda_hrtf_screen_measured_surface(usable.view(),nullptr,nullptr).code==0,"Remaining measured surface must still pass geometry checks");
+ require(sda_hrtf_screen_measured_surface(sliver.view(),nullptr,nullptr).code==1,"Final measurement gate must reject unfiltered degenerate faces");
+ check(sliver,1,"Acoustic gate must still reject degenerate faces");
  auto invalid=noRear;invalid.triangles[0]=UINT32_MAX;
  require(sda_hrtf_select_measured_faces(invalid.view(),mask.data(),mask.size(),nullptr,nullptr).code==1,"Selection must reject invalid face indices");
  auto opposing=noRear;for(float &n:opposing.normals)n=-n;

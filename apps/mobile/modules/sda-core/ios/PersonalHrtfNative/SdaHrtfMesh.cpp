@@ -185,7 +185,10 @@ struct Screen {
    for(int j=0;j<3;++j){t.i[j]=input.triangles[3*f+j];if(t.i[j]>=input.vertex_count)throw Error(1,"Invalid mesh index");}
    t.a=load(input.vertices+3*t.i[0]);t.b=load(input.vertices+3*t.i[1]);t.c=load(input.vertices+3*t.i[2]);
    V normal=cross(t.b-t.a,t.c-t.a);double magnitude=norm(normal);
-   if(magnitude<1e-12)throw Error(1,"Degenerate mesh triangle");
+   // A partial measured preview can omit unusable extractor slivers. Do not
+   // move vertices or fill holes; the retained mesh still gets the full
+   // degeneracy/topology/intersection/support screen below.
+   if(magnitude<1e-12)continue;
    // Large unsupported Poisson fill cannot force a costly sampling lattice.
    if(std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})>maxEdge)continue;
    t.n=normal*(1/magnitude);t.center=(t.a+t.b+t.c)*(1.0/3);
