@@ -142,7 +142,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     // Ray-cast a fixed asymmetric phantom while the camera moves to each side.
     // This tests registration against a known pose; it is not a human ear scan.
     struct SideResult { int merged, longestLoss; float positionError, angleError; };
-    auto scanSide = [&](float sign) {
+    auto scanSide = [&](float sign, bool returning=false, bool gaps=false) {
         model.reset(937);
         prepare(true);
         std::vector<Eigen::Vector3f> calibratedRays;
@@ -157,8 +157,9 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
                                        {0.014f,0.030f,0.023f},{0.014f,0.028f,0.022f}};
         const Eigen::Vector3f centers[] = {center,center+Eigen::Vector3f(0.004f,-0.004f,0.095f),
                                           center+Eigen::Vector3f(0.084f,-0.004f,0),center+Eigen::Vector3f(-0.084f,0.002f,0)};
-        for(int step=0;step<=100;step++) {
-            const float angle=sign*step*0.7f*float(M_PI)/180;
+        const int frameCount=returning ? 201 : 101;
+        for(int step=0;step<frameCount;step++) {
+            const float angle=sign*(step>100 ? 200-step : step)*0.7f*float(M_PI)/180;
             const Eigen::Matrix3f rotation=Eigen::AngleAxisf(angle,Eigen::Vector3f::UnitY()).toRotationMatrix();
             const Eigen::Vector3f origin=center+rotation*Eigen::Vector3f(0,0,0.4f);
             for(int y=0;y<height;y++)for(int x=0;x<width;x++) {
@@ -172,16 +173,23 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
                 }
                 frame->rawFrame.depths[y*width+x]=nearest;
             }
+            const bool missing=gaps && step>=45 && step<=48;
+            if(missing) for(auto &d : frame->rawFrame.depths)d=1;
             processor.computeFrameValues(*frame,frame->rawFrame);
+            const auto beforePose=model.getCurrentExtrinsicMatrix();const auto beforeCount=model.getSurfels().size();
             const auto result=model.assimilate(*frame,pbf,icp,fusion,20+step/15.0);
+            if(missing && (result.isMerged || model.getSurfels().size()!=beforeCount ||
+                !model.getCurrentExtrinsicMatrix().isApprox(beforePose,0)))
+                return SideResult{0,999,1,1};
+            if(missing)continue;
             if(!result.isMerged) { longestLoss=std::max(longestLoss,++rejectedRun); continue; }
             merged++; rejectedRun=0;
             const auto pose=model.getCurrentExtrinsicMatrix();
             maxPositionError=std::max(maxPositionError,(pose.block<3,1>(0,3)-origin).norm());
             maxAngleError=std::max(maxAngleError,Eigen::AngleAxisf(pose.block<3,3>(0,0).transpose()*rotation).angle());
         }
-        printf("SDA side trajectory prediction=%d distributed=%d iterations=%d sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
-               pbf.sdaMotionPrediction,pbf.sdaDistributedSamples,icp.maxIterations,sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
+        printf("SDA side trajectory prediction=%d distributed=%d geometric=%d iterations=%d sign=%g returning=%d gaps=%d accepted=%d/%d longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
+               pbf.sdaMotionPrediction,pbf.sdaDistributedSamples,icp.sdaGeometricConvergence,icp.maxIterations,sign,returning,gaps,merged,frameCount,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
         return SideResult{merged,longestLoss,maxPositionError,maxAngleError};
     };
     icp.sdaGeometricConvergence=false;
@@ -196,6 +204,10 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
        left.positionError>0.005f || right.positionError>0.005f ||
        left.angleError>3*float(M_PI)/180 || right.angleError>3*float(M_PI)/180) return 16;
     if(left.merged<baselineLeft.merged || right.merged<baselineRight.merged) return 17;
+    const auto reverse=scanSide(1,true,true);
+    if(reverse.merged<188 || reverse.longestLoss>3 || reverse.positionError>0.005f ||
+       reverse.angleError>3*float(M_PI)/180) return 18;
+    printf("SDA side-scan regression: bilateral poses, direction reversal and four missing-depth frames passed\n");
     printf("SDA tracking fixture: 10s blank rejected, surfels/pose unchanged, return-to-view recovered, reset passed\n");
     return 0;
  }
