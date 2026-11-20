@@ -164,7 +164,11 @@ struct FusionResourcesTest {
         abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
   return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
  }
- static func main() throws {
+ static func main() {
+  do { try run() }
+  catch { print("SDA verification failure: \(error)"); exit(1) }
+ }
+ static func run() throws {
   installMeshCrashTrace()
   let framework = Bundle(for:SCReconstructionManager.self)
   guard framework.bundleIdentifier == "com.standardcyborg.StandardCyborgFusion",
@@ -192,6 +196,7 @@ struct FusionResourcesTest {
    model.sdaMaximumSurfelCount = 1234567
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("New model has stale point count") }
    let lock = NSLock(); var completed = false
+   print("SDA resource fixture: finalizing empty manager")
    model.finalize { lock.lock(); completed = true; lock.unlock() }
    let deadline = Date().addingTimeInterval(20)
    while true {
@@ -201,6 +206,7 @@ struct FusionResourcesTest {
     RunLoop.current.run(until:Date().addingTimeInterval(0.02))
    }
    lock.lock(); completed = false; lock.unlock()
+   print("SDA resource fixture: resetting manager")
    model.sdaReset { lock.lock(); completed = true; lock.unlock() }
    let resetDeadline = Date().addingTimeInterval(20)
    while true {
