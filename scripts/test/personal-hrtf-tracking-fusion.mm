@@ -141,6 +141,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     if(!model.getSurfels().empty()) return 11;
     // Ray-cast a fixed asymmetric phantom while the camera moves to each side.
     // This tests registration against a known pose; it is not a human ear scan.
+    struct SideResult { int merged, longestLoss; float positionError, angleError; };
     auto scanSide = [&](float sign) {
         model.reset(937);
         prepare(true);
@@ -179,13 +180,20 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
             maxPositionError=std::max(maxPositionError,(pose.block<3,1>(0,3)-origin).norm());
             maxAngleError=std::max(maxAngleError,Eigen::AngleAxisf(pose.block<3,3>(0,0).transpose()*rotation).angle());
         }
-        printf("SDA side trajectory iterations=%d sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
-               icp.maxIterations,sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
-        return merged;
+        printf("SDA side trajectory prediction=%d distributed=%d iterations=%d sign=%g accepted=%d/101 longestLoss=%d positionError=%g angleErrorDegrees=%g\n",
+               pbf.sdaMotionPrediction,pbf.sdaDistributedSamples,icp.maxIterations,sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
+        return SideResult{merged,longestLoss,maxPositionError,maxAngleError};
     };
-    scanSide(1); scanSide(-1);
-    icp.maxIterations=64;
-    scanSide(1); scanSide(-1);
+    pbf.sdaMotionPrediction=false; pbf.sdaDistributedSamples=false;
+    const auto baselineLeft=scanSide(1), baselineRight=scanSide(-1);
+    pbf.sdaMotionPrediction=true; pbf.sdaDistributedSamples=true;
+    const auto left=scanSide(1), right=scanSide(-1);
+    // Never count increased acceptance as an improvement unless the recovered
+    // pose agrees with the known camera path as well.
+    if(left.merged<91 || right.merged<91 || left.longestLoss>3 || right.longestLoss>3 ||
+       left.positionError>0.005f || right.positionError>0.005f ||
+       left.angleError>3*float(M_PI)/180 || right.angleError>3*float(M_PI)/180) return 16;
+    if(left.merged<baselineLeft.merged || right.merged<baselineRight.merged) return 17;
     printf("SDA tracking fixture: 10s blank rejected, surfels/pose unchanged, return-to-view recovered, reset passed\n");
     return 0;
  }

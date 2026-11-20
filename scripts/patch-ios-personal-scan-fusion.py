@@ -24,6 +24,7 @@ paths.update({'meshFileHeader':('StandardCyborgFusion/Sources/include/StandardCy
 paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryFileIO_PLY.cpp','23a884d3f2fbd86e212e28a4182568ccc772d5e824cb6ed92e79052f38da33c4')})
 paths.update({'happly':('CppDependencies/happly/include/happly.h','f6bb34ad0102a3f12ef3389b4221af4020c5aed0938bf88b56ec9b00e13c4c35')})
 paths.update({'pbfSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/PBFModel.cpp','0a0f89c8e12f822f1ed8588a344a8c2b328426932f6f394ae17f7551f2068bd2')})
+paths['pbfConfig']=('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/PBFConfiguration.hpp','52a3ccfa2cee8c92d44630c82be8c0987309b86eec51344f407f9cb88384f3ed')
 for key,name,digest in [
  ('depthDataHeader','MetalDepthProcessorData.hpp','019aa4d2eeb6dcbe2c43dba9bd7ae45588b32747269ca986355578001e8c8b8d'),
  ('depthData','MetalDepthProcessorData.mm','b4820bd3a97146f18490610755476e918133033e0c2018d9d94fb46aaa2b7b77'),
@@ -143,9 +144,11 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
     ICPResult icpResult = ICP::run(icpConfig,''')
 
 
+# Internal registration strategies permit controlled same-engine comparisons.
+replace('pbfConfig','struct PBFConfiguration {','struct PBFConfiguration {\n    bool sdaMotionPrediction = true;\n    bool sdaDistributedSamples = true;')
 # A short pose prediction is an ICP initial guess only. Retry without it if
 # the original convergence or velocity checks reject it; never fuse a guess.
-replace('pbfSource','        ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n\n        Matrix4f extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;','        const Matrix4f acceptedPose = _extrinsicMatrix;\n        Matrix4f prediction = acceptedPose;\n        const auto older = _nthMostRecentValidFrameMetadata(1);\n        const bool predict = previousFrameMeta && older &&\n            sdaPredictTrackingPose(older->viewMatrix,previousFrameMeta->viewMatrix,\n                                   older->timestamp,previousFrameMeta->timestamp,currentTime,prediction);\n        Matrix4f extrinsicMatrixTmp = acceptedPose;\n        ICPResult icpResult;\n        for (int attempt=0; attempt<(predict ? 2 : 1); ++attempt) {\n        _extrinsicMatrix = predict && attempt==0 ? prediction : acceptedPose;\n        icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n        extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;')
+replace('pbfSource','        ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n\n        Matrix4f extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;','        const Matrix4f acceptedPose = _extrinsicMatrix;\n        Matrix4f prediction = acceptedPose;\n        const auto older = _nthMostRecentValidFrameMetadata(1);\n        const bool predict = pbfConfig.sdaMotionPrediction && previousFrameMeta && older &&\n            sdaPredictTrackingPose(older->viewMatrix,previousFrameMeta->viewMatrix,\n                                   older->timestamp,previousFrameMeta->timestamp,currentTime,prediction);\n        Matrix4f extrinsicMatrixTmp = acceptedPose;\n        ICPResult icpResult;\n        for (int attempt=0; attempt<(predict ? 2 : 1); ++attempt) {\n        _extrinsicMatrix = predict && attempt==0 ? prediction : acceptedPose;\n        icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n        extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;')
 replace('pbfSource','        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;','        if (frameMeta.icpUnusedIterationFraction > 0) break;\n        }\n        _extrinsicMatrix = acceptedPose;\n        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;')
 
 # The original raster walk stops at maxCount, often before reaching the lower
@@ -156,7 +159,7 @@ replace('pbfSource','        for (off_t i = 0; i < pointCount && filteredCount <
         while (pointCount > 1 && gcd(stride,pointCount) != 1) ++stride;
         size_t sampleIndex = 0;
         for (size_t visited = 0; visited < pointCount && filteredCount < maxCount; ++visited) {
-            const size_t i = sampleIndex;
+            const size_t i = pbfConfig.sdaDistributedSamples ? sampleIndex : visited;
             sampleIndex = (sampleIndex + stride) % pointCount;''')
 
 # Side/grazing depth may contain NaNs: comparisons with NaN are false,
