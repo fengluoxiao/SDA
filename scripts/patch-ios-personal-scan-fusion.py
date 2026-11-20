@@ -129,7 +129,7 @@ replace('source','    auto metadata = _modelQueue_model->assimilate(','''    _su
 # falling through to terminal shutdown and deleting it on every rejected frame.
 replace('source','                    // Intentional fall-through','                    break; // Recoverable loss: keep processing the latest input.')
 # Apply the same bounded rotation-angle calculation exercised by the native tests.
-replace('pbfSource','#import <cmath>','#import <cmath>\n#include "../Public/SdaTrackingRecovery.hpp"')
+replace('pbfSource','#import <cmath>','#import <cmath>\n#include "../Public/SdaTrackingRecovery.hpp"\n#include "../Public/SdaTrackingPrediction.hpp"')
 for axis in ['X','Y','Z']:
  replace('pbfSource',f'acosf(current{axis}.dot(previous{axis}))',f'SdaTrackingRecovery::axisAngle(current{axis}.dot(previous{axis}), current{axis}.norm() * previous{axis}.norm())')
 replace('pbfSource','currentFrameMeta->timestamp == previousFrameMeta->timestamp','currentFrameMeta->timestamp <= previousFrameMeta->timestamp')
@@ -142,6 +142,11 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
     }
     ICPResult icpResult = ICP::run(icpConfig,''')
 
+
+# A short pose prediction is an ICP initial guess only. Retry without it if
+# the original convergence or velocity checks reject it; never fuse a guess.
+replace('pbfSource','        ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n\n        Matrix4f extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;','        const Matrix4f acceptedPose = _extrinsicMatrix;\n        Matrix4f prediction = acceptedPose;\n        const auto older = _nthMostRecentValidFrameMetadata(1);\n        const bool predict = previousFrameMeta && older &&\n            sdaPredictTrackingPose(older->viewMatrix,previousFrameMeta->viewMatrix,\n                                   older->timestamp,previousFrameMeta->timestamp,currentTime,prediction);\n        Matrix4f extrinsicMatrixTmp = acceptedPose;\n        ICPResult icpResult;\n        for (int attempt=0; attempt<(predict ? 2 : 1); ++attempt) {\n        _extrinsicMatrix = predict && attempt==0 ? prediction : acceptedPose;\n        icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n        extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;')
+replace('pbfSource','        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;','        if (frameMeta.icpUnusedIterationFraction > 0) break;\n        }\n        _extrinsicMatrix = acceptedPose;\n        if (frameMeta.icpUnusedIterationFraction > 0) {\n            _extrinsicMatrix = extrinsicMatrixTmp;')
 
 # The original raster walk stops at maxCount, often before reaching the lower
 # part of the ear. Preserve its weighting and sample count, but distribute the
@@ -431,6 +436,10 @@ recovery=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/P
 recoveryTarget=root/Path(paths['source'][0]).parent/'SdaTrackingRecovery.hpp'
 recoveryTarget.write_bytes(recovery.read_bytes())
 record={str(recoveryTarget.relative_to(root)):hashlib.sha256(recovery.read_bytes()).hexdigest()}
+prediction=recovery.with_name('SdaTrackingPrediction.hpp')
+predictionTarget=recoveryTarget.with_name(prediction.name)
+predictionTarget.write_bytes(prediction.read_bytes())
+record[str(predictionTarget.relative_to(root))]=hashlib.sha256(prediction.read_bytes()).hexdigest()
 cleanup=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaPoissonMeshCleanup.hpp'
 cleanupTarget=root/Path(paths['poissonAdapter'][0]).parent/cleanup.name
 cleanupTarget.write_bytes(cleanup.read_bytes());record[str(cleanupTarget.relative_to(root))]=hashlib.sha256(cleanup.read_bytes()).hexdigest()
