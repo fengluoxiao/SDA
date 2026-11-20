@@ -9,11 +9,17 @@ faceframe=("$ios"/PersonalHrtfFusion/FaceFrame/*.swift)
 cp "$ios/Licenses/FaceFrame/provenance.json" "$out/faceframe-provenance.json"
 # Fetch before changing into the pinned framework checkout; fail before builds
 # if fixtures cannot be verified, rather than silently skipping positive input.
-python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
-if [[ "${SDA_FUSION_DEVICE_ONLY:-0}" != 1 ]]; then
- xcrun swiftc -O -parse-as-library "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" -o "$out/capture-guide-test"
+if [[ "${SDA_FUSION_USE_PREFLIGHT:-0}" == 1 ]]; then
+ test -s "$out/ear-positive-fixtures/faceframe-sweep.json" && test -s "$out/capture-guide-result.json"
+ test "$(cat "$out/faceframe-preflight-source.txt")" = "$(git rev-parse HEAD)"
+elif [[ "${SDA_FUSION_DEVICE_ONLY:-0}" != 1 ]]; then
+ python3 "$PWD/scripts/test/fetch-personal-hrtf-ear-fixtures.py" "$out/ear-positive-fixtures"
+ xcrun clang++ -std=c++17 -O2 -c "$ios/PersonalHrtfNative/SdaHrtfMesh.cpp" -o "$out/faceframe-measurement.o"
+ xcrun swiftc -O -parse-as-library -import-objc-header "$ios/SdaBridge.h" "${faceframe[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$PWD/scripts/test/personal-hrtf-capture-guide.swift" "$out/faceframe-measurement.o" -Xlinker -lc++ -o "$out/capture-guide-test"
  "$out/capture-guide-test" "$out/ear-positive-fixtures" | tee "$out/capture-guide-result.json"
+ git rev-parse HEAD > "$out/faceframe-preflight-source.txt"
 fi
+if [[ "${SDA_FUSION_PREFLIGHT_ONLY:-0}" == 1 ]]; then exit 0; fi
 stage="$PWD/scripts/stage-ios-personal-scan-fusion.py"
 probe="$PWD/scripts/test/personal-hrtf-fusion-resources.swift"
 lifecycle="$PWD/scripts/patch-ios-personal-scan-fusion.py"

@@ -2,6 +2,7 @@ import Foundation
 import simd
 
 enum ReplayFailure: Error { case invalid(String) }
+enum PersonalHrtfError: Error { case message(String) }
 
 @main struct FaceFrameDepthReplay {
  static let width = 144, height = 120
@@ -42,7 +43,11 @@ enum ReplayFailure: Error { case invalid(String) }
   } }
   let angles = Array(repeating:0,count:36) + Array(stride(from:2,through:70,by:2)) + Array(repeating:70,count:4) + Array(stride(from:68,through:-70,by:-2)) + Array(repeating:-70,count:4)
   var trace = [[String:Any]](), guide = PersonalHeadCaptureGuide(), acceptedPose:simd_float4x4?, observedLeft = false, observedRight = false, geometryRight = 0
-  engine.onMeasuredFrame = { _,_,pose in acceptedPose = pose }
+  var support = PersonalHeadMeasuredSupport(limit:500000)
+  engine.onMeasuredFrame = { [weak engine] image,weights,pose in
+   acceptedPose = pose
+   if let volume = engine?.volume { support.append(image:image,weights:weights,pose:pose,volume:volume,frame:volume.integratedFrames) }
+  }
   for (index,angle) in angles.enumerated() {
    let camera = pose(angle), invalid = index == 33 || index == angles.count-3
    let depths = invalid ? [Float](repeating:0,count:width*height) : (angle == 0 ? frontalDepth : image(camera))
@@ -61,8 +66,11 @@ enum ReplayFailure: Error { case invalid(String) }
   guard observedLeft, observedRight, guide.complete, geometryRight > 0, let volume = engine.volume else { throw ReplayFailure.invalid("FaceFrame did not register both sides: \(engine.counts), geometry right frames=\(geometryRight)") }
   let surface = SurfaceNets.extract(volume,maximumVertices:1000000,maximumTriangles:2000000)
   guard surface.triangles.count > 1000, SurfaceNets.extract(volume,maximumVertices:4,maximumTriangles:8).vertices.isEmpty else { throw ReplayFailure.invalid("Unbounded or empty upstream surface extraction") }
+  let geometry = try PersonalHrtfReviewGeometry(vertices:surface.vertices.flatMap { [$0.x,$0.y,$0.z] },triangles:surface.triangles.flatMap { [$0.x,$0.y,$0.z] })
+  let measured = try PersonalHrtfMeshCheck.measurement(.init(surface:geometry,support:support.positions,normals:support.normals),cancelled:{false})
+  guard support.count >= 10000, measured.surface.triangles.count/3 > 1000, measured.distance <= 0.0015 else { throw ReplayFailure.invalid("FaceFrame surface did not pass independent depth support") }
   try JSONSerialization.data(withJSONObject:trace).write(to:directory.appendingPathComponent("faceframe-sweep.json"))
-  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"surfaceFaces":surface.triangles.count,"syntheticDepth":true,"physicalScanTested":false]
+  let result: [String:Any] = ["frames":angles.count,"frontalOnlyNoEar":true,"leftFrames":engine.counts.left,"rightFrames":engine.counts.right,"rightFramesWithoutFaceAnchor":geometryRight,"missingDepthRejected":true,"surfaceFaces":surface.triangles.count,"measuredReviewFaces":measured.surface.triangles.count/3,"supportPoints":support.count,"maximumSupportDistance":measured.distance,"syntheticDepth":true,"physicalScanTested":false]
   print(String(decoding:try JSONSerialization.data(withJSONObject:result),as:UTF8.self))
  }
 }

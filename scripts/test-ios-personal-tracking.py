@@ -19,10 +19,10 @@ print('PASS: 6/15/30/60fps loss through 30min, repeated recovery, guidance, rese
 
 assert 'count >= 600 { fail'not in text
 assert 'FusionEngine()' in text and 'fusion.process(frame)' in text and 'allocationLimitReached' in text
-assert 'sda_hrtf_scan_point_limit(budget)'in text
+assert 'sda_hrtf_scan_point_limit(available)'in text
 assert 'maximumSurfelCount) continue'in patch
 assert 'metadata.result = SCAssimilatedFrameResultFailed;\n        }'not in patch
-print('PASS: quota has a strict insertion bound and paused capture retains its measured model')
+print('PASS: bounded native insertion policy and budgeted FaceFrame capture path')
 
 assert "config.sdaGeometricConvergence" in patch
 assert "sdaMotionPrediction && previousFrameMeta" in patch

@@ -1,5 +1,6 @@
 import ARKit
 import AVFoundation
+import SceneKit
 import UIKit
 
 typealias PersonalHeadDepthFrame = ARFrame

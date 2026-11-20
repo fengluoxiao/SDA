@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(StandardCyborgFusion)
 import StandardCyborgFusion
+#endif
 
 // A conservative geometric screen, never a claim that measured ear detail is
 // acoustically sufficient. Ear landmarks/convergence are a separate later gate.
@@ -12,6 +14,7 @@ enum PersonalHrtfMeshCheck {
   let surface: PersonalHrtfReviewGeometry
   let support: [Float], normals: [Float]
  }
+ #if canImport(StandardCyborgFusion)
  static func screen(mesh meshURL: URL, support supportURL: URL, cancelled: @escaping () -> Bool) throws -> Double {
   try screen(try load(mesh:meshURL,support:supportURL,cancelled:cancelled),cancelled:cancelled)
  }
@@ -57,6 +60,7 @@ enum PersonalHrtfMeshCheck {
   }
   return Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals)
  }
+ #endif
  // The measurement build reviews only measured triangles. Poisson's inferred
  // closures never appear in review or satisfy the measurement gate.
  static func measurement(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> (surface: PersonalHrtfReviewGeometry, distance: Double) {

@@ -25,10 +25,10 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
  init(frontTrueDepth:Void) throws {
   guard PersonalHeadScanController.supported() else { throw PersonalHrtfError.message("此设备无法使用前置 TrueDepth") }
   coverage = try PersonalHrtfCaptureCoverage()
-  budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
-  pointLimit = Int(sda_hrtf_scan_point_limit(budget))
-  guard pointLimit > 0 else { throw PersonalHrtfError.message("当前内存不足以开始头耳测量") }
-  support = PersonalHeadMeasuredSupport(limit:pointLimit)
+  let available = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+  let limit = Int(sda_hrtf_scan_point_limit(available))
+  guard limit > 0 else { throw PersonalHrtfError.message("当前内存不足以开始头耳测量") }
+  budget = available; pointLimit = limit; support = PersonalHeadMeasuredSupport(limit:limit)
   super.init()
   fusion?.maximumBlocks = Int(budget/8192)
  }
