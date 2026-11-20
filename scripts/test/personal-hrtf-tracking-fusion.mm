@@ -204,9 +204,11 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
        left.positionError>0.005f || right.positionError>0.005f ||
        left.angleError>3*float(M_PI)/180 || right.angleError>3*float(M_PI)/180) return 16;
     if(left.merged<baselineLeft.merged || right.merged<baselineRight.merged) return 17;
-    const auto reverse=scanSide(1,true,true);
-    if(reverse.merged<188 || reverse.longestLoss>3 || reverse.positionError>0.005f ||
-       reverse.angleError>3*float(M_PI)/180) return 18;
+    for (float sign : {1.0f,-1.0f}) {
+        const auto reverse=scanSide(sign,true,true);
+        if(reverse.merged<188 || reverse.longestLoss>3 || reverse.positionError>0.005f ||
+           reverse.angleError>3*float(M_PI)/180) return 18;
+    }
     printf("SDA side-scan regression: bilateral poses, direction reversal and four missing-depth frames passed\n");
     printf("SDA tracking fixture: 10s blank rejected, surfels/pose unchanged, return-to-view recovered, reset passed\n");
     return 0;
