@@ -144,8 +144,13 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    captureLimit?(count,"本次采集预算已用满（最多 \(pointLimit) 个点），已暂停并保留测量。可尝试处理现有模型；未覆盖的区域仍会由几何检查拒绝。")
    return
   }
-  if failed { fail("连续 3 秒未能恢复跟踪，请重新采集；保持头部不动，让手机回到刚才能扫描的位置"); return }
-  progress?(count,accepted ? "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" : "暂时失去跟踪：保持头部不动，将手机缓慢退回刚才的位置")
+  if failed { fail("配准器发生内部错误，无法继续本次采集"); return }
+  let hint: String
+  if accepted { hint = "正在配准头耳深度 · \(model.sdaSurfelCount)/\(pointLimit) 点" }
+  else if manager.sdaNeedsTrackingRecovery {
+   hint = "测量已保留：请保持头部不动，把手机退回上次对准的位置，重新对齐后会自动继续；也可处理已采集部分"
+  } else { hint = "正在重新对齐：保持头部不动，缓慢移回上一视角，不用重新采集" }
+  progress?(count,hint)
  }
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }
  func finish() {

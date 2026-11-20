@@ -15,7 +15,11 @@ patch=(root/'scripts/patch-ios-personal-scan-fusion.py').read_text()
 assert '_sdaTrackingRecovery.terminal(pbfMetadata.isMerged,'in patch
 assert 'terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking'in patch
 assert '_sdaTrackingRecovery.reset()'in patch
-print('PASS: native 6/15/30/60fps recovery, timeout, reset, invalid clock; full cadence and bounded records')
+assert 'manager.sdaNeedsTrackingRecovery'in text
+assert '连续 3 秒未能恢复跟踪'not in text
+assert 'break; // Recoverable loss' in patch
+assert 'SdaTrackingRecovery::axisAngle' in patch
+print('PASS: 6/15/30/60fps loss through 30min, repeated recovery, guidance, reset, invalid clock; acos roundoff and real angles')
 
 assert 'count >= 600 { fail'not in text
 assert 'if model.sdaReachedSurfelLimit'in text and 'phase = .paused'in text

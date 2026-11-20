@@ -23,6 +23,7 @@ paths.update({'meshFileIO':('StandardCyborgFusion/Sources/StandardCyborgFusion/P
 paths.update({'meshFileHeader':('StandardCyborgFusion/Sources/include/StandardCyborgFusion/SCMesh+FileIO.h','573591298053a8f72d2f9090a5ce80dc46e83300a3e6c067855ef0c6664fe0d3')})
 paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryFileIO_PLY.cpp','23a884d3f2fbd86e212e28a4182568ccc772d5e824cb6ed92e79052f38da33c4')})
 paths.update({'happly':('CppDependencies/happly/include/happly.h','f6bb34ad0102a3f12ef3389b4221af4020c5aed0938bf88b56ec9b00e13c4c35')})
+paths.update({'pbfSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/PBFModel.cpp','0a0f89c8e12f822f1ed8588a344a8c2b328426932f6f394ae17f7551f2068bd2')})
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -39,6 +40,8 @@ replace('header','/** The gravity vector of the current scan. */', '''/** SDA: m
 @property (atomic) NSUInteger sdaMaximumSurfelCount;
 /** SDA: capture is paused at the bound; the measured model remains available. */
 @property (atomic, readonly) BOOL sdaReachedSurfelLimit;
+/** SDA: sustained loss asks the user to return to the last view; does not discard the model. */
+@property (atomic, readonly) BOOL sdaNeedsTrackingRecovery;
 /** SDA: completion runs on main after the model queue has released its state. */
 - (void)sdaResetWithCompletion:(nullable dispatch_block_t)completion NS_SWIFT_NAME(sdaReset(completion:));
 
@@ -48,8 +51,9 @@ replace('source','    GravityEstimator _gravityEstimator;','''    GravityEstimat
     std::mutex _sdaGravityMutex;
     std::atomic<size_t> _sdaSurfelCount;
     std::atomic<size_t> _sdaMaximumSurfelCount;
-    SdaTrackingRecovery _sdaTrackingRecovery;''')
-replace('source','        _wroteIntrinsicsToFile = NO;','        _wroteIntrinsicsToFile = NO;\n        _sdaSurfelCount.store(0, std::memory_order_relaxed);\n        _sdaMaximumSurfelCount.store(500000, std::memory_order_relaxed);')
+    SdaTrackingRecovery _sdaTrackingRecovery;
+    std::atomic<bool> _sdaNeedsTrackingRecovery;''')
+replace('source','        _wroteIntrinsicsToFile = NO;','        _wroteIntrinsicsToFile = NO;\n        _sdaSurfelCount.store(0, std::memory_order_relaxed);\n        _sdaNeedsTrackingRecovery.store(false, std::memory_order_relaxed);\n        _sdaMaximumSurfelCount.store(500000, std::memory_order_relaxed);')
 replace('source','- (simd_float3)gravity\n{','''- (NSUInteger)sdaMaximumSurfelCount
 {
     return _sdaMaximumSurfelCount.load(std::memory_order_acquire);
@@ -62,6 +66,11 @@ replace('source','- (simd_float3)gravity\n{','''- (NSUInteger)sdaMaximumSurfelCo
 {
     return _sdaSurfelCount.load(std::memory_order_acquire) >= _sdaMaximumSurfelCount.load(std::memory_order_acquire);
 }
+- (BOOL)sdaNeedsTrackingRecovery
+{
+    return _sdaNeedsTrackingRecovery.load(std::memory_order_acquire);
+}
+
 - (NSUInteger)sdaSurfelCount
 {
     return (NSUInteger)_sdaSurfelCount.load(std::memory_order_acquire);
@@ -88,9 +97,10 @@ replace('source','''                                                            
         
         if (_includesDepthBuffersInMetadata)''','''                                                                                                        _inputQueue_statistics.consecutiveLostTrackingCount);
         // Upstream ends after 8 rejected frames (<0.3s at 30fps). Keep the
-        // exact ICP acceptance decision; only give rejected frames 3s to recover.
+        // exact ICP acceptance decision; never end a scan merely for losing tracking.
         const bool terminalTracking = _sdaTrackingRecovery.terminal(pbfMetadata.isMerged,
                                                                    NSProcessInfo.processInfo.systemUptime);
+        _sdaNeedsTrackingRecovery.store(_sdaTrackingRecovery.needsReturnToView(NSProcessInfo.processInfo.systemUptime), std::memory_order_release);
         if (!pbfMetadata.isMerged) {
             metadata.result = terminalTracking ? SCAssimilatedFrameResultFailed : SCAssimilatedFrameResultLostTracking;
         }
@@ -101,6 +111,14 @@ replace('source','''                                                            
         if (_includesDepthBuffersInMetadata)''')
 replace('source','    auto metadata = _modelQueue_model->assimilate(','''    _surfelFusionConfig.maximumSurfelCount = _sdaMaximumSurfelCount.load(std::memory_order_acquire);
     auto metadata = _modelQueue_model->assimilate(''')
+# LostTracking is recoverable: keep the newest pending input rather than
+# falling through to terminal shutdown and deleting it on every rejected frame.
+replace('source','                    // Intentional fall-through','                    break; // Recoverable loss: keep processing the latest input.')
+# Apply the same bounded rotation-angle calculation exercised by the native tests.
+replace('pbfSource','#import <cmath>','#import <cmath>\n#include "../Public/SdaTrackingRecovery.hpp"')
+for axis in ['X','Y','Z']:
+ replace('pbfSource',f'acosf(current{axis}.dot(previous{axis}))',f'SdaTrackingRecovery::axisAngle(current{axis}.dot(previous{axis}), current{axis}.norm() * previous{axis}.norm())')
+replace('pbfSource','currentFrameMeta->timestamp == previousFrameMeta->timestamp','currentFrameMeta->timestamp <= previousFrameMeta->timestamp')
 # The upstream initial-frame configuration must not erase the caller's near clip.
 replace('source','    _surfelFusionConfig.minDepth = 0;','    // Preserve the caller-provided near-depth exclusion.')
 replace('fusionHeader','#import "SurfelIndexMap.hpp"','#import "SurfelIndexMap.hpp"\n#include "SdaHrtfMesh.h"')
@@ -119,6 +137,7 @@ replace('source','- (void)reset\n{','''- (void)reset
 replace('source','            _modelQueue_model->reset();','''            _modelQueue_model->reset();
             _sdaSurfelCount.store(0, std::memory_order_release);
             _sdaTrackingRecovery.reset();
+            _sdaNeedsTrackingRecovery.store(false, std::memory_order_release);
             if (completion != nil) { dispatch_async(dispatch_get_main_queue(), completion); }''')
 
 
@@ -274,4 +293,4 @@ for key in ['fusionHeader']:
  target.write_bytes(meshHeader.read_bytes());record[str(target.relative_to(root))]=hashlib.sha256(meshHeader.read_bytes()).hexdigest()
 for key,(path,_)in paths.items():
  data=texts[key].encode();(root/path).write_bytes(data);record[path]=hashlib.sha256(data).hexdigest()
-(root.parent/'fusion-lifecycle-patch.json').write_text(json.dumps({'pinnedCommit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['atomic model-thread point-count snapshot','memory-configured strict per-insertion point cap; capture limit preserves measured model','serialized gravity estimator access','3s monotonic recovery of rejected frames without relaxing ICP acceptance','model reset completion after memory release'],'sha256':record},indent=2)+'\n')
+(root.parent/'fusion-lifecycle-patch.json').write_text(json.dumps({'pinnedCommit':'8c3bc698944ec41edaa6f627db15a6573e8e2af2','patches':['atomic model-thread point-count snapshot','memory-configured strict per-insertion point cap; capture limit preserves measured model','serialized gravity estimator access','recoverable tracking loss retains model and pending input; normalized rotation angle avoids acos NaN','model reset completion after memory release'],'sha256':record},indent=2)+'\n')

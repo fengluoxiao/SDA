@@ -6,19 +6,48 @@ int main() {
     for (int fps : {6, 15, 30, 60}) {
         SdaTrackingRecovery gate;
         assert(!gate.terminal(true, 0));
-        // More than the old 6/8 frame cutoff must be recoverable.
-        for (int i=0; i<fps*3; ++i) assert(!gate.terminal(false, 10.0+double(i)/fps));
-        assert(!gate.terminal(true, 12.99));
-        assert(!gate.terminal(false, 15));
-        assert(!gate.terminal(false, 17.99));
-        assert(gate.terminal(false, 18));
-        assert(gate.terminal(true, 19)); // Terminal stays terminal until a new scan.
+        // Thirty minutes of rejected frames never clears a measured scan.
+        for (int i=0; i<fps*1800; ++i) {
+            const double now = 10.0+double(i)/fps;
+            assert(!gate.terminal(false, now));
+            assert(gate.needsReturnToView(now) == (now >= 13.0));
+        }
+        assert(!gate.terminal(true, 1810));
+        assert(!gate.needsReturnToView(1810));
+        assert(!gate.terminal(false, 1820));
+        assert(!gate.needsReturnToView(1822.99));
+        assert(!gate.terminal(false, 1823));
+        assert(gate.needsReturnToView(1823));
+        // Recovery can succeed repeatedly without a reset or a new coordinate frame.
+        assert(!gate.terminal(true, 2000));
+        assert(!gate.needsReturnToView(2000));
         gate.reset();
-        assert(!gate.terminal(true, 20));
-        assert(!gate.terminal(false, 21));
-        assert(!gate.terminal(true, 21.1));
-        assert(!gate.terminal(false, 100)); // Success clears the old loss timer.
+        assert(!gate.needsReturnToView(5000));
+        assert(!gate.terminal(false, 5000));
+        assert(!gate.terminal(false, 10)); // clock rolls back; restart guidance timer.
+        assert(!gate.needsReturnToView(12.99));
+        assert(gate.needsReturnToView(13));
     }
-    SdaTrackingRecovery invalid;
-    assert(invalid.terminal(false,std::numeric_limits<double>::quiet_NaN()));
+    for (double bad : {-1.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        SdaTrackingRecovery gate;
+        assert(gate.terminal(false,bad));
+        assert(gate.terminal(true,1));
+        gate.reset();
+        assert(!gate.terminal(true,2));
+    }
+    using G = SdaTrackingRecovery;
+    // Reproduces acos(dot>1) NaN at a near-identity Float32 pose.
+    assert(std::isnan(std::acos(1.0000001f)));
+    assert(G::axisAngle(1.0000001f,1.0f)==0);
+    assert(G::axisAngle(1.00001f,1.00001f)==0);
+    assert(std::abs(G::axisAngle(-1.0000001f,1.0f)-3.14159265f)<1e-6f);
+    for (int degrees : {1, 10, 45, 90, 135, 179}) {
+        float angle=degrees*3.14159265f/180;
+        for (float scale : {0.9999f,1.0f,1.0001f})
+            assert(std::abs(G::axisAngle(std::cos(angle)*scale,scale)-angle)<1e-5f);
+    }
+    for(float bad : {0.0f,0.9f,1.1f,std::numeric_limits<float>::infinity()})
+        assert(std::isnan(G::axisAngle(1,bad)));
+    assert(std::isnan(G::axisAngle(1.1f,1)));
+    assert(std::isnan(G::axisAngle(std::numeric_limits<float>::quiet_NaN(),1)));
 }
