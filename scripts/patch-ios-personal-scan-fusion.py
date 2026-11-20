@@ -24,6 +24,13 @@ paths.update({'meshFileHeader':('StandardCyborgFusion/Sources/include/StandardCy
 paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryFileIO_PLY.cpp','23a884d3f2fbd86e212e28a4182568ccc772d5e824cb6ed92e79052f38da33c4')})
 paths.update({'happly':('CppDependencies/happly/include/happly.h','f6bb34ad0102a3f12ef3389b4221af4020c5aed0938bf88b56ec9b00e13c4c35')})
 paths.update({'pbfSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/PBFModel.cpp','0a0f89c8e12f822f1ed8588a344a8c2b328426932f6f394ae17f7551f2068bd2')})
+for key,name,digest in [
+ ('depthDataHeader','MetalDepthProcessorData.hpp','019aa4d2eeb6dcbe2c43dba9bd7ae45588b32747269ca986355578001e8c8b8d'),
+ ('depthData','MetalDepthProcessorData.mm','b4820bd3a97146f18490610755476e918133033e0c2018d9d94fb46aaa2b7b77'),
+ ('depthProcessor','MetalDepthProcessor.mm','49a7b25a6451b5095cfe9117c41635953aa99d4f79c185d9d4116f6b9ba19d4f'),
+ ('computeEngine','MetalComputeEngine.mm','8d790e7a4bf9eb9e8e28da16261ffadf6d73743f97a4538c149140548a309ea9'),
+ ('indexMap','MetalSurfelIndexMap.mm','c04576bf3cbb471c0857249fc0243138e9969a253a074070e7f72711a90027be')]:
+ paths[key]=('StandardCyborgFusion/Sources/StandardCyborgFusion/MetalDepthProcessor/'+name,digest)
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -127,6 +134,94 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
         return rejected;
     }
     ICPResult icpResult = ICP::run(icpConfig,''')
+
+
+# Do not seed a scan from a tiny/invalid fragment that cannot supply a later
+# ICP target. A failed GPU frame has negative weights and cannot initialize it.
+replace('pbfSource','    if (_surfels.size() > 0) {','''    if (_surfels.empty()) {
+        if (!std::isfinite(pbfConfig.icpDownsampleFraction) || pbfConfig.icpDownsampleFraction <= 0) return frameMeta;
+        const double seedEstimate = std::ceil(32.0 / std::min(1.0f, pbfConfig.icpDownsampleFraction));
+        if (seedEstimate > frame.positions.size()) return frameMeta;
+        const size_t minimumSeed = (size_t)seedEstimate;
+        size_t usable = 0;
+        for (size_t i = 0; i < frame.positions.size() && usable < minimumSeed; ++i) {
+            const float depth = rawFrame.depths[i];
+            const Vector3f position = standard_cyborg::toVector3f(frame.positions[i]);
+            const Vector3f normal = standard_cyborg::toVector3f(frame.normals[i]);
+            if (std::isfinite(depth) && depth > surfelFusionConfiguration.minDepth && depth <= surfelFusionConfiguration.maxDepth &&
+                frame.inputConfidences[i] >= surfelFusionConfiguration.inputConfidenceThreshold && frame.weights[i] > 0 &&
+                position.allFinite() && normal.allFinite() && position.norm() > 0 &&
+                -position.dot(normal) / position.norm() >= std::cos(surfelFusionConfiguration.maxSurfelIncidenceThreshold)) ++usable;
+        }
+        if (usable < minimumSeed) return frameMeta;
+    }
+    if (_surfels.size() > 0) {''')
+
+# Borrowed vector storage is not a VM-backed Metal allocation contract. Own
+# bounded working buffers and copy only valid bytes, never padded vector pages.
+replace('depthDataHeader','    size_t width;','    bool sdaCompleted = false;\n    size_t width;')
+replace('depthData','#import <iostream>','#import <iostream>\n#include <cstring>')
+replace('depthData','    width = widthIn;','    sdaCompleted = false;\n    width = widthIn;')
+for vector,buffer,ctype in [('points','pointsBuffer','math::Vec3'),('normals','normalsBuffer','math::Vec3'),('weights','weightsBuffer','float'),('inputConfidences','inputConfidencesBuffer','float'),('surfelSizes','surfelSizesBuffer','float')]:
+ size={'points':'pointsBufferSize','normals':'normalsBufferSize','weights':'weightsBufferSize','inputConfidences':'inputConfidencesSize','surfelSizes':'surfelSizesSize'}[vector]
+ replace('depthData',f'roundUpToMultiple({vector}.size() * sizeof({ctype}), 4096)',f'{vector}.size() * sizeof({ctype})')
+ replace('depthData',f'    {buffer} = [device newBufferWithBytesNoCopy:{vector}.data() length:{size} options:0 deallocator:NULL];',f'''    if ({buffer} == nil || {buffer}.length != {size}) {{
+        {buffer} = [device newBufferWithLength:{size} options:MTLResourceStorageModeShared];
+    }}
+    if ({buffer}.contents != nullptr && {size} > 0) std::memcpy({buffer}.contents, {vector}.data(), {size});''')
+replace('computeEngine','    [commandBuffer waitUntilCompleted];','    [commandBuffer waitUntilCompleted];\n    depthProcessorData.sdaCompleted = commandBuffer.status == MTLCommandBufferStatusCompleted;')
+replace('depthProcessor','#import <vector>','#import <vector>\n#include <algorithm>\n#include <cstring>')
+replace('depthProcessor','    [_computeEngine runWithDepthProcessorData:_depthProcessorData];','''    // Do not expose stale GPU outputs after an allocation/command failure.
+    auto reject = [&]() {
+        std::fill(frame.weights.begin(), frame.weights.end(), -1.0f);
+        std::fill(frame.inputConfidences.begin(), frame.inputConfidences.end(), 0.0f);
+    };
+    if (!_depthProcessorData.pointsBuffer || !_depthProcessorData.normalsBuffer ||
+        !_depthProcessorData.weightsBuffer || !_depthProcessorData.inputConfidencesBuffer ||
+        !_depthProcessorData.surfelSizesBuffer || !_depthProcessorData.workBuffer ||
+        !_depthProcessorData.depthTexture || !_depthProcessorData.workTexture || !_depthProcessorData.smoothedDepthTexture) {
+        reject(); return;
+    }
+    [_computeEngine runWithDepthProcessorData:_depthProcessorData];
+    if (!_depthProcessorData.sdaCompleted) { reject(); return; }
+    std::memcpy(frame.positions.data(), _depthProcessorData.pointsBuffer.contents, frame.positions.size() * sizeof(math::Vec3));
+    std::memcpy(frame.normals.data(), _depthProcessorData.normalsBuffer.contents, frame.normals.size() * sizeof(math::Vec3));
+    std::memcpy(frame.weights.data(), _depthProcessorData.weightsBuffer.contents, frame.weights.size() * sizeof(float));
+    std::memcpy(frame.inputConfidences.data(), _depthProcessorData.inputConfidencesBuffer.contents, frame.inputConfidences.size() * sizeof(float));
+    std::memcpy(frame.surfelSizes.data(), _depthProcessorData.surfelSizesBuffer.contents, frame.surfelSizes.size() * sizeof(float));''')
+start=texts['indexMap'].index('        // On iOS devices, we write directly into indexLookups')
+end=texts['indexMap'].index('        _indexTexture.label',start)
+replace('indexMap',texts['indexMap'][start:end],'''        descriptor.usage = MTLTextureUsageRenderTarget;
+#if !TARGET_OS_OSX
+        descriptor.storageMode = MTLStorageModeShared;
+#endif
+        _indexTexture = [_device newTextureWithDescriptor:descriptor];
+''')
+replace('indexMap','''        surfelsBuffer = [_device newBufferWithBytesNoCopy:(void *)&surfels[0]
+                                                   length:roundUpToMultiple(sizeof(Surfel) * surfels.size(), 4096)
+                                                  options:0
+                                              deallocator:NULL];''','''        surfelsBuffer = [_device newBufferWithBytes:surfels.data()
+                                                   length:sizeof(Surfel) * surfels.size()
+                                                  options:MTLResourceStorageModeShared];''')
+replace('indexMap','''        surfelsBuffer = [_device newBufferWithBytesNoCopy:(void *)surfels
+                                                   length:roundUpToMultiple(sizeof(Surfel) * surfelCount, 4096)
+                                                  options:0
+                                              deallocator:NULL];''','''        surfelsBuffer = [_device newBufferWithBytes:surfels
+                                                   length:sizeof(Surfel) * surfelCount
+                                                  options:MTLResourceStorageModeShared];''')
+replace('indexMap','''    // On iOS devices, we've written directly into indexLookups, so no need to copy the result back out
+#if TARGET_OS_OSX
+    [_indexTexture getBytes:indexLookups.data()
+                bytesPerRow:rawFrame.width * sizeof(uint32_t)
+                 fromRegion:MTLRegionMake2D(0, 0, rawFrame.width, rawFrame.height)
+                mipmapLevel:0];
+#endif''','''    if (commandBuffer.status != MTLCommandBufferStatusCompleted) return false;
+    [_indexTexture getBytes:indexLookups.data()
+                bytesPerRow:rawFrame.width * sizeof(uint32_t)
+                 fromRegion:MTLRegionMake2D(0, 0, rawFrame.width, rawFrame.height)
+                mipmapLevel:0];''')
+replace('indexMap','_indexTexture.width != rawFrame.width)', '_indexTexture.width != rawFrame.width || _indexTexture.height != rawFrame.height)')
+replace('indexMap','_depthTexture.width != rawFrame.width)', '_depthTexture.width != rawFrame.width || _depthTexture.height != rawFrame.height)')
 
 # The upstream initial-frame configuration must not erase the caller's near clip.
 replace('source','    _surfelFusionConfig.minDepth = 0;','    // Preserve the caller-provided near-depth exclusion.')

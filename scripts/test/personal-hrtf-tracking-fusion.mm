@@ -50,6 +50,9 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
         }
         processor.computeFrameValues(*frame,frame->rawFrame);
     };
+    prepare(false);
+    auto blank=model.assimilate(*frame,pbf,icp,fusion,0.5);
+    if(blank.isMerged || !model.getSurfels().empty()) return 12;
     printf("SDA tracking fixture: processing visible depth\n");
     prepare(true);
     printf("SDA tracking fixture: fusing initial depth\n");
