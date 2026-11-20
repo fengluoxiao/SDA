@@ -153,6 +153,19 @@ replace('pbfSource','            float depth = frame.rawFrame.depths[i];','''   
                 !(frame.inputConfidences[i] >= surfelFusionConfiguration.inputConfidenceThreshold) ||
                 !position.allFinite() || !normal.allFinite() || normal.squaredNorm() <= 0) continue;''')
 
+# The same invalid samples must not reach the retained measured surface after
+# a valid subset has aligned. NaN also passes ordinary range/angle comparisons.
+replace('fusionSource','#import "PBFDefinitions.h"','#import "PBFDefinitions.h"\n#include <cmath>')
+replace('fusionSource','if (depth <= surfelFusionConfiguration.minDepth || depth > surfelFusionConfiguration.maxDepth)',
+                       'if (!std::isfinite(depth) || depth <= surfelFusionConfiguration.minDepth || depth > surfelFusionConfiguration.maxDepth)')
+replace('fusionSource','if (inputConfidence < surfelFusionConfiguration.inputConfidenceThreshold)',
+                       'if (!(inputConfidence >= surfelFusionConfiguration.inputConfidenceThreshold))')
+replace('fusionSource','            const float incomingSurfelSize = frame.surfelSizes[index];','''            const float incomingSurfelSize = frame.surfelSizes[index];
+            if (!incomingPosition.allFinite() || !incomingNormal.allFinite() ||
+                incomingPosition.squaredNorm() <= 0 || incomingNormal.squaredNorm() <= 0 ||
+                !std::isfinite(incomingSurfelSize) || incomingSurfelSize <= 0 ||
+                !std::isfinite(frame.weights[index]) || frame.weights[index] <= 0) continue;''')
+
 # Do not seed a scan from a tiny/invalid fragment that cannot supply a later
 # ICP target. A failed GPU frame has negative weights and cannot initialize it.
 replace('pbfSource','    if (_surfels.size() > 0) {','''    if (_surfels.empty()) {

@@ -101,6 +101,9 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     }
     printf("SDA non-finite subset: usable view recovered=%d\n",sparseRecovered);
     if(!sparseRecovered) return 14;
+    for(const auto &s : model.getSurfels())
+        if(!s.position.allFinite() || !s.normal.allFinite() || !std::isfinite(s.weight) ||
+           !std::isfinite(s.surfelSize)) return 15;
     prepare(true);
     const auto saved=model.getSurfels();
     const Eigen::Matrix4f savedPose=model.getCurrentExtrinsicMatrix();
