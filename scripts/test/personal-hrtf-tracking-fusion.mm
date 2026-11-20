@@ -184,8 +184,10 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
                pbf.sdaMotionPrediction,pbf.sdaDistributedSamples,icp.maxIterations,sign,merged,longestLoss,maxPositionError,maxAngleError*180/float(M_PI));
         return SideResult{merged,longestLoss,maxPositionError,maxAngleError};
     };
+    icp.sdaGeometricConvergence=false;
     pbf.sdaMotionPrediction=false; pbf.sdaDistributedSamples=false;
     const auto baselineLeft=scanSide(1), baselineRight=scanSide(-1);
+    icp.sdaGeometricConvergence=true;
     pbf.sdaMotionPrediction=true; pbf.sdaDistributedSamples=true;
     const auto left=scanSide(1), right=scanSide(-1);
     // Never count increased acceptance as an improvement unless the recovered

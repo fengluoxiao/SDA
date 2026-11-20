@@ -1,4 +1,5 @@
 #include "SdaTrackingRecovery.hpp"
+#include "SdaTrackingConvergence.hpp"
 #include <cassert>
 #include <initializer_list>
 #include <limits>
@@ -60,4 +61,15 @@ int main() {
         assert(std::isnan(G::axisAngle(1,bad)));
     assert(std::isnan(G::axisAngle(1.1f,1)));
     assert(std::isnan(G::axisAngle(std::numeric_limits<float>::quiet_NaN(),1)));
+    SdaTrackingConvergence stable;
+    assert(!stable.observe(.00002f,.0001f,.0005f,80,100));
+    assert(!stable.observe(.00002f,.0001f,.0005f,80,100));
+    assert(stable.observe(.00002f,.0001f,.0005f,80,100));
+    for(int fail=0;fail<6;fail++) {
+        SdaTrackingConvergence gate;
+        assert(!gate.observe(0,0,0,80,100));
+        assert(!gate.observe(fail==0?.001f:0,fail==1?.01f:0,fail==2?.005f:0,fail==3?20:80,fail==4?1000:100));
+        if(fail==5)assert(!gate.observe(std::numeric_limits<float>::quiet_NaN(),0,0,80,100));
+        else { assert(!gate.observe(0,0,0,80,100));assert(!gate.observe(0,0,0,80,100));assert(gate.observe(0,0,0,80,100)); }
+    }
 }

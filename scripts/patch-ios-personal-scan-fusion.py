@@ -25,6 +25,8 @@ paths.update({'geometryPLY':('scsdk/Sources/standard_cyborg/src/io/ply/GeometryF
 paths.update({'happly':('CppDependencies/happly/include/happly.h','f6bb34ad0102a3f12ef3389b4221af4020c5aed0938bf88b56ec9b00e13c4c35')})
 paths.update({'pbfSource':('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/PBFModel.cpp','0a0f89c8e12f822f1ed8588a344a8c2b328426932f6f394ae17f7551f2068bd2')})
 paths['pbfConfig']=('StandardCyborgFusion/Sources/StandardCyborgFusion/DataStructures/PBFConfiguration.hpp','52a3ccfa2cee8c92d44630c82be8c0987309b86eec51344f407f9cb88384f3ed')
+paths['icpSource']=('StandardCyborgFusion/Sources/StandardCyborgFusion/Algorithm/ICP.cpp','4b13cabef52cc60d7a68a8ecbad72fb993823b4079065ceffdfcc6ba57d60743')
+paths['icpHeader']=('StandardCyborgFusion/Sources/include/StandardCyborgFusion/ICP.hpp','de7d7ee8c37dd6e060b5fcb8936e375a377841d493d3b664a8e0ad6ea34a0cb2')
 for key,name,digest in [
  ('depthDataHeader','MetalDepthProcessorData.hpp','019aa4d2eeb6dcbe2c43dba9bd7ae45588b32747269ca986355578001e8c8b8d'),
  ('depthData','MetalDepthProcessorData.mm','b4820bd3a97146f18490610755476e918133033e0c2018d9d94fb46aaa2b7b77'),
@@ -146,6 +148,14 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
 
 # Internal registration strategies permit controlled same-engine comparisons.
 replace('pbfConfig','struct PBFConfiguration {','struct PBFConfiguration {\n    bool sdaMotionPrediction = true;\n    bool sdaDistributedSamples = true;')
+# Point-to-point RMS can oscillate tangentially despite stable point-to-plane
+# geometry. Stop only after three tiny rigid updates with sufficient close support.
+replace('icpHeader','struct ICPConfiguration {','struct ICPConfiguration {\n    bool sdaGeometricConvergence = true;')
+replace('icpSource','#include <dispatch/dispatch.h>','#include <dispatch/dispatch.h>\n#include "../Public/SdaTrackingConvergence.hpp"')
+replace('icpSource','    float computeRMSCorrespondenceError()','    float pointToPlaneRMS(size_t& inliers) const {\n        inliers=0;\n        double squared=0;\n        for(size_t i=0;i<sourceVertices.size();i++) {\n            if (!((*weights)(i)>0)) continue;\n            const auto n=standard_cyborg::toVector3f(targetNormals[i]);\n            const auto d=standard_cyborg::toVector3f(sourceVertices[i])-standard_cyborg::toVector3f(targetVertices[i]);\n            const float length=n.norm();\n            if(!n.allFinite() || !d.allFinite() || !(length>0)) return NAN;\n            const double error=d.dot(n)/length;\n            squared+=error*error; ++inliers;\n        }\n        return inliers ? float(std::sqrt(squared/inliers)) : NAN;\n    }\n    float computeRMSCorrespondenceError()')
+replace('icpSource','    float previousError = 1e10;','    SdaTrackingConvergence geometricConvergence;\n    float previousError = 1e10;')
+replace('icpSource','        relativeError = fabsf(rmsError - previousError) / rmsError;','        size_t inliers=0;\n        const float planeRms=correspondence.pointToPlaneRMS(inliers);\n        const Eigen::Matrix3f r=sourceTransformAdjustment.block<3,3>(0,0);\n        const Eigen::Vector3f skew(r(2,1)-r(1,2),r(0,2)-r(2,0),r(1,0)-r(0,1));\n        const float angle=std::atan2(skew.norm()*0.5f,(r.trace()-1)*0.5f);\n        const bool stable=config.sdaGeometricConvergence && geometricConvergence.observe(\n            sourceTransformAdjustment.block<3,1>(0,3).norm(),angle,planeRms,inliers,vertexCount);\n        relativeError = stable ? 0 : fabsf(rmsError - previousError) / rmsError;')
+
 # A short pose prediction is an ICP initial guess only. Retry without it if
 # the original convergence or velocity checks reject it; never fuse a guess.
 replace('pbfSource','        ICPResult icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n\n        Matrix4f extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;','        const Matrix4f acceptedPose = _extrinsicMatrix;\n        Matrix4f prediction = acceptedPose;\n        const auto older = _nthMostRecentValidFrameMetadata(1);\n        const bool predict = pbfConfig.sdaMotionPrediction && previousFrameMeta && older &&\n            sdaPredictTrackingPose(older->viewMatrix,previousFrameMeta->viewMatrix,\n                                   older->timestamp,previousFrameMeta->timestamp,currentTime,prediction);\n        Matrix4f extrinsicMatrixTmp = acceptedPose;\n        ICPResult icpResult;\n        for (int attempt=0; attempt<(predict ? 2 : 1); ++attempt) {\n        _extrinsicMatrix = predict && attempt==0 ? prediction : acceptedPose;\n        icpResult = _runICP(frame, surfelFusionConfiguration, icpConfig, pbfConfig);\n        extrinsicMatrixTmp = toMatrix4f(icpResult.sourceTransform) * _extrinsicMatrix;')
@@ -443,6 +453,10 @@ prediction=recovery.with_name('SdaTrackingPrediction.hpp')
 predictionTarget=recoveryTarget.with_name(prediction.name)
 predictionTarget.write_bytes(prediction.read_bytes())
 record[str(predictionTarget.relative_to(root))]=hashlib.sha256(prediction.read_bytes()).hexdigest()
+convergence=recovery.with_name('SdaTrackingConvergence.hpp')
+convergenceTarget=recoveryTarget.with_name(convergence.name)
+convergenceTarget.write_bytes(convergence.read_bytes())
+record[str(convergenceTarget.relative_to(root))]=hashlib.sha256(convergence.read_bytes()).hexdigest()
 cleanup=Path(__file__).resolve().parents[1]/'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaPoissonMeshCleanup.hpp'
 cleanupTarget=root/Path(paths['poissonAdapter'][0]).parent/cleanup.name
 cleanupTarget.write_bytes(cleanup.read_bytes());record[str(cleanupTarget.relative_to(root))]=hashlib.sha256(cleanup.read_bytes()).hexdigest()
