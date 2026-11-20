@@ -180,7 +180,19 @@ struct FusionResourcesTest {
   coverage.register(frameID:4,accepted:true,view:matrix_identity_float4x4,projection:matrix_identity_float4x4,completion:callback)
   let noDepth = try wait()
   guard noDepth.state.head == 0, noDepth.state.leftEar == 0, noDepth.state.rightEar == 0 else { throw Failure.invalid("NaN depth advanced capture") }
-  return ["rawInferenceBeforeRegistrationPassed":true,"rawDepthUsedPassed":true,"rejectedPoseDoesNotAdvance":true,"exactAcceptedFramePaired":true,"rgbEarWithMissingDepthRemainsUnqualified":true,"physicalScanTested":false]
+  // Unsupported camera input must terminate that observation and allow a new
+  // valid RGB frame; it must not leave initial scanning permanently pending.
+  coverage.offerRaw(color:depth,depth:depth,frameID:5,orientation:.up,force:true,completion:callback)
+  let invalidColor = try wait()
+  guard invalidColor.frameID == 5, !invalidColor.registered, invalidColor.state.head == 0 else { throw Failure.invalid("Invalid RGB input lost frame identity or advanced capture") }
+  coverage.register(frameID:5,accepted:true,view:matrix_identity_float4x4,projection:matrix_identity_float4x4,completion:callback)
+  let invalidPaired = try wait()
+  guard invalidPaired.frameID == 5, invalidPaired.registered, invalidPaired.state.head == 0 else { throw Failure.invalid("Failed inference left accepted bootstrap pending") }
+  fill(0.3)
+  coverage.offerRaw(color:color,depth:depth,frameID:6,orientation:.up,force:true,completion:callback)
+  let retried = try wait()
+  guard retried.frameID == 6, retried.detectedEars > 0, retried.depthSupportedEars > 0 else { throw Failure.invalid("Camera inference did not recover after invalid input") }
+  return ["rawInferenceBeforeRegistrationPassed":true,"rawDepthUsedPassed":true,"rejectedPoseDoesNotAdvance":true,"exactAcceptedFramePaired":true,"rgbEarWithMissingDepthRemainsUnqualified":true,"failedInferenceRetiresAndRetries":true,"physicalScanTested":false]
  }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model

@@ -81,7 +81,11 @@ final class PersonalHrtfCaptureCoverage {
     if let pair = frames.observe(observation,frameID:frameID) { completion(consume(pair.0,pair.1)) }
     else { completion(update(observation,message:rawMessage(observation),registered:false)) }
    } catch {
-    completion(Update(state:state,message:"相机画面识别暂未成功，正在继续采集",registered:false))
+    // Complete the identity join even on inference failure. In particular, the
+    // initial accepted seed must be released for retry instead of waiting forever.
+    let missing = Observation(frameID:frameID,time:now,orientation:orientation,face:nil,ears:[])
+    if let pair = frames.observe(missing,frameID:frameID) { completion(consume(pair.0,pair.1)) }
+    else { completion(update(missing,message:"相机画面识别暂未成功，正在继续采集",registered:false)) }
    }
   }
  }
