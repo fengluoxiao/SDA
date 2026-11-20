@@ -16,7 +16,6 @@ git -C "$source" fetch --depth 1 origin "$pin"
 GIT_LFS_SKIP_SMUDGE=1 git -C "$source" checkout --detach FETCH_HEAD
 test "$(git -C "$source" rev-parse HEAD)" = "$pin"
 python3 "$lifecycle" "$source"
-cp "$(dirname "$probe")/personal-hrtf-tracking-fusion.mm" "$source/StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SdaTrackingFusionTest.mm"
 python3 "$PWD/scripts/test-ios-personal-tracking.py" > "$out/fusion-tracking-regression.log" 2>&1
 # The upstream package's bundle loader expects a resource bundle, but its
 # manifest omits shader resources. Package the Metal kernels explicitly. Ear
@@ -78,6 +77,7 @@ xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios1
 # Exercise framework/resource discovery in an actual iOS Simulator process.
 # A runner without a Metal GPU reports that limitation explicitly in the JSON;
 # it never substitutes a host-side camera or synthetic ear scan.
+cp "$(dirname "$probe")/personal-hrtf-tracking-fusion.mm" "$source/StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SdaTrackingFusionTest.mm"
 xcodebuild archive -workspace "$out/FusionPackage.xcworkspace" -scheme StandardCyborgFusion -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath "$out/derived-simulator" -archivePath "$out/StandardCyborgFusion-simulator.xcarchive" ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES SKIP_INSTALL=NO BUILD_LIBRARY_FOR_DISTRIBUTION=YES CODE_SIGNING_ALLOWED=NO STRIP_INSTALLED_PRODUCT=NO DEBUG_INFORMATION_FORMAT=dwarf > "$out/fusion-simulator-build.log" 2>&1 || { tail -100 "$out/fusion-simulator-build.log"; exit 1; }
 sim_products="$out/StandardCyborgFusion-simulator.xcarchive/Products/Library/Frameworks"
 python3 "$stage" "$source" "$sim_products/StandardCyborgFusion.framework" "$out/derived-simulator"
