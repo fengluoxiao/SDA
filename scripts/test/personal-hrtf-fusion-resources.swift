@@ -12,6 +12,9 @@ enum PersonalHrtfError: Error { case message(String) } // test-only bridge for t
 @_silgen_name("sdaInstallMeshCrashTrace")
 func installMeshCrashTrace()
 
+@_silgen_name("sdaTestTrackingFusion")
+func testTrackingFusion() -> UInt32
+
 @main
 struct FusionResourcesTest {
  enum Failure: Error { case invalid(String) }
@@ -209,10 +212,12 @@ struct FusionResourcesTest {
    guard model.sdaSurfelCount == 0 else { throw Failure.invalid("Released model has stale point count") }
    initialized = true
   }
+  let trackingCode = testTrackingFusion()
+  guard trackingCode == 0 else { throw Failure.invalid("Real tracking recovery regression failed: \(trackingCode)") }
   let roundTrip = try meshRoundTrip()
   let partialRoundTrip = try meshRoundTrip(partial:true)
   let coverage = try coverageResources()
-  let result:[String:Any] = ["partialNoRearRoundTrip":partialRoundTrip,"captureCoverage":coverage,"poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
+  let result:[String:Any] = ["realMetalTrackingRecoveryPassed":true,"trackingLossSeconds":10,"blankFramesDidNotChangeMeasuredSurfels":true,"partialNoRearRoundTrip":partialRoundTrip,"captureCoverage":coverage,"poissonRoundTrip":roundTrip,"bundleLocated":true,"versionMetadataValid":true,"metalFunctions":functions,"reconstructionInitialized":initialized,"atomicPointCountSnapshotValid":initialized,"resetCompletionPassed":initialized,"scanBudgetConfiguredAndClamped":initialized,"metalGPUAvailable":initialized,"physicalScanTested":false,"earAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

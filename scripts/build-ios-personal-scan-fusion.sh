@@ -16,7 +16,8 @@ git -C "$source" fetch --depth 1 origin "$pin"
 GIT_LFS_SKIP_SMUDGE=1 git -C "$source" checkout --detach FETCH_HEAD
 test "$(git -C "$source" rev-parse HEAD)" = "$pin"
 python3 "$lifecycle" "$source"
-CXX="$(xcrun --find clang++)" python3 "$PWD/scripts/test-ios-personal-tracking.py" > "$out/fusion-tracking-regression.log" 2>&1
+cp "$(dirname "$probe")/personal-hrtf-tracking-fusion.mm" "$source/StandardCyborgFusion/Sources/StandardCyborgFusion/Public/SdaTrackingFusionTest.mm"
+python3 "$PWD/scripts/test-ios-personal-tracking.py" > "$out/fusion-tracking-regression.log" 2>&1
 # The upstream package's bundle loader expects a resource bundle, but its
 # manifest omits shader resources. Package the Metal kernels explicitly. Ear
 # and foot ML models are excluded from this reconstruction-only build; no

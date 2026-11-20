@@ -119,6 +119,15 @@ replace('pbfSource','#import <cmath>','#import <cmath>\n#include "../Public/SdaT
 for axis in ['X','Y','Z']:
  replace('pbfSource',f'acosf(current{axis}.dot(previous{axis}))',f'SdaTrackingRecovery::axisAngle(current{axis}.dot(previous{axis}), current{axis}.norm() * previous{axis}.norm())')
 replace('pbfSource','currentFrameMeta->timestamp == previousFrameMeta->timestamp','currentFrameMeta->timestamp <= previousFrameMeta->timestamp')
+# The upstream ICP reports success for an empty cloud. An out-of-range/blank
+# frame must not be marked aligned or become the next tracking reference.
+replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (downsampledSourceCloud.getPositions().size() < 32 || _ICPTargetCloud->getPositions().size() < 32) {
+        ICPResult rejected;
+        rejected.succeeded = false;
+        return rejected;
+    }
+    ICPResult icpResult = ICP::run(icpConfig,''')
+
 # The upstream initial-frame configuration must not erase the caller's near clip.
 replace('source','    _surfelFusionConfig.minDepth = 0;','    // Preserve the caller-provided near-depth exclusion.')
 replace('fusionHeader','#import "SurfelIndexMap.hpp"','#import "SurfelIndexMap.hpp"\n#include "SdaHrtfMesh.h"')
