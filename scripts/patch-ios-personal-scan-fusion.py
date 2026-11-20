@@ -143,6 +143,16 @@ replace('pbfSource','    ICPResult icpResult = ICP::run(icpConfig,','''    if (d
     ICPResult icpResult = ICP::run(icpConfig,''')
 
 
+# Side/grazing depth may contain NaNs: comparisons with NaN are false,
+# so upstream's range and stochastic weight checks alone admit invalid points.
+# Use only finite, positive-weight samples meeting the existing fusion confidence.
+replace('pbfSource','            float depth = frame.rawFrame.depths[i];','''            float depth = frame.rawFrame.depths[i];
+            const auto position = standard_cyborg::toVector3f(frame.positions[i]);
+            const auto normal = standard_cyborg::toVector3f(frame.normals[i]);
+            if (!std::isfinite(depth) || !std::isfinite(frame.weights[i]) || frame.weights[i] <= 0 ||
+                !(frame.inputConfidences[i] >= surfelFusionConfiguration.inputConfidenceThreshold) ||
+                !position.allFinite() || !normal.allFinite() || normal.squaredNorm() <= 0) continue;''')
+
 # Do not seed a scan from a tiny/invalid fragment that cannot supply a later
 # ICP target. A failed GPU frame has negative weights and cannot initialize it.
 replace('pbfSource','    if (_surfels.size() > 0) {','''    if (_surfels.empty()) {

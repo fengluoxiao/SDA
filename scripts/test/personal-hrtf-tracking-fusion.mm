@@ -8,6 +8,7 @@
 #include "SdaTrackingRecovery.hpp"
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 // Failure injection wraps the real renderer; accepted frames still use Metal.
 class SdaTestIndexMap final : public SurfelIndexMap {
@@ -82,6 +83,25 @@ extern "C" __attribute__((visibility("default"))) uint32_t sdaTestTrackingFusion
     }
     printf("SDA tracking fixture stationary: accepted=%d/16\n",accepted);
     if(accepted<8) return 3;
+    // A corrupt subset must be excluded before ICP rather than poison the
+    // entire otherwise usable view. Start with real Metal output, then inject
+    // non-finite GPU/sample values explicitly; this is a fault-injection test.
+    prepare(true);
+    const float nan=std::numeric_limits<float>::quiet_NaN();
+    for(size_t i=0;i<frame->positions.size();i+=4) {
+        frame->rawFrame.depths[i]=nan;
+        frame->weights[i]=nan;
+        frame->positions[i]=math::Vec3(nan,nan,nan);
+        frame->normals[i]=math::Vec3(nan,nan,nan);
+    }
+    bool sparseRecovered=false;
+    for(int i=0;i<12;i++) {
+        auto result=model.assimilate(*frame,pbf,icp,fusion,1.6+i/30.0);
+        if(result.isMerged) { sparseRecovered=true; break; }
+    }
+    printf("SDA non-finite subset: usable view recovered=%d\n",sparseRecovered);
+    if(!sparseRecovered) return 14;
+    prepare(true);
     const auto saved=model.getSurfels();
     const Eigen::Matrix4f savedPose=model.getCurrentExtrinsicMatrix();
     index->failNext = true;
