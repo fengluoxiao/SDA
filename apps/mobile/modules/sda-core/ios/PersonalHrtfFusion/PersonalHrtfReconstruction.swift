@@ -18,6 +18,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private let lock = NSLock()
  private var phase = Phase.idle
  private var cancelled = false
+ private var nextFrameID: UInt64 = 0
  private var lastTimestamp = -1.0
  private var lastPoseTime = -1.0
  private var cameraPositions: [SIMD3<Float>] = []
@@ -59,8 +60,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   model.sdaMaximumSurfelCount = UInt(pointLimit)
   model.delegate = self
   model.flipsInputHorizontally = false
-  model.includesDepthBuffersInMetadata = true
-  model.includesColorBuffersInMetadata = true
+  model.includesDepthBuffersInMetadata = false
+  model.includesColorBuffersInMetadata = false
   model.minDepth = 0.15
   model.setMaxDepth(0.65)
   model.icpDownsampleFraction = 0.1
@@ -101,6 +102,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   guard phase == .scanning, !cancelled, frame.timestamp.isFinite, frame.timestamp > lastTimestamp,
         !bootstrapPending, let analysis = coverage else { lock.unlock(); return }
   lastTimestamp = frame.timestamp
+  nextFrameID += 1; let frameID = nextFrameID
   let orientation = Self.imageOrientation
   let region = analysis.captureRegion
   if region == nil {
@@ -115,15 +117,32 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
     guard let masked else { self.bootstrapPending = false; return }
     // Until this seed is registered AND its reference is measured, retain only
     // this one frame. No inference backlog and no arbitrary background seed.
-    self.model.accumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration)
+    self.coverage?.offerRaw(color:frame.color,depth:depth.depthDataMap,frameID:frameID,orientation:orientation,force:true) { [weak self] update in self?.receiveCoverage(update) }
+    self.model.sdaAccumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration,frameID:frameID)
    }
    return
   }
   lock.unlock()
+  analysis.offerRaw(color:frame.color,depth:depth.depthDataMap,frameID:frameID,orientation:orientation) { [weak self] update in self?.receiveCoverage(update) }
   guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(depth.depthDataMap,seed:nil,orientation:orientation,region:region) else { return }
   lock.lock(); defer { lock.unlock() }
   guard phase == .scanning, !cancelled else { return }
-  model.accumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration)
+  model.sdaAccumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration,frameID:frameID)
+ }
+ private func receiveCoverage(_ update:PersonalHrtfCaptureCoverage.Update) {
+  DispatchQueue.main.async { [weak self] in
+   guard let self else { return }
+   self.lock.lock()
+   guard self.phase == .scanning else { self.lock.unlock(); return }
+   if update.registered { self.bootstrapPending = false }
+   self.guide = update.state
+   let ready = update.state.complete && self.model.sdaSurfelCount >= 10000
+   if ready { self.phase = .captured }
+   self.lock.unlock()
+   self.captureGuide?(update.state)
+   self.captureReadiness?(ready,update.message)
+   if ready { self.motion.stopDeviceMotionUpdates() }
+  }
  }
  private static var imageOrientation: CGImagePropertyOrientation {
   switch UIDevice.current.orientation {
@@ -150,27 +169,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   let count = cameraPositions.count
   lock.unlock()
-  captureReadiness?(guide.complete && model.sdaSurfelCount >= 10000 && count > 0,guide.status)
   if accepted { coverage?.updatePose(view:metadata.viewMatrix,projection:metadata.projectionMatrix) }
-  if accepted, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
-   coverage?.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:Self.imageOrientation) { [weak self] state in
-    DispatchQueue.main.async {
-     guard let self else { return }
-     self.lock.lock()
-     self.bootstrapPending = false
-     guard self.phase == .scanning else { self.lock.unlock(); return }
-     self.guide = state
-     let ready = state.complete && self.model.sdaSurfelCount >= 10000
-     if ready { self.phase = .captured }
-     self.lock.unlock()
-     self.captureGuide?(state)
-     self.captureReadiness?(ready,state.status)
-     if ready { self.motion.stopDeviceMotionUpdates() }
-    }
-   }
-  } else {
-   lock.lock(); bootstrapPending = false; lock.unlock()
-  }
+  coverage?.register(frameID:metadata.sdaFrameID,accepted:accepted,view:metadata.viewMatrix,projection:metadata.projectionMatrix) { [weak self] update in self?.receiveCoverage(update) }
+  if !accepted { lock.lock(); bootstrapPending = false; lock.unlock() }
   if model.sdaReachedSurfelLimit {
    lock.lock()
    guard phase == .scanning else { lock.unlock(); return }

@@ -134,6 +134,54 @@ struct FusionResourcesTest {
   }
   return results
  }
+ static func rawCoverageResources() throws -> [String:Any] {
+  let folder = URL(fileURLWithPath:CommandLine.arguments[1],isDirectory:true)
+  guard let image = CIImage(contentsOf:folder.appendingPathComponent("caucasian-left_medium.jpg"),options:[.applyOrientationProperty:true]) else { throw Failure.invalid("Raw pipeline fixture absent") }
+  var colorOptional:CVPixelBuffer?, depthOptional:CVPixelBuffer?
+  guard CVPixelBufferCreate(kCFAllocatorDefault,448,448,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&colorOptional) == kCVReturnSuccess,
+        CVPixelBufferCreate(kCFAllocatorDefault,128,128,kCVPixelFormatType_DepthFloat32,nil,&depthOptional) == kCVReturnSuccess,
+        let color = colorOptional, let depth = depthOptional else { throw Failure.invalid("Raw pipeline buffers unavailable") }
+  let context = CIContext(options:[.useSoftwareRenderer:false])
+  let scaled = image.transformed(by:CGAffineTransform(translationX:-image.extent.minX,y:-image.extent.minY)).transformed(by:CGAffineTransform(scaleX:448/image.extent.width,y:448/image.extent.height))
+  context.render(scaled,to:color)
+  func fill(_ value:Float) {
+   CVPixelBufferLockBaseAddress(depth,[]); defer { CVPixelBufferUnlockBaseAddress(depth,[]) }
+   let base = CVPixelBufferGetBaseAddress(depth)!, stride = CVPixelBufferGetBytesPerRow(depth)
+   for y in 0..<128 { for x in 0..<128 { base.storeBytes(of:value,toByteOffset:y*stride+x*4,as:Float.self) } }
+  }
+  fill(0.3)
+  let coverage = try PersonalHrtfCaptureCoverage(), semaphore = DispatchSemaphore(value:0), lock = NSLock()
+  var result:PersonalHrtfCaptureCoverage.Update?
+  let callback:(PersonalHrtfCaptureCoverage.Update)->Void = { value in lock.lock(); result = value; lock.unlock(); semaphore.signal() }
+  func wait() throws -> PersonalHrtfCaptureCoverage.Update {
+   guard semaphore.wait(timeout:.now()+20) == .success else { throw Failure.invalid("Raw inference did not run without accepted registration") }
+   lock.lock(); defer { lock.unlock() }
+   guard let value = result else { throw Failure.invalid("Raw pipeline produced no update") }; result = nil
+   return value
+  }
+  coverage.offerRaw(color:color,depth:depth,frameID:1,orientation:.up,force:true,completion:callback)
+  let raw = try wait()
+  guard raw.frameID == 1, raw.detectedEars > 0, raw.depthSupportedEars > 0, !raw.registered,
+        raw.state.head == 0, !raw.state.complete else { throw Failure.invalid("Raw measured ear was gated by fusion or advanced unregistered evidence") }
+  coverage.register(frameID:1,accepted:false,view:matrix_identity_float4x4,projection:matrix_identity_float4x4,completion:callback)
+  let rejected = try wait()
+  guard rejected.frameID == 1, rejected.detectedEars > 0, !rejected.registered, rejected.state.head == 0 else { throw Failure.invalid("Rejected registration qualified raw ear evidence") }
+  coverage.offerRaw(color:color,depth:depth,frameID:3,orientation:.up,force:true,completion:callback)
+  _ = try wait()
+  coverage.register(frameID:3,accepted:true,view:matrix_identity_float4x4,projection:matrix_identity_float4x4,completion:callback)
+  let accepted = try wait()
+  guard accepted.frameID == 3, accepted.registered, accepted.detectedEars > 0, accepted.state.head == 0 else { throw Failure.invalid("Exact accepted pose failed to pair or skipped required face seed") }
+  // Colour recognition continues even when there is no usable depth. This must
+  // remain an unqualified observation, not a successful scan.
+  fill(.nan)
+  coverage.offerRaw(color:color,depth:depth,frameID:4,orientation:.up,force:true,completion:callback)
+  let missing = try wait()
+  guard missing.detectedEars > 0, missing.depthSupportedEars == 0, !missing.registered else { throw Failure.invalid("Missing depth hid RGB ears or fabricated measured evidence") }
+  coverage.register(frameID:4,accepted:true,view:matrix_identity_float4x4,projection:matrix_identity_float4x4,completion:callback)
+  let noDepth = try wait()
+  guard noDepth.state.head == 0, noDepth.state.leftEar == 0, noDepth.state.rightEar == 0 else { throw Failure.invalid("NaN depth advanced capture") }
+  return ["rawInferenceBeforeRegistrationPassed":true,"rawDepthUsedPassed":true,"rejectedPoseDoesNotAdvance":true,"exactAcceptedFramePaired":true,"rgbEarWithMissingDepthRemainsUnqualified":true,"physicalScanTested":false]
+ }
  static func coverageResources() throws -> [String:Any] {
   _ = try PersonalHrtfCaptureCoverage() // actually load the compiled offline model
   print("SDA loading offline ear detector")
@@ -252,7 +300,7 @@ struct FusionResourcesTest {
   var neutralSeedRejected = false
   initial.prepareInitial(color:color,depth:large,orientation:.up) { seed in neutralSeedRejected = seed == nil; semaphore.signal() }
   guard semaphore.wait(timeout:.now()+10) == .success, neutralSeedRejected else { throw Failure.invalid("Neutral/background image bootstrapped reconstruction") }
-  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"sequentialTargetGatePassed":true,"wrongEarAndDuplicateRejected":true,"multiViewEarRequired":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"partialEarDepthRegressionPassed":true,"positiveEarImageInference":try positiveEarResources(),"physicalEarCaptureValidated":false]
+  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"sequentialTargetGatePassed":true,"wrongEarAndDuplicateRejected":true,"multiViewEarRequired":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"partialEarDepthRegressionPassed":true,"positiveEarImageInference":try positiveEarResources(),"rawCameraPipeline":try rawCoverageResources(),"physicalEarCaptureValidated":false]
  }
  static func main() {
   do { try run() }

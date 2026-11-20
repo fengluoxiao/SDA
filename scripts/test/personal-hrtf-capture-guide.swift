@@ -61,6 +61,25 @@ enum Failure: Error { case invalid(String) }
     guard side(point,camera) == expected else { throw Failure.invalid("Viewpoint angle or side symmetry failed") }
    }
   }
-  print("{\"sequentialCapturePassed\":true,\"wrongTargetRejected\":true,\"duplicateRejected\":true,\"occlusionAndCompletedStatePassed\":true,\"earMultiViewRequired\":true,\"frontalEarViewsRejected\":true,\"anatomicalViewpointAngleSweepPassed\":true,\"physicalScanTested\":false}")
+  // Pair by source identity, never by arrival time or the latest pose.
+  var join = PersonalHeadFrameJoin<String,Bool>(capacity:4)
+  guard join.observe("ear-1",frameID:1) == nil, join.register(true,frameID:2) == nil,
+        let first = join.register(false,frameID:1), first.0 == "ear-1", first.1 == false,
+        join.observe("duplicate",frameID:1) == nil,
+        let second = join.observe("ear-2",frameID:2), second.0 == "ear-2", second.1 == true else {
+   throw Failure.invalid("Source identity lost across reordered/rejected/duplicate registrations")
+  }
+  // A dropped native input must not consume a different frame's measurement.
+  guard join.observe("dropped",frameID:3) == nil, join.register(true,frameID:4) == nil,
+        let fourth = join.observe("ear-4",frameID:4), fourth.0 == "ear-4",
+        join.register(true,frameID:3) == nil else { throw Failure.invalid("Dropped or stale frame reused a pose") }
+  for id in UInt64(5)...10000 {
+   _ = join.register(id.isMultiple(of:2),frameID:id)
+   guard join.count <= 4 else { throw Failure.invalid("Sparse join exceeded its fixed capacity") }
+  }
+  guard join.observe("expired",frameID:9996) == nil,
+        let last = join.observe("ear-10000",frameID:10000), last.1,
+        join.observe("zero",frameID:0) == nil else { throw Failure.invalid("Evicted or zero frame ID was revived") }
+  print("{\"sequentialCapturePassed\":true,\"wrongTargetRejected\":true,\"duplicateRejected\":true,\"occlusionAndCompletedStatePassed\":true,\"earMultiViewRequired\":true,\"frontalEarViewsRejected\":true,\"anatomicalViewpointAngleSweepPassed\":true,\"exactFrameJoinPassed\":true,\"sparseJoinBounded\":true,\"physicalScanTested\":false}")
  }
 }

@@ -70,3 +70,43 @@ struct PersonalHeadCaptureGuide: Equatable {
   lastPoint = nil; firstCamera = nil; baseline = 0; firstTime = 0
  }
 }
+
+// Sparse event join only: never stores camera buffers or substitutes a recent
+// pose for a different frame. Call from one serial queue. Native frame dropping,
+// inference delays and out-of-order callbacks cannot create false evidence.
+struct PersonalHeadFrameJoin<Observation, Registration> {
+ private struct Entry { var observation: Observation?; var registration: Registration? }
+ private var entries: [UInt64: Entry] = [:]
+ private var newest: UInt64 = 0, retiredThrough: UInt64 = 0
+ let capacity: UInt64
+ init(capacity: UInt64 = 64) { self.capacity = max(1,capacity) }
+ var count: Int { entries.count }
+ mutating func observe(_ observation: Observation, frameID: UInt64) -> (Observation, Registration)? {
+  guard admit(frameID) else { return nil }
+  var entry = entries[frameID] ?? Entry()
+  guard entry.observation == nil else { return nil }
+  entry.observation = observation; entries[frameID] = entry
+  return take(frameID)
+ }
+ mutating func register(_ registration: Registration, frameID: UInt64) -> (Observation, Registration)? {
+  guard admit(frameID) else { return nil }
+  var entry = entries[frameID] ?? Entry()
+  guard entry.registration == nil else { return nil }
+  entry.registration = registration; entries[frameID] = entry
+  return take(frameID)
+ }
+ private mutating func admit(_ frameID: UInt64) -> Bool {
+  guard frameID > retiredThrough else { return false }
+  newest = max(newest,frameID)
+  let floor = newest > capacity ? newest-capacity : 0
+  entries = entries.filter { $0.key > floor && $0.key > retiredThrough }
+  return frameID > floor
+ }
+ private mutating func take(_ frameID: UInt64) -> (Observation, Registration)? {
+  guard let entry = entries[frameID], let observation = entry.observation,
+        let registration = entry.registration else { return nil }
+  retiredThrough = frameID
+  entries = entries.filter { $0.key > retiredThrough }
+  return (observation,registration)
+ }
+}

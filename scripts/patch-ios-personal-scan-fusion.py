@@ -34,6 +34,7 @@ for key,name,digest in [
  ('computeEngine','MetalComputeEngine.mm','8d790e7a4bf9eb9e8e28da16261ffadf6d73743f97a4538c149140548a309ea9'),
  ('indexMap','MetalSurfelIndexMap.mm','c04576bf3cbb471c0857249fc0243138e9969a253a074070e7f72711a90027be')]:
  paths[key]=('StandardCyborgFusion/Sources/StandardCyborgFusion/MetalDepthProcessor/'+name,digest)
+paths['frameMetadata']=('StandardCyborgFusion/Sources/include/StandardCyborgFusion/SCAssimilatedFrameMetadata.h','352cc5f99a8e46585dc465b51c180852159fdef6257769a62d4617458ea5463f')
 texts={}
 for key,(path,digest) in paths.items():
  data=(root/path).read_bytes()
@@ -345,6 +346,40 @@ replace('source','''            if (metadata.colorBuffer != NULL) {
                 CVPixelBufferRelease(metadata.colorBuffer);
             }
             if (includeCoverage) _sdaCoverageMetadataPending.store(false, std::memory_order_release);''')
+
+# Match native registration to independently analysed raw TrueDepth frames.
+# IDs travel with each incoming frame, including rejected registrations. No RGB
+# or raw depth buffers are attached to the per-frame main-thread callbacks.
+replace('frameMetadata','    CFAbsoluteTime assimilationTime;', '    CFAbsoluteTime assimilationTime;\n    uint64_t sdaFrameID;')
+replace('header','/** Pass in device motion updates as fast as they are made available by the system */', '''/** SDA: preserve the source camera frame identity across native frame dropping. */
+- (void)sdaAccumulateDepthBuffer:(CVPixelBufferRef)depthBuffer
+                   colorBuffer:(CVPixelBufferRef)colorBuffer
+               calibrationData:(AVCameraCalibrationData *)calibrationData
+                       frameID:(uint64_t)frameID
+NS_SWIFT_NAME(sdaAccumulate(depthBuffer:colorBuffer:calibrationData:frameID:));
+
+/** Pass in device motion updates as fast as they are made available by the system */''')
+replace('source','@property (nonatomic, readonly) int sequence;', '@property (nonatomic, readonly) int sequence;\n@property (nonatomic) uint64_t sdaFrameID;')
+replace('source','''- (void)accumulateDepthBuffer:(CVPixelBufferRef)depthBuffer
+                  colorBuffer:(CVPixelBufferRef)colorBuffer
+              calibrationData:(AVCameraCalibrationData *)calibrationData
+{''','''- (void)accumulateDepthBuffer:(CVPixelBufferRef)depthBuffer
+                  colorBuffer:(CVPixelBufferRef)colorBuffer
+              calibrationData:(AVCameraCalibrationData *)calibrationData
+{
+    [self sdaAccumulateDepthBuffer:depthBuffer colorBuffer:colorBuffer calibrationData:calibrationData frameID:0];
+}
+
+- (void)sdaAccumulateDepthBuffer:(CVPixelBufferRef)depthBuffer
+                   colorBuffer:(CVPixelBufferRef)colorBuffer
+               calibrationData:(AVCameraCalibrationData *)calibrationData
+                       frameID:(uint64_t)frameID
+{''')
+replace('source','''                                                                calibrationData:calibrationData];
+        CVPixelBufferRelease(depthBuffer);''','''                                                                calibrationData:calibrationData];
+        data.sdaFrameID = frameID;
+        CVPixelBufferRelease(depthBuffer);''')
+replace('source','        const double coverageTime = NSProcessInfo.processInfo.systemUptime;', '        metadata.sdaFrameID = incomingFrameData.sdaFrameID;\n        const double coverageTime = NSProcessInfo.processInfo.systemUptime;')
 
 # PLY float properties preserve double_val. Auxiliary integer representations must
 # not cast negative/out-of-range floats to unsigned or overflow signed integers.
