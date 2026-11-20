@@ -7,26 +7,24 @@ import simd
 import StandardCyborgFusion
 
 // Advisory capture evidence, not an acoustic qualification or an ear-canal detector.
-// Only successfully registered frames enter this queue; at most one frame is retained.
+// Only successfully registered frames count toward steps; at most one analysis frame is retained.
 final class PersonalHrtfCaptureCoverage {
- struct State {
-  var head = 0, leftEar = 0, rightEar = 0
-  private var lastLeft: SIMD3<Float>?, lastRight: SIMD3<Float>?
-  mutating func observe(head seenHead:Bool,left:SIMD3<Float>?,right:SIMD3<Float>?) {
-   if seenHead { head = min(3,head+1) }
-   // A region needs three separate accepted frames; once captured it stays marked.
-   if let left, leftEar < 3 {
-    if let previous = lastLeft, simd_distance(previous,left) > 0.025 { leftEar = 0 }
-    lastLeft = left; leftEar = min(3,leftEar+1)
-   }
-   if let right, rightEar < 3 {
-    if let previous = lastRight, simd_distance(previous,right) > 0.025 { rightEar = 0 }
-    lastRight = right; rightEar = min(3,rightEar+1)
-   }
-  }
-  var status: String {
-   func mark(_ n:Int) -> String { n >= 3 ? "区域已采集" : (n > 0 ? "继续缓慢扫描" : "待采集") }
-   return "头部：\(mark(head)) · 左耳：\(mark(leftEar)) · 右耳：\(mark(rightEar))"
+ typealias State = PersonalHeadCaptureGuide
+ struct Seed { let box: CGRect; let depth: Float }
+ struct Region { let center: SIMD3<Float>; let view: simd_float4x4; let projection: simd_float4x4 }
+ private var region: Region?
+ var captureRegion: Region? { lock.lock(); defer { lock.unlock() }; return region }
+ // Seed only from a measured frontal face, never the first arbitrary camera frame.
+ func prepareInitial(color: CVPixelBuffer, depth: CVPixelBuffer, orientation: CGImagePropertyOrientation, completion: @escaping (Seed?) -> Void) {
+  queue.async {
+   let request = VNDetectFaceRectanglesRequest()
+   try? VNImageRequestHandler(cvPixelBuffer:color,orientation:orientation).perform([request])
+   let faces = request.results ?? []
+   guard faces.count == 1, let face = faces.first,
+         face.confidence >= 0.8, abs(face.yaw?.floatValue ?? 100) < 0.3,
+         face.boundingBox.width >= 0.15,
+         let depthValue = Self.depthMedian(depth,in:face.boundingBox,orientation:orientation) else { completion(nil); return }
+   completion(Seed(box:face.boundingBox,depth:depthValue))
   }
  }
  private let queue = DispatchQueue(label:"app.sda.capture-coverage",qos:.utility,autoreleaseFrequency:.workItem)
@@ -47,7 +45,7 @@ final class PersonalHrtfCaptureCoverage {
             orientation:CGImagePropertyOrientation,completion:@escaping(State)->Void) {
   let now = ProcessInfo.processInfo.systemUptime
   lock.lock()
-  guard !busy, now-lastSample >= 0.5 else { lock.unlock(); return }
+  guard !busy, now-lastSample >= 0.3 else { lock.unlock(); return }
   busy = true; lastSample = now; lock.unlock()
   queue.async { [self] in
    defer { lock.lock(); busy = false; lock.unlock() }
@@ -95,10 +93,55 @@ final class PersonalHrtfCaptureCoverage {
       }
      }
     }
-    state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0)
+    let camera = SIMD3(cameraToModel.columns.3.x,cameraToModel.columns.3.y,cameraToModel.columns.3.z)
+    state.observe(head:seenHead,left:leftEvidence?.0,right:rightEvidence?.0,camera:camera,time:now)
+    if let anchor {
+     lock.lock(); region = Region(center:anchor,view:view,projection:projection); lock.unlock()
+    }
    } catch { /* A failed inference never counts as measured coverage. */ }
    completion(state)
   }
+ }
+ // A fresh depth buffer is required: never modify AVFoundation-owned or retained metadata.
+ // Face seed removes the room/torso before ICP; subsequent masks follow the last
+ // accepted pose with a generous head-sized bound so cheek overlap remains usable.
+ static func maskedDepth(_ input: CVPixelBuffer, seed: Seed?, orientation: CGImagePropertyOrientation, region: Region?) -> CVPixelBuffer? {
+  guard CVPixelBufferGetPixelFormatType(input) == kCVPixelFormatType_DepthFloat32,
+        seed != nil || region != nil else { return nil }
+  let width = CVPixelBufferGetWidth(input), height = CVPixelBufferGetHeight(input)
+  guard width <= 640, height <= 640 else { return nil }
+  var optional: CVPixelBuffer?
+  guard CVPixelBufferCreate(kCFAllocatorDefault,width,height,kCVPixelFormatType_DepthFloat32,nil,&optional) == kCVReturnSuccess, let output = optional else { return nil }
+  CVPixelBufferLockBaseAddress(input,.readOnly); CVPixelBufferLockBaseAddress(output,[])
+  defer { CVPixelBufferUnlockBaseAddress(input,.readOnly); CVPixelBufferUnlockBaseAddress(output,[]) }
+  guard let source = CVPixelBufferGetBaseAddress(input), let destination = CVPixelBufferGetBaseAddress(output) else { return nil }
+  let sourceStride = CVPixelBufferGetBytesPerRow(input), targetStride = CVPixelBufferGetBytesPerRow(output)
+  let cameraToModel = region.map { simd_inverse($0.view) }
+  let inverseProjection = region.map { simd_inverse($0.projection) }
+  var seedBounds = CGRect.zero
+  if let seed {
+   let b = seed.box.insetBy(dx:-seed.box.width*0.3,dy:-seed.box.height*0.2)
+   let corners = [CGPoint(x:b.minX,y:b.minY),CGPoint(x:b.maxX,y:b.maxY)].map { rawPoint($0,orientation:orientation) }
+   seedBounds = CGRect(x:min(corners[0].x,corners[1].x),y:min(corners[0].y,corners[1].y),width:abs(corners[1].x-corners[0].x),height:abs(corners[1].y-corners[0].y))
+  }
+  var retained = 0
+  for y in 0..<height { for x in 0..<width {
+   let d = source.load(fromByteOffset:y*sourceStride+x*4,as:Float.self)
+   var valid = d.isFinite && d >= 0.15 && d <= 0.65
+   if valid, let region, let cameraToModel, let inverseProjection {
+    let clip = SIMD4<Float>((Float(x)+0.5)/Float(width)*2-1,(Float(y)+0.5)/Float(height)*2-1,0,1)
+    let v = inverseProjection*clip
+    let ray = SIMD3(v.x,v.y,v.z)/v.w
+    let p = cameraToModel*SIMD4(ray*(d/abs(ray.z)),1)
+    let point = SIMD3(p.x,p.y,p.z)
+    valid = simd_distance(point,region.center) <= 0.21
+   } else if valid, let seed {
+    valid = seedBounds.contains(CGPoint(x:(Double(x)+0.5)/Double(width),y:1-(Double(y)+0.5)/Double(height))) && abs(d-seed.depth) <= 0.12
+   }
+   destination.storeBytes(of:valid ? d : Float.nan,toByteOffset:y*targetStride+x*4,as:Float.self)
+   if valid { retained += 1 }
+  } }
+  return retained >= 1000 ? output : nil
  }
  static func modelPoint(_ point:CGPoint,depth:Float,orientation:CGImagePropertyOrientation,cameraToModel:simd_float4x4,projection:simd_float4x4) -> SIMD3<Float>? {
   let raw = rawPoint(point,orientation:orientation)

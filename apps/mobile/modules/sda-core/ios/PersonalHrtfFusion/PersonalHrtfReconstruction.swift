@@ -14,7 +14,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   case message(String)
   var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
  }
- private enum Phase: Equatable { case idle, scanning, paused, finalizing, meshing, checking, finished }
+ private enum Phase: Equatable { case idle, scanning, captured, paused, finalizing, meshing, checking, finished }
  private let lock = NSLock()
  private var phase = Phase.idle
  private var cancelled = false
@@ -23,7 +23,9 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private var cameraPositions: [SIMD3<Float>] = []
  private let pointLimit: Int
  private var coverage: PersonalHrtfCaptureCoverage?
- private var coverageStatus = "头部：待采集 · 左耳：待采集 · 右耳：待采集"
+ private var guide = PersonalHeadCaptureGuide()
+ private var bootstrapPending = false
+ private var lastBootstrapAttempt = -Double.infinity
  private var failureReason: String?
  private let model: SCReconstructionManager
  private let motion = CMMotionManager()
@@ -33,6 +35,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  private let directory: URL
  private var observers: [NSObjectProtocol] = []
  private var completion: ((Result<PersonalHeadMeshCandidate,Error>) -> Void)?
+ var captureGuide: ((PersonalHeadCaptureGuide) -> Void)?
  var captureReadiness: ((Bool, String) -> Void)?
  var captureLimit: ((Int, String) -> Void)?
  var progress: ((Int, String) -> Void)?
@@ -94,11 +97,43 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
         let distortion = calibration.lensDistortionLookupTable, !distortion.isEmpty,
         CVPixelBufferGetWidth(depth.depthDataMap) <= 640,
         CVPixelBufferGetHeight(depth.depthDataMap) <= 640 else { return }
-  lock.lock(); defer { lock.unlock() }
-  guard phase == .scanning, !cancelled, frame.timestamp.isFinite, frame.timestamp > lastTimestamp else { return }
+  lock.lock()
+  guard phase == .scanning, !cancelled, frame.timestamp.isFinite, frame.timestamp > lastTimestamp,
+        !bootstrapPending, let analysis = coverage else { lock.unlock(); return }
   lastTimestamp = frame.timestamp
-  model.accumulate(depthBuffer:depth.depthDataMap,colorBuffer:frame.color,calibrationData:calibration)
+  let orientation = Self.imageOrientation
+  let region = analysis.captureRegion
+  if region == nil {
+   let now = ProcessInfo.processInfo.systemUptime
+   guard now-lastBootstrapAttempt >= 0.3 else { lock.unlock(); return }
+   lastBootstrapAttempt = now; bootstrapPending = true; lock.unlock()
+   analysis.prepareInitial(color:frame.color,depth:depth.depthDataMap,orientation:orientation) { [weak self] seed in
+    guard let self else { return }
+    let masked = seed.flatMap { PersonalHrtfCaptureCoverage.maskedDepth(depth.depthDataMap,seed:$0,orientation:orientation,region:nil) }
+    self.lock.lock(); defer { self.lock.unlock() }
+    guard self.phase == .scanning, !self.cancelled else { self.bootstrapPending = false; return }
+    guard let masked else { self.bootstrapPending = false; return }
+    // Until this seed is registered AND its reference is measured, retain only
+    // this one frame. No inference backlog and no arbitrary background seed.
+    self.model.accumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration)
+   }
+   return
+  }
+  lock.unlock()
+  guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(depth.depthDataMap,seed:nil,orientation:orientation,region:region) else { return }
+  lock.lock(); defer { lock.unlock() }
+  guard phase == .scanning, !cancelled else { return }
+  model.accumulate(depthBuffer:masked,colorBuffer:frame.color,calibrationData:calibration)
  }
+ private static var imageOrientation: CGImagePropertyOrientation {
+  switch UIDevice.current.orientation {
+  case .landscapeLeft: return .up
+  case .landscapeRight: return .down
+  case .portraitUpsideDown: return .right
+  default: return .left
+  }
+ }
+
  func reconstructionManager(_ manager: SCReconstructionManager, didProcessWith metadata: SCAssimilatedFrameMetadata, statistics: SCReconstructionManagerStatistics) {
   lock.lock()
   guard phase == .scanning else { lock.unlock(); return }
@@ -115,25 +150,25 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   }
   let count = cameraPositions.count
   lock.unlock()
-  let ready = model.sdaSurfelCount >= 10000 && count > 0
-  captureReadiness?(ready,coverageStatus)
-  if accepted, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
-   let orientation: CGImagePropertyOrientation
-   switch UIDevice.current.orientation {
-   case .landscapeLeft: orientation = .up
-   case .landscapeRight: orientation = .down
-   case .portraitUpsideDown: orientation = .right
-   default: orientation = .left
-   }
-   coverage?.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:orientation) { [weak self] state in
+  captureReadiness?(guide.complete && model.sdaSurfelCount >= 10000 && count > 0,guide.status)
+  if metadata.result == .succeeded, let color = metadata.colorBuffer?.takeUnretainedValue(), let depth = metadata.depthBuffer?.takeUnretainedValue() {
+   coverage?.offer(color:color,depth:depth,view:metadata.viewMatrix,projection:metadata.projectionMatrix,orientation:Self.imageOrientation) { [weak self] state in
     DispatchQueue.main.async {
      guard let self else { return }
-     self.lock.lock(); let scanning = self.phase == .scanning; self.lock.unlock()
-     guard scanning else { return }
-     self.coverageStatus = state.status
-     self.captureReadiness?(self.model.sdaSurfelCount >= 10000,state.status)
+     self.lock.lock()
+     self.bootstrapPending = false
+     guard self.phase == .scanning else { self.lock.unlock(); return }
+     self.guide = state
+     let ready = state.complete && self.model.sdaSurfelCount >= 10000
+     if ready { self.phase = .captured }
+     self.lock.unlock()
+     self.captureGuide?(state)
+     self.captureReadiness?(ready,state.status)
+     if ready { self.motion.stopDeviceMotionUpdates() }
     }
    }
+  } else {
+   lock.lock(); bootstrapPending = false; lock.unlock()
   }
   if model.sdaReachedSurfelLimit {
    lock.lock()
@@ -141,7 +176,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
    phase = .paused; lock.unlock()
    releaseCaptureAnalysis()
    motion.stopDeviceMotionUpdates()
-   captureLimit?(count,"本次采集预算已用满（最多 \(pointLimit) 个点），已暂停并保留测量。可尝试处理现有模型；未覆盖的区域仍会由几何检查拒绝。")
+   captureLimit?(count,"本次采集预算已用满（最多 \(pointLimit) 个点），已暂停并保留测量。三个步骤未完成时不能跳过；请取消后重新采集。")
    return
   }
   if failed { fail("配准器发生内部错误，无法继续本次采集"); return }
@@ -157,8 +192,8 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
  func reconstructionManager(_ manager: SCReconstructionManager,didEncounterAPIError error: Error) { fail(error.localizedDescription) }
  func finish() {
   lock.lock()
-  guard phase == .scanning || phase == .paused else { lock.unlock(); return }
-  guard !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("有效测量表面不足，请继续采集"); return }
+  guard phase == .scanning || phase == .captured || phase == .paused else { lock.unlock(); return }
+  guard guide.complete, !cameraPositions.isEmpty, model.sdaSurfelCount >= 10000 else { lock.unlock(); fail("正脸和两耳尚未全部采集，或有效测量表面不足"); return }
   phase = .finalizing; lock.unlock()
   releaseCaptureAnalysis()
   motion.stopDeviceMotionUpdates()
@@ -174,12 +209,12 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor, SCR
   guard phase != .finished else { lock.unlock(); return }
   cancelled = true; failureReason = message
   let old = phase
-  if phase == .scanning || phase == .paused || phase == .idle { phase = .finalizing }
+  if phase == .scanning || phase == .captured || phase == .paused || phase == .idle { phase = .finalizing }
   let operation = meshing
   lock.unlock()
   releaseCaptureAnalysis()
   motion.stopDeviceMotionUpdates()
-  if old == .scanning || old == .paused { model.finalize { [self] in end(.failure(Failure.message(message))) } }
+  if old == .scanning || old == .captured || old == .paused { model.finalize { [self] in end(.failure(Failure.message(message))) } }
   else if old == .idle { model.finalize { [self] in end(.failure(Failure.message(message))) } }
   else if old == .meshing { operation?.cancel() } // completion owns cleanup after writes stop
   // A finalize already in flight observes cancelled in prepareMesh.

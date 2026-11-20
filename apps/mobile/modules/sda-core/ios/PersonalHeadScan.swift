@@ -17,6 +17,7 @@ struct PersonalHeadMeshCandidate {
 }
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }
+ var captureGuide: ((PersonalHeadCaptureGuide) -> Void)? { get set }
  var captureReadiness: ((Bool, String) -> Void)? { get set }
  var captureLimit: ((Int, String) -> Void)? { get set }
  func start(completion: @escaping (Result<PersonalHeadMeshCandidate,Error>) -> Void) throws
@@ -25,6 +26,7 @@ protocol PersonalHeadReconstructor: AnyObject {
  func cancel()
 }
 extension PersonalHeadReconstructor {
+ var captureGuide: ((PersonalHeadCaptureGuide) -> Void)? { get { nil } set {} }
  var captureReadiness: ((Bool, String) -> Void)? { get { nil } set {} }
  var captureLimit: ((Int, String) -> Void)? { get { nil } set {} }
 }
@@ -43,6 +45,10 @@ final class PersonalHeadScanController: UIViewController {
  private let preview = UIView(frame:.zero)
  private let message = UILabel(), countLabel = UILabel(), coverageLabel = UILabel()
  private let finishButton = UIButton(type:.system)
+ private let stageTitle = UILabel(), targetIcon = UIImageView(), stageProgress = UIProgressView(progressViewStyle:.default)
+ private let speaker = AVSpeechSynthesizer()
+ private var shownStage: PersonalHeadCaptureGuide.Stage?
+ private let feedback = UINotificationFeedbackGenerator()
  private let frameLock = NSLock()
  private var acceptingFrames = false // protected by frameLock
  private var finished = false, permissionCancelled = false // main queue
@@ -60,26 +66,47 @@ final class PersonalHeadScanController: UIViewController {
   preview.layer.addSublayer(camera.previewLayer)
   message.textColor = .white; message.numberOfLines = 0; message.textAlignment = .center
   message.font = .preferredFont(forTextStyle:.body)
-  message.text = "仅使用前置 TrueDepth，在 iPhone 上实时重建。请他人协助：先正面对准脸部建立左右耳参考，再缓慢移动手机，采集头部正面和两耳（无需扫描后脑），头顶只需保留可确认向上的测量位置。移开遮耳头发，头部和表情保持稳定，相邻画面保持重叠，距离约 25–60 厘米。"
+  message.text = PersonalHeadCaptureGuide().instruction
+  stageTitle.font = .preferredFont(forTextStyle:.title2); stageTitle.textColor = .white; stageTitle.textAlignment = .center
+  stageTitle.adjustsFontForContentSizeCategory = true
+  targetIcon.tintColor = .white; targetIcon.contentMode = .scaleAspectFit
+  targetIcon.heightAnchor.constraint(equalToConstant:56).isActive = true
+  stageProgress.progressTintColor = .systemGreen
+  stageProgress.trackTintColor = UIColor.white.withAlphaComponent(0.2)
+
   countLabel.textColor = .white; countLabel.textAlignment = .center; countLabel.numberOfLines = 0
   coverageLabel.textColor = .white; coverageLabel.textAlignment = .center; coverageLabel.numberOfLines = 0
   coverageLabel.font = .preferredFont(forTextStyle:.footnote)
-  coverageLabel.text = "头部：待采集 · 左耳：待采集 · 右耳：待采集\n无需扫描后脑；区域识别不代表耳廓精度合格"
-  finishButton.setTitle("完成采集，在本机处理",for:.normal); finishButton.isEnabled = false
+  coverageLabel.text = PersonalHeadCaptureGuide().status
+  finishButton.setTitle("采集完成后继续",for:.normal); finishButton.isEnabled = false
   finishButton.addTarget(self,action:#selector(finishScan),for:.touchUpInside)
   let cancel = UIButton(type:.system); cancel.setTitle("取消并删除",for:.normal)
   cancel.addTarget(self,action:#selector(cancelScan),for:.touchUpInside)
-  let stack = UIStackView(arrangedSubviews:[message,countLabel,coverageLabel,finishButton,cancel]); stack.axis = .vertical; stack.spacing = 14
+  let stack = UIStackView(arrangedSubviews:[targetIcon,stageTitle,message,stageProgress,coverageLabel,countLabel,finishButton,cancel]); stack.axis = .vertical; stack.spacing = 10
   stack.backgroundColor = UIColor.black.withAlphaComponent(0.65); stack.isLayoutMarginsRelativeArrangement = true
-  stack.layoutMargins = UIEdgeInsets(top:16,left:18,bottom:12,right:18); stack.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(stack)
+  stack.layoutMargins = UIEdgeInsets(top:16,left:18,bottom:12,right:18)
+  let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scroll)
+  stack.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(stack)
   NSLayoutConstraint.activate([
    preview.topAnchor.constraint(equalTo:view.topAnchor),preview.bottomAnchor.constraint(equalTo:view.bottomAnchor),
    preview.leadingAnchor.constraint(equalTo:view.leadingAnchor),preview.trailingAnchor.constraint(equalTo:view.trailingAnchor),
-   stack.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor,constant:12),
-   stack.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor,constant:-12),
-   stack.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor,constant:-8)
+   scroll.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor,constant:12),
+   scroll.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor,constant:-12),
+   scroll.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor,constant:-8),
+   scroll.heightAnchor.constraint(equalTo:view.safeAreaLayoutGuide.heightAnchor,multiplier:0.58),
+   stack.topAnchor.constraint(equalTo:scroll.contentLayoutGuide.topAnchor),stack.bottomAnchor.constraint(equalTo:scroll.contentLayoutGuide.bottomAnchor),
+   stack.leadingAnchor.constraint(equalTo:scroll.contentLayoutGuide.leadingAnchor),stack.trailingAnchor.constraint(equalTo:scroll.contentLayoutGuide.trailingAnchor),
+   stack.widthAnchor.constraint(equalTo:scroll.frameLayoutGuide.widthAnchor)
   ])
   isModalInPresentation = true; UIApplication.shared.isIdleTimerDisabled = true
+  showGuide(PersonalHeadCaptureGuide())
+  reconstruction.captureGuide = { [weak self] state in
+   DispatchQueue.main.async {
+    guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
+    self.showGuide(state)
+
+   }
+  }
   reconstruction.progress = { [weak self] count,text in
    DispatchQueue.main.async {
     guard let self, !self.finished, !self.capturePaused || self.processing else { return }
@@ -90,9 +117,10 @@ final class PersonalHeadScanController: UIViewController {
   reconstruction.captureReadiness = { [weak self] ready,text in
    DispatchQueue.main.async {
     guard let self, !self.finished, !self.processing, !self.capturePaused else { return }
-    self.coverageLabel.text = text + "\n无需扫描后脑；区域识别不代表耳廓精度合格"
+    self.coverageLabel.text = text
     self.frameLock.lock(); let scanning = self.acceptingFrames; self.frameLock.unlock()
-    self.finishButton.isEnabled = scanning && ready
+    self.finishButton.isEnabled = ready && (scanning || self.shownStage == .complete)
+    if ready { self.stopFrames() }
    }
   }
   reconstruction.captureLimit = { [weak self] count,text in
@@ -102,8 +130,9 @@ final class PersonalHeadScanController: UIViewController {
     self.stopFrames()
     self.message.text = text
     self.countLabel.text = "已保留本次测量，可处理现有模型或取消删除"
-    self.finishButton.setTitle("处理已采集的模型",for:.normal)
-    self.finishButton.isEnabled = count > 0
+    self.speaker.stopSpeaking(at:.immediate)
+    self.finishButton.setTitle("三个步骤未完成，请重新采集",for:.normal)
+    self.finishButton.isEnabled = false
    }
   }
   do { try reconstruction.start { [weak self] result in
@@ -115,6 +144,25 @@ final class PersonalHeadScanController: UIViewController {
    guard let self else { return }; self.frameLock.lock(); let accept = self.acceptingFrames; self.frameLock.unlock()
    if accept { self.reconstruction.accumulate(frame) }
   },failure:{ [weak self] error in self?.stop(error.localizedDescription) })
+ }
+ private func showGuide(_ state: PersonalHeadCaptureGuide) {
+  stageTitle.text = state.title; message.text = state.instruction
+  coverageLabel.text = state.status; stageProgress.setProgress(state.fraction,animated:true)
+  targetIcon.image = UIImage(systemName:state.complete ? "checkmark.circle.fill" : (state.stage == .face ? "faceid" : "ear"))
+  targetIcon.transform = state.stage == .rightEar ? CGAffineTransform(scaleX:-1,y:1) : .identity
+  guard shownStage != state.stage else { return }
+  if shownStage != nil { feedback.notificationOccurred(.success) }
+  shownStage = state.stage
+  if state.complete { finishButton.setTitle("继续检查测量结果",for:.normal) }
+  UIAccessibility.post(notification:.announcement,argument:state.title+"。"+state.instruction)
+  // Speak only on a step change, never on every depth/tracking callback.
+  // VoiceOver already provides the accessibility announcement.
+  if !UIAccessibility.isVoiceOverRunning {
+   speaker.stopSpeaking(at:.immediate)
+   let utterance = AVSpeechUtterance(string:state.title+"。"+state.instruction)
+   utterance.voice = AVSpeechSynthesisVoice(language:"zh-CN"); utterance.rate = 0.48
+   speaker.speak(utterance)
+  }
  }
  override func viewDidLayoutSubviews() {
   super.viewDidLayoutSubviews(); camera.previewLayer.frame = preview.bounds
@@ -129,7 +177,7 @@ final class PersonalHeadScanController: UIViewController {
   }
  }
  override func viewDidDisappear(_ animated: Bool) {
-  super.viewDidDisappear(animated); permissionCancelled = true; stopFrames()
+  super.viewDidDisappear(animated); speaker.stopSpeaking(at:.immediate); permissionCancelled = true; stopFrames()
   UIApplication.shared.isIdleTimerDisabled = false
   if !finished { reconstruction.cancel() }
  }
@@ -138,7 +186,7 @@ final class PersonalHeadScanController: UIViewController {
  }
  @objc private func finishScan() {
   guard !finished, !processing else { return }; processing = true; permissionCancelled = true; stopFrames()
-  finishButton.isEnabled = false; message.text = "正在 iPhone 上完成配准与重建，请保持应用在前台。"
+  speaker.stopSpeaking(at:.immediate); finishButton.isEnabled = false; message.text = "正在 iPhone 上完成配准与重建，请保持应用在前台。"
   reconstruction.finish()
  }
  @objc private func cancelScan() { cancel() }
@@ -148,7 +196,7 @@ final class PersonalHeadScanController: UIViewController {
  }
  private func end(_ result: Result<PersonalHeadMeshCandidate,Error>) {
   guard !finished else { return }; finished = true; permissionCancelled = true
-  stopFrames(); reconstruction.progress = nil; reconstruction.captureLimit = nil; reconstruction.captureReadiness = nil; UIApplication.shared.isIdleTimerDisabled = false
+  stopFrames(); speaker.stopSpeaking(at:.immediate); reconstruction.captureGuide = nil; reconstruction.progress = nil; reconstruction.captureLimit = nil; reconstruction.captureReadiness = nil; UIApplication.shared.isIdleTimerDisabled = false
   let answer: Result<PersonalHeadMeshCandidate,Error>
   if let reason {
    if case .success(let candidate) = result { try? FileManager.default.removeItem(at:candidate.directory) }

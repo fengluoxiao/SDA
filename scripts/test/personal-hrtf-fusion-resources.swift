@@ -128,22 +128,35 @@ struct FusionResourcesTest {
   let request = VNCoreMLRequest(model:visionModel); request.imageCropAndScaleOption = .scaleFill
   try VNImageRequestHandler(cvPixelBuffer:color,orientation:.up).perform([request])
   print("SDA offline ear detector inference completed on neutral input")
-  var state = PersonalHrtfCaptureCoverage.State()
+  var state = PersonalHeadCaptureGuide()
   let leftEarPoint = SIMD3<Float>(0.08,0,0), rightEarPoint = SIMD3<Float>(-0.08,0,0)
-  state.observe(head:true,left:leftEarPoint,right:nil)
-  guard state.head == 1, state.leftEar == 1, state.rightEar == 0 else { throw Failure.invalid("A single frame qualified unobserved regions") }
-  state.observe(head:false,left:SIMD3<Float>(0.12,0,0),right:nil)
-  guard state.leftEar == 1 else { throw Failure.invalid("Unstable ear observations accumulated") }
-  for _ in 0..<3 { state.observe(head:true,left:leftEarPoint,right:nil) }
-  guard state.head == 3, state.leftEar == 3, state.rightEar == 0 else { throw Failure.invalid("Left-ear evidence counted as both ears") }
-  state.observe(head:false,left:SIMD3<Float>(0.15,0,0),right:rightEarPoint)
-  guard state.leftEar == 3, state.rightEar == 1 else { throw Failure.invalid("Completed region was lost while scanning the other ear") }
-  for _ in 0..<2 { state.observe(head:false,left:nil,right:rightEarPoint) }
-  guard state.rightEar == 3 else { throw Failure.invalid("Stable right-ear evidence was lost") }
-  // Turning away from a frontal face and brief missing detections do not reset
-  // any region that was already measured in the registered coordinate system.
-  for _ in 0..<2000 { state.observe(head:false,left:nil,right:nil) }
-  guard state.head == 3, state.leftEar == 3, state.rightEar == 3 else { throw Failure.invalid("A view transition reset completed coverage") }
+  var clock = 1.0
+  func observe(_ head:Bool = false,_ left:SIMD3<Float>? = nil,_ right:SIMD3<Float>? = nil,_ camera:SIMD3<Float> = .zero) {
+   state.observe(head:head,left:left,right:right,camera:camera,time:clock); clock += 0.31
+  }
+  for _ in 0..<10 { observe(false,leftEarPoint,rightEarPoint) }
+  guard state.stage == .face, state.head == 0, state.leftEar == 0, state.rightEar == 0 else { throw Failure.invalid("Ears skipped the required face setup") }
+  for _ in 0..<4 { observe(true,leftEarPoint,rightEarPoint) }
+  guard state.stage == .leftEar, state.head == 4, state.leftEar == 0 else { throw Failure.invalid("Face did not advance alone") }
+  for _ in 0..<10 { observe(true,nil,rightEarPoint) }
+  guard state.stage == .leftEar, state.leftEar == 0, state.rightEar == 0 else { throw Failure.invalid("Wrong ear advanced the current step") }
+  for _ in 0..<10 { observe(false,leftEarPoint) }
+  guard state.stage == .leftEar, !state.complete else { throw Failure.invalid("One frozen ear view qualified multi-view capture") }
+  observe(false,SIMD3<Float>(0.15,0,0))
+  guard state.leftEar == 1 else { throw Failure.invalid("Unstable ear evidence accumulated") }
+  for i in 0..<7 { observe(false,leftEarPoint,nil,SIMD3<Float>(Float(i)*0.002,0,0)) }
+  guard state.stage == .rightEar, state.leftEar == 6 else { throw Failure.invalid("Measured left-ear views did not advance") }
+  for _ in 0..<20 { observe(true,leftEarPoint,nil) }
+  guard state.stage == .rightEar, state.head == 4, state.leftEar == 6, state.rightEar == 0 else { throw Failure.invalid("Journey through the face reset a completed step") }
+  observe(false,nil,rightEarPoint)
+  state.observe(head:false,left:nil,right:rightEarPoint,camera:SIMD3<Float>(0.1,0,0),time:clock-0.31)
+  guard state.rightEar == 1 else { throw Failure.invalid("Duplicate callback counted as evidence") }
+  for _ in 0..<5 { observe() }
+  guard state.rightEar == 0 else { throw Failure.invalid("Occlusion did not clear incomplete step evidence") }
+  for i in 0..<7 { observe(false,nil,rightEarPoint,SIMD3<Float>(Float(i)*0.002,0,0)) }
+  guard state.complete, state.head == 4, state.leftEar == 6, state.rightEar == 6 else { throw Failure.invalid("Valid sequential capture failed to complete") }
+  for _ in 0..<2000 { observe() }
+  guard state.complete else { throw Failure.invalid("Completed capture was lost") }
   var optional: CVPixelBuffer?
   guard CVPixelBufferCreate(kCFAllocatorDefault,32,32,kCVPixelFormatType_DepthFloat32,nil,&optional) == kCVReturnSuccess,
         let buffer = optional else { throw Failure.invalid("Synthetic depth allocation failed") }
@@ -166,7 +179,34 @@ struct FusionResourcesTest {
   let projection = simd_float4x4(columns:(SIMD4(-2,0,0,0),SIMD4(0,-2,0,0),SIMD4(0,0,-1.02,-1),SIMD4(0,0,-0.202,0)))
   guard let world = PersonalHrtfCaptureCoverage.modelPoint(CGPoint(x:0.8,y:0.7),depth:0.3,orientation:.up,cameraToModel:matrix_identity_float4x4,projection:projection),
         abs(world.x + 0.09)<1e-5, abs(world.y-0.06)<1e-5, abs(world.z+0.3)<1e-5 else { throw Failure.invalid("Pinned image-row projection mapped the capture region incorrectly") }
-  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"realEarDetectionValidated":false]
+  // Exercise the same foreground buffer path used before native ICP. Do not
+  // accept torso/background depth or mutate borrowed AVFoundation buffers.
+  var largeOptional: CVPixelBuffer?
+  guard CVPixelBufferCreate(kCFAllocatorDefault,128,128,kCVPixelFormatType_DepthFloat32,nil,&largeOptional) == kCVReturnSuccess, let large = largeOptional else { throw Failure.invalid("Mask test allocation failed") }
+  CVPixelBufferLockBaseAddress(large,[])
+  let source = CVPixelBufferGetBaseAddress(large)!, sourceStride = CVPixelBufferGetBytesPerRow(large)
+  for y in 0..<128 { for x in 0..<128 { source.storeBytes(of:Float(0.3),toByteOffset:y*sourceStride+x*4,as:Float.self) } }
+  CVPixelBufferUnlockBaseAddress(large,[])
+  func validCount(_ b:CVPixelBuffer) -> Int {
+   CVPixelBufferLockBaseAddress(b,.readOnly); defer { CVPixelBufferUnlockBaseAddress(b,.readOnly) }
+   let p = CVPixelBufferGetBaseAddress(b)!, stride = CVPixelBufferGetBytesPerRow(b)
+   var count = 0
+   for y in 0..<128 { for x in 0..<128 { if p.load(fromByteOffset:y*stride+x*4,as:Float.self).isFinite { count += 1 } } }
+   return count
+  }
+  for orientation in [CGImagePropertyOrientation.up,.down,.left,.right] {
+   let seed = PersonalHrtfCaptureCoverage.Seed(box:CGRect(x:0.35,y:0.3,width:0.3,height:0.4),depth:0.3)
+   guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(large,seed:seed,orientation:orientation,region:nil), validCount(masked) >= 1000, validCount(masked) < 8000, validCount(large) == 128*128 else { throw Failure.invalid("Frontal seed retained background or modified borrowed depth") }
+  }
+  let foreground = PersonalHrtfCaptureCoverage.Region(center:SIMD3<Float>(0,0,-0.3),view:matrix_identity_float4x4,projection:projection)
+  guard let masked = PersonalHrtfCaptureCoverage.maskedDepth(large,seed:nil,orientation:.up,region:foreground), validCount(masked) > 1000 else { throw Failure.invalid("Head-sized mask lost measured overlap") }
+  let background = PersonalHrtfCaptureCoverage.Region(center:SIMD3<Float>(0,0,-0.6),view:matrix_identity_float4x4,projection:projection)
+  guard PersonalHrtfCaptureCoverage.maskedDepth(large,seed:nil,orientation:.up,region:background) == nil else { throw Failure.invalid("Unrelated depth admitted to head model") }
+  let initial = try PersonalHrtfCaptureCoverage(), semaphore = DispatchSemaphore(value:0)
+  var neutralSeedRejected = false
+  initial.prepareInitial(color:color,depth:large,orientation:.up) { seed in neutralSeedRejected = seed == nil; semaphore.signal() }
+  guard semaphore.wait(timeout:.now()+10) == .success, neutralSeedRejected else { throw Failure.invalid("Neutral/background image bootstrapped reconstruction") }
+  return ["neutralVisionInferencePassed":true,"stableRegionEvidencePassed":true,"completedCoverageSurvivesMissingDetections":true,"earModelLoaded":true,"invalidDepthRejected":true,"orientationDepthPassed":true,"sequentialTargetGatePassed":true,"wrongEarAndDuplicateRejected":true,"multiViewEarRequired":true,"foregroundMaskPassed":true,"backgroundSeedRejected":true,"realEarDetectionValidated":false]
  }
  static func main() {
   do { try run() }
