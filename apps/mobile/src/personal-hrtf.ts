@@ -6,7 +6,7 @@ export function showPersonalHrtfSettings() {
  const run = async (action: string) => {
   try {
    const result = await engine.personalHrtfAction(action);
-   if (result?.cancelled) return;
+   if (result?.cancelled || result?.failurePresented) return;
    Alert.alert("个人 HRTF", result?.message || "设置已保存，下一次打开曲目时使用；当前播放不受影响。");
   } catch (e) { Alert.alert("个人 HRTF 未完成", String(e)); }
  };

@@ -49,13 +49,17 @@ with zipfile.ZipFile(ipa)as z:
         for cue in ['手机不动，鼻尖慢慢转向自己的右肩，让镜头看到左耳。','左耳已记录。手机不动，鼻尖经过正面转向自己的左肩，让镜头看到右耳。','FaceFrame · 双耳侧面已记录','双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。']:
             assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue
         assert b'Incomplete surface edge' in z.read(fw+'StandardCyborgFusion'), 'Missing native Poisson edge-error classification'
+        for marker in ['SDA-measured-surface.ply','SDA-unverified-candidate.ply','SDA-measured-points.ply','SDA-scan-log.json','导出实测模型','导出候选模型（未通过检查）','导出实测点云（无网格）']:
+            assert marker.encode() in runtime, 'Missing scan export in the device executable: '+marker
+        assert b'SDAPoissonLine' in z.read(fw+'StandardCyborgFusion')
+        assert b'failurePresented' in bundle, 'Native failure sheet would be followed by a second JS alert'
         assert '尚未获得当前侧的有效三维视角'.encode() not in runtime
         assert '已对准右耳'.encode() not in runtime
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)
         assert '@rpath/StandardCyborgFusion.framework/StandardCyborgFusion'in links
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
       'frontCameraPermission':True,'guidedCaptureEmbedded':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
-      'scanEngine':'FaceFrame','faceFrameRevision':faceframe['commit'],
+      'scanEngine':'FaceFrame','faceFrameRevision':faceframe['commit'],'scanDiagnosticsAndPLYExports':True,
       'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))

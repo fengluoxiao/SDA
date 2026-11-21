@@ -17,6 +17,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
  private let coverage: PersonalHrtfCaptureCoverage
  private var fusion: FusionEngine? = FusionEngine()
  private var support: PersonalHeadMeasuredSupport
+ private let scanLog = PersonalHeadScanLog()
  private var leftSupport = false, rightSupport = false
  private let budget: UInt64, pointLimit: Int
  var captureGuide: ((PersonalHeadCaptureGuide)->Void)?
@@ -103,14 +104,18 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   fusion.onMeasuredFrame = nil
   if status.diagnostics.mappingSwitches != switches {
    support = PersonalHeadMeasuredSupport(limit:pointLimit); leftSupport = false; rightSupport = false; coverage.reset()
+   scanLog.leftDepthFrames = 0; scanLog.rightDepthFrames = 0
   }
   lock.lock(); needsVertices = fusion.needsFaceVertices; lock.unlock()
   guard !isCancelled else { return }
   let side = PersonalHeadEarView.side(advanced:fusion.counts.left > old.left || fusion.counts.right > old.right,
                                       pose:acceptedPose,eyes:fusion.eyes)
-  if independent && side == .left { leftSupport = true }; if independent && side == .right { rightSupport = true }
+  if independent && side == .left { leftSupport = true; scanLog.leftDepthFrames += 1 }
+  if independent && side == .right { rightSupport = true; scanLog.rightDepthFrames += 1 }
   coverage.observe(status:status,side:side,pixels:color,pose:acceptedPose)
   let guide = coverage.guide
+  scanLog.registeredFrames = status.diagnostics.fusedFrames; scanLog.points = support.count
+  scanLog.leftEarConfirmed = guide.stage == .rightEar || guide.complete; scanLog.rightEarConfirmed = guide.complete
   let statusText: String
   if guide.complete { statusText = "FaceFrame · 双耳侧面已记录" }
   else if status.tracking == .tooFast { statusText = "请慢一点转头" }
@@ -139,16 +144,27 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   }
  }
  private func measuredCandidate() throws -> PersonalHeadMeshCandidate {
+  var candidate:PersonalHrtfReviewGeometry?
+  do {
+  scanLog.stage = "verify-depth-support"
   guard !isCancelled, fusion?.volume != nil, leftSupport, rightSupport, support.count >= 10000 else {
    throw PersonalHrtfError.message("已识别双耳，但无足够的原始绝对深度支持实测表面，未生成个人档案")
   }
   fusion = nil
   let available = min(budget,sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory))
+  scanLog.budgetMiB = available / (1024*1024)
   guard available >= 64*1024*1024 else { throw PersonalHrtfError.message("当前内存不足以检查实测表面") }
-  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,currentBudget:{ sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory) },cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
+  let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,log:scanLog,candidateReady:{ candidate = $0 },currentBudget:{ sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory) },cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
    lock.lock(); meshing = operation; let stop = cancelled; lock.unlock(); if stop { operation?.cancel() }
   })
   return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance)
+  } catch {
+   if isCancelled || error is CancellationError { throw error }
+   let reason = (error as? PersonalHrtfError)?.errorDescription ?? (error as? PersonalHrtfReviewGeometry.Failure)?.message
+   scanLog.finish(error,applicationReason:reason)
+   let geometry:PersonalHeadExport? = candidate.map { .mesh($0,verified:false) } ?? (support.count > 0 ? .points(support.positions,support.normals) : nil)
+   throw PersonalHeadReconstructionFailure(message:reason ?? "本机重建未完成。",log:scanLog,geometry:geometry)
+  }
  }
  func cancel() {
   lock.lock(); guard phase != .finished, !cancelled else { lock.unlock(); return }; cancelled = true; let operation = meshing; lock.unlock()

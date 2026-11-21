@@ -17,7 +17,7 @@ arch="$(uname -m)"
 xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-ios16.4-simulator" -sdk "$sim_sdk" "$geometry" "$fixture" "$test" -o "$out/review-simulator-test"
 app="$out/ReviewUITest.app"
 mkdir -p "$app"
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-ios16.4-simulator" -sdk "$sim_sdk" "$geometry" "$controller" "$fixture" "$PWD/scripts/test/personal-hrtf-review-ui.swift" -o "$app/ReviewUITest" 2>&1 | tee "$out/review-ui-compile.log"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-ios16.4-simulator" -sdk "$sim_sdk" "$geometry" "$controller" "$ios/PersonalHeadScanDiagnostics.swift" "$ios/PersonalHeadScanExportUI.swift" "$fixture" "$PWD/scripts/test/personal-hrtf-scan-exports.swift" "$PWD/scripts/test/personal-hrtf-review-ui.swift" -o "$app/ReviewUITest" 2>&1 | tee "$out/review-ui-compile.log"
 python3 - "$app/Info.plist" <<'PY'
 import plistlib,sys
 with open(sys.argv[1],'wb')as f:plistlib.dump({'CFBundleIdentifier':'app.sda.hrtf-review-test','CFBundleExecutable':'ReviewUITest','CFBundleName':'ReviewUITest','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0','MinimumOSVersion':'16.4','LSRequiresIPhoneOS':True,'UILaunchScreen':{},'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneConfigurationName':'Review','UISceneDelegateClassName':'ReviewSceneDelegate'}]}},'UIDeviceFamily':[1,2],'CFBundleSupportedPlatforms':['iPhoneSimulator'],'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait','UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']},f)
@@ -70,6 +70,7 @@ import json,sys
 root=Path(sys.argv[1]);lines=(root/'review-ui-runtime.log').read_text().splitlines()
 result=json.loads(next(s for s in reversed(lines)if s.startswith('{')))
 assert result['passed']and result['layoutSizesChecked']==6 and result['cancelDismissedOnce']
+assert result['failureSharePresented'] and result['meshAndCloudRoundTrip'] and result['privateLogAndCleanup']
 assert result['physicalScanTested']is False and result['deviceVisualAcceptance']is False
 (root/'review-ui-result.json').write_text(json.dumps(result,indent=2)+'\n')
 PY

@@ -6,6 +6,7 @@ import simd
 // playback, orientation or selected HRTF. No generated anatomy is displayed.
 final class PersonalHrtfReviewController: UIViewController {
  private let surface: PersonalHrtfReviewGeometry
+ var exportSurface:((UIViewController,UIView)->Void)?
  private let sceneView = SCNView(), model = SCNNode(), selection = SCNNode()
  private let step = UISegmentedControl(items:["左耳","右耳","鼻尖","头顶"])
  private let message = UILabel(), advanceButton = UIButton(type:.system)
@@ -53,7 +54,9 @@ final class PersonalHrtfReviewController: UIViewController {
   let reset = UIButton(type:.system); reset.setTitle("清除此项",for:.normal); reset.addTarget(self,action:#selector(clearStep),for:.touchUpInside)
   let cancel = UIButton(type:.system); cancel.setTitle("取消并删除采集",for:.normal); cancel.addTarget(self,action:#selector(cancelReview),for:.touchUpInside)
   let buttons = UIStackView(arrangedSubviews:[reset,advanceButton]); buttons.distribution = .fillEqually; buttons.spacing = 12
-  let controls = UIStackView(arrangedSubviews:[step,message,buttons,cancel]); controls.axis = .vertical; controls.spacing = 10
+  let export = UIButton(type:.system); var config = UIButton.Configuration.plain(); config.image = UIImage(systemName:"square.and.arrow.up"); config.title = "导出实测模型"; config.imagePadding = 6; export.configuration = config
+  export.isHidden = exportSurface == nil; export.addTarget(self,action:#selector(shareMeasuredSurface(_:)),for:.touchUpInside)
+  let controls = UIStackView(arrangedSubviews:[step,message,buttons,export,cancel]); controls.axis = .vertical; controls.spacing = 10
   // Keep confirm and cancel reachable in landscape and at large text sizes.
   let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(scroll)
   controls.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(controls)
@@ -64,6 +67,7 @@ final class PersonalHrtfReviewController: UIViewController {
    controls.topAnchor.constraint(equalTo:scroll.contentLayoutGuide.topAnchor),controls.bottomAnchor.constraint(equalTo:scroll.contentLayoutGuide.bottomAnchor,constant:-12),controls.leadingAnchor.constraint(equalTo:scroll.contentLayoutGuide.leadingAnchor,constant:16),controls.trailingAnchor.constraint(equalTo:scroll.contentLayoutGuide.trailingAnchor,constant:-16),controls.widthAnchor.constraint(equalTo:scroll.frameLayoutGuide.widthAnchor,constant:-32)
   ]); changeStep()
  }
+ @objc private func shareMeasuredSurface(_ button:UIButton) { exportSurface?(self,button) }
  @objc private func changeStep() {
   let descriptions = ["选择本人左耳入口的实测面（蓝色 L）。模型正面朝向你时，它在画面右边。", "选择本人右耳入口的实测面（橙色 R）。模型正面朝向你时，它在画面左边。", "旋转模型，轻点鼻尖，确认头部前方。", "轻点头顶，确认向上方向。"]
   message.text = descriptions[step.selectedSegmentIndex]+" 双指缩放、拖动旋转。人工确认不代表扫描精度已合格。"

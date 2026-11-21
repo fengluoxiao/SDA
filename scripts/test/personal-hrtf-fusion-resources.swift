@@ -192,26 +192,28 @@ struct FusionResourcesTest {
  static func meshRecovery(_ points:[Float],_ normals:[Float]) throws -> [String:Any] {
   let missing = NSError(domain:"SDA.Poisson",code:4), budget:UInt64 = 512*1024*1024
   var attempts = [Int32](), published = [Bool](), faces = 0, distance = Double.infinity
-  for scenario in ["recover","repeat","other","cancel","budget"] {
+  for scenario in ["recover","repeat","topology","empty","capacity","no-output","other","allocation","cancel","budget"] {
    attempts.removeAll(); published.removeAll(); var stopped = false, remaining = budget
    do {
-    let result = try PersonalHrtfMeshCheck.poissonMeasurement(positions:points,normals:normals,budget:budget,currentBudget:{ remaining },cancelled:{ stopped },operationChanged:{ published.append($0 != nil) },startOperation:{ op in
+    let log = PersonalHeadScanLog()
+    let result = try PersonalHrtfMeshCheck.poissonMeasurement(positions:points,normals:normals,budget:budget,log:log,currentBudget:{ remaining },cancelled:{ stopped },operationChanged:{ published.append($0 != nil) },startOperation:{ op in
      attempts.append(op.parameters.resolution)
      if scenario == "other" { throw NSError(domain:"SDA.Poisson",code:1) }
+     if let code = ["topology":5,"empty":6,"capacity":7,"no-output":3,"allocation":8][scenario] { throw NSError(domain:"SDA.Poisson",code:code) }
      if scenario == "cancel" { stopped = true }
      if scenario == "budget" { remaining = 1 }
      if attempts.count == 1 || scenario == "repeat" { throw missing }
      op.start() // Real fallback solver, PLY reader and strict geometry checks.
     })
-    guard scenario == "recover", result.surface.triangles.count > 3000, result.distance <= 0.0015 else { throw Failure.invalid("Unexpected recovery success: \(scenario)") }
+    guard scenario == "recover", result.surface.triangles.count > 3000, result.distance <= 0.0015, log.attempts.map(\.code) == [4,0], log.candidateTriangles >= result.surface.triangles.count/3 else { throw Failure.invalid("Unexpected recovery success: \(scenario)") }
     faces = result.surface.triangles.count/3; distance = result.distance
    } catch is CancellationError {
     guard scenario == "cancel" else { throw Failure.invalid("Unexpected cancellation: \(scenario)") }
    } catch PersonalHrtfError.message(let message) {
-    let token = ["repeat":"两次重建","other":"未能重建","budget":"内存不足"][scenario]
+    let token = ["repeat":"两次重建","other":"未能重建","budget":"内存不足","allocation":"内存不足","topology":"两档精度","empty":"两档精度","capacity":"两档精度","no-output":"两档精度"][scenario]
     guard let token, message.contains(token), !message.contains("/Users/") else { throw Failure.invalid("Unexpected geometry error: \(scenario): \(message)") }
    }
-   let retry = scenario == "recover" || scenario == "repeat"
+   let retry = ["recover","repeat","topology","empty","capacity","no-output"].contains(scenario)
    guard attempts == (retry ? [6,5] : [6]), published == (retry ? [true,false,true,false] : [true,false]) else { throw Failure.invalid("Wrong operation lifetime: \(scenario)") }
   }
   return ["firstErrorInjected":true,"fallbackMeasuredFaces":faces,"fallbackSupportDistance":distance,"cancelAndBudgetRespected":true,"unrelatedErrorNotRetried":true,"retryBounded":true]

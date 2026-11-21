@@ -15,7 +15,7 @@ enum PersonalHrtfMeshCheck {
   let support: [Float], normals: [Float]
  }
  #if canImport(StandardCyborgFusion)
- static func poissonMeasurement(positions:[Float],normals:[Float],budget:UInt64,currentBudget:(()->UInt64)? = nil,cancelled:@escaping()->Bool,operationChanged:(SCMeshingOperation?)->Void,startOperation:(SCMeshingOperation)throws->Void = { $0.start() }) throws -> (surface:PersonalHrtfReviewGeometry,distance:Double) {
+ static func poissonMeasurement(positions:[Float],normals:[Float],budget:UInt64,log:PersonalHeadScanLog? = nil,candidateReady:(PersonalHrtfReviewGeometry)->Void = {_ in},currentBudget:(()->UInt64)? = nil,cancelled:@escaping()->Bool,operationChanged:(SCMeshingOperation?)->Void,startOperation:(SCMeshingOperation)throws->Void = { $0.start() }) throws -> (surface:PersonalHrtfReviewGeometry,distance:Double) {
   guard positions.count == normals.count, positions.count.isMultiple(of:3), (10000...Int(SDA_HRTF_MAXIMUM_SUPPORT_POINTS)).contains(positions.count/3) else { throw PersonalHrtfError.message("原始测量点不足或超出本机预算") }
   let pointBytes = UInt64(positions.count/3)*64
   func available() -> UInt64 { min(budget,currentBudget?() ?? budget) }
@@ -27,9 +27,13 @@ enum PersonalHrtfMeshCheck {
   try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
   defer { try? FileManager.default.removeItem(at:directory) }
   let input = directory.appendingPathComponent("measured.ply")
+  log?.stage = "write-measured-input"
   try PersonalHeadMeasuredSupport.writePLY(to:input,positions:positions,normals:normals,cancelled:cancelled)
-  let meshURL = try extractSurface(input:input,cancelled:cancelled,requireBudget:requireBudget,operationChanged:operationChanged,start:startOperation)
+  log?.stage = "extract-surface"
+  let meshURL = try extractSurface(input:input,log:log,cancelled:cancelled,requireBudget:requireBudget,operationChanged:operationChanged,start:startOperation)
+  log?.stage = "read-candidate"
   let header = try preflight(meshURL,maximumVertices:1000000,maximumFaces:2000000)
+  log?.candidateVertices = header.vertices; log?.candidateTriangles = header.faces
   // Bound allocations from actual headers before invoking the upstream readers.
   // Estimate includes geometry, topology/BVH, support search and copied buffers.
   let needed = UInt64(header.vertices)*192 + UInt64(header.faces)*256 + pointBytes, remaining = available()
@@ -50,10 +54,12 @@ enum PersonalHrtfMeshCheck {
   let faces = mesh.facesData.withUnsafeBytes { raw in
    (0..<mesh.faceCount * 3).map { raw.loadUnaligned(fromByteOffset:$0 * 4,as:UInt32.self) }
   }
-  return try measurement(Loaded(surface:try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces),support:positions,normals:normals),cancelled:cancelled)
+  let candidate = try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces)
+  candidateReady(candidate); log?.stage = "check-measured-geometry"
+  return try measurement(Loaded(surface:candidate,support:positions,normals:normals),cancelled:cancelled)
  }
- private static func extractSurface(input:URL,cancelled:()->Bool,requireBudget:()throws->Void,operationChanged:(SCMeshingOperation?)->Void,start:(SCMeshingOperation)throws->Void) throws -> URL {
-  // Retry only the pinned extractor's missing-edge error. Keep the same
+ private static func extractSurface(input:URL,log:PersonalHeadScanLog?,cancelled:()->Bool,requireBudget:()throws->Void,operationChanged:(SCMeshingOperation?)->Void,start:(SCMeshingOperation)throws->Void) throws -> URL {
+  // Retry only known recoverable geometry errors on a coarser grid. Keep the same
   // absolute-depth points, independent output files, and the same final screen.
   for resolution:Int32 in [6,5] {
    if cancelled() { throw CancellationError() }; try requireBudget()
@@ -69,12 +75,18 @@ enum PersonalHrtfMeshCheck {
      if cancelled() || operation.isCancelled { throw CancellationError() }
      if let error = operation.sdaError { throw error }
     }
-    return output
+    log?.record(resolution,nil); return output
    } catch {
     if cancelled() || error is CancellationError { throw CancellationError() }
     let failure = error as NSError
+    log?.record(resolution,failure)
     guard failure.domain == "SDA.Poisson" else { throw error }
-    guard failure.code == 4 else { throw PersonalHrtfError.message("本次头耳测量未能重建出可检查的表面。") }
+    switch failure.code {
+    case 3,4,5,6,7:
+     if resolution == 5, failure.code != 4 { throw PersonalHrtfError.message("已用两档精度重建，仍未得到可检查的表面。") }
+    case 8: throw PersonalHrtfError.message("本机内存不足，已停止网格重建。")
+    default: throw PersonalHrtfError.message("本次头耳测量未能重建出可检查的表面。")
+    }
    }
   }
   throw PersonalHrtfError.message("双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。")

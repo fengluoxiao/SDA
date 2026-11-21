@@ -30,6 +30,7 @@ enum ReviewResult {
   DispatchQueue.main.asyncAfter(deadline:.now()+30) { self.fail("review UI timed out") }
   DispatchQueue.main.async {
    do {
+    try ScanExportTest.run()
     var earlyCallbacks = 0
     let early = PersonalHrtfReviewController(surface:try ReviewFixture.surface())
     early.complete = { _ in earlyCallbacks += 1 }
@@ -37,26 +38,47 @@ enum ReviewResult {
     try ReviewFixture.require(earlyCallbacks == 1,"cancel before presentation")
     fputs("Creating measured review controller\n",stderr)
     let controller = PersonalHrtfReviewController(surface:try ReviewFixture.surface())
+    var exportTapped = false
+    controller.exportSurface = { _,_ in exportTapped = true }
     controller.modalPresentationStyle = .fullScreen
     controller.complete = { [self] result in
      callbacks += 1
      guard case .failure = result, callbacks == 1 else { self.fail("cancel completion") }
      DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
       guard self.callbacks == 1, host.presentedViewController == nil else { self.fail("cancel dismissal") }
-      ReviewResult.write(["passed":true,"layoutSizesChecked":6,"cancelDismissedOnce":true,"cancelBeforePresentation":true,"physicalScanTested":false,"deviceVisualAcceptance":false])
-      print("{\"passed\":true,\"layoutSizesChecked\":6,\"cancelDismissedOnce\":true,\"cancelBeforePresentation\":true,\"physicalScanTested\":false,\"deviceVisualAcceptance\":false}")
-      fflush(stdout); exit(0)
+      guard exportTapped else { self.fail("review export action missing") }
+      self.checkFailureSheet(host)
      }
     }
     host.present(controller,animated:false) {
      fputs("Review controller presented\n",stderr)
      do { try self.check(controller) } catch { self.fail(error.localizedDescription) }
+     self.descendants(controller.view).compactMap { $0 as? UIButton }.first { $0.configuration?.title == "导出实测模型" }?.sendActions(for:.touchUpInside)
      controller.cancel(); controller.cancel()
     }
    } catch { self.fail(error.localizedDescription) }
   }
  }
  private func descendants(_ view: UIView) -> [UIView] { [view]+view.subviews.flatMap(descendants) }
+ private func checkFailureSheet(_ host:UIViewController) {
+  let log = PersonalHeadScanLog(), index = IndexPath(row:0,section:0)
+  let sheet = PersonalHeadScanFailureController(.init(message:"合成测试",log:log,geometry:.points([0,0,0],[0,0,1])))
+  let nav = UINavigationController(rootViewController:sheet)
+  host.present(nav,animated:false) {
+   guard sheet.tableView.numberOfRows(inSection:0) == 2, sheet.tableView(sheet.tableView,cellForRowAt:index).accessibilityTraits.contains(.button) else { self.fail("missing independent export choices") }
+   sheet.tableView(sheet.tableView,didSelectRowAt:index)
+   func checkShare(_ attempt:Int) {
+    if let share = sheet.presentedViewController as? UIActivityViewController {
+     share.dismiss(animated:false) {
+      let result:[String:Any] = ["passed":true,"layoutSizesChecked":6,"cancelDismissedOnce":true,"cancelBeforePresentation":true,"failureSharePresented":true,"meshAndCloudRoundTrip":true,"privateLogAndCleanup":true,"physicalScanTested":false,"deviceVisualAcceptance":false]
+      ReviewResult.write(result); print(String(decoding:try! JSONSerialization.data(withJSONObject:result),as:UTF8.self)); fflush(stdout); exit(0)
+     }
+    } else if attempt<50 { DispatchQueue.main.asyncAfter(deadline:.now()+0.1){checkShare(attempt+1)} }
+    else { self.fail("Native share sheet was not presented") }
+   }
+   checkShare(0)
+  }
+ }
  private func check(_ controller: PersonalHrtfReviewController) throws {
   let original = controller.view.frame
   defer { controller.view.frame = original }

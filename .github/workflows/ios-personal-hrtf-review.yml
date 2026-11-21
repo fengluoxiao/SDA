@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/workflows/ios-personal-hrtf-review.yml'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScanDiagnostics.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScanExportUI.swift'
+      - 'scripts/test/personal-hrtf-scan-exports.swift'
       - 'scripts/check-ios-personal-hrtf-review.sh'
       - 'scripts/test/personal-hrtf-review*.swift'
   workflow_dispatch:

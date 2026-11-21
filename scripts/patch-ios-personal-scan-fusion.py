@@ -496,16 +496,31 @@ for key in ['meshHeader','poissonHeader']:
               '@interface '+('SCMeshingOperation' if key=='meshHeader' else 'MeshingOperation')+' : NSOperation\n@property (atomic, readonly, nullable) NSError *sdaError;'.replace('\\n','\n'))
 replace('meshSource','- (void)main\n{','- (NSError *)sdaError { return _operation.sdaError; }\n\n- (void)main\n{')
 replace('meshSource','    [_operation cancel];','    [super cancel];\n    [_operation cancel];')
-replace('poissonSource','#import <PoissonRecon/ExecuteEntryFunctions.hpp>','#import <PoissonRecon/ExecuteEntryFunctions.hpp>\n#include <exception>\n#include <cstring>')
+replace('poissonSource','#import <PoissonRecon/ExecuteEntryFunctions.hpp>','#import <PoissonRecon/ExecuteEntryFunctions.hpp>\n#include <exception>\n#include <cstring>\n#include <cstdio>\n#include <new>')
 replace('poissonSource','@implementation MeshingOperation {','@interface MeshingOperation ()\n@property (atomic, readwrite, nullable) NSError *sdaError;\n@end\n\n@implementation MeshingOperation {')
 replace('poissonSource','    if (![weakSelf isCancelled]) {\n        PoissonReconExecute', '    try {\n    if (![weakSelf isCancelled]) {\n        PoissonReconExecute')
 replace('poissonSource','            [[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:NULL];', '''            NSError *error = nil;
-            if (![[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:&error]) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:tempPoissonOutputPathString]) {
+                self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Poisson produced no surface file"}];
+            } else if (![[NSFileManager defaultManager] moveItemAtPath:tempPoissonOutputPathString toPath:_outputFilePath error:&error]) {
                 self.sdaError = error;
             }''')
-replace('poissonSource','    [[NSFileManager defaultManager] removeItemAtPath:tempPoissonOutputPathString error:NULL];', '''    } catch (const std::exception& error) {
-        const bool missingEdge = std::strstr(error.what(), "FEMTree.LevelSet.3D.inl") && std::strstr(error.what(), "Edge not set:");
-        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:(missingEdge ? 4 : 1) userInfo:@{NSLocalizedDescriptionKey:missingEdge ? @"Incomplete surface edge" : @"Surface extraction failed"}];
+replace('poissonSource','    [[NSFileManager defaultManager] removeItemAtPath:tempPoissonOutputPathString error:NULL];', '''    } catch (const std::bad_alloc&) {
+        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:8 userInfo:@{NSLocalizedDescriptionKey:@"Insufficient reconstruction memory"}];
+    } catch (const std::exception& error) {
+        const char *what = error.what();
+        const bool levelSet = std::strstr(what,"FEMTree.LevelSet.3D.inl");
+        int code = 1, line = 0;
+        NSString *detail = @"other";
+        if (levelSet && std::strstr(what,"Edge not set:")) code = 4;
+        else if (levelSet && std::strstr(what,"Failed to close loop")) { code = 5; detail = @"open-contour"; }
+        else if (levelSet && std::strstr(what,"Couldn't find vertex in edge map")) { code = 5; detail = @"edge-map"; }
+        else if (levelSet && std::strstr(what,"Not a zero-crossing root")) { code = 5; detail = @"zero-crossing"; }
+        else if (levelSet && std::strstr(what,"Minimal area triangulation failed")) { code = 5; detail = @"triangulation"; }
+        else if (std::strstr(what,"Poisson emitted no usable surface")) code = 6;
+        else if (std::strstr(what,"Reconstructed mesh exceeds bounded on-device measurement capacity")) code = 7;
+        if (const char *p = std::strstr(what,"(Line ")) std::sscanf(p,"(Line %d",&line);
+        self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:code userInfo:@{NSLocalizedDescriptionKey:code == 4 ? @"Incomplete surface edge" : @"Surface extraction failed", @"SDAPoissonLine":@(line), @"SDAExtractorSite":levelSet ? @"FEMTree.LevelSet.3D.inl" : @"other", @"SDAContourIssue":detail}];
     } catch (...) {
         self.sdaError = [NSError errorWithDomain:@"SDA.Poisson" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Poisson reconstruction failed"}];
     }

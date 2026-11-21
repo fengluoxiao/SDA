@@ -4,6 +4,7 @@ out="${1:?Pass a dedicated build directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
+scan_export=("$ios/PersonalHeadScanDiagnostics.swift" "$ios/PersonalHeadScanExportUI.swift")
 python3 "$PWD/scripts/stage-faceframe-scan.py" "$ios" "$out/faceframe-source"
 faceframe=("$ios"/PersonalHrtfFusion/FaceFrame/*.swift)
 cp "$ios/Licenses/FaceFrame/provenance.json" "$out/faceframe-provenance.json"
@@ -88,7 +89,7 @@ if [[ "${SDA_FUSION_DEVICE_ONLY:-0}" == 1 ]]; then
   exit 0
 fi
 sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfPipelineFactory.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift "${faceframe[@]}" 2>&1 | tee "$out/fusion-swift-typecheck.log"
+xcrun --sdk iphoneos swiftc -typecheck -swift-version 5 -target arm64-apple-ios16.4 -sdk "$sdk" -F "$out/StandardCyborgFusion-ios.xcarchive/Products/Library/Frameworks" -import-objc-header "$ios/SdaBridge.h" "${scan_export[@]}" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHeadDepthCapture.swift" "$ios/PersonalHeadScan.swift" "$ios/PersonalHrtfStore.swift" "$ios/PersonalHrtfCoordinator.swift" "$ios/PersonalHrtfPipelineFactory.swift" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfReviewController.swift" "$ios"/PersonalHrtfFusion/*.swift "${faceframe[@]}" 2>&1 | tee "$out/fusion-swift-typecheck.log"
 
 # Exercise framework/resource discovery in an actual iOS Simulator process.
 # A runner without a Metal GPU reports that limitation explicitly in the JSON;
@@ -105,7 +106,7 @@ python3 "$generator"
 for unit in SdaHrtfMesh SdaHrtfSolver; do
  xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -fexceptions -target "$(uname -m)-apple-ios16.4-simulator" -isysroot "$sim_sdk" -I "$ios/PersonalHrtfNative" -c "$ios/PersonalHrtfNative/$unit.cpp" -o "$out/$unit-fusion-simulator.o"
 done
-xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "${faceframe[@]}" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
+xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" -F "$sim_products" -framework StandardCyborgFusion -Xlinker -rpath -Xlinker "$sim_products" -import-objc-header "$ios/SdaBridge.h" "$probe" "$ios/PersonalHeadScanDiagnostics.swift" "$ios/PersonalHeadCaptureGuide.swift" "$ios/PersonalHrtfFusion/PersonalHrtfCaptureCoverage.swift" "$ios/PersonalHrtfFusion/PersonalHeadMeasuredSupport.swift" "${faceframe[@]}" "$ios/PersonalHrtfReviewGeometry.swift" "$ios/PersonalHrtfFusion/PersonalHrtfMeshCheck.swift" "$out/SdaHrtfMesh-fusion-simulator.o" "$out/SdaHrtfSolver-fusion-simulator.o" "$out/fusion-crash-trace.o" -Xlinker -lc++ -o "$out/fusion-resource-test" 2>&1 | tee "$out/fusion-resource-compile.log"
 codesign --force --sign - "$out/fusion-resource-test"
 xcrun simctl list devices available -j > "$out/fusion-simulators.json"
 udid="$(python3 - "$out/fusion-simulators.json" <<'PY'

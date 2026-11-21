@@ -20,7 +20,16 @@ enum ReplayFailure: Error { case invalid(String) }
   // World axes at neutral: +X is the person's left, +Z is their nose
   // (ARFaceAnchor). Hold the phone fixed; rotate the FACE in world space.
   var phone = matrix_identity_float4x4; phone.columns.3.z = 0.36
-  let eyes = (left:Vec3(0.032,0,0),right:Vec3(-0.032,0,0))
+  let eyes = frontSlots
+  // Freeze the 967 device report as a regression: the same positive projection
+  // on its named eye-slot vector is a physical RIGHT ear, not a left step.
+  let previousSlots = (left:Vec3(0.032,0,0),right:Vec3(-0.032,0,0))
+  var guide = PersonalHeadCaptureGuide(); guide.show(front:1,measuredEar:nil)
+  let wrong = PersonalHeadEarView.side(advanced:true,pose:pose(65),eyes:previousSlots)
+  guide.show(front:1,measuredEar:wrong)
+  guard wrong == .right, guide.targetEar == .left else { throw ReplayFailure.invalid("967 wrong ear advanced the left prompt") }
+  guide.show(front:1,measuredEar:PersonalHeadEarView.side(advanced:true,pose:pose(-65),eyes:previousSlots))
+  guard guide.targetEar == .right else { throw ReplayFailure.invalid("Physical left ear did not advance") }
   func rotation(_ r:Float,_ axis:Vec3) -> simd_float4x4 { simd_float4x4(simd_quatf(angle:r * .pi / 180,axis:axis)) }
   for sign:Float in [-1,1] {
    let face = rotation(sign*65,Vec3(0,1,0)), expected:PersonalHeadCaptureGuide.EarSide = sign < 0 ? .left : .right
@@ -39,6 +48,8 @@ enum ReplayFailure: Error { case invalid(String) }
    guard PersonalHeadEarView.side(advanced:true,pose:translation,eyes:eyes) == nil else { throw ReplayFailure.invalid("Translation credited an ear") }
   }
  }
+ // Synthetic front camera slot ordering; not a recording of the user's ARFrame.
+ static let frontSlots = (left:Vec3(-0.032,0,0),right:Vec3(0.032,0,0))
  static func image(_ pose:simd_float4x4) -> [Float] {
   var depths = [Float](repeating:0,count:width*height)
   for row in 0..<height { for column in 0..<width {
@@ -75,7 +86,7 @@ enum ReplayFailure: Error { case invalid(String) }
    let camera = pose(angle), invalid = index == 33 || index == angles.count-3
    let depths = invalid ? [Float](repeating:0,count:width*height) : (angle == 0 ? frontalDepth : image(camera))
    let faceLost = angle == -64 || angle == -66
-   let frame = FusionFrame(time:Double(index)/15,width:width,height:height,depth:depths,calibrationK:intrinsic,calibrationReference:SIMD2(Float(width),Float(height)),intrinsics:intrinsic,imageResolution:SIMD2(Float(width),Float(height)),arPose:faceLost ? nil : camera,motion:index == 0 ? 0 : Float(abs(angle-angles[index-1]))*15,leftEye:faceLost ? nil : Vec3(0.032,0,0),rightEye:faceLost ? nil : Vec3(-0.032,0,0),faceVertices:engine.needsFaceVertices && !faceLost ? vertices : nil)
+   let frame = FusionFrame(time:Double(index)/15,width:width,height:height,depth:depths,calibrationK:intrinsic,calibrationReference:SIMD2(Float(width),Float(height)),intrinsics:intrinsic,imageResolution:SIMD2(Float(width),Float(height)),arPose:faceLost ? nil : camera,motion:index == 0 ? 0 : Float(abs(angle-angles[index-1]))*15,leftEye:faceLost ? nil : Self.frontSlots.left,rightEye:faceLost ? nil : Self.frontSlots.right,faceVertices:engine.needsFaceVertices && !faceLost ? vertices : nil)
    let before = engine.counts; acceptedPose = nil
    let status = engine.process(frame)
    let side = PersonalHeadEarView.side(advanced:engine.counts.left > before.left || engine.counts.right > before.right,pose:acceptedPose,eyes:engine.eyes)

@@ -19,6 +19,7 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
  private let localPipeline: PersonalHrtfLocalPipeline?
  private var processing = false
  private var review: PersonalHrtfReviewController?
+ private weak var failureSheet:PersonalHeadScanFailureController?
  static func topController() -> UIViewController? {
   let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.filter { $0.activationState == .foregroundActive }.flatMap { $0.windows }
   var root = windows.first(where:{$0.isKeyWindow})?.rootViewController
@@ -29,7 +30,8 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
   self.localPipeline = localPipeline; super.init(); PersonalHrtfStore.prepareForLaunch()
  }
  func cancel() {
-  if let review { review.cancel() }
+  if let failureSheet { failureSheet.close() }
+  else if let review { review.cancel() }
   else if let scanning { scanning.cancel() }
   else if processing { localPipeline?.cancel() }
   else { presenter?.presentedViewController?.dismiss(animated:false); finish(.failure(PersonalHrtfError.message("操作已取消"))) }
@@ -48,9 +50,16 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
    scanner.complete = { [weak self] result in
     guard let self else { return }; self.scanning = nil
     switch result {
-    case .failure(let error): self.finish(.failure(error))
+    case .failure(let error):
+     guard let report = error as? PersonalHeadReconstructionFailure, let host = Self.topController(), host.viewIfLoaded?.window != nil else { self.finish(.failure(error)); return }
+     let sheet = PersonalHeadScanFailureController(report), navigation = UINavigationController(rootViewController:sheet)
+     navigation.isModalInPresentation = true; self.failureSheet = sheet
+     sheet.closed = { [weak self] in self?.failureSheet = nil; self?.finish(.success(["failurePresented":true])) }
+     host.present(navigation,animated:true)
     case .success(let candidate):
      let review = PersonalHrtfReviewController(surface:candidate.surface)
+     let exporter = PersonalHeadExportPresenter()
+     review.exportSurface = { host,button in exporter.share(.mesh(candidate.surface,verified:true),from:host,anchor:button) }
      review.modalPresentationStyle = .fullScreen; self.review = review
      review.complete = { [self] result in
       self.review = nil

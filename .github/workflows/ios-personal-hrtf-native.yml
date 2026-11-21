@@ -6,7 +6,7 @@ on:
       - '.github/workflows/ios-personal-hrtf-native.yml'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/**'
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadDepthCapture.swift'
-      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan*.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfStore.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfOnDeviceSolver.swift'

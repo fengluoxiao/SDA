@@ -5,7 +5,11 @@ import simd
 enum PersonalHeadEarView {
  static func side(advanced: Bool, pose: simd_float4x4?, eyes: (left: Vec3, right: Vec3)?) -> PersonalHeadCaptureGuide.EarSide? {
   guard advanced, let pose, let eyes else { return nil }
-  let leftward = simd_normalize(eyes.left - eyes.right)
+  // Adapt the ordering observed on the front TrueDepth capture path once,
+  // before either coverage or support gets an anatomical label. In 967 the
+  // positive projection onto (left slot - right slot) credited the user's
+  // physical right ear as left. Do not mirror the RGB preview or mesh here.
+  let leftward = simd_normalize(eyes.right - eyes.left)
   let toCamera = simd_normalize(pose.translation - (eyes.left + eyes.right) / 2)
   // Camera +Z points back toward the phone. Translation changes the first
   // projection, not the second; rolling the phone changes neither.
