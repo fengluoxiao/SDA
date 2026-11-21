@@ -40,6 +40,32 @@ final class PersonalHrtfProjectBuilder {
   case message(String)
   var errorDescription: String? { if case .message(let s) = self { return s }; return nil }
  }
+ struct ReviewFailure: LocalizedError {
+  let message:String, issue:String, region:String?, loops:Int, depthBackedFaces:Int
+  var errorDescription:String? { message }
+  init(_ result:SdaHrtfReviewProjectResult,detail:String){
+   loops=Int(result.review_loops);depthBackedFaces=Int(result.retriangulated_faces)
+   region=result.boundary_region.map { String(cString:$0) }
+   let area=["left-ear":"左耳周围","right-ear":"右耳周围","both-ears":"双耳周围","posterior":"后方","front-or-side":"正脸或侧面"][region ?? ""] ?? "实测表面"
+   let code=result.boundary_issue.map { String(cString:$0) }
+   let why:String
+   switch code {
+   case "insufficient-interior-depth": why="\(area)的小孔内部缺少位置和方向一致的实测深度。"
+   case "confirmed-source-gap": why="\(area)的缺口靠近已确认的耳道声源，不能代替实测。"
+   case "open-anatomical-contour": why="\(area)有超出局部修补范围的开口，不能当作后方计算边界。"
+   case "ambiguous-posterior-contours": why="无法从这些开口确定唯一的后方计算边界。"
+   case "too-many-contours": why="实测表面有过多分离的开口，超过本机局部修补范围。"
+   case "gap-outside-repair-limit","nonplanar-gap": why="\(area)的缺口范围或形状超出了可验证的修补范围。"
+   default:
+    if detail.contains("measured depth support") || detail.contains("ear fold") || detail.contains("Measured folds"){why="简化后的头耳表面与实测深度不够一致。"}
+    else if detail.contains("Posterior contour"){why="后方轮廓无法形成有效的计算边界。"}
+    else if result.project.code == 3 {why="声学输入准备达到本机资源上限。"}
+    else {why="声学输入未通过检查：\(detail)。"}
+   }
+   issue=code ?? (result.project.code == 3 ? "resource-bound" : "project-validation")
+   message=why+"现有档案未更改，无需扫描后脑。"
+  }
+ }
  private let lock = NSLock()
  private var cancelled = false, running = false
  func cancel() { lock.lock(); cancelled = true; lock.unlock() }
@@ -100,10 +126,8 @@ final class PersonalHrtfProjectBuilder {
   }
   guard reply.code == 0 else {
    let text = withUnsafePointer(to:&reply.message) { p in p.withMemoryRebound(to:CChar.self,capacity:256) { String(cString:$0) } }
-   if reviewResources != nil {
-    if text.contains("boundary reaches the face or pinna") || text.contains("Multiple review boundaries") {throw Failure.message("正脸或耳周的实测表面仍有缺口，无法只在后方建立计算边界。现有档案未更改；无需扫描后脑。")}
-    if text.contains("measured depth support") || text.contains("ear fold") || text.contains("Measured folds") {throw Failure.message("简化后的头耳表面与实测深度不够一致，已停止计算并保留现有档案。")}
-   }
+   if reply.code == 2 {throw CancellationError()}
+   if let selected {throw ReviewFailure(selected,detail:text)}
    throw Failure.message("本机声学输入准备失败：\(text)")
   }
   // Identical ordering to native generation: south pole, rings in
@@ -124,7 +148,7 @@ final class PersonalHrtfProjectBuilder {
   return PreparedInput(project:root.appendingPathComponent("AcousticProject",isDirectory:true),
     specification:.init(directions:directions,bins:frequencies,
       sourceAreas:[reply.source_areas.0,reply.source_areas.1],referenceRadius:radius,commonShift:selected == nil ? commonShift : frequencies/2,
-      reviewedGeometry:selected.map { .init(measuredFaces:Int($0.measured_faces),boundaryFaces:Int($0.boundary_faces),reviewDeviation:$0.review_deviation) }),
+      reviewedGeometry:selected.map { .init(measuredFaces:Int($0.measured_faces),boundaryFaces:Int($0.boundary_faces),reviewDeviation:$0.review_deviation,depthBackedFaces:Int($0.retriangulated_faces)) }),
     origin:[reply.origin.0,reply.origin.1,reply.origin.2])
  }
  func prepareReview(root:URL,measurement:Measurement,headroom:UInt64 = sda_hrtf_available_memory(),physical:UInt64 = ProcessInfo.processInfo.physicalMemory) throws -> PreparedInput {

@@ -50,6 +50,8 @@ with zipfile.ZipFile(ipa)as z:
         if experimental:
             assert b'scanExperimental' in runtime and b'scanExperimental' in bundle
             assert b'posterior-computational-baffle' in runtime and b'Bounded reciprocal ML-FMM' in runtime
+            for marker in [b'insufficient-interior-depth',b'prepare-acoustic-input',b'check-retained-geometry']:
+                assert marker in runtime, 'Missing measured geometry / acoustic preparation diagnosis: '+str(marker)
             assert b'Arseny Kapoulkine' in z.read(app+'SdaCoreAssets.bundle/Licenses/Meshoptimizer-MIT.txt')
         for cue in ['手机不动，鼻尖慢慢转向自己的右肩，让镜头看到左耳。','左耳已记录。手机不动，鼻尖经过正面转向自己的左肩，让镜头看到右耳。','FaceFrame · 双耳侧面已记录','双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。']:
             assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue

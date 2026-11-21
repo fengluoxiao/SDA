@@ -43,6 +43,8 @@ typedef struct {
  SdaHrtfSamplingPlan plan;
  size_t measured_faces, boundary_faces;
  double review_deviation;
+ size_t review_loops, retriangulated_faces;
+ const char *boundary_issue, *boundary_region; // static diagnostic labels, or NULL
 } SdaHrtfReviewProjectResult;
 // Explicit experimental preparation. Uses measured source faces on the review
 // mesh, may add a labeled non-anatomical posterior baffle; never fills ears.

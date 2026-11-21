@@ -12,8 +12,9 @@ final class PersonalHrtfResponseBuilder {
  }
  struct ReviewedGeometry {
   let measuredFaces:Int,boundaryFaces:Int,reviewDeviation:Double
+  var depthBackedFaces:Int = 0
   var description:[String:Any] { ["measuredFaces":measuredFaces,"boundaryFaces":boundaryFaces,"maxReviewDeviationM":reviewDeviation,
-   "boundaryModel":boundaryFaces == 0 ? "none" : "posterior-computational-baffle","physicalAccuracyValidated":false] }
+   "boundaryModel":boundaryFaces == 0 ? "none" : "posterior-computational-baffle","depthBackedRetriangulatedFaces":depthBackedFaces,"physicalAccuracyValidated":false] }
  }
  struct Specification {
   let directions: [Direction]

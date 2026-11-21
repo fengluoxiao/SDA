@@ -1,5 +1,6 @@
 // Synthetic geometry regression only. These are NOT human scans or HRTFs.
 #include "SdaHrtfMesh.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -127,6 +128,11 @@ int main(){try{
  check(dense,0,"Exact dense support search at maximum scan budget");
  callbacks=0;require(sda_hrtf_screen_head_mesh(dense.view(),[](void *p){return int(++*static_cast<int*>(p)>=1500);},&callbacks).code==2,"Cancel dense support indexing");
  auto largeMesh=cube(256);check(largeMesh,0,"Dense surface above legacy 80k vertex limit");
+ // A coherent sub-mm grid, with independent outward offsets approaching the
+ // support tolerance. This exercises repeated lookups, not just exact hits.
+ for(size_t i=0;i<largeMesh.support.size();++i)largeMesh.support[i]+=.00105f*largeMesh.normals[i];
+ std::vector<uint8_t> mask(largeMesh.triangles.size()/3);auto shifted=sda_hrtf_select_measured_faces(largeMesh.view(),mask.data(),mask.size(),nullptr,nullptr);
+ require(shifted.code==0 && std::find(mask.begin(),mask.end(),0)==mask.end() && shifted.support_samples==4*mask.size() && shifted.support_distance>.00104 && shifted.support_distance<.00106,"Dense offset scan exhausted work or changed the measured distance");
  std::cout<<"{\"partialMeasuredNoRearPassed\":true,\"acousticClosedGatePreserved\":true,\"denseMeshCapacityPassed\":true,\"denseMeshVertices\":393218,\"denseMeshFaces\":786432,\"scanBudgetTestsPassed\":true,\"denseSupportPoints\":1500000,\"geometricChecksPassed\":true,\"selfIntersectionRejected\":true,\"unmeasuredClosureRejected\":true,\"cancellation\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;
  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}}

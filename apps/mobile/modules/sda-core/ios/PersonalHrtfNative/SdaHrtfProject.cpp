@@ -87,7 +87,7 @@ struct Build {
   require(reached.size()==boundary.size() && vertices.size()+count==edges.size()+1,"Ear source patch must be one disk without holes");
   return p;
  }
- SdaHrtfProjectResult run(const char *root,const SdaHrtfMeshView *review=nullptr,size_t measuredFaces=0,double *deviation=nullptr) {
+ SdaHrtfProjectResult run(const char *root,const SdaHrtfMeshView *review=nullptr,size_t measuredFaces=0,double *deviation=nullptr,size_t retriangulated=0) {
   check();require(root && *root,"Missing private acoustic job directory");
   if(in.mesh.vertex_count>nativeDimensionLimit || in.mesh.triangle_count>nativeDimensionLimit)throw Failure(3,"Measured mesh exceeds embedded solver dimensions; no automatic detail removal");
   require(in.bins>=16 && in.bins<=2048 && (in.bins&(in.bins-1))==0,"Invalid uniform FFT frequency count");
@@ -144,6 +144,7 @@ struct Build {
    }
    file("sda-project.json",[&](auto &s){s<<"{\"schema\":1,\"acousticAccuracyValidated\":false,\"sampleRate\":48000,\"bins\":"<<in.bins<<",\"azimuthSteps\":"<<az<<",\"elevationSteps\":"<<in.elevation_steps<<",\"directions\":"<<directions<<",\"referenceRadius\":"<<in.reference_radius<<",\"sourceAreas\":["<<l.area<<','<<r.area<<"],\"coordinateFrame\":\"x-front-y-left-z-up\"";
     if(review)s<<",\"measuredFaces\":"<<measuredFaces<<",\"boundaryFaces\":"<<in.mesh.triangle_count-measuredFaces<<",\"boundaryModel\":\""<<(measuredFaces==in.mesh.triangle_count?"none":"posterior-computational-baffle")<<"\",\"maxReviewDeviationM\":"<<*deviation;
+    if(review)s<<",\"depthBackedRetriangulatedFaces\":"<<retriangulated;
     s<<"}\n";});
    check();require(!exists(target),"Acoustic project already exists");fs::rename(stage,target);committed=true;
   } catch(...) {if(!committed){std::error_code error;fs::remove_all(stage,error);}throw;}

@@ -12,21 +12,69 @@ struct ReviewPreparation {
  uint32_t append(V v){if(vertices.size()/3>=20000)throw Failure(3,"Prepared vertices exceed solver capacity");auto id=uint32_t(vertices.size()/3);for(auto x:v)vertices.push_back(float(x));return id;}
  static Tri key(Tri t){std::rotate(t.begin(),std::min_element(t.begin(),t.end()),t.end());return t;}
  static void face(std::vector<uint32_t>& indices,uint32_t a,uint32_t b,uint32_t c){if(indices.size()>=60000)throw Failure(3,"Prepared faces exceed solver capacity");indices.insert(indices.end(),{a,b,c});}
- std::vector<uint32_t> boundary(const uint32_t *indices,size_t count,const float *v){
+ using Ring=std::vector<uint32_t>;
+ using Rings=std::vector<Ring>;
+ Rings boundaries(const uint32_t *indices,size_t count,SdaHrtfReviewProjectResult *diagnostic=nullptr){
   std::vector<uint64_t> edges;edges.reserve(count*3);
   for(size_t f=0;f<count;++f){if(f%512==0)check();for(int j=0;j<3;++j){uint32_t a=indices[3*f+j],b=indices[3*f+(j+1)%3];
    require(a!=b,"Degenerate review face");edges.push_back((uint64_t(std::min(a,b))<<32)|(uint64_t(std::max(a,b))<<1)|(a>b));}}
   std::sort(edges.begin(),edges.end());std::map<uint32_t,uint32_t> next;
   for(size_t i=0;i<edges.size();){if(i%1024==0)check();auto e=edges[i];size_t end=i+1;while(end<edges.size() && edges[end]/2==e/2)++end;
    if(end-i==1){uint32_t a=uint32_t(e>>32),b=(uint32_t(e)>>1);if(e&1)std::swap(a,b);
-    const V p=point(v,a);require(dot(sub(p,origin),front)<-.018 && std::min(norm(sub(p,ears[0])),norm(sub(p,ears[1])))>.035,"Open boundary reaches the face or pinna; cannot construct a posterior baffle");
     require(next.emplace(a,b).second,"Branched review boundary");
    }else require(end-i==2 && edges[i]!=edges[i+1],"Nonmanifold or reversed review triangles");i=end;
   }
-  if(next.empty())return {};
-  std::vector<uint32_t> ring;auto at=next.begin()->first,first=at;
-  do{ring.push_back(at);auto it=next.find(at);require(it!=next.end(),"Open review boundary chain");at=it->second;next.erase(it);}while(at!=first);
-  require(next.empty() && ring.size()>=3,"Multiple review boundaries cannot be closed as a posterior baffle");return ring;
+  Rings rings;
+  while(!next.empty()){
+   if(diagnostic)diagnostic->review_loops=rings.size()+1;
+   if(rings.size()>=65){if(diagnostic)diagnostic->boundary_issue="too-many-contours";throw Failure(3,"Too many separate review boundaries");}
+   Ring ring;auto at=next.begin()->first,first=at;
+   do{if(ring.size()%512==0)check();ring.push_back(at);auto it=next.find(at);require(it!=next.end(),"Open review boundary chain");at=it->second;next.erase(it);}while(at!=first);
+   require(ring.size()>=3,"Degenerate review boundary");rings.emplace_back(std::move(ring));
+  }
+  return rings;
+ }
+ bool posterior(V p)const{return dot(sub(p,origin),front)<-.018 && std::min(norm(sub(p,ears[0])),norm(sub(p,ears[1])))>.035;}
+ const char *region(const Ring &ring,const float *v)const{
+  bool l=false,r=false,back=true;
+  for(auto id:ring){auto p=point(v,id);l|=norm(sub(p,ears[0]))<=.035;r|=norm(sub(p,ears[1]))<=.035;back&=posterior(p);}
+  return l&&r?"both-ears":l?"left-ear":r?"right-ear":back?"posterior":"front-or-side";
+ }
+ struct Gaps {std::vector<uint32_t> triangles;bool hasPosterior=false;};
+ Gaps classify(const Rings &rings,SdaHrtfMeshView m,const std::vector<unsigned char> &sourceLocks,SdaHrtfReviewProjectResult &result){
+  Gaps gaps;std::vector<const char*> regions;std::vector<uint8_t> nearEar;double totalArea=0;
+  auto fail=[&](const char *issue,const char *where){result.boundary_issue=issue;result.boundary_region=where;throw Failure(1,issue);};
+  for(const auto &ring:rings){
+   check();const auto where=region(ring,m.vertices);V lo=point(m.vertices,ring[0]),hi=lo;bool back=true,ear=false,source=false;
+   for(auto id:ring){auto p=point(m.vertices,id);back&=posterior(p);auto d=std::min(norm(sub(p,ears[0])),norm(sub(p,ears[1])));
+    ear|=d<=.035;source|=sourceLocks[id] || d<.006;for(int j=0;j<3;++j){lo[j]=std::min(lo[j],p[j]);hi[j]=std::max(hi[j],p[j]);}}
+   if(source)fail("confirmed-source-gap",where);
+   if(norm(sub(hi,lo))>(ear?.004:.008) || ring.size()>12){
+    if(!back)fail("open-anatomical-contour",where);
+    // A local posterior opening must not become a fictitious head-sized baffle.
+    double low=1e20,high=-1e20;for(auto id:ring){double y=dot(sub(point(m.vertices,id),origin),left);low=std::min(low,y);high=std::max(high,y);}
+    if(low>=0 || high<=0 || high-low<.45*norm(sub(ears[0],ears[1])) || gaps.hasPosterior)fail("ambiguous-posterior-contours",where);
+    gaps.hasPosterior=true;continue;
+   }
+   // Only locally convex, nearly planar holes. Opposite edge winding closes
+   // the review triangles, without adding vertices or constructing anatomy.
+   Ring ids(ring.rbegin(),ring.rend());V a=point(m.vertices,ids[0]),normal{};
+   for(size_t i=1;i+1<ids.size();++i)normal=add(normal,cross(sub(point(m.vertices,ids[i]),a),sub(point(m.vertices,ids[i+1]),a)));
+   double area=.5*norm(normal);totalArea+=area;
+   if(!(area>5e-13 && area<=(ear?6e-6:32e-6)) || totalArea>96e-6 || nearEar.size()+ids.size()-2>128)fail("gap-outside-repair-limit",where);
+   normal=mul(normal,.5/area);
+   for(size_t i=0;i<ids.size();++i){V b=point(m.vertices,ids[i]),edge=sub(point(m.vertices,ids[(i+1)%ids.size()]),b);
+    if(std::abs(dot(sub(b,a),normal))>(ear?.00025:.00045))fail("nonplanar-gap",where);
+    for(size_t j=2;j<ids.size();++j)if(dot(cross(edge,sub(point(m.vertices,ids[(i+j)%ids.size()]),b)),normal)<=1e-12)fail("nonplanar-gap",where);
+   }
+   for(size_t i=1;i+1<ids.size();++i){gaps.triangles.insert(gaps.triangles.end(),{ids[0],ids[i],ids[i+1]});nearEar.push_back(ear);regions.push_back(where);}
+  }
+  if(!nearEar.empty()){
+   size_t failed=0;auto r=sda_check_gap_support(m,gaps.triangles.data(),nearEar.data(),nearEar.size(),failed,cancelled,context);
+   if(r.code==1 && failed<regions.size())fail("insufficient-interior-depth",regions[failed]);
+   if(r.code)throw Failure(r.code,r.message);
+  }
+  result.retriangulated_faces=nearEar.size();return gaps;
  }
  void refine(){
   for(int iteration=0;iteration<12;++iteration){check();std::map<std::pair<uint32_t,uint32_t>,uint32_t> mid;
@@ -80,10 +128,19 @@ struct ReviewPreparation {
   for(size_t j=0;j<original.triangle_count*3;++j){if(j%4096==0)check();require(original.triangles[j]<original.vertex_count,"Invalid review face index");}
   std::copy_n(input.front,3,front.begin());std::copy_n(input.up,3,up.begin());require(std::abs(norm(front)-1)<1e-6 && std::abs(norm(up)-1)<1e-6 && std::abs(dot(front,up))<1e-6,"Invalid anatomical axes");left=cross(up,front);
   Build raw{input,cancelled,context};ears[0]=raw.patch(input.left_faces,input.left_face_count).center;ears[1]=raw.patch(input.right_faces,input.right_face_count).center;origin=mul(add(ears[0],ears[1]),.5);
-  auto seam=boundary(original.triangles,original.triangle_count,original.vertices);
   std::map<Tri,int> patches;std::vector<unsigned char> locks(original.vertex_count);
   for(int e=0;e<2;++e){auto ids=e?input.right_faces:input.left_faces;auto n=e?input.right_face_count:input.left_face_count;
    for(size_t j=0;j<n;++j){const auto *t=original.triangles+3*ids[j];require(patches.emplace(key({t[0],t[1],t[2]}),e).second,"Overlapping ear sources");for(int k=0;k<3;++k)locks[t[k]]=1;}}
+  // Establish anatomical left/right before attributing a failure to one ear.
+  V separation=sub(ears[0],ears[1]);require(dot(separation,left)>.8*norm(separation),"Confirmed ears disagree with left/right head frame");
+  auto rings=boundaries(original.triangles,original.triangle_count,&result);
+  auto gaps=classify(rings,original,locks,result);
+  std::vector<uint32_t> repaired;std::set<Tri> gapFaces;
+  if(!gaps.triangles.empty()){
+   repaired.assign(original.triangles,original.triangles+3*original.triangle_count);repaired.insert(repaired.end(),gaps.triangles.begin(),gaps.triangles.end());
+   for(size_t j=0;j<gaps.triangles.size();j+=3){auto *t=gaps.triangles.data()+j;gapFaces.insert(key({t[0],t[1],t[2]}));for(int k=0;k<3;++k)locks[t[k]]=1;}
+   original.triangles=repaired.data();original.triangle_count=repaired.size()/3;
+  }
   std::vector<uint32_t> simple(original.triangle_count*3);
   constexpr size_t target=11500;
   if(original.triangle_count>target){float error=0;std::vector<float> normals(original.vertex_count*3);double nose=-1e20;
@@ -108,9 +165,12 @@ struct ReviewPreparation {
   if(simple.size()>60000)throw Failure(3,"Measured folds cannot fit the solver face limit at the required tolerance");
   std::vector<uint32_t> remap(original.vertex_count,UINT32_MAX);
   for(size_t j=0;j<simple.size();j+=3){if(j%1536==0)check();auto match=patches.find(key({simple[j],simple[j+1],simple[j+2]}));
+   if(!gapFaces.empty())gapFaces.erase(key({simple[j],simple[j+1],simple[j+2]}));
    if(match!=patches.end()){(match->second?rightFaces:leftFaces).push_back(uint32_t(j/3));patches.erase(match);}
    for(int k=0;k<3;++k){auto id=simple[j+k];if(remap[id]==UINT32_MAX)remap[id]=append(point(original.vertices,id));faces.push_back(remap[id]);}}
-  require(patches.empty(),"Simplification changed a confirmed source face");refine();auto loop=boundary(faces.data(),faces.size()/3,vertices.data());require(loop.empty()==seam.empty(),"Simplification changed surface topology");
+  require(patches.empty() && gapFaces.empty(),"Simplification changed a confirmed source or depth-backed gap face");refine();auto remaining=boundaries(faces.data(),faces.size()/3);
+  require(remaining.size()==size_t(gaps.hasPosterior),"Simplification changed surface topology");
+  Ring loop;if(!remaining.empty()){loop=std::move(remaining.front());for(auto id:loop)require(posterior(point(vertices.data(),id)),"Simplified posterior boundary reaches measured anatomy");}
   if(original.triangle_count>target){
    // Collapses of nearly flat or skinny faces need not be identical on x86
    // and ARM. Only independently supported geometry is admissible on either.
@@ -128,6 +188,6 @@ struct ReviewPreparation {
   input.mesh.vertices=vertices.data();input.mesh.vertex_count=vertices.size()/3;input.mesh.triangles=faces.data();input.mesh.triangle_count=faces.size()/3;
   input.left_faces=leftFaces.data();input.right_faces=rightFaces.data();input.left_face_count=leftFaces.size();input.right_face_count=rightFaces.size();
   input.bins=result.plan.bins;input.azimuth_steps=result.plan.azimuth_steps;input.elevation_steps=result.plan.elevation_steps;input.reference_radius=1.2;
-  Build project{input,cancelled,context};result.project=project.run(root,&original,result.measured_faces,&result.review_deviation);return true;
+  Build project{input,cancelled,context};result.project=project.run(root,&original,result.measured_faces,&result.review_deviation,result.retriangulated_faces);return true;
  }
 };

@@ -20,8 +20,15 @@ xcrun clang++ -std=c++17 -O2 -I "$native" "${sources[@]}" scripts/test/personal-
 "$out/project-host-test" "$out/project-host" | tee "$out/project-host-result.json"
 xcrun clang++ -std=c++17 -O2 -I "$native" "${sources[@]}" scripts/test/personal-hrtf-reviewed-input.cpp -o "$out/review-project-test"
 "$out/review-project-test" "$out/review-project" | tee "$out/review-project-result.json"
-xcrun clang++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$native" "${sources[@]}" scripts/test/personal-hrtf-project.cpp -o "$out/project-sanitized-test"
+san=(-std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$native")
+san_objects=()
+for source in "${sources[@]}"; do
+ obj="$out/$(basename "$source" .cpp)-san.o"; xcrun clang++ "${san[@]}" -c "$source" -o "$obj"; san_objects+=("$obj")
+done
+xcrun clang++ "${san[@]}" "${san_objects[@]}" scripts/test/personal-hrtf-project.cpp -o "$out/project-sanitized-test"
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/project-sanitized-test" "$out/project-sanitized" | tee "$out/project-sanitized-result.json"
+xcrun clang++ "${san[@]}" "${san_objects[@]}" scripts/test/personal-hrtf-reviewed-input.cpp -o "$out/review-sanitized-test"
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "$out/review-sanitized-test" "$out/review-sanitized" | tee "$out/review-sanitized-result.json"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 arch="$(uname -m)"
 objects=()

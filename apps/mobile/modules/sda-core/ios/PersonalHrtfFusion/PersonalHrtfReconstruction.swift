@@ -157,13 +157,14 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,log:scanLog,candidateReady:{ candidate = $0 },currentBudget:{ sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory) },cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
    lock.lock(); meshing = operation; let stop = cancelled; lock.unlock(); if stop { operation?.cancel() }
   })
-  return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance,support:support.positions,supportNormals:support.normals)
+  return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance,support:support.positions,supportNormals:support.normals,scanLog:scanLog)
   } catch {
    if isCancelled || error is CancellationError { throw error }
    let reason = (error as? PersonalHrtfError)?.errorDescription ?? (error as? PersonalHrtfReviewGeometry.Failure)?.message
    scanLog.finish(error,applicationReason:reason)
    let geometry:PersonalHeadExport? = candidate.map { .mesh($0,verified:false) } ?? (support.count > 0 ? .points(support.positions,support.normals) : nil)
-   throw PersonalHeadReconstructionFailure(message:reason ?? "本机重建未完成。",log:scanLog,geometry:geometry)
+   throw PersonalHeadReconstructionFailure(message:reason ?? "本机重建未完成。",log:scanLog,geometry:geometry,
+    independentPoints:candidate != nil && support.count > 0 ? .points(support.positions,support.normals) : nil)
   }
  }
  func cancel() {

@@ -55,8 +55,8 @@ enum PersonalHrtfMeshCheck {
    (0..<mesh.faceCount * 3).map { raw.loadUnaligned(fromByteOffset:$0 * 4,as:UInt32.self) }
   }
   let candidate = try PersonalHrtfReviewGeometry(vertices:vertices,triangles:faces)
-  candidateReady(candidate); log?.stage = "check-measured-geometry"
-  return try measurement(Loaded(surface:candidate,support:positions,normals:normals),cancelled:cancelled)
+  candidateReady(candidate)
+  return try measurement(Loaded(surface:candidate,support:positions,normals:normals),log:log,cancelled:cancelled)
  }
  private static func extractSurface(input:URL,log:PersonalHeadScanLog?,cancelled:()->Bool,requireBudget:()throws->Void,operationChanged:(SCMeshingOperation?)->Void,start:(SCMeshingOperation)throws->Void) throws -> URL {
   // Retry only known recoverable geometry errors on a coarser grid. Keep the same
@@ -94,7 +94,8 @@ enum PersonalHrtfMeshCheck {
  #endif
  // The measurement build reviews only measured triangles. Poisson's inferred
  // closures never appear in review or satisfy the measurement gate.
- static func measurement(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> (surface: PersonalHrtfReviewGeometry, distance: Double) {
+ static func measurement(_ loaded: Loaded, log:PersonalHeadScanLog? = nil, cancelled: @escaping () -> Bool) throws -> (surface: PersonalHrtfReviewGeometry, distance: Double) {
+  log?.stage = "select-depth-supported-faces"
   let token = Cancellation(cancelled)
   let vertices = loaded.surface.vertices, faces = loaded.surface.triangles
   var mask = [UInt8](repeating:0,count:faces.count/3)
@@ -112,7 +113,7 @@ enum PersonalHrtfMeshCheck {
     }
    }
   }
-  try requirePassed(selected)
+  log?.checkedSamples=selected.support_samples;try requirePassed(selected)
   // Compact used vertices so discarded closures are not retained in the review
   // surface, and every displayed face uses the original measured coordinates.
   var remap = [UInt32](repeating:UInt32.max,count:vertices.count/3)
@@ -130,13 +131,14 @@ enum PersonalHrtfMeshCheck {
   }
   if cancelled() { throw PersonalHrtfError.message("已取消测量表面检查") }
   let surface = try PersonalHrtfReviewGeometry(vertices:retainedVertices,triangles:retainedFaces)
-  let distance = try screen(Loaded(surface:surface,support:loaded.support,normals:loaded.normals),measurementOnly:true,cancelled:cancelled)
+  log?.stage="check-retained-geometry";log?.retainedTriangles=retainedFaces.count/3
+  let distance = try screen(Loaded(surface:surface,support:loaded.support,normals:loaded.normals),measurementOnly:true,log:log,cancelled:cancelled)
   return (surface,distance)
  }
  static func screen(_ loaded: Loaded, cancelled: @escaping () -> Bool) throws -> Double {
   try screen(loaded,measurementOnly:false,cancelled:cancelled)
  }
- private static func screen(_ loaded: Loaded, measurementOnly:Bool, cancelled: @escaping () -> Bool) throws -> Double {
+ private static func screen(_ loaded: Loaded, measurementOnly:Bool, log:PersonalHeadScanLog? = nil, cancelled: @escaping () -> Bool) throws -> Double {
   let token = Cancellation(cancelled)
   let vertices = loaded.surface.vertices, faces = loaded.surface.triangles
   let positions = loaded.support, normals = loaded.normals
@@ -154,7 +156,7 @@ enum PersonalHrtfMeshCheck {
     }
    }
   }
-  try requirePassed(result)
+  log?.checkedSamples=result.support_samples;try requirePassed(result)
   return result.support_distance
  }
  private static func requirePassed(_ value:SdaHrtfMeshResult) throws {

@@ -32,5 +32,11 @@ enum ScanExportTest {
   try ReviewFixture.require(file.url.pathExtension == "json" && object?["stage"] as? String == "extract-surface" && attempts?.count == 2 && attempts?.first?["reason"] as? String == "level-set-topology" && attempts?.first?["sourceLine"] as? Int == 1648,"Incomplete failure diagnostics")
   try ReviewFixture.require(data.range(of:Data("secret.ply".utf8)) == nil && object?["vertices"] == nil && object?["normals"] == nil,"Private geometry or path in diagnostic log")
   file.discard(); try ReviewFixture.require(!FileManager.default.fileExists(atPath:file.url.path),"Share completion retained a log")
+  let acoustic=PersonalHeadScanLog();acoustic.stage="prepare-acoustic-input";acoustic.boundaryLoops=2;acoustic.depthBackedFaces=0
+  acoustic.boundaryIssue="insufficient-interior-depth";acoustic.boundaryRegion="right-ear"
+  let report=PersonalHeadReconstructionFailure(message:"合成测试",log:acoustic,geometry:.mesh(surface,verified:true),independentPoints:.points(p,n))
+  let diagnostic=try report.exports[0].makeFile();defer { diagnostic.discard() }
+  let metadata=try JSONSerialization.jsonObject(with:Data(contentsOf:diagnostic.url)) as? [String:Any]
+  try ReviewFixture.require(metadata?["boundaryIssue"] as? String == acoustic.boundaryIssue && metadata?["boundaryRegion"] as? String == "right-ear" && metadata?["boundaryLoops"] as? Int == 2 && metadata?["depthBackedFaces"] as? Int == 0 && metadata?["support"] == nil && metadata?["vertices"] == nil,"Unexpected acoustic diagnostic payload")
  }
 }

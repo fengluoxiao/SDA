@@ -10,6 +10,8 @@ final class PersonalHeadScanLog: Encodable {
  var stage = "capture", failure = "", registeredFrames = 0, points = 0
  var leftDepthFrames = 0, rightDepthFrames = 0, leftEarConfirmed = false, rightEarConfirmed = false
  var budgetMiB:UInt64 = 0, candidateVertices = 0, candidateTriangles = 0
+ var checkedSamples:UInt64?, retainedTriangles:Int?, boundaryLoops:Int?, depthBackedFaces:Int?
+ var boundaryIssue:String?, boundaryRegion:String?
  struct Attempt: Encodable { let resolution:Int32, code:Int, reason:String, sourceLine:Int?, source:String?, detail:String? }
  var attempts = [Attempt]()
  func record(_ resolution:Int32,_ error:NSError?) {
@@ -29,7 +31,9 @@ final class PersonalHeadScanLog: Encodable {
 
 struct PersonalHeadReconstructionFailure: LocalizedError {
  let message:String, log:PersonalHeadScanLog, geometry:PersonalHeadExport?
+ var independentPoints:PersonalHeadExport? = nil
  var errorDescription:String? { message }
+ var exports:[PersonalHeadExport] { [.log(log)] + [geometry,independentPoints].compactMap { $0 } }
 }
 
 enum PersonalHeadExport {

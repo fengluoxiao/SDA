@@ -48,10 +48,10 @@ final class PersonalHeadScanFailureController: UITableViewController {
   if let host = navigationController?.presentingViewController { host.dismiss(animated:true,completion:callback) }
   else { callback() }
  }
- override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int)->Int { report.geometry == nil ? 1 : 2 }
+ override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int)->Int { report.exports.count }
  override func tableView(_ tableView:UITableView,titleForHeaderInSection section:Int)->String? { report.message }
  override func tableView(_ tableView:UITableView,titleForFooterInSection section:Int)->String? { "日志不含照片或三维坐标。模型或点云包含个人头耳形状，仅在你选择导出时分享。关闭后会删除本次临时数据。" }
- private func item(at path:IndexPath)->PersonalHeadExport { path.row == 0 ? .log(report.log) : report.geometry! }
+ private func item(at path:IndexPath)->PersonalHeadExport { report.exports[path.row] }
  override func tableView(_ tableView:UITableView,cellForRowAt path:IndexPath)->UITableViewCell {
   let cell = UITableViewCell(style:.default,reuseIdentifier:nil); var content = cell.defaultContentConfiguration()
   content.text = item(at:path).title; content.image = UIImage(systemName:path.row == 0 ? "doc.text" : "cube"); cell.contentConfiguration = content

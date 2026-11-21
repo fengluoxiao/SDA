@@ -62,10 +62,13 @@ enum ReviewResult {
  private func descendants(_ view: UIView) -> [UIView] { [view]+view.subviews.flatMap(descendants) }
  private func checkFailureSheet(_ host:UIViewController) {
   let log = PersonalHeadScanLog(), index = IndexPath(row:0,section:0)
-  let sheet = PersonalHeadScanFailureController(.init(message:"合成测试",log:log,geometry:.points([0,0,0],[0,0,1])))
+  guard let surface=try? ReviewFixture.surface() else {fail("missing review fixture")}
+  log.stage="prepare-acoustic-input";log.boundaryIssue="insufficient-interior-depth";log.boundaryRegion="left-ear"
+  let sheet = PersonalHeadScanFailureController(.init(message:"合成测试",log:log,geometry:.mesh(surface,verified:true),independentPoints:.points([0,0,0],[0,0,1])))
   let nav = UINavigationController(rootViewController:sheet)
   host.present(nav,animated:false) {
-   guard sheet.tableView.numberOfRows(inSection:0) == 2, sheet.tableView(sheet.tableView,cellForRowAt:index).accessibilityTraits.contains(.button) else { self.fail("missing independent export choices") }
+   let titles=(0..<sheet.tableView.numberOfRows(inSection:0)).map {row in (sheet.tableView(sheet.tableView,cellForRowAt:IndexPath(row:row,section:0)).contentConfiguration as? UIListContentConfiguration)?.text ?? ""}
+   guard titles == ["导出日志","导出实测模型","导出实测点云（无网格）"], sheet.tableView(sheet.tableView,cellForRowAt:index).accessibilityTraits.contains(.button) else { self.fail("missing independent export choices") }
    sheet.tableView(sheet.tableView,didSelectRowAt:index)
    func checkShare(_ attempt:Int) {
     if let share = sheet.presentedViewController as? UIActivityViewController {

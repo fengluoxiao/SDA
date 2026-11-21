@@ -72,6 +72,16 @@ import simd
   try FileManager.default.createDirectory(at:reviewedRoot,withIntermediateDirectories:false)
   let reviewed=try builder.prepareReview(root:reviewedRoot,measurement:measurement,headroom:1536*mib,physical:4096*mib)
   try require(reviewed.specification.directions.count==114 && reviewed.specification.bins==256 && reviewed.specification.reviewedGeometry?.boundaryFaces==0,"Closed review bridge changed provenance or plan")
+  // Remove the triangle next to a confirmed source (same two vertices). The
+  // Swift error must preserve the native region, never suggest the rear scan.
+  var openFaces=faces;openFaces.removeSubrange(17*3..<18*3)
+  let open=PersonalHrtfProjectBuilder.Measurement(vertices:vertices,triangles:openFaces,support:support,normals:normals,leftFaces:[23,24],rightFaces:[16],front:[1,0,0],up:[0,0,1])
+  let rejected=root.appendingPathComponent("protected-source");try FileManager.default.createDirectory(at:rejected,withIntermediateDirectories:false)
+  do {_ = try builder.prepareReview(root:rejected,measurement:open,headroom:1536*mib,physical:4096*mib);throw NSError(domain:"Missing reviewed input failure",code:1)}
+  catch let error as PersonalHrtfProjectBuilder.ReviewFailure {
+   try require(error.loops==1 && error.region != nil && error.message.contains("现有档案未更改"),"Native boundary evidence lost in Swift")
+  }
+  let leftovers=try FileManager.default.contentsOfDirectory(atPath:rejected.path);try require(leftovers.isEmpty,"Published rejected review geometry")
   let baseline=source.deletingLastPathComponent().appendingPathComponent("capacity-4/AcousticProject")
   for ear in 1...2 {let path="NumCalc/source_\(ear)/be.out";try FileManager.default.copyItem(at:baseline.appendingPathComponent(path),to:reviewed.project.appendingPathComponent(path))}
   let estimated=try PersonalHrtfResponseBuilder().build(project:reviewed.project,specification:reviewed.specification,numericalBudget:512*mib)

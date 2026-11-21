@@ -57,11 +57,7 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
     guard let self else { return }; self.scanning = nil
     switch result {
     case .failure(let error):
-     guard let report = error as? PersonalHeadReconstructionFailure, let host = Self.topController(), host.viewIfLoaded?.window != nil else { self.finish(.failure(error)); return }
-     let sheet = PersonalHeadScanFailureController(report), navigation = UINavigationController(rootViewController:sheet)
-     navigation.isModalInPresentation = true; self.failureSheet = sheet
-     sheet.closed = { [weak self] in self?.failureSheet = nil; self?.finish(.success(["failurePresented":true])) }
-     host.present(navigation,animated:true)
+     self.presentFailure(error)
     case .success(let candidate):
      let review = PersonalHrtfReviewController(surface:candidate.surface)
      let exporter = PersonalHeadExportPresenter()
@@ -99,6 +95,15 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
   default: finish(.failure(PersonalHrtfError.message("未知个人 HRTF 操作")))
   }
  }
+ private func presentFailure(_ error:Error) {
+  if error is CancellationError {finish(.success(["cancelled":true]));return}
+  guard let report=error as? PersonalHeadReconstructionFailure else {finish(.failure(error));return}
+  guard UIApplication.shared.applicationState == .active, let host=Self.topController(),host.viewIfLoaded?.window != nil else {finish(.failure(PersonalHrtfError.message(report.message)));return}
+  let sheet=PersonalHeadScanFailureController(report), nav=UINavigationController(rootViewController:sheet)
+  nav.isModalInPresentation=true;failureSheet=sheet
+  sheet.closed={ [weak self] in self?.failureSheet=nil;self?.finish(.success(["failurePresented":true])) }
+  host.present(nav,animated:true)
+ }
  private func generate(_ candidate:PersonalHeadMeshCandidate,_ landmarks:PersonalHrtfReviewGeometry.Confirmation,_ pipeline:PersonalHrtfLocalPipeline){
   guard let host=Self.topController(),host.viewIfLoaded?.window != nil else { finish(.failure(PersonalHrtfError.message("请在前台开始计算")));return }
   let root=FileManager.default.temporaryDirectory.appendingPathComponent("SDAHeadScan",isDirectory:true).appendingPathComponent(UUID().uuidString,isDirectory:true)
@@ -118,7 +123,7 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
     self.processing=false;self.jobAlert=nil
     let done={ [self] in
      switch outcome {
-     case .failure(let error):self.finish(.failure(error))
+     case .failure(let error):self.clearJob();self.presentFailure(error)
      case .success(let details):
       guard self.jobRoot==root, UIApplication.shared.applicationState == .active,let host=Self.topController(),host.viewIfLoaded?.window != nil else { self.finish(.success(["cancelled":true]));return }
       let boundary=(details["boundaryFaces"] as? Int ?? 0)>0 ? "后方使用计算边界，并非实测后脑。" : "使用闭合实测表面。"
@@ -150,9 +155,12 @@ final class PersonalHrtfCoordinator: NSObject, UIDocumentPickerDelegate {
    DispatchQueue.main.async { self?.finish(result) }
   }
  }
- private func finish(_ result: Result<[String:Any],Error>) {
+ private func clearJob() {
   for observer in jobObservers { NotificationCenter.default.removeObserver(observer) };jobObservers.removeAll();jobAlert=nil
   if let root=jobRoot {try? FileManager.default.removeItem(at:root);jobRoot=nil}
+ }
+ private func finish(_ result: Result<[String:Any],Error>) {
+  clearJob()
   let done=completion;completion=nil;done?(result)
  }
 }

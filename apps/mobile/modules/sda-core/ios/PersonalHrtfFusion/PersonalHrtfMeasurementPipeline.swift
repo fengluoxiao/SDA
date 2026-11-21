@@ -27,9 +27,22 @@ final class PersonalHrtfMeasurementPipeline: PersonalHrtfLocalPipeline {
   DispatchQueue.global(qos:.utility).async { [self] in
    do {
     try checkpoint()
-    guard candidate.geometryScreenVersion==2,candidate.maximumSupportDistance.isFinite,candidate.maximumSupportDistance<=0.0015 else {throw PersonalHrtfError.message("实测表面未通过深度验证")}
-    let m=try PersonalHrtfProjectBuilder.measurement(surface:candidate.surface,support:candidate.support,normals:candidate.supportNormals,landmarks:landmarks)
-    let p=try b.prepareReview(root:root,measurement:m);try checkpoint()
+    let p:PersonalHrtfProjectBuilder.PreparedInput
+    do {
+     guard candidate.geometryScreenVersion==2,candidate.maximumSupportDistance.isFinite,candidate.maximumSupportDistance<=0.0015 else {throw PersonalHrtfError.message("实测表面未通过深度验证")}
+     let m=try PersonalHrtfProjectBuilder.measurement(surface:candidate.surface,support:candidate.support,normals:candidate.supportNormals,landmarks:landmarks)
+     p=try b.prepareReview(root:root,measurement:m)
+    } catch {
+     try checkpoint();if error is CancellationError {throw error}
+     let log=candidate.scanLog ?? PersonalHeadScanLog();log.stage="prepare-acoustic-input";log.points=candidate.support.count/3
+     log.retainedTriangles=candidate.surface.triangles.count/3
+     if let detail=error as? PersonalHrtfProjectBuilder.ReviewFailure {
+      log.boundaryIssue=detail.issue;log.boundaryRegion=detail.region;log.boundaryLoops=detail.loops;log.depthBackedFaces=detail.depthBackedFaces
+     }
+     log.finish(error,applicationReason:log.boundaryIssue ?? "input-validation")
+     throw PersonalHeadReconstructionFailure(message:error.localizedDescription,log:log,geometry:.mesh(candidate.surface,verified:true),independentPoints:.points(candidate.support,candidate.supportNormals))
+    }
+    try checkpoint()
     DispatchQueue.main.async { [self] in
      do {try checkpoint()} catch {finish(.failure(error));return}
      progress("正在检查两耳频率和内存预算")

@@ -102,6 +102,8 @@ struct Screen {
  SdaHrtfMeshView input;SdaHrtfMeshCancelled cancelled;void *context;SdaHrtfMeshResult reply{};
  std::vector<Triangle> faces;std::vector<uint32_t> parent,order;std::vector<Node> nodes;
  std::vector<uint32_t> supportOrder;std::vector<Node> supportNodes;
+ std::vector<uint32_t> vertexWitness;
+ double peakDistance2=0;
  Screen(SdaHrtfMeshView i,SdaHrtfMeshCancelled c,void *p):input(i),cancelled(c),context(p){}
  uint64_t ticks=0,work=0;
  void check(){if((++ticks&1023)==0&&cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");}
@@ -144,21 +146,28 @@ struct Screen {
  static double boxDistance(const Box &box,V p){
   double d=0;for(int i=0;i<3;++i){double gap=std::max({box.low[i]-p[i],p[i]-box.high[i],0.0});d+=gap*gap;}return d;
  }
- void nearestSupport(int index,V p,V normal,double &best,bool &found){
-  charge();const Node &node=supportNodes[index];double distance=boxDistance(node.box,p);
-  if(distance>best||(found&&distance>=best))return;
+ void consider(uint32_t id,V p,V normal,double &best,uint32_t &hit){
+  V delta=load(input.support+3*id)-p;double d=dot(delta,delta);
+  if(d<=best){V n=load(input.support_normals+3*id);if(dot(n,normal)>=0.5*norm(n)){best=d;hit=id;}}
+ }
+ void nearestSupport(int index,V p,V normal,double &best,uint32_t &hit){
+  charge();const Node &node=supportNodes[index];
   if(node.left<0){
    for(int j=node.start;j<node.end;++j){
-    charge();uint32_t i=supportOrder[j];V delta=load(input.support+3*i)-p;double d=dot(delta,delta);
-    if(d<=best){V measuredNormal=load(input.support_normals+3*i);if(dot(measuredNormal,normal)>=0.5*norm(measuredNormal)){best=d;found=true;}}
+    charge();consider(supportOrder[j],p,normal,best,hit);
+    if(hit!=UINT32_MAX && best<=peakDistance2)return;
    }
   }else{
    int first=node.left,second=node.right;
-   if(boxDistance(supportNodes[second].box,p)<boxDistance(supportNodes[first].box,p))std::swap(first,second);
-   nearestSupport(first,p,normal,best,found);nearestSupport(second,p,normal,best,found);
+   double a=boxDistance(supportNodes[first].box,p),b=boxDistance(supportNodes[second].box,p);
+   if(b<a){std::swap(first,second);std::swap(a,b);}
+   if(a<=best)nearestSupport(first,p,normal,best,hit);
+   if(hit!=UINT32_MAX && best<=peakDistance2)return;
+   if(b<best || (hit==UINT32_MAX && b==best))nearestSupport(second,p,normal,best,hit);
   }
  }
  void prepareSupport(){
+  vertexWitness.assign(input.vertex_count,UINT32_MAX);
   supportOrder.resize(input.support_count);std::iota(supportOrder.begin(),supportOrder.end(),0);
   for(size_t i=0;i<input.support_count;++i){check();V p=load(input.support+3*i),n=load(input.support_normals+3*i);
    if(!finite(p)||!finite(n)||norm(n)<1e-6)throw Error(1,"Invalid measured point/normal");
@@ -167,20 +176,49 @@ struct Screen {
  }
  bool measured(const Triangle &t){
   int steps=std::max(1,int(std::ceil(std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})/tolerance)));
-  auto sample=[&](V p){
-   ++reply.support_samples;double best=tolerance*tolerance;bool found=false;
-   nearestSupport(0,p,t.n,best,found);
-   if(found)reply.support_distance=std::max(reply.support_distance,std::sqrt(best));
-   return found;
+  uint32_t last=UINT32_MAX;
+  auto sample=[&](V p,uint32_t vertex){
+   ++reply.support_samples;charge();double best=tolerance*tolerance;uint32_t hit=UINT32_MAX;
+   if(vertex!=UINT32_MAX && vertexWitness[vertex]!=UINT32_MAX)consider(vertexWitness[vertex],p,t.n,best,hit);
+   if(last!=UINT32_MAX && last!=hit)consider(last,p,t.n,best,hit);
+   // Only the maximum nearest distance is reported. An actual aligned point
+   // inside the previous maximum proves this sample cannot increase it. For
+   // a new maximum (or a miss) the BVH still performs the exact search.
+   if((hit==UINT32_MAX || best>peakDistance2) && boxDistance(supportNodes[0].box,p)<=best)nearestSupport(0,p,t.n,best,hit);
+   if(hit==UINT32_MAX)return false;
+   if(best>peakDistance2){peakDistance2=best;reply.support_distance=std::sqrt(best);}
+   if(vertex!=UINT32_MAX)vertexWitness[vertex]=hit;
+   last=hit;return true;
   };
   for(int i=0;i<=steps;++i)for(int j=0;j<=steps-i;++j)
-   if(!sample(t.a+(t.b-t.a)*(double(i)/steps)+(t.c-t.a)*(double(j)/steps)))return false;
-  return sample(t.center);
+   if(!sample(t.a+(t.b-t.a)*(double(i)/steps)+(t.c-t.a)*(double(j)/steps),i==steps?t.i[1]:j==steps?t.i[2]:!i&&!j?t.i[0]:UINT32_MAX))return false;
+  return sample(t.center,UINT32_MAX);
  }
  void validateInput(){
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
   if(!input.vertices||!input.triangles||!input.support||!input.support_normals||input.vertex_count<4||input.triangle_count<4||input.support_count<4)throw Error(1,"Incomplete measured mesh/support input");
   if(input.vertex_count>1000000||input.triangle_count>2000000||input.support_count>SDA_HRTF_MAXIMUM_SUPPORT_POINTS)throw Error(3,"Measured geometry exceeds local processing bound");
+ }
+ bool interiorHit(int index,const Box &box,V a,V b,V c,V n,double twiceArea,bool ear){
+  charge();const auto &node=supportNodes[index];if(!node.box.overlaps(box))return false;
+  if(node.left>=0)return interiorHit(node.left,box,a,b,c,n,twiceArea,ear)||interiorHit(node.right,box,a,b,c,n,twiceArea,ear);
+  for(int j=node.start;j<node.end;++j){
+   charge();auto id=supportOrder[j];V p=load(input.support+3*id),m=load(input.support_normals+3*id);
+   if(std::abs(dot(p-a,n))>(ear?.0003:.0005) || dot(m,n)<(ear?.93:.85)*norm(m))continue;
+   // Strictly inside the projected cell, not a rim sample near the centroid.
+   double margin=.08*twiceArea;
+   if(dot(cross(b-a,p-a),n)>margin && dot(cross(c-b,p-b),n)>margin && dot(cross(a-c,p-c),n)>margin)return true;
+  }
+  return false;
+ }
+ bool coveredInterior(V a,V b,V c,V n,bool ear){
+  double ab=dot(b-a,b-a),bc=dot(c-b,c-b),ca=dot(a-c,a-c),spacing=ear?.0018:.0028;
+  if(std::max({ab,bc,ca})>spacing*spacing){
+   if(bc>=ab && bc>=ca){V old=a;a=b;b=c;c=old;}else if(ca>=ab){V old=c;c=b;b=a;a=old;}
+   V m=(a+b)*.5;return coveredInterior(a,m,c,n,ear)&&coveredInterior(m,b,c,n,ear);
+  }
+  Box box;box.add(a);box.add(b);box.add(c);V pad{.00051,.00051,.00051};box.low=box.low-pad;box.high=box.high+pad;
+  return interiorHit(0,box,a,b,c,n,dot(cross(b-a,c-a),n),ear);
  }
  void select(uint8_t *mask,size_t count){
   validateInput();
@@ -267,6 +305,23 @@ struct Screen {
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
  }
 };
+}
+SdaHrtfMeshResult sda_check_gap_support(SdaHrtfMeshView review,const uint32_t *indices,const uint8_t *nearEar,size_t count,size_t &failed,SdaHrtfMeshCancelled cancelled,void *context){
+ Screen s{review,cancelled,context};failed=0;try{
+  s.validateInput();if(!indices || !nearEar || !count || count>128)throw Error(1,"Invalid local triangulation batch");
+  s.prepareSupport();
+  for(;failed<count;++failed){
+   Triangle t{};for(int k=0;k<3;++k){t.i[k]=indices[3*failed+k];if(t.i[k]>=review.vertex_count)throw Error(1,"Invalid gap vertex");}
+   t.a=load(review.vertices+3*t.i[0]);t.b=load(review.vertices+3*t.i[1]);t.c=load(review.vertices+3*t.i[2]);
+   V n=cross(t.b-t.a,t.c-t.a);double mag=norm(n);
+   if(!(mag>=1e-12) || std::max({norm(t.a-t.b),norm(t.b-t.c),norm(t.c-t.a)})>.008)throw Error(1,"Invalid gap triangle dimensions");
+   t.n=n*(1/mag);t.center=(t.a+t.b+t.c)*(1./3);
+   if(!s.coveredInterior(t.a,t.b,t.c,t.n,nearEar[failed]!=0) || !s.measured(t))throw Error(1,"Gap lacks aligned interior depth");
+  }
+  if(cancelled && cancelled(context))throw Error(2,"Gap verification cancelled");
+ }catch(const Error &e){s.reply.code=e.code;std::snprintf(s.reply.message,sizeof s.reply.message,"%s",e.what());}
+ catch(const std::bad_alloc &){s.reply.code=3;std::snprintf(s.reply.message,sizeof s.reply.message,"Insufficient memory for gap verification");}
+ return s.reply;
 }
 SdaHrtfMeshResult sda_screen_prepared_surface(SdaHrtfMeshView model,size_t measuredFaces,SdaHrtfMeshView review,const double ears[6],double &deviation,SdaHrtfMeshCancelled cancelled,void *context){
  Screen screen{model,cancelled,context};try{
