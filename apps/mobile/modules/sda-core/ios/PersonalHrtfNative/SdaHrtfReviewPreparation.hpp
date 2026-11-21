@@ -1,6 +1,8 @@
 // Private implementation included after Build. No artificial vertex is ever
 // returned to the review/export UI or passed to the depth support index.
 struct ReviewPreparation {
+ using Cell=std::array<int,3>;
+ static Cell cell(V p){return {int(std::floor(p[0]/.006)),int(std::floor(p[1]/.006)),int(std::floor(p[2]/.006))};}
  SdaHrtfProjectInput input;SdaHrtfMeshCancelled cancelled;void *context;
  std::vector<float> vertices;std::vector<uint32_t> faces,leftFaces,rightFaces;
  V front{},left{},up{},origin{},ears[2]{};
@@ -69,7 +71,7 @@ struct ReviewPreparation {
   }
   auto tip=append(center);for(size_t j=0;j<outer.size();++j)face(faces,outer[(j+1)%outer.size()],outer[j],tip);
  }
- void prepare(const char *root,uint64_t room,uint64_t physical,SdaHrtfReviewProjectResult &result){
+ bool prepare(const char *root,uint64_t room,uint64_t physical,SdaHrtfReviewProjectResult &result,std::set<Cell>& keep,int pass){
   check();auto original=input.mesh;
   require(original.vertices && original.triangles && original.support && original.support_normals && original.vertex_count>=4 && original.vertex_count<=1000000 && original.triangle_count>=4 && original.triangle_count<=2000000 && original.support_count>=4 && original.support_count<=SDA_HRTF_MAXIMUM_SUPPORT_POINTS,"Invalid review mesh buffers");
   uint64_t estimate=32*MiB+original.vertex_count*192ull+original.triangle_count*128ull+original.support_count*32ull;
@@ -90,7 +92,7 @@ struct ReviewPreparation {
     V a=point(original.vertices,t[0]),n=cross(sub(point(original.vertices,t[1]),a),sub(point(original.vertices,t[2]),a));
     for(int j=0;j<3;++j)for(int k=0;k<3;++k)normals[3*t[j]+k]+=float(n[k]);}
    for(size_t i=0;i<original.vertex_count;++i){V n=point(normals.data(),uint32_t(i));double size=norm(n);require(size>1e-13,"Unresolved review vertex normal");for(int j=0;j<3;++j)normals[i*3+j]=float(n[j]/size);
-    if(dot(front,point(original.vertices,uint32_t(i)))>nose-.001)locks[i]=1;}
+    const auto p=point(original.vertices,uint32_t(i));if(dot(front,p)>nose-.001 || keep.count(cell(p)))locks[i]=1;}
    const float weights[]={.05f,.05f,.05f};
    for(int pass=0;;++pass){check();size_t size=meshopt_simplifyWithAttributes(simple.data(),original.triangles,original.triangle_count*3,original.vertices,original.vertex_count,3*sizeof(float),normals.data(),12,weights,3,locks.data(),target*3,.00035f,meshopt_SimplifyErrorAbsolute,&error);
     require(std::isfinite(error) && error<=.000351f,"Measured surface simplification exceeds tolerance");
@@ -109,11 +111,23 @@ struct ReviewPreparation {
    if(match!=patches.end()){(match->second?rightFaces:leftFaces).push_back(uint32_t(j/3));patches.erase(match);}
    for(int k=0;k<3;++k){auto id=simple[j+k];if(remap[id]==UINT32_MAX)remap[id]=append(point(original.vertices,id));faces.push_back(remap[id]);}}
   require(patches.empty(),"Simplification changed a confirmed source face");refine();auto loop=boundary(faces.data(),faces.size()/3,vertices.data());require(loop.empty()==seam.empty(),"Simplification changed surface topology");
+  if(original.triangle_count>target){
+   // Collapses of nearly flat or skinny faces need not be identical on x86
+   // and ARM. Only independently supported geometry is admissible on either.
+   SdaHrtfMeshView partial=original;partial.vertices=vertices.data();partial.vertex_count=vertices.size()/3;partial.triangles=faces.data();partial.triangle_count=faces.size()/3;
+   std::vector<uint8_t> mask(partial.triangle_count);auto selected=sda_hrtf_select_measured_faces(partial,mask.data(),mask.size(),cancelled,context);
+   if(selected.code)throw Failure(selected.code,selected.message);
+   size_t before=keep.size();bool bad=false;
+   for(size_t f=0;f<mask.size();++f)if(!mask[f]){bad=true;
+    for(int k=0;k<3;++k){const auto c=cell(point(partial.vertices,faces[3*f+k]));
+     for(int x=-1;x<=1;++x)for(int y=-1;y<=1;++y)for(int z=-1;z<=1;++z)keep.insert({c[0]+x,c[1]+y,c[2]+z});}}
+   if(bad){if(pass>=2 || keep.size()==before)throw Failure(1,"Cannot simplify the surface without losing measured depth support");return false;}
+  }
   result.measured_faces=faces.size()/3;closePosterior(loop);result.boundary_faces=faces.size()/3-result.measured_faces;
   result.plan=sda_hrtf_sampling_plan(room,physical,vertices.size()/3,faces.size()/3);if(!result.plan.tier)throw Failure(3,"Prepared surface leaves no room for the evaluation grid");
   input.mesh.vertices=vertices.data();input.mesh.vertex_count=vertices.size()/3;input.mesh.triangles=faces.data();input.mesh.triangle_count=faces.size()/3;
   input.left_faces=leftFaces.data();input.right_faces=rightFaces.data();input.left_face_count=leftFaces.size();input.right_face_count=rightFaces.size();
   input.bins=result.plan.bins;input.azimuth_steps=result.plan.azimuth_steps;input.elevation_steps=result.plan.elevation_steps;input.reference_radius=1.2;
-  Build project{input,cancelled,context};result.project=project.run(root,&original,result.measured_faces,&result.review_deviation);
+  Build project{input,cancelled,context};result.project=project.run(root,&original,result.measured_faces,&result.review_deviation);return true;
  }
 };

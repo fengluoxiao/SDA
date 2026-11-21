@@ -156,7 +156,7 @@ struct Build {
 }
 extern "C" SdaHrtfReviewProjectResult sda_hrtf_prepare_review_project(const char *root,SdaHrtfProjectInput review,uint64_t room,uint64_t physical,SdaHrtfMeshCancelled cancelled,void *context){
  SdaHrtfReviewProjectResult result{};
- try{ReviewPreparation work{review,cancelled,context};work.prepare(root,room,physical,result);}
+ try{std::set<ReviewPreparation::Cell> keep;for(int pass=0;;++pass){ReviewPreparation work{review,cancelled,context};if(work.prepare(root,room,physical,result,keep,pass))break;}}
  catch(const Failure &e){result.project.code=e.code;std::snprintf(result.project.message,sizeof result.project.message,"%s",e.what());}
  catch(...){result.project.code=3;std::snprintf(result.project.message,sizeof result.project.message,"Cannot prepare bounded review geometry");}
  return result;
