@@ -11,6 +11,7 @@
 #include <map>
 #include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,6 +42,85 @@ Fixture cube(){
 }
 
 static std::string read(const fs::path &p){std::ifstream s(p,std::ios::binary);return {std::istreambuf_iterator<char>(s),{}};}
+static void samplingPlans(const fs::path &root,const SdaHrtfProjectInput &fixture){
+ constexpr uint64_t mib=1024*1024, gib=1024*mib;
+ struct Case {int ram,roomMiB,az,el,bins;};
+ const Case cases[]={{4,1536,16,8,256},{6,1536,24,12,512},{12,3072,32,16,1024},
+                     {16,4096,40,16,1024},{24,6144,40,18,1024},{32,8192,40,18,1024}};
+ auto plan=[](uint64_t room,uint64_t ram,size_t nodes=8718,size_t faces=17432){return sda_hrtf_sampling_plan(room,ram,nodes,faces);};
+ auto dirs=[](const SdaHrtfSamplingPlan &p){return p.azimuth_steps*(p.elevation_steps-1)+2;};
+ for(const auto &c:cases){
+  auto p=plan(c.roomMiB*mib,c.ram*gib);
+  require(p.tier>0 && p.azimuth_steps==c.az && p.elevation_steps==c.el && p.bins==c.bins,"Unexpected resource-selected grid");
+  require(p.numerical_budget_bytes==c.ram*gib/8,"Incorrect physical/headroom-limited solve budget");
+  auto input=fixture;input.azimuth_steps=p.azimuth_steps;input.elevation_steps=p.elevation_steps;input.bins=p.bins;
+  auto dir=root/("capacity-"+std::to_string(c.ram));fs::create_directory(dir);
+  auto result=sda_hrtf_prepare_project(dir.string().c_str(),input,nullptr,nullptr);
+  require(result.code==0 && result.directions==size_t(dirs(p)),"Selected grid not accepted by project writer");
+  auto project=dir/"AcousticProject";
+  std::ifstream grid(project/"EvaluationGrids/FullSphere/Nodes.txt"),faces(project/"EvaluationGrids/FullSphere/Elements.txt");
+  size_t n=0,f=0;require((grid>>n) && n==result.directions && (faces>>f) && f==2*(n-2),"Grid file dimensions differ from plan");
+  std::unique_ptr<SdaHrtfSolver,decltype(&sda_hrtf_solver_destroy)> solver(sda_hrtf_create_for_resources(project.string().c_str(),c.roomMiB*mib,c.ram*gib),sda_hrtf_solver_destroy);
+  require(bool(solver),"Cannot open adaptive project");
+  for(int ear:{1,2}){
+   auto relative="NumCalc/source_"+std::to_string(ear);auto earDir=project/relative;
+   auto previousLog=earDir/("NC"+std::to_string(p.bins)+"-"+std::to_string(p.bins)+".out");
+   std::ofstream(previousLog)<<"previous log";std::ofstream(earDir/"Memory.txt")<<"previous estimate";
+   for(int k:{p.bins,1,p.bins+1}){
+    auto check=sda_hrtf_check_frequency_capacity(solver.get(),relative.c_str(),k);
+    require(check.code==(k>p.bins?1:0) && !check.remaining_array_bytes,"Invalid frequency preflight or resource leak");
+   }
+   require(!fs::exists(earDir/"be.out") && !fs::exists(earDir/"NC1-1.out") && read(previousLog)=="previous log" && read(earDir/"Memory.txt")=="previous estimate","Preflight wrote or overwrote output");
+   std::ifstream nc(project/("NumCalc/source_"+std::to_string(ear)+"/NC.inp"));std::string line;
+   for(int k=0;k<3;++k)std::getline(nc,line);
+   int method=0,count=0,id=-1,points=0;nc>>method>>count;std::getline(nc,line);
+   require(method==1 && count==p.bins && (nc>>id>>points) && id==0 && points==p.bins+1,"Ear project not using selected frequency count");
+   for(int k=0;k<=p.bins;++k){double t,hz,im;require((nc>>t>>hz>>im) && std::abs(hz-24000.*k/p.bins)<1e-8 && im==0,"Ear frequency grid mismatch");}
+   // Exercise the low, 16 GiB and format-limited grids, not just their manifests.
+   if(c.ram==4 || c.ram==16 || c.ram==24){
+    auto source="NumCalc/source_"+std::to_string(ear);const int step=p.bins/4; // 6 kHz on all grids
+    auto r=sda_hrtf_solver_run(solver.get(),source.c_str(),c.ram==4?1:step,c.ram==4?p.bins:step,0,nullptr,nullptr);
+    if(r.code)throw std::runtime_error(r.message);
+    require(!r.remaining_array_bytes,"Adaptive frequency retained arrays");
+    std::ifstream eval(project/source/"be.out"/("be."+std::to_string(step))/"pEvalGrid");
+    std::getline(eval,line);int groups=0,g=0;size_t rows=0;
+    require((eval>>groups>>g>>rows) && groups==1 && g==1 && rows==n,"Wrong adaptive pressure shape");
+    std::set<int> seen;
+    for(size_t i=0;i<n;++i){double re,im;int node;require((eval>>node>>re>>im) && node>=400000 && size_t(node-400000)<n && seen.insert(node).second && std::isfinite(re) && std::isfinite(im) && (re!=0 || im!=0),"Missing or invalid adaptive pressure");}
+   }
+  }
+  if(c.ram==4){
+   const size_t stride=4*size_t(p.bins);
+   std::vector<int32_t> ids(n);for(size_t i=0;i<n;++i)ids[i]=400000+int32_t(i);
+   std::vector<double> bank(n*stride);std::vector<float> hrir(stride);
+   auto r=sda_hrtf_read_pressure(solver.get(),ids.data(),n,p.bins,bank.data(),bank.size());
+   if(r.code)throw std::runtime_error(r.message);
+   for(size_t i=0;i<n;++i){
+    r=sda_hrtf_make_hrir(solver.get(),bank.data()+i*stride,stride,p.bins,result.source_areas,1.2,p.bins/2,hrir.data(),hrir.size());
+    if(r.code)throw std::runtime_error(r.message);
+    for(size_t ear:{0,1}){double energy=0;for(size_t j=0;j<stride/2;++j){double x=hrir[ear*stride/2+j];energy+=x*x;}require(std::isfinite(energy) && energy>1e-16,"Invalid full baseline HRIR");}
+   }
+  }
+ }
+ const uint64_t max=std::numeric_limits<uint64_t>::max();
+ auto wide=plan(max,max),base=plan(1536*mib,4*gib);
+ require(dirs(wide)==682 && wide.bins==1024 && wide.numerical_budget_bytes==4*gib,"Future capacity must saturate without overflow");
+ require(plan(0,32*gib).tier==0 && plan(8*gib,0).tier==0 && plan(512*mib-1,32*gib).tier==0,"Never guess missing/insufficient headroom");
+ require(plan(768*mib,32*gib).tier==base.tier && plan(1536*mib,32*gib).tier==2 && plan(3*gib,32*gib).tier==3,"Multitasking headroom must override physical capacity");
+ require(plan(16*gib,4*gib).tier==base.tier,"Available RAM cannot bypass the physical capacity gate");
+ require(plan(4*gib,15*gib).tier==4 && plan(6*gib,22*gib).tier==5,"Intermediate reported capacities must not require exact RAM buckets");
+ require(plan(16*gib,32*gib,20000-114,20000-224).tier==1 && !plan(16*gib,32*gib,20000-113,4).tier && !plan(16*gib,32*gib,4,20000-223).tier,"Off-by-one in remaining solver indices");
+ require(plan(max,max,8718,20000-1200).tier==4 && plan(max,max,8718,20000-1199).tier==3,"Dense mesh must leave room for grid elements");
+ require(!plan(max,max,3,4).tier && !plan(max,max,4,3).tier && !plan(max,max,std::numeric_limits<size_t>::max(),4).tier && !plan(max,max,4,std::numeric_limits<size_t>::max()).tier,"Invalid mesh sizes must not wrap");
+ // Sweep nonstandard capacities and arbitrary headroom independently; neither
+ // increasing resource may reduce sampling density or skip the archive bound.
+ int previous[97]{};
+ for(int phys=3;phys<=64;++phys){int last=0;for(int j=0;j<=96;++j){
+  auto p=plan(j*128*mib,phys*gib);
+  require(p.tier>=last && p.tier>=previous[j] && p.tier<=wide.tier,"Non-monotonic capacity policy");
+  last=previous[j]=p.tier;
+ }}
+}
 static void nodesMatch(const fs::path &p,const Fixture &f,const SdaHrtfProjectResult &result){
  std::istringstream s(read(p));size_t n;require(bool(s>>n)&&n==f.vertices.size()/3,"Node count changed");
  for(size_t i=0;i<n;++i){size_t id;double x,y,z;require(bool(s>>id>>x>>y>>z)&&id==i,"Node order changed");require(std::abs(x-(f.vertices[3*i]-result.origin[0]))<1e-12&&std::abs(y-(f.vertices[3*i+1]-result.origin[1]))<1e-12&&std::abs(z-(f.vertices[3*i+2]-result.origin[2]))<1e-12,"Measured geometry was scaled or changed");}
@@ -50,6 +130,7 @@ int main(int argc,char **argv)try{
  {std::ofstream sentinel(root/"unrelated");sentinel<<"keep";}
  auto f=cube();uint32_t left[]={24,25},right[]={16};
  SdaHrtfProjectInput in{};in.mesh=f.view();in.left_faces=left;in.left_face_count=2;in.right_faces=right;in.right_face_count=1;in.front[0]=1;in.up[2]=1;in.bins=16;in.azimuth_steps=16;in.elevation_steps=4;in.reference_radius=1.2;
+ samplingPlans(root,in);
  auto call=[&](SdaHrtfProjectInput v,SdaHrtfMeshCancelled c=nullptr,void *ctx=nullptr){return sda_hrtf_prepare_project(root.string().c_str(),v,c,ctx);};
  auto reject=[&](SdaHrtfProjectInput v){auto result=call(v);require(result.code!=0,"Invalid preparation accepted");require(!fs::exists(root/"AcousticProject")&&!fs::exists(root/".preparing-acoustic"),"Rejected preparation left partial files");require(read(root/"unrelated")=="keep","Preparation touched unrelated files");};
  auto bad=in;bad.bins=17;reject(bad);bad=in;bad.elevation_steps=5;reject(bad);bad=in;bad.bins=2048;bad.azimuth_steps=64;bad.elevation_steps=32;reject(bad);
@@ -93,5 +174,5 @@ int main(int argc,char **argv)try{
  std::vector<double> bank(50*4*16);auto readResult=sda_hrtf_read_pressure(solver.get(),ids.data(),50,16,bank.data(),bank.size());if(readResult.code)throw std::runtime_error(readResult.message);
  std::vector<float> impulse(64);for(int d=0;d<50;++d){auto r=sda_hrtf_make_hrir(solver.get(),bank.data()+d*64,64,16,result.source_areas,1.2,8,impulse.data(),impulse.size());if(r.code)throw std::runtime_error(r.message);}
  require(read(root/"unrelated")=="keep","Solve touched unrelated files");
- std::cout<<"{\"passed\":true,\"actualGeneratedProjectSolved\":true,\"directions\":50,\"independentSourceAreas\":true,\"rigidFrameChecked\":true,\"fullSphereTopologyChecked\":true,\"cancellationCleanup\":true,\"overwriteRejected\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;return 0;
+ std::cout<<"{\"passed\":true,\"preparedCapacityGiB\":[4,6,12,16,24,32],\"bilateral6kHzDirections\":[114,602,682],\"completeBaselineHRIRs\":114,\"baselineBinsPerEar\":256,\"resourceSweepCases\":6014,\"actualGeneratedProjectSolved\":true,\"directions\":50,\"independentSourceAreas\":true,\"rigidFrameChecked\":true,\"fullSphereTopologyChecked\":true,\"cancellationCleanup\":true,\"overwriteRejected\":true,\"physicalScanTested\":false,\"acousticAccuracyValidated\":false}"<<std::endl;return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<std::endl;return 1;}

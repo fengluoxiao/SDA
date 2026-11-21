@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/zeux/meshoptimizer",
+  "tag": "v0.24",
+  "commit": "7b2d4f4c817aea55d74dcd65d9763ac2ca608026",
+  "license": "MIT",
+  "files": {
+    "src/simplifier.cpp": "7d3dd0f1122ae13667bcc420ac565c709a927ed326cb8076c24ae5e0d1470c99",
+    "src/meshoptimizer.h": "5e87787e43b0ae88878c7d9bb40ebeed79a63123d2f2b714420b66f864544366",
+    "LICENSE.md": "e4a26033e3551fb2722888949fbb41e77aee628e8e8f04dcffeee301aa7e5634"
+  }
+}

@@ -15,6 +15,15 @@ typedef struct {
  int azimuth_steps, elevation_steps; // multiples of 8 / even; includes both poles
  double reference_radius; // metres, all evaluation nodes use this common radius
 } SdaHrtfProjectInput;
+// Sampling policy only. A nonzero tier does not qualify the measured surface
+// or guarantee that every frequency's numerical arrays will fit the budget.
+typedef struct {
+ int tier; // 0 unavailable; positive ordinal of the selected grid, not a device class
+ int azimuth_steps, elevation_steps, bins;
+ uint64_t numerical_budget_bytes;
+} SdaHrtfSamplingPlan;
+SdaHrtfSamplingPlan sda_hrtf_sampling_plan(uint64_t headroom, uint64_t physical_memory,
+ size_t mesh_vertices, size_t mesh_triangles);
 typedef struct {
  int code; // 0 prepared, 1 invalid, 2 cancelled, 3 resource bound
  size_t directions;
@@ -29,6 +38,16 @@ typedef struct {
 // Does NOT solve, certify acoustic accuracy, install, or select a personal HRTF.
 SdaHrtfProjectResult sda_hrtf_prepare_project(const char *root,
  SdaHrtfProjectInput input, SdaHrtfMeshCancelled cancelled, void *context);
+typedef struct {
+ SdaHrtfProjectResult project;
+ SdaHrtfSamplingPlan plan;
+ size_t measured_faces, boundary_faces;
+ double review_deviation;
+} SdaHrtfReviewProjectResult;
+// Explicit experimental preparation. Uses measured source faces on the review
+// mesh, may add a labeled non-anatomical posterior baffle; never fills ears.
+SdaHrtfReviewProjectResult sda_hrtf_prepare_review_project(const char *root,SdaHrtfProjectInput review,
+ uint64_t headroom,uint64_t physical_memory,SdaHrtfMeshCancelled cancelled,void *context);
 #ifdef __cplusplus
 }
 #endif

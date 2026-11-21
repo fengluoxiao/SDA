@@ -27,6 +27,18 @@ final class PersonalHrtfOnDeviceSolver {
   if let handle { sda_hrtf_solver_cancel(handle) }
  }
 
+ private static func checked(_ result:SdaHrtfSolverResult,preflight:Bool = false) throws -> UInt64 {
+  guard result.remaining_array_bytes == 0 else { throw PersonalHrtfError.message("本地声学任务未正确释放资源") }
+  if result.code == 0 { return result.peak_array_bytes }
+  if result.code == 2 { throw PersonalHrtfError.message("已取消本地计算，未启用未完成的个人档案") }
+  var reply = result
+  let detail = withUnsafePointer(to:&reply.message) { p in
+   p.withMemoryRebound(to:CChar.self,capacity:512) { String(cString:$0) }
+  }
+  if preflight { throw PersonalHrtfError.message("本机声学预检未通过，尚未开始双耳求解：\(detail)") }
+  throw PersonalHrtfError.message("本地声学计算未完成，保留现有档案：\(detail)")
+ }
+
  // The owner provides a dedicated temporary job directory and removes it only
  // AFTER completion. A partial/failing solve is never installed as a profile.
  func run(qualifiedProject: URL, frequencies: Int,
@@ -50,11 +62,12 @@ final class PersonalHrtfOnDeviceSolver {
     let result: Result<Output, Error> = Result {
      // Budget is for all tracked numerical arrays; Foundation, input geometry,
      // audio playback and the application's other allocations also need room.
-     let budget = sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory)
+     let room = sda_hrtf_available_memory(), physical = ProcessInfo.processInfo.physicalMemory
+     let budget = sda_hrtf_solve_budget(room,physical)
      guard budget > 0 else {
       throw PersonalHrtfError.message("iPhone 当前可用内存不足以开始本机声学计算，请稍后重试；现有档案保持可用")
      }
-     guard let native = qualifiedProject.path.withCString({ sda_hrtf_solver_create($0,budget) }) else {
+     guard let native = qualifiedProject.path.withCString({ sda_hrtf_create_for_resources($0,room,physical) }) else {
       throw PersonalHrtfError.message("无法创建 iPhone 本地声学计算任务")
      }
      lock.lock(); handle = native; if cancelled { sda_hrtf_solver_cancel(native) }; lock.unlock()
@@ -78,21 +91,21 @@ final class PersonalHrtfOnDeviceSolver {
       }
      }
      var peak: UInt64 = 0
+     // Probe both jobs before the first pressure solve. FMM storage depends
+     // on mesh and frequency, not just total RAM or output direction count.
+     let endpoints = frequencies == 1 ? [1] : [frequencies,1]
+     for ear in 1...2 {
+      for step in endpoints {
+       let reply = "NumCalc/source_\(ear)".withCString { sda_hrtf_check_frequency_capacity(native,$0,Int32(step)) }
+       peak = max(peak,try Self.checked(reply,preflight:true))
+      }
+     }
      for ear in 0..<2 {
       currentEar = ear
-      var reply = "NumCalc/source_\(ear + 1)".withCString { path in
+      let reply = "NumCalc/source_\(ear + 1)".withCString { path in
        sda_hrtf_solver_run(native,path,1,Int32(frequencies),0,callback,Unmanaged.passUnretained(self).toOpaque())
       }
-      guard reply.code == 0 else {
-       let detail = withUnsafePointer(to:&reply.message) { pointer in
-        pointer.withMemoryRebound(to:CChar.self,capacity:512) { String(cString:$0) }
-       }
-       if reply.code == 2 { throw PersonalHrtfError.message("已取消本地计算，未启用未完成的个人档案") }
-       if reply.code == 3 { throw PersonalHrtfError.message("当前扫描超出 iPhone 本地计算的内存预算；未替换现有 SDA Spatial 档案") }
-       throw PersonalHrtfError.message("本地声学计算未完成：\(detail)")
-      }
-      guard reply.remaining_array_bytes == 0 else { throw PersonalHrtfError.message("本地声学任务未正确释放资源") }
-      peak = max(peak,reply.peak_array_bytes)
+      peak = max(peak,try Self.checked(reply))
      }
      return Output(project:qualifiedProject,frequencies:frequencies,peakTrackedArrayBytes:peak,numericalBudgetBytes:budget)
     }

@@ -157,7 +157,7 @@ final class PersonalHrtfReconstruction: NSObject, PersonalHeadReconstructor {
   let measured = try PersonalHrtfMeshCheck.poissonMeasurement(positions:support.positions,normals:support.normals,budget:available,log:scanLog,candidateReady:{ candidate = $0 },currentBudget:{ sda_hrtf_recommended_budget(sda_hrtf_available_memory(),ProcessInfo.processInfo.physicalMemory) },cancelled:{ [self] in isCancelled },operationChanged:{ [self] operation in
    lock.lock(); meshing = operation; let stop = cancelled; lock.unlock(); if stop { operation?.cancel() }
   })
-  return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance)
+  return PersonalHeadMeshCandidate(geometryScreenVersion:2,surface:measured.surface,maximumSupportDistance:measured.distance,support:support.positions,supportNormals:support.normals)
   } catch {
    if isCancelled || error is CancellationError { throw error }
    let reason = (error as? PersonalHrtfError)?.errorDescription ?? (error as? PersonalHrtfReviewGeometry.Failure)?.message

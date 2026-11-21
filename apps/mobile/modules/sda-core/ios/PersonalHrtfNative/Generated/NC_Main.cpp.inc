@@ -206,7 +206,7 @@ int embedded_main(int argc, char **argv)
 	sprintf(filename,"NC.out");
     }
 
-	ofstream NCout(local_path(filename));
+	auto &NCout=runtime->jobLog; NCout.open(log_path(filename));
 	if(!NCout) NC_Error_Exit_0(NCout, "can not open the output stream NCout!");
 
 	
@@ -275,7 +275,7 @@ void NC_ControlProgram(ofstream& NCout,int iend, bool estimate_ram, bool check_n
   ofstream NCestim;
 
   if(estimate_ram) {
-    NCestim.open(local_path("Memory.txt"));
+    NCestim.open(log_path("Memory.txt"));
     if(!NCestim)
       if(!NCout) NC_Error_Exit_0(NCout, "can not open the output stream NCestim!");
   }
@@ -496,6 +496,8 @@ frequency_progress(state().currentFrequency_, state().numFrequencies_);
       }
     }
 
+    if(!estimate_ram || runtime->capacityOnly)check_coefficient_storage();
+    if(runtime->capacityOnly)continue;
     if( estimate_ram ) {
       
       
@@ -748,10 +750,10 @@ frequency_progress(state().currentFrequency_, state().numFrequencies_);
 	    state().clulevarry[j].WeiGauLv = allocate_array<double>((nthej));
 
 	    
-	    state().tmtxlev[j].zTmxLv = allocate_array<Complex>((state().tmtxlev[j].nEntriesT));
+	    state().tmtxlev[j].zTmxLv = runtime->compactFar ? nullptr : allocate_array<Complex>((state().tmtxlev[j].nEntriesT));
 	    if(state().boolComputeTVector_) state().tmtxlev[j].zTvcLv = allocate_array<Complex>((state().clulevarry[j].nClustSLv*npsh));
-	    state().dmtxlev[j].zDmxLv = allocate_array<Complex>((state().dmtxlev[j].nEntriesD));
-	    state().smtxlev[j].zSmxLv = allocate_array<Complex>((state().smtxlev[j].nEntriesS));
+	    state().dmtxlev[j].zDmxLv = runtime->compactFar ? nullptr : allocate_array<Complex>((state().dmtxlev[j].nEntriesD));
+	    state().smtxlev[j].zSmxLv = runtime->compactFar ? nullptr : allocate_array<Complex>((state().smtxlev[j].nEntriesS));
 	  }
 
 	break;
@@ -814,7 +816,7 @@ frequency_progress(state().currentFrequency_, state().numFrequencies_);
     lti_sol += lti_sst;
 
     
-    NC_PostProcessing(NCout);
+    packed_release(); NC_PostProcessing(NCout);
 
     switch(state().methodFMM_)
       {
@@ -839,6 +841,7 @@ frequency_progress(state().currentFrequency_, state().numFrequencies_);
 
 	    release_array(state().clulevarry[j].zwkT);
 	    release_array(state().clulevarry[j].zwkS);
+        for(int c=0;c<state().clulevarry[j].nClustOLv;++c){ checkpoint(); release_array(state().clulevarry[j].ClastArLv[c].NumsFanClus); state().clulevarry[j].ClastArLv[c].NumsFanClus=nullptr;}
 
 
 	    release_array(state().dmtxlev[j].jcolDmxLv);

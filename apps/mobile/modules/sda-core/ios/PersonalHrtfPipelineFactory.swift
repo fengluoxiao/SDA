@@ -12,7 +12,7 @@ final class PersonalHrtfPipelineFactory {
  }
  static var capabilities: [String:Any] {
   #if canImport(StandardCyborgFusion)
-  return ["scanSupported":PersonalHeadScanController.supported(),"measurementOnly":true,"localReconstruction":true,"personalGenerationReady":false,"cameraPolicy":"front-truedepth-only"]
+  return ["scanSupported":PersonalHeadScanController.supported(),"measurementOnly":false,"localReconstruction":true,"experimentalGeneration":true,"personalGenerationReady":false,"cameraPolicy":"front-truedepth-only"]
   #else
   return ["scanSupported":false,"measurementOnly":true,"localReconstruction":false,"personalGenerationReady":false,"cameraPolicy":"front-truedepth-only"]
   #endif

@@ -10,9 +10,10 @@ export function showPersonalHrtfSettings() {
    Alert.alert("个人 HRTF", result?.message || "设置已保存，下一次打开曲目时使用；当前播放不受影响。");
   } catch (e) { Alert.alert("个人 HRTF 未完成", String(e)); }
  };
- Alert.alert("个人 HRTF · 实验功能", `${status.name || "SDA Spatial · 默认档案"}\n仅使用前置 TrueDepth，需他人协助缓慢扫描完整头耳。当前测试版支持本机采集、三维重建与左右耳位置确认，用于验证实机测量。尚未开放从扫描生成个人 HRTF，候选网格不能直接当作声学响应。已有个人 .phrtf 档案仍可导入 SDA 自有引擎；系统空间输出与文件调优播放使用各自路径。`, [
+ Alert.alert("个人 HRTF · 实验功能", `${status.name || "SDA Spatial · 默认档案"}\n前置 TrueDepth：正脸、左耳、右耳。无需扫描后脑。`, [
   { text: "本机适配与档案", onPress: () => Alert.alert("头耳扫描与档案", "原始相机帧直接送入本机重建器，不保存整段扫描。临时网格在任务完成或取消后删除。单份个人档案最多 16 MiB，总存储上限 32 MiB。", [
    { text: "前置 TrueDepth · 测量验证", onPress: () => { if (!status.scanSupported) { Alert.alert("无法采集", "此设备没有可用的前置 TrueDepth 相机。"); return; } void run("scan"); } },
+   ...(status.experimentalGeneration && status.scanSupported ? [{text:"扫描并生成实验档案",onPress:()=>Alert.alert("生成实验档案？","在本机前台计算，可能耗时较长。双耳必须来自实测；只有后方的缺口允许使用计算边界。结果未经真人声学验证，生成后可选择不启用。",[{text:"取消",style:"cancel"},{text:"开始扫描",onPress:()=>void run("scanExperimental")}])}] : []),
    { text: "导入个人 .phrtf", onPress: () => void run("import") },
    { text: "取消", style: "cancel" },
   ]) },

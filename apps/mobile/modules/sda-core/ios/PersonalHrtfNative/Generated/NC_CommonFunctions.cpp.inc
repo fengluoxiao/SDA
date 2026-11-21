@@ -362,7 +362,7 @@ double BLdispoi(Vector<double>& pointa, Vector<double>& pointb)
 	int i;
 
 	if(pointa.size() < NDIM || pointb.size() < NDIM)
-		NC_Error_Exit_0(NCout, "Dimension of the vectors must be not less than NDIM!");
+		NC_Error_Exit_0(runtime->jobLog, "Dimension of the vectors must be not less than NDIM!");
 
 	for(i=0; i<NDIM; i++)
 	{ checkpoint(); 
@@ -1145,7 +1145,8 @@ BeginCGS:
 		  runtime->quiet << j << " Abs Error:" << sqrt(dwk1) << endl;
 		}
 
-		if(err_rel < state().ErroIterSols || j == state().niter_max_)
+		if(runtime->compactFar && (!std::isfinite(err_rel) || (j==state().niter_max_ && err_rel>=state().ErroIterSols)))throw Failure(1,"Bounded ML-FMM did not converge");
+        if(err_rel < state().ErroIterSols || j == state().niter_max_)
 		{
 			if(j/10*10 != j) runtime->quiet << j << " " << err_rel << "\n" << endl;
 			for(i=0; i<state().numRowsOfCoefficientMatrix_; i++) state().zrhs[i] = zX_j[i];
@@ -1207,7 +1208,7 @@ void NC_MatrixVectorMultiplication
 	switch(state().methodPreconditioner_)
 	{
 	case 0: 
-		NC_IncompleteLUForBack(NCout, zmultvect, ztmp);
+		NC_IncompleteLUForBack(runtime->jobLog, zmultvect, ztmp);
 		break;
 	case 1: 
 		for(i=0; i<state().numRowsOfCoefficientMatrix_; i++) ztmp[i] = zmultvect[i]*state().dscaling[i];
@@ -1238,14 +1239,14 @@ void NC_MatrixVectorMultiplication
 			{ checkpoint(); 
 				zvc_t[i].set(0.0, 0.0);
 				for(j=state().irowtmtx[i]; j<state().irowtmtx[i + 1]; j++)
-					zvc_t[i] += state().ztmtx[j]*ztmp[state().jcoltmtx[j]];
+					zvc_t[i] += state().ztmtx[j]*ztmp[state().jcoltmtx[(j-state().irowtmtx[i])+state().irowtmtx[i-i%state().numIntegrationPointsUnitSphere_]/state().numIntegrationPointsUnitSphere_]];
 			}
 
 			for(i=0; i<state().dmtxlev[0].nRowsD; i++)
 			{ checkpoint(); 
 				zvc_d[i].set(0.0, 0.0);
 				for(j=state().dmtxlev[0].irowDmxLv[i]; j<state().dmtxlev[0].irowDmxLv[i + 1]; j++)
-					zvc_d[i] += state().dmtxlev[0].zDmxLv[j]*zvc_t[state().dmtxlev[0].jcolDmxLv[j]];
+					zvc_d[i] += state().dmtxlev[0].zDmxLv[j]*zvc_t[(state().clustarry[i/state().numIntegrationPointsUnitSphere_].NumsFarClus[j-state().dmtxlev[0].irowDmxLv[i]]*state().numIntegrationPointsUnitSphere_+i%state().numIntegrationPointsUnitSphere_)];
 			}
 
 			for(i=0; i<state().numRowsOfCoefficientMatrix_; i++)
@@ -1254,11 +1255,11 @@ void NC_MatrixVectorMultiplication
 
 				
 				for(j=state().irownea[i]; j<state().irownea[i + 1]; j++)
-					zresuvect[i] += state().zcoefl[j]*ztmp[state().jcolnea[j]];
+					zresuvect[i] += state().zcoefl[j]*ztmp[state().jcolnea[j+state().nearColumnBias[i]]];
 
 				
 				for(j=state().irowsmtx[i]; j<state().irowsmtx[i + 1]; j++)
-					zresuvect[i] += state().zsmtx[j]*zvc_d[state().jcolsmtx[j]];
+					zresuvect[i] += state().zsmtx[j]*zvc_d[(j+state().jcolsmtx[i])];
 			}
 		}
 		break;
@@ -1268,13 +1269,14 @@ void NC_MatrixVectorMultiplication
 		{ checkpoint(); 
 			zresuvect[i].set(0.0, 0.0);
 			for(j=state().irownea[i]; j<state().irownea[i + 1]; j++)
-				zresuvect[i] += state().zcoefl[j]*ztmp[state().jcolnea[j]];
+				zresuvect[i] += state().zcoefl[j]*ztmp[state().jcolnea[j+state().nearColumnBias[i]]];
 		}
 
 		
 		for(ilv=0; ilv<state().numClusterLevels_; ilv++)
 		{ checkpoint(); 
 			
+			if(runtime->compactFar){packed_apply(&ztmp,&zresuvect);break;}
 			for(i=0; i<state().clulevarry[ilv].nPoinSpheLv*state().clulevarry[ilv].nClustSLv; i++)
 			{ checkpoint(); 
 				state().clulevarry[ilv].zwkT[i].set(0.0, 0.0);
@@ -1418,7 +1420,7 @@ void NC_IncompleteLUDecomposition
 			for(j=state().irownea[i]; j<state().irownea[i + 1]; j++)
 			{ checkpoint(); 
 				state().zcoefl[j] *= dwk;
-				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j] == i) n_trues++;
+				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j+state().nearColumnBias[i]] == i) n_trues++;
 			}
 			for(j=state().irowsmtx[i]; j<state().irowsmtx[i + 1]; j++) state().zsmtx[j] *= dwk;
 			state().zrhs[i] *= dwk;
@@ -1434,13 +1436,13 @@ void NC_IncompleteLUDecomposition
 			for(j=state().irownea[i]; j<state().irownea[i + 1]; j++)
 			{ checkpoint(); 
 				state().zcoefl[j] *= dwk;
-				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j] == i) n_trues++;
+				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j+state().nearColumnBias[i]] == i) n_trues++;
 			}
 
 			for(ilv=0; ilv<state().numClusterLevels_; ilv++)
 			{ checkpoint(); 
-				for(j=state().smtxlev[ilv].irowSmxLv[i]; j<state().smtxlev[ilv].irowSmxLv[i + 1]; j++)
-					state().smtxlev[ilv].zSmxLv[j] *= dwk;
+				if(runtime->compactFar){if(ilv==0)runtime->packedRowScale[i]*=dwk;}
+                else for(j=state().smtxlev[ilv].irowSmxLv[i]; j<state().smtxlev[ilv].irowSmxLv[i + 1]; j++)state().smtxlev[ilv].zSmxLv[j] *= dwk;
 			}
 
 			state().zrhs[i] *= dwk;
@@ -1475,8 +1477,8 @@ void NC_IncompleteLUDecomposition
 			nrow_tru[i] = kl;
 			for(j=state().irownea[i]; j<state().irownea[i + 1]; j++) 
 			{ checkpoint(); 
-				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j] == i)
-					jcol_tru[kl++] = state().jcolnea[j];
+				if(state().zcoefl[j].norm() > threshfac || state().jcolnea[j+state().nearColumnBias[i]] == i)
+					jcol_tru[kl++] = state().jcolnea[j+state().nearColumnBias[i]];
 			}
 		}
 		nrow_tru[state().numRowsOfCoefficientMatrix_] = kl;
@@ -1556,7 +1558,7 @@ void NC_IncompleteLUDecomposition
 		{ checkpoint(); 
 			for(j=state().nL_firnu[i]; j<state().nL_firnu[i + 1]; j++)
 			{ checkpoint(); 
-				for(k=state().irownea[i]; k<state().irownea[i + 1]; k++) if(state().jcolnea[k] == state().nL_colnu[j])
+				for(k=state().irownea[i]; k<state().irownea[i + 1]; k++) if(state().jcolnea[k+state().nearColumnBias[i]] == state().nL_colnu[j])
 				{
 					kl = k;
 					break;
@@ -1567,7 +1569,7 @@ void NC_IncompleteLUDecomposition
 			for(j=state().nU_firnu[i]; j<state().nU_firnu[i + 1]; j++)
 			{ checkpoint(); 
 				for(k=state().irownea[state().nU_rownu[j]]; k<state().irownea[state().nU_rownu[j] + 1]; k++)
-				if(state().jcolnea[k] == i)
+				if(state().jcolnea[k+state().nearColumnBias[state().nU_rownu[j]]] == i)
 				{
 					ku = k;
 					break;

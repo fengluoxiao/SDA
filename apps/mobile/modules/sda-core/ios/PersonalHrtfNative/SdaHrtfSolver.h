@@ -16,8 +16,12 @@ typedef struct {
 // iOS process headroom reported by the OS, or 0 on non-iOS test hosts.
 uint64_t sda_hrtf_available_memory(void);
 // Returns 0 if headroom is unknown/too low. Reserves app/audio/OS room, caps
-// numerical arrays at 768 MiB and at one eighth of physical memory.
+// scan/reconstruction work at 768 MiB and at one eighth of physical memory.
 uint64_t sda_hrtf_recommended_budget(uint64_t headroom, uint64_t physical_memory);
+// Serial acoustic solve only. Same reserves, 4 GiB total hard stop, no
+// up-front allocation; individual tracked arrays are still at most 1 GiB.
+uint64_t sda_hrtf_solve_budget(uint64_t headroom,uint64_t physical_memory);
+SdaHrtfSolver *sda_hrtf_create_for_resources(const char *root,uint64_t headroom,uint64_t physical_memory);
 // root must be an existing, private job directory. Memory budget: 1-1024 MiB.
 SdaHrtfSolver *sda_hrtf_solver_create(const char *root, uint64_t memory_budget);
 // The owner keeps this handle alive until run returns. Cancellation is thread-safe.
@@ -27,6 +31,10 @@ void sda_hrtf_solver_cancel(SdaHrtfSolver *job);
 SdaHrtfSolverResult sda_hrtf_solver_run(SdaHrtfSolver *job, const char *work,
  int first_frequency, int last_frequency, int estimate_only,
  SdaHrtfProgress progress, void *context);
+// Read a frequency's actual cluster tree and mandatory coefficient storage;
+// no pressure, estimates or logs are written. A pass is necessary, not proof
+// that other arrays, other frequencies or future headroom will fit.
+SdaHrtfSolverResult sda_hrtf_check_frequency_capacity(SdaHrtfSolver *job,const char *work,int frequency_index);
 void sda_hrtf_solver_destroy(SdaHrtfSolver *job);
 // Read both ears' completed evaluation pressure files into caller-owned memory.
 // Validates the NC input's uniform positive FFT frequencies through 24 kHz and

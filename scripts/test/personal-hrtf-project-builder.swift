@@ -43,6 +43,43 @@ import simd
   try require(bridged.support == support && bridged.normals == normals && zip(bridged.front,[1.0,0,0]).allSatisfy({ abs($0-$1) < 1e-7 }) && zip(bridged.up,[0.0,0,1]).allSatisfy({ abs($0-$1) < 1e-7 }),"review bridge changed measured inputs")
   try reject { _ = try PersonalHrtfProjectBuilder.measurement(surface:ReviewFixture.surface(),support:support,normals:normals,landmarks:landmarks) }
   let builder = PersonalHrtfProjectBuilder()
+  // Use injected runtime readings, not the simulator's host RAM. Compare both
+  // actual ear files and the Swift directions with the native test's projects.
+  let capacities: [(UInt64,UInt64,Int,Int)] = [(4,1536,114,256),(6,1536,266,512),(12,3072,482,1024),
+                                             (16,4096,602,1024),(24,6144,682,1024),(32,8192,682,1024)]
+  let mib: UInt64 = 1024*1024
+  for (ram,available,count,bins) in capacities {
+   let dir = root.appendingPathComponent("capacity-\(ram)")
+   try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:false)
+   let selected = try builder.prepare(root:dir,measurement:measurement,headroom:available*mib,physicalMemory:ram*1024*mib)
+   let spec = selected.specification
+   try require(spec.directions.count == count && spec.bins == bins && spec.commonShift == bins/2,"Adaptive Swift response dimensions differ")
+   let reference = source.deletingLastPathComponent().appendingPathComponent("capacity-\(ram)/AcousticProject")
+   for path in ["EvaluationGrids/FullSphere/Nodes.txt","EvaluationGrids/FullSphere/Elements.txt","NumCalc/source_1/NC.inp","NumCalc/source_2/NC.inp"] {
+    let actual = try Data(contentsOf:selected.project.appendingPathComponent(path)), expected = try Data(contentsOf:reference.appendingPathComponent(path))
+    try require(actual == expected,"Swift and native wrote different adaptive grids for \(ram) GiB")
+   }
+   let nodes = try rows(selected.project.appendingPathComponent("EvaluationGrids/FullSphere/Nodes.txt"))
+   try require(nodes.count == spec.directions.count && zip(nodes,spec.directions).allSatisfy { Int32($0.0[0]) == $0.1.nodeID },"Adaptive response node IDs differ")
+   if ram == 4 {
+    let archive = try PersonalHrtfResponseBuilder().build(project:reference,specification:spec,numericalBudget:512*mib)
+    let length = try archive.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
+    try require((1...16*1024*1024).contains(length),"Missing full baseline response archive")
+   }
+  }
+  let unavailable = root.appendingPathComponent("unavailable")
+  let reviewedRoot=root.appendingPathComponent("reviewed-experimental")
+  try FileManager.default.createDirectory(at:reviewedRoot,withIntermediateDirectories:false)
+  let reviewed=try builder.prepareReview(root:reviewedRoot,measurement:measurement,headroom:1536*mib,physical:4096*mib)
+  try require(reviewed.specification.directions.count==114 && reviewed.specification.bins==256 && reviewed.specification.reviewedGeometry?.boundaryFaces==0,"Closed review bridge changed provenance or plan")
+  let baseline=source.deletingLastPathComponent().appendingPathComponent("capacity-4/AcousticProject")
+  for ear in 1...2 {let path="NumCalc/source_\(ear)/be.out";try FileManager.default.copyItem(at:baseline.appendingPathComponent(path),to:reviewed.project.appendingPathComponent(path))}
+  let estimated=try PersonalHrtfResponseBuilder().build(project:reviewed.project,specification:reviewed.specification,numericalBudget:512*mib)
+  try require(FileManager.default.fileExists(atPath:estimated.path),"Reviewed experiment did not produce an archive")
+  try FileManager.default.createDirectory(at:unavailable,withIntermediateDirectories:false)
+  try reject { _ = try builder.prepare(root:unavailable,measurement:measurement,headroom:0,physicalMemory:32*1024*mib) }
+  let contents = try FileManager.default.contentsOfDirectory(atPath:unavailable.path)
+  try require(contents.isEmpty,"Unknown memory wrote a partial acoustic project")
   let prepared = try builder.prepare(root:root,measurement:measurement,bins:16,azimuthSteps:16,elevationSteps:4,radius:1.2,commonShift:8)
   let spec = prepared.specification
   try require(spec.directions.count == 50 && spec.bins == 16,"Swift direction dimensions differ")
@@ -61,10 +98,10 @@ import simd
   try reject { _ = try PersonalHrtfProjectBuilder().prepare(root:root,measurement:measurement,bins:16,azimuthSteps:16,elevationSteps:4,radius:1.2,commonShift:32) }
   // Consume the C++ test's actual solver outputs with the same specification
   // returned through Swift. Synthetic geometry is NEVER installed or selected.
-  let archive = try PersonalHrtfResponseBuilder().build(project:source,specification:spec,numericalBudget:32*1024*1024)
+  let archive = try PersonalHrtfResponseBuilder().build(project:source,specification:spec,numericalBudget:2*1024*1024*1024)
   let size = try archive.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
   try require(size > 0 && size <= 16*1024*1024,"Actual solved response archive missing")
-  let result: [String:Any] = ["passed":true,"reviewMeasurementBridgeChecked":true,"swiftNativeDirectionMatch":true,"actualSolvedResponseArchived":true,"directions":50,"cancellation":true,"overwriteRejected":true,"physicalScanTested":false,"acousticAccuracyValidated":false]
+  let result: [String:Any] = ["passed":true,"reviewMeasurementBridgeChecked":true,"swiftNativeDirectionMatch":true,"adaptiveProjectsChecked":capacities.count,"actualSolvedResponseArchived":true,"directions":50,"cancellation":true,"overwriteRejected":true,"physicalScanTested":false,"acousticAccuracyValidated":false]
   print(String(data:try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!)
  }
 }

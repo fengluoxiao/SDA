@@ -89,6 +89,7 @@ double csipFMgau[4], etapFMgau[4], weipFMgau[4];
 Complex *zT_vc;
 bool IfTvc = false;
 int imultipori, nlevmlfmori;
+int *nearColumnBias;
 };
 thread_local State *activeState=nullptr;
 State &state(){return *activeState;}

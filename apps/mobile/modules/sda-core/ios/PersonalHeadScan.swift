@@ -9,6 +9,9 @@ struct PersonalHeadMeshCandidate {
  let geometryScreenVersion: Int
  let surface: PersonalHrtfReviewGeometry
  let maximumSupportDistance: Double
+ // Independent sensor samples, not vertices/normals re-sampled from the review mesh.
+ // Swift arrays share their backing storage until the scan session releases them.
+ let support: [Float], supportNormals: [Float]
 }
 protocol PersonalHeadReconstructor: AnyObject {
  var progress: ((Int, String) -> Void)? { get set }

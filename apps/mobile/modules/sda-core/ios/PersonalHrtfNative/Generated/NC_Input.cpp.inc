@@ -730,7 +730,7 @@ bool NC_checkedges(void) {
   
   
 
-  int hedges[state().numNodes_];
+  Vector<int> hedges(state().numNodes_);
   int nvert, iel, first, second, j;
   bool meshokay;
   meshokay = true;

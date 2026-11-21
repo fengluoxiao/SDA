@@ -4,10 +4,15 @@ on:
     branches: [codex/ios-personal-hrtf-local-20261119]
     paths:
       - '.github/workflows/ios-personal-hrtf-project.yml'
-      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaHrtfProject.*'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/**'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfProjectBuilder.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfResponseBuilder.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaHrtfSolver.cpp'
+      - 'scripts/generate-embedded-numcalc.py'
+      - 'scripts/numcalc-compact-near.inc'
       - 'scripts/check-ios-personal-hrtf-project.sh'
       - 'scripts/test/personal-hrtf-project.cpp'
+      - 'scripts/test/personal-hrtf-reviewed-input.cpp'
       - 'scripts/test/personal-hrtf-project-builder.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
       - 'scripts/test/personal-hrtf-review-fixture.swift'

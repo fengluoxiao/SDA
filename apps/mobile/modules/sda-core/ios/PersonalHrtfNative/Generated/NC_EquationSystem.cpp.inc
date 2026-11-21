@@ -325,6 +325,7 @@ void NC_BuildSystemFMBEM
             }
             
             
+            if(runtime->compactFar)packed_prepare();
             NC_BuildDforMLFMM(NCout);
             
             
@@ -334,7 +335,7 @@ void NC_BuildSystemFMBEM
             NC_BuildTforMLFMM(NCout);
             
             
-            NC_BuildSforMLFMM(NCout);
+            if(!runtime->compactFar)NC_BuildSforMLFMM(NCout);
     }
     
     
@@ -720,7 +721,7 @@ void NC_BuildTforMLFMM
         if(state().boolComputeTVector_) for(i=0; i<nrowT; i++) zTvcLn[i].set(0.0, 0.0);
         
         
-        for(i=0; i<irowTmxLn[nrowT]; i++) zTmxLn[i].set(0.0, 0.0);
+        if(!runtime->compactFar)for(i=0; i<irowTmxLn[nrowT]; i++) zTmxLn[i].set(0.0, 0.0);
         
         
         irownu = ientry = 0;
@@ -793,6 +794,7 @@ void NC_BuildTforMLFMM
                               cencli, state().clulevarry[nlv].uvcsphe, TMele, TVele);
                 
                 
+                if(runtime->compactFar)packed_store_t(nlv,i,j,TMele);
                 jdifdar = j*ndofi;
                 if(rfa_cl == -1) {dfa_cl = -1.0;} else {dfa_cl = 1.0;}
                 
@@ -800,7 +802,7 @@ void NC_BuildTforMLFMM
                 { checkpoint(); 
                     iadrek = ientry + k*ncldofi + jdifdar;
                     
-                    zTmxLn[iadrek] = TMele[k]*dfa_cl;
+                    if(!runtime->compactFar)zTmxLn[iadrek] = TMele[k]*dfa_cl;
                     if(idfs == 2)  zTmxLn[++iadrek] = TVele[k]*dfa_cl;
                     
                     if(ifvcj) zTvcLn[irownu + k] += TVele[k];
@@ -810,7 +812,7 @@ void NC_BuildTforMLFMM
             ientry += nPoSphe*ncldofi;
         } 
         
-        if(irowTmxLn[nrowT] != iadrek + 1)
+        if(!runtime->compactFar && irowTmxLn[nrowT] != iadrek + 1)
         {
             NC_Error_Exit_2(NCout, "iadrek + 1 must be equal to irowTmxLn[nrowT]!",
                             "irowTmxLn[nrowT] = ", irowTmxLn[nrowT],
@@ -846,12 +848,13 @@ void NC_BuildDforMLFMM
 	  
 	  for(j=0; j<state().clulevarry[nlv].ClastArLv[i].NumFanClus; j++) { checkpoint(); 
 	    jcl = state().clulevarry[nlv].ClastArLv[i].NumsFanClus[j];
+            if(runtime->compactFar && jcl<i)continue;
 	    for(k=0; k<NDIM; k++)
 	      disij[k] = state().clulevarry[nlv].ClastArLv[i].CoorCent[k] - state().clulevarry[nlv].ClastArLv[jcl].CoorCent[k];
 	    Vcnorm_dim3_(disij, dij);
 	    dkij = dij*state().waveNumbers_;
 
-	    if( state().adapt_fmmlength_) {
+	    if(state().adapt_fmmlength_ || runtime->compactFar) {
 	      
 	      
 	      
@@ -861,7 +864,8 @@ void NC_BuildDforMLFMM
 	      if((double)expalength - rw >= 0.5) expalength++;
 	      if(expalength < state().minExpansionTermsFMM_) 
 		expalength = state().minExpansionTermsFMM_;
-	      NC_SphericalHankel(NCout, zH1m, expalength,dkij);
+	      if(runtime->compactFar)expalength=std::min(state().clulevarry[nlv].nExpaTermLv,std::max(state().minExpansionTermsFMM_,int(std::floor(rw+.5))+5));
+              NC_SphericalHankel(NCout, zH1m, expalength,dkij);
 	    }
 	    else {
 	      
@@ -889,6 +893,7 @@ void NC_BuildDforMLFMM
                 
                 for(k=0; k<state().clulevarry[nlv].nPoinSpheLv; k++)
                 { checkpoint(); 
+                    if(runtime->compactFar){packed_store_d(nlv,i,j,zdiat);break;}
                     ikjadre = identry + k*state().clulevarry[nlv].ClastArLv[i].NumFanClus + j;
                     zwork_d[ikjadre] = zdiat[k];
                 }
@@ -1077,14 +1082,14 @@ void NC_RHSvecTofSLFMM
 	{ checkpoint(); 
 		zvc_d[i].set(0.0, 0.0);
 		for(j=state().dmtxlev[0].irowDmxLv[i]; j<state().dmtxlev[0].irowDmxLv[i + 1]; j++)
-			zvc_d[i] += state().dmtxlev[0].zDmxLv[j]*state().ztvct[state().dmtxlev[0].jcolDmxLv[j]];
+			zvc_d[i] += state().dmtxlev[0].zDmxLv[j]*state().ztvct[(state().clustarry[i/state().numIntegrationPointsUnitSphere_].NumsFarClus[j-state().dmtxlev[0].irowDmxLv[i]]*state().numIntegrationPointsUnitSphere_+i%state().numIntegrationPointsUnitSphere_)];
 	}
 
 	
 	for(i=0; i<state().numRowsOfCoefficientMatrix_; i++)
 	{ checkpoint(); 	
 		for(j=state().irowsmtx[i]; j<state().irowsmtx[i + 1]; j++)
-				state().zrhs[i] += state().zsmtx[j]*zvc_d[state().jcolsmtx[j]];
+				state().zrhs[i] += state().zsmtx[j]*zvc_d[(j+state().jcolsmtx[i])];
 	}
 }
 
@@ -1095,6 +1100,7 @@ void NC_RHSvecTofMLFMM
 )
 {
 	int i, j, ilv;
+	if(runtime->compactFar){packed_apply(nullptr,nullptr);return;}
 	Vector<Complex> zvc_d(state().maxRowNumberD_);
 
 	
@@ -1354,7 +1360,7 @@ void NC_SearchAddressNforFMM
     strout += c;
     
     iadr = -1;
-    for(i=state().irownea[nrow]; i<state().irownea[nrow + 1]; i++) if(state().jcolnea[i] == ncol)
+    for(i=state().irownea[nrow]; i<state().irownea[nrow + 1]; i++) if(state().jcolnea[i+state().nearColumnBias[nrow]] == ncol)
     {
         iadr = i;
         break;

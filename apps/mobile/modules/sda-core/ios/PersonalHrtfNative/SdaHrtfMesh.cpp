@@ -1,4 +1,5 @@
 #include "SdaHrtfMesh.h"
+#include "SdaHrtfMeshInternal.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -76,6 +77,13 @@ bool intersection(const Triangle &a,const Triangle &b){
  const V av[]={a.a,a.b,a.c},bv[]={b.a,b.b,b.c};
  for(int i=0;i<3;++i)for(int j=0;j<3;++j)if(a.i[i]==b.i[j])shared[n++]=av[i];
  if(n==3)return true;
+ if(n==2){
+  // Noncoplanar planes containing the same edge intersect only on that
+  // line. Avoid an ill-conditioned ray test for newly bisected faces.
+  V edge=shared[1]-shared[0],oa{},ob{};
+  for(int j=0;j<3;++j){if(std::find(b.i.begin(),b.i.end(),a.i[j])==b.i.end())oa=av[j]-shared[0];if(std::find(a.i.begin(),a.i.end(),b.i[j])==a.i.end())ob=bv[j]-shared[0];}
+  return dot(cross(edge,oa),cross(edge,ob))>0 && std::abs(dot(ob,a.n))<1e-10 && std::abs(dot(oa,b.n))<1e-10;
+ }
  if(norm(cross(a.n,b.n))<1e-8&&std::abs(dot(a.n,b.a-a.a))<1e-9)
   return coplanarInvalidContact(a,b,shared,n);
  auto legitimate=[&](V p){
@@ -197,7 +205,30 @@ struct Screen {
   if(retained<4)throw Error(1,"Too little measured surface remains for review");
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
  }
- void run(bool partial=false){
+ // Distance to a finite triangle, including edges and corners. The BVH query
+ // deliberately excludes the artificial boundary and opposite-facing folds.
+ static double triangleDistance(V p,const Triangle &t){
+  V a=t.a,b=t.b,c=t.c,n=t.n;double h=dot(p-a,n);V q=p-n*h;
+  if(dot(cross(b-a,q-a),n)>=0 && dot(cross(c-b,q-b),n)>=0 && dot(cross(a-c,q-c),n)>=0)return h*h;
+  double best=1e10;for(int i=0;i<3;++i){const V vs[]={a,b,c};V u=vs[i],d=vs[(i+1)%3]-u;
+   V delta=p-(u+d*std::clamp(dot(p-u,d)/dot(d,d),0.,1.));best=std::min(best,dot(delta,delta));}return best;
+ }
+ void nearestFace(int node,V p,V normal,size_t measured,double &best,bool &found){
+  charge();const auto &v=nodes[node];if(boxDistance(v.box,p)>best)return;
+  if(v.left<0){for(int i=v.start;i<v.end;++i){auto id=order[i];const auto &t=faces[id];
+   if(id>=measured || dot(normal,t.n)<0.75)continue;double dist=triangleDistance(p,t);if(dist<=best){best=dist;found=true;}}
+  }else{int a=v.left,b=v.right;if(boxDistance(nodes[b].box,p)<boxDistance(nodes[a].box,p))std::swap(a,b);nearestFace(a,p,normal,measured,best,found);nearestFace(b,p,normal,measured,best,found);}
+ }
+ void checkReview(SdaHrtfMeshView review,size_t measured,const double ears[6],double &error){
+  const V l{ears[0],ears[1],ears[2]},r{ears[3],ears[4],ears[5]};error=0;
+  for(size_t f=0;f<review.triangle_count;++f){check();V p[4];for(int j=0;j<3;++j){auto id=review.triangles[3*f+j];if(id>=review.vertex_count)throw Error(1,"Invalid review face");p[j]=load(review.vertices+3*id);}
+   V n=cross(p[1]-p[0],p[2]-p[0]);double size=norm(n);if(!(size>=1e-12))throw Error(1,"Invalid review normal");n=n*(1/size);p[3]=(p[0]+p[1]+p[2])*(1./3.);
+   for(V v:p){double bound=std::min(norm(v-l),norm(v-r))<=.045 ? .0006 : .0012;
+    double best=bound*bound;bool found=false;nearestFace(0,v,n,measured,best,found);
+    if(!found)throw Error(1,"Simplification loses a measured surface or ear fold");error=std::max(error,std::sqrt(best));}
+  }
+ }
+ void run(bool partial=false,size_t measuredFaces=SIZE_MAX){
   validateInput();
   std::vector<Edge> edges;edges.reserve(3*input.triangle_count);faces.reserve(input.triangle_count);
   parent.resize(input.triangle_count);std::iota(parent.begin(),parent.end(),0);
@@ -232,10 +263,18 @@ struct Screen {
   reply.enclosed_volume=partial?0:volume;
   order.resize(faces.size());std::iota(order.begin(),order.end(),0);nodes.reserve(faces.size()/2);tree(0,int(faces.size()));pair(0,0);
   prepareSupport();
-  for(const Triangle &t:faces)if(!measured(t))throw Error(1,"Mesh includes a surface without measured depth support");
+  for(size_t i=0;i<std::min(measuredFaces,faces.size());++i)if(!measured(faces[i]))throw Error(1,"Mesh includes a surface without measured depth support");
   if(cancelled&&cancelled(context))throw Error(2,"Mesh check cancelled");
  }
 };
+}
+SdaHrtfMeshResult sda_screen_prepared_surface(SdaHrtfMeshView model,size_t measuredFaces,SdaHrtfMeshView review,const double ears[6],double &deviation,SdaHrtfMeshCancelled cancelled,void *context){
+ Screen screen{model,cancelled,context};try{
+  if(measuredFaces<4 || measuredFaces>model.triangle_count)throw Error(1,"Invalid measured face range");
+  screen.run(false,measuredFaces);screen.checkReview(review,measuredFaces,ears,deviation);
+ }catch(const Error &e){screen.reply.code=e.code;std::snprintf(screen.reply.message,sizeof screen.reply.message,"%s",e.what());}
+ catch(...){screen.reply.code=3;std::snprintf(screen.reply.message,sizeof screen.reply.message,"Not enough memory to verify prepared surface");}
+ return screen.reply;
 }
 extern "C" SdaHrtfMeshResult sda_hrtf_screen_head_mesh(SdaHrtfMeshView input,SdaHrtfMeshCancelled cancelled,void *context){
  Screen screen{input,cancelled,context};

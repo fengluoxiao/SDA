@@ -34,6 +34,8 @@ struct SdaHrtfSolver {
  std::mutex mutex;
 };
 namespace sda_numcalc {
+struct PackedLevel;
+class Complex;
 struct Failure : std::runtime_error {
  int code;
  Failure(int c, const std::string &s):std::runtime_error(s),code(c){}
@@ -44,12 +46,18 @@ struct Runtime {
  SdaHrtfSolver &owner;
  std::filesystem::path work;
  uint64_t used=0,peak=0,ticks=0,memoryChecks=0;
+ bool capacityOnly=false, checkedFrequency=false;
+ bool compactFar=false;
+ PackedLevel *packed=nullptr;
+ Complex *phaseTable=nullptr;
+ double *packedRowScale=nullptr;
  std::unordered_map<void*,Allocation> arrays;
  std::list<void*> order;
  std::set<FILE*> files;
  SdaHrtfProgress progress=nullptr;
  void *callbackContext=nullptr;
  std::tm wallTime{};
+ std::ofstream jobLog;
  NullBuffer nullBuffer;
  std::ostream quiet{&nullBuffer};
  Runtime(SdaHrtfSolver &o,const std::filesystem::path &w):owner(o),work(w){}
@@ -73,7 +81,8 @@ template<class T> T *allocate_array(size_t count) {
  // registry: optimized Apple new[] may fold these empty allocations. Keeping
  // an order entry for an already-present address corrupts cleanup bookkeeping.
  if(count==0)return nullptr;
- if(count>uint64_t(std::numeric_limits<int>::max()) || count>runtime->owner.budget/sizeof(T))
+ const uint64_t maxArray=std::min<uint64_t>(runtime->owner.budget,1024ull*1024*1024);
+ if(count>uint64_t(std::numeric_limits<int>::max()) || count>maxArray/sizeof(T))
   throw Failure(3,"Native solver array exceeds memory budget");
  // Charge bounded bookkeeping as well; never retain an ever-growing log of
  // arrays that have already been freed during the many frequency solves.

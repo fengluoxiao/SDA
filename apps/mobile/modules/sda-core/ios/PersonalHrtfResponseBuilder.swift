@@ -10,12 +10,18 @@ final class PersonalHrtfResponseBuilder {
   let azimuth: Double // SOFA: positive left
   let elevation: Double // positive up
  }
+ struct ReviewedGeometry {
+  let measuredFaces:Int,boundaryFaces:Int,reviewDeviation:Double
+  var description:[String:Any] { ["measuredFaces":measuredFaces,"boundaryFaces":boundaryFaces,"maxReviewDeviationM":reviewDeviation,
+   "boundaryModel":boundaryFaces == 0 ? "none" : "posterior-computational-baffle","physicalAccuracyValidated":false] }
+ }
  struct Specification {
   let directions: [Direction]
   let bins: Int
   let sourceAreas: [Double] // left, right; measured acoustic source patches
   let referenceRadius: Double
   let commonShift: Int
+  var reviewedGeometry:ReviewedGeometry? = nil
  }
  enum Failure: LocalizedError {
   case message(String)
@@ -63,7 +69,8 @@ final class PersonalHrtfResponseBuilder {
   try require(s.referenceRadius.isFinite && (0.25...10).contains(s.referenceRadius) && (0..<2*s.bins).contains(s.commonShift),"响应参考距离或共同延迟无效")
   let bytes = count * 4 * s.bins * MemoryLayout<Double>.size
   let assetBytes = count * 4 * s.bins * MemoryLayout<Float>.size
-  try require(bytes <= 64 * 1024 * 1024 && assetBytes <= 16 * 1024 * 1024 && numericalBudget >= UInt64(bytes + 4*1024*1024) && numericalBudget <= 768*1024*1024,"个人响应超过本机内存或档案尺寸上限")
+  let readerBudget = min(numericalBudget,768*1024*1024)
+  try require(bytes <= 64 * 1024 * 1024 && assetBytes <= 16 * 1024 * 1024 && readerBudget >= UInt64(bytes + 4*1024*1024),"个人响应超过本机内存或档案尺寸上限")
   var ids = Set<Int32>(), directions = Set<String>(), sectors = Set<Int>(), low = false, high = false
   let locale = Locale(identifier:"en_US_POSIX")
   var names: [String] = [], positions: [[String:Any]] = []
@@ -84,11 +91,12 @@ final class PersonalHrtfResponseBuilder {
   // separately from numerical arrays; reserve room for playback/application.
   let working = UInt64(bytes + assetBytes * 6 + 128*1024*1024)
   try require(available == 0 || available >= working,"iPhone 当前可用内存不足以构建完整响应档案")
-  guard let job = project.path.withCString({ sda_hrtf_solver_create($0,numericalBudget) }) else { throw Failure.message("无法创建本机响应读取任务") }
+  guard let job = project.path.withCString({ sda_hrtf_solver_create($0,readerBudget) }) else { throw Failure.message("无法创建本机响应读取任务") }
   lock.lock(); handle = job; if cancelled { sda_hrtf_solver_cancel(job) }; lock.unlock()
   var digest = SHA256()
   let identity = try JSONSerialization.data(withJSONObject:["positions":positions,"bins":s.bins,"sourceAreas":s.sourceAreas,"radius":s.referenceRadius,"commonShift":s.commonShift],options:[.sortedKeys])
   digest.update(data:identity)
+  if let geometry=s.reviewedGeometry { digest.update(data:try JSONSerialization.data(withJSONObject:geometry.description,options:[.sortedKeys])) }
   // The pressure bank is released before materializing the archive JSON.
   let files: [[String:Any]] = try {
    var pressure = [Double](repeating:0,count:count*4*s.bins)
@@ -124,11 +132,15 @@ final class PersonalHrtfResponseBuilder {
   }()
   try checkpoint()
   let id = "personal-" + Self.hex(digest.finalize())
+  let name=s.reviewedGeometry == nil ? "个人头耳 · 本机计算" : "个人头耳 · 实验估算"
+  var source:[String:Any]=["name":name,"method":"front-truedepth-local-mesh2hrtf-experimental","convention":"SimpleFreeFieldHRIR","cameraPolicy":"front-truedepth-only","mesh2hrtfVersion":"1.3.0","physicalAccuracyValidated":false]
+  if let geometry=s.reviewedGeometry { source["geometry"]=geometry.description }
   let manifest: [String:Any] = ["schemaVersion":2,"calibrationVersion":0,"personalSofaVersion":1,"sampleRate":48000,"completeSubject":true,"subjectId":id,
-   "source":["name":"个人头耳 · 本机计算","method":"front-truedepth-local-mesh2hrtf-experimental","convention":"SimpleFreeFieldHRIR","cameraPolicy":"front-truedepth-only","mesh2hrtfVersion":"1.3.0","physicalAccuracyValidated":false],
+   "source":source,
    "azimuthConvention":"positive left, degrees; elevation positive up",
    "processing":["calibrated":false,"preserveMeasurements":true,"commonDelaySamples":s.commonShift,"delayApplied":true,"normalization":false,"roomResponse":false],"positions":positions]
-  let json = try JSONSerialization.data(withJSONObject:["format":"sda-phrtf","version":1,"name":"个人头耳 · 本机计算","assessment":NSNull(),"manifest":manifest,"files":files],options:[.sortedKeys])
+  // Keep the base64 payload at its planned size even when samples encode '/'.
+  let json = try JSONSerialization.data(withJSONObject:["format":"sda-phrtf","version":1,"name":name,"assessment":NSNull(),"manifest":manifest,"files":files],options:[.sortedKeys,.withoutEscapingSlashes])
   try require(json.count <= 24*1024*1024,"个人响应档案展开尺寸超出上限")
   let archive = try gzip(json)
   let target = project.appendingPathComponent("local-personal.phrtf")

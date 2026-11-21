@@ -1467,11 +1467,11 @@ void NC_AllocateSDTmtxsSLFMM
     
     nnonzertmtx = 0; 
     for(i=0; i<state().numOriginalReflectedClusters_; i++) nnonzertmtx += state().clustarry[i].NumOfDOFs;
-    nnonzertmtx *= state().numIntegrationPointsUnitSphere_;
+    nnonzertmtx = index_product(nnonzertmtx,state().numIntegrationPointsUnitSphere_);
 
     
     
-    state().jcoltmtx = allocate_array<int>((nnonzertmtx));
+    state().jcoltmtx = allocate_array<int>((nnonzertmtx/state().numIntegrationPointsUnitSphere_));
     state().irowtmtx = allocate_array<int>((state().numIntegrationPointsUnitSphere_*state().numOriginalReflectedClusters_ + 1));
 
     inoze = nnoze = 0;
@@ -1481,11 +1481,13 @@ void NC_AllocateSDTmtxsSLFMM
         for(j=0; j<state().numIntegrationPointsUnitSphere_; j++)
         { checkpoint(); 
             state().irowtmtx[inoze++] = nnoze;
+            if (j != 0) { nnoze += state().clustarry[i].NumOfDOFs; continue; }
+            int compactT = nnoze/state().numIntegrationPointsUnitSphere_;
             for(k=0; k<state().clustarry[i].NumOfEl; k++)
             { checkpoint(); 
                 k1 = state().clustarry[i].NumsOfEl[k];
-                state().jcoltmtx[nnoze++] = state().jelist[k1][0];
-                if(idfs == 2) state().jcoltmtx[nnoze++] = state().jelist[k1][1];
+                state().jcoltmtx[compactT++] = state().jelist[k1][0]; ++nnoze;
+                if(idfs == 2) { state().jcoltmtx[compactT++] = state().jelist[k1][1]; ++nnoze; }
             }
         }
     }
@@ -1497,12 +1499,12 @@ void NC_AllocateSDTmtxsSLFMM
     nnonzerdmtx = 0; 
     for(i=0; i<state().numOriginalClusters_; i++)
     { checkpoint(); 
-        nnonzerdmtx += state().clustarry[i].NumFarClus;
+        nnonzerdmtx = index_sum(nnonzerdmtx,state().clustarry[i].NumFarClus);
     }
-    nnonzerdmtx *= state().numIntegrationPointsUnitSphere_;
+    nnonzerdmtx = index_product(nnonzerdmtx,state().numIntegrationPointsUnitSphere_);
 
     
-    state().dmtxlev[0].jcolDmxLv = allocate_array<int>((nnonzerdmtx));
+    state().dmtxlev[0].jcolDmxLv = nullptr;
     state().dmtxlev[0].irowDmxLv = allocate_array<int>((nrowdmtx + 1));
 
     irowd = nnze = 0;
@@ -1511,8 +1513,7 @@ void NC_AllocateSDTmtxsSLFMM
         for(k=0; k<state().numIntegrationPointsUnitSphere_; k++)
         { checkpoint(); 
             state().dmtxlev[0].irowDmxLv[irowd++] =  nnze;
-            for(j=0; j<state().clustarry[i].NumFarClus; j++)
-                state().dmtxlev[0].jcolDmxLv[nnze++] = state().clustarry[i].NumsFarClus[j]*state().numIntegrationPointsUnitSphere_ + k;
+            nnze += state().clustarry[i].NumFarClus;
         }
     }
     state().dmtxlev[0].irowDmxLv[irowd] =  nnze;
@@ -1540,7 +1541,7 @@ void NC_AllocateSDTmtxsSLFMM
     for(i=0; i<state().numRowsOfCoefficientMatrix_; i++) if(nuclusrow[i] >= 0) nnonzersmtx += state().numIntegrationPointsUnitSphere_;
 
     
-    state().jcolsmtx = allocate_array<int>((nnonzersmtx));
+    state().jcolsmtx = allocate_array<int>((state().numRowsOfCoefficientMatrix_));
     state().irowsmtx = allocate_array<int>((state().numRowsOfCoefficientMatrix_ + 1));
 
     
@@ -1551,7 +1552,7 @@ void NC_AllocateSDTmtxsSLFMM
         if(nuclusrow[i] >= 0)
         {
             kcol = state().numIntegrationPointsUnitSphere_*nuclusrow[i];
-            for(j=0; j<state().numIntegrationPointsUnitSphere_; j++) state().jcolsmtx[itr++] = kcol++;
+            state().jcolsmtx[i] = kcol-itr; itr += state().numIntegrationPointsUnitSphere_;
         }
     }
     state().irowsmtx[state().numRowsOfCoefficientMatrix_] = itr;
@@ -1650,9 +1651,10 @@ void NC_AllocateTmtxMLFMM
 			j += state().clulevarry[nlv].ClastArLv[i].NumOfDOFs;
 
 		}
-		state().tmtxlev[nlv].nEntriesT = j*state().clulevarry[nlv].nPoinSpheLv;
+		state().tmtxlev[nlv].nEntriesT = index_product(j,state().clulevarry[nlv].nPoinSpheLv);
 		state().tmtxlev[nlv].nRowsT = state().clulevarry[nlv].nClustSLv*state().clulevarry[nlv].nPoinSpheLv;
 
+		if(runtime->compactFar){state().tmtxlev[nlv].jcolTmxLv=nullptr;state().tmtxlev[nlv].irowTmxLv=nullptr;continue;}
 		state().tmtxlev[nlv].jcolTmxLv = allocate_array<int>((state().tmtxlev[nlv].nEntriesT));
 		state().tmtxlev[nlv].irowTmxLv = allocate_array<int>((state().tmtxlev[nlv].nRowsT + 1));
 
@@ -1684,6 +1686,7 @@ void NC_AllocateDmtxMLFMM
     int i, j, k, nnze, irowd, nlv, nrosdmtx, nnonzerdmtx;
 
     Vector<int> nclufar(state().numOriginalClusters_);
+    index_product(state().numOriginalClusters_,state().numOriginalReflectedClusters_);
     Matrix<int> nuclfar(state().numOriginalClusters_, state().numOriginalReflectedClusters_);
 
     
@@ -1741,9 +1744,10 @@ void NC_AllocateDmtxMLFMM
 
         nrosdmtx = state().clulevarry[nlv].nClustOLv*state().clulevarry[nlv].nPoinSpheLv;
         nnonzerdmtx = 0;
-        for(i=0; i<state().clulevarry[nlv].nClustOLv; i++) nnonzerdmtx += nclufar[i];
-        nnonzerdmtx *= state().clulevarry[nlv].nPoinSpheLv;
+        for(i=0; i<state().clulevarry[nlv].nClustOLv; i++) nnonzerdmtx = index_sum(nnonzerdmtx,nclufar[i]);
+        nnonzerdmtx = index_product(nnonzerdmtx,state().clulevarry[nlv].nPoinSpheLv);
 
+        if(runtime->compactFar){state().dmtxlev[nlv].jcolDmxLv=nullptr;state().dmtxlev[nlv].irowDmxLv=nullptr;state().dmtxlev[nlv].nRowsD=nrosdmtx;state().dmtxlev[nlv].nEntriesD=nnonzerdmtx;continue;}
         state().dmtxlev[nlv].jcolDmxLv = allocate_array<int>((nnonzerdmtx));
         state().dmtxlev[nlv].irowDmxLv = allocate_array<int>((nrosdmtx + 1));
 
@@ -1801,6 +1805,7 @@ void NC_AllocateSmtxMLFMM
 		}
 
 		
+		if(runtime->compactFar){state().smtxlev[nlv].jcolSmxLv=nullptr;state().smtxlev[nlv].irowSmxLv=nullptr;continue;}
 		state().smtxlev[nlv].jcolSmxLv = allocate_array<int>((state().smtxlev[nlv].nEntriesS));
 		state().smtxlev[nlv].irowSmxLv = allocate_array<int>((state().numRowsOfCoefficientMatrix_ + 1));
 
@@ -1826,94 +1831,76 @@ void NC_AllocateNmtx
 	ofstream& NCout
  )
 {
-    int i, j, k, neli, nelij, nel0, nori_clu;
-    Vector<bool> bneacluo(state().numOriginalClusters_);
 
-    
-    state().numNonZeroEntries_ = 0;
-    for(i=0; i<state().numOriginalClusters_; i++)
-    { checkpoint(); 
-        neli = state().ClustArray[i].NumOfDOFs;
-        bneacluo = false;
-        for(j=0; j<state().ClustArray[i].NumNeaClus; j++)
-        { checkpoint(); 
-            nori_clu = state().ClustArray[state().ClustArray[i].NumsNeaClus[j]].OriClust;
-            if(!bneacluo[nori_clu]) bneacluo[nori_clu] = true;
-        }
-        nelij = 0;
-        for(j=0; j<state().numOriginalClusters_; j++) if(bneacluo[j]) nelij += state().ClustArray[j].NumOfDOFs;
-        state().numNonZeroEntries_ += neli*nelij;
+
+
+Vector<int> starts(state().numOriginalClusters_ + 1, 0);
+Vector<bool> adjacent(state().numOriginalClusters_);
+auto mark = [&](int cluster) {
+    adjacent = false;
+    const auto &c = state().ClustArray[cluster];
+    for (int k=0; k<c.NumNeaClus; ++k) { checkpoint(); 
+        adjacent[state().ClustArray[c.NumsNeaClus[k]].OriClust] = true;
     }
-
-
-    state().jcolnea = allocate_array<int>((state().numNonZeroEntries_));
-    state().irownea = allocate_array<int>((state().numRowsOfCoefficientMatrix_ + 1));
-    int ij, ine, ij0, ij1, ijk, idfs;
-
-    
-    state().boolComputeTVector_ = false;
-    for(i=0; i<state().numOriginalReflectedClusters_; i++)
-    { checkpoint(); 
-        nel0 = state().ClustArray[i].NumsOfEl[0];
-	
-	
-	if( state().ClustArray[i].listElementPropertyEl == 0 && (state().ibval[nel0] < 3 ) )
-        {
-            state().boolComputeTVector_ = true;
-            break;
-        }
+};
+for (int c=0; c<state().numOriginalClusters_; ++c) { checkpoint(); 
+    mark(c);
+    int width = 0;
+    for (int j=0; j<state().numOriginalClusters_; ++j) { checkpoint(); 
+        if (adjacent[j]) width += state().ClustArray[j].NumOfDOFs;
     }
-
+    if (width > INT_MAX - starts[c]) throw Failure(3,"Near field column count exceeds limit");
+    starts[c+1] = starts[c]+width;
+}
+state().jcolnea = allocate_array<int>((starts[state().numOriginalClusters_]));
+state().irownea = allocate_array<int>((state().numRowsOfCoefficientMatrix_+1));
+state().nearColumnBias = allocate_array<int>((state().numRowsOfCoefficientMatrix_));
+std::fill_n(state().nearColumnBias,state().numRowsOfCoefficientMatrix_,-1);
+for (int c=0; c<state().numOriginalClusters_; ++c) { checkpoint(); 
+    mark(c);
+    int dst=starts[c];
     
     
-    
-    Matrix<bool> nuclus(state().numRowsOfCoefficientMatrix_, state().numOriginalClusters_, false);
-
-    for(i=0; i<state().numOriginalClusters_; i++)
-    { checkpoint(); 
-        ine = state().ClustArray[i].NumNeaClus;
-        idfs = state().ClustArray[i].NDOFsPeEl;
-        for(j=0; j<state().ClustArray[i].NumOfEl; j++)
-        { checkpoint(); 
-            ij = state().ClustArray[i].NumsOfEl[j];
-            ij0 = state().jelist[ij][0];
-            for(k=0; k<ine; k++)
-            { checkpoint(); 
-                nori_clu = state().ClustArray[state().ClustArray[i].NumsNeaClus[k]].OriClust;
-                if(!nuclus(ij0, nori_clu)) nuclus(ij0, nori_clu) =  true;
-            }
-            if(idfs == 2)
-            {
-                ij1 = state().jelist[ij][1];
-                for(k=0; k<ine; k++)
-                { checkpoint(); 
-                    nori_clu = state().ClustArray[state().ClustArray[i].NumsNeaClus[k]].OriClust;
-                    if(!nuclus(ij1, nori_clu)) nuclus(ij1, nori_clu) =  true;
-                }
+    for (int j=0; j<state().numOriginalClusters_; ++j) { checkpoint(); 
+        if (!adjacent[j]) continue;
+        const auto &n=state().ClustArray[j];
+        for (int k=0; k<n.NumOfEl; ++k) { checkpoint(); 
+            const int el=n.NumsOfEl[k];
+            for (int d=0; d<n.NDOFsPeEl; ++d) { checkpoint(); 
+                if (dst >= starts[c+1]) throw Failure(1,"Invalid cluster DOF count");
+                state().jcolnea[dst++]=state().jelist[el][d];
             }
         }
     }
-
-    ijk = 0;
-    for(i=0; i<state().numRowsOfCoefficientMatrix_; i++)
-    { checkpoint(); 
-        state().irownea[i] = ijk;
-        for(j=0; j<state().numOriginalClusters_; j++)
-        { checkpoint(); 
-            if(!nuclus(i, j)) continue;
-            for(k=0; k<state().ClustArray[j].NumOfEl; k++)
-            { checkpoint(); 
-                ij0 = state().ClustArray[j].NumsOfEl[k];
-                state().jcolnea[ijk++] = state().jelist[ij0][0];
-                if(state().ClustArray[j].NDOFsPeEl == 2) state().jcolnea[ijk++] = state().jelist[ij0][1];
-            }
+    if (dst != starts[c+1]) throw Failure(1,"Invalid near field column count");
+    const auto &owner=state().ClustArray[c];
+    for (int k=0; k<owner.NumOfEl; ++k) { checkpoint(); 
+        for (int d=0; d<owner.NDOFsPeEl; ++d) { checkpoint(); 
+            const int row=state().jelist[owner.NumsOfEl[k]][d];
+            if (row<0 || row>=state().numRowsOfCoefficientMatrix_ || state().nearColumnBias[row]!=-1)
+                throw Failure(1,"Invalid near field row owner");
+            state().nearColumnBias[row]=c;
         }
     }
-    state().irownea[i] = ijk;
+}
+state().numNonZeroEntries_=0;
+for (int row=0; row<state().numRowsOfCoefficientMatrix_; ++row) { checkpoint(); 
+    const int c=state().nearColumnBias[row];
+    if (c<0) throw Failure(1,"Missing near field row owner");
+    state().irownea[row]=state().numNonZeroEntries_;
+    state().nearColumnBias[row]=starts[c]-state().numNonZeroEntries_;
+    const int width=starts[c+1]-starts[c];
+    if (width > INT_MAX-state().numNonZeroEntries_) throw Failure(3,"Near field exceeds solver dimensions");
+    state().numNonZeroEntries_+=width;
+}
+state().irownea[state().numRowsOfCoefficientMatrix_]=state().numNonZeroEntries_;
+state().boolComputeTVector_=false;
+for (int c=0; c<state().numOriginalReflectedClusters_; ++c) { checkpoint(); 
+    if (state().ClustArray[c].listElementPropertyEl==0 && state().ibval[state().ClustArray[c].NumsOfEl[0]]<3) {
+        state().boolComputeTVector_=true; break;
+    }
+}
 
-    if(ijk != state().numNonZeroEntries_)
-        NC_Error_Exit_2(NCout, "ijk must equal to state().numNonZeroEntries_!", "ijk = ", ijk,
-                        "state().numNonZeroEntries_ = ", state().numNonZeroEntries_);
 }
 
 
@@ -2036,7 +2023,7 @@ void NC_DeleteArrays(const int& imultpol, const int& nlevmlfm, const int& ifdelN
 
 	if(imultpol) 
 	{
-		release_array(state().jcolnea);
+		release_array(state().nearColumnBias); release_array(state().jcolnea);
 		release_array(state().irownea);
 	}
 

@@ -1,4 +1,7 @@
 #include "SdaHrtfProject.h"
+#include "SdaHrtfSolver.h"
+#include "SdaHrtfMeshInternal.hpp"
+#include "MeshOpt/meshoptimizer.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,6 +16,22 @@
 #include <vector>
 namespace {
 namespace fs=std::filesystem;
+constexpr size_t nativeDimensionLimit=20000;
+constexpr uint64_t MiB=1024ull*1024;
+constexpr uint64_t maxResponseBytes=16*MiB;
+// Bounds for the generated (not imported) archive. Foundation emits unwrapped,
+// unescaped base64 per direction; include both JSON records, SHA and header.
+// zlib default window/memLevel deflateBound plus the gzip wrapper/trailer.
+bool automaticGridFits(size_t vertices,size_t faces,int az,int el,int bins,uint64_t budget,uint64_t headroom) {
+ const size_t rings=size_t(az)*(el-1), dirs=rings+2;
+ if(dirs>nativeDimensionLimit-vertices || 2*rings>nativeDimensionLimit-faces)return false;
+ const uint64_t perDirection=4ull*bins*sizeof(float), samples=dirs*perDirection;
+ const uint64_t pressure=dirs*4ull*bins*sizeof(double);
+ const uint64_t json=16*1024+dirs*(4*((perDirection+2)/3)+512);
+ const uint64_t gzip=json+(json>>12)+(json>>14)+(json>>25)+32;
+ return samples<=maxResponseBytes && json<=24*MiB && gzip<=16*MiB &&
+        pressure<=64*MiB && pressure+4*MiB<=budget && pressure+6*samples+128*MiB<=headroom;
+}
 constexpr double pi=3.14159265358979323846;
 struct Failure:std::runtime_error { int code; Failure(int c,const char *s):std::runtime_error(s),code(c){} };
 using V=std::array<double,3>;
@@ -68,22 +87,23 @@ struct Build {
   require(reached.size()==boundary.size() && vertices.size()+count==edges.size()+1,"Ear source patch must be one disk without holes");
   return p;
  }
- SdaHrtfProjectResult run(const char *root) {
+ SdaHrtfProjectResult run(const char *root,const SdaHrtfMeshView *review=nullptr,size_t measuredFaces=0,double *deviation=nullptr) {
   check();require(root && *root,"Missing private acoustic job directory");
-  if(in.mesh.vertex_count>20000 || in.mesh.triangle_count>20000)throw Failure(3,"Measured mesh exceeds embedded solver dimensions; no automatic detail removal");
+  if(in.mesh.vertex_count>nativeDimensionLimit || in.mesh.triangle_count>nativeDimensionLimit)throw Failure(3,"Measured mesh exceeds embedded solver dimensions; no automatic detail removal");
   require(in.bins>=16 && in.bins<=2048 && (in.bins&(in.bins-1))==0,"Invalid uniform FFT frequency count");
   require(in.azimuth_steps>=8 && in.azimuth_steps<=64 && in.azimuth_steps%8==0 && in.elevation_steps>=4 && in.elevation_steps<=32 && in.elevation_steps%2==0,"Invalid full sphere evaluation grid");
   const size_t directions=size_t(in.azimuth_steps)*(in.elevation_steps-1)+2;
-  if(directions<32 || directions>2048 || directions*4*in.bins*sizeof(float)>16*1024*1024)throw Failure(3,"Evaluation grid exceeds response archive bounds");
+  if(directions<32 || directions>2048 || directions*4*in.bins*sizeof(float)>maxResponseBytes)throw Failure(3,"Evaluation grid exceeds response archive bounds");
   const size_t allGridTriangles=2*size_t(in.azimuth_steps)*(in.elevation_steps-1);
-  if(in.mesh.vertex_count+directions>20000 || in.mesh.triangle_count+allGridTriangles>20000)throw Failure(3,"Mesh plus evaluation grid exceeds native solver dimensions");
+  if(in.mesh.vertex_count+directions>nativeDimensionLimit || in.mesh.triangle_count+allGridTriangles>nativeDimensionLimit)throw Failure(3,"Mesh plus evaluation grid exceeds native solver dimensions");
   require(std::isfinite(in.reference_radius) && in.reference_radius>=.25 && in.reference_radius<=10,"Invalid common evaluation radius");
   for(int i=0;i<3;++i){require(std::isfinite(in.front[i]) && std::isfinite(in.up[i]),"Nonfinite head coordinate frame");front[i]=in.front[i];up[i]=in.up[i];}
   require(std::abs(norm(front)-1)<1e-6 && std::abs(norm(up)-1)<1e-6 && std::abs(dot(front,up))<1e-6,"Head axes must be measured, unit and orthogonal");
   left=cross(up,front);
-  auto screened=sda_hrtf_screen_head_mesh(in.mesh,cancelled,context);
-  if(screened.code)throw Failure(screened.code,screened.message);
+  if(!review){auto screened=sda_hrtf_screen_head_mesh(in.mesh,cancelled,context);if(screened.code)throw Failure(screened.code,screened.message);}
   Patch l=patch(in.left_faces,in.left_face_count),r=patch(in.right_faces,in.right_face_count);
+  if(review){double ears[]={l.center[0],l.center[1],l.center[2],r.center[0],r.center[1],r.center[2]};
+   auto screened=sda_screen_prepared_surface(in.mesh,measuredFaces,*review,ears,*deviation,cancelled,context);if(screened.code)throw Failure(screened.code,screened.message);}
   std::set<uint32_t> lfaces(l.faces.begin(),l.faces.end());
   for(auto face:r.faces)require(!lfaces.count(face),"Left and right ear source patches overlap");
   V separation=sub(l.center,r.center);double distance=norm(separation);
@@ -122,7 +142,9 @@ struct Build {
      s<<"RETU\nPOST PROCESS\nEND\n";
     });
    }
-   file("sda-project.json",[&](auto &s){s<<"{\"schema\":1,\"acousticAccuracyValidated\":false,\"sampleRate\":48000,\"bins\":"<<in.bins<<",\"azimuthSteps\":"<<az<<",\"elevationSteps\":"<<in.elevation_steps<<",\"directions\":"<<directions<<",\"referenceRadius\":"<<in.reference_radius<<",\"sourceAreas\":["<<l.area<<','<<r.area<<"],\"coordinateFrame\":\"x-front-y-left-z-up\"}\n";});
+   file("sda-project.json",[&](auto &s){s<<"{\"schema\":1,\"acousticAccuracyValidated\":false,\"sampleRate\":48000,\"bins\":"<<in.bins<<",\"azimuthSteps\":"<<az<<",\"elevationSteps\":"<<in.elevation_steps<<",\"directions\":"<<directions<<",\"referenceRadius\":"<<in.reference_radius<<",\"sourceAreas\":["<<l.area<<','<<r.area<<"],\"coordinateFrame\":\"x-front-y-left-z-up\"";
+    if(review)s<<",\"measuredFaces\":"<<measuredFaces<<",\"boundaryFaces\":"<<in.mesh.triangle_count-measuredFaces<<",\"boundaryModel\":\""<<(measuredFaces==in.mesh.triangle_count?"none":"posterior-computational-baffle")<<"\",\"maxReviewDeviationM\":"<<*deviation;
+    s<<"}\n";});
    check();require(!exists(target),"Acoustic project already exists");fs::rename(stage,target);committed=true;
   } catch(...) {if(!committed){std::error_code error;fs::remove_all(stage,error);}throw;}
   reply.directions=directions;reply.source_areas[0]=l.area;reply.source_areas[1]=r.area;
@@ -130,6 +152,35 @@ struct Build {
   std::snprintf(reply.message,sizeof reply.message,"Acoustic input prepared; ear measurement accuracy and frequency convergence remain unqualified");return reply;
  }
 };
+#include "SdaHrtfReviewPreparation.hpp"
+}
+extern "C" SdaHrtfReviewProjectResult sda_hrtf_prepare_review_project(const char *root,SdaHrtfProjectInput review,uint64_t room,uint64_t physical,SdaHrtfMeshCancelled cancelled,void *context){
+ SdaHrtfReviewProjectResult result{};
+ try{ReviewPreparation work{review,cancelled,context};work.prepare(root,room,physical,result);}
+ catch(const Failure &e){result.project.code=e.code;std::snprintf(result.project.message,sizeof result.project.message,"%s",e.what());}
+ catch(...){result.project.code=3;std::snprintf(result.project.message,sizeof result.project.message,"Cannot prepare bounded review geometry");}
+ return result;
+}
+extern "C" SdaHrtfSamplingPlan sda_hrtf_sampling_plan(uint64_t headroom,uint64_t physical,size_t vertices,size_t triangles){
+ const auto budget=sda_hrtf_solve_budget(headroom,physical);
+ if(!budget || vertices<4 || triangles<4 || vertices>nativeDimensionLimit || triangles>nativeDimensionLimit)return {};
+ SdaHrtfSamplingPlan best{};
+ int az=16,el=8,bins=256;
+ uint64_t nextPhysical=5*1024, nextRoom=1280; // MiB, not marketing RAM or a model identifier
+ for(int rank=1;az<=64 && el<=32;++rank){
+  if(!automaticGridFits(vertices,triangles,az,el,bins,budget,headroom))break;
+  best={rank,az,el,bins,budget};
+  if(physical/MiB<nextPhysical || headroom/MiB<nextRoom)break;
+  // An admission heuristic for serial work, not a request to allocate RAM.
+  // Each refinement requires 60% more capacity on BOTH axes. At 1024 bins
+  // spend extra capacity on angular detail, not twice as many BEM solves.
+  nextPhysical=(nextPhysical*8+4)/5;
+  nextRoom=(nextRoom*8+4)/5;
+  if(bins<1024){az+=8;el+=4;bins*=2;}
+  else if(az==2*el)az+=8;
+  else el+=2;
+ }
+ return best;
 }
 extern "C" SdaHrtfProjectResult sda_hrtf_prepare_project(const char *root,SdaHrtfProjectInput input,SdaHrtfMeshCancelled cancelled,void *context){
  Build build{input,cancelled,context};

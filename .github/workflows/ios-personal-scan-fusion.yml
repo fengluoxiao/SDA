@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/ios-personal-scan-fusion.yml'
       - 'scripts/build-ios-personal-scan-fusion.sh'
+      - 'scripts/generate-embedded-numcalc.py'
+      - 'scripts/numcalc-compact-near.inc'
       - 'scripts/stage-ios-personal-scan-fusion.py'
       - 'scripts/stage-faceframe-scan.py'
       - 'scripts/test/personal-hrtf-capture-guide.swift'
@@ -14,6 +16,8 @@ on:
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadScan*.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHeadDepthCapture.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfCoordinator.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfProjectBuilder.swift'
+      - 'apps/mobile/modules/sda-core/ios/PersonalHrtfResponseBuilder.swift'
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfReview*.swift'
   workflow_dispatch:
 permissions:

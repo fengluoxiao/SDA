@@ -104,7 +104,7 @@ void NC_ComputeGlobalCoordinates
 		shfunx[3] = -s1*t2;
 		break;
 	default:
-		NC_Error_Exit_0(NCout, "number of nodes of an element must be 3 or 4!");
+		NC_Error_Exit_0(runtime->jobLog, "number of nodes of an element must be 3 or 4!");
 	}
 
 	for(i=0; i<NDIM; i++)
@@ -143,7 +143,7 @@ double NC_ComputeUnitVectorOnElement
 		shndt[3] = -shndt[0];
 		break;
 	default:
-		NC_Error_Exit_0(NCout, "number of nodes of an element must be 3 or 4!");
+		NC_Error_Exit_0(runtime->jobLog, "number of nodes of an element must be 3 or 4!");
 	}
 
 	
@@ -210,7 +210,7 @@ double NC_ReflectPointVector
 		return(reffac);
 		break;
 	default:
-			NC_Error_Exit_0(NCout, "state().numReflectionsOfElements_ must be equal to 8, 4, 2 or 1!");
+			NC_Error_Exit_0(runtime->jobLog, "state().numReflectionsOfElements_ must be equal to 8, 4, 2 or 1!");
 	}
 
 	
@@ -392,7 +392,7 @@ void NC_ReflectElement
 		return;
 		break;
 	default:
-		NC_Error_Exit_0(NCout, "state().numReflectionsOfElements_ must be equal to 8, 4, 2 or 1!");
+		NC_Error_Exit_0(runtime->jobLog, "state().numReflectionsOfElements_ must be equal to 8, 4, 2 or 1!");
 	}
 
 	
@@ -492,12 +492,12 @@ int NC_ComputeGausseanPoints
 			}
 			break;
 		default:
-			NC_Error_Exit_0(NCout, "norder must be between 1 and 7!");
+			NC_Error_Exit_0(runtime->jobLog, "norder must be between 1 and 7!");
 		} 
 		break;
 	case 4:
 
-		BLGauCooWe(NCout, norder, coordgau, weitgau);
+		BLGauCooWe(runtime->jobLog, norder, coordgau, weitgau);
 
 		ngp = 0;
 		for(i=0; i<norder; i++) for(j=0; j<norder; j++)
@@ -509,7 +509,7 @@ int NC_ComputeGausseanPoints
 		}
 		break;
 	default:
-		NC_Error_Exit_0(NCout, "inodj must be equal to 3 or 4!");
+		NC_Error_Exit_0(runtime->jobLog, "inodj must be equal to 3 or 4!");
 	} 
 
 	return ngp;

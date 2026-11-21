@@ -24,16 +24,16 @@ for p in sorted(source.rglob('*')):
     notices.append({'path':relative.as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
 assert notices,'No reconstruction dependency notices found'
 provenance=json.loads((out/'fusion-provenance.json').read_text())
-provenance.update(notices=notices,measurementOnly=True,personalGenerationReady=False)
+provenance.update(notices=notices,measurementOnly=False,experimentalGeneration=True,personalGenerationReady=False)
 (dest/'provenance.json').write_text(json.dumps(provenance,indent=2))
 Path('ios-artifacts/personal-scan-framework.json').write_text(json.dumps(provenance,indent=2))
 PY
 cat > ios-artifacts/PERSONAL-HRTF-TEST-README-zh.md <<'EOF'
-# SDA iPhone 前置 TrueDepth 测量测试版
+# SDA 前置 TrueDepth 个人声学实验版
 
 本包为未签名 arm64 IPA，最低 iOS 16.4。安装需要用户侧载签名；不是 App Store / TestFlight 包。
 
-入口：设置 → 声音增强 → 个人 HRTF · 头耳扫描 → 本机适配与档案 → 前置 TrueDepth · 测量验证。
+入口：设置 → 声音增强 → 个人 HRTF · 头耳扫描 → 本机适配与档案。选择「前置 TrueDepth · 测量验证」只进行测量；选择「扫描并生成实验档案」才进行数值求解。
 
 本包使用 FaceFrame（Apache-2.0）固定版本 `122fdc04ae2070991c82bf31d2c3c07b7f158d0b` 的深度配准和左右侧覆盖代码。仅一个前置 TrueDepth 会话，不使用后置相机、录像、云端、GNM 头模或推测的耳廓。
 
@@ -43,7 +43,7 @@ FaceFrame 在头部坐标系中融合深度。StandardCyborg / PoissonRecon 根�
 
 失败面板可分别导出诊断日志和几何文件。日志不含相机图像、坐标或设备标识。若有可读但未通过几何检查的候选网格，可导出标明未验证的 PLY；没有可读网格时提供实测点云（带法线、无三角面）。在成功的模型预览页可导出屏幕上正在检查的实测网格；坐标单位为米。几何文件含个人头耳形状，只在用户点击导出并选择分享目标时交付。
 
-范围：这是用于真实设备验证的测量包。尚未证明耳部细节的声学精度，不会生成或启用个人 HRTF。关闭结果页后不保留扫描，应用中断遗留的共享临时文件下次启动清理。已有 .phrtf 档案仍可导入。
+实验生成使用实测双耳、正脸及明确标记的后方刚性计算边界。没有扫描后脑，不用后置摄像头。前脸或耳廓有未测缺口、几何检查失败、温度或内存不适合时停止。前台计算可能很久；只有完成双耳全频点、档案校验且本人点选启用后才替换档案。计算结束删除工作文件，异常退出下次启动清理。尚未验证真人声学精度或实机耗时。
 
 包内带有重建框架、Metal 资源与许可声明。personal-scan-package-audit.json 记录实际 IPA 的资源审计，不代表已经通过真人采集或听感验收。
 EOF

@@ -8,6 +8,8 @@ assets/hrtf/**/*.json text eol=lf
 assets/hrtf/**/*.f32 binary
 
 # Signed catalog package bytes must not change with checkout line endings.
+apps/mobile/modules/sda-core/ios/PersonalHrtfNative/MeshOpt/* text eol=lf
+apps/mobile/modules/sda-core/ios/Licenses/Meshoptimizer-MIT.txt text eol=lf
 apps/head-tracking-driver/package/* -text
 
 # Fixed reference filter bytes and provenance must survive every host checkout.

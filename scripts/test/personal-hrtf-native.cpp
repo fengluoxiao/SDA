@@ -67,6 +67,8 @@ try{
  require(sda_hrtf_recommended_budget(2ull*1024*mib,6ull*1024*mib)==768*mib,"6 GiB device numerical cap");
  require(sda_hrtf_recommended_budget(2ull*1024*mib,3ull*1024*mib)==384*mib,"Smaller device numerical cap");
  require(sda_hrtf_recommended_budget(UINT64_MAX,UINT64_MAX)==768*mib,"Budget arithmetic must not overflow");
+ require(sda_hrtf_solve_budget(0,16*1024*mib)==0 && !sda_hrtf_create_for_resources(root.string().c_str(),0,16*1024*mib),"Unknown app headroom must prevent acoustic work");
+ require(sda_hrtf_solve_budget(768*mib,32*1024*mib)==(512*mib)/5*3 && sda_hrtf_solve_budget(UINT64_MAX,UINT64_MAX)==4096*mib,"Large-memory jobs must still respect headroom and saturation");
  require(!sda_hrtf_solver_create(root.string().c_str(),1024ull*mib+1),"Reject budget above absolute cap");
  uint64_t peak=0;auto j=job(root);
  std::cerr<<"Testing pressure-to-HRIR conversion"<<std::endl;
@@ -87,6 +89,17 @@ try{
   auto r=sda_hrtf_solver_run(j.get(),("NumCalc/source_"+std::to_string(ear)).c_str(),index,index,0,nullptr,nullptr);
   check_result(r,0,"Higher-frequency FMM solve");compare(root,ear,frequency);peak=std::max(peak,r.peak_array_bytes);
  }
+ // Two contiguous frequencies reuse a cluster tree. Force the bounded path
+ // using only its public allocation budget; verify it ran for both ears.
+ auto compact=job(root,48*mib);
+ for(int ear:{1,2}){
+  auto dir="NumCalc/source_"+std::to_string(ear);
+  auto r=sda_hrtf_solver_run(compact.get(),dir.c_str(),59,60,0,nullptr,nullptr);check_result(r,0,"Contiguous bounded reciprocal solves");
+  std::ifstream trace(root/dir/"NC59-60.out");std::string log{std::istreambuf_iterator<char>(trace),{}};
+  require(log.find("Bounded reciprocal ML-FMM at 6000 Hz")!=std::string::npos,"Bounded path was not exercised");
+  auto a=pressure(root/dir/"be.out/be.60/pEvalGrid"),b=pressure(root/("expected/ear"+std::to_string(ear)+"-6000hz.txt"));
+  for(size_t i=0;i<a.size();i+=2){double ref=std::hypot(b[i],b[i+1]);require(std::hypot(a[i]-b[i],a[i+1]-b[i+1])<=1e-10+.001*ref,"Bounded bilateral pressure mismatch");}
+ }
  std::cerr<<"Testing memory exhaustion and recovery"<<std::endl;
  auto small=job(root,1024*1024);
  check_result(sda_hrtf_solver_run(small.get(),"NumCalc/source_1",1,1,0,nullptr,nullptr),3,"Memory budget");
@@ -103,6 +116,7 @@ try{
  check_result(sda_hrtf_solver_run(j.get(),"oversized-input",1,1,0,nullptr,nullptr),3,"Bound mesh products before signed indexing overflow");
  std::cerr<<"Testing cancellation"<<std::endl;
  auto cancelled=job(root);sda_hrtf_solver_cancel(cancelled.get());
+ check_result(sda_hrtf_check_frequency_capacity(cancelled.get(),"NumCalc/source_1",60),2,"Cancelled capacity preflight");
  check_result(sda_hrtf_solver_run(cancelled.get(),"NumCalc/source_1",1,1,0,nullptr,nullptr),2,"Cancellation before run");
  auto during=job(root);
  auto cancel=[](void *p,int,int){sda_hrtf_solver_cancel(static_cast<SdaHrtfSolver*>(p));};

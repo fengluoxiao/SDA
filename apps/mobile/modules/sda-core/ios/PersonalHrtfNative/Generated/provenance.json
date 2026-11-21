@@ -2,10 +2,12 @@
   "upstreamCommit": "e45d0436a6fbeca3db13828cbae23ca109225be3",
   "licence": "EUPL-1.2",
   "generatedBy": "scripts/generate-embedded-numcalc.py",
-  "jobStateFields": 179,
+  "jobStateFields": 180,
   "changes": [
     "private per-invocation state",
     "tracked native arrays",
+    "shared near-field and compact single-level FMM indices",
+    "bounded reciprocal ML-FMM for rigid triangles",
     "in-process errors and cancellation",
     "job-relative file IO",
     "no subprocess or cwd changes"

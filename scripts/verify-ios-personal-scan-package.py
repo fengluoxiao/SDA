@@ -19,7 +19,8 @@ with zipfile.ZipFile(ipa)as z:
     notice=app+'SdaCoreAssets.bundle/Licenses/StandardCyborg/provenance.json'
     provenance=json.loads(z.read(notice))
     assert provenance['commit']=='8c3bc698944ec41edaa6f627db15a6573e8e2af2'
-    assert provenance['measurementOnly'] and not provenance['personalGenerationReady']
+    experimental=provenance.get('experimentalGeneration') is True
+    assert provenance['measurementOnly']==(not experimental) and not provenance['personalGenerationReady']
     assert len(provenance['notices'])>=1
     base=notice.rsplit('/',1)[0]+'/'
     for row in provenance['notices']:
@@ -46,6 +47,10 @@ with zipfile.ZipFile(ipa)as z:
         binary=Path(tmp)/'SDA';runtime=z.read(app+info['CFBundleExecutable']);binary.write_bytes(runtime)
         for title in ['1 / 3  扫描正脸','2 / 3  扫描左耳','3 / 3  扫描右耳']:
             assert title.encode('utf8') in runtime,'Guided capture stage absent from compiled device executable: '+title
+        if experimental:
+            assert b'scanExperimental' in runtime and b'scanExperimental' in bundle
+            assert b'posterior-computational-baffle' in runtime and b'Bounded reciprocal ML-FMM' in runtime
+            assert b'Arseny Kapoulkine' in z.read(app+'SdaCoreAssets.bundle/Licenses/Meshoptimizer-MIT.txt')
         for cue in ['手机不动，鼻尖慢慢转向自己的右肩，让镜头看到左耳。','左耳已记录。手机不动，鼻尖经过正面转向自己的左肩，让镜头看到右耳。','FaceFrame · 双耳侧面已记录','双耳已记录，但两次重建都未能连成完整的表面边缘。本次没有生成个人档案，请重新扫描。']:
             assert cue.encode() in runtime,'Anatomical ear guide absent: '+cue
         assert b'Incomplete surface edge' in z.read(fw+'StandardCyborgFusion'), 'Missing native Poisson edge-error classification'
@@ -60,7 +65,7 @@ with zipfile.ZipFile(ipa)as z:
     report={'ipa':ipa.name,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest(),
       'frontCameraPermission':True,'guidedCaptureEmbedded':True,'reconstructionFrameworkEmbedded':True,'metalResourcesEmbedded':True,'earDetectorEmbedded':True,
       'scanEngine':'FaceFrame','faceFrameRevision':faceframe['commit'],'scanDiagnosticsAndPLYExports':True,
-      'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':True,
+      'zipArchiveNoticesVerified':zip_verified,'noticesVerified':len(provenance['notices']),'nativeEntryInBundle':True,'measurementOnly':not experimental,'experimentalGeneration':experimental,
       'personalGenerationReady':False,'deviceScanTested':False,'requiresUserSigning':True}
     ipa.with_name('personal-scan-package-audit.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))

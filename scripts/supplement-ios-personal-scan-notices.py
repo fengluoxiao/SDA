@@ -8,13 +8,15 @@ audit=json.loads((source/'personal-scan-package-audit.json').read_text())
 assert hashlib.sha256(base.read_bytes()).hexdigest()==audit['sha256']
 assert info['sourceCommit']==os.environ['SDA_BASE_SOURCE_COMMIT']
 assert info['nativeDispatchStackRegression']['passed']
-assert audit['measurementOnly'] and not audit['personalGenerationReady']
+experimental=audit.get('experimentalGeneration') is True
+assert audit['measurementOnly']==(not experimental) and not audit['personalGenerationReady']
 license_root=Path('apps/mobile/modules/sda-core/ios/Licenses/ZipArchive')
 notice=json.loads((license_root/'provenance.json').read_text())
 assert notice['commit']=='df35718ea19a94e015b91dc4881dee028ce4cdba'
 for name,digest in notice['files'].items():
  assert hashlib.sha256((license_root/name).read_bytes()).hexdigest()==digest
-ipa=out/('SDA-TrueDepth-measurement-'+info['appVersion']+'-build'+info['appBuildNumber']+'-unsigned-arm64.ipa')
+kind='experimental-hrtf' if experimental else 'measurement'
+ipa=out/('SDA-TrueDepth-'+kind+'-'+info['appVersion']+'-build'+info['appBuildNumber']+'-unsigned-arm64.ipa')
 shutil.copy2(base,ipa)
 with zipfile.ZipFile(base)as z:
  assert 'Payload/SDA.app/_CodeSignature/CodeResources'not in z.namelist(),'Only unsigned app copies may receive notices'

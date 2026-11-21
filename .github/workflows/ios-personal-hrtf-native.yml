@@ -14,6 +14,7 @@ on:
       - 'apps/mobile/modules/sda-core/ios/PersonalHrtfProjectBuilder.swift'
       - 'apps/mobile/modules/sda-core/ios/SdaBridge.h'
       - 'scripts/generate-embedded-numcalc.py'
+      - 'scripts/numcalc-compact-near.inc'
       - 'scripts/check-ios-personal-hrtf-native.sh'
       - 'scripts/test/personal-hrtf-native.cpp'
       - 'scripts/test/personal-hrtf-mesh.cpp'
