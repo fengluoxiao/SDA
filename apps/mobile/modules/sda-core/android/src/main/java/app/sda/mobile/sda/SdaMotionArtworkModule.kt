@@ -12,6 +12,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import com.facebook.react.bridge.LifecycleEventListener
+import com.facebook.react.bridge.ReactContext
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -35,7 +36,7 @@ class SdaMotionArtworkModule: Module() {
 class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(context,appContext),TextureView.SurfaceTextureListener,LifecycleEventListener {
  override val shouldUseAndroidLayout=true
  private val onStatus by EventDispatcher()
- private val react=appContext.reactContext
+ private val react=appContext.reactContext as? ReactContext
  private val main=Handler(Looper.getMainLooper())
  private val texture=TextureView(context)
  private var source=""

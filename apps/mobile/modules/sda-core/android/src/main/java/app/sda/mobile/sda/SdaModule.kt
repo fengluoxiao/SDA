@@ -1122,7 +1122,7 @@ class SdaModule : Module() {
             .put("direct", preferences.getBoolean("direct", true))
             .put("appleLoudnessEnabled", preferences.getBoolean("appleLoudnessEnabled", false))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
-            .put("listeningProfile", preferences.getString("listeningProfile", "{"rear":1,"height":1,"bassDb":0,"trebleDb":0}"))
+            .put("listeningProfile", preferences.getString("listeningProfile", "{\"rear\":1,\"height\":1,\"bassDb\":0,\"trebleDb\":0}"))
             .put("spatialEnhancementEnabled", preferences.getBoolean("spatialEnhancementEnabled", false))
             .put("spatialCueDb", spatialCueDb())
             .put("alacStereoUpmix", preferences.getBoolean("alacStereoUpmix", false))
