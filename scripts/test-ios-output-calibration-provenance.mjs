@@ -5,12 +5,17 @@ const match=recorder.match(/const outputMakeup=renderer\.match\((\/[^\n]+\/)\);/
 const pattern=new Function(`return ${match[1]}`)();
 const renderer=readFileSync('apps/native-renderer/src/lib.rs','utf8');
 assert.equal(Number(renderer.match(pattern)?.[1]),1.8);
-const alternate=renderer.replace(/else if self\.program_enabled && \(named_format \|\| self\.dolby_spatial_programme_seen\) \{ 1\.8 \}/,'else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 2.75 }');
+const alternate=renderer.replace(/let calibration = if named_format \|\| self\.dolby_spatial_programme_seen \{1\.8\}/,'let calibration = if named_format || self.dolby_spatial_programme_seen {2.75}');
 assert.equal(Number(alternate.match(pattern)?.[1]),2.75,'record the real ordinary calibration, not a hardcoded value or authored branch');
 assert.equal('let db = if self.authored.enabled { 7.25 } else { 0.0 };'.match(pattern),null);
 assert.match(recorder,/stereoProgrammeMakeupDb:0[,}]/,'iOS must record zero extra stereo makeup');
 assert.match(readFileSync('scripts/record-android-release.py','utf8'),/'stereoProgrammeMakeupDb': 0[,}]/,'Android must record zero extra stereo makeup');
-console.log('Provenance records immersive calibration separately from unity stereo makeup and authored overrides.');
+const offsetExtractor=recorder.match(/const appleLoudnessOffset=renderer\.match\((\/[^\n]+\/)\);/);assert(offsetExtractor);
+const offsetPattern=new Function(`return ${offsetExtractor[1]}`)();
+assert.equal(Number(renderer.match(offsetPattern)?.[1]),0.7);
+assert.equal(Number(renderer.replace('calibration + if self.apple_loudness {0.7}','calibration + if self.apple_loudness {0.9}').match(offsetPattern)?.[1]),0.9);
+assert.match(recorder,/appleLoudnessOffsetDb:Number\(appleLoudnessOffset\[1\]\)/);
+console.log('Provenance records default immersive/stereo calibration and the optional Apple offset separately.');
 
 const spatialExtractor=recorder.match(/const spatialBalanceAlgorithm=renderer\.match\((\/[^\n]+\/)\);/);
 assert(spatialExtractor,'spatial identity must come from the compiled renderer');
