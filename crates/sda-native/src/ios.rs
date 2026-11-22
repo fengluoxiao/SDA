@@ -781,7 +781,7 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
 mod apple_loudness_tests {
     use super::*;
     #[test]
-    fn apple_loudness_speaker_output_is_balance_gated_and_excludes_alac() {
+    fn apple_loudness_speaker_output_includes_alac_and_is_balance_gated() {
         for alac in [false,true] {for balance in [false,true] {for apple in [false,true] {
             let h=unsafe {sda_ios_alac_speakers_create(false)};
             {
@@ -793,7 +793,7 @@ mod apple_loudness_tests {
             unsafe {sda_ios_speakers_balance(h,balance);sda_ios_speakers_apple_loudness(h,apple);}
             let mut output=vec![0.;256*12];let frames=unsafe {sda_ios_speakers_read(h,output.as_mut_ptr(),256)};
             assert_eq!(frames,256);
-            let ratio=if balance {0.5*if apple&&!alac {10_f32.powf(0.7/20.)}else{1.}}else{1.};
+            let ratio=if balance {0.5*if apple {10_f32.powf(0.7/20.)}else{1.}}else{1.};
             assert!((output[0]-0.02*ratio).abs()<1e-7,"alac={alac} balance={balance} apple={apple}");
             unsafe {sda_ios_speakers_close(h)};
         }}}
@@ -972,7 +972,7 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
             Ok(frame) => Some(frame), Err(_) => return 0,
         }
     } else { None };
-    let selected_gain = host.target_gain * if host.apple_loudness && !alac {10_f32.powf(0.7/20.)} else {1.};
+    let selected_gain = host.target_gain * if host.apple_loudness {10_f32.powf(0.7/20.)} else {1.};
     if frames > 0 && !host.read_started {
         host.gain = if host.balance_enabled { selected_gain } else { 1.0 };
         host.read_started = true;

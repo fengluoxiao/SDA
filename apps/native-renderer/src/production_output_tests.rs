@@ -1,24 +1,24 @@
 //! Common output controls remain independent of source-group balance.
 use super::*;
 #[test]
-fn apple_loudness_adds_only_point_seven_db_with_balance_and_preserves_stereo() {
+fn apple_loudness_adds_only_point_seven_db_to_every_balanced_programme() {
     let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
-    for codec in ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm","alac","mp3","future-object-format"] {
+    for codec in ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm","alac","mp3","aac","flac","pcm","vorbis","dts","future-object-format"] {
         let immersive=["eac3","truehd","mlpa","mpegh","av3a","ac4","adm"].contains(&codec);
         let mut base=Engine::new(48000,2);let mut apple=Engine::new(48000,2);
         for e in [&mut base,&mut apple] {
             e.set_program_codec(codec.into());e.program_enabled=true;e.set_program_target(0.5,true);
-            declare_makeup_source(e,true,"");
+            declare_makeup_source(e,immersive,if immersive{""}else{"FrontLeft"});
         }
         assert!(protocol::apply_render_command(&mut apple,render_command::RenderCommand::Command(Command::SetAppleLoudness{enabled:true}),&fifo,&telemetry));
-        assert_eq!(apple.programme_output_makeup.target_db(),if immersive{2.5}else{0.});
-        let ratio=if immersive{10_f32.powf(0.7/20.)}else{1.};
+        assert_eq!(apple.programme_output_makeup.target_db(),if immersive{2.5}else{0.7});
+        let ratio=10_f32.powf(0.7/20.);
         for i in 0..2400 {let x=(i as f32*0.13).sin()*0.003;let a=base.process_final_output([x,-0.4*x]);let b=apple.process_final_output([x,-0.4*x]);
             for ear in 0..2 {assert!((a[ear]*ratio-b[ear]).abs()<2e-7,"{codec}: repeated/incorrect gain");}}
         // Disabled balance gates the option, but remembers it across transport resets.
         for balance in [false,true] {
             protocol::apply_render_command(&mut apple,render_command::RenderCommand::Command(Command::SetProgramEnabled{enabled:balance}),&fifo,&telemetry);
-            assert_eq!(apple.programme_output_makeup.target_db(),if balance&&immersive{2.5}else{0.});
+            assert_eq!(apple.programme_output_makeup.target_db(),if balance {if immersive{2.5}else{0.7}} else {0.});
         }
         apple.output_active=true;apple.paused=false;let before=apple.programme_output_makeup.gain();
         protocol::apply_render_command(&mut apple,render_command::RenderCommand::Command(Command::SetAppleLoudness{enabled:false}),&fifo,&telemetry);

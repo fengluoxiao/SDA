@@ -1016,7 +1016,7 @@ export class SdaPlayer {
       r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
       this.scheduledProgramLoudnessGainDb = undefined;
       r.setVolumeBalance(this.volumeBalanceEnabled && this.stereoBalanceEligible);
-      r.setAppleLoudness(this.appleLoudnessEnabled && !this.stereoStartupEligible && ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm"].includes(this.trackCodec ?? ""));
+      r.setAppleLoudness(this.appleLoudnessEnabled);
       r.setHeadphoneCompensation(this.headphoneProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
       r.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
@@ -1479,7 +1479,7 @@ export class SdaPlayer {
     this.appleLoudnessEnabled=enabled;
     if(this.nativeFileSession){void this.nativeFileBridge?.command({action:"configure",session:this.nativeFileSession,appleLoudness:enabled}).catch(error=>this.cb.onError?.(String(error)));return;}
     void Promise.resolve(this.nativeRendererSink?.setAppleLoudness?.(enabled)).catch(error=>this.cb.onError?.(String(error)));
-    this.renderer?.setAppleLoudness(enabled && !this.stereoStartupEligible && ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm"].includes(this.trackCodec ?? ""));
+    this.renderer?.setAppleLoudness(enabled);
   }
   setVolumeBalance(enabled: boolean): void {
     if (this.nativeFileSession) { this.volumeBalanceEnabled = enabled; void this.nativeFileBridge?.command({ action: "configure", session: this.nativeFileSession, volumeBalance: enabled }).catch(error => this.cb.onError?.(String(error))); return; }
