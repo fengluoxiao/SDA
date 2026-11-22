@@ -1,0 +1,101 @@
+name: Motion artwork CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/ios-personal-hrtf-local-20261119
+    paths:
+      - .github/workflows/motion-artwork-ci.yml
+      - apps/mobile/src/ArtworkEdgeBlend.tsx
+      - apps/mobile/src/EmbeddedMotionArtwork.tsx
+      - apps/mobile/src/motion-artwork-capability.ts
+      - apps/mobile/src/IOSPlayer.tsx
+      - apps/mobile/src/IOSNativeSettings.tsx
+      - apps/mobile/src/AndroidSettings.tsx
+      - apps/mobile/src/navigation-preferences.tsx
+      - apps/mobile/modules/sda-core/**
+      - apps/mobile/test/motion-artwork.test.mjs
+      - scripts/check-embedded-motion-artwork.sh
+      - scripts/select-apple-toolchain.py
+      - scripts/test/embedded-motion-artwork.swift
+      - scripts/test/fixtures/motion-artwork-tall.mp4
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: JavaScript contracts and mobile types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - name: Verify dynamic artwork contracts
+        run: |
+          node --test apps/mobile/test/motion-artwork.test.mjs
+          node scripts/test-navigation-preferences.mjs
+      - name: Typecheck mobile app
+        run: pnpm --filter @sda/mobile exec tsc --noEmit
+
+  ios-native:
+    name: iOS embedded artwork reader
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Apple SDK
+        run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir ios-artifacts
+      - name: Test host, device types and simulator playback
+        run: bash scripts/check-embedded-motion-artwork.sh ios-artifacts/motion-artwork-tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: motion-artwork-ios-tests
+          path: ios-artifacts/motion-artwork-tests
+          retention-days: 7
+
+  android-native:
+    name: Android artwork module compile
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+      - name: Configure Android SDK
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > apps/mobile/android/local.properties
+      - name: Compile Android artwork module
+        run: |
+          rm -rf apps/mobile/android/build/generated/autolinking apps/mobile/android/app/build/generated/autolinking
+          chmod +x ./gradlew
+          ./gradlew :sda-core:compileReleaseKotlin --stacktrace
+        working-directory: apps/mobile/android
