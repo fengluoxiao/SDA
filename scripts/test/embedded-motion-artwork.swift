@@ -20,12 +20,19 @@ import CryptoKit
   let square=motion("square",Data([0,0,0,8])+Data("ftyp".utf8))
   func save(_ name:String,_ bytes:Data)throws->URL {let file=root.appendingPathComponent(name);try bytes.write(to:file);return file}
   func read(_ file:URL)throws->MotionArtworkRange?{let handle=try FileHandle(forReadingFrom:file);defer{try? handle.close()};return try MotionArtworkRange.find(in:handle,size:handle.seekToEnd())}
-  let parent=try save("embedded.m4a",prefix+square+motion("tall",video));let range=try read(parent)
-  try require(range != nil && range?.length==video.count,"Portrait variant was not selected")
-  let handle=try FileHandle(forReadingFrom:parent);try handle.seek(toOffset:range!.offset);let actual=try handle.read(upToCount:Int(range!.length));try handle.close()
+  let parent=try save("embedded.m4a",prefix+square+motion("tall",video))
+  guard let range=try read(parent),range.length==UInt64(video.count) else {throw NSError(domain:"Portrait variant was not selected",code:1)}
+  let handle=try FileHandle(forReadingFrom:parent);try handle.seek(toOffset:range.offset);let actual=try handle.read(upToCount:Int(range.length));try handle.close()
   try require(actual==video,"Range changed the embedded video")
-  for (name,data) in [("static",prefix),("square-only",prefix+square),("bad-schema",prefix+motion("tall",video,"other/1")),("bad-length",prefix+motion("tall",video,"amdl-motion/1",true)),("wrong-uuid",prefix+motion("tall",video,"amdl-motion/1",nil,Data(repeating:1,count:16))),("truncated",(prefix+motion("tall",video)).dropLast(1).withUnsafeBytes{Data($0)}),("bad-extended",be(1)+Data("uuid".utf8)+Data(repeating:255,count:8))] {
-   try require(try read(save(name+".m4a",data))==nil,"Malformed or absent motion accepted: \(name)")
+  let badSchema=prefix+motion("tall",video,"other/1")
+  let badLength=prefix+motion("tall",video,"amdl-motion/1",true)
+  let wrongUUID=prefix+motion("tall",video,"amdl-motion/1",nil,Data(repeating:1,count:16))
+  let completeTall=prefix+motion("tall",video)
+  let truncated=completeTall.dropLast(1).withUnsafeBytes{Data($0)}
+  let badExtended=be(1)+Data("uuid".utf8)+Data(repeating:255,count:8)
+  let malformed:[(String,Data)] = [("static",prefix),("square-only",prefix+square),("bad-schema",badSchema),("bad-length",badLength),("wrong-uuid",wrongUUID),("truncated",truncated),("bad-extended",badExtended)]
+  for (name,data) in malformed {
+    guard try read(save(name+".m4a",data)) == nil else {throw NSError(domain:"Malformed or absent motion accepted: \(name)",code:1)}
   }
   let before=try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()
   guard let source=MotionArtworkSource(url:parent) else {throw NSError(domain:"Cannot open bounded MP4 source",code:1)}
