@@ -71,8 +71,6 @@ jobs:
         run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir ios-artifacts
       - name: Test embedded portrait motion artwork
         run: bash scripts/check-embedded-motion-artwork.sh ios-artifacts/motion-artwork-tests
-      - name: Verify dynamic artwork UI contracts
-        run: node --test apps/mobile/test/motion-artwork.test.mjs
       - name: Record build tools
         id: xcode
         run: |
@@ -115,6 +113,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
           node scripts/prepare-ios-assets.mjs
+      - name: Verify dynamic artwork UI contracts
+        run: node --test apps/mobile/test/motion-artwork.test.mjs
       - name: Build device Rust library
         run: |
           set -o pipefail
