@@ -35,7 +35,8 @@ fn open(engine:&mut MobileEngine,command:&Value,prepared:Option<Metadata>)->Engi
  let metadata=std::fs::metadata(path).map_err(|e|e.to_string())?;if !metadata.is_file(){return Err("native source is not a regular file".into());}
  engine.reset_source_state();engine.begin_seek(0,0);
  engine.startup.lock().expect("startup lock").paused=command["paused"].as_bool().unwrap_or(false);
- engine.balance.enabled=command["volumeBalance"].as_bool().unwrap_or(false);
+ // Clear the previous source's effective eligibility before any new PCM.
+ engine.set_volume_balance(command["volumeBalance"].as_bool().unwrap_or(false))?;
  engine.set_apple_loudness(command["appleLoudness"].as_bool().unwrap_or(false))?;
  engine.config.object_rendering=command["objectRendering"].as_bool().unwrap_or(true);engine.config.binaural_enabled=command["binauralEnabled"].as_bool().unwrap_or(true);
  if let Some(measurement)=command.get("measurement").filter(|v|!v.is_null()){engine.set_measured_loudness(&measurement.to_string())?;}
