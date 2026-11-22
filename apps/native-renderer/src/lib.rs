@@ -225,6 +225,7 @@ pub enum Command {
         #[serde(rename = "gainDb")]
         gain_db: f32,
     },
+    SetAppleLoudness { enabled: bool },
     SetProgramEnabled {
         enabled: bool,
     },
@@ -1266,6 +1267,7 @@ pub struct Engine {
     master_preamp: master_preamp::MasterPreamp,
     spatial_preamp: master_preamp::MasterPreamp,
     final_output_trim: master_preamp::MasterPreamp,
+    apple_loudness: bool,
     programme_output_makeup: master_preamp::MasterPreamp,
     dolby_spatial_programme_seen: bool,
     output_gain: f32,
@@ -1426,6 +1428,7 @@ impl Engine {
             output_target_gain: 1.0,
             output_gain_step: 0.0,
             output_gain_ramp_remaining: 0,
+            apple_loudness: false,
             program_enabled: false,
             program_metadata_gain: 1.0,
             program_gain: 1.0,
@@ -1596,7 +1599,7 @@ impl Engine {
                     | "TopSideLeft" | "TopSideRight" | "TopMiddleLeft" | "TopMiddleRight"
                     | "TopSurroundLeft" | "TopSurroundRight" | "TopRearLeft" | "TopRearRight"
                     | "TopCenter"))));
-        let db = if self.authored.enabled {if self.authored.programme_handled {0.0}else{self.authored.makeup_db}} else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { 1.8 } else { 0.0 };
+        let db = if self.authored.enabled {if self.authored.programme_handled {0.0}else{self.authored.makeup_db}} else if self.program_enabled && (named_format || self.dolby_spatial_programme_seen) { if self.apple_loudness { 2.5 } else { 1.8 } } else { 0.0 };
         if self.programme_output_makeup.target_db() != db {
             self.programme_output_makeup.set(db, self.output_sample_rate, immediate)
                 .expect("valid programme output makeup");

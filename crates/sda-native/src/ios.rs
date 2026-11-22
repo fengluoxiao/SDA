@@ -210,6 +210,7 @@ pub unsafe extern "C" fn sda_ios_command(
             "spatialLayerGain" => e.set_spatial_layer_gain_db(number("gainDb")?)?,
             "listeningProfile" => e.set_listening_profile(str_arg("json")?)?,
             "spatialEnhancement" => e.set_spatial_enhancement(boolean("enabled")?)?,
+            "appleLoudness" => e.set_apple_loudness(boolean("enabled")?)?,
             "balance" => e.set_volume_balance(boolean("enabled")?)?,
             "measured" => e.set_measured_loudness(str_arg("json")?)?,
             "loudness" => return Ok(json!(e.complete_loudness_json())),
@@ -776,6 +777,28 @@ pub unsafe extern "C" fn sda_ios_alac_feed(p: *mut std::ffi::c_void, bytes: *con
 }
 
 // Separate speaker PCM ABI. Never enters MobileEngine, HRTF, room or stereo FIFO.
+#[cfg(test)]
+mod apple_loudness_tests {
+    use super::*;
+    #[test]
+    fn apple_loudness_speaker_output_is_balance_gated_and_excludes_alac() {
+        for alac in [false,true] {for balance in [false,true] {for apple in [false,true] {
+            let h=unsafe {sda_ios_alac_speakers_create(false)};
+            {
+                let host=unsafe {&mut *h.cast::<SpeakerHost>()};
+                if !alac {host.av3a_decoder=Some(sda_core::StreamingDecoder::new("av3a").unwrap());host.channels=12;}
+                host.target_gain=0.5;
+                host.pcm.extend(std::iter::repeat_n(0.02,256*host.channels));
+            }
+            unsafe {sda_ios_speakers_balance(h,balance);sda_ios_speakers_apple_loudness(h,apple);}
+            let mut output=vec![0.;256*12];let frames=unsafe {sda_ios_speakers_read(h,output.as_mut_ptr(),256)};
+            assert_eq!(frames,256);
+            let ratio=if balance {0.5*if apple&&!alac {10_f32.powf(0.7/20.)}else{1.}}else{1.};
+            assert!((output[0]-0.02*ratio).abs()<1e-7,"alac={alac} balance={balance} apple={apple}");
+            unsafe {sda_ios_speakers_close(h)};
+        }}}
+    }
+}
 struct SpeakerHost {
     decoder: Option<mpegh::MpeghDecoder>,
     av3a_decoder: Option<sda_core::StreamingDecoder>,
@@ -787,6 +810,7 @@ struct SpeakerHost {
     active: crate::ObjectSnapshot,
     meter: crate::balance::LoudnessMeter,
     balance_enabled: bool,
+    apple_loudness: bool,
     measured_frames: usize,
     target_gain: f32,
     gain: f32,
@@ -799,7 +823,7 @@ pub unsafe extern "C" fn sda_ios_speakers_create(error: *mut *mut c_char) -> *mu
     let result = std::panic::catch_unwind(|| mpegh::MpeghDecoder::new_7_1_4()).unwrap_or_else(|_| Err("speaker decoder panic".into()));
     match result {
         Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: Some(decoder), av3a_decoder: None, alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(), events: Default::default(), active: Default::default(),
-            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false, measure_only: false, fixed_measurement: None })).cast(),
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, apple_loudness: false, measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false, measure_only: false, fixed_measurement: None })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
     }
 }
@@ -813,7 +837,7 @@ pub unsafe extern "C" fn sda_ios_av3a_speakers_create(error: *mut *mut c_char) -
         Ok(decoder) => Box::into_raw(Box::new(SpeakerHost { decoder: None, av3a_decoder: Some(decoder),
             alac: Default::default(), channels: 12, upmix: false, pcm: Default::default(),
             events: Default::default(), active: Default::default(),
-            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false,
+            meter: crate::balance::LoudnessMeter::speakers_7_1_4(), balance_enabled: false, apple_loudness: false,
             measured_frames: 0, target_gain: 1.0, gain: 1.0, read_started: false,
             measure_only: false, fixed_measurement: None })).cast(),
         Err(e) => { if !error.is_null() { unsafe { *error = reply(Err(e)); } } std::ptr::null_mut() }
@@ -874,7 +898,7 @@ pub unsafe extern "C" fn sda_ios_speakers_feed(p: *mut std::ffi::c_void, bytes: 
 pub unsafe extern "C" fn sda_ios_alac_speakers_create(upmix: bool) -> *mut std::ffi::c_void {
     Box::into_raw(Box::new(SpeakerHost { decoder:None, av3a_decoder:None, alac:Default::default(), channels:if upmix {12} else {2}, upmix,
         pcm:Default::default(), events:Default::default(), active:Default::default(), meter:crate::balance::LoudnessMeter::new(48000),
-        balance_enabled:false, measured_frames:0, target_gain:1.0, gain:1.0, read_started:false, measure_only:false, fixed_measurement:None })).cast()
+        balance_enabled:false, apple_loudness:false, measured_frames:0, target_gain:1.0, gain:1.0, read_started:false, measure_only:false, fixed_measurement:None })).cast()
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_alac_speakers_feed(p: *mut std::ffi::c_void, bytes: *const u8, len: usize, finish: bool) -> *mut c_char {
@@ -948,12 +972,13 @@ pub unsafe extern "C" fn sda_ios_speakers_read(p: *mut std::ffi::c_void, out: *m
             Ok(frame) => Some(frame), Err(_) => return 0,
         }
     } else { None };
+    let selected_gain = host.target_gain * if host.apple_loudness && !alac {10_f32.powf(0.7/20.)} else {1.};
     if frames > 0 && !host.read_started {
-        host.gain = if host.balance_enabled { host.target_gain } else { 1.0 };
+        host.gain = if host.balance_enabled { selected_gain } else { 1.0 };
         host.read_started = true;
     }
     for i in 0..frames {
-        let target = if host.balance_enabled { host.target_gain } else { 1.0 };
+        let target = if host.balance_enabled { selected_gain } else { 1.0 };
         // A single smooth gain for all 12 channels, including LFE. No remapping.
         host.gain += (target - host.gain).clamp(-1.0/12000.0, 1.0/12000.0);
         for ch in 0..host.channels {
@@ -983,6 +1008,10 @@ pub unsafe extern "C" fn sda_ios_speakers_objects(p: *mut std::ffi::c_void, cloc
         let host = unsafe { &mut *p.cast::<SpeakerHost>() };
         serde_json::to_value(crate::snapshot_at_clock(&mut host.events, &mut host.active, clock)).map_err(|e| e.to_string())
     })
+}
+#[no_mangle]
+pub unsafe extern "C" fn sda_ios_speakers_apple_loudness(p: *mut std::ffi::c_void, enabled: bool) {
+    if !p.is_null() { unsafe { (*p.cast::<SpeakerHost>()).apple_loudness = enabled; } }
 }
 #[no_mangle]
 pub unsafe extern "C" fn sda_ios_speakers_balance(p: *mut std::ffi::c_void, enabled: bool) {

@@ -176,6 +176,7 @@ export interface NativeRendererSink {
   setSpeakerMutes?(names: string[], focus?: string[]): void | Promise<void>;
   setVolume(volume: number): void | Promise<void>;
   setProgramEnabled(enabled: boolean): void | Promise<void>;
+  setAppleLoudness?(enabled: boolean): void | Promise<void>;
   setProgramGainDb(gainDb: number | null, atSample?: number): void | Promise<void>;
   setBinauralEq(bands: BinauralEqBands, lowCut: boolean): void | Promise<void>;
   setHeadphoneProfile(id: string | null): void | Promise<void>;
@@ -405,6 +406,7 @@ export class SdaPlayer {
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
+  private appleLoudnessEnabled = false;
   private stereoBalanceEligible = false;
   /** Optional ALAC-only pseudo-upmix. The source PCM stays identifiable as stereo. */
   private alacStereoUpmixEnabled = false;
@@ -1014,6 +1016,7 @@ export class SdaPlayer {
       r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
       this.scheduledProgramLoudnessGainDb = undefined;
       r.setVolumeBalance(this.volumeBalanceEnabled && this.stereoBalanceEligible);
+      r.setAppleLoudness(this.appleLoudnessEnabled && !this.stereoStartupEligible && ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm"].includes(this.trackCodec ?? ""));
       r.setHeadphoneCompensation(this.headphoneProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
       r.setBinauralLowFrequencyDiagnostic(this.binauralLowFrequencyDiagnosticMode);
@@ -1090,7 +1093,7 @@ export class SdaPlayer {
     const session = `${this.id}:${Date.now()}`; this.nativeFileSession = session; this.nativeFileEpoch = 0; this.ended = false;
     this.nativeFileOpening = true; this.nativeFilePendingState = null;this.nativeSeekStates.clear();
     let snapshot: NativeFileSnapshot;
-    try { snapshot = await this.nativeFileBridge.command({ action: "open", session, epoch: 0, path, codec: "auto", masterEditable:this.authoredMasterEditable, layout: layoutIdFor(this.initArgs?.layout ?? LAYOUTS["7.1.4"]), paused: true, upmix: this.outputMode !== "stereo" && this.alacStereoUpmixEnabled, volumeBalance: this.volumeBalanceEnabled, objectRendering: this.objectRenderingEnabled && this.outputMode !== "stereo", binauralEnabled: this.outputMode !== "stereo", measurement: this.nativeFileMeasurement }); }
+    try { snapshot = await this.nativeFileBridge.command({ action: "open", session, epoch: 0, path, codec: "auto", masterEditable:this.authoredMasterEditable, layout: layoutIdFor(this.initArgs?.layout ?? LAYOUTS["7.1.4"]), paused: true, upmix: this.outputMode !== "stereo" && this.alacStereoUpmixEnabled, volumeBalance: this.volumeBalanceEnabled, appleLoudness: this.appleLoudnessEnabled, objectRendering: this.objectRenderingEnabled && this.outputMode !== "stereo", binauralEnabled: this.outputMode !== "stereo", measurement: this.nativeFileMeasurement }); }
     catch (error) { this.nativeFileSession = null; throw error; }
     finally { this.nativeFileOpening = false; }
     if (this.disposed || this.nativeFileSession !== session) return;
@@ -1472,6 +1475,12 @@ export class SdaPlayer {
     return true;
   }
 
+  setAppleLoudness(enabled: boolean): void {
+    this.appleLoudnessEnabled=enabled;
+    if(this.nativeFileSession){void this.nativeFileBridge?.command({action:"configure",session:this.nativeFileSession,appleLoudness:enabled}).catch(error=>this.cb.onError?.(String(error)));return;}
+    void Promise.resolve(this.nativeRendererSink?.setAppleLoudness?.(enabled)).catch(error=>this.cb.onError?.(String(error)));
+    this.renderer?.setAppleLoudness(enabled && !this.stereoStartupEligible && ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm"].includes(this.trackCodec ?? ""));
+  }
   setVolumeBalance(enabled: boolean): void {
     if (this.nativeFileSession) { this.volumeBalanceEnabled = enabled; void this.nativeFileBridge?.command({ action: "configure", session: this.nativeFileSession, volumeBalance: enabled }).catch(error => this.cb.onError?.(String(error))); return; }
 

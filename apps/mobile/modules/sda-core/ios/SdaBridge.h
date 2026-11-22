@@ -39,6 +39,7 @@ void *sda_ios_av3a_speakers_create(char **error);
 char *sda_ios_speakers_feed(void *decoder, const uint8_t *bytes, size_t length, bool finish);
 size_t sda_ios_speakers_read(void *decoder, float *pcm, size_t capacity_frames);
 char *sda_ios_speakers_objects(void *decoder, uint64_t consumed_frames);
+void sda_ios_speakers_apple_loudness(void *handle, bool enabled);
 void sda_ios_speakers_balance(void *decoder, bool enabled);
 void sda_ios_speakers_measure_only(void *decoder);
 char *sda_ios_speakers_measurement(void *decoder);

@@ -91,6 +91,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
       </View>)}
       {section("播放", <>
         {toggle("音量平衡", p.authoredPlayback?false:p.volumeBalanceEnabled, p.setVolumeBalance, p.busy||p.authoredPlayback===true)}{separator()}
+        {toggle("对齐 Apple 响度", p.volumeBalanceEnabled&&!p.authoredPlayback&&p.appleLoudnessEnabled, p.setAppleLoudness, p.busy||!p.volumeBalanceEnabled||p.authoredPlayback===true, "开启后额外增加 0.7 dB；空间节目输出补偿由 +1.8 dB 调整为 +2.5 dB")}{separator()}
         {menu("播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], PLAYBACK_MODES.map(id => ({ id, label: PLAYBACK_MODE_LABELS[id] })), p.playbackMode,
           id => { if (PLAYBACK_MODES.includes(id as typeof p.playbackMode)) p.setPlaybackMode(id as typeof p.playbackMode); })}
       </>, p.authoredPlayback?"当前 SDAR 由文件混音参数控制，已写入音频的处理不重复执行。":"节目参考只衰减；已识别的空间节目另含 +1.8 dB 输出校准，仍受峰值保护。Audio Vivid 在导入时完成整曲响度分析，播放、定位和重复播放使用同一参考。")}

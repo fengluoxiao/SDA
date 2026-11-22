@@ -431,6 +431,13 @@ pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeClose(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetAppleLoudness(
+    env: JNIEnv, _class: JClass, ptr: jlong, enabled: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result=take_engine(ptr).ok_or("engine unavailable".to_string()).and_then(|engine|engine.set_apple_loudness(enabled!=0));
+    env.new_string(result.err().unwrap_or_default()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
 pub extern "system" fn Java_com_sda_nativebridge_SdaEngine_nativeSetVolumeBalance(
     env: JNIEnv, _class: JClass, ptr: jlong, enabled: jni::sys::jboolean,
 ) -> jni::sys::jstring {

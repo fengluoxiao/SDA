@@ -132,6 +132,11 @@ jobs:
           node scripts/prepare-ios-assets.mjs
       - name: Verify shared Android and iOS lyrics UI
         run: node scripts/test-mobile-lyrics.mjs
+      - name: Verify Apple loudness toggle and WebAudio gain
+        run: |
+          pnpm --filter @sda/mobile exec tsc --noEmit
+          node scripts/test/apple-loudness.test.cjs
+          node --test packages/renderer/test/output-dynamics.test.mjs
       - name: Verify native head tracking startup and rendered audio
         run: node scripts/test-native-head-tracking.mjs
       - name: Verify native output FIFO
@@ -148,6 +153,11 @@ jobs:
           else
             echo "Pinned source predates the native stack regression; see package provenance."
           fi
+      - name: Verify Apple loudness on native PCM output
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/native-renderer/Cargo.toml --release --locked --no-default-features --lib apple_loudness -- --test-threads=1 2>&1 | tee ios-artifacts/apple-loudness-renderer.log
+          MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec" cargo test --manifest-path crates/sda-native/Cargo.toml --release --locked --no-default-features --features ios-host --lib apple_loudness -- --test-threads=1 2>&1 | tee ios-artifacts/apple-loudness-system.log
       - name: Restore CocoaPods downloads
         uses: actions/cache@v4
         with:

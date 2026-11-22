@@ -51,6 +51,7 @@ export interface PlayerProps {
   headYaw: number; error: string | null; directObjects: boolean; directionalObjects: boolean;
   renderingStatus: string; volume: number;
   volumeBalanceEnabled: boolean; setVolumeBalance(enabled: boolean): void;
+  appleLoudnessEnabled: boolean; setAppleLoudness(enabled: boolean): void;
   spatialEnhancementEnabled: boolean; setSpatialEnhancement(enabled: boolean): void;
   seekTo?(positionMs: number): void;
   chooseFile(): void; play(): void; togglePause(): void; stop(): void;
@@ -323,6 +324,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           {label("音量", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
             <View style={s.settingRow}><View style={s.settingCopy}>{label("音量平衡", false, s.settingTitle)}{label("节目参考只衰减，保持声部比例；指定空间格式另含 +1.8 dB 输出校准，仍受输出保护", true, s.settingDescription)}</View><Switch accessibilityLabel="音量平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.authoredPlayback?false:p.volumeBalanceEnabled} disabled={p.busy||p.authoredPlayback} onValueChange={p.setVolumeBalance} /></View>
+            <View style={[s.settingRow,{opacity:!p.volumeBalanceEnabled||p.authoredPlayback||p.busy?0.45:1}]}><View style={s.settingCopy}>{label("对齐 Apple 响度", false, s.settingTitle)}{label("音量平衡开启时额外增加 0.7 dB", true, s.settingDescription)}</View><Switch accessibilityLabel="对齐 Apple 响度" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.volumeBalanceEnabled&&!p.authoredPlayback&&p.appleLoudnessEnabled} disabled={p.busy||!p.volumeBalanceEnabled||p.authoredPlayback} onValueChange={p.setAppleLoudness} /></View>
           </View>
           {label("播放模式", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>

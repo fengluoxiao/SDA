@@ -187,6 +187,7 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
     </Section>
     <Section title="播放" footer={<Text>{p.authoredPlayback?"当前 SDAR 由文件混音参数控制，已写入音频的处理不重复执行。":"节目参考只衰减；已识别的空间节目另含 +1.8 dB 输出校准，仍受峰值保护。Audio Vivid 在导入时完成整曲响度分析，播放、定位和重复播放使用同一参考。"}</Text>}>
       <Toggle label="音量平衡" isOn={p.authoredPlayback?false:p.volumeBalanceEnabled} onIsOnChange={p.setVolumeBalance} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
+      <Toggle label="对齐 Apple 响度" isOn={p.volumeBalanceEnabled&&!p.authoredPlayback&&p.appleLoudnessEnabled} onIsOnChange={p.setAppleLoudness} modifiers={[tint(appTheme.accent), disabled(p.busy||!p.volumeBalanceEnabled||p.authoredPlayback===true)]} />
       <Picker label="播放模式" selection={p.playbackMode} onSelectionChange={p.setPlaybackMode} modifiers={[pickerStyle("menu")]}>
         {PLAYBACK_MODES.map(mode => <Text key={mode} modifiers={[tag(mode)]}>{PLAYBACK_MODE_LABELS[mode]}</Text>)}
       </Picker>

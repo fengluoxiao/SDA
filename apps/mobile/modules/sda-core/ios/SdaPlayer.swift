@@ -142,6 +142,7 @@ final class SdaPlayer {
     try system.pump()
     return outputRouteStatus(system.status())
    case "objects": return try system.objects(decodeReply)
+   case "appleLoudness": system.setAppleLoudness(args["enabled"] as? Bool ?? false); return true
    case "balance": system.setBalance(args["enabled"] as? Bool ?? false); return true
    case "pause":
     system.setPaused(args["paused"] as? Bool ?? false)
@@ -262,7 +263,7 @@ final class SdaPlayer {
    "binauralEnabled": prefs.object(forKey:"sda.binauralEnabled") ?? true,
    "direct": prefs.object(forKey: "sda.direct") ?? true, "directional": prefs.object(forKey: "sda.directional") ?? true,
    "nearField": false, "metresPerUnit": prefs.object(forKey: "sda.scale") ?? 1.0,
-   "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance")]
+   "roomId": savedRoom(), "volumeBalanceEnabled": prefs.bool(forKey: "sda.balance"), "appleLoudnessEnabled": prefs.bool(forKey:"sda.appleLoudness")]
  }
  private var activeHrtfManifest: String?
  func hrtfPath(_ set: String) throws -> String {
@@ -324,6 +325,7 @@ final class SdaPlayer {
    try buildNativeOutput(h, start:sessionReady)
    if !sessionReady { isPaused = true; finishPreparation() }
    _ = try command("near", ["enabled":s["nearField"]!,"scale":s["metresPerUnit"]!])
+   _ = try command("appleLoudness", ["enabled":s["appleLoudnessEnabled"]!])
    _ = try command("balance", ["enabled":s["volumeBalanceEnabled"]!])
    _ = try command("volume", ["volume":1.0])
    _ = try command("spatialEnhancement", ["enabled":s["spatialEnhancementEnabled"]!])
@@ -583,6 +585,7 @@ final class SdaPlayer {
       throw SdaError.message("系统音频正被占用，请结束通话或其他音频后再播放")
      }
      systemSpatial = try SystemSpatial360(decodeReply:decodeReply,volume:1, alacUpmix:input.isAlac ? alacUpmixActive : nil, sourceCodec:input.isAv3a ? "av3a" : "mpegh")
+     systemSpatial?.setAppleLoudness(prefs.bool(forKey:"sda.appleLoudness"))
      systemSpatial?.setBalance(prefs.bool(forKey:"sda.balance"))
      hrtfState = input.isAlac ? "ALAC 立体声 → \(alacUpmixActive ? "7.1.4 上混" : "2.0") · 苹果系统输出 · KU100/房间已旁路" : "\(input.isAv3a ? "Audio Vivid" : "360RA") → 7.1.4 · 苹果系统空间音频请求 · KU100/房间已旁路"
     } else { try startNative(codec:input.nativeCodec) }

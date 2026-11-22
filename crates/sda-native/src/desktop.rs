@@ -36,6 +36,7 @@ fn open(engine:&mut MobileEngine,command:&Value,prepared:Option<Metadata>)->Engi
  engine.reset_source_state();engine.begin_seek(0,0);
  engine.startup.lock().expect("startup lock").paused=command["paused"].as_bool().unwrap_or(false);
  engine.balance.enabled=command["volumeBalance"].as_bool().unwrap_or(false);
+ engine.set_apple_loudness(command["appleLoudness"].as_bool().unwrap_or(false))?;
  engine.config.object_rendering=command["objectRendering"].as_bool().unwrap_or(true);engine.config.binaural_enabled=command["binauralEnabled"].as_bool().unwrap_or(true);
  if let Some(measurement)=command.get("measurement").filter(|v|!v.is_null()){engine.set_measured_loudness(&measurement.to_string())?;}
  let hint=command["codec"].as_str().unwrap_or("auto");
@@ -120,7 +121,7 @@ pub fn install(commands:Arc<render_command::RenderCommandQueue>,fifo:Arc<stereo_
        "fileClose"=>{engine.startup.lock().expect("startup lock").paused=true;engine.begin_seek(0,0);},
        "fileConfigure"=>{if let Some(scene)=command.get("authoredScene"){
           let source=engine.sdar_source.as_mut().ok_or("authored source is unavailable")?;if !source.file.is_editable_master(){return Err("only a WAV master accepts scene edits".into());}source.scene=serde_json::from_value(scene.clone()).map_err(|e|e.to_string())?;
-        }if let Some(layout)=command["layout"].as_str(){if engine.sdar_source.is_some(){engine.set_sdar_layout(layout)?;}else{engine.config.layout=layout.into();}}if let Some(value)=command["upmix"].as_bool(){p.upmix=value;}if let Some(value)=command["volumeBalance"].as_bool(){engine.set_volume_balance(value)?;}if engine.sdar_source.is_none(){if let Some(value)=command["objectRendering"].as_bool(){engine.config.object_rendering=value;engine.decoder.set_object_rendering(value);}}},
+        }if let Some(layout)=command["layout"].as_str(){if engine.sdar_source.is_some(){engine.set_sdar_layout(layout)?;}else{engine.config.layout=layout.into();}}if let Some(value)=command["upmix"].as_bool(){p.upmix=value;}if let Some(value)=command["volumeBalance"].as_bool(){engine.set_volume_balance(value)?;}if let Some(value)=command["appleLoudness"].as_bool(){engine.set_apple_loudness(value)?;}if engine.sdar_source.is_none(){if let Some(value)=command["objectRendering"].as_bool(){engine.config.object_rendering=value;engine.decoder.set_object_rendering(value);}}},
        "fileStatus"=>{},_=>return Err("unknown native file operation".into())};Ok(snapshot(&engine,p))})();reply(&command,result);
       if kind=="fileClose"{playback=None;engine.reset_source_state();}
      }else{reply(&command,Err("native file session was replaced".into()));}

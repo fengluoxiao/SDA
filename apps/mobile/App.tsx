@@ -75,6 +75,7 @@ interface SdaEngineModule extends MpeghMp4Host {
   feedDone(): boolean;
   setVolume(volume: number): void;
   setVolumeBalance(enabled: boolean): void;
+  setAppleLoudness?(enabled: boolean): void;
   setSpatialEnhancement?(enabled: boolean): void;
   setListeningProfile?(json: string): void;
   hrtfStatus(): string;
@@ -131,6 +132,7 @@ interface State {
   renderingStatus: string;
   volume: number;
   volumeBalanceEnabled: boolean;
+  appleLoudnessEnabled: boolean;
   spatialEnhancementEnabled: boolean;
   rooms: { id: string; name: string; layout: string }[];
   roomId: string;
@@ -155,6 +157,7 @@ export default class App extends React.Component<Record<string, never>, State> {
     queueIndex: -1,
     volume: 1,
     volumeBalanceEnabled: false,
+    appleLoudnessEnabled: false,
     spatialEnhancementEnabled: false,
     rooms: [], roomId: "", roomBusy: false,
     nearField: false, metresPerUnit: 1, nearFieldBusy: false,
@@ -250,6 +253,7 @@ export default class App extends React.Component<Record<string, never>, State> {
         spatialCueDb: settings.spatialCueDb ?? -6,
         hrtfWetWeight: settings.hrtfWetWeight ?? 0, directObjects: settings.direct, directionalObjects: settings.directional,
         volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+        appleLoudnessEnabled: settings.appleLoudnessEnabled === true,
         spatialEnhancementEnabled: settings.spatialEnhancementEnabled === true,
         systemSpatial360RA: Platform.OS === "ios" && settings.systemSpatial360RA === true,
         roomId: settings.roomId || "", rooms: JSON.parse(this.getEngine().rooms()),
@@ -617,6 +621,7 @@ export default class App extends React.Component<Record<string, never>, State> {
       if (imported?.durationMs) this.setState({ durationMs: imported.durationMs });
       const settings = JSON.parse(engine.renderingSettings());
       this.setState({ volumeBalanceEnabled: settings.volumeBalanceEnabled === true,
+        appleLoudnessEnabled: settings.appleLoudnessEnabled === true,
           roomId: settings.roomId || "", layout: settings.layout, systemSpatial360RAActive: settings.systemSpatial360RAActive === true });
       // Retain the queue-owned compressed track for repeat/next. Interruptions use resume, never reimport.
       engine.setVolume(hasSystemVolumeSlider ? 1 : this.state.volume);
@@ -798,10 +803,21 @@ export default class App extends React.Component<Record<string, never>, State> {
     } catch (error) { this.setState({ error: error instanceof Error ? error.message : String(error) }); }
   };
 
+  private setAppleLoudness = (appleLoudnessEnabled: boolean) => {
+    if(this.state.authoredPlayback || !this.state.volumeBalanceEnabled || this.state.busy)return;
+    try {
+      if(!this.artworkPreview){
+        const setter=this.getEngine().setAppleLoudness;
+        if(!setter)throw new Error("请更新原生模块以使用对齐 Apple 响度");
+        setter(appleLoudnessEnabled);
+      }
+      this.setState({appleLoudnessEnabled,error:null});
+    } catch(error){this.setState({error:error instanceof Error?error.message:String(error)});}
+  };
   private setVolumeBalance = (volumeBalanceEnabled: boolean) => {
     if(this.state.authoredPlayback)return;
     try {
-      this.getEngine().setVolumeBalance(volumeBalanceEnabled);
+      if(!this.artworkPreview)this.getEngine().setVolumeBalance(volumeBalanceEnabled);
       this.setState({ volumeBalanceEnabled, error: null });
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) });
@@ -838,6 +854,6 @@ export default class App extends React.Component<Record<string, never>, State> {
     return <RemotePlayer {...this.state} attachLyrics={this.attachLyrics} setHeadTracking={this.setHeadTracking} setBinauralEnabled={this.setBinauralEnabled} setSystemSpatial360RA={this.setSystemSpatial360RA} setAlacStereoUpmix={this.setAlacStereoUpmix} setSystemSpatialStereo={this.setSystemSpatialStereo} chooseFile={this.chooseFile} play={this.playSelected}
       selectTrack={this.selectTrack} previous={() => this.skipTrack(-1)} next={() => this.skipTrack(1)} setPlaybackMode={this.setPlaybackMode}
       seekTo={this.seekTo} togglePause={this.togglePause} stop={this.stop} adjustYaw={this.adjustYaw}
-      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} listeningProfile={this.state.listeningProfile} setListeningProfile={this.setListeningProfile} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
+      resetYaw={this.resetYaw} setVolume={this.setVolume} setVolumeBalance={this.setVolumeBalance} setAppleLoudness={this.setAppleLoudness} listeningProfile={this.state.listeningProfile} setListeningProfile={this.setListeningProfile} setSpatialEnhancement={this.setSpatialEnhancement} setSpatialCueDb={this.setSpatialCueDb} setRenderingPreset={this.setRenderingPreset} setRendering={this.setObjectRendering} setRoom={this.setRoom} setNearField={this.setNearField} {...previewProps} />;
   }
 }

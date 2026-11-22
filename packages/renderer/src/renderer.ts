@@ -334,6 +334,7 @@ export class SpatialRenderer {
   private multichannelProjector: { id: string; gain: GainNode; nodes: AudioNode[] } | null = null;
   private volume = 1;
   private volumeBalanceEnabled = false;
+  private appleLoudnessEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
   private horizontalVbap?: { layout: readonly VirtualSpeaker[]; solver: VbapSolver; indices: number[] };
@@ -730,6 +731,7 @@ export class SpatialRenderer {
       outputChannelCount: [2],
       processorOptions: { ceilingDb: BINAURAL_PEAK_GUARD_CEILING_DB },
     });
+    this.peakGuard.port.postMessage({ type: "appleLoudness", enabled: this.appleLoudnessEnabled });
     this.peakGuard.port.postMessage({ type: "programEnabled", enabled: this.volumeBalanceEnabled });
     this.peakGuard.port.postMessage({
       type: "programGain",
@@ -1923,6 +1925,8 @@ export class SpatialRenderer {
     this.node?.port.postMessage({ type: "pause", paused });
     this.peakGuard?.port.postMessage({ type: "pause", paused });
   }
+
+  setAppleLoudness(enabled: boolean): void { this.appleLoudnessEnabled=enabled; this.peakGuard?.port.postMessage({type:"appleLoudness",enabled}); }
 
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;

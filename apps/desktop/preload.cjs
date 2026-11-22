@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   nativeRendererLfeMuted: (muted) => ipcRenderer.invoke("sda:native-renderer-lfe-muted", muted),
   nativeRendererSpeakerMutes: (names, focus) => ipcRenderer.invoke("sda:native-renderer-speaker-mutes", names, focus),
   nativeRendererVolume: (volume) => ipcRenderer.invoke("sda:native-renderer-volume", volume),
+  nativeRendererAppleLoudness: (enabled) => ipcRenderer.invoke("sda:native-renderer-apple-loudness", enabled),
   nativeRendererProgramEnabled: (enabled) => ipcRenderer.invoke("sda:native-renderer-program-enabled", enabled),
   nativeRendererDownmixTrims: (updates) => ipcRenderer.invoke("sda:native-renderer-downmix-trims", updates),
   nativeRendererProgramGain: (gain, atSample) => ipcRenderer.invoke("sda:native-renderer-program-gain", gain, atSample),

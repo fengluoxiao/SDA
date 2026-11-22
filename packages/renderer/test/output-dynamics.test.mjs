@@ -16,6 +16,20 @@ eval(source);
 const PeakGuard = processors.get("sda-final-peak-guard");
 assert.ok(PeakGuard, "final peak guard must register");
 
+test("Apple loudness adds 0.7 dB once and is gated by programme balance", () => {
+  globalThis.sampleRate=48000;
+  const input=Float32Array.from({length:4800},(_,i)=>0.04*Math.sin(i*0.13));
+  for(const enabled of [false,true])for(const apple of [false,true]) {
+    const guard=new PeakGuard();
+    guard.port.onmessage({data:{type:"appleLoudness",enabled:apple}});
+    guard.port.onmessage({data:{type:"programGain",gain:0.5}});
+    guard.port.onmessage({data:{type:"programEnabled",enabled}});
+    const gain=enabled?0.5*(apple?10**(0.7/20):1):1;
+    const output=render(guard,input,input);
+    for(let i=0;i<input.length;i++)assert.ok(Math.abs(output[0][i]-input[i]*gain)<2e-8);
+  }
+});
+
 function render(guard, left, right) {
   const length = left.length + guard.lookahead;
   const result = [new Float32Array(length), new Float32Array(length)];

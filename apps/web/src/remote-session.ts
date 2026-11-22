@@ -18,6 +18,7 @@ export interface RemotePlayback {
   loading?:boolean;
   stereoAvailable?:boolean;
   volumeBalanceEnabled?:boolean;
+  appleLoudnessEnabled?:boolean;
   title:string; playing:boolean; paused:boolean; position:number; duration:number; volume:number;
   currentId:string; playbackMode:string; stereoMode:string; playlist:{id:string;title:string}[];
 }

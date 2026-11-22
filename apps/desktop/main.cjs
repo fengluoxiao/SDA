@@ -1720,6 +1720,10 @@ ipcMain.handle("sda:native-renderer-volume", async (_event, volume) => {
   writeStartupLog(`setVolume=${volume} ACK -> ${accepted}`);
   return accepted;
 });
+ipcMain.handle("sda:native-renderer-apple-loudness", async (_event, enabled) => {
+  if(typeof enabled!=="boolean")return false;
+  return nativeRendererCommandAck({type:"setAppleLoudness",enabled},"setAppleLoudness");
+});
 ipcMain.handle("sda:native-renderer-program-enabled", async (_event, enabled) => {
   if (typeof enabled !== "boolean") return false;
   const accepted = await nativeRendererCommandAck({ type: "setProgramEnabled", enabled }, "setProgramEnabled");

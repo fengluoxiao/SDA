@@ -522,6 +522,7 @@ class SdaModule : Module() {
                     if (isMp3 && mp3Cache != null) check(SdaEngine.nativeOpenMp3(it, mp3Cache.absolutePath) > 0) {
                         "MP3 打开失败: ${SdaEngine.nativeLastError()}"
                     }
+                    check(SdaEngine.nativeSetAppleLoudness(it, renderingSettings().getBoolean("appleLoudnessEnabled")).isEmpty()) { "Apple loudness configuration failed" }
                     val balanceError = SdaEngine.nativeSetVolumeBalance(it, renderingSettings().getBoolean("volumeBalanceEnabled"))
                     check(balanceError.isEmpty()) { balanceError }
                     check(SdaEngine.nativeSetHeadYaw(it, headYawDegrees.toFloat()) == 0) {
@@ -874,6 +875,16 @@ class SdaModule : Module() {
             Eac3Input.durationMs(context, Uri.parse(uriString))
         }
 
+        Function("setAppleLoudness") { enabled: Boolean ->
+            synchronized(nativeLock) {
+                if (handle != 0L && pipelineHandle == handle) {
+                    val error = SdaEngine.nativeSetAppleLoudness(handle, enabled)
+                    check(error.isEmpty()) { error }
+                }
+                val context = appContext.reactContext ?: error("no react context")
+                context.getSharedPreferences("sda-rendering", 0).edit().putBoolean("appleLoudnessEnabled", enabled).apply()
+            }
+        }
         Function("setVolumeBalance") { enabled: Boolean ->
             synchronized(nativeLock) {
                 if (handle != 0L && pipelineHandle == handle) {
@@ -1109,6 +1120,7 @@ class SdaModule : Module() {
             .put("hrtfWetWeight", 0.0)
             .put("binauralEnabled", preferences.getBoolean("binauralEnabled", true))
             .put("direct", preferences.getBoolean("direct", true))
+            .put("appleLoudnessEnabled", preferences.getBoolean("appleLoudnessEnabled", false))
             .put("volumeBalanceEnabled", preferences.getBoolean("volumeBalanceEnabled", false))
             .put("listeningProfile", preferences.getString("listeningProfile", "{"rear":1,"height":1,"bassDb":0,"trebleDb":0}"))
             .put("spatialEnhancementEnabled", preferences.getBoolean("spatialEnhancementEnabled", false))

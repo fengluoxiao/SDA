@@ -249,6 +249,7 @@ pub struct MobileEngine {
     /// Decoded frames waiting to be handed to the renderer worker.
     pending: Mutex<VecDeque<balance::PendingFrame>>,
     balance: balance::VolumeBalance,
+    apple_loudness: bool,
     /// Desktop-compatible channel mapping, source lifecycle and event compaction.
     frame_router: frame_router::FrameRouter,
     /// Codec clock of the newest queued frame (presentation clock base).
@@ -301,6 +302,7 @@ impl MobileEngine {
             startup: Mutex::new(StartupGate::default()),
             pending: Mutex::new(VecDeque::new()),
             balance: balance::VolumeBalance::default(),
+            apple_loudness: false,
             frame_router: frame_router::FrameRouter::default(),
             newest_sample_pos: Mutex::new(0),
             last_poll: Mutex::new(None),
@@ -374,6 +376,7 @@ impl MobileEngine {
             Command::SetObjectHrtf { enabled: self.config.direct_object_hrtf },
         ));
         let _ = commands.push(render_command::RenderCommand::Command(Command::SetBinauralEnabled { enabled: self.config.binaural_enabled }));
+        commands.push(render_command::RenderCommand::Command(Command::SetAppleLoudness {enabled:self.apple_loudness})).map_err(|_| "Apple loudness command queue full")?;
         self.pipeline = Some(RenderPipeline { fifo: fifo.clone(), commands: commands.clone(), telemetry: telemetry.clone() });
         if !self.config.object_rendering { let _ = commands.push(render_command::RenderCommand::Command(Command::SetObjectRendering { enabled: false })); }
         self.decoder.set_object_rendering(self.config.object_rendering);
@@ -856,6 +859,13 @@ impl MobileEngine {
         }
     }
 
+    pub fn set_apple_loudness(&mut self, enabled: bool) -> EngineResult<()> {
+        if let Some(pipeline)=&self.pipeline {
+            pipeline.commands.push(render_command::RenderCommand::Command(Command::SetAppleLoudness {enabled})).map_err(|_| "Apple loudness command queue full")?;
+        }
+        self.apple_loudness=enabled;
+        Ok(())
+    }
     pub fn set_volume_balance(&mut self, enabled: bool) -> EngineResult<()> {
         if self.sdar_source.is_some(){return Ok(());}
         if let Some(pipeline) = &self.pipeline {

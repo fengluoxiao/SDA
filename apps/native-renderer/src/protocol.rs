@@ -672,6 +672,11 @@ fn handle_command(
                 });
             }
         }
+        Command::SetAppleLoudness { enabled } => {
+            state.apple_loudness = enabled;
+            state.refresh_programme_output_makeup(!state.output_active || state.paused);
+            write_event(&Event::Ack { command: "setAppleLoudness", accepted: true, detail: None });
+        }
         Command::SetProgramEnabled { enabled } => {
             state.program_enabled = if state.authored.enabled {!state.authored.programme_handled}else{enabled};
             state.set_program_target(state.program_metadata_gain, !state.output_active);
@@ -1578,6 +1583,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::SetAuthoredProcessing { .. } => "setAuthoredProcessing",
         Command::ConfigureAuthoredScene { .. } => "configureAuthoredScene",
         Command::SetComparisonGain { .. } => "setComparisonGain",
+        Command::SetAppleLoudness { .. } => "setAppleLoudness",
         Command::SetProgramEnabled { .. } => "setProgramEnabled",
         Command::SetProgramGain { .. } => "setProgramGain",
         Command::SetBinauralEq { .. } => "setBinauralEq",

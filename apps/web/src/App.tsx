@@ -456,6 +456,7 @@ export function App() {
   const [volume, setVolume] = useState(1);
   const [balanceAnalysisProgress, setBalanceAnalysisProgress] = useState<number | null>(null);
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(readVolumeBalanceEnabled);
+  const [appleLoudnessEnabled,setAppleLoudnessEnabled]=useState(()=>localStorage.getItem("sda-apple-loudness-enabled")==="true");
   const [spatialBalanceEnabled, setSpatialBalanceEnabled] = useState(() => window.sdaDesktop?.getSpatialBalanceEnabled?.() ?? true);
   const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
@@ -549,6 +550,7 @@ export function App() {
   const playRef = useRef<(source: PlaybackSource) => Promise<void>>(async () => {});
   const playPlaylistItemRef = useRef<(id: string) => void>(() => {});
   const volumeRef = useRef(volume);
+  const appleLoudnessRef = useRef(appleLoudnessEnabled);appleLoudnessRef.current=appleLoudnessEnabled;
   const volumeBalanceRef = useRef(volumeBalanceEnabled);
   const binauralEqBandsRef = useRef(binauralEqBands);
   const binauralLowFrequencyDiagnosticRef = useRef(binauralLowFrequencyDiagnostic);
@@ -686,6 +688,11 @@ export function App() {
             setVolume: async (volume) => {
               if (!ownsNativeSession()) return;
               await enqueueNative(`setVolume=${volume}`, () => desktop.nativeRendererVolume?.(volume));
+            },
+            setAppleLoudness: async (enabled) => {
+              if (!ownsNativeSession()) return;
+              if(!desktop.nativeRendererAppleLoudness)throw new Error("请重启 Electron 以加载对齐 Apple 响度接口");
+              await enqueueNative("setAppleLoudness",()=>desktop.nativeRendererAppleLoudness!(enabled));
             },
             setProgramEnabled: async (enabled) => {
               if (!ownsNativeSession()) return;
@@ -1035,7 +1042,7 @@ export function App() {
       const latestHeadPose = headTrackingSessionRef.current.sample();
       if (latestHeadPose) player.setHeadPose(latestHeadPose);
       player.setVolume(volumeRef.current);
-      player.setVolumeBalance(volumeBalanceRef.current);
+      player.setAppleLoudness(appleLoudnessRef.current);player.setVolumeBalance(volumeBalanceRef.current);
       player.setBinauralEqBands(binauralEqBandsRef.current);
       player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnosticRef.current);
       return player;
@@ -1528,7 +1535,7 @@ export function App() {
           return;
         }
         player.setVolume(volumeRef.current);
-        player.setVolumeBalance(volumeBalanceRef.current);
+        player.setAppleLoudness(appleLoudnessRef.current);player.setVolumeBalance(volumeBalanceRef.current);
         player.setBinauralEqBands(binauralEqBandsRef.current);
         player.setBinauralLowFrequencyDiagnostic(binauralLowFrequencyDiagnostic);
         player.setHeadphoneCompensation(headphoneProfileId);
@@ -1791,6 +1798,12 @@ export function App() {
       setSpatialBalanceEnabled(enabled);
     } catch (error) { setErrors((previous) => [...previous, String(error)]); }
   }, []);
+
+  const changeAppleLoudness=useCallback((enabled:boolean)=>{
+    if(!volumeBalanceRef.current)return;
+    setAppleLoudnessEnabled(enabled);localStorage.setItem("sda-apple-loudness-enabled",String(enabled));
+    playerRef.current?.setAppleLoudness(enabled);
+  },[]);
 
   const changeVolumeBalance = useCallback((enabled: boolean) => {
     setVolumeBalanceEnabled(enabled);
@@ -2125,7 +2138,7 @@ export function App() {
     layoutSelection:{value:layoutId,options:layoutOptions,locked:roomComparison!==null},
     source:track?{codec:track.codec,sampleRate:track.sampleRate,channels:track.rawBedLabels?.length??track.channels,objects:track.objectChannels}:undefined,
     artist:track?.artist, album:track?.album, coverUrl:track?.coverUrl, title:track?.title??fileNameRef.current??"",playing,paused,position,duration,volume,
-    currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,
+    currentId:playlistCurrentId??"",playbackMode,stereoMode:stereoRenderMode,stereoAvailable:stereoProgram,volumeBalanceEnabled,appleLoudnessEnabled,
     playlist:playlist.map(item=>({id:item.id,title:item.title})),
   },async command=>{
     if(["play","next","previous","track","replay"].includes(command.action))await claimPlayback(command.controlOnly?"local":"remote");
@@ -2149,6 +2162,7 @@ export function App() {
       case "volume":changeVolume(Number(command.value));break;
       case "playbackMode":changePlaybackMode(command.value as PlaybackMode);break;
       case "volumeBalance":changeVolumeBalance(command.value===true);break;
+      case "appleLoudness":changeAppleLoudness(command.value===true);break;
       case "layout":
         if(roomComparison!==null)throw Error("请先退出对照试听");
         if(!layoutOptions.some(option=>option.value===command.value))throw Error("当前歌曲不支持此布局，请重新选择");
@@ -2380,6 +2394,9 @@ export function App() {
                   disabled={track?.codec==="sdar"}
                   onChange={(event) => changeVolumeBalance(event.target.checked)}
                 />
+              </label>
+              <label className="settings-switch" style={{opacity:!volumeBalanceEnabled||track?.codec==="sdar"?0.45:1}} title="音量平衡开启时额外增加 0.7 dB，空间节目输出补偿由 +1.8 dB 调整为 +2.5 dB">
+                <span>对齐 Apple 响度</span><input type="checkbox" role="switch" checked={volumeBalanceEnabled&&track?.codec!=="sdar"&&appleLoudnessEnabled} disabled={!volumeBalanceEnabled||track?.codec==="sdar"} onChange={event=>changeAppleLoudness(event.target.checked)}/>
               </label>
             </fieldset>
             {alacStereoProgram && <fieldset className="settings-group">

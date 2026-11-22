@@ -19,6 +19,7 @@ final class SystemSpatial360 {
  var buffering = false
  var underruns = 0
  var closed = false
+ var appleLoudness = false
  var balanceEnabled = false
  var inputFinished = false
  var decodedInputStarted = false
@@ -195,12 +196,14 @@ final class SystemSpatial360 {
   var error: UnsafeMutablePointer<CChar>?
   guard let next = (sourceCodec == "av3a" ? sda_ios_av3a_speakers_create(&error) : (alacUpmix.map({ sda_ios_alac_speakers_create($0) }) ?? sda_ios_speakers_create(&error))) else { _ = try decodeReply(error); throw SdaError.message("系统音频播放源重建失败") }
   decoder = next; closed = false; decodedInputStarted = false
+  sda_ios_speakers_apple_loudness(decoder,appleLoudness)
   sda_ios_speakers_balance(decoder,balanceEnabled)
   try setMeasurement(value,decodeReply:decodeReply)
  }
  func setMeasurement(_ value: String, decodeReply: (UnsafeMutablePointer<CChar>?) throws -> Any) throws {
   _ = try decodeReply(sda_ios_speakers_measured(decoder,value)); measurementReady = true
  }
+ func setAppleLoudness(_ enabled: Bool) { appleLoudness=enabled; sda_ios_speakers_apple_loudness(decoder,enabled) }
  func setBalance(_ enabled: Bool) { balanceEnabled = enabled; sda_ios_speakers_balance(decoder,enabled) }
  func status() -> [String:Any] {
   let clock = consumed, decoded = enqueued + queued

@@ -39,6 +39,7 @@ object SdaEngine {
     external fun nativeResetHeadPose(ptr: Long): Int
     external fun nativeFinish(ptr: Long): Int
     external fun nativePause(ptr: Long, paused: Boolean): Int
+    external fun nativeSetAppleLoudness(ptr: Long, enabled: Boolean): String
     external fun nativeSetVolumeBalance(ptr: Long, enabled: Boolean): String
     external fun nativeSetMeasuredLoudness(ptr: Long, json: String): String
     external fun nativeExtractMpeghMp4(source: String, output: String): String

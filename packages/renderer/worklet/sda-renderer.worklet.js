@@ -661,6 +661,7 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
     this.paused = false;
     this.consumed = 0;
     this.programEnabled = false;
+    this.appleLoudness = false;
     this.programMetadataGain = 1;
     this.programGain = 1;
     this.programTargetGain = 1;
@@ -672,7 +673,7 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
   }
 
   setProgramTarget(target, ramp) {
-    this.programTargetGain = this.programEnabled ? target : 1;
+    this.programTargetGain = this.programEnabled ? target * (this.appleLoudness ? Math.pow(10,0.7/20) : 1) : 1;
     if (!this.timelineStarted) {
       this.programGain = this.programTargetGain;
       this.programGainStep = 0;
@@ -703,6 +704,10 @@ class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
           order: this.programEventOrder++,
         });
         this.scheduledProgramGains.sort((left, right) => left.at - right.at || left.order - right.order);
+        break;
+      case "appleLoudness":
+        this.appleLoudness=!!msg.enabled;
+        this.setProgramTarget(this.programMetadataGain,ramp);
         break;
       case "programEnabled":
         this.programEnabled = !!msg.enabled;

@@ -508,6 +508,7 @@ function ThemedPlayer(p: PlayerProps) {
           {heading("播放")}
           <View style={[s.group, { backgroundColor: c.panel, borderColor: c.line }]}>
             {toggle("音量平衡", "节目参考只衰减，保持声部比例；指定空间格式另含 +1.8 dB 输出校准，仍受输出保护", p.volumeBalanceEnabled, p.setVolumeBalance, p.busy)}
+            {toggle("对齐 Apple 响度", "音量平衡开启时额外增加 0.7 dB，空间节目补偿为 +2.5 dB", p.volumeBalanceEnabled&&!p.authoredPlayback&&p.appleLoudnessEnabled, p.setAppleLoudness, p.busy||!p.volumeBalanceEnabled||p.authoredPlayback===true)}
             {divider()}
             {actionRow("repeat", "播放模式", PLAYBACK_MODE_LABELS[p.playbackMode], () => p.setPlaybackMode(followingPlaybackMode(p.playbackMode)))}
           </View>

@@ -79,6 +79,7 @@ public final class SdaModule: Module {
   Function("setVolume") { (v: Double) in try player.locked { guard v.isFinite && v >= 0 && v <= 1 else { throw SdaError.message("音量无效") }; if player.hasPlayback { _ = try player.command("volume",["volume":v]) }; player.prefs.set(v,forKey:"sda.volume") } }
   Function("setListeningProfile") { (json: String) in try player.locked { try player.saveListeningProfile(json) } }
   Function("setSpatialEnhancement") { (enabled: Bool) in try player.locked { try player.saveSpatialEnhancement(enabled) } }
+  Function("setAppleLoudness") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("appleLoudness",["enabled":v]) }; player.prefs.set(v,forKey:"sda.appleLoudness") } }
   Function("setVolumeBalance") { (v: Bool) in try player.locked { if player.hasPlayback { _ = try player.command("balance",["enabled":v]) }; player.prefs.set(v,forKey:"sda.balance") } }
   Function("setBinauralEnabled") { (enabled: Bool) in try player.locked {
    if player.handle != nil { _ = try player.command("binaural",["enabled":enabled]) }

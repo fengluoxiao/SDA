@@ -60,6 +60,8 @@ with zipfile.ZipFile(ipa)as z:
             assert marker.encode() in runtime, 'Missing scan export in the device executable: '+marker
         assert b'SDAPoissonLine' in z.read(fw+'StandardCyborgFusion')
         assert b'failurePresented' in bundle, 'Native failure sheet would be followed by a second JS alert'
+        assert b'setAppleLoudness' in bundle and b'appleLoudnessEnabled' in bundle, 'Missing Apple loudness UI'
+        assert b'appleLoudness' in runtime and b'setAppleLoudness' in runtime, 'Missing Apple loudness native bridge'
         assert '尚未获得当前侧的有效三维视角'.encode() not in runtime
         assert '已对准右耳'.encode() not in runtime
         links=subprocess.check_output(['otool','-L',str(binary)],text=True)

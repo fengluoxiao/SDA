@@ -200,6 +200,7 @@ declare global {
       nativeRendererLfeMuted?: (muted: boolean) => Promise<boolean>;
       nativeRendererSpeakerMutes?: (names: string[], focus?: string[]) => Promise<boolean>;
       nativeRendererVolume?: (volume: number) => Promise<boolean>;
+      nativeRendererAppleLoudness?: (enabled: boolean) => Promise<boolean>;
       nativeRendererProgramEnabled?: (enabled: boolean) => Promise<boolean>;
       nativeRendererDownmixTrims?: (updates: readonly import("@sda/core").DownmixTrimUpdate[]) => Promise<boolean>;
       nativeRendererProgramGain?: (gain: number, atSample?: number) => Promise<boolean>;
