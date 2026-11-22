@@ -43,7 +43,7 @@ export function ArtworkRightFeather(p: Props) {
   const MaskedView = nativeMask();
   if (!MaskedView || frame.width <= 0 || frame.height <= 0) return null;
   return <MaskedView testID="tablet-artwork-lyrics-feather" pointerEvents="none"
-    style={{ position: "absolute", left: frame.left, top: frame.top, width: frame.width, height: frame.height }}
+    style={{ position: "absolute", left: frame.left - (p.parentLeft ?? 0), top: frame.top - (p.parentTop ?? 0), width: frame.width, height: frame.height }}
     maskElement={<View style={{ flexDirection: "row", width: frame.width, height: frame.height }}>
       <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ width: frame.innerWidth, height: frame.height }} />
       <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ width: frame.outerWidth, height: frame.height, transform: [{ scaleX: -1 }] }} />

@@ -8,7 +8,8 @@
       "app.sda.mobile.sda.SdaModule",
       "app.sda.mobile.sda.SdaAndroidChromeModule",
       "app.sda.mobile.sda.SdaAndroidSymbolModule",
-      "app.sda.mobile.sda.SdaSystemVolumeModule"
+      "app.sda.mobile.sda.SdaSystemVolumeModule",
+      "app.sda.mobile.sda.SdaMotionArtworkModule"
     ]
   },
   "apple": {
@@ -19,7 +20,8 @@
       "SdaMaterialSurfaceModule",
       "SdaNativeSliderModule",
       "SdaNativeStepperModule",
-      "SdaSystemVolumeModule"
+      "SdaSystemVolumeModule",
+      "SdaMotionArtworkModule"
     ]
   }
 }

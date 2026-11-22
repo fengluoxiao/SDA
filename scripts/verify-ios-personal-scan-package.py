@@ -60,6 +60,8 @@ with zipfile.ZipFile(ipa)as z:
             assert marker.encode() in runtime, 'Missing scan export in the device executable: '+marker
         assert b'SDAPoissonLine' in z.read(fw+'StandardCyborgFusion')
         assert b'failurePresented' in bundle, 'Native failure sheet would be followed by a second JS alert'
+        assert b'SdaMotionArtwork' in runtime and b'amdl-motion/1' in runtime, 'Missing embedded motion artwork reader'
+        assert b'motionArtwork' in bundle and b'SdaMotionArtwork' in bundle, 'Missing opt-in motion artwork UI'
         assert b'setAppleLoudness' in bundle and b'appleLoudnessEnabled' in bundle, 'Missing Apple loudness UI'
         assert b'appleLoudness' in runtime and b'setAppleLoudness' in runtime, 'Missing Apple loudness native bridge'
         assert '尚未获得当前侧的有效三维视角'.encode() not in runtime

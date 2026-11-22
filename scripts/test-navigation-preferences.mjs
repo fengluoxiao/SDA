@@ -39,13 +39,13 @@ console.log('Side navigation preference: default off, save order, reload, late-r
 const sides=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true})));
 assert.equal(sides.render().sideTabPosition,'right');await tick();
 sides.render().setSideTabPosition('left');sides.render().setLandscapeSideTabs(false);await tick();
-assert.deepEqual(sides.writes.at(-1),{cardboard:cardboardDefaults,landscapeSideTabs:false,tabletPortraitLayout:false,immersiveSpace:false,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'left'});
+assert.deepEqual(sides.writes.at(-1),{motionArtwork:false,cardboard:cardboardDefaults,landscapeSideTabs:false,tabletPortraitLayout:false,immersiveSpace:false,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'left'});
 const sideReload=harness(Promise.resolve(JSON.stringify(sides.writes.at(-1))));sideReload.render();await tick();
 assert.equal(sideReload.render().sideTabPosition,'left');
 let releasePosition;const sideRace=harness(new Promise(resolve=>{releasePosition=resolve;}));
 sideRace.render().setSideTabPosition('right');releasePosition(JSON.stringify({landscapeSideTabs:true,sideTabPosition:'left'}));await tick();
 assert.equal(sideRace.render().sideTabPosition,'right');assert.equal(sideRace.render().landscapeSideTabs,true);
-assert.deepEqual(sideRace.writes.at(-1),{cardboard:cardboardDefaults,landscapeSideTabs:true,tabletPortraitLayout:false,immersiveSpace:false,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'right'});
+assert.deepEqual(sideRace.writes.at(-1),{motionArtwork:false,cardboard:cardboardDefaults,landscapeSideTabs:true,tabletPortraitLayout:false,immersiveSpace:false,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'right'});
 const invalidSide=harness(Promise.resolve(JSON.stringify({sideTabPosition:'top'})));invalidSide.render();await tick();assert.equal(invalidSide.render().sideTabPosition,'right');
 console.log('Side position: default right, migration, persistence, independent late-read protection passed.');
 
@@ -69,7 +69,7 @@ console.log('Phone portrait layout preference: default-off migration, enable/dis
 const stageDefaults=harness(Promise.resolve(JSON.stringify({landscapeSideTabs:true,tabletPortraitLayout:true,sideTabPosition:'left'})));
 assert.equal(stageDefaults.render().immersiveSpace,false);await tick();assert.equal(stageDefaults.render().immersiveSpace,false);
 stageDefaults.render().setImmersiveSpace(true);await tick();
-assert.deepEqual(stageDefaults.writes.at(-1),{cardboard:cardboardDefaults,landscapeSideTabs:true,tabletPortraitLayout:true,immersiveSpace:true,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'left'});
+assert.deepEqual(stageDefaults.writes.at(-1),{motionArtwork:false,cardboard:cardboardDefaults,landscapeSideTabs:true,tabletPortraitLayout:true,immersiveSpace:true,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'left'});
 const stageReload=harness(Promise.resolve(JSON.stringify(stageDefaults.writes.at(-1))));stageReload.render();await tick();assert.equal(stageReload.render().immersiveSpace,true);
 let releaseStage;const stageRace=harness(new Promise(resolve=>{releaseStage=resolve;}));
 stageRace.render().setImmersiveSpace(true);releaseStage(JSON.stringify({immersiveSpace:false,showChannelSpeakers:false,space120Fps:false,sideTabPosition:'left',tabletPortraitLayout:true}));await tick();
@@ -103,3 +103,7 @@ let releaseVr;const vrRace=harness(new Promise(resolve=>releaseVr=resolve));vrRa
 const vrInvalid=harness(Promise.resolve(JSON.stringify({cardboard:{enabled:'true',eyeDistanceMm:1000,k1:-3,k2:'bad'}})));vrInvalid.render();await tick();assert.equal(vrInvalid.render().cardboard.enabled,false);assert.equal(vrInvalid.render().cardboard.eyeDistanceMm,76);assert.equal(vrInvalid.render().cardboard.k1,0);assert.equal(vrInvalid.render().cardboard.k2,.24);
 for(const file of ['IOSNativeSettings.tsx','AndroidSettings.tsx','IOSPlayer.tsx'])assert.match(readFileSync('apps/mobile/src/'+file,'utf8'),/纸盒 VR/);
 console.log('Cardboard VR: default off, validated calibration, persistence, independent late-read protection and all mobile settings entries passed.');
+
+const motion=harness(Promise.resolve(JSON.stringify({motionArtwork:true})));assert.equal(motion.render().motionArtwork,false);await tick();assert.equal(motion.render().motionArtwork,true);motion.render().setMotionArtwork(false);await tick();assert.equal(motion.writes.at(-1).motionArtwork,false);
+let restoreMotion;const motionRace=harness(new Promise(resolve=>{restoreMotion=resolve;}));motionRace.render().setMotionArtwork(false);restoreMotion(JSON.stringify({motionArtwork:true,landscapeSideTabs:true}));await tick();assert.equal(motionRace.render().motionArtwork,false);assert.equal(motionRace.render().landscapeSideTabs,true);
+console.log("Motion artwork: default off, persistence and late-read protection passed.");

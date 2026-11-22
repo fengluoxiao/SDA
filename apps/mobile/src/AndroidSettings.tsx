@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { androidHeaderLayout } from "./android-chrome-model";
 import { AndroidGlassToggle, AndroidPageHeader, hasAndroidChrome } from "./AndroidChrome";
 import { useNavigationPreferences } from "./navigation-preferences";
+import { supportsEmbeddedMotionArtwork } from "./motion-artwork-capability";
 import renderExperiment from "../ios-experiments/active.json";
 import { androidMaterialTheme } from "./android-material-theme";
 import { CHARACTER_THEMES, useAppTheme } from "./app-theme";
@@ -89,6 +90,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
         {action("重新播放", "arrow.counterclockwise", p.play, p.busy || !p.selectedUri)}
         {action("停止播放", "stop.fill", p.stop, p.busy || !p.playing, true)}
       </View>)}
+      {section("封面", toggle("动态封面", supportsEmbeddedMotionArtwork && navigation.motionArtwork, navigation.setMotionArtwork, !supportsEmbeddedMotionArtwork), supportsEmbeddedMotionArtwork ? "默认使用静态封面；开启后仅播放页静音循环播放内嵌竖版视频，列表仍显示静态封面。" : "此预览仅显示静态封面，动态封面需要原生版本。")}
       {section("播放", <>
         {toggle("音量平衡", p.authoredPlayback?false:p.volumeBalanceEnabled, p.setVolumeBalance, p.busy||p.authoredPlayback===true)}{separator()}
         {toggle("对齐 Apple 响度", p.volumeBalanceEnabled&&!p.authoredPlayback&&p.appleLoudnessEnabled, p.setAppleLoudness, p.busy||!p.volumeBalanceEnabled||p.authoredPlayback===true, "开启后额外增加 0.7 dB；空间节目输出补偿由 +1.8 dB 调整为 +2.5 dB")}{separator()}

@@ -23,6 +23,7 @@ import { SystemClock, SYSTEM_CLOCK_LINE_HEIGHT } from "./SystemClock";
 import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider";
 import { CircularMiniPlayer, CIRCULAR_MINI_PLAYER_LAYOUT } from "./CircularMiniPlayer";
 import { SharedMiniPlayerArtwork, SharedMiniPlayerTransition } from "./SharedMiniPlayerTransition";
+import { EmbeddedMotionArtwork, supportsEmbeddedMotionArtwork } from "./EmbeddedMotionArtwork";
 import { useSharedMiniPlayerTransition } from "./use-shared-mini-player-transition";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
@@ -156,6 +157,8 @@ function ThemedPlayer(p: PlayerProps) {
   const c = Platform.OS === "android" ? { ...palettes[isLight ? "light" : "dark"], bg: md3.bg, panel: md3.panel, ink: md3.ink, muted: md3.muted, line: md3.line, field: md3.panel, accent: md3.primary } : { ...palettes[isLight ? "light" : "dark"], accent: appTheme.accent };
   const pc = { ink: "#ffffff", muted: PLAYER_PROGRESS_PAINT.fillColor, line: PLAYER_PROGRESS_TRACK, field: "rgba(255,255,255,.10)" };
   const [failedArtwork, setFailedArtwork] = useState("");
+  const [motionReadyUri,setMotionReadyUri]=useState("");
+  const onMotionVisible=useCallback((ready:boolean,uri:string)=>setMotionReadyUri(old=>ready?uri:old===uri?"":old),[]);
   const artworkUri = p.metadata.coverUri || "";
   const hasArtwork = !!artworkUri && failedArtwork !== artworkUri;
   const [artworkTone, setArtworkTone] = useState({ uri: "", color: "#303034" });
@@ -207,7 +210,7 @@ function ThemedPlayer(p: PlayerProps) {
   const tabletArtworkKey = `${width}:${height}:${tabletLayout?.coverSize ?? 0}:${tabletLandscape}`;
   const measureTabletArtwork = useCallback(() => {
     const surface = surfaceRef.current;
-    if (!tabletPlayer || !landscapePlayer || !surface) { setMeasuredTabletArtwork(null); return; }
+    if (!tabletPlayer || !surface) { setMeasuredTabletArtwork(null); return; }
     tabletArtworkRef.current?.measureLayout(surface, (left, top, width, height) => {
       if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return;
       const frame = { left, top, width, height };
@@ -248,6 +251,7 @@ function ThemedPlayer(p: PlayerProps) {
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
+  const tabletMotionArtwork = <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} active={immersiveHome && playing && !p.ended && !p.busy && !p.preparingAudio && !settings && (!lyricsPageSelected || landscapePlayer)} />;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -400,7 +404,7 @@ function ThemedPlayer(p: PlayerProps) {
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>
-    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /></View> : <View style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /><EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} active={immersiveHome && playing && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!tabletPlayer || tabletLandscape) && (!lyricsPageSelected || landscapePlayer)} /></View> : <View style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     </View>
   </View>}
   {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
@@ -443,8 +447,8 @@ function ThemedPlayer(p: PlayerProps) {
           </TabletLandscapePlayer> : <>
           <View ref={playerRowRef} onLayout={measureLandscapeLyrics} testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
-            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }]}>
-              {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
+            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }, supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork && { overflow: "visible" }]}>
+              {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor} overlay={tabletMotionArtwork} motionEnabled={supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork} motionVisible={navigationPreferences.motionArtwork && motionReadyUri === p.selectedUri}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </View>}
             {!tabletPlayer && !hasArtwork && <Animated.View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ opacity: sharedMini.mainOpacity }}>{fallbackArtwork}</Animated.View>}
           </Pressable>
@@ -538,7 +542,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}
-          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("炫彩风格", "柔光背景与彩色声源标记", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}{divider()}{toggle("纸盒 VR", "空间全屏时横屏双眼显示，支持回中和镜片校准", navigationPreferences.cardboard.enabled, enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled }))}{divider()}{toggle("显示声道音箱", "显示原有音箱模型，帮助辨认声道方位", navigationPreferences.showChannelSpeakers, navigationPreferences.setShowChannelSpeakers)}{divider()}{toggle("120fps 空间视图", sceneDisplayCapabilities().supports120 ? "开启后请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps", sceneDisplayCapabilities().supports120 && navigationPreferences.space120Fps, navigationPreferences.setSpace120Fps, !sceneDisplayCapabilities().supports120)}</View>
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("动态封面", "播放页使用内嵌竖版视频，列表保留静态封面", supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork, navigationPreferences.setMotionArtwork, !supportsEmbeddedMotionArtwork)}{divider()}{toggle("炫彩风格", "柔光背景与彩色声源标记", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}{divider()}{toggle("纸盒 VR", "空间全屏时横屏双眼显示，支持回中和镜片校准", navigationPreferences.cardboard.enabled, enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled }))}{divider()}{toggle("显示声道音箱", "显示原有音箱模型，帮助辨认声道方位", navigationPreferences.showChannelSpeakers, navigationPreferences.setShowChannelSpeakers)}{divider()}{toggle("120fps 空间视图", sceneDisplayCapabilities().supports120 ? "开启后请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps", sceneDisplayCapabilities().supports120 && navigationPreferences.space120Fps, navigationPreferences.setSpace120Fps, !sceneDisplayCapabilities().supports120)}</View>
           <View style={[s.group, { backgroundColor: c.panel }]}>{!tabletDevice && <>{toggle("平板风格界面", "竖屏使用平板布局，横屏只改为模糊背景，封面保持原样；关闭恢复原有样式", navigationPreferences.tabletPortraitLayout, navigationPreferences.setTabletPortraitLayout)}{divider()}</>}{toggle("横屏侧边导航", "横屏时在所选侧显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}{divider()}{actionRow("sidebar.left", "导航栏位置", navigationPreferences.sideTabPosition === "left" ? "左边" : "右边", () => Alert.alert("导航栏位置", undefined, [{ text: "左边", onPress: () => navigationPreferences.setSideTabPosition("left") }, { text: "右边", onPress: () => navigationPreferences.setSideTabPosition("right") }, { text: "取消", style: "cancel" }]))}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>

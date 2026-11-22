@@ -5,6 +5,7 @@ import { supportsIOSGlass } from "./ios-platform-version";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { IOSNativePage, hasNativePageHeader } from "./IOSNativePage";
 import { useNavigationPreferences } from "./navigation-preferences";
+import { supportsEmbeddedMotionArtwork } from "./motion-artwork-capability";
 import { CHARACTER_THEMES, useAppTheme, validTheme } from "./app-theme";
 import React, { useState, useEffect } from "react";
 import { Alert, Modal, Platform, PlatformColor, StyleSheet, View, useWindowDimensions } from "react-native";
@@ -184,6 +185,9 @@ function NativeSettingsForm({ player: p, onClose }: { player: PlayerProps; onClo
         <Button label="重新播放" systemImage="arrow.counterclockwise" onPress={() => { onClose(); p.play(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.selectedUri)]} />
         <Button label="停止播放" systemImage="stop.fill" role="destructive" onPress={() => { onClose(); p.stop(); }} modifiers={[buttonStyle("borderless"), frame({ maxWidth: width, minHeight: 44 }), disabled(p.busy || !p.playing)]} />
       </HStack>
+    </Section>
+    <Section title="封面" footer={<Text>{supportsEmbeddedMotionArtwork ? "默认使用静态封面。开启后，播放页静音循环播放文件内嵌的竖版动态封面；列表仍显示静态封面。" : "此预览仅显示静态封面，动态封面需要原生版本。"}</Text>}>
+      <Toggle label="动态封面" isOn={supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork} onIsOnChange={navigationPreferences.setMotionArtwork} modifiers={[disabled(!supportsEmbeddedMotionArtwork)]} />
     </Section>
     <Section title="播放" footer={<Text>{p.authoredPlayback?"当前 SDAR 由文件混音参数控制，已写入音频的处理不重复执行。":"节目参考只衰减；已识别的空间节目另含 +1.8 dB 输出校准，仍受峰值保护。Audio Vivid 在导入时完成整曲响度分析，播放、定位和重复播放使用同一参考。"}</Text>}>
       <Toggle label="音量平衡" isOn={p.authoredPlayback?false:p.volumeBalanceEnabled} onIsOnChange={p.setVolumeBalance} modifiers={[tint(appTheme.accent), disabled(p.busy||p.authoredPlayback===true)]} />
