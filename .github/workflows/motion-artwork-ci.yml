@@ -2,24 +2,6 @@ name: Motion artwork CI
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/ios-personal-hrtf-local-20261119
-    paths:
-      - .github/workflows/motion-artwork-ci.yml
-      - apps/mobile/src/ArtworkEdgeBlend.tsx
-      - apps/mobile/src/EmbeddedMotionArtwork.tsx
-      - apps/mobile/src/motion-artwork-capability.ts
-      - apps/mobile/src/IOSPlayer.tsx
-      - apps/mobile/src/IOSNativeSettings.tsx
-      - apps/mobile/src/AndroidSettings.tsx
-      - apps/mobile/src/navigation-preferences.tsx
-      - apps/mobile/modules/sda-core/**
-      - apps/mobile/test/motion-artwork.test.mjs
-      - scripts/check-embedded-motion-artwork.sh
-      - scripts/select-apple-toolchain.py
-      - scripts/test/embedded-motion-artwork.swift
-      - scripts/test/fixtures/motion-artwork-tall.mp4
 
 permissions:
   contents: read

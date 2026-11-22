@@ -4,21 +4,21 @@ import { requireNativeView } from "expo";
 import { useNavigationPreferences } from "./navigation-preferences";
 export { supportsEmbeddedMotionArtwork } from "./motion-artwork-capability";
 
-type Props = {sourceUri:string;active:boolean;onVisible?(ready:boolean,uri:string):void};
-type NativeProps = Props & {onStatus(event:NativeSyntheticEvent<{uri:string;ready:boolean;unavailable?:boolean}>):void;style:object;pointerEvents:"none"};
+type Props = {sourceUri:string;visible:boolean;active:boolean;onVisible?(ready:boolean,uri:string):void};
+type NativeProps = Omit<Props,"visible"> & {onStatus(event:NativeSyntheticEvent<{uri:string;ready:boolean;unavailable?:boolean}>):void;style:object;pointerEvents:"none"};
 const NativeArtwork=(globalThis as any).expo?.modules?.SdaMotionArtwork
  ? (requireNativeView as unknown as <P>(name:string)=>React.ComponentType<P>)<NativeProps>("SdaMotionArtwork") : null;
 
 // Only the large playback artwork mounts this overlay. Static posters, library
 // rows and mini-player artwork stay in their existing Image components.
-export function EmbeddedMotionArtwork({sourceUri,active,onVisible}:Props) {
+export function EmbeddedMotionArtwork({sourceUri,visible,active,onVisible}:Props) {
  const {motionArtwork}=useNavigationPreferences();
  const [foreground,setForeground]=useState(AppState.currentState==="active");
  useEffect(()=>{const subscription=AppState.addEventListener("change",value=>setForeground(value==="active"));return ()=>subscription.remove();},[]);
- if(!motionArtwork || !NativeArtwork || !active || !foreground || !sourceUri.startsWith("file:"))return null;
- return <MotionFrame key={sourceUri} sourceUri={sourceUri} active onVisible={onVisible} />;
+ if(!motionArtwork || !NativeArtwork || !visible || !foreground || !sourceUri.startsWith("file:"))return null;
+ return <MotionFrame key={sourceUri} sourceUri={sourceUri} active={active} onVisible={onVisible} />;
 }
-function MotionFrame({sourceUri,active,onVisible}:Props) {
+function MotionFrame({sourceUri,active,onVisible}:Omit<Props,"visible">) {
  const [ready,setReady]=useState(false),[failed,setFailed]=useState(false);
  useEffect(()=>()=>onVisible?.(false,sourceUri),[sourceUri,onVisible]);
  if(!NativeArtwork || failed)return null;

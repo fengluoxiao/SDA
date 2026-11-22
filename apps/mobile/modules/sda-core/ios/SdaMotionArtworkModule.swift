@@ -15,7 +15,7 @@ public final class SdaMotionArtworkModule: Module {
 final class SdaMotionArtworkView: ExpoView {
  let onStatus=EventDispatcher()
  var sourceUri="" {didSet{if sourceUri != oldValue {stop();startIfNeeded()}}}
- var active=false {didSet{if active {startIfNeeded()}else{stop()}}}
+ var active=false {didSet{if active {startIfNeeded()}else{pause()}}}
  private let videoLayer=AVPlayerLayer()
  private var source:MotionArtworkSource?, player:AVQueuePlayer?, loop:AVPlayerLooper?
  private var ready:NSKeyValueObservation?, failure:NSKeyValueObservation?, observers=[NSObjectProtocol]()
@@ -24,13 +24,15 @@ final class SdaMotionArtworkView: ExpoView {
   super.init(appContext:appContext);clipsToBounds=true;isUserInteractionEnabled=false
   videoLayer.videoGravity = .resizeAspectFill;layer.addSublayer(videoLayer)
   let center=NotificationCenter.default
-  observers.append(center.addObserver(forName:UIApplication.willResignActiveNotification,object:nil,queue:.main){[weak self]_ in self?.stop()})
+  observers.append(center.addObserver(forName:UIApplication.willResignActiveNotification,object:nil,queue:.main){[weak self]_ in self?.pause()})
   observers.append(center.addObserver(forName:UIApplication.didBecomeActiveNotification,object:nil,queue:.main){[weak self]_ in self?.startIfNeeded()})
  }
  override func layoutSubviews(){super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;CATransaction.commit()}
  override func didMoveToWindow(){super.didMoveToWindow();if window==nil{stop()}else{startIfNeeded()}}
  private func startIfNeeded() {
-  guard active,window != nil,UIApplication.shared.applicationState == .active,player==nil,!starting,let url=URL(string:sourceUri),url.isFileURL else{return}
+  guard window != nil,UIApplication.shared.applicationState == .active,let url=URL(string:sourceUri),url.isFileURL else{return}
+  if let player {if active {player.play()};return}
+  guard active,!starting else{return}
   starting=true;let token=generation,uri=sourceUri
   DispatchQueue.global(qos:.utility).async { [weak self] in
    let prepared=MotionArtworkSource(url:url)
@@ -59,5 +61,6 @@ final class SdaMotionArtworkView: ExpoView {
   player?.pause();loop?.disableLooping();loop=nil;player?.removeAllItems();videoLayer.player=nil;player=nil
   source?.close();source=nil
  }
+ private func pause() {player?.pause()}
  deinit {for observer in observers{NotificationCenter.default.removeObserver(observer)};player?.pause();loop?.disableLooping();source?.close()}
 }

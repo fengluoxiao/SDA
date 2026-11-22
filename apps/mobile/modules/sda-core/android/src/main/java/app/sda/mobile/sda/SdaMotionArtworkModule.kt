@@ -50,12 +50,12 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private var videoHeight=0
  init {addView(texture,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));texture.surfaceTextureListener=this;texture.isOpaque=false;isClickable=false;clipChildren=true}
  fun updateSource(value:String){if(source!=value){source=value;stop();startIfNeeded()}}
- fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else stop()}
+ fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else player?.pause()}
  override fun onAttachedToWindow(){super.onAttachedToWindow();react?.addLifecycleEventListener(this);startIfNeeded()}
  override fun onDetachedFromWindow(){react?.removeLifecycleEventListener(this);stop();super.onDetachedFromWindow()}
  override fun onWindowVisibilityChanged(visibility:Int){super.onWindowVisibilityChanged(visibility);if(visibility==View.VISIBLE)startIfNeeded()else stop()}
  override fun onHostResume(){foreground=true;startIfNeeded()}
- override fun onHostPause(){foreground=false;stop()}
+ override fun onHostPause(){foreground=false;player?.pause()}
  override fun onHostDestroy(){foreground=false;stop()}
  private fun crop(){
   if(videoWidth<=0 || videoHeight<=0 || texture.width<=0 || texture.height<=0)return
@@ -63,7 +63,8 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   val matrix=Matrix();matrix.setScale(if(ratio>viewport)ratio/viewport else 1f,if(ratio<viewport)viewport/ratio else 1f,texture.width/2f,texture.height/2f);texture.setTransform(matrix)
  }
  private fun startIfNeeded(){
-  if(!active || !foreground || !isAttachedToWindow || windowVisibility!=View.VISIBLE || !texture.isAvailable || player!=null || starting)return
+  if(player!=null){if(active && foreground && isAttachedToWindow && windowVisibility==View.VISIBLE)player?.start();return}
+  if(!active || !foreground || !isAttachedToWindow || windowVisibility!=View.VISIBLE || !texture.isAvailable || starting)return
   val uri=Uri.parse(source);if(uri.scheme!="file")return
   val path=uri.path ?: return;val token=generation;val current=source;starting=true
   reader.execute {
