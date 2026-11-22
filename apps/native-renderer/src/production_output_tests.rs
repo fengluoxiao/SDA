@@ -1,6 +1,36 @@
 //! Common output controls remain independent of source-group balance.
 use super::*;
 #[test]
+fn apple_loudness_live_toggle_output_audit() {
+    let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
+    for codec in ["alac","eac3","mpegh"] {for amplitude in [0.003_f32,0.3,4.0] {
+        let mut base=Engine::new(48000,2);let mut apple=Engine::new(48000,2);
+        for e in [&mut base,&mut apple] {
+            e.set_program_codec(codec.into());e.program_enabled=true;e.program_metadata_gain=0.5;e.set_program_target(0.5,true);
+            declare_makeup_source(e,codec!="alac",if codec=="alac"{"FrontLeft"}else{""});
+            e.output_active=true;e.paused=false;
+        }
+        let measure=|a:&mut Engine,b:&mut Engine| {
+            let mut energy=[0_f64;2];let mut peaks=[0_f32;2];
+            for i in 0..24000 {
+                let x=amplitude*(i as f32*0.13).sin();
+                a.advance_output_envelopes();b.advance_output_envelopes();
+                let values=[a.process_final_output([x,-0.4*x]),b.process_final_output([x,-0.4*x])];
+                if i>=6000 {for j in 0..2 {for sample in values[j] {energy[j]+=f64::from(sample).powi(2);peaks[j]=peaks[j].max(sample.abs());}}}
+            }
+            (10.*(energy[1]/energy[0]).log10(),peaks)
+        };
+        let _=measure(&mut base,&mut apple);
+        protocol::apply_render_command(&mut apple,render_command::RenderCommand::Command(Command::SetAppleLoudness{enabled:true}),&fifo,&telemetry);
+        let (delta,peak)=measure(&mut base,&mut apple);
+        if amplitude<1. {assert!((delta-0.7).abs()<0.001,"live {codec} delta {delta}");}
+        for e in [&mut base,&mut apple] {protocol::apply_render_command(e,render_command::RenderCommand::Command(Command::SetProgramEnabled{enabled:false}),&fifo,&telemetry);}
+        let (disabled,_)=measure(&mut base,&mut apple);
+        assert!(disabled.abs()<0.001,"disabled {codec} delta {disabled}");
+        println!("APPLE_GAIN_AUDIT codec={codec} inputPeak={amplitude} enabledDeltaDb={delta:.6} balanceOffDeltaDb={disabled:.6} outputPeak={peak:?}");
+    }}
+}
+#[test]
 fn apple_loudness_adds_only_point_seven_db_to_every_balanced_programme() {
     let fifo=stereo_fifo::StereoFifo::new(4096);let telemetry=RuntimeTelemetry::default();
     for codec in ["eac3","truehd","mlpa","mpegh","av3a","ac4","adm","alac","mp3","aac","flac","pcm","vorbis","dts","future-object-format"] {
