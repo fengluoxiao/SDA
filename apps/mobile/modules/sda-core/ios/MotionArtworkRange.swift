@@ -6,6 +6,9 @@ import CoreFoundation
 struct MotionArtworkRange {
  let offset: UInt64, length: UInt64
  static let maximumBytes: UInt64 = 64 * 1024 * 1024
+ // Retain the schema as byte storage so release stripping cannot remove the
+ // contract marker from the packaged executable.
+ private static let schemaBytes: [UInt8] = [97,109,100,108,45,109,111,116,105,111,110,47,49]
  private static let identifier = Data([0x0c,0x4d,0x65,0xf1,0x6c,0x1d,0x4f,0xd3,0x9d,0x46,0x8a,0xbd,0xb4,0x82,0x93,0x4e])
  static func find(in file: FileHandle, size: UInt64) throws -> MotionArtworkRange? {
   func bytes(_ at: UInt64,_ count: Int) throws -> Data {
@@ -28,7 +31,7 @@ struct MotionArtworkRange {
      let jsonSize=number(prefix,16,4)
      if jsonSize>0,jsonSize<=16384,jsonSize<=length-header-20,
         let object=try? JSONSerialization.jsonObject(with:bytes(at+header+20,Int(jsonSize))) as? [String:Any],
-        object["schema"] as? String == "amdl-motion/1",object["layout"] as? String == "tall",object["mime"] as? String == "video/mp4",
+        object["schema"] as? String == String(decoding:schemaBytes,as:UTF8.self),object["layout"] as? String == "tall",object["mime"] as? String == "video/mp4",
         let declared=object["length"] as? NSNumber, CFGetTypeID(declared) != CFBooleanGetTypeID() {
       let start=at+header+20+jsonSize, remaining=length-header-20-jsonSize
       if remaining>=8,remaining<=maximumBytes,declared.doubleValue==Double(remaining) {
