@@ -1,6 +1,15 @@
-export const ARTWORK_AMBIENT_PAINT = {
+export type ArtworkAmbientPaint = { imageOpacity: number; scrimColor: string };
+
+export const ARTWORK_AMBIENT_PAINT: ArtworkAmbientPaint = {
   imageOpacity: .45,
   scrimColor: "rgba(0,0,0,.24)",
+} as const;
+
+// Portrait tablet layout has no separate album pane, so its backdrop must stay
+// visibly tied to the artwork instead of washing out to the flat tone.
+export const TABLET_AMBIENT_PAINT: ArtworkAmbientPaint = {
+  imageOpacity: .72,
+  scrimColor: "rgba(0,0,0,.12)",
 } as const;
 
 export const ARTWORK_BACKDROP_FEATHER_FRACTION = .35;

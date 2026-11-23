@@ -1,6 +1,6 @@
 import React from "react";
 import { View } from "react-native";
-import { PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
+import { ArtworkBottomFeather, PhoneLandscapeBlur } from "./PhoneLandscapeBlur";
 
 export type ArtworkFrame = { left: number; top: number; width: number; height: number };
 
@@ -16,7 +16,7 @@ export function ArtworkEdgeBlend({ children, overlay, motionEnabled, motionVisib
   return <View testID="tablet-landscape-artwork-blend" style={{ width: "100%", height: "100%" }}>
     {children}
     {overlay}
-    {motionVisible && !landscape ? <TabletArtworkFeather uri={uri} surfaceWidth={surfaceWidth} surfaceHeight={surfaceHeight}
+    {motionVisible && !landscape ? <ArtworkBottomFeather uri={uri} surfaceWidth={surfaceWidth} surfaceHeight={surfaceHeight}
       artworkLeft={frame.left} artworkTop={frame.top} artworkWidth={frame.width} artworkHeight={frame.height}
       parentLeft={frame.left} parentTop={frame.top} backgroundColor={backgroundColor} /> : landscape && <PhoneLandscapeBlur edge uri={uri} surfaceWidth={surfaceWidth} surfaceHeight={surfaceHeight}
       artworkLeft={frame.left} artworkTop={frame.top} artworkWidth={frame.width} artworkHeight={frame.height}

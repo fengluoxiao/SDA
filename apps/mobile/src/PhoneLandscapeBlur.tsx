@@ -1,11 +1,12 @@
 import React from "react";
 import { Image, Platform, StyleSheet, View } from "react-native";
-import { phoneLandscapeBlurEdge, artworkBackdropBottomEdge, artworkRightContinuation, ARTWORK_AMBIENT_PAINT } from "./phone-landscape-blur-model";
+import { phoneLandscapeBlurEdge, artworkBackdropBottomEdge, artworkRightContinuation, ARTWORK_AMBIENT_PAINT, TABLET_AMBIENT_PAINT, type ArtworkAmbientPaint } from "./phone-landscape-blur-model";
 
 type Props = {
   uri: string; surfaceWidth: number; surfaceHeight: number;
   artworkLeft: number; artworkTop: number; artworkWidth: number; artworkHeight: number;
   edge?: boolean; edgeWidth?: number; edgeDirection?: "right" | "bottom"; edgeHeight?: number; testID?: string; parentLeft?: number; parentTop?: number; backgroundColor?: string;
+  paint?: ArtworkAmbientPaint;
 };
 
 function nativeMask() {
@@ -21,12 +22,13 @@ function nativeMask() {
 // The edge samples the same screen-aligned backdrop as the background. A small
 // alpha mask blends into the sharp cover without moving or resizing that cover.
 export function PhoneLandscapeBlur(p: Props) {
+  const paint=p.paint??ARTWORK_AMBIENT_PAINT;
   const frame = p.edgeDirection === "bottom"
     ? artworkBackdropBottomEdge(p.artworkLeft, p.artworkTop, p.artworkWidth, p.artworkHeight, p.edgeHeight)
     : phoneLandscapeBlurEdge(p.artworkLeft, p.artworkTop, p.artworkWidth, p.artworkHeight, p.edgeWidth);
   const background = <View style={{ position: "absolute", left: p.edge ? -frame.left : 0, top: p.edge ? -frame.top : 0, width: p.surfaceWidth, height: p.surfaceHeight, backgroundColor: p.backgroundColor ?? "#303034" }}>
-    <Image source={{ uri: p.uri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
+    <Image source={{ uri: p.uri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: paint.imageOpacity }]} />
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: paint.scrimColor }]} />
   </View>;
   if (!p.edge) return <View testID="phone-landscape-blur-background" pointerEvents="none" style={StyleSheet.absoluteFill}>{background}</View>;
   const MaskedView = nativeMask();
@@ -64,4 +66,10 @@ export function TabletArtworkFeather(p: Props) {
     <PhoneLandscapeBlur {...p} edge edgeDirection="bottom" testID="tablet-artwork-controls-feather"
       artworkWidth={p.artworkWidth + frame.outerWidth} />
   </>;
+}
+
+/** Portrait tablet covers only need the control-side ramp; no side pane follows them. */
+export function ArtworkBottomFeather(p: Props) {
+  return <PhoneLandscapeBlur {...p} edge edgeDirection="bottom" paint={TABLET_AMBIENT_PAINT} testID="tablet-artwork-controls-feather"
+    artworkWidth={p.artworkWidth} />;
 }

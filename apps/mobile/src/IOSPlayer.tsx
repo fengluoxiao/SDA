@@ -11,7 +11,7 @@ import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
 import { PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
-import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT } from "./phone-landscape-blur-model";
+import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT, TABLET_AMBIENT_PAINT } from "./phone-landscape-blur-model";
 import { isTabletPlayer, tabletPlayerLayout, tabletImmersivePlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
 import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
@@ -400,8 +400,8 @@ function ThemedPlayer(p: PlayerProps) {
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
     {tabletPlayer && <>
-      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />}
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
+      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: TABLET_AMBIENT_PAINT.imageOpacity }]} />}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: TABLET_AMBIENT_PAINT.scrimColor }]} />
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>
@@ -448,7 +448,7 @@ function ThemedPlayer(p: PlayerProps) {
           </TabletLandscapePlayer> : <>
           <View ref={playerRowRef} onLayout={measureLandscapeLyrics} testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
-            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }, supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork && { overflow: "visible" }]}>
+            {tabletLayout && <View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18 }, supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork && np.motionCover]}>
               {hasArtwork ? <ArtworkEdgeBlend landscape={landscapePlayer} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} frame={tabletArtworkFrame} backgroundColor={fadeColor} overlay={tabletMotionArtwork} motionEnabled={supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork} motionVisible={navigationPreferences.motionArtwork && motionReadyUri === p.selectedUri}><Image source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={{ width: "100%", height: "100%", borderRadius: 18 }} /></ArtworkEdgeBlend> : <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </View>}
             {!tabletPlayer && !hasArtwork && <Animated.View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ opacity: sharedMini.mainOpacity }}>{fallbackArtwork}</Animated.View>}
@@ -636,6 +636,7 @@ const np = StyleSheet.create({
   artwork: { position: "absolute", top: 0, left: 0, width: "100%" },
   defaultArtwork: { position: "absolute", top: 0, left: 0, width: "100%", backgroundColor: "#303034", alignItems: "center", justifyContent: "center" },
   cover: { flexShrink: 0, alignSelf: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 14 }, shadowOpacity: .26, shadowRadius: 22 },
+  motionCover: { elevation: 0, shadowOpacity: 0, shadowRadius: 0 },
   coverImage: { width: "100%", height: "100%", borderRadius: 9 }, emptyCover: { backgroundColor: "transparent", alignItems: "center", justifyContent: "center" },
   metadata: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 8 }, title: { color: "#fff", fontSize: 20, fontWeight: "600", lineHeight: 26 }, artist: { color: "rgba(255,255,255,.58)", fontSize: 19, marginTop: 2 },
   action: { width: 48, height: 44, alignItems: "center", justifyContent: "center" }, smallAction: { width: 32, height: 32, borderRadius: 16, backgroundColor: "transparent", alignItems: "center", justifyContent: "center" },
