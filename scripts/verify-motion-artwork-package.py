@@ -26,7 +26,7 @@ with zipfile.ZipFile(ipa) as z:
 
 build_info = json.loads(Path("ios-artifacts/build-info.json").read_text(encoding="utf-8"))
 assert build_info["appVersion"] == "0.9.40"
-assert build_info["appBuildNumber"] == "980"
+assert build_info["appBuildNumber"] == "981"
 assert build_info["packagingMode"] == "motion-artwork-device-package"
 assert build_info["testsExecuted"] is False
 assert build_info["nativeDispatchStackRegression"]["passed"] is False

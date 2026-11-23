@@ -114,6 +114,7 @@ jobs:
       - name: Install dependencies and prepare resources
         run: |
           pnpm install --frozen-lockfile --config.node-linker=hoisted
+          node scripts/patch-expo-module-scan-timeout.mjs
           node scripts/prepare-ios-assets.mjs
       - name: Verify dynamic artwork UI contracts
         run: node --test apps/mobile/test/motion-artwork.test.mjs
