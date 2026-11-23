@@ -52,7 +52,7 @@ jobs:
     if: ${{ github.event_name == 'push' || inputs.scope == 'motion-artwork' || github.event.client_payload.scope == 'motion-artwork' }}
     name: iOS motion artwork package
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 100
     env:
       CI: '1'
       CARGO_INCREMENTAL: '0'
