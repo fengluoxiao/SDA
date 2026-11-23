@@ -25,6 +25,7 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  const player=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.match(player,/np\.motionCover/);assert.match(player,/tabletPlayer && !tabletMotionBackdrop/);
+ assert.match(player,/tabletPortraitMotion && hasArtwork/);assert.match(player,/TABLET_AMBIENT_PAINT\.imageOpacity/);assert.match(player,/tablet-motion-ambient-artwork/);
  assert.match(player,/const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop/);
  assert.match(player,/opacity: tabletPlayer && !tabletLandscape && !tabletPortraitMotion \? 0 : 1/);
  assert.match(player,/tabletLandscape \|\| tabletPortraitMotion/);
