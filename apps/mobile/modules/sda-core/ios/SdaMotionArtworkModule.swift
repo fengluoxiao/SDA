@@ -28,7 +28,7 @@ final class SdaMotionArtworkView: ExpoView {
   observers.append(center.addObserver(forName:UIApplication.didBecomeActiveNotification,object:nil,queue:.main){[weak self]_ in self?.startIfNeeded()})
  }
  override func layoutSubviews(){super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;CATransaction.commit()}
- override func didMoveToWindow(){super.didMoveToWindow();if window==nil{stop()}else{startIfNeeded()}}
+ override func didMoveToWindow(){super.didMoveToWindow();if window==nil{pause()}else{startIfNeeded()}}
  private func startIfNeeded() {
   guard window != nil,UIApplication.shared.applicationState == .active,let url=URL(string:sourceUri),url.isFileURL else{return}
   if let player {if active {player.play()};return}

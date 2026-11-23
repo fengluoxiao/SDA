@@ -18,6 +18,8 @@ on:
         description: Optional pinned runtime source to package with this workflow
         required: false
         type: string
+  repository_dispatch:
+    types: [motion-artwork-package]
   push:
     branches: [feat/android-port, codex/ios-personal-hrtf-local-20261119]
     paths:
@@ -47,7 +49,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   motion-artwork-ios:
-    if: ${{ github.event_name == 'push' || inputs.scope == 'motion-artwork' }}
+    if: ${{ github.event_name == 'push' || inputs.scope == 'motion-artwork' || github.event.client_payload.scope == 'motion-artwork' }}
     name: iOS motion artwork package
     runs-on: xcode-27
     timeout-minutes: 75
@@ -65,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.client_payload.source_ref || github.sha }}
           submodules: recursive
       - name: Select Xcode and verify iOS SDK
         run: python3 scripts/select-apple-toolchain.py --xcode-version '27.1' --ios-sdk-version '27.1' --host-major 27 --record-dir ios-artifacts

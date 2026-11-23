@@ -19,11 +19,11 @@ test("portrait motion stays under the same tablet right/bottom feather and prese
 });
 test("dynamic artwork is opt-in and only mounted on the large player cover",()=>{
  const prefs=readFileSync("apps/mobile/src/navigation-preferences.tsx","utf8");assert.match(prefs,/const defaults[^\n]*motionArtwork: false/);
-const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/!visible/);assert.match(overlay,/!foreground/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{sourceUri\} sourceUri=\{sourceUri\} active/);assert.match(overlay,/active=\{active\} pointerEvents/);
+const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{sourceUri\} sourceUri=\{sourceUri\}/);assert.match(overlay,/active=\{visible && active && foreground\}/);assert.match(overlay,/active=\{active\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);
  const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,2);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
  const rows=ui.slice(ui.indexOf("track.metadata.coverUri ?"));assert(!rows.split("</ScrollView>")[0].includes("EmbeddedMotionArtwork"));
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
- assert.match(readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8"),/np\.motionCover/);assert.match(readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8"),/TABLET_AMBIENT_PAINT\.imageOpacity/);
+ const player=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.match(player,/np\.motionCover/);assert.match(player,/tabletPlayer && !tabletMotionBackdrop/);
  const blur=readFileSync("apps/mobile/src/PhoneLandscapeBlur.tsx","utf8");assert.match(blur,/export function ArtworkBottomFeather/);assert.match(blur,/edgeDirection="bottom"/);
 });

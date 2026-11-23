@@ -11,7 +11,7 @@ import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
 import { PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
-import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT, TABLET_AMBIENT_PAINT } from "./phone-landscape-blur-model";
+import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT } from "./phone-landscape-blur-model";
 import { isTabletPlayer, tabletPlayerLayout, tabletImmersivePlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
 import { usePlayerSurfaceLayout } from "./use-player-surface-layout";
@@ -252,6 +252,7 @@ function ThemedPlayer(p: PlayerProps) {
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
   const motionSurfaceVisible = immersiveHome && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!lyricsPageSelected || landscapePlayer);
+  const tabletMotionBackdrop = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletMotionArtwork = <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && !!tabletLayout && !landscapePlayer} active={motionSurfaceVisible && playing && !!tabletLayout && !landscapePlayer} />;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
@@ -399,9 +400,9 @@ function ThemedPlayer(p: PlayerProps) {
   <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {tabletPlayer && <>
-      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: TABLET_AMBIENT_PAINT.imageOpacity }]} />}
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: TABLET_AMBIENT_PAINT.scrimColor }]} />
+    {tabletPlayer && !tabletMotionBackdrop && <>
+      {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>

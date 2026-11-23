@@ -52,8 +52,8 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  fun updateSource(value:String){if(source!=value){source=value;stop();startIfNeeded()}}
  fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else player?.pause()}
  override fun onAttachedToWindow(){super.onAttachedToWindow();react?.addLifecycleEventListener(this);startIfNeeded()}
- override fun onDetachedFromWindow(){react?.removeLifecycleEventListener(this);stop();super.onDetachedFromWindow()}
- override fun onWindowVisibilityChanged(visibility:Int){super.onWindowVisibilityChanged(visibility);if(visibility==View.VISIBLE)startIfNeeded()else stop()}
+ override fun onDetachedFromWindow(){react?.removeLifecycleEventListener(this);pause();super.onDetachedFromWindow()}
+ override fun onWindowVisibilityChanged(visibility:Int){super.onWindowVisibilityChanged(visibility);if(visibility==View.VISIBLE)startIfNeeded()else pause()}
  override fun onHostResume(){foreground=true;startIfNeeded()}
  override fun onHostPause(){foreground=false;player?.pause()}
  override fun onHostDestroy(){foreground=false;stop()}
@@ -90,6 +90,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   }
  }
  private fun stop(){generation++;starting=false;player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
+ private fun pause(){player?.pause()}
  override fun onSurfaceTextureAvailable(surface:SurfaceTexture,width:Int,height:Int){startIfNeeded()}
  override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop()}
  override fun onSurfaceTextureDestroyed(surface:SurfaceTexture):Boolean{stop();return true}

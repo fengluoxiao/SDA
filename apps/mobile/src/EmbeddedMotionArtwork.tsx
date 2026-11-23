@@ -15,8 +15,10 @@ export function EmbeddedMotionArtwork({sourceUri,visible,active,onVisible}:Props
  const {motionArtwork}=useNavigationPreferences();
  const [foreground,setForeground]=useState(AppState.currentState==="active");
  useEffect(()=>{const subscription=AppState.addEventListener("change",value=>setForeground(value==="active"));return ()=>subscription.remove();},[]);
- if(!motionArtwork || !NativeArtwork || !visible || !foreground || !sourceUri.startsWith("file:"))return null;
- return <MotionFrame key={sourceUri} sourceUri={sourceUri} active={active} onVisible={onVisible} />;
+ // Keep the native player mounted for tab changes and app backgrounds. The
+ // lifecycle/active flags pause it, while its last rendered frame remains.
+ if(!motionArtwork || !NativeArtwork || !sourceUri.startsWith("file:"))return null;
+ return <MotionFrame key={sourceUri} sourceUri={sourceUri} active={visible && active && foreground} onVisible={onVisible} />;
 }
 function MotionFrame({sourceUri,active,onVisible}:Omit<Props,"visible">) {
  const [ready,setReady]=useState(false),[failed,setFailed]=useState(false);
