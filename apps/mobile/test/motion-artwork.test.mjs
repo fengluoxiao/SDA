@@ -29,5 +29,6 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  assert.match(player,/opacity: tabletPlayer && !tabletLandscape && !tabletPortraitMotion \? 0 : 1/);
  assert.match(player,/tabletLandscape \|\| tabletPortraitMotion/);
  assert.match(player,/opacity: tabletPortraitMotion \? 0 : 1/);
+ assert.match(player,/tabletPortraitMotion \? <Image source=/);assert.match(player,/opacity: 0/);
  const blur=readFileSync("apps/mobile/src/PhoneLandscapeBlur.tsx","utf8");assert.match(blur,/export function ArtworkBottomFeather/);assert.match(blur,/edgeDirection="bottom"/);
 });
