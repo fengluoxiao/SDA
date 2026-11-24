@@ -252,9 +252,11 @@ function ThemedPlayer(p: PlayerProps) {
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
   const motionSurfaceVisible = immersiveHome && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!lyricsPageSelected || landscapePlayer);
+  const motionArtworkReady = motionReadyUri === p.selectedUri && hasArtwork;
   const tabletMotionBackdrop = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
-  const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop;
+  const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop && motionArtworkReady;
   const tabletMotionArtwork = tabletPortraitMotion ? null : <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && !!tabletLayout && !landscapePlayer} active={motionSurfaceVisible && playing && !!tabletLayout && !landscapePlayer} />;
+  const motionPlaneFrame = tabletPortraitMotion ? { left: 0, top: 0, width, height } : immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -401,13 +403,13 @@ function ThemedPlayer(p: PlayerProps) {
   <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {tabletPlayer && !landscapePlayer && <>
+    {tabletPlayer && !landscapePlayer && !tabletPortraitMotion && <>
       {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape && !tabletPortraitMotion ? 0 : 1 }]}>
-    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /><EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && (!tabletPlayer || tabletLandscape || tabletPortraitMotion)} active={motionSurfaceVisible && playing && (!tabletPlayer || tabletLandscape || tabletPortraitMotion)} /></View> : <View style={{ position: "absolute", top: immersiveArtwork.top, left: immersiveArtwork.left, width: immersiveArtwork.width, height: immersiveArtwork.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} /><EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && (!tabletPlayer || tabletLandscape || tabletPortraitMotion)} active={motionSurfaceVisible && playing && (!tabletPlayer || tabletLandscape || tabletPortraitMotion)} /></View> : <View style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     </View>
   </View>}
   {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
@@ -418,7 +420,10 @@ function ThemedPlayer(p: PlayerProps) {
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
     </>}
-    {tabletPortraitMotion && hasArtwork && <PhoneLandscapeBlur edge edgeDirection="bottom" testID="tablet-motion-bottom-blend" backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={immersiveArtwork.left} artworkTop={immersiveArtwork.top} artworkWidth={immersiveArtwork.width} artworkHeight={immersiveArtwork.height} />}
+    {tabletPortraitMotion && <>
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", opacity: .14 }]} />
+      <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: height * .58, left: 0, width, height: height * .42, tintColor: "#000", opacity: .46 }} />
+    </>}
     {tabletLandscape && hasArtwork && <TabletArtworkFeather
       backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
       artworkLeft={immersiveArtwork.left} artworkTop={immersiveArtwork.top} artworkWidth={immersiveArtwork.width} artworkHeight={immersiveArtwork.height} />}
