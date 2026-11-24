@@ -64,14 +64,14 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  }
  private fun startIfNeeded(){
   if(player!=null){if(active && foreground && isAttachedToWindow && windowVisibility==View.VISIBLE)player?.start();return}
-  if(!active || !foreground || !isAttachedToWindow || windowVisibility!=View.VISIBLE || !texture.isAvailable || starting)return
+  if(!foreground || !isAttachedToWindow || windowVisibility!=View.VISIBLE || !texture.isAvailable || starting)return
   val uri=Uri.parse(source);if(uri.scheme!="file")return
   val path=uri.path ?: return;val token=generation;val current=source;starting=true
   reader.execute {
    if(generation!=token)return@execute
    val range=try {RandomAccessFile(File(path),"r").use {MotionArtworkRange.find(it)}}catch(_:Exception){null}
    main.post {
-    if(generation!=token || !active || !foreground || !isAttachedToWindow || !texture.isAvailable)return@post
+   if(generation!=token || !foreground || !isAttachedToWindow || !texture.isAvailable)return@post
     starting=false
     if(range==null){onStatus(mapOf("uri" to current,"ready" to false,"unavailable" to true));return@post}
     try {
@@ -81,8 +81,8 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
      // Android duplicates this descriptor; retain no extraction or cached clip.
      RandomAccessFile(File(path),"r").use {file->next.setDataSource(file.fd,range.offset,range.length)}
      next.setOnVideoSizeChangedListener {_,w,h->if(generation==token){videoWidth=w;videoHeight=h;crop()}}
-     next.setOnPreparedListener {if(generation==token && active && foreground){crop();it.start()}}
-     next.setOnInfoListener {_,what,_->if(generation==token && what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START)onStatus(mapOf("uri" to current,"ready" to true));false}
+     next.setOnPreparedListener {if(generation==token && foreground){crop();it.start()}}
+     next.setOnInfoListener {_,what,_->if(generation==token && what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){onStatus(mapOf("uri" to current,"ready" to true));if(!active)player?.pause()};false}
      next.setOnErrorListener {_,_,_->if(generation==token){stop();onStatus(mapOf("uri" to current,"ready" to false,"unavailable" to true))};true}
      next.prepareAsync()
     }catch(_:Exception){stop();onStatus(mapOf("uri" to current,"ready" to false,"unavailable" to true))}

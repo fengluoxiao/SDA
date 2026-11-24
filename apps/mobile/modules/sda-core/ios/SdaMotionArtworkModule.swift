@@ -32,12 +32,12 @@ final class SdaMotionArtworkView: ExpoView {
  private func startIfNeeded() {
   guard window != nil,UIApplication.shared.applicationState == .active,let url=URL(string:sourceUri),url.isFileURL else{return}
   if let player {if active {player.play()};return}
-  guard active,!starting else{return}
+   guard !starting else{return}
   starting=true;let token=generation,uri=sourceUri
   DispatchQueue.global(qos:.utility).async { [weak self] in
    let prepared=MotionArtworkSource(url:url)
    DispatchQueue.main.async { [weak self] in
-    guard let self,self.generation==token,self.active,self.window != nil,UIApplication.shared.applicationState == .active else{prepared?.close();return}
+    guard let self,self.generation==token,self.window != nil,UIApplication.shared.applicationState == .active else{prepared?.close();return}
     self.starting=false
     guard let prepared else {self.onStatus(["uri":uri,"ready":false,"unavailable":true]);return}
     let item=AVPlayerItem(asset:prepared.asset),player=AVQueuePlayer()
@@ -46,7 +46,10 @@ final class SdaMotionArtworkView: ExpoView {
     self.loop=AVPlayerLooper(player:player,templateItem:item);self.videoLayer.player=player
     self.ready=self.videoLayer.observe(\.isReadyForDisplay,options:[.initial,.new]) { [weak self] layer,_ in
      DispatchQueue.main.async { [weak self] in guard let self,self.generation==token else{return}
-      if layer.isReadyForDisplay {self.onStatus(["uri":uri,"ready":true])}
+      if layer.isReadyForDisplay {
+       if !self.active {player.pause()}
+       self.onStatus(["uri":uri,"ready":true])
+      }
      }
     }
     self.failure=player.observe(\.status,options:[.new]) { [weak self] player,_ in
