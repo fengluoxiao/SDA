@@ -133,9 +133,20 @@ jobs:
           pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
           cd ios
           pod install 2>&1 | tee ../../../ios-artifacts/pods.log
+      - name: Restore Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ios-build/device
+          key: ios-derived-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}
+          restore-keys: |
+            ios-derived-v1-${{ steps.xcode.outputs.fingerprint }}-
       - name: Archive unsigned device app
         run: |
           set -o pipefail
+          # Derived data lives under CI workspace so GitHub caches can serve it
+          # between runs. New runs pick it up through cache restore with the
+          # same key, and a build already warm from the finished job stays
+          # incremental instead of recompiling the full RN/Xcode stack.
           xcodebuild -showBuildTimingSummary -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES COMPILATION_CACHE_CAS_PATH="$PWD/ios-build/CompilationCache.noindex" COMPILATION_CACHE_LIMIT_SIZE=2G CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
