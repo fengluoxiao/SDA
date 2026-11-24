@@ -24,5 +24,5 @@ function MotionFrame({sourceUri,active,onVisible}:Omit<Props,"visible">) {
  const [ready,setReady]=useState(false),[failed,setFailed]=useState(false);
  if(!NativeArtwork || failed)return null;
  return <NativeArtwork sourceUri={sourceUri} active={active} pointerEvents="none" style={[StyleSheet.absoluteFill,{opacity:ready?1:0}]}
-  onStatus={event=>{if(event.nativeEvent.uri!==sourceUri)return;if(event.nativeEvent.unavailable){setFailed(true);onVisible?.(false,sourceUri);}else{setReady(event.nativeEvent.ready);onVisible?.(event.nativeEvent.ready,sourceUri);}}} />;
+  onStatus={event=>{if(event.nativeEvent.uri!==sourceUri)return;if(event.nativeEvent.unavailable){setFailed(true);onVisible?.(false,sourceUri);}else{setReady(event.nativeEvent.ready);if(event.nativeEvent.ready)onVisible?.(true,sourceUri);}}} />;
 }
