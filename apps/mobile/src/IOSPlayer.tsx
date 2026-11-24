@@ -256,7 +256,7 @@ function ThemedPlayer(p: PlayerProps) {
   const tabletMotionBackdrop = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop && motionArtworkReady;
   const tabletMotionArtwork = tabletPortraitMotion ? null : <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && !!tabletLayout && !landscapePlayer} active={motionSurfaceVisible && playing && !!tabletLayout && !landscapePlayer} />;
-  const motionPlaneFrame = tabletPortraitMotion ? { left: 0, top: 0, width, height } : immersiveArtwork;
+  const motionPlaneFrame = immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -403,7 +403,7 @@ function ThemedPlayer(p: PlayerProps) {
   <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {immersiveHome && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor }]}>
-    {tabletPlayer && !landscapePlayer && !tabletPortraitMotion && hasArtwork && <>
+    {tabletPlayer && !landscapePlayer && hasArtwork && <>
       {hasArtwork && <Image testID="tablet-ambient-artwork" source={{ uri: artworkUri }} resizeMode="cover" blurRadius={48} style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]} />}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
     </>}
@@ -416,13 +416,9 @@ function ThemedPlayer(p: PlayerProps) {
   {/* Keep both the moving and settled artwork below the original edge treatment. */}
   {immersiveHome && (!tabletPlayer || tabletLandscape || tabletPortraitMotion) && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    {!phoneLandscapeBlur && !tabletPortraitMotion && <>
+    {!phoneLandscapeBlur && <>
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
-    </>}
-    {tabletPortraitMotion && <>
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000", opacity: .14 }]} />
-      <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: height * .58, left: 0, width, height: height * .42, tintColor: "#000", opacity: .46 }} />
     </>}
     {tabletLandscape && hasArtwork && <TabletArtworkFeather
       backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
