@@ -14,6 +14,10 @@ export const TABLET_AMBIENT_PAINT: ArtworkAmbientPaint = {
 
 export const ARTWORK_BACKDROP_FEATHER_FRACTION = .35;
 
+// Apple Music continues the cover into the controls with the same blurred
+// artwork. A long ramp avoids the hard cut produced by a flat colour strip.
+export const PORTRAIT_MOTION_BACKDROP_FEATHER_FRACTION = .48;
+
 // Use the original landscape gradient's rightmost 30% coverage. Its existing
 // alpha ramp starts transparent and progressively covers the sharp artwork,
 // reaching the complete screen-aligned blurred backdrop at the right boundary.
@@ -29,6 +33,14 @@ export function phoneLandscapeBlurEdge(left: number, top: number, width: number,
 export function artworkBackdropBottomEdge(left: number, top: number, width: number, height: number, edgeHeight?: number) {
   const available = Math.max(0, height);
   const span = edgeHeight === undefined ? available * ARTWORK_BACKDROP_FEATHER_FRACTION : Math.min(available, Math.max(0, Number.isFinite(edgeHeight) ? edgeHeight : 0));
+  return { left, top: top + available - span, width: Math.max(0, width), height: span };
+}
+
+// Portrait motion artwork uses the measured album frame and fades into the
+// screen-aligned blurred backdrop above the controls.
+export function portraitMotionBackdropEdge(left: number, top: number, width: number, height: number, edgeHeight?: number) {
+  const available = Math.max(0, height);
+  const span = edgeHeight === undefined ? available * PORTRAIT_MOTION_BACKDROP_FEATHER_FRACTION : Math.min(available, Math.max(0, Number.isFinite(edgeHeight) ? edgeHeight : 0));
   return { left, top: top + available - span, width: Math.max(0, width), height: span };
 }
 

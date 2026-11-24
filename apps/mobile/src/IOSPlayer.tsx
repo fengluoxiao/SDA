@@ -10,7 +10,7 @@ import { PLAYER_PROGRESS_PAINT, PLAYER_PROGRESS_TRACK } from "./player-progress-
 import { ArtworkEdgeBlend, type ArtworkFrame } from "./ArtworkEdgeBlend";
 import { spatialHeadIndicator } from "./spatial-head-indicator";
 import { sideNavigationAppearance } from "./side-navigation-appearance";
-import { PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
+import { ArtworkBottomFeather, PhoneLandscapeBlur, TabletArtworkFeather } from "./PhoneLandscapeBlur";
 import { phoneLandscapeBlurEdge, ARTWORK_AMBIENT_PAINT } from "./phone-landscape-blur-model";
 import { isTabletPlayer, tabletPlayerLayout, tabletImmersivePlayerLayout, tabletNavigationPageInsets } from "./tablet-player-layout";
 import { AndroidSideTabs, hasAndroidChrome } from "./AndroidChrome";
@@ -256,7 +256,7 @@ function ThemedPlayer(p: PlayerProps) {
   const tabletMotionBackdrop = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop && motionArtworkReady;
   const tabletMotionArtwork = tabletPortraitMotion ? null : <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && !!tabletLayout && !landscapePlayer} active={motionSurfaceVisible && playing && !!tabletLayout && !landscapePlayer} />;
-  const motionPlaneFrame = immersiveArtwork;
+  const motionPlaneFrame = tabletPortraitMotion && tabletArtworkFrame ? tabletArtworkFrame : immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -417,9 +417,13 @@ function ThemedPlayer(p: PlayerProps) {
   {immersiveHome && (!tabletPlayer || tabletLandscape || tabletPortraitMotion) && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     {!phoneLandscapeBlur && <>
-    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer || tabletPortraitMotion ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
     </>}
+    {tabletPortraitMotion && tabletArtworkFrame && <ArtworkBottomFeather
+      backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
+      artworkLeft={tabletArtworkFrame.left} artworkTop={tabletArtworkFrame.top}
+      artworkWidth={tabletArtworkFrame.width} artworkHeight={tabletArtworkFrame.height} />}
     {tabletLandscape && hasArtwork && <TabletArtworkFeather
       backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
       artworkLeft={immersiveArtwork.left} artworkTop={immersiveArtwork.top} artworkWidth={immersiveArtwork.width} artworkHeight={immersiveArtwork.height} />}

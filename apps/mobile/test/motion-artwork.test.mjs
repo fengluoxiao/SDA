@@ -30,9 +30,9 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  assert.match(player,/opacity: tabletPlayer && !tabletLandscape && !tabletPortraitMotion \? 0 : 1/);
  assert.match(player,/tabletLandscape \|\| tabletPortraitMotion/);
  assert.match(player,/tabletPortraitMotion \? <Image source=/);assert.match(player,/opacity: 0/);
- assert.match(player,/const motionPlaneFrame = immersiveArtwork/);
- assert.match(player,/!phoneLandscapeBlur && <>/);
+ assert.match(player,/const motionPlaneFrame = tabletPortraitMotion && tabletArtworkFrame \? tabletArtworkFrame : immersiveArtwork/);
+ assert.match(player,/!phoneLandscapeBlur && <>/);assert.match(player,/landscapePlayer \|\| tabletPortraitMotion \? 0 : 1/);assert.match(player,/tabletPortraitMotion && tabletArtworkFrame && <ArtworkBottomFeather/);
  const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \{player\.pause\(\)\}/);assert.match(iosNative,/player\.play\(\)/);
  const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active\)player\?\.pause\(\)/);
- const blur=readFileSync("apps/mobile/src/PhoneLandscapeBlur.tsx","utf8");assert.match(blur,/export function ArtworkBottomFeather/);assert.match(blur,/edgeDirection="bottom"/);
+ const blur=readFileSync("apps/mobile/src/PhoneLandscapeBlur.tsx","utf8");assert.match(blur,/export function ArtworkBottomFeather/);assert.match(blur,/portraitMotionEdge/);assert.match(blur,/edgeDirection="bottom"/);
 });

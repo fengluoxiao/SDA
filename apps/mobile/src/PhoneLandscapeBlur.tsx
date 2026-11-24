@@ -1,11 +1,11 @@
 import React from "react";
 import { Image, Platform, StyleSheet, View } from "react-native";
-import { phoneLandscapeBlurEdge, artworkBackdropBottomEdge, artworkRightContinuation, ARTWORK_AMBIENT_PAINT, TABLET_AMBIENT_PAINT, type ArtworkAmbientPaint } from "./phone-landscape-blur-model";
+import { phoneLandscapeBlurEdge, artworkBackdropBottomEdge, portraitMotionBackdropEdge, artworkRightContinuation, ARTWORK_AMBIENT_PAINT, type ArtworkAmbientPaint } from "./phone-landscape-blur-model";
 
 type Props = {
   uri: string; surfaceWidth: number; surfaceHeight: number;
   artworkLeft: number; artworkTop: number; artworkWidth: number; artworkHeight: number;
-  edge?: boolean; edgeWidth?: number; edgeDirection?: "right" | "bottom"; edgeHeight?: number; testID?: string; parentLeft?: number; parentTop?: number; backgroundColor?: string;
+  edge?: boolean; edgeWidth?: number; edgeDirection?: "right" | "bottom"; edgeHeight?: number; portraitMotionEdge?: boolean; testID?: string; parentLeft?: number; parentTop?: number; backgroundColor?: string;
   paint?: ArtworkAmbientPaint;
 };
 
@@ -23,7 +23,9 @@ function nativeMask() {
 // alpha mask blends into the sharp cover without moving or resizing that cover.
 export function PhoneLandscapeBlur(p: Props) {
   const paint=p.paint??ARTWORK_AMBIENT_PAINT;
-  const frame = p.edgeDirection === "bottom"
+  const frame = p.portraitMotionEdge
+    ? portraitMotionBackdropEdge(p.artworkLeft, p.artworkTop, p.artworkWidth, p.artworkHeight, p.edgeHeight)
+    : p.edgeDirection === "bottom"
     ? artworkBackdropBottomEdge(p.artworkLeft, p.artworkTop, p.artworkWidth, p.artworkHeight, p.edgeHeight)
     : phoneLandscapeBlurEdge(p.artworkLeft, p.artworkTop, p.artworkWidth, p.artworkHeight, p.edgeWidth);
   const background = <View style={{ position: "absolute", left: p.edge ? -frame.left : 0, top: p.edge ? -frame.top : 0, width: p.surfaceWidth, height: p.surfaceHeight, backgroundColor: p.backgroundColor ?? "#303034" }}>
@@ -70,6 +72,6 @@ export function TabletArtworkFeather(p: Props) {
 
 /** Portrait tablet covers only need the control-side ramp; no side pane follows them. */
 export function ArtworkBottomFeather(p: Props) {
-  return <PhoneLandscapeBlur {...p} edge edgeDirection="bottom" paint={TABLET_AMBIENT_PAINT} testID="tablet-artwork-controls-feather"
+  return <PhoneLandscapeBlur {...p} edge portraitMotionEdge edgeDirection="bottom" paint={ARTWORK_AMBIENT_PAINT} testID="tablet-artwork-controls-feather"
     artworkWidth={p.artworkWidth} />;
 }
