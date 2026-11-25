@@ -2,7 +2,9 @@ package app.sda.mobile.sda
 
 import android.content.Context
 import android.graphics.Matrix
+import android.graphics.RenderEffect
 import android.graphics.SurfaceTexture
+import android.graphics.Shader
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
@@ -29,6 +31,7 @@ class SdaMotionArtworkModule: Module() {
    Events("onStatus")
    Prop("sourceUri") {view:SdaMotionArtworkView,value:String->view.updateSource(value)}
    Prop("active") {view:SdaMotionArtworkView,value:Boolean->view.updateActive(value)}
+   Prop("blurred") {view:SdaMotionArtworkView,value:Boolean->view.updateBlurred(value)}
   }
  }
 }
@@ -51,6 +54,9 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  init {addView(texture,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));texture.surfaceTextureListener=this;texture.isOpaque=false;isClickable=false;clipChildren=true}
  fun updateSource(value:String){if(source!=value){source=value;stop();startIfNeeded()}}
  fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else player?.pause()}
+ fun updateBlurred(value:Boolean){
+  if(android.os.Build.VERSION.SDK_INT>=31)texture.setRenderEffect(if(value)RenderEffect.createBlurEffect(36f,36f,Shader.TileMode.DECAL)else null)
+ }
  override fun onAttachedToWindow(){super.onAttachedToWindow();react?.addLifecycleEventListener(this);startIfNeeded()}
  override fun onDetachedFromWindow(){react?.removeLifecycleEventListener(this);pause();super.onDetachedFromWindow()}
  override fun onWindowVisibilityChanged(visibility:Int){super.onWindowVisibilityChanged(visibility);if(visibility==View.VISIBLE)startIfNeeded()else pause()}

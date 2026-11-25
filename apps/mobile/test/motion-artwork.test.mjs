@@ -19,15 +19,15 @@ test("portrait motion stays under the same tablet right/bottom feather and prese
 });
 test("dynamic artwork is opt-in and only mounted on the large player cover",()=>{
  const prefs=readFileSync("apps/mobile/src/navigation-preferences.tsx","utf8");assert.match(prefs,/const defaults[^\n]*motionArtwork: false/);
-const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{sourceUri\} sourceUri=\{sourceUri\}/);assert.match(overlay,/active=\{visible && active && foreground\}/);assert.match(overlay,/active=\{active\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/if\(event\.nativeEvent\.ready\)onVisible\?\.\(true,sourceUri\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
- const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,2);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
+const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{motionKey \?\? sourceUri\} sourceUri=\{sourceUri\}/);assert.match(overlay,/active=\{visible && active && foreground\}/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(true\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
+ const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,3);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
  const rows=ui.slice(ui.indexOf("track.metadata.coverUri ?"));assert(!rows.split("</ScrollView>")[0].includes("EmbeddedMotionArtwork"));
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  const player=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.match(player,/np\.motionCover/);assert.match(player,/tabletPlayer && !landscapePlayer && hasArtwork && <>/);
- assert.match(player,/const motionArtworkReady = motionReadyUri === p\.selectedUri && hasArtwork/);
+ assert.match(player,/const motionArtworkReady = motionReadyUri === motionSourceKey && hasArtwork/);
  assert.match(player,/const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop && motionArtworkReady/);
- assert.match(player,/opacity: tabletPlayer && !tabletLandscape && !tabletPortraitMotion \? 0 : 1/);
+ assert.match(player,/const motionSourceKey=`\$\{p\.selectedUri\}:\$\{artworkUri\}`/);assert.match(player,/tablet-motion-ambient-motion/);assert.match(player,/motionKey=\{motionSourceKey\}/);assert.match(player,/const tabletMotionBackdropReady = tabletPortraitMotion && motionBackdropReadyKey === motionSourceKey/);
  assert.match(player,/tabletLandscape \|\| tabletPortraitMotion/);
  assert.match(player,/tabletPortraitMotion \? <Image source=/);assert.match(player,/opacity: 0/);
  assert.match(player,/const motionPlaneFrame = immersiveArtwork/);
