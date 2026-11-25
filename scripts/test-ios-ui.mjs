@@ -428,7 +428,7 @@ assert.doesNotMatch(homePages, /np.coverImage|np.emptyCover/);
 
 // SDK 58 uses edge-to-edge native backgrounds; removed StatusBar props must not return.
 assert.doesNotMatch(ui.match(/<StatusBar[^>]+>/)?.[0] ?? "", /backgroundColor=|translucent=/);
-assert.match(ui, /immersiveHome && <View pointerEvents="none"/);
+assert.match(ui, /\(immersiveHome \|\| tabletMotionEnabled\) && <View pointerEvents="none"[^>]+opacity: immersiveHome \? 1 : 0/);
 
 
 assert.match(ui, /backgroundColor: fadeColor/);
@@ -670,9 +670,9 @@ for(const offset of [0,-31.5]) {
 // Portrait tablet artwork is an in-flow complete square; its ambient background fills
 // the surface independently of the foreground cover and control geometry.
 assert.match(ui, /isTabletPlayer\(Platform.OS, Platform.OS === "ios" && !!Platform.isPad, width, height\)/);
-assert.match(ui, /testID="tablet-ambient-artwork"[^>]+resizeMode="cover" blurRadius=\{48\}/);
+assert.match(ui, /testID="tablet-ambient-artwork"[^>]+>\s*<QueuedArtwork[^>]+resizeMode="cover" blurRadius=\{48\}/);
 assert.match(ui, /testID="tablet-complete-artwork"/);
-assert.match(ui, /hasArtwork \? <ArtworkEdgeBlend landscape=\{landscapePlayer\}[^>]*><Image source=\{\{ uri: artworkUri \}\} resizeMode="contain"/);
+assert.match(ui, /<QueuedArtwork uri=\{hasArtwork \? artworkUri : ""\} nextUri=\{nextPortraitArtwork\} resizeMode="contain"/);
 assert.match(ui, /tabletLayout && \{ width: tabletLayout.controlsWidth/);
 assert.doesNotMatch(ui,/ipad-artwork-backdrop|immersiveTabletArtwork/);
 

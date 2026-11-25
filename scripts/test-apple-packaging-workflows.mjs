@@ -26,3 +26,18 @@ assert(mac.steps.find(x=>x.id==='apple_tools').run.includes('--probe-macos-arch'
 assert(mac.steps.find(x=>x.uses==='Swatinem/rust-cache@v2').with.key.includes('steps.apple_tools.outputs.fingerprint'));
 assert.equal(mac.steps.find(x=>x.name==='Ensure Intel cross-build tools can execute').if,"matrix.arch == 'x64'");
 console.log('Apple package runner, toolchain pinning, SDK/architecture probes and old-source staging checks passed.');
+
+const focused=workflow('ios-port-ci.yml').jobs['motion-artwork-ios'];
+const compileCache=focused.steps.find(step=>step.name==='Restore Xcode compilation cache');
+assert.equal(compileCache.with.path,'ios-build/CompilationCache.noindex');
+assert(compileCache.with.key.includes('github.run_id'),'successful runs must save newly compiled entries under a new key');
+assert(compileCache.with['restore-keys'].includes('ios-compile-v1-'),'focused packages must reuse the original compilation cache');
+assert(!focused.steps.some(step=>step.with?.path==='ios-build/device'));
+const archive=focused.steps.find(step=>step.name==='Archive unsigned device app');
+assert(archive.run.includes('COMPILATION_CACHE_CAS_PATH="$PWD/'+compileCache.with.path+'"'));
+const fusion=focused.steps.find(step=>step.id==='fusion-cache');
+assert(!fusion.with['restore-keys'],'finished native frameworks require exact input matches');
+for(const input of ['SdaHrtfMesh.h','PersonalHrtfNative/*.hpp','stage-faceframe-scan.py','patch-ios-personal-scan-fusion.py'])assert(fusion.with.key.includes(input));
+for(const output of ['StandardCyborgFusion.xcframework','PersonalHrtfFusion/FaceFrame','Licenses/StandardCyborg','Licenses/FaceFrame','personal-scan-framework.json'])assert(fusion.with.path.includes(output));
+assert.equal(focused.steps.find(step=>step.name==='Embed on-device TrueDepth framework').if,"steps.fusion-cache.outputs.cache-hit != 'true'");
+console.log('Focused iOS builds restore the actual compiler cache and reuse complete frameworks only for identical inputs.');

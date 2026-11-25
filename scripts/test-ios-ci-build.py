@@ -88,5 +88,48 @@ done
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((root / 'targets.txt').read_text().splitlines(), ['aarch64-apple-ios', 'aarch64-apple-ios-sim'] if include_simulator else ['aarch64-apple-ios'])
 
+class MotionSimulatorCleanup(unittest.TestCase):
+    def test_owned_simulator_stops_after_success_or_failure(self):
+        bash = shutil.which('bash')
+        if os.name == 'nt':
+            bash = str(Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git/bin/bash.exe')
+        if not bash or not Path(bash).exists():
+            self.skipTest('bash is unavailable')
+        for state, fail in [('Shutdown', False), ('Shutdown', True), ('Booted', False)]:
+            with self.subTest(state=state, fail=fail), tempfile.TemporaryDirectory(prefix='sda-motion-cleanup-') as temporary:
+                root = Path(temporary).resolve()
+                (root / 'scripts').mkdir()
+                shutil.copyfile(ROOT / 'scripts/check-embedded-motion-artwork.sh', root / 'scripts/check-embedded-motion-artwork.sh')
+                mocks = root / 'mock-bin'
+                mocks.mkdir()
+                def mock(name, content):
+                    path = mocks / name
+                    with path.open('w', encoding='utf-8', newline='\n') as output:
+                        output.write('#!/usr/bin/env bash\nset -euo pipefail\n' + content)
+                    path.chmod(0o755)
+                mock('python3', 'if [[ "$*" == *"sys.argv[2]"* ]]; then echo "$SDA_MOCK_STATE"; else echo mock-udid; fi\n')
+                mock('codesign', 'exit 0\n')
+                mock('xcrun', '''printf '%s\\n' "$*" >> "$PWD/commands.txt"
+if [[ "$*" == *--show-sdk-path* ]]; then echo /mock/sdk; exit 0; fi
+if [[ "$1" == swiftc || "$*" == *" swiftc "* ]]; then
+ while (( $# )); do
+  if [[ "$1" == -o ]]; then
+   shift
+   printf '#!/usr/bin/env bash\\nexit 0\\n' > "$1"
+   chmod +x "$1"
+   break
+  fi
+  shift
+ done
+elif [[ "$*" == 'simctl spawn '* && "$SDA_MOCK_FAIL" == 1 ]]; then exit 17
+fi
+''')
+                environment = dict(os.environ, SDA_MOCK_STATE=state, SDA_MOCK_FAIL=str(int(fail)))
+                result = subprocess.run([bash, '-c', 'export PATH="$PWD/mock-bin:$PATH"\nbash scripts/check-embedded-motion-artwork.sh ios-artifacts/test'], cwd=root, env=environment, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 17 if fail else 0, result.stdout + result.stderr)
+                commands = (root / 'commands.txt').read_text().splitlines()
+                self.assertEqual(commands.count('simctl shutdown mock-udid'), int(state == 'Shutdown'))
+                self.assertEqual(commands.count('simctl boot mock-udid'), int(state == 'Shutdown'))
+
 if __name__ == '__main__':
     unittest.main()

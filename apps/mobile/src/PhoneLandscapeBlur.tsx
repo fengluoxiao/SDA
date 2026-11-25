@@ -9,6 +9,17 @@ type Props = {
   paint?: ArtworkAmbientPaint;
 };
 
+type MotionBackdropProps = {
+  children: React.ReactNode;
+  surfaceWidth: number; surfaceHeight: number;
+  artworkTop: number; artworkHeight: number; fallbackColor: string;
+};
+
+type QueuedArtworkProps = {
+  uri: string; nextUri: string; resizeMode: "contain" | "cover";
+  style: object; blurRadius?: number; onError?(uri: string): void;
+};
+
 function nativeMask() {
   if (Platform.OS !== "ios" && Platform.OS !== "android") return null;
   try {
@@ -18,6 +29,34 @@ function nativeMask() {
     return (require("@expo/ui/community/masked-view") as typeof import("@expo/ui/community/masked-view")).MaskedView;
   } catch { return null; }
 }
+
+export function MotionArtworkFeather(p: MotionBackdropProps) {
+  const MaskedView = nativeMask();
+  const boundary = p.artworkTop + p.artworkHeight;
+  const span = Math.min(boundary, p.artworkHeight * .30);
+  const start = boundary - span;
+  if (!MaskedView || span <= 0) return <>
+    {p.children}
+    {span > 0 && <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch"
+      style={{ position: "absolute", top: start, width: p.surfaceWidth, height: span, tintColor: p.fallbackColor }} />}
+  </>;
+  return <MaskedView testID="tablet-motion-backdrop-mask" pointerEvents="none" style={StyleSheet.absoluteFill}
+    maskElement={<View style={{ width: p.surfaceWidth, height: p.surfaceHeight }}>
+      <View style={{ height: start, backgroundColor: "#ffffff" }} />
+      <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" fadeDuration={0}
+        style={{ width: p.surfaceWidth, height: span, transform: [{ scaleY: -1 }] }} />
+    </View>}>
+    {p.children}
+  </MaskedView>;
+}
+
+export const QueuedArtwork = React.memo(function QueuedArtwork({ uri, nextUri, resizeMode, style, blurRadius, onError }: QueuedArtworkProps) {
+  const sources = [...new Set([uri, nextUri].filter(Boolean))];
+  return <>{sources.map(sourceUri => <Image key={sourceUri} source={{ uri: sourceUri }} resizeMode={resizeMode}
+    blurRadius={blurRadius} fadeDuration={0}
+    onError={sourceUri === uri && onError ? () => onError(sourceUri) : undefined}
+    style={[style, { opacity: sourceUri === uri ? 1 : 0 }]} />)}</>;
+});
 
 // The edge samples the same screen-aligned backdrop as the background. A small
 // alpha mask blends into the sharp cover without moving or resizing that cover.

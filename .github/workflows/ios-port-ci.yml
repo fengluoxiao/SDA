@@ -93,6 +93,7 @@ jobs:
         with:
           workspaces: crates/sda-native -> ../../ios-build/cargo
           key: ios-device-motion-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'crates/sda-native/Cargo.lock') }}
+          cache-on-failure: true
           restore-keys: |
             ios-device-${{ steps.xcode.outputs.fingerprint }}-
       - name: Validate provenance inputs and pin runtime source
@@ -122,10 +123,30 @@ jobs:
         run: |
           set -o pipefail
           GITHUB_SHA="$SDA_SOURCE_COMMIT" bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
+      - name: Restore on-device TrueDepth framework
+        id: fusion-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/mobile/modules/sda-core/ios/StandardCyborgFusion.xcframework
+            apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/FaceFrame
+            apps/mobile/modules/sda-core/ios/Licenses/StandardCyborg
+            apps/mobile/modules/sda-core/ios/Licenses/FaceFrame
+            ios-artifacts/personal-scan-framework.json
+            ios-artifacts/PERSONAL-HRTF-TEST-README-zh.md
+          key: fusion-device-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('scripts/package-ios-personal-scan.sh', 'scripts/build-ios-personal-scan-fusion.sh', 'scripts/stage-ios-personal-scan-fusion.py', 'scripts/patch-ios-personal-scan-fusion.py', 'scripts/stage-faceframe-scan.py', 'scripts/test-ios-personal-tracking.py', 'scripts/test-ios-personal-prediction.py', 'scripts/test/personal-hrtf-tracking*.cpp', 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/*.hpp', 'apps/mobile/modules/sda-core/ios/PersonalHrtfNative/SdaHrtfMesh.h', 'apps/mobile/modules/sda-core/ios/PersonalHrtfFusion/PersonalHrtfReconstruction.swift') }}
       - name: Embed on-device TrueDepth framework
+        if: steps.fusion-cache.outputs.cache-hit != 'true'
         run: |
           set -o pipefail
           bash scripts/package-ios-personal-scan.sh 2>&1 | tee ios-artifacts/personal-scan-package.log
+      - name: Restore CocoaPods downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/modules/**/*.podspec') }}
+          restore-keys: |
+            ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-
       - name: Generate Xcode project and install CocoaPods
         run: |
           set -o pipefail
@@ -133,20 +154,17 @@ jobs:
           pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
           cd ios
           pod install 2>&1 | tee ../../../ios-artifacts/pods.log
-      - name: Restore Xcode DerivedData
+      - name: Restore Xcode compilation cache
         uses: actions/cache@v4
         with:
-          path: ios-build/device
-          key: ios-derived-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}
+          path: ios-build/CompilationCache.noindex
+          key: ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-${{ github.run_id }}
           restore-keys: |
-            ios-derived-v1-${{ steps.xcode.outputs.fingerprint }}-
+            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-
+            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-
       - name: Archive unsigned device app
         run: |
           set -o pipefail
-          # Derived data lives under CI workspace so GitHub caches can serve it
-          # between runs. New runs pick it up through cache restore with the
-          # same key, and a build already warm from the finished job stays
-          # incremental instead of recompiling the full RN/Xcode stack.
           xcodebuild -showBuildTimingSummary -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES COMPILATION_CACHE_CAS_PATH="$PWD/ios-build/CompilationCache.noindex" COMPILATION_CACHE_LIMIT_SIZE=2G CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
           mkdir -p ios-build/package/Payload
           cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
@@ -159,6 +177,9 @@ jobs:
           printf 'Focused arm64 IPA for embedded portrait motion artwork; unrelated feature tests were not run. Requires signing for installation.\n' > ios-artifacts/README.txt
       - name: Audit focused motion artwork package
         run: python3 scripts/verify-motion-artwork-package.py ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa
+      - name: Record compilation timings
+        if: always()
+        run: python3 scripts/summarize-ios-build-timings.py ios-artifacts
       - name: Upload versioned package to requested draft release
         if: ${{ inputs.release_tag != '' }}
         env:
