@@ -49,7 +49,7 @@ final class SdaMotionArtworkView: ExpoView {
      let source=request.sourceImage.clampedToExtent()
      let filter=CIFilter(name:"CIGaussianBlur",parameters:[kCIInputRadiusKey:36])!
      filter.setValue(source,forKey:kCIInputImageKey)
-     guard let output=filter.outputImage else {request.finish(with:request.sourceImage.extent);return}
+     guard let output=filter.outputImage else {request.finish(with:source,context:nil);return}
      request.finish(with:output.cropped(to:request.sourceImage.extent),context:nil)
     }}
     self.source=prepared;self.player=player;player.isMuted=true;player.volume=0
