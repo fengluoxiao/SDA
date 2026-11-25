@@ -14,9 +14,9 @@ export const TABLET_AMBIENT_PAINT: ArtworkAmbientPaint = {
 
 export const ARTWORK_BACKDROP_FEATHER_FRACTION = .35;
 
-// Apple Music continues the cover into the controls with the same blurred
-// artwork. A long ramp avoids the hard cut produced by a flat colour strip.
-export const PORTRAIT_MOTION_BACKDROP_FEATHER_FRACTION = .48;
+// Keep the sharp cover geometry identical to the non-tablet player. Only the
+// lower edge feathers into the persistent blurred artwork backdrop.
+export const PORTRAIT_MOTION_BACKDROP_FEATHER_FRACTION = .18;
 
 // Use the original landscape gradient's rightmost 30% coverage. Its existing
 // alpha ramp starts transparent and progressively covers the sharp artwork,

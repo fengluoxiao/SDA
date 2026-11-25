@@ -256,7 +256,7 @@ function ThemedPlayer(p: PlayerProps) {
   const tabletMotionBackdrop = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletPortraitMotion = tabletPlayer && !landscapePlayer && tabletMotionBackdrop && motionArtworkReady;
   const tabletMotionArtwork = tabletPortraitMotion ? null : <EmbeddedMotionArtwork sourceUri={p.selectedUri} onVisible={onMotionVisible} visible={motionSurfaceVisible && !!tabletLayout && !landscapePlayer} active={motionSurfaceVisible && playing && !!tabletLayout && !landscapePlayer} />;
-  const motionPlaneFrame = tabletPortraitMotion && tabletArtworkFrame ? tabletArtworkFrame : immersiveArtwork;
+  const motionPlaneFrame = immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -420,10 +420,10 @@ function ThemedPlayer(p: PlayerProps) {
     <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer || tabletPortraitMotion ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
     </>}
-    {tabletPortraitMotion && tabletArtworkFrame && <ArtworkBottomFeather
+    {tabletPortraitMotion && <ArtworkBottomFeather
       backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
-      artworkLeft={tabletArtworkFrame.left} artworkTop={tabletArtworkFrame.top}
-      artworkWidth={tabletArtworkFrame.width} artworkHeight={tabletArtworkFrame.height} />}
+      artworkLeft={motionPlaneFrame.left} artworkTop={motionPlaneFrame.top}
+      artworkWidth={motionPlaneFrame.width} artworkHeight={motionPlaneFrame.height} />}
     {tabletLandscape && hasArtwork && <TabletArtworkFeather
       backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height}
       artworkLeft={immersiveArtwork.left} artworkTop={immersiveArtwork.top} artworkWidth={immersiveArtwork.width} artworkHeight={immersiveArtwork.height} />}
