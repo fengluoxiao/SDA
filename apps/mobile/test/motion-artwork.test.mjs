@@ -28,7 +28,7 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  assert.match(ui,/const tabletMotionEnabled = tabletPortrait && motionEnabled/);
  assert.match(ui,/const motionSourceKey=p.selectedUri/);
- assert.match(ui,/liveBackdropEnabled=motionEnabled && \(!landscapePlayer \|\| phoneLandscapeBlur \|\| tabletLandscape\)/);
+ assert.match(ui,/liveBackdropEnabled=motionEnabled && \(tabletPortrait \|\| phoneLandscapeBlur \|\| tabletLandscape\)/);
  assert.match(ui,/\{liveBackdropEnabled && <View testID="motion-artwork-live-backdrop"/);
  assert.match(ui,/<MotionArtworkFeather enabled=\{motionEnabled\} mode=\{motionFeatherMode\}/);
  assert.match(ui,/const showStaticArtwork=motionSelection.current==="static"/);

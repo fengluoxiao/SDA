@@ -266,7 +266,7 @@ function ThemedPlayer(p: PlayerProps) {
   const nextMotionSourceUri=motionSelection.next==="motion"?nextArtworkTrack?.uri??"":"";
   const showStaticArtwork=motionSelection.current==="static";
   const portraitMotionActive=!landscapePlayer && !!selectedMotionUri;
-  const liveBackdropEnabled=motionEnabled && (!landscapePlayer || phoneLandscapeBlur || tabletLandscape);
+  const liveBackdropEnabled=motionEnabled && (tabletPortrait || phoneLandscapeBlur || tabletLandscape);
   const landscapeMotionActive=landscapePlayer && !!selectedMotionUri && (phoneLandscapeBlur || tabletLandscape);
   const motionFeatherMode=selectedMotionUri?(!landscapePlayer?"portrait":phoneLandscapeBlur?"phone-landscape":tabletLandscape?"tablet-landscape":"none"):"none";
   const portraitMotionLayout=portraitMotionArtworkLayout(width,height,motionSelection.aspectRatio);
