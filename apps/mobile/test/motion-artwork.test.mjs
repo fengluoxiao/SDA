@@ -53,6 +53,7 @@ test("native covers alternate direction without creating reversed-video files or
  assert.match(ios,/reverseClock.pause\(at:CACurrentMediaTime\(\)\)/);
  const android=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");
  assert.match(android,/next.isLooping=false/);assert.match(android,/setOnCompletionListener.*beginReverse/);
+ assert.match(android,/setOnPreparedListener[^\n]*prepareReverseTail\(\)/);
  assert.match(android,/currentReversePosition\(\)/);assert.match(android,/waitingForwardFrame && forwardSeekComplete/);
  const frames=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/MotionArtworkReverseFrames.kt","utf8");
  assert.match(frames,/getFramesAtIndex\(start,count\)/);assert.match(frames,/maxMemory\(\)\/12/);

@@ -117,7 +117,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
      // Android duplicates this descriptor; retain no extraction or cached clip.
      RandomAccessFile(File(path),"r").use {file->next.setDataSource(file.fd,range.offset,range.length)}
      next.setOnVideoSizeChangedListener {_,w,h->if(generation==token){videoWidth=w;videoHeight=h;crop()}}
-     next.setOnPreparedListener {if(generation==token && foreground){prepared=true;crop();it.start()}}
+     next.setOnPreparedListener {if(generation==token){prepared=true;crop();if(foreground){it.start();prepareReverseTail()}}}
      next.setOnInfoListener {_,what,_->if(generation==token && what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){onStatus(mapOf("uri" to current,"ready" to true));if(!active || !presented)pause()};false}
      next.setOnCompletionListener {if(generation==token)beginReverse()}
      next.setOnSeekCompleteListener {if(generation==token){forwardSeekComplete=true;resume()}}
