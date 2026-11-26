@@ -2,6 +2,11 @@ name: iOS device package
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: Package validation scope for a pinned source
+        type: choice
+        default: motion-artwork
+        options: [motion-artwork, full]
       release_tag:
         description: Optional existing draft release tag to upload packages to
         required: false
@@ -34,11 +39,29 @@ on:
       - 'pnpm-lock.yaml'
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: ios-port-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  shared-cache-entry:
+    if: inputs.source_ref != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Forward pinned-source packages to the shared cache entry
+        uses: actions/github-script@v7
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          PACKAGE_SCOPE: ${{ inputs.scope || 'motion-artwork' }}
+          RELEASE_TAG: ${{ inputs.release_tag || '' }}
+        with:
+          script: |
+            const {data:source}=await github.rest.repos.getCommit({...context.repo,ref:process.env.SOURCE_REF});
+            const branch=context.payload.repository.default_branch;
+            await github.rest.actions.createWorkflowDispatch({...context.repo,workflow_id:'ios-shared-cache.yml',ref:branch,inputs:{source_ref:source.sha,scope:process.env.PACKAGE_SCOPE,release_tag:process.env.RELEASE_TAG}});
+            await core.summary.addHeading('iOS shared build cache').addRaw(`Source: ${process.env.SOURCE_REF}\n\nCommit: ${source.sha}\n\nCache scope: ${branch}\n\n`).addLink('Open the actual packaging runs',`${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/ios-shared-cache.yml`).write();
   ios:
+    if: inputs.source_ref == ''
     name: iOS SDK ${{ matrix.sdk }}
     runs-on: xcode-27
     timeout-minutes: 90
@@ -103,7 +126,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/sda-native -> ../../ios-build/cargo
-          key: ios-device-${{ matrix.sdk }}-${{ steps.xcode.outputs.fingerprint }}
+          shared-key: ios-device-release
+          key: ios-device-${{ steps.xcode.outputs.fingerprint }}
           cache-on-failure: true
       - name: Validate provenance inputs and pin runtime source
         env:
