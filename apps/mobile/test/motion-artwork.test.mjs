@@ -49,8 +49,11 @@ test("native covers alternate direction without creating reversed-video files or
  assert.doesNotMatch(ios,/generateCGImagesAsynchronously|item.canPlayReverse/);
  assert.match(ios,/MotionArtworkReverseFrames.acquire\(uri\)/);
  assert.match(ios,/bottomExtension \? frame.bottomImage:frame.blurredImage/);
+ assert.match(ios,/toneLayer=CAGradientLayer\(\)/);
  const iosFrames=readFileSync("apps/mobile/modules/sda-core/ios/MotionArtworkReverseFrames.swift","utf8");
  assert.match(iosFrames,/AVAssetReaderTrackOutput/);assert.match(iosFrames,/copyNextSampleBuffer/);
+ assert.match(iosFrames,/blurFrame.cropping\(to:/);assert.match(iosFrames,/deferred:false/);
+ assert.doesNotMatch(iosFrames,/MotionArtworkBackdrop.blurred\(small,bottomExtension:true/);
  assert.match(iosFrames,/ProcessInfo.processInfo.physicalMemory\/128/);assert.match(iosFrames,/abs\(\$0.key-wantedIndex\)<=1/);
  assert.match(ios,/reverseClock.pause\(at:CACurrentMediaTime\(\)\)/);
  const android=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");

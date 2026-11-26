@@ -3,7 +3,7 @@ import CoreImage
 import CoreGraphics
 
 final class MotionArtworkReverseFrames {
- struct Frame {let time:Double;let image:CGImage;let blurredImage:CGImage;let bottomImage:CGImage;let bytes:Int}
+ struct Frame {let time:Double;let image:CGImage;let blurredImage:CGImage;let bottomImage:CGImage;let bottomTone:CGColor;let bytes:Int}
  private struct Configuration {
   let track:AVAssetTrack,transform:CGAffineTransform,frameInterval:Double,windowDuration:Double,lastIndex:Int,duration:Double
  }
@@ -41,10 +41,10 @@ final class MotionArtworkReverseFrames {
      let bounds=CGRect(origin:.zero,size:naturalSize).applying(transform)
      guard duration.isFinite,duration>0,duration<Double(Int.max)/120,bounds.width.isFinite,bounds.height.isFinite,bounds.width>0,bounds.height>0 else{throw NSError(domain:"SDA.MotionReverse.Dimensions",code:1)}
      let frameRate=nominalRate.isFinite && nominalRate>0 ? max(1,min(120,nominalRate)):30
-     let sharpScale=min(1,1024/max(bounds.width,bounds.height)),blurScale=min(1,384/max(bounds.width,bounds.height))
+     let sharpScale=min(1,1024/max(bounds.width,bounds.height)),blurScale=min(1,320/max(bounds.width,bounds.height))
      let sharpRow=((Int(ceil(bounds.width*sharpScale))*4+255)/256)*256
      let blurRow=((Int(ceil(bounds.width*blurScale))*4+255)/256)*256
-     let bytes=sharpRow*Int(ceil(bounds.height*sharpScale))+2*blurRow*Int(ceil(bounds.height*blurScale))
+     let bytes=sharpRow*Int(ceil(bounds.height*sharpScale))+blurRow*Int(ceil(bounds.height*blurScale))+blurRow*Int(ceil(bounds.height*blurScale*0.28))
      let frameCount=max(1,min(24,Self.windowByteLimit/max(1,bytes)))
      let windowDuration=Double(frameCount)/frameRate
      let configuration=Configuration(track:track,transform:transform,frameInterval:1/frameRate,windowDuration:windowDuration,lastIndex:max(0,Int(max(0,duration-0.5/frameRate)/windowDuration)),duration:duration)
@@ -130,16 +130,17 @@ final class MotionArtworkReverseFrames {
     image=image.transformed(by:CGAffineTransform(translationX:-image.extent.minX,y:-image.extent.minY))
     let scale=min(1,1024/max(image.extent.width,image.extent.height))
     let sharp=image.transformed(by:CGAffineTransform(scaleX:scale,y:scale))
-    let blurScale=min(1,384/max(image.extent.width,image.extent.height))
+    let blurScale=min(1,320/max(image.extent.width,image.extent.height))
     let small=image.transformed(by:CGAffineTransform(scaleX:blurScale,y:blurScale))
-    let blurred=MotionArtworkBackdrop.blurred(small,bottomExtension:false,radius:36*blurScale)
-    let bottom=MotionArtworkBackdrop.blurred(small,bottomExtension:true,radius:36*blurScale)
-    guard let sharpFrame=context.createCGImage(sharp,from:sharp.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),
-     let blurFrame=context.createCGImage(blurred,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),
-     let bottomFrame=context.createCGImage(bottom,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()) else{return false}
+    let blurred=MotionArtworkBackdrop.blurred(small,bottomExtension:false,radius:36*blurScale*min(1,image.extent.width/720))
+    guard let sharpFrame=context.createCGImage(sharp,from:sharp.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
+     let blurFrame=context.createCGImage(blurred,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
+     let bottomCrop=blurFrame.cropping(to:CGRect(x:0,y:Double(blurFrame.height)*0.72,width:Double(blurFrame.width),height:Double(blurFrame.height)*0.28)) else{return false}
+    let styledBottom=MotionArtworkBackdrop.continuationStyle(CIImage(cgImage:bottomCrop))
+    guard let bottomFrame=context.createCGImage(styledBottom,from:styledBottom.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{return false}
     let frameBytes=sharpFrame.bytesPerRow*sharpFrame.height+blurFrame.bytesPerRow*blurFrame.height+bottomFrame.bytesPerRow*bottomFrame.height
     guard bytes+frameBytes<=Self.windowByteLimit else{return false}
-    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bytes:frameBytes));bytes+=frameBytes;return true
+    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bottomTone:MotionArtworkBackdrop.toneColor(sharpFrame),bytes:frameBytes));bytes+=frameBytes;return true
    }
    if !keepReading{break}
   }

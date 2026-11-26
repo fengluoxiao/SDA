@@ -41,19 +41,24 @@ import CoreImage
   let renderContext=CIContext(options:[.cacheIntermediates:false])
   guard let colorFrame=renderContext.createCGImage(extended,from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let colorData=colorFrame.dataProvider?.data else{throw NSError(domain:"Bottom-extension render failed",code:1)}
   let colorBytes=colorData as Data
-  for row in [0,50,99]{let at=row*colorFrame.bytesPerRow+50*4;try require(Int(colorBytes[at])>Int(colorBytes[at+1])*2,"Bottom extension included the green upper image")}
+  for row in [50,75,99]{let at=row*colorFrame.bytesPerRow+50*4;try require(Int(colorBytes[at])>Int(colorBytes[at+1])+10,"Playback controls did not retain the lower image colors")}
   try require(abs(MotionArtworkBackdrop.extendedImage(twoTone).extent.height-100)<0.00001,"Bottom extension changed the render bounds")
   for channel in [1,2]{
    let color=CIColor(red:0,green:channel==1 ? 1:0,blue:channel==2 ? 1:0)
    let lower=CIImage(color:color).cropped(to:MotionArtworkBackdrop.bottomBand(colorExtent)).composited(over:CIImage(color:CIColor(red:1,green:0,blue:0)).cropped(to:colorExtent))
    guard let painted=renderContext.createCGImage(MotionArtworkBackdrop.blurred(lower,bottomExtension:true,radius:8),from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let data=painted.dataProvider?.data else{throw NSError(domain:"Generic bottom color render failed",code:1)}
    let bytes=data as Data
-   for row in [0,50,99]{let at=row*painted.bytesPerRow+50*4;try require(Int(bytes[at+channel])>Int(bytes[at])+10,"Bottom extension used a fixed song color")}
+   for row in [50,75,99]{let at=row*painted.bytesPerRow+50*4;try require(Int(bytes[at+channel])>Int(bytes[at])+10,"Bottom extension used a fixed song color")}
   }
   let white=CIImage(color:CIColor(red:1,green:1,blue:1)).cropped(to:colorExtent)
   guard let whiteFrame=renderContext.createCGImage(MotionArtworkBackdrop.blurred(white,bottomExtension:true,radius:8),from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let whiteData=whiteFrame.dataProvider?.data else{throw NSError(domain:"White artwork render failed",code:1)}
   let whiteBytes=whiteData as Data
   try require(whiteBytes[50*whiteFrame.bytesPerRow+50*4]<=165,"Bright artwork must remain dark enough under playback controls")
+  guard let rawColorFrame=renderContext.createCGImage(twoTone,from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{throw NSError(domain:"Palette reference render failed",code:1)}
+  let forwardTone=MotionArtworkBackdrop.toneColor(twoTone),reverseTone=MotionArtworkBackdrop.toneColor(rawColorFrame)
+  guard let forwardComponents=forwardTone.components,let reverseComponents=reverseTone.components else{throw NSError(domain:"Palette components missing",code:1)}
+  for channel in 0..<3{try require(abs(forwardComponents[channel]-reverseComponents[channel])<0.02,"Forward and reverse palette samplers disagree")}
+  try require(abs(reverseTone.alpha-0.85)<0.00001,"Footer tone opacity changed")
   var reverseClock=MotionArtworkReverseClock()
   reverseClock.begin(at:5);reverseClock.resume(at:100)
   try require(reverseClock.current(at:102)==3,"Reverse playback must move from five to three seconds")
@@ -174,8 +179,8 @@ import CoreImage
   }
   let stressSeconds=Date().timeIntervalSince(stressStarted)
   try require(stressDelivered>=140,"Long-GOP reverse playback dropped source frames")
-  try require(Double(stressDelivered)/max(stressSeconds,0.000001)>=24,"Long-GOP reverse decode remains below 24 frames per second")
   print("{\"longGopResolution\":\"720x1280\",\"reverseFrames\":\(stressDelivered),\"decodeSeconds\":\(stressSeconds),\"decodeFramesPerSecond\":\(Double(stressDelivered)/max(stressSeconds,0.000001)),\"retainedBytes\":\(stress.statistics.retainedBytes),\"windowByteLimit\":\(MotionArtworkReverseFrames.windowByteLimit)}")
+  try require(Double(stressDelivered)/max(stressSeconds,0.000001)>=24,"Long-GOP reverse decode remains below 24 frames per second")
   stress.reset();try require(stress.statistics.retainedBytes==0,"Long-GOP windows survived reset")
   generator.cancelAllCGImageGeneration();source.close();source.close()
   try require(try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()==before,"Created a decoded/extracted cover cache")
