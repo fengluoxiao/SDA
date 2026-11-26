@@ -2,6 +2,7 @@ package app.sda.mobile.sda
 
 import android.content.Context
 import android.graphics.Matrix
+import android.graphics.Bitmap
 import android.graphics.RenderEffect
 import android.graphics.SurfaceTexture
 import android.graphics.Shader
@@ -69,7 +70,10 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private var reverseScheduled=false
  private var waitingForwardFrame=false
  private var forwardSeekComplete=false
+ private var tailScheduled=false
+ private var lastReverseBitmap:Bitmap?=null
  private val reverseTick=Runnable {reverseScheduled=false;renderReverseFrame()}
+ private val tailTick=Runnable {tailScheduled=false;prepareReverseTail()}
  init {addView(texture,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));addView(reverseImage,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));texture.surfaceTextureListener=this;texture.isOpaque=false;isClickable=false;clipChildren=true}
  fun updateSource(value:String){if(source!=value){source=value;stop();startIfNeeded()}}
  fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else pause()}
@@ -109,7 +113,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
      val output=Surface(texture.surfaceTexture);surface=output
      val next=MediaPlayer();player=next
      next.setSurface(output);next.setVolume(0f,0f);next.isLooping=false
-     reverseFrames=MotionArtworkReverseFrames(path,range)
+     reverseFrames=MotionArtworkReverseFrames.acquire(path,range)
      // Android duplicates this descriptor; retain no extraction or cached clip.
      RandomAccessFile(File(path),"r").use {file->next.setDataSource(file.fd,range.offset,range.length)}
      next.setOnVideoSizeChangedListener {_,w,h->if(generation==token){videoWidth=w;videoHeight=h;crop()}}
@@ -127,13 +131,19 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private fun currentReversePosition()=maxOf(0L,reversePositionMs-if(reverseStartedNs==0L)0L else (System.nanoTime()-reverseStartedNs)/1000000L)
  private fun resume(){
   if(!canAnimate())return
-  if(reversing){if(reverseStartedNs==0L)reverseStartedNs=System.nanoTime();scheduleReverse(0)}else player?.start()
+  if(reversing){if(reverseStartedNs==0L)reverseStartedNs=System.nanoTime();scheduleReverse(0)}else{player?.start();prepareReverseTail()}
  }
- private fun scheduleReverse(delay:Long=33){if(!reverseScheduled && canAnimate()){reverseScheduled=true;main.postDelayed(reverseTick,delay)}}
+ private fun scheduleReverse(delay:Long=16){if(!reverseScheduled && canAnimate()){reverseScheduled=true;main.postDelayed(reverseTick,delay)}}
+ private fun prepareReverseTail(){
+  if(!canAnimate() || reversing)return
+  try{val current=player ?: return;if(current.currentPosition>=current.duration-1500)reverseFrames?.prepareTail(videoWidth,videoHeight)}catch(_:IllegalStateException){return}
+  if(!tailScheduled){tailScheduled=true;main.postDelayed(tailTick,200)}
+ }
  private fun beginReverse(){
   if(!presented){rewind();return}
   val duration=player?.duration ?: return
   if(duration<=0)return
+  reverseFrames?.prepareTail(videoWidth,videoHeight);lastReverseBitmap=null
   reversing=true;reversePositionMs=maxOf(0L,duration.toLong()-1);reverseStartedNs=0L;reverseEpoch++
   resume()
  }
@@ -143,16 +153,16 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   if(position<=0){pause();reversing=false;waitingForwardFrame=true;forwardSeekComplete=false;player?.seekTo(0);return}
   val token=generation;val epoch=reverseEpoch
   reverseFrames?.request(position*1000L,videoWidth,videoHeight,if(blurred)384 else 1024){frame->
-   if(generation!=token || reverseEpoch!=epoch || !reversing || !canAnimate()){frame?.recycle();return@request}
+   if(generation!=token || reverseEpoch!=epoch || !reversing || !canAnimate())return@request
    if(frame==null){val uri=source;stop();onStatus(mapOf("uri" to uri,"ready" to false,"unavailable" to true));return@request}
-   reverseImage.setImageBitmap(frame);reverseImage.visibility=View.VISIBLE
+   if(lastReverseBitmap!==frame){lastReverseBitmap=frame;reverseImage.setImageBitmap(frame);reverseImage.visibility=View.VISIBLE}
   }
   scheduleReverse()
  }
- private fun clearReverseImage(){reverseImage.visibility=View.INVISIBLE;reverseImage.setImageDrawable(null);waitingForwardFrame=false}
- private fun rewind(){pause();reversing=false;reversePositionMs=0;reverseStartedNs=0;clearReverseImage();if(prepared){forwardSeekComplete=false;player?.seekTo(0)}}
- private fun stop(){generation++;starting=false;pause();prepared=false;reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.close();reverseFrames=null;clearReverseImage();player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnCompletionListener(null);player?.setOnSeekCompleteListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
- private fun pause(){if(reversing){reversePositionMs=currentReversePosition();reverseStartedNs=0};reverseEpoch++;main.removeCallbacks(reverseTick);reverseScheduled=false;if(prepared)try{player?.pause()}catch(_:IllegalStateException){}}
+ private fun clearReverseImage(){reverseImage.visibility=View.INVISIBLE;reverseImage.setImageDrawable(null);lastReverseBitmap=null;waitingForwardFrame=false}
+ private fun rewind(){pause();reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.reset();clearReverseImage();if(prepared){forwardSeekComplete=false;player?.seekTo(0)}}
+ private fun stop(){generation++;starting=false;pause();prepared=false;reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.release();reverseFrames=null;clearReverseImage();player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnCompletionListener(null);player?.setOnSeekCompleteListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
+ private fun pause(){if(reversing){reversePositionMs=currentReversePosition();reverseStartedNs=0};reverseEpoch++;main.removeCallbacks(reverseTick);main.removeCallbacks(tailTick);tailScheduled=false;reverseScheduled=false;if(prepared)try{player?.pause()}catch(_:IllegalStateException){}}
  override fun onSurfaceTextureAvailable(surface:SurfaceTexture,width:Int,height:Int){startIfNeeded()}
  override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop()}
  override fun onSurfaceTextureDestroyed(surface:SurfaceTexture):Boolean{stop();return true}

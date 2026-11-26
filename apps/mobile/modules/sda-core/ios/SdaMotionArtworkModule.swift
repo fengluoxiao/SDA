@@ -39,8 +39,8 @@ final class SdaMotionArtworkView: ExpoView {
  private var endObserver:NSObjectProtocol?,timeObserver:Any?
  private var direction:Float=1,fallbackReverse=false
  private var reverseClock=MotionArtworkReverseClock()
- private var reverseGenerator:AVAssetImageGenerator?,reverseTimer:DispatchSourceTimer?
- private var reverseRequest=0,pendingReverseRequest:Int?,seekRevision=0
+ private var reverseFrames:MotionArtworkReverseFrames?,reverseTimer:DispatchSourceTimer?
+ private var lastReverseFrameTime:Double?,seekRevision=0
  private let reverseLayer=CALayer()
  private var generation=0,starting=false
  required init(appContext:AppContext? = nil) {
@@ -72,7 +72,7 @@ final class SdaMotionArtworkView: ExpoView {
      guard let output=filter.outputImage else {request.finish(with:source,context:nil);return}
      request.finish(with:output.cropped(to:request.sourceImage.extent),context:nil)
     }}
-    self.source=prepared;self.player=player;player.isMuted=true;player.volume=0
+    self.source=prepared;self.player=player;self.reverseFrames=MotionArtworkReverseFrames.acquire(uri);player.isMuted=true;player.volume=0
     player.automaticallyWaitsToMinimizeStalling=false
     player.allowsExternalPlayback=false;player.preventsDisplaySleepDuringVideoPlayback=false
     player.replaceCurrentItem(with:item);self.videoLayer.player=player
@@ -84,9 +84,9 @@ final class SdaMotionArtworkView: ExpoView {
       self.beginReverse()
      }else if position<=1.0/60{self.playForwardFromStart()}
     }
-    self.timeObserver=player.addPeriodicTimeObserver(forInterval:CMTime(value:1,timescale:60),queue:.main){[weak self] time in
-     guard let self,self.generation==token,self.direction<0,!self.fallbackReverse,time.seconds<=1.0/120 else{return}
-     self.playForwardFromStart()
+    self.timeObserver=player.addPeriodicTimeObserver(forInterval:CMTime(value:1,timescale:5),queue:.main){[weak self] _ in
+     guard let self,self.generation==token,self.direction>0,self.canAnimate else{return}
+     self.prepareReverseTail()
     }
     self.ready=self.videoLayer.observe(\.isReadyForDisplay,options:[.initial,.new]) { [weak self] layer,_ in
      DispatchQueue.main.async { [weak self] in guard let self,self.generation==token else{return}
@@ -107,7 +107,7 @@ final class SdaMotionArtworkView: ExpoView {
   generation+=1;starting=false;ready?.invalidate();ready=nil;failure?.invalidate();failure=nil
   if let endObserver{NotificationCenter.default.removeObserver(endObserver)};endObserver=nil
   if let timeObserver{player?.removeTimeObserver(timeObserver)};timeObserver=nil
-  pause();reverseGenerator?.cancelAllCGImageGeneration();reverseGenerator=nil
+  pause();reverseFrames?.release();reverseFrames=nil
   player?.replaceCurrentItem(with:nil);videoLayer.player=nil;player=nil
   direction=1;fallbackReverse=false;reverseClock.begin(at:0);seekRevision+=1
   CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=nil;reverseLayer.isHidden=true;CATransaction.commit()
@@ -120,14 +120,17 @@ final class SdaMotionArtworkView: ExpoView {
    reverseClock.resume(at:CACurrentMediaTime())
    guard reverseTimer==nil else{return}
    let timer=DispatchSource.makeTimerSource(queue:.main)
-   timer.schedule(deadline:.now(),repeating:.milliseconds(33),leeway:.milliseconds(3))
+   timer.schedule(deadline:.now(),repeating:.nanoseconds(16666667),leeway:.milliseconds(1))
    timer.setEventHandler{[weak self] in self?.renderReverseFrame()};reverseTimer=timer;timer.resume()
-  }else{player.playImmediately(atRate:direction)}
+  }else{prepareReverseTail();player.playImmediately(atRate:direction)}
  }
  private func pause() {
   player?.pause();reverseClock.pause(at:CACurrentMediaTime())
-  reverseTimer?.cancel();reverseTimer=nil;pendingReverseRequest=nil
-  reverseGenerator?.cancelAllCGImageGeneration()
+  reverseTimer?.cancel();reverseTimer=nil
+ }
+ private func prepareReverseTail(){
+  guard let player,let duration=player.currentItem?.duration.seconds,duration.isFinite,player.currentTime().seconds>=duration-1.5 else{return}
+  reverseFrames?.prepareTail()
  }
  private func beginReverse() {
   if !presented{rewind();return}
@@ -135,39 +138,27 @@ final class SdaMotionArtworkView: ExpoView {
   let duration=item.duration.seconds
   guard duration.isFinite,duration>0 else{return}
   direction = -1
-  if item.canPlayReverse {fallbackReverse=false;resume();return}
   fallbackReverse=true;player.pause()
-  let generator=AVAssetImageGenerator(asset:item.asset)
-  let maximumDimension=blurred ? 384.0:1024.0
-  generator.appliesPreferredTrackTransform=true;generator.maximumSize=CGSize(width:maximumDimension,height:maximumDimension)
-  generator.requestedTimeToleranceBefore = .zero;generator.requestedTimeToleranceAfter = .zero
-  generator.videoComposition=item.videoComposition;reverseGenerator=generator
-  reverseClock.begin(at:max(0,duration-1.0/30));resume()
+  reverseFrames?.prepareTail();lastReverseFrameTime=nil
+  reverseClock.begin(at:max(0,duration-(reverseFrames?.frameInterval ?? 1.0/30)));resume()
  }
  private func renderReverseFrame() {
-  guard canAnimate,fallbackReverse,let generator=reverseGenerator,pendingReverseRequest==nil else{return}
+  guard canAnimate,fallbackReverse,let frames=reverseFrames else{return}
   let position=reverseClock.current(at:CACurrentMediaTime())
   if position<=0{playForwardFromStart();return}
-  reverseRequest+=1;let request=reverseRequest,token=generation
-  pendingReverseRequest=request
-  generator.generateCGImagesAsynchronously(forTimes:[NSValue(time:CMTime(seconds:position,preferredTimescale:600))]){[weak self] _,image,_,result,_ in
-   DispatchQueue.main.async{[weak self] in
-    guard let self,self.generation==token,self.pendingReverseRequest==request else{return}
-    self.pendingReverseRequest=nil
-    guard self.canAnimate,self.fallbackReverse else{return}
-    guard result == .succeeded,let image else{
-     if result != .cancelled{let uri=self.sourceUri;self.stop();self.onStatus(["uri":uri,"ready":false,"unavailable":true])};return
-    }
-    CATransaction.begin();CATransaction.setDisableActions(true);self.reverseLayer.contents=image;self.reverseLayer.isHidden=false;CATransaction.commit()
-   }
+  guard let frame=frames.frame(at:position) else{
+   if frames.failed{let uri=sourceUri;stop();onStatus(["uri":uri,"ready":false,"unavailable":true])};return
   }
+  guard lastReverseFrameTime != frame.time else{return}
+  lastReverseFrameTime=frame.time
+  CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=blurred ? frame.blurredImage:frame.image;reverseLayer.isHidden=false;CATransaction.commit()
  }
  private func playForwardFromStart() {
-  pause();direction=1;fallbackReverse=false;reverseGenerator=nil
+  pause();direction=1;fallbackReverse=false;lastReverseFrameTime=nil
   seekToStart()
  }
  private func rewind() {
-  pause();direction=1;fallbackReverse=false;reverseGenerator=nil;reverseClock.begin(at:0)
+  pause();direction=1;fallbackReverse=false;lastReverseFrameTime=nil;reverseFrames?.reset();reverseClock.begin(at:0)
   seekToStart()
  }
  private func seekToStart() {
@@ -185,6 +176,6 @@ final class SdaMotionArtworkView: ExpoView {
   for observer in observers{NotificationCenter.default.removeObserver(observer)}
   if let endObserver{NotificationCenter.default.removeObserver(endObserver)}
   if let timeObserver{player?.removeTimeObserver(timeObserver)}
-  reverseTimer?.cancel();reverseGenerator?.cancelAllCGImageGeneration();player?.pause();source?.close()
+  reverseTimer?.cancel();reverseFrames?.release();player?.pause();source?.close()
  }
 }

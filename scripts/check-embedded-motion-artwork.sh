@@ -4,7 +4,7 @@ out="${1:?Pass a fresh test directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
-sources=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
+sources=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkReverseFrames.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
 fixture="$PWD/scripts/test/fixtures/motion-artwork-tall.mp4"
 xcrun swiftc -O -parse-as-library -swift-version 5 "${sources[@]}" -o "$out/motion-host-test"
 "$out/motion-host-test" "$fixture" "$out/host-inputs" | tee "$out/motion-host-result.json"

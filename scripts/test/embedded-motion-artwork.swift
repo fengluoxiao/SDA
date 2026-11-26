@@ -4,6 +4,33 @@ import CryptoKit
 
 @main struct MotionArtworkTest {
  static func require(_ test:Bool,_ message:String) throws {if !test{throw NSError(domain:message,code:1)}}
+ static func stressClip(_ url:URL)async throws {
+  let writer=try AVAssetWriter(outputURL:url,fileType:.mp4)
+  let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:720,AVVideoHeightKey:1280,AVVideoCompressionPropertiesKey:[AVVideoAverageBitRateKey:2_000_000,AVVideoMaxKeyFrameIntervalKey:150,AVVideoExpectedSourceFrameRateKey:30,AVVideoAllowFrameReorderingKey:true]])
+  input.expectsMediaDataInRealTime=false
+  let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:720,kCVPixelBufferHeightKey as String:1280,kCVPixelBufferIOSurfacePropertiesKey as String:[:]])
+  try require(writer.canAdd(input),"Cannot create reverse stress fixture");writer.add(input)
+  try require(writer.startWriting(),"Cannot start stress encoder");writer.startSession(atSourceTime:.zero)
+  for index in 0..<150 {
+   while !input.isReadyForMoreMediaData {
+    if writer.status == .failed{throw writer.error ?? NSError(domain:"Stress encoder failed",code:1)}
+    try await Task.sleep(nanoseconds:1_000_000)
+   }
+   guard let pool=adaptor.pixelBufferPool else{throw NSError(domain:"Stress pixel pool missing",code:1)}
+   var allocated:CVPixelBuffer?
+   try require(CVPixelBufferPoolCreatePixelBuffer(nil,pool,&allocated)==kCVReturnSuccess,"Stress pixel allocation failed")
+   guard let buffer=allocated else{throw NSError(domain:"Stress buffer missing",code:1)}
+   CVPixelBufferLockBaseAddress(buffer,[])
+   let stride=CVPixelBufferGetBytesPerRow(buffer)/4
+   let pixels=CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to:UInt32.self)
+   pixels.initialize(repeating:0xff000000 | (UInt32(index)<<16) | 0x00003080,count:stride*1280)
+   for row in 200..<280{pixels.advanced(by:row*stride+(index*4)%640).initialize(repeating:0xfff0e010,count:64)}
+   CVPixelBufferUnlockBaseAddress(buffer,[])
+   try require(adaptor.append(buffer,withPresentationTime:CMTime(value:Int64(index),timescale:30)),"Stress frame append failed")
+  }
+  writer.endSession(atSourceTime:CMTime(value:5,timescale:1));input.markAsFinished();await writer.finishWriting()
+  try require(writer.status == .completed,"Stress encoder did not complete")
+ }
  static func main() async throws {
   var reverseClock=MotionArtworkReverseClock()
   reverseClock.begin(at:5);reverseClock.resume(at:100)
@@ -44,6 +71,9 @@ import CryptoKit
   for (name,data) in malformed {
     guard try read(save(name+".m4a",data)) == nil else {throw NSError(domain:"Malformed or absent motion accepted: \(name)",code:1)}
   }
+  let stressURL=root.appendingPathComponent("long-gop.mp4")
+  try await stressClip(stressURL)
+  let stressParent=try save("long-gop.m4a",prefix+motion("tall",try Data(contentsOf:stressURL)))
   let before=try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()
   guard let source=MotionArtworkSource(url:parent) else {throw NSError(domain:"Cannot open bounded MP4 source",code:1)}
   let videos=try await source.asset.loadTracks(withMediaType:.video),audio=try await source.asset.loadTracks(withMediaType:.audio)
@@ -65,6 +95,65 @@ import CryptoKit
   }
   try require(Set(forwardHashes).count>1,"Reverse fixture must contain moving frames")
   try require(reverseHashes==Array(forwardHashes.reversed()),"Reverse frame requests must return the original frames in reverse order")
+  let buffered=MotionArtworkReverseFrames.acquire(parent.absoluteString)
+  let backgroundClient=MotionArtworkReverseFrames.acquire(parent.absoluteString)
+  try require(buffered === backgroundClient,"Sharp and blurred covers must share one decoder")
+  backgroundClient.release();defer{buffered.release()};buffered.prepareTail()
+  func bufferedFrame(_ position:Double)async throws->MotionArtworkReverseFrames.Frame {
+   let deadline=Date().addingTimeInterval(20)
+   while Date()<deadline {
+    if let frame=buffered.frame(at:position){return frame}
+    try require(!buffered.failed,"Windowed reverse decoder failed")
+    try await Task.sleep(nanoseconds:5_000_000)
+   }
+   throw NSError(domain:"Windowed reverse frame timed out",code:1)
+  }
+  _=try await bufferedFrame(duration-1.0/30)
+  var bufferedForward=[String](),bufferedReverse=[String]()
+  for time in sampleTimes+Array(sampleTimes.reversed()) {
+   let sample=try await bufferedFrame(time)
+   guard let pixels=sample.image.dataProvider?.data else{throw NSError(domain:"Missing buffered pixels",code:1)}
+   let hash=SHA256.hash(data:pixels as Data).map{String(format:"%02x",$0)}.joined()
+   if bufferedForward.count<sampleTimes.count{bufferedForward.append(hash)}else{bufferedReverse.append(hash)}
+  }
+  try require(bufferedReverse==Array(bufferedForward.reversed()),"Windowed playback changed the reverse frame order")
+  buffered.prepareTail();_=try await bufferedFrame(duration-buffered.frameInterval)
+  let frameCount=max(1,Int(duration/buffered.frameInterval)),reverseStarted=Date()
+  var delivered=0,lastTime=Double.infinity
+  for index in stride(from:frameCount-1,through:0,by:-1) {
+   let frame=try await bufferedFrame(Double(index)*buffered.frameInterval)
+   try require(frame.time<=lastTime+0.00001,"Reverse samples must have descending timestamps")
+   if frame.time != lastTime{delivered+=1};lastTime=frame.time
+   try require(buffered.statistics.retainedBytes<=3*MotionArtworkReverseFrames.windowByteLimit,"Reverse windows exceeded the memory bound")
+  }
+  let reverseSeconds=Date().timeIntervalSince(reverseStarted),stats=buffered.statistics
+  try require(delivered>=max(2,frameCount*4/5),"Windowed playback skipped source frames")
+  try require(stats.peakWindowBytes<=MotionArtworkReverseFrames.windowByteLimit,"Decoded window exceeded its byte budget")
+  try require(reverseSeconds<=max(2,duration*1.5),"Windowed decoder cannot keep up with the synthetic clip")
+  print("{\"windowedReverseFrames\":\(delivered),\"decodeSeconds\":\(reverseSeconds),\"decodeFramesPerSecond\":\(Double(delivered)/max(reverseSeconds,0.000001)),\"decodedWindows\":\(stats.decodedWindows),\"retainedBytes\":\(stats.retainedBytes),\"peakWindowBytes\":\(stats.peakWindowBytes)}")
+  buffered.reset();try require(buffered.statistics.retainedBytes==0,"Track reset must discard reverse windows")
+  let stress=MotionArtworkReverseFrames.acquire(stressParent.absoluteString);defer{stress.release()};stress.prepareTail()
+  func stressFrame(_ position:Double)async throws->MotionArtworkReverseFrames.Frame {
+   let deadline=Date().addingTimeInterval(20)
+   while Date()<deadline {
+    if let frame=stress.frame(at:position){return frame}
+    try require(!stress.failed,"Long-GOP reverse decoder failed");try await Task.sleep(nanoseconds:2_000_000)
+   }
+   throw NSError(domain:"Long-GOP reverse frame timed out",code:1)
+  }
+  _=try await stressFrame(149.0/30)
+  let stressStarted=Date();var stressDelivered=0,previousTime=Double.infinity
+  for index in stride(from:149,through:0,by:-1){
+   let frame=try await stressFrame(Double(index)/30)
+   try require(frame.time<=previousTime+0.00001,"Long-GOP timestamps must descend")
+   if frame.time != previousTime{stressDelivered+=1};previousTime=frame.time
+   try require(stress.statistics.retainedBytes<=3*MotionArtworkReverseFrames.windowByteLimit,"Long-GOP working memory exceeded its bound")
+  }
+  let stressSeconds=Date().timeIntervalSince(stressStarted)
+  try require(stressDelivered>=140,"Long-GOP reverse playback dropped source frames")
+  try require(Double(stressDelivered)/max(stressSeconds,0.000001)>=24,"Long-GOP reverse decode remains below 24 frames per second")
+  print("{\"longGopResolution\":\"720x1280\",\"reverseFrames\":\(stressDelivered),\"decodeSeconds\":\(stressSeconds),\"decodeFramesPerSecond\":\(Double(stressDelivered)/max(stressSeconds,0.000001)),\"retainedBytes\":\(stress.statistics.retainedBytes),\"windowByteLimit\":\(MotionArtworkReverseFrames.windowByteLimit)}")
+  stress.reset();try require(stress.statistics.retainedBytes==0,"Long-GOP windows survived reset")
   generator.cancelAllCGImageGeneration();source.close();source.close()
   try require(try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()==before,"Created a decoded/extracted cover cache")
   print("{\"passed\":true,\"portraitSelectedOverDefaultSquare\":true,\"malformedCases\":7,\"embeddedBytesPreserved\":true,\"decodedPortraitFrame\":true,\"reverseFramesVerified\":true,\"reversePauseAndResume\":true,\"audioTracks\":0,\"clipCacheCreated\":false,\"physicalDeviceTested\":false}")
