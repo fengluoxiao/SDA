@@ -27,6 +27,7 @@ final class MotionArtworkReverseFrames {
  private var configuration:Configuration?,source:MotionArtworkSource?,reader:AVAssetReader?
  private var windows=[Int:[Frame]](),failure:Error?,configurationTask:Task<Void,Never>?
  private var decodedWindows=0,peakWindowBytes=0
+ private var decodeSeconds=0.0,sharpSeconds=0.0,blurSeconds=0.0,bottomSeconds=0.0,toneSeconds=0.0
  private var activeViews=Set<ObjectIdentifier>()
  // The two visible surfaces share working RAM; an idle surface must not
  // discard frames still in use by the other surface.
@@ -76,6 +77,10 @@ final class MotionArtworkReverseFrames {
  var statistics:(decodedWindows:Int,retainedBytes:Int,peakWindowBytes:Int){
   lock.lock();defer{lock.unlock()}
   return(decodedWindows,windows.values.flatMap{$0}.reduce(0){$0+$1.bytes},peakWindowBytes)
+ }
+ var renderingStatistics:[String:Double]{
+  lock.lock();defer{lock.unlock()}
+  return ["readerSeconds":decodeSeconds,"sharpSeconds":sharpSeconds,"blurSeconds":blurSeconds,"bottomSeconds":bottomSeconds,"toneSeconds":toneSeconds]
  }
  func prepareTail(){
   lock.lock();defer{lock.unlock()};guard !closed else{return}
@@ -132,7 +137,12 @@ final class MotionArtworkReverseFrames {
   defer{reader.cancelReading();lock.lock();if self.reader === reader{self.reader=nil};lock.unlock()}
   guard reader.startReading() else{throw reader.error ?? NSError(domain:"SDA.MotionReverse.Start",code:1)}
   var frames=[Frame](),bytes=0
-  while let sample=output.copyNextSampleBuffer(){
+  var decoded=0.0,sharpRendered=0.0,blurRendered=0.0,bottomRendered=0.0,toneRendered=0.0
+  defer{lock.lock();decodeSeconds+=decoded;sharpSeconds+=sharpRendered;blurSeconds+=blurRendered;bottomSeconds+=bottomRendered;toneSeconds+=toneRendered;lock.unlock()}
+  while true{
+   let reading=Date.timeIntervalSinceReferenceDate
+   let next=output.copyNextSampleBuffer();decoded+=Date.timeIntervalSinceReferenceDate-reading
+   guard let sample=next else{break}
    lock.lock();let cancelled=closed || revision != token;lock.unlock()
    if cancelled{break}
    let keepReading:Bool=autoreleasepool{
@@ -145,14 +155,23 @@ final class MotionArtworkReverseFrames {
     let blurScale=min(1,320/max(image.extent.width,image.extent.height))
     let small=image.transformed(by:CGAffineTransform(scaleX:blurScale,y:blurScale))
     let blurred=MotionArtworkBackdrop.blurred(small,bottomExtension:false,radius:36*blurScale*min(1,image.extent.width/720))
-    guard let sharpFrame=context.createCGImage(sharp,from:sharp.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
-     let blurFrame=context.createCGImage(blurred,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
+    let sharpStart=Date.timeIntervalSinceReferenceDate
+    guard let sharpFrame=context.createCGImage(sharp,from:sharp.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{return false}
+    sharpRendered+=Date.timeIntervalSinceReferenceDate-sharpStart
+    let blurStart=Date.timeIntervalSinceReferenceDate
+    guard let blurFrame=context.createCGImage(blurred,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
      let bottomCrop=blurFrame.cropping(to:CGRect(x:0,y:Double(blurFrame.height)*0.72,width:Double(blurFrame.width),height:Double(blurFrame.height)*0.28)) else{return false}
+    blurRendered+=Date.timeIntervalSinceReferenceDate-blurStart
+    let bottomStart=Date.timeIntervalSinceReferenceDate
     let styledBottom=MotionArtworkBackdrop.continuationStyle(CIImage(cgImage:bottomCrop))
     guard let bottomFrame=context.createCGImage(styledBottom,from:styledBottom.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{return false}
+    bottomRendered+=Date.timeIntervalSinceReferenceDate-bottomStart
+    let toneStart=Date.timeIntervalSinceReferenceDate
+    let bottomTone=MotionArtworkBackdrop.toneColor(sharpFrame)
+    toneRendered+=Date.timeIntervalSinceReferenceDate-toneStart
     let frameBytes=sharpFrame.bytesPerRow*sharpFrame.height+blurFrame.bytesPerRow*blurFrame.height+bottomFrame.bytesPerRow*bottomFrame.height
     guard bytes+frameBytes<=Self.windowByteLimit else{return false}
-    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bottomTone:MotionArtworkBackdrop.toneColor(sharpFrame),bytes:frameBytes));bytes+=frameBytes;return true
+    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bottomTone:bottomTone,bytes:frameBytes));bytes+=frameBytes;return true
    }
    if !keepReading{break}
   }

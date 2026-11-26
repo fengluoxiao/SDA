@@ -33,6 +33,9 @@ import CoreImage
   try require(writer.status == .completed,"Stress encoder did not complete")
  }
  static func main() async throws {
+  // Keep benchmark evidence even when a following assertion terminates the
+  // simulator process; stdout is otherwise buffered when piped through tee.
+  setbuf(stdout,nil)
   let colorExtent=CGRect(x:0,y:0,width:100,height:100)
   let green=CIImage(color:CIColor(red:0,green:1,blue:0)).cropped(to:colorExtent)
   let red=CIImage(color:CIColor(red:1,green:0,blue:0)).cropped(to:MotionArtworkBackdrop.bottomBand(colorExtent))
@@ -192,6 +195,7 @@ import CoreImage
    try require(stress.statistics.retainedBytes<=3*MotionArtworkReverseFrames.windowByteLimit,"Long-GOP working memory exceeded its bound")
   }
   let stressSeconds=Date().timeIntervalSince(stressStarted)
+  print(String(data:try JSONSerialization.data(withJSONObject:["reverseRendering":stress.renderingStatistics],options:.sortedKeys),encoding:.utf8)!)
   try require(stressDelivered>=140,"Long-GOP reverse playback dropped source frames")
   print("{\"longGopResolution\":\"720x1280\",\"reverseFrames\":\(stressDelivered),\"decodeSeconds\":\(stressSeconds),\"decodeFramesPerSecond\":\(Double(stressDelivered)/max(stressSeconds,0.000001)),\"retainedBytes\":\(stress.statistics.retainedBytes),\"windowByteLimit\":\(MotionArtworkReverseFrames.windowByteLimit)}")
   try require(Double(stressDelivered)/max(stressSeconds,0.000001)>=24,"Long-GOP reverse decode remains below 24 frames per second")
