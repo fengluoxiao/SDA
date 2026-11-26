@@ -428,7 +428,7 @@ assert.doesNotMatch(homePages, /np.coverImage|np.emptyCover/);
 
 // SDK 58 uses edge-to-edge native backgrounds; removed StatusBar props must not return.
 assert.doesNotMatch(ui.match(/<StatusBar[^>]+>/)?.[0] ?? "", /backgroundColor=|translucent=/);
-assert.match(ui, /\(immersiveHome \|\| tabletMotionEnabled\) && <View pointerEvents="none"[^>]+opacity: immersiveHome \? 1 : 0/);
+assert.match(ui, /\(immersiveHome \|\| motionEnabled\) && <View pointerEvents="none"[^>]+opacity: immersiveHome \? 1 : 0/);
 
 
 assert.match(ui, /backgroundColor: fadeColor/);

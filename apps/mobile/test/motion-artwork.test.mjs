@@ -19,20 +19,21 @@ test("portrait motion stays under the same tablet right/bottom feather and prese
 });
 test("dynamic artwork is opt-in and only mounted on the large player cover",()=>{
  const prefs=readFileSync("apps/mobile/src/navigation-preferences.tsx","utf8");assert.match(prefs,/const defaults[^\n]*motionArtwork: false/);
-const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{motionKey \?\? sourceUri\} sourceUri=\{sourceUri\}/);assert.match(overlay,/active=\{visible && active && foreground\}/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(true\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
+const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{uri\} sourceUri=\{uri\}/);assert.match(overlay,/uri===sourceUri && visible && active && foreground/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(event\.nativeEvent\.ready\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
  const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,3);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
  const rows=ui.slice(ui.indexOf("track.metadata.coverUri ?"));assert(!rows.split("</ScrollView>")[0].includes("EmbeddedMotionArtwork"));
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
- assert.match(ui,/const tabletMotionEnabled = tabletPortrait && supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork/);
- assert.match(ui,/const motionSourceKey=`\$\{p\.selectedUri\}:\$\{artworkUri\}`/);
- assert.match(ui,/\{!!wantedMotionKey && <Animated.View key=\{wantedMotionKey\} testID="tablet-motion-ambient-motion"/);
+ assert.match(ui,/const tabletMotionEnabled = tabletPortrait && motionEnabled/);
+ assert.match(ui,/const motionSourceKey=p.selectedUri/);
+ assert.match(ui,/\{!!wantedMotionKey && <Animated.View testID="tablet-motion-ambient-motion"/);
  assert.match(ui,/<MotionArtworkFeather[^>]*>\s*<View[^>]*motionPlaneFrame[^>]*>\s*<EmbeddedMotionArtwork motionKey=\{wantedMotionKey\} sourceUri=\{p.selectedUri\}/);
- assert.match(ui,/new Animated.Value\(0\)[\s\S]*?\}, \[wantedMotionKey\]\)/);
+ assert.match(ui,/new Animated.Value\(prepared\?\.sharp\?1:0\)/);
+ assert.equal((ui.match(/nextSourceUri=\{nextMotionSourceUri\}/g)||[]).length,3);
  assert.match(ui,/p\.queue\.slice\(p\.queueIndex \+ 1\)\.find\(track => !track\.preparation\)/);
  assert.equal((ui.match(/<QueuedArtwork[^>]*nextUri=\{nextPortraitArtwork\}/g) || []).length, 2);
  assert.doesNotMatch(ui,/tabletStillReady|motionScene|CrossfadeArtwork/);
- const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \{player\.pause\(\)\}/);assert.match(iosNative,/player\.play\(\)/);
+ const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \{player\.pause\(\)\}/);assert.match(iosNative,/player\.automaticallyWaitsToMinimizeStalling=false/);assert.match(iosNative,/player\.playImmediately\(atRate:1\)/);
  const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active\)player\?\.pause\(\)/);
 });
 
@@ -75,4 +76,68 @@ test("the next poster and blur become visible in their original keyed views, wit
   assert.equal(layers("shared", "shared").length, 1);
   assert.equal(layers("", "next")[0].props.style[1].opacity, 0);
  }
+});
+
+const motionBundle=await build({entryPoints:["apps/mobile/src/EmbeddedMotionArtwork.tsx"],bundle:true,platform:"node",format:"cjs",external:["*"],write:false});
+function motionHarness(){
+ const states=new Map(),effects=[];
+ let cursor=0,slots=[];
+ const hooks={...React,
+  useState(initial){const slot=cursor++,state=slots;if(!(slot in state))state[slot]=initial;return[state[slot],value=>{state[slot]=value;}];},
+  useRef(initial){const slot=cursor++;return slots[slot]??={current:initial};},
+  useCallback(callback){return callback;},
+  useEffect(run,deps){const slot=cursor++;if(!slots[slot]||deps.some((value,index)=>value!==slots[slot].deps[index]))effects.push(()=>{slots[slot]?.cleanup?.();slots[slot]={deps,cleanup:run()};});},
+ };
+ hooks.useLayoutEffect=hooks.useEffect;
+ const animated={View:"Animated.View",Value:class{constructor(value){this.value=value;}setValue(value){this.value=value;}},timing:(value,config)=>({start(){value.value=config.toValue;},stop(){}})};
+ const native={Animated:animated,AppState:{currentState:"active",addEventListener:()=>({remove(){}})},StyleSheet:{absoluteFill:{}}};
+ const previous=globalThis.expo;
+ globalThis.expo={modules:{SdaMotionArtwork:{}}};
+ const exports={exports:{}};
+ try{
+  new Function("require","module","exports",motionBundle.outputFiles[0].text)(name=>name==="react"?hooks:name==="react-native"?native:name==="expo"?{requireNativeView:()=>"NativeMotion"}:{useNavigationPreferences:()=>({motionArtwork:true})},exports,exports.exports);
+ }finally{globalThis.expo=previous;}
+ return{component:exports.exports.EmbeddedMotionArtwork,render(component,props){cursor=0;if(!states.has(component))states.set(component,[]);slots=states.get(component);const tree=component(props);effects.splice(0).forEach(run=>run());return tree;}};
+}
+
+test("the next video prepares one paused frame and promotes the same native view on selection",()=>{
+ const queue=motionHarness(),reports=[];
+ const props={sourceUri:"file:///first.m4a",nextSourceUri:"file:///next.m4a",motionKey:"file:///first.m4a",visible:true,active:true,revealDuration:0,onVisible:(...args)=>reports.push(args)};
+ const before=queue.render(queue.component,props).props.children[0];
+ assert.equal(before.length,2);
+ assert.equal(before[1].props.active,false);
+ assert.equal(before[1].props.presented,false);
+ const frame=queue;
+ let tree=frame.render(before[1].type,before[1].props);
+ const nativeView=tree.props.children[0].props.children[0];
+ nativeView.props.onStatus({nativeEvent:{uri:"file:///wrong.m4a",ready:true}});
+ assert.equal(reports.length,0);
+ nativeView.props.onStatus({nativeEvent:{uri:"file:///next.m4a",ready:true}});
+ assert.deepEqual(reports,[[true,"file:///next.m4a"]]);
+ tree=frame.render(before[1].type,before[1].props);
+ assert.equal(tree.props.style[1].opacity,0);
+ assert.equal(tree.props.children[0].props.style[1].opacity.value,1);
+ const promoted=queue.render(queue.component,{...props,sourceUri:"file:///next.m4a",motionKey:"file:///next.m4a",nextSourceUri:"file:///third.m4a"}).props.children[0][0];
+ assert.equal(promoted.type,before[1].type);
+ assert.equal(promoted.props.key,before[1].props.key);
+ assert.equal(promoted.props.active,true);
+ tree=frame.render(promoted.type,promoted.props);
+ assert.equal(tree.props.style[1].opacity,1);
+ assert.equal(tree.props.children[0].props.style[1].opacity.value,1);
+ const paused=queue.render(queue.component,{...props,active:false}).props.children[0];
+ assert(paused.every(layer=>layer.props.active===false));
+ assert.deepEqual(queue.render(queue.component,{...props,sourceUri:"file:///same.m4a",nextSourceUri:"file:///same.m4a"}).props.children[0].length,1);
+});
+
+test("an absent or failed next video remains invisible and cannot hide a static-only song",()=>{
+ const queue=motionHarness(),reports=[];
+ const props={sourceUri:"file:///first.m4a",nextSourceUri:"file:///still.m4a",visible:true,active:true,onVisible:(...args)=>reports.push(args)};
+ const pending=queue.render(queue.component,props).props.children[0][1];
+ const frame=queue;
+ const tree=frame.render(pending.type,pending.props);
+ tree.props.children[0].props.children[0].props.onStatus({nativeEvent:{uri:"file:///still.m4a",ready:false,unavailable:true}});
+ assert.equal(frame.render(pending.type,pending.props),null);
+ assert.equal(reports.length,0);
+ const third=queue.render(queue.component,{...props,sourceUri:"file:///third.m4a",nextSourceUri:undefined}).props.children[0];
+ assert.deepEqual(third.map(layer=>layer.props.sourceUri),["file:///third.m4a"]);
 });

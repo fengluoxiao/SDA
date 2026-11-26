@@ -158,9 +158,7 @@ function ThemedPlayer(p: PlayerProps) {
   const [failedArtwork, setFailedArtwork] = useState("");
   const artworkUri = p.metadata.coverUri || "";
   const hasArtwork = !!artworkUri && failedArtwork !== artworkUri;
-  // A still-only track still publishes a poster URI. Treat that as the source
-  // generation so its old motion frame can never win the next readiness race.
-  const motionSourceKey=`${p.selectedUri}:${artworkUri}`;
+  const motionSourceKey=p.selectedUri;
   const [artworkTone, setArtworkTone] = useState({ uri: "", color: "#303034" });
   const preparedArtworkColor = readArtworkColor(artworkUri, p.metadata.artworkColor);
   const fadeColor = preparedArtworkColor || (artworkTone.uri === artworkUri ? artworkTone.color : "#303034");
@@ -253,28 +251,44 @@ function ThemedPlayer(p: PlayerProps) {
   const playing = p.playing && !p.paused;
   const motionSurfaceVisible = immersiveHome && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!lyricsPageSelected || landscapePlayer);
   const tabletPortrait = tabletPlayer && !landscapePlayer;
-  const tabletMotionEnabled = tabletPortrait && supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
+  const motionEnabled = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
+  const tabletMotionEnabled = tabletPortrait && motionEnabled;
   const wantedMotionKey = tabletMotionEnabled && hasArtwork && p.selectedUri.startsWith("file:") ? motionSourceKey : "";
-  const nextPortraitArtwork = React.useMemo(() => {
-    if (!tabletMotionEnabled || p.queueIndex < 0) return "";
-    const available = p.queue.slice(p.queueIndex + 1).find(track => !track.preparation)
+  const nextArtworkTrack = React.useMemo(() => {
+    if (!motionEnabled || p.queueIndex < 0) return undefined;
+    return p.queue.slice(p.queueIndex + 1).find(track => !track.preparation)
       ?? p.queue.find(track => !track.preparation);
-    return available?.metadata.coverUri ?? "";
-  }, [tabletMotionEnabled, p.queue, p.queueIndex]);
+  }, [motionEnabled, p.queue, p.queueIndex]);
+  const nextPortraitArtwork = tabletMotionEnabled ? nextArtworkTrack?.metadata.coverUri ?? "" : "";
+  const nextMotionSourceUri = nextArtworkTrack?.uri ?? "";
+  const motionReadiness=useRef(new Map<string,{sharp:boolean;blur:boolean}>());
+  const motionSources=useRef<string[]>([]);
+  motionSources.current=[p.selectedUri,nextMotionSourceUri];
   const motionAppearance = React.useMemo(() => {
-    const sharp = new Animated.Value(0);
-    return { sharp, blur: new Animated.Value(0), still: sharp.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) };
+    const prepared=motionReadiness.current.get(wantedMotionKey);
+    const sharp = new Animated.Value(prepared?.sharp?1:0);
+    return { sharp, blur: new Animated.Value(prepared?.blur?1:0), still: sharp.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) };
   }, [wantedMotionKey]);
+  React.useLayoutEffect(()=>{
+    if(!wantedMotionKey){motionReadiness.current.clear();return;}
+    for(const uri of motionReadiness.current.keys())if(!motionSources.current.includes(uri))motionReadiness.current.delete(uri);
+  },[wantedMotionKey,nextMotionSourceUri]);
   React.useLayoutEffect(() => () => {
     motionAppearance.sharp.stopAnimation();
     motionAppearance.blur.stopAnimation();
   }, [motionAppearance]);
-  const reportMotionSharp = useCallback((ready: boolean) => {
-    Animated.timing(motionAppearance.sharp, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
-  }, [motionAppearance]);
-  const reportMotionBlur = useCallback((ready: boolean) => {
-    Animated.timing(motionAppearance.blur, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
-  }, [motionAppearance]);
+  const reportMotionSharp = useCallback((ready: boolean,uri:string) => {
+    if(!motionSources.current.includes(uri))return;
+    const previous=motionReadiness.current.get(uri)??{sharp:false,blur:false};
+    motionReadiness.current.set(uri,{...previous,sharp:ready});
+    if(uri===wantedMotionKey)Animated.timing(motionAppearance.sharp, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
+  }, [motionAppearance,wantedMotionKey]);
+  const reportMotionBlur = useCallback((ready: boolean,uri:string) => {
+    if(!motionSources.current.includes(uri))return;
+    const previous=motionReadiness.current.get(uri)??{sharp:false,blur:false};
+    motionReadiness.current.set(uri,{...previous,blur:ready});
+    if(uri===wantedMotionKey)Animated.timing(motionAppearance.blur, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
+  }, [motionAppearance,wantedMotionKey]);
   const motionPlaneFrame = immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
@@ -421,7 +435,7 @@ function ThemedPlayer(p: PlayerProps) {
   </IOSMetadataSheet>
   <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
-  {(immersiveHome || tabletMotionEnabled) && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor, opacity: immersiveHome ? 1 : 0 }]}>
+  {(immersiveHome || motionEnabled) && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor, opacity: immersiveHome ? 1 : 0 }]}>
     {tabletPortrait && <>
       <View testID="tablet-ambient-artwork" style={[StyleSheet.absoluteFill, { opacity: ARTWORK_AMBIENT_PAINT.imageOpacity }]}>
         <QueuedArtwork uri={hasArtwork ? artworkUri : ""} nextUri={nextPortraitArtwork} resizeMode="cover" blurRadius={48} style={StyleSheet.absoluteFill} />
@@ -430,18 +444,18 @@ function ThemedPlayer(p: PlayerProps) {
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>
-    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} />{!tabletPortrait && <EmbeddedMotionArtwork motionKey={motionSourceKey} sourceUri={p.selectedUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} />}</View> : <View style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} />{!tabletPortrait && <EmbeddedMotionArtwork motionKey={motionSourceKey} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} />}</View> : <View style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
     </View>
-    {!!wantedMotionKey && <Animated.View key={wantedMotionKey} testID="tablet-motion-ambient-motion" style={[StyleSheet.absoluteFill, { opacity: motionAppearance.sharp }]}>
+    {!!wantedMotionKey && <Animated.View testID="tablet-motion-ambient-motion" style={[StyleSheet.absoluteFill, { opacity: motionAppearance.sharp }]}>
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: motionAppearance.blur, backgroundColor: fadeColor }]}>
         <View style={[StyleSheet.absoluteFill, { transform: [{ scale: 1.12 }] }]}>
-          <EmbeddedMotionArtwork motionKey={wantedMotionKey} blurred opacity={ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={p.selectedUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionBlur} />
+          <EmbeddedMotionArtwork motionKey={wantedMotionKey} blurred opacity={ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} revealDuration={0} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionBlur} />
         </View>
         <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
       </Animated.View>
       <MotionArtworkFeather surfaceWidth={width} surfaceHeight={height} artworkTop={motionPlaneFrame.top} artworkHeight={motionPlaneFrame.height} fallbackColor={fadeColor}>
         <View style={{ position: "absolute", ...motionPlaneFrame }}>
-          <EmbeddedMotionArtwork motionKey={wantedMotionKey} sourceUri={p.selectedUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionSharp} />
+          <EmbeddedMotionArtwork motionKey={wantedMotionKey} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} revealDuration={0} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionSharp} />
         </View>
       </MotionArtworkFeather>
     </Animated.View>}

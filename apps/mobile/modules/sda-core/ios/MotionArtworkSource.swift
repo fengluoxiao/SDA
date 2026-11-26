@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 final class MotionArtworkSource: NSObject, AVAssetResourceLoaderDelegate {
  let asset: AVURLAsset
  private let url: URL, file: FileHandle, range: MotionArtworkRange, scoped: Bool
- private let queue=DispatchQueue(label:"app.sda.motion-artwork.read",qos:.utility)
+ private let queue=DispatchQueue(label:"app.sda.motion-artwork.read",qos:.userInitiated)
  private var closed=false
  init?(url: URL) {
   guard url.isFileURL else {return nil}
