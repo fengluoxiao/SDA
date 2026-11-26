@@ -42,7 +42,9 @@ final class MotionArtworkReverseFrames {
      guard duration.isFinite,duration>0,duration<Double(Int.max)/120,bounds.width.isFinite,bounds.height.isFinite,bounds.width>0,bounds.height>0 else{throw NSError(domain:"SDA.MotionReverse.Dimensions",code:1)}
      let frameRate=nominalRate.isFinite && nominalRate>0 ? max(1,min(120,nominalRate)):30
      let sharpScale=min(1,1024/max(bounds.width,bounds.height)),blurScale=min(1,384/max(bounds.width,bounds.height))
-     let bytes=Int(ceil(bounds.width*sharpScale))*Int(ceil(bounds.height*sharpScale))*4+Int(ceil(bounds.width*blurScale))*Int(ceil(bounds.height*blurScale))*4
+     let sharpRow=((Int(ceil(bounds.width*sharpScale))*4+255)/256)*256
+     let blurRow=((Int(ceil(bounds.width*blurScale))*4+255)/256)*256
+     let bytes=sharpRow*Int(ceil(bounds.height*sharpScale))+blurRow*Int(ceil(bounds.height*blurScale))
      let frameCount=max(1,min(24,Self.windowByteLimit/max(1,bytes)))
      let windowDuration=Double(frameCount)/frameRate
      let configuration=Configuration(track:track,transform:transform,frameInterval:1/frameRate,windowDuration:windowDuration,lastIndex:max(0,Int(max(0,duration-0.5/frameRate)/windowDuration)),duration:duration)
@@ -100,7 +102,7 @@ final class MotionArtworkReverseFrames {
    do{
     let frames=try decode(index,configuration,source.asset,token)
     lock.lock()
-    if !closed,revision==token,let wantedIndex,abs(index-wantedIndex)<=1{
+    if !closed,revision==token,let currentIndex=self.wantedIndex,abs(index-currentIndex)<=1{
      windows[index]=frames;decodedWindows+=1;peakWindowBytes=max(peakWindowBytes,frames.reduce(0){$0+$1.bytes});pruneLocked()
     }
     lock.unlock()
