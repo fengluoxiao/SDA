@@ -1,0 +1,10 @@
+# iOS packaging and shared build caches
+
+- All agents must dispatch iOS packages through `ios-shared-cache.yml` on the repository's default branch (`master`). Pass the intended source branch, tag, or preferably a pushed immutable commit as `source_ref`; do not change the workflow execution ref to match the source.
+- Example: `gh workflow run ios-shared-cache.yml --ref master -f source_ref=<pushed-commit> -f scope=motion-artwork`. Supply `release_tag` only when uploading to an explicitly requested existing draft release.
+- `motion-artwork` is the focused device-package scope. Use `full` only when the task calls for the complete validation suite. Run checks relevant to the changed feature, without accumulating unrelated feature tests into packaging.
+- The default-branch legacy `ios-port-ci.yml` entry forwards requests with `source_ref` to the shared entry. Prefer the shared entry directly. A completed forwarding job is not a completed IPA build; report the downstream packaging run.
+- GitHub cache visibility is scoped to workflow execution refs. Branch-independent cache keys alone do not share caches across unrelated branches or tags. Keep package execution in the default-branch scope, and keep cache keys independent of the source branch/tag name.
+- Reuse compiler/dependency caches only with compatible architecture, toolchain and dependency inputs. Finished framework reuse requires an exact match of its build inputs and complete resources/licenses. Always build and audit the requested source; do not reuse an IPA from another commit.
+- The shared entry calls a reusable packaging workflow pinned to an immutable commit. If changing that worker, commit and push it first, validate it, then update the pin in the default-branch shared entry. Editing a worker on a feature branch alone does not update the active worker.
+- The shared entry does not merge application code into `master`. Confirm the packaged source commit matches the requested commit, and distinguish local checks, cache restoration, artifact creation and installed-device validation in reports.

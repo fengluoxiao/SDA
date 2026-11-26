@@ -106,3 +106,31 @@ try{
  for(const [name,value]of Object.entries(savedEnvironment)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
 }
 console.log('Shared entry builds only in the default-branch scope; non-default entries redirect without a duplicate build.');
+
+const policy=readFileSync('AGENTS.md','utf8');
+assert(policy.includes('ios-shared-cache.yml --ref master'));
+assert(policy.includes('A completed forwarding job is not a completed IPA build'));
+if(process.argv[2]){
+ const legacy=parse(readFileSync(process.argv[2],'utf8'));
+ assert.equal(legacy.jobs['shared-cache-entry'].if,"inputs.source_ref != ''");
+ assert.equal(legacy.jobs.ios.if,"inputs.source_ref == ''");
+ assert.equal(legacy.permissions.actions,'write');
+ const rust=legacy.jobs.ios.steps.find(step=>step.uses==='Swatinem/rust-cache@v2');
+ assert.equal(rust.with['shared-key'],'ios-device-release');
+ assert.equal(rust.with.key,focused.steps.find(step=>step.uses==='Swatinem/rust-cache@v2').with.key);
+ const script=legacy.jobs['shared-cache-entry'].steps[0].with.script;
+ try{
+  process.env.SOURCE_REF='other-agent/source';process.env.PACKAGE_SCOPE='motion-artwork';process.env.RELEASE_TAG='';
+  const dispatched=[];
+  const sha='c'.repeat(40);
+  const github={rest:{repos:{getCommit:async()=>({data:{sha}})},actions:{createWorkflowDispatch:async request=>dispatched.push(request)}}};
+  const context={repo:{owner:'test',repo:'SDA'},payload:{repository:{default_branch:'master'}},serverUrl:'https://github.com'};
+  const summary={addHeading(){return this;},addRaw(){return this;},addLink(){return this;},async write(){}};
+  await new AsyncFunction('github','context','core',script)(github,context,{summary});
+  assert.equal(dispatched.length,1);assert.equal(dispatched[0].ref,'master');
+  assert.equal(dispatched[0].workflow_id,'ios-shared-cache.yml');assert.equal(dispatched[0].inputs.source_ref,sha);
+ }finally{
+  for(const [name,value]of Object.entries(savedEnvironment)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
+ }
+ console.log('Legacy master entry redirects other-agent source builds once, retaining the original unpinned master path.');
+}
