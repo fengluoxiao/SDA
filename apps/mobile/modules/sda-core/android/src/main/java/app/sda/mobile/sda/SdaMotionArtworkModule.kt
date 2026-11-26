@@ -87,6 +87,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private var videoWidth=0
  private var videoHeight=0
  private var reverseFrames:MotionArtworkReverseFrames?=null
+ private val reverseLease=Any()
  private var reversing=false
  private var reversePositionMs=0L
  private var reverseStartedNs=0L
@@ -155,6 +156,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
      val next=MediaPlayer();player=next
      next.setSurface(output);next.setVolume(0f,0f);next.isLooping=false
      reverseFrames=MotionArtworkReverseFrames.acquire(path,range)
+     reverseFrames?.setActive(reverseLease,active && presented && foreground)
      // Android duplicates this descriptor; retain no extraction or cached clip.
      RandomAccessFile(File(path),"r").use {file->next.setDataSource(file.fd,range.offset,range.length)}
      next.setOnVideoSizeChangedListener {_,w,h->if(generation==token){videoWidth=w;videoHeight=h;crop()}}
@@ -172,7 +174,8 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private fun currentReversePosition()=maxOf(0L,reversePositionMs-if(reverseStartedNs==0L)0L else (System.nanoTime()-reverseStartedNs)/1000000L)
  private fun resume(){
   if(!canAnimate())return
-  if(reversing){if(reverseStartedNs==0L)reverseStartedNs=System.nanoTime();scheduleReverse(0)}else{player?.start();prepareReverseTail()}
+  reverseFrames?.setActive(reverseLease,true)
+  if(reversing){scheduleReverse(0)}else{player?.start();prepareReverseTail()}
  }
  private fun scheduleReverse(delay:Long=16){if(!reverseScheduled && canAnimate()){reverseScheduled=true;main.postDelayed(reverseTick,delay)}}
  private fun prepareReverseTail(){
@@ -196,6 +199,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   reverseFrames?.request(position*1000L,videoWidth,videoHeight,if(blurred)384 else 1024){frame->
    if(generation!=token || reverseEpoch!=epoch || !reversing || !canAnimate())return@request
    if(frame==null){val uri=source;stop();onStatus(mapOf("uri" to uri,"ready" to false,"unavailable" to true));return@request}
+   if(reverseStartedNs==0L)reverseStartedNs=System.nanoTime()
    if(lastReverseBitmap!==frame){lastReverseBitmap=frame;reverseImage.setImageBitmap(frame);updateReverseMatrix();reverseImage.visibility=View.VISIBLE}
   }
   scheduleReverse()
@@ -203,7 +207,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private fun clearReverseImage(){reverseImage.visibility=View.INVISIBLE;reverseImage.setImageDrawable(null);lastReverseBitmap=null;waitingForwardFrame=false}
  private fun rewind(){pause();reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.reset();clearReverseImage();if(prepared){forwardSeekComplete=false;player?.seekTo(0)}}
  private fun stop(){generation++;starting=false;pause();prepared=false;reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.release();reverseFrames=null;clearReverseImage();player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnCompletionListener(null);player?.setOnSeekCompleteListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
- private fun pause(){if(reversing){reversePositionMs=currentReversePosition();reverseStartedNs=0};reverseEpoch++;main.removeCallbacks(reverseTick);main.removeCallbacks(tailTick);tailScheduled=false;reverseScheduled=false;if(prepared)try{player?.pause()}catch(_:IllegalStateException){}}
+ private fun pause(){if(reversing){reversePositionMs=currentReversePosition();reverseStartedNs=0};reverseEpoch++;main.removeCallbacks(reverseTick);main.removeCallbacks(tailTick);tailScheduled=false;reverseScheduled=false;reverseFrames?.setActive(reverseLease,false);if(prepared)try{player?.pause()}catch(_:IllegalStateException){}}
  override fun onSurfaceTextureAvailable(surface:SurfaceTexture,width:Int,height:Int){startIfNeeded()}
  override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop();updateReverseMatrix()}
  override fun onSurfaceTextureDestroyed(surface:SurfaceTexture):Boolean{stop();return true}

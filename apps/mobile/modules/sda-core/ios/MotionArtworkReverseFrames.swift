@@ -27,6 +27,16 @@ final class MotionArtworkReverseFrames {
  private var configuration:Configuration?,source:MotionArtworkSource?,reader:AVAssetReader?
  private var windows=[Int:[Frame]](),failure:Error?,configurationTask:Task<Void,Never>?
  private var decodedWindows=0,peakWindowBytes=0
+ private var activeViews=Set<ObjectIdentifier>()
+ // The two visible surfaces share working RAM; an idle surface must not
+ // discard frames still in use by the other surface.
+ func setActive(_ active:Bool,for view:ObjectIdentifier){
+  lock.lock()
+  if active{activeViews.insert(view);lock.unlock();return}
+  let removed=activeViews.remove(view) != nil
+  guard removed,activeViews.isEmpty else{lock.unlock();return}
+  let activeReader=resetLocked();lock.unlock();activeReader?.cancelReading()
+ }
  private init(_ uri:String){
   self.uri=uri
   configurationTask=Task.detached(priority:.userInitiated){[weak self] in
@@ -123,6 +133,8 @@ final class MotionArtworkReverseFrames {
   guard reader.startReading() else{throw reader.error ?? NSError(domain:"SDA.MotionReverse.Start",code:1)}
   var frames=[Frame](),bytes=0
   while let sample=output.copyNextSampleBuffer(){
+   lock.lock();let cancelled=closed || revision != token;lock.unlock()
+   if cancelled{break}
    let keepReading:Bool=autoreleasepool{
     let time=CMSampleBufferGetPresentationTimeStamp(sample).seconds
     guard time>=start-0.00001,time<end,let buffer=CMSampleBufferGetImageBuffer(sample) else{return true}
@@ -148,7 +160,10 @@ final class MotionArtworkReverseFrames {
   return frames.sorted{$0.time<$1.time}
  }
  func reset(){
-  lock.lock();revision+=1;windows.removeAll();wantedIndex=nil;wantsTail=false;let activeReader=reader;lock.unlock();activeReader?.cancelReading()
+  lock.lock();let activeReader=resetLocked();lock.unlock();activeReader?.cancelReading()
+ }
+ private func resetLocked()->AVAssetReader?{
+  revision+=1;windows.removeAll();wantedIndex=nil;wantsTail=false;return reader
  }
  private func close(){
   lock.lock();closed=true;revision+=1;windows.removeAll();let activeReader=reader;let source=self.source;self.source=nil;lock.unlock()

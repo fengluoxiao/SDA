@@ -57,6 +57,7 @@ final class SdaMotionArtworkView: ExpoView {
  private var ready:NSKeyValueObservation?, failure:NSKeyValueObservation?, observers=[NSObjectProtocol]()
  private var endObserver:NSObjectProtocol?,timeObserver:Any?
  private var direction:Float=1,fallbackReverse=false
+ private var awaitingReverseFrame=false
  private var reverseClock=MotionArtworkReverseClock()
  private var reverseFrames:MotionArtworkReverseFrames?,reverseTimer:DispatchSourceTimer?
  private var lastReverseFrameTime:Double?,seekRevision=0
@@ -109,6 +110,7 @@ final class SdaMotionArtworkView: ExpoView {
     let item=AVPlayerItem(asset:prepared.asset),player=AVPlayer()
     if self.blurred {item.videoComposition=self.makeVideoComposition(prepared.asset)}
     self.source=prepared;self.player=player;self.reverseFrames=MotionArtworkReverseFrames.acquire(uri);player.isMuted=true;player.volume=0
+    self.reverseFrames?.setActive(self.canAnimate,for:ObjectIdentifier(self))
     player.automaticallyWaitsToMinimizeStalling=false
     player.allowsExternalPlayback=false;player.preventsDisplaySleepDuringVideoPlayback=false
     player.replaceCurrentItem(with:item);self.videoLayer.player=player
@@ -152,8 +154,8 @@ final class SdaMotionArtworkView: ExpoView {
  private var canAnimate:Bool{active && presented && window != nil && UIApplication.shared.applicationState == .active}
  private func resume() {
   guard canAnimate,let player else{return}
+  reverseFrames?.setActive(true,for:ObjectIdentifier(self))
   if fallbackReverse {
-   reverseClock.resume(at:CACurrentMediaTime())
    guard reverseTimer==nil else{return}
    let timer=DispatchSource.makeTimerSource(queue:.main)
    timer.schedule(deadline:.now(),repeating:.nanoseconds(16666667),leeway:.milliseconds(1))
@@ -163,6 +165,8 @@ final class SdaMotionArtworkView: ExpoView {
  private func pause() {
   player?.pause();reverseClock.pause(at:CACurrentMediaTime())
   reverseTimer?.cancel();reverseTimer=nil
+  awaitingReverseFrame=fallbackReverse
+  reverseFrames?.setActive(false,for:ObjectIdentifier(self))
  }
  private func prepareReverseTail(){
   guard let player,let duration=player.currentItem?.duration.seconds,duration.isFinite,player.currentTime().seconds>=duration-1.5 else{return}
@@ -175,6 +179,7 @@ final class SdaMotionArtworkView: ExpoView {
   guard duration.isFinite,duration>0 else{return}
   direction = -1
   fallbackReverse=true;player.pause()
+  awaitingReverseFrame=true
   reverseFrames?.prepareTail();lastReverseFrameTime=nil
   reverseClock.begin(at:max(0,duration-(reverseFrames?.frameInterval ?? 1.0/30)));resume()
  }
@@ -183,8 +188,10 @@ final class SdaMotionArtworkView: ExpoView {
   let position=reverseClock.current(at:CACurrentMediaTime())
   if position<=0{playForwardFromStart();return}
   guard let frame=frames.frame(at:position) else{
+   reverseClock.pause(at:CACurrentMediaTime());awaitingReverseFrame=true
    if frames.failed{let uri=sourceUri;stop();onStatus(["uri":uri,"ready":false,"unavailable":true])};return
   }
+  if awaitingReverseFrame{awaitingReverseFrame=false;reverseClock.resume(at:CACurrentMediaTime())}
   showReverseFrame(frame)
  }
  private func showReverseFrame(_ frame:MotionArtworkReverseFrames.Frame){
@@ -216,6 +223,6 @@ final class SdaMotionArtworkView: ExpoView {
   for observer in observers{NotificationCenter.default.removeObserver(observer)}
   if let endObserver{NotificationCenter.default.removeObserver(endObserver)}
   if let timeObserver{player?.removeTimeObserver(timeObserver)}
-  reverseTimer?.cancel();reverseFrames?.release();player?.pause();source?.close()
+  reverseTimer?.cancel();reverseFrames?.setActive(false,for:ObjectIdentifier(self));reverseFrames?.release();player?.pause();source?.close()
  }
 }

@@ -39,6 +39,10 @@ class MotionArtworkReverseFrames private constructor(private val path:String,pri
  private var configuration:Configuration?=null
  private val windows=mutableMapOf<Int,List<Frame>>()
  private var retriever:MediaMetadataRetriever?=null
+ private val activeViews=mutableSetOf<Any>()
+ fun setActive(view:Any,active:Boolean){synchronized(lock){
+  if(active)activeViews.add(view)else if(activeViews.remove(view) && activeViews.isEmpty)reset()
+ }}
  fun prepareTail(videoWidth:Int,videoHeight:Int){synchronized(lock){
   if(closed)return
   inputWidth=videoWidth;inputHeight=videoHeight;requestedUs=null;wantsTail=true
@@ -91,7 +95,7 @@ class MotionArtworkReverseFrames private constructor(private val path:String,pri
      if(closed || config==null || window==null){working=false;return}
      Triple(config,window,revision)
     }
-    val frames=decode(task.first,task.second)
+    val frames=decode(task.first,task.second,task.third)
     synchronized(lock){val wanted=wantedWindow;if(!closed && revision==task.third && wanted!=null && kotlin.math.abs(task.second-wanted)<=1){windows[task.second]=frames;pruneLocked()}}
    }
   }catch(_:Exception){synchronized(lock){if(!closed)failed=true;working=false}}
@@ -100,7 +104,7 @@ class MotionArtworkReverseFrames private constructor(private val path:String,pri
   val scale=min(1.0,maximum.toDouble()/max(bitmap.width,bitmap.height))
   return Bitmap.createScaledBitmap(bitmap,max(1,(bitmap.width*scale).toInt()),max(1,(bitmap.height*scale).toInt()),true)
  }
- private fun decode(config:Configuration,window:Int):List<Frame>{
+ private fun decode(config:Configuration,window:Int,token:Int):List<Frame>{
   val reader=retriever ?: return emptyList()
   val start=window*config.windowFrames;val count=min(config.windowFrames,config.count-start)
   val originals=if(config.batchSupported && Build.VERSION.SDK_INT>=28)reader.getFramesAtIndex(start,count) else (0 until count).map{index->
@@ -110,6 +114,7 @@ class MotionArtworkReverseFrames private constructor(private val path:String,pri
   check(originals.isNotEmpty())
   val frames=mutableListOf<Frame>();var bytes=0L
   for((offset,original)in originals.withIndex()){
+   if(synchronized(lock){closed || revision!=token})break
    val sharp=scaled(original,1024);val background=scaled(original,384)
    val frameBytes=sharp.rowBytes.toLong()*sharp.height+background.rowBytes.toLong()*background.height
    if(bytes+frameBytes>WINDOW_BYTES)break
