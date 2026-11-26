@@ -36,8 +36,24 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  assert.match(ui,/p\.queue\.slice\(p\.queueIndex \+ 1\)\.find\(track => !track\.preparation\)/);
  assert.equal((ui.match(/<QueuedArtwork[^>]*nextUri=\{nextPortraitArtwork\}/g) || []).length, 2);
  assert.doesNotMatch(ui,/tabletStillReady|motionScene|CrossfadeArtwork/);
- const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \|\| !self\.presented \{player\.pause\(\)\}/);assert.match(iosNative,/player\.automaticallyWaitsToMinimizeStalling=false/);assert.match(iosNative,/player\.playImmediately\(atRate:1\)/);assert.match(iosNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(iosNative,/if presented\{startIfNeeded\(\)\}else\{rewind\(\)\}/);assert.match(iosNative,/player.seek\(to:\.zero/);
- const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active \|\| !presented\)player\?\.pause\(\)/);assert.match(androidNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(androidNative,/else if\(prepared\)\{player\?\.pause\(\);player\?\.seekTo\(0\)\}/);
+ const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \|\| !self\.presented \{self\.pause\(\)\}/);assert.match(iosNative,/player\.automaticallyWaitsToMinimizeStalling=false/);assert.match(iosNative,/player\.playImmediately\(atRate:1\)/);assert.match(iosNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(iosNative,/if presented\{startIfNeeded\(\)\}else\{rewind\(\)\}/);assert.match(iosNative,/player.seek\(to:\.zero/);
+ const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active \|\| !presented\)pause\(\)/);assert.match(androidNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(androidNative,/if\(value\)startIfNeeded\(\)else rewind\(\)/);
+});
+
+test("native covers alternate direction without creating reversed-video files or retaining a full decoded clip",()=>{
+ const ios=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");
+ assert.doesNotMatch(ios,/AVPlayerLooper/);
+ assert.match(ios,/item.canPlayReverse/);assert.match(ios,/direction = -1/);assert.match(ios,/playImmediately\(atRate:direction\)/);
+ assert.match(ios,/self.direction<0,!self.fallbackReverse,time.seconds<=1.0\/120/);
+ assert.match(ios,/pendingReverseRequest==nil/);assert.match(ios,/maximumDimension=blurred \? 384.0:1024.0/);
+ assert.match(ios,/reverseClock.pause\(at:CACurrentMediaTime\(\)\)/);
+ const android=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");
+ assert.match(android,/next.isLooping=false/);assert.match(android,/setOnCompletionListener.*beginReverse/);
+ assert.match(android,/currentReversePosition\(\)/);assert.match(android,/waitingForwardFrame && forwardSeekComplete/);
+ const frames=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/MotionArtworkReverseFrames.kt","utf8");
+ assert.match(frames,/!pending.compareAndSet\(false,true\)/);assert.match(frames,/getScaledFrameAtTime/);
+ assert.match(frames,/executor.shutdown\(\)/);
+ assert.doesNotMatch(ios+android+frames,/AVAssetWriter|MediaMuxer|FileOutputStream|mutableListOf<Bitmap|\[CGImage\]/);
 });
 
 const featherBundle = await build({ entryPoints: ["apps/mobile/src/PhoneLandscapeBlur.tsx"], bundle: true, platform: "node", format: "cjs", external: ["react", "react-native", "@expo/ui/*", "*.png"], write: false });

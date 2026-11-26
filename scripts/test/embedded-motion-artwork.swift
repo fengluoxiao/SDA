@@ -5,6 +5,16 @@ import CryptoKit
 @main struct MotionArtworkTest {
  static func require(_ test:Bool,_ message:String) throws {if !test{throw NSError(domain:message,code:1)}}
  static func main() async throws {
+  var reverseClock=MotionArtworkReverseClock()
+  reverseClock.begin(at:5);reverseClock.resume(at:100)
+  try require(reverseClock.current(at:102)==3,"Reverse playback must move from five to three seconds")
+  reverseClock.pause(at:102)
+  try require(reverseClock.current(at:200)==3,"Paused reverse playback must retain its position")
+  reverseClock.resume(at:200);reverseClock.resume(at:200.5)
+  try require(reverseClock.current(at:201)==2,"Resume must not restart the reverse leg")
+  try require(reverseClock.current(at:210)==0,"Reverse playback must stop at zero")
+  reverseClock.begin(at:0)
+  try require(reverseClock.current(at:300)==0,"Track switches must reset the reverse clock")
   let args=CommandLine.arguments;try require(args.count==3,"Pass synthetic clip and fresh test directory")
   let video=try Data(contentsOf:URL(fileURLWithPath:args[1])),root=URL(fileURLWithPath:args[2],isDirectory:true)
   try require(!FileManager.default.fileExists(atPath:root.path),"Fresh directory required");try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false)
@@ -41,8 +51,22 @@ import CryptoKit
   let generator=AVAssetImageGenerator(asset:source.asset);generator.appliesPreferredTrackTransform=true
   let frame=try await generator.image(at:.zero)
   try require(frame.image.width==96 && frame.image.height==128,"Wrong portrait frame dimensions")
+  let duration=try await source.asset.load(.duration).seconds
+  try require(duration.isFinite && duration>0,"Missing clip duration")
+  generator.maximumSize=CGSize(width:512,height:512)
+  generator.requestedTimeToleranceBefore = .zero;generator.requestedTimeToleranceAfter = .zero
+  let sampleTimes=[0.0,duration/3,duration*2/3]
+  var forwardHashes=[String](),reverseHashes=[String]()
+  for time in sampleTimes+Array(sampleTimes.reversed()) {
+   let sample=try await generator.image(at:CMTime(seconds:time,preferredTimescale:600))
+   guard let pixels=sample.image.dataProvider?.data else{throw NSError(domain:"Cannot inspect reverse frame pixels",code:1)}
+   let digest=SHA256.hash(data:pixels as Data).map{String(format:"%02x",$0)}.joined()
+   if forwardHashes.count<sampleTimes.count{forwardHashes.append(digest)}else{reverseHashes.append(digest)}
+  }
+  try require(Set(forwardHashes).count>1,"Reverse fixture must contain moving frames")
+  try require(reverseHashes==Array(forwardHashes.reversed()),"Reverse frame requests must return the original frames in reverse order")
   generator.cancelAllCGImageGeneration();source.close();source.close()
   try require(try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()==before,"Created a decoded/extracted cover cache")
-  print("{\"passed\":true,\"portraitSelectedOverDefaultSquare\":true,\"malformedCases\":7,\"embeddedBytesPreserved\":true,\"decodedPortraitFrame\":true,\"audioTracks\":0,\"clipCacheCreated\":false,\"physicalDeviceTested\":false}")
+  print("{\"passed\":true,\"portraitSelectedOverDefaultSquare\":true,\"malformedCases\":7,\"embeddedBytesPreserved\":true,\"decodedPortraitFrame\":true,\"reverseFramesVerified\":true,\"reversePauseAndResume\":true,\"audioTracks\":0,\"clipCacheCreated\":false,\"physicalDeviceTested\":false}")
  }
 }
