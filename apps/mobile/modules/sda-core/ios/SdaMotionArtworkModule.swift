@@ -7,10 +7,19 @@ import QuartzCore
 public final class SdaMotionArtworkModule: Module {
  public func definition() -> ModuleDefinition {
   Name("SdaMotionArtwork")
+  AsyncFunction("hasMotionArtwork") { (uri:String) -> Bool in
+   guard let url=URL(string:uri),url.isFileURL else{return false}
+   let scoped=url.startAccessingSecurityScopedResource()
+   defer{if scoped{url.stopAccessingSecurityScopedResource()}}
+   guard let file=try? FileHandle(forReadingFrom:url) else{return false}
+   defer{try? file.close()}
+   do{return try MotionArtworkRange.find(in:file,size:file.seekToEnd()) != nil}catch{return false}
+  }
   View(SdaMotionArtworkView.self) {
    Events("onStatus")
    Prop("sourceUri") { (view:SdaMotionArtworkView, value:String) in view.sourceUri=value }
    Prop("active") { (view:SdaMotionArtworkView, value:Bool) in view.active=value }
+   Prop("presented") { (view:SdaMotionArtworkView, value:Bool) in view.presented=value }
    Prop("blurred") { (view:SdaMotionArtworkView, value:Bool) in view.blurred=value }
   }
  }
@@ -19,6 +28,10 @@ final class SdaMotionArtworkView: ExpoView {
  let onStatus=EventDispatcher()
  var sourceUri="" {didSet{if sourceUri != oldValue {stop();startIfNeeded()}}}
  var active=false {didSet{if active {startIfNeeded()}else{pause()}}}
+ var presented=false {didSet{
+  guard presented != oldValue else{return}
+  if presented{startIfNeeded()}else{rewind()}
+ }}
  var blurred=false {didSet{if blurred != oldValue && (player != nil || starting) {stop();startIfNeeded()}}}
  private let videoLayer=AVPlayerLayer()
  private var source:MotionArtworkSource?, player:AVQueuePlayer?, loop:AVPlayerLooper?
@@ -35,7 +48,7 @@ final class SdaMotionArtworkView: ExpoView {
  override func didMoveToWindow(){super.didMoveToWindow();if window==nil{pause()}else{startIfNeeded()}}
  private func startIfNeeded() {
   guard window != nil,UIApplication.shared.applicationState == .active,let url=URL(string:sourceUri),url.isFileURL else{return}
-  if let player {if active {player.playImmediately(atRate:1)};return}
+  if let player {if active && presented {player.playImmediately(atRate:1)};return}
    guard !starting else{return}
   starting=true;let token=generation,uri=sourceUri
   DispatchQueue.global(qos:.userInitiated).async { [weak self] in
@@ -59,7 +72,7 @@ final class SdaMotionArtworkView: ExpoView {
     self.ready=self.videoLayer.observe(\.isReadyForDisplay,options:[.initial,.new]) { [weak self] layer,_ in
      DispatchQueue.main.async { [weak self] in guard let self,self.generation==token else{return}
       if layer.isReadyForDisplay {
-       if !self.active {player.pause()}
+       if !self.active || !self.presented {player.pause()}
        self.onStatus(["uri":uri,"ready":true])
       }
      }
@@ -77,5 +90,16 @@ final class SdaMotionArtworkView: ExpoView {
   source?.close();source=nil
  }
  private func pause() {player?.pause()}
+ private func rewind() {
+  guard let player else{return}
+  let token=generation
+  player.pause()
+  player.seek(to:.zero,toleranceBefore:.zero,toleranceAfter:.zero){[weak self] finished in
+   DispatchQueue.main.async{[weak self] in
+    guard let self,finished,self.generation==token,self.active,self.presented,self.window != nil,UIApplication.shared.applicationState == .active else{return}
+    player.playImmediately(atRate:1)
+   }
+  }
+ }
  deinit {for observer in observers{NotificationCenter.default.removeObserver(observer)};player?.pause();loop?.disableLooping();source?.close()}
 }

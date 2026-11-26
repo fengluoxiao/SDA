@@ -24,6 +24,7 @@ import { hasSystemVolumeSlider, SystemVolumeSlider } from "./SystemVolumeSlider"
 import { CircularMiniPlayer, CIRCULAR_MINI_PLAYER_LAYOUT } from "./CircularMiniPlayer";
 import { SharedMiniPlayerArtwork, SharedMiniPlayerTransition } from "./SharedMiniPlayerTransition";
 import { EmbeddedMotionArtwork, supportsEmbeddedMotionArtwork } from "./EmbeddedMotionArtwork";
+import { useMotionArtworkSelection } from "./use-motion-artwork-selection";
 import { useSharedMiniPlayerTransition } from "./use-shared-mini-player-transition";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
@@ -253,42 +254,16 @@ function ThemedPlayer(p: PlayerProps) {
   const tabletPortrait = tabletPlayer && !landscapePlayer;
   const motionEnabled = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletMotionEnabled = tabletPortrait && motionEnabled;
-  const wantedMotionKey = tabletMotionEnabled && hasArtwork && p.selectedUri.startsWith("file:") ? motionSourceKey : "";
   const nextArtworkTrack = React.useMemo(() => {
     if (!motionEnabled || p.queueIndex < 0) return undefined;
     return p.queue.slice(p.queueIndex + 1).find(track => !track.preparation)
       ?? p.queue.find(track => !track.preparation);
   }, [motionEnabled, p.queue, p.queueIndex]);
   const nextPortraitArtwork = tabletMotionEnabled ? nextArtworkTrack?.metadata.coverUri ?? "" : "";
-  const nextMotionSourceUri = nextArtworkTrack?.uri ?? "";
-  const motionReadiness=useRef(new Map<string,{sharp:boolean;blur:boolean}>());
-  const motionSources=useRef<string[]>([]);
-  motionSources.current=[p.selectedUri,nextMotionSourceUri];
-  const motionAppearance = React.useMemo(() => {
-    const prepared=motionReadiness.current.get(wantedMotionKey);
-    const sharp = new Animated.Value(prepared?.sharp?1:0);
-    return { sharp, blur: new Animated.Value(prepared?.blur?1:0), still: sharp.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) };
-  }, [wantedMotionKey]);
-  React.useLayoutEffect(()=>{
-    if(!wantedMotionKey){motionReadiness.current.clear();return;}
-    for(const uri of motionReadiness.current.keys())if(!motionSources.current.includes(uri))motionReadiness.current.delete(uri);
-  },[wantedMotionKey,nextMotionSourceUri]);
-  React.useLayoutEffect(() => () => {
-    motionAppearance.sharp.stopAnimation();
-    motionAppearance.blur.stopAnimation();
-  }, [motionAppearance]);
-  const reportMotionSharp = useCallback((ready: boolean,uri:string) => {
-    if(!motionSources.current.includes(uri))return;
-    const previous=motionReadiness.current.get(uri)??{sharp:false,blur:false};
-    motionReadiness.current.set(uri,{...previous,sharp:ready});
-    if(uri===wantedMotionKey)Animated.timing(motionAppearance.sharp, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
-  }, [motionAppearance,wantedMotionKey]);
-  const reportMotionBlur = useCallback((ready: boolean,uri:string) => {
-    if(!motionSources.current.includes(uri))return;
-    const previous=motionReadiness.current.get(uri)??{sharp:false,blur:false};
-    motionReadiness.current.set(uri,{...previous,blur:ready});
-    if(uri===wantedMotionKey)Animated.timing(motionAppearance.blur, { toValue: Number(ready), duration: 180, useNativeDriver: true, isInteraction: false }).start();
-  }, [motionAppearance,wantedMotionKey]);
+  const motionSelection=useMotionArtworkSelection(motionEnabled,p.selectedUri,nextArtworkTrack?.uri??"");
+  const selectedMotionUri=motionSelection.current==="motion"?p.selectedUri:"";
+  const nextMotionSourceUri=motionSelection.next==="motion"?nextArtworkTrack?.uri??"":"";
+  const showStaticArtwork=motionSelection.current==="static";
   const motionPlaneFrame = immersiveArtwork;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
@@ -444,21 +419,25 @@ function ThemedPlayer(p: PlayerProps) {
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPlayer && !tabletLandscape ? 0 : 1 }]}>
-    {hasArtwork ? <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}><Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: sharedMini.mainOpacity }]} />{!tabletPortrait && <EmbeddedMotionArtwork motionKey={motionSourceKey} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} />}</View> : <View style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height, backgroundColor: "#303034", alignItems: "center", justifyContent: "center" }} /> }
+    <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}>
+      {hasArtwork && <Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: showStaticArtwork?sharedMini.mainOpacity:0 }]} />}
+      {!hasArtwork && showStaticArtwork && <View style={[StyleSheet.absoluteFill,{backgroundColor:"#303034"}]} />}
+      {!tabletPortrait && <EmbeddedMotionArtwork motionKey={motionSourceKey} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />}
     </View>
-    {!!wantedMotionKey && <Animated.View testID="tablet-motion-ambient-motion" style={[StyleSheet.absoluteFill, { opacity: motionAppearance.sharp }]}>
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: motionAppearance.blur, backgroundColor: fadeColor }]}>
+    </View>
+    {tabletMotionEnabled && <View testID="tablet-motion-ambient-motion" style={[StyleSheet.absoluteFill, { opacity: selectedMotionUri?1:0 }]}>
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: fadeColor }]}>
         <View style={[StyleSheet.absoluteFill, { transform: [{ scale: 1.12 }] }]}>
-          <EmbeddedMotionArtwork motionKey={wantedMotionKey} blurred opacity={ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} revealDuration={0} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionBlur} />
+          <EmbeddedMotionArtwork blurred opacity={ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
         </View>
         <View style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />
-      </Animated.View>
+      </View>
       <MotionArtworkFeather surfaceWidth={width} surfaceHeight={height} artworkTop={motionPlaneFrame.top} artworkHeight={motionPlaneFrame.height} fallbackColor={fadeColor}>
         <View style={{ position: "absolute", ...motionPlaneFrame }}>
-          <EmbeddedMotionArtwork motionKey={wantedMotionKey} sourceUri={p.selectedUri} nextSourceUri={nextMotionSourceUri} revealDuration={0} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onVisible={reportMotionSharp} />
+          <EmbeddedMotionArtwork sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
         </View>
       </MotionArtworkFeather>
-    </Animated.View>}
+    </View>}
   </View>}
   {circularMiniPlayerActive && <SharedMiniPlayerArtwork frames={sharedMini.frames} value={sharedMini.travel} active={sharedMini.active} home={page === 0} artworkUri={hasArtwork ? artworkUri : ""} fallbackArtwork={fallbackArtwork} fallbackColor={immersiveHome ? pc.ink : c.ink} playing={playing} onReady={sharedMini.onArtworkReady} />}
   {/* Keep both the moving and settled artwork below the original edge treatment. */}
@@ -500,7 +479,7 @@ function ThemedPlayer(p: PlayerProps) {
           </TabletLandscapePlayer> : <>
           <View ref={playerRowRef} onLayout={measureLandscapeLyrics} testID={tabletPlayer ? "tablet-player-layout" : undefined} style={[s.playerContent, { gap: playerGap, flex: 1, paddingHorizontal: 25 }, landscapePlayer && np.landscapeContent, compactLandscape && np.compactContent, tabletLayout && { width: "100%", maxWidth: tabletLayout.contentWidth, alignSelf: "center", flexDirection: landscapePlayer ? "row" : "column", alignItems: "center", justifyContent: "center", gap: tabletLayout.columnGap, paddingHorizontal: tabletLayout.horizontalPadding, paddingVertical: tabletLayout.verticalPadding }]} >
           <Pressable accessibilityRole="button" accessibilityLabel={p.metadata.coverUri ? (p.metadata.album || title) + " 专辑封面，轻点选择歌曲" : hasArtwork ? "临时预览图片，轻点选择歌曲" : "选择歌曲"} onPress={p.chooseFile} disabled={p.busy} style={[{ height: coverSize, flexShrink: 0, alignItems: "center", justifyContent: "center" }, landscapePlayer && { width: "50%", height: "100%" }, tabletLayout && { width: landscapePlayer ? tabletLayout.coverSize : "100%", height: landscapePlayer ? "100%" : tabletLayout.coverSize, minHeight: 0 }]}>
-            {tabletLayout && <Animated.View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18, opacity: motionAppearance.still }]}>
+            {tabletLayout && <Animated.View ref={tabletArtworkRef} collapsable={false} onLayout={measureTabletArtwork} testID="tablet-complete-artwork" style={[np.cover, { width: tabletLayout.coverSize, height: tabletLayout.coverSize, borderRadius: 18, opacity: showStaticArtwork?1:0 }]}>
               <QueuedArtwork uri={hasArtwork ? artworkUri : ""} nextUri={nextPortraitArtwork} resizeMode="contain" onError={setFailedArtwork} style={[StyleSheet.absoluteFill, { borderRadius: 18 }]} />
               {!hasArtwork && <View style={{ flex: 1, borderRadius: 18, backgroundColor: "rgba(255,255,255,.08)", alignItems: "center", justifyContent: "center" }}><Symbol name="music.note" fallback="♫" size={90} color={pc.muted} /></View>}
             </Animated.View>}

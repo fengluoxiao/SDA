@@ -27,10 +27,15 @@ import java.util.concurrent.Executors
 class SdaMotionArtworkModule: Module() {
  override fun definition()=ModuleDefinition {
   Name("SdaMotionArtwork")
+  AsyncFunction("hasMotionArtwork") {uri:String->
+   val parsed=Uri.parse(uri)
+   if(parsed.scheme!="file" || parsed.path==null)false else try{RandomAccessFile(File(parsed.path!!),"r").use{MotionArtworkRange.find(it)!=null}}catch(_:Exception){false}
+  }
   View(SdaMotionArtworkView::class) {
    Events("onStatus")
    Prop("sourceUri") {view:SdaMotionArtworkView,value:String->view.updateSource(value)}
    Prop("active") {view:SdaMotionArtworkView,value:Boolean->view.updateActive(value)}
+   Prop("presented") {view:SdaMotionArtworkView,value:Boolean->view.updatePresented(value)}
    Prop("blurred") {view:SdaMotionArtworkView,value:Boolean->view.updateBlurred(value)}
   }
  }
@@ -44,6 +49,8 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private val texture=TextureView(context)
  private var source=""
  private var active=false
+ private var presented=false
+ private var prepared=false
  private var foreground=true
  @Volatile private var generation=0
  private var starting=false
@@ -54,6 +61,11 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  init {addView(texture,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.MATCH_PARENT));texture.surfaceTextureListener=this;texture.isOpaque=false;isClickable=false;clipChildren=true}
  fun updateSource(value:String){if(source!=value){source=value;stop();startIfNeeded()}}
  fun updateActive(value:Boolean){active=value;if(value)startIfNeeded()else player?.pause()}
+ fun updatePresented(value:Boolean){
+  if(presented==value)return
+  presented=value
+  if(value)startIfNeeded()else if(prepared){player?.pause();player?.seekTo(0)}
+ }
  fun updateBlurred(value:Boolean){
   if(android.os.Build.VERSION.SDK_INT>=31)texture.setRenderEffect(if(value)RenderEffect.createBlurEffect(36f,36f,Shader.TileMode.DECAL)else null)
  }
@@ -69,7 +81,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   val matrix=Matrix();matrix.setScale(if(ratio>viewport)ratio/viewport else 1f,if(ratio<viewport)viewport/ratio else 1f,texture.width/2f,texture.height/2f);texture.setTransform(matrix)
  }
  private fun startIfNeeded(){
-  if(player!=null){if(active && foreground && isAttachedToWindow && windowVisibility==View.VISIBLE)player?.start();return}
+  if(player!=null){if(active && presented && foreground && isAttachedToWindow && windowVisibility==View.VISIBLE)player?.start();return}
   if(!foreground || !isAttachedToWindow || windowVisibility!=View.VISIBLE || !texture.isAvailable || starting)return
   val uri=Uri.parse(source);if(uri.scheme!="file")return
   val path=uri.path ?: return;val token=generation;val current=source;starting=true
@@ -87,15 +99,15 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
      // Android duplicates this descriptor; retain no extraction or cached clip.
      RandomAccessFile(File(path),"r").use {file->next.setDataSource(file.fd,range.offset,range.length)}
      next.setOnVideoSizeChangedListener {_,w,h->if(generation==token){videoWidth=w;videoHeight=h;crop()}}
-     next.setOnPreparedListener {if(generation==token && foreground){crop();it.start()}}
-     next.setOnInfoListener {_,what,_->if(generation==token && what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){onStatus(mapOf("uri" to current,"ready" to true));if(!active)player?.pause()};false}
+     next.setOnPreparedListener {if(generation==token && foreground){prepared=true;crop();it.start()}}
+     next.setOnInfoListener {_,what,_->if(generation==token && what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){onStatus(mapOf("uri" to current,"ready" to true));if(!active || !presented)player?.pause()};false}
      next.setOnErrorListener {_,_,_->if(generation==token){stop();onStatus(mapOf("uri" to current,"ready" to false,"unavailable" to true))};true}
      next.prepareAsync()
     }catch(_:Exception){stop();onStatus(mapOf("uri" to current,"ready" to false,"unavailable" to true))}
    }
   }
  }
- private fun stop(){generation++;starting=false;player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
+ private fun stop(){generation++;starting=false;prepared=false;player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
  private fun pause(){player?.pause()}
  override fun onSurfaceTextureAvailable(surface:SurfaceTexture,width:Int,height:Int){startIfNeeded()}
  override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop()}

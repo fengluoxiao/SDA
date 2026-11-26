@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {readFileSync} from "node:fs";
 import {build} from "esbuild";
+import "./motion-artwork-selection.test.mjs";
 
 const compiled=await build({entryPoints:["apps/mobile/src/ArtworkEdgeBlend.tsx"],bundle:true,platform:"node",format:"cjs",external:["*"],write:false});
 const React={createElement:(type,props,...children)=>({type,props:{...props,children}}),Fragment:"Fragment"};
@@ -26,15 +27,17 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  assert.match(ui,/const tabletMotionEnabled = tabletPortrait && motionEnabled/);
  assert.match(ui,/const motionSourceKey=p.selectedUri/);
- assert.match(ui,/\{!!wantedMotionKey && <Animated.View testID="tablet-motion-ambient-motion"/);
- assert.match(ui,/<MotionArtworkFeather[^>]*>\s*<View[^>]*motionPlaneFrame[^>]*>\s*<EmbeddedMotionArtwork motionKey=\{wantedMotionKey\} sourceUri=\{p.selectedUri\}/);
- assert.match(ui,/new Animated.Value\(prepared\?\.sharp\?1:0\)/);
+ assert.match(ui,/\{tabletMotionEnabled && <View testID="tablet-motion-ambient-motion"/);
+ assert.match(ui,/<MotionArtworkFeather[^>]*>\s*<View[^>]*motionPlaneFrame[^>]*>\s*<EmbeddedMotionArtwork sourceUri=\{selectedMotionUri\}/);
+ assert.match(ui,/const showStaticArtwork=motionSelection.current==="static"/);
+ assert.doesNotMatch(ui,/motionAppearance|Animated\.timing\(motion/);
+ assert.doesNotMatch(overlay,/Animated|revealDuration/);
  assert.equal((ui.match(/nextSourceUri=\{nextMotionSourceUri\}/g)||[]).length,3);
  assert.match(ui,/p\.queue\.slice\(p\.queueIndex \+ 1\)\.find\(track => !track\.preparation\)/);
  assert.equal((ui.match(/<QueuedArtwork[^>]*nextUri=\{nextPortraitArtwork\}/g) || []).length, 2);
  assert.doesNotMatch(ui,/tabletStillReady|motionScene|CrossfadeArtwork/);
- const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \{player\.pause\(\)\}/);assert.match(iosNative,/player\.automaticallyWaitsToMinimizeStalling=false/);assert.match(iosNative,/player\.playImmediately\(atRate:1\)/);
- const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active\)player\?\.pause\(\)/);
+ const iosNative=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");assert.doesNotMatch(iosNative,/guard active,!starting/);assert.match(iosNative,/if !self\.active \|\| !self\.presented \{player\.pause\(\)\}/);assert.match(iosNative,/player\.automaticallyWaitsToMinimizeStalling=false/);assert.match(iosNative,/player\.playImmediately\(atRate:1\)/);assert.match(iosNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(iosNative,/if presented\{startIfNeeded\(\)\}else\{rewind\(\)\}/);assert.match(iosNative,/player.seek\(to:\.zero/);
+ const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active \|\| !presented\)player\?\.pause\(\)/);assert.match(androidNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(androidNative,/else if\(prepared\)\{player\?\.pause\(\);player\?\.seekTo\(0\)\}/);
 });
 
 const featherBundle = await build({ entryPoints: ["apps/mobile/src/PhoneLandscapeBlur.tsx"], bundle: true, platform: "node", format: "cjs", external: ["react", "react-native", "@expo/ui/*", "*.png"], write: false });
@@ -90,7 +93,7 @@ function motionHarness(){
  };
  hooks.useLayoutEffect=hooks.useEffect;
  const animated={View:"Animated.View",Value:class{constructor(value){this.value=value;}setValue(value){this.value=value;}},timing:(value,config)=>({start(){value.value=config.toValue;},stop(){}})};
- const native={Animated:animated,AppState:{currentState:"active",addEventListener:()=>({remove(){}})},StyleSheet:{absoluteFill:{}}};
+ const native={View:"View",Animated:animated,AppState:{currentState:"active",addEventListener:()=>({remove(){}})},StyleSheet:{absoluteFill:{}}};
  const previous=globalThis.expo;
  globalThis.expo={modules:{SdaMotionArtwork:{}}};
  const exports={exports:{}};
@@ -109,21 +112,21 @@ test("the next video prepares one paused frame and promotes the same native view
  assert.equal(before[1].props.presented,false);
  const frame=queue;
  let tree=frame.render(before[1].type,before[1].props);
- const nativeView=tree.props.children[0].props.children[0];
+ const nativeView=tree.props.children[0];
  nativeView.props.onStatus({nativeEvent:{uri:"file:///wrong.m4a",ready:true}});
  assert.equal(reports.length,0);
  nativeView.props.onStatus({nativeEvent:{uri:"file:///next.m4a",ready:true}});
  assert.deepEqual(reports,[[true,"file:///next.m4a"]]);
  tree=frame.render(before[1].type,before[1].props);
  assert.equal(tree.props.style[1].opacity,0);
- assert.equal(tree.props.children[0].props.style[1].opacity.value,1);
+ assert.equal(tree.props.children[0].props.presented,false);
  const promoted=queue.render(queue.component,{...props,sourceUri:"file:///next.m4a",motionKey:"file:///next.m4a",nextSourceUri:"file:///third.m4a"}).props.children[0][0];
  assert.equal(promoted.type,before[1].type);
  assert.equal(promoted.props.key,before[1].props.key);
  assert.equal(promoted.props.active,true);
  tree=frame.render(promoted.type,promoted.props);
  assert.equal(tree.props.style[1].opacity,1);
- assert.equal(tree.props.children[0].props.style[1].opacity.value,1);
+ assert.equal(tree.props.children[0].props.presented,true);
  const paused=queue.render(queue.component,{...props,active:false}).props.children[0];
  assert(paused.every(layer=>layer.props.active===false));
  assert.deepEqual(queue.render(queue.component,{...props,sourceUri:"file:///same.m4a",nextSourceUri:"file:///same.m4a"}).props.children[0].length,1);
@@ -135,7 +138,7 @@ test("an absent or failed next video remains invisible and cannot hide a static-
  const pending=queue.render(queue.component,props).props.children[0][1];
  const frame=queue;
  const tree=frame.render(pending.type,pending.props);
- tree.props.children[0].props.children[0].props.onStatus({nativeEvent:{uri:"file:///still.m4a",ready:false,unavailable:true}});
+ tree.props.children[0].props.onStatus({nativeEvent:{uri:"file:///still.m4a",ready:false,unavailable:true}});
  assert.equal(frame.render(pending.type,pending.props),null);
  assert.equal(reports.length,0);
  const third=queue.render(queue.component,{...props,sourceUri:"file:///third.m4a",nextSourceUri:undefined}).props.children[0];

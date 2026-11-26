@@ -15,6 +15,7 @@ with zipfile.ZipFile(ipa) as z:
     runtime = z.read(app + info["CFBundleExecutable"])
     bundle = z.read(app + "main.jsbundle")
     assert b"SdaMotionArtwork" in runtime
+    assert b"hasMotionArtwork" in runtime
     assert b"amdl-motion/1" in runtime
     assert b"sda-motion://" in runtime
     assert b"MotionArtworkRange" in runtime
