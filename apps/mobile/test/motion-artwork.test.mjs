@@ -3,6 +3,7 @@ import test from "node:test";
 import {readFileSync} from "node:fs";
 import {build} from "esbuild";
 import "./motion-artwork-selection.test.mjs";
+import "./portrait-motion-artwork-layout.test.mjs";
 
 const compiled=await build({entryPoints:["apps/mobile/src/ArtworkEdgeBlend.tsx"],bundle:true,platform:"node",format:"cjs",external:["*"],write:false});
 const React={createElement:(type,props,...children)=>({type,props:{...props,children}}),Fragment:"Fragment"};
@@ -20,14 +21,14 @@ test("portrait motion stays under the same tablet right/bottom feather and prese
 });
 test("dynamic artwork is opt-in and only mounted on the large player cover",()=>{
  const prefs=readFileSync("apps/mobile/src/navigation-preferences.tsx","utf8");assert.match(prefs,/const defaults[^\n]*motionArtwork: false/);
-const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{uri\} sourceUri=\{uri\}/);assert.match(overlay,/uri===sourceUri && visible && active && foreground/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(event\.nativeEvent\.ready\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
+const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{uri\} sourceUri=\{uri\}/);assert.match(overlay,/uri===sourceUri && visible && active && foreground/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} bottomExtension=\{bottomExtension\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(event\.nativeEvent\.ready\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
  const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,2);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
  const rows=ui.slice(ui.indexOf("track.metadata.coverUri ?"));assert(!rows.split("</ScrollView>")[0].includes("EmbeddedMotionArtwork"));
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  assert.match(ui,/const tabletMotionEnabled = tabletPortrait && motionEnabled/);
  assert.match(ui,/const motionSourceKey=p.selectedUri/);
- assert.match(ui,/liveBackdropEnabled=motionEnabled && \(tabletPortrait \|\| phoneLandscapeBlur \|\| tabletLandscape\)/);
+ assert.match(ui,/liveBackdropEnabled=motionEnabled && \(!landscapePlayer \|\| phoneLandscapeBlur \|\| tabletLandscape\)/);
  assert.match(ui,/\{liveBackdropEnabled && <View testID="motion-artwork-live-backdrop"/);
  assert.match(ui,/<MotionArtworkFeather enabled=\{motionEnabled\} mode=\{motionFeatherMode\}/);
  assert.match(ui,/const showStaticArtwork=motionSelection.current==="static"/);
@@ -47,7 +48,7 @@ test("native covers alternate direction without creating reversed-video files or
  assert.match(ios,/direction = -1/);assert.match(ios,/playImmediately\(atRate:direction\)/);
  assert.doesNotMatch(ios,/generateCGImagesAsynchronously|item.canPlayReverse/);
  assert.match(ios,/MotionArtworkReverseFrames.acquire\(uri\)/);
- assert.match(ios,/frame.blurredImage:frame.image/);
+ assert.match(ios,/bottomExtension \? frame.bottomImage:frame.blurredImage/);
  const iosFrames=readFileSync("apps/mobile/modules/sda-core/ios/MotionArtworkReverseFrames.swift","utf8");
  assert.match(iosFrames,/AVAssetReaderTrackOutput/);assert.match(iosFrames,/copyNextSampleBuffer/);
  assert.match(iosFrames,/ProcessInfo.processInfo.physicalMemory\/128/);assert.match(iosFrames,/abs\(\$0.key-wantedIndex\)<=1/);

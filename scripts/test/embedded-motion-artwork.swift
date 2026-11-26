@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CryptoKit
+import CoreImage
 
 @main struct MotionArtworkTest {
  static func require(_ test:Bool,_ message:String) throws {if !test{throw NSError(domain:message,code:1)}}
@@ -32,6 +33,27 @@ import CryptoKit
   try require(writer.status == .completed,"Stress encoder did not complete")
  }
  static func main() async throws {
+  let colorExtent=CGRect(x:0,y:0,width:100,height:100)
+  let green=CIImage(color:CIColor(red:0,green:1,blue:0)).cropped(to:colorExtent)
+  let red=CIImage(color:CIColor(red:1,green:0,blue:0)).cropped(to:MotionArtworkBackdrop.bottomBand(colorExtent))
+  let twoTone=red.composited(over:green)
+  let extended=MotionArtworkBackdrop.blurred(twoTone,bottomExtension:true,radius:8)
+  let renderContext=CIContext(options:[.cacheIntermediates:false])
+  guard let colorFrame=renderContext.createCGImage(extended,from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let colorData=colorFrame.dataProvider?.data else{throw NSError(domain:"Bottom-extension render failed",code:1)}
+  let colorBytes=colorData as Data
+  for row in [0,50,99]{let at=row*colorFrame.bytesPerRow+50*4;try require(Int(colorBytes[at])>Int(colorBytes[at+1])*2,"Bottom extension included the green upper image")}
+  try require(abs(MotionArtworkBackdrop.extendedImage(twoTone).extent.height-100)<0.00001,"Bottom extension changed the render bounds")
+  for channel in [1,2]{
+   let color=CIColor(red:0,green:channel==1 ? 1:0,blue:channel==2 ? 1:0)
+   let lower=CIImage(color:color).cropped(to:MotionArtworkBackdrop.bottomBand(colorExtent)).composited(over:CIImage(color:CIColor(red:1,green:0,blue:0)).cropped(to:colorExtent))
+   guard let painted=renderContext.createCGImage(MotionArtworkBackdrop.blurred(lower,bottomExtension:true,radius:8),from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let data=painted.dataProvider?.data else{throw NSError(domain:"Generic bottom color render failed",code:1)}
+   let bytes=data as Data
+   for row in [0,50,99]{let at=row*painted.bytesPerRow+50*4;try require(Int(bytes[at+channel])>Int(bytes[at])+10,"Bottom extension used a fixed song color")}
+  }
+  let white=CIImage(color:CIColor(red:1,green:1,blue:1)).cropped(to:colorExtent)
+  guard let whiteFrame=renderContext.createCGImage(MotionArtworkBackdrop.blurred(white,bottomExtension:true,radius:8),from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let whiteData=whiteFrame.dataProvider?.data else{throw NSError(domain:"White artwork render failed",code:1)}
+  let whiteBytes=whiteData as Data
+  try require(whiteBytes[50*whiteFrame.bytesPerRow+50*4]<=165,"Bright artwork must remain dark enough under playback controls")
   var reverseClock=MotionArtworkReverseClock()
   reverseClock.begin(at:5);reverseClock.resume(at:100)
   try require(reverseClock.current(at:102)==3,"Reverse playback must move from five to three seconds")
@@ -112,6 +134,7 @@ import CryptoKit
   var bufferedForward=[String](),bufferedReverse=[String]()
   for time in sampleTimes+Array(sampleTimes.reversed()) {
    let sample=try await bufferedFrame(time)
+   try require(sample.bottomImage.width>0 && sample.bottomImage.height>0,"Reverse frame is missing its bottom continuation")
    guard let pixels=sample.image.dataProvider?.data else{throw NSError(domain:"Missing buffered pixels",code:1)}
    let hash=SHA256.hash(data:pixels as Data).map{String(format:"%02x",$0)}.joined()
    if bufferedForward.count<sampleTimes.count{bufferedForward.append(hash)}else{bufferedReverse.append(hash)}

@@ -15,12 +15,24 @@ public final class SdaMotionArtworkModule: Module {
    defer{try? file.close()}
    do{return try MotionArtworkRange.find(in:file,size:file.seekToEnd()) != nil}catch{return false}
   }
+  AsyncFunction("motionArtworkInfo") { (uri:String) async -> [String:Any] in
+   guard let url=URL(string:uri),let source=MotionArtworkSource(url:url) else{return ["present":false]}
+   defer{source.close()}
+   do{
+    guard let track=try await source.asset.loadTracks(withMediaType:.video).first else{return ["present":false]}
+    let size=try await track.load(.naturalSize),transform=try await track.load(.preferredTransform)
+    let rect=CGRect(origin:.zero,size:size).applying(transform)
+    guard rect.width.isFinite,rect.height.isFinite,rect.width>0,rect.height>0 else{return ["present":true]}
+    return ["present":true,"width":Double(rect.width),"height":Double(rect.height)]
+   }catch{return ["present":false]}
+  }
   View(SdaMotionArtworkView.self) {
    Events("onStatus")
    Prop("sourceUri") { (view:SdaMotionArtworkView, value:String) in view.sourceUri=value }
    Prop("active") { (view:SdaMotionArtworkView, value:Bool) in view.active=value }
    Prop("presented") { (view:SdaMotionArtworkView, value:Bool) in view.presented=value }
    Prop("blurred") { (view:SdaMotionArtworkView, value:Bool) in view.blurred=value }
+   Prop("bottomExtension") { (view:SdaMotionArtworkView, value:Bool) in view.bottomExtension=value }
   }
  }
 }
@@ -32,7 +44,14 @@ final class SdaMotionArtworkView: ExpoView {
   guard presented != oldValue else{return}
   if presented{startIfNeeded()}else{rewind()}
  }}
- var blurred=false {didSet{if blurred != oldValue && (player != nil || starting) {stop();startIfNeeded()}}}
+ var blurred=false {didSet{updateGravity();if blurred != oldValue && (player != nil || starting) {stop();startIfNeeded()}}}
+ var bottomExtension=false {didSet{
+  guard bottomExtension != oldValue else{return}
+  backdrop.bottomExtension=bottomExtension;updateGravity()
+  if fallbackReverse,let frame=reverseFrames?.frame(at:reverseClock.current(at:CACurrentMediaTime())){lastReverseFrameTime=nil;showReverseFrame(frame)}
+  else if !active,blurred,let item=player?.currentItem,let asset=source?.asset{item.videoComposition=makeVideoComposition(asset)}
+ }}
+ private let backdrop=MotionArtworkBackdrop()
  private let videoLayer=AVPlayerLayer()
  private var source:MotionArtworkSource?, player:AVPlayer?
  private var ready:NSKeyValueObservation?, failure:NSKeyValueObservation?, observers=[NSObjectProtocol]()
@@ -52,6 +71,16 @@ final class SdaMotionArtworkView: ExpoView {
   observers.append(center.addObserver(forName:UIApplication.didBecomeActiveNotification,object:nil,queue:.main){[weak self]_ in self?.startIfNeeded()})
  }
  override func layoutSubviews(){super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;CATransaction.commit()}
+ private func updateGravity(){
+  CATransaction.begin();CATransaction.setDisableActions(true)
+  videoLayer.videoGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
+  reverseLayer.contentsGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
+  CATransaction.commit()
+ }
+ private func makeVideoComposition(_ asset:AVAsset)->AVVideoComposition {
+  let policy=backdrop
+  return AVVideoComposition(asset:asset){request in request.finish(with:policy.render(request.sourceImage),context:nil)}
+ }
  override func didMoveToWindow(){super.didMoveToWindow();if window==nil{pause()}else{startIfNeeded()}}
  private func startIfNeeded() {
   guard window != nil,UIApplication.shared.applicationState == .active,let url=URL(string:sourceUri),url.isFileURL else{return}
@@ -65,13 +94,7 @@ final class SdaMotionArtworkView: ExpoView {
     self.starting=false
     guard let prepared else {self.onStatus(["uri":uri,"ready":false,"unavailable":true]);return}
     let item=AVPlayerItem(asset:prepared.asset),player=AVPlayer()
-    if self.blurred {item.videoComposition=AVVideoComposition(asset:prepared.asset){request in
-     let source=request.sourceImage.clampedToExtent()
-     let filter=CIFilter(name:"CIGaussianBlur",parameters:[kCIInputRadiusKey:36])!
-     filter.setValue(source,forKey:kCIInputImageKey)
-     guard let output=filter.outputImage else {request.finish(with:source,context:nil);return}
-     request.finish(with:output.cropped(to:request.sourceImage.extent),context:nil)
-    }}
+    if self.blurred {item.videoComposition=self.makeVideoComposition(prepared.asset)}
     self.source=prepared;self.player=player;self.reverseFrames=MotionArtworkReverseFrames.acquire(uri);player.isMuted=true;player.volume=0
     player.automaticallyWaitsToMinimizeStalling=false
     player.allowsExternalPlayback=false;player.preventsDisplaySleepDuringVideoPlayback=false
@@ -149,9 +172,12 @@ final class SdaMotionArtworkView: ExpoView {
   guard let frame=frames.frame(at:position) else{
    if frames.failed{let uri=sourceUri;stop();onStatus(["uri":uri,"ready":false,"unavailable":true])};return
   }
+  showReverseFrame(frame)
+ }
+ private func showReverseFrame(_ frame:MotionArtworkReverseFrames.Frame){
   guard lastReverseFrameTime != frame.time else{return}
   lastReverseFrameTime=frame.time
-  CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=blurred ? frame.blurredImage:frame.image;reverseLayer.isHidden=false;CATransaction.commit()
+  CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=blurred ? (bottomExtension ? frame.bottomImage:frame.blurredImage):frame.image;reverseLayer.isHidden=false;CATransaction.commit()
  }
  private func playForwardFromStart() {
   pause();direction=1;fallbackReverse=false;lastReverseFrameTime=nil

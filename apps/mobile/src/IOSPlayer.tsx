@@ -25,6 +25,7 @@ import { CircularMiniPlayer, CIRCULAR_MINI_PLAYER_LAYOUT } from "./CircularMiniP
 import { SharedMiniPlayerArtwork, SharedMiniPlayerTransition } from "./SharedMiniPlayerTransition";
 import { EmbeddedMotionArtwork, supportsEmbeddedMotionArtwork } from "./EmbeddedMotionArtwork";
 import { useMotionArtworkSelection } from "./use-motion-artwork-selection";
+import { portraitMotionArtworkLayout } from "./portrait-motion-artwork-layout";
 import { useSharedMiniPlayerTransition } from "./use-shared-mini-player-transition";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
@@ -264,10 +265,13 @@ function ThemedPlayer(p: PlayerProps) {
   const selectedMotionUri=motionSelection.current==="motion"?p.selectedUri:"";
   const nextMotionSourceUri=motionSelection.next==="motion"?nextArtworkTrack?.uri??"":"";
   const showStaticArtwork=motionSelection.current==="static";
-  const liveBackdropEnabled=motionEnabled && (tabletPortrait || phoneLandscapeBlur || tabletLandscape);
+  const portraitMotionActive=!landscapePlayer && !!selectedMotionUri;
+  const liveBackdropEnabled=motionEnabled && (!landscapePlayer || phoneLandscapeBlur || tabletLandscape);
   const landscapeMotionActive=landscapePlayer && !!selectedMotionUri && (phoneLandscapeBlur || tabletLandscape);
-  const motionFeatherMode=selectedMotionUri?(tabletPortrait?"portrait":phoneLandscapeBlur?"phone-landscape":tabletLandscape?"tablet-landscape":"none"):"none";
-  const motionPlaneFrame = immersiveArtwork;
+  const motionFeatherMode=selectedMotionUri?(!landscapePlayer?"portrait":phoneLandscapeBlur?"phone-landscape":tabletLandscape?"tablet-landscape":"none"):"none";
+  const portraitMotionLayout=portraitMotionArtworkLayout(width,height,motionSelection.aspectRatio);
+  const motionPlaneFrame = portraitMotionActive?portraitMotionLayout.frame:immersiveArtwork;
+  const motionFeatherHeight=portraitMotionActive?portraitMotionLayout.featherHeight:motionPlaneFrame.height;
   const togglePlayback = useCallback(() => p.playing ? p.togglePause() : p.play(), [p.playing, p.togglePause, p.play]);
   const navigate = useCallback((index: number) => {
     // Tabs are hidden in fullscreen. Native resume/synchronization callbacks
@@ -421,14 +425,14 @@ function ThemedPlayer(p: PlayerProps) {
       {hasArtwork && <View testID="tablet-ambient-scrim" style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />}
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    {liveBackdropEnabled && <View testID="motion-artwork-live-backdrop" style={[StyleSheet.absoluteFill,{opacity:selectedMotionUri?1:0,backgroundColor:fadeColor}]}>
-      <View style={[StyleSheet.absoluteFill,{transform:[{scale:1.12}]}]}>
-        <EmbeddedMotionArtwork blurred opacity={ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
+    {liveBackdropEnabled && <View testID="motion-artwork-live-backdrop" style={[StyleSheet.absoluteFill,{opacity:selectedMotionUri?1:0,backgroundColor:portraitMotionActive?"#08080a":fadeColor}]}>
+      <View style={[StyleSheet.absoluteFill,{transform:[{scale:portraitMotionActive?1:1.12}]}]}>
+        <EmbeddedMotionArtwork blurred bottomExtension={portraitMotionActive} opacity={portraitMotionActive?1:ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
       </View>
-      <View style={[StyleSheet.absoluteFill,{backgroundColor:ARTWORK_AMBIENT_PAINT.scrimColor}]} />
+      <View style={[StyleSheet.absoluteFill,{backgroundColor:portraitMotionActive?"rgba(0,0,0,.40)":ARTWORK_AMBIENT_PAINT.scrimColor}]} />
     </View>}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPortrait && !selectedMotionUri ? 0 : 1 }]}>
-    <MotionArtworkFeather enabled={motionEnabled} mode={motionFeatherMode} surfaceWidth={width} surfaceHeight={height} artworkLeft={motionPlaneFrame.left} artworkTop={motionPlaneFrame.top} artworkWidth={motionPlaneFrame.width} artworkHeight={motionPlaneFrame.height} fallbackColor={fadeColor}>
+    <MotionArtworkFeather enabled={motionEnabled} mode={motionFeatherMode} surfaceWidth={width} surfaceHeight={height} artworkLeft={motionPlaneFrame.left} artworkTop={motionPlaneFrame.top} artworkWidth={motionPlaneFrame.width} artworkHeight={motionFeatherHeight} fallbackColor={fadeColor}>
     <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}>
       {hasArtwork && <Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: showStaticArtwork?sharedMini.mainOpacity:0 }]} />}
       {!hasArtwork && showStaticArtwork && <View style={[StyleSheet.absoluteFill,{backgroundColor:"#303034"}]} />}
@@ -442,7 +446,7 @@ function ThemedPlayer(p: PlayerProps) {
   {immersiveHome && !tabletPortrait && <View testID="player-artwork-edge-overlay" pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
     {phoneLandscapeBlur && hasArtwork && !landscapeMotionActive && <PhoneLandscapeBlur edge backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
     {!phoneLandscapeBlur && <>
-    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer ? 0 : 1 }} />
+    <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" style={{ position: "absolute", top: artworkTop + artworkSize * .82, left: 0, width, height: artworkSize * .18, tintColor: fadeColor, opacity: landscapePlayer || portraitMotionActive ? 0 : 1 }} />
     <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" style={{ position: "absolute", ...landscapeFade, tintColor: fadeColor, opacity: landscapePlayer && !tabletLandscape ? 1 : 0 }} />
     </>}
     {tabletLandscape && hasArtwork && !landscapeMotionActive && <TabletArtworkFeather

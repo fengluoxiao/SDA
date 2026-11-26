@@ -3,10 +3,11 @@ import test from "node:test";
 import {build} from "esbuild";
 
 const compiled=await build({entryPoints:["apps/mobile/src/use-motion-artwork-selection.ts"],bundle:true,platform:"node",format:"cjs",external:["react"],write:false});
-function selectionHarness(){
+function selectionHarness(withInfo=false){
  const calls=[],pending=new Map();
  let state={},effect,dependencies,rendered;
  const native={hasMotionArtwork:uri=>{calls.push(uri);return new Promise(resolve=>pending.set(uri,resolve));}};
+ if(withInfo)native.motionArtworkInfo=uri=>{calls.push(uri);return new Promise(resolve=>pending.set(uri,resolve));};
  const hooks={useState:()=>[state,value=>{state=typeof value==="function"?value(state):value;}],useCallback:callback=>callback,useEffect(run,next){
   if(!dependencies||next.some((value,index)=>value!==dependencies[index])){effect?.();dependencies=next;effect=run();}
  }};
@@ -70,4 +71,16 @@ test("a long playlist retains presence information for only the current and next
   assert.equal(harness.render(true,current,next).current,"motion");
   assert.deepEqual(harness.keys().sort(),[current,next].sort());
  }
+});
+
+test("portrait layout receives the actual video dimensions before showing a motion cover",async()=>{
+ const harness=selectionHarness(true);
+ assert.equal(harness.render(false).current,"static");assert.equal(harness.calls.length,0);
+ assert.equal(harness.render(true).current,"pending");assert.equal(harness.calls.length,2);
+ harness.pending.get("file:///current")({present:true,width:1080,height:1440});
+ harness.pending.get("file:///next")({present:true,width:1080,height:1920});await settle();
+ const current=harness.render(true);assert.equal(current.current,"motion");assert.equal(current.aspectRatio,.75);
+ const next=harness.render(true,"file:///next","");assert.equal(next.current,"motion");assert.equal(next.aspectRatio,9/16);
+ assert.equal(harness.calls.length,2);
+ assert.equal(harness.motionArtworkAspectRatio({present:true,width:Infinity,height:0}),.75);
 });

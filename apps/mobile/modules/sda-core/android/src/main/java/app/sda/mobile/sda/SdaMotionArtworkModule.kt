@@ -3,10 +3,14 @@ package app.sda.mobile.sda
 import android.content.Context
 import android.graphics.Matrix
 import android.graphics.Bitmap
+import android.graphics.Paint
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.RenderEffect
 import android.graphics.SurfaceTexture
 import android.graphics.Shader
 import android.media.MediaPlayer
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -33,12 +37,31 @@ class SdaMotionArtworkModule: Module() {
    val parsed=Uri.parse(uri)
    if(parsed.scheme!="file" || parsed.path==null)false else try{RandomAccessFile(File(parsed.path!!),"r").use{MotionArtworkRange.find(it)!=null}}catch(_:Exception){false}
   }
+  AsyncFunction("motionArtworkInfo") {uri:String->
+   val parsed=Uri.parse(uri)
+   if(parsed.scheme!="file" || parsed.path==null)mapOf<String,Any>("present" to false)else try{
+    RandomAccessFile(File(parsed.path!!),"r").use{file->
+     val range=MotionArtworkRange.find(file)
+     if(range==null)mapOf<String,Any>("present" to false)else{
+      val reader=MediaMetadataRetriever()
+      try{
+       reader.setDataSource(file.fd,range.offset,range.length)
+       val width=reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+       val height=reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+       val rotation=reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+       mapOf<String,Any>("present" to true,"width" to if(rotation%180!=0)height else width,"height" to if(rotation%180!=0)width else height)
+      }catch(_:Exception){mapOf<String,Any>("present" to true)}finally{reader.release()}
+     }
+    }
+   }catch(_:Exception){mapOf<String,Any>("present" to false)}
+  }
   View(SdaMotionArtworkView::class) {
    Events("onStatus")
    Prop("sourceUri") {view:SdaMotionArtworkView,value:String->view.updateSource(value)}
    Prop("active") {view:SdaMotionArtworkView,value:Boolean->view.updateActive(value)}
    Prop("presented") {view:SdaMotionArtworkView,value:Boolean->view.updatePresented(value)}
    Prop("blurred") {view:SdaMotionArtworkView,value:Boolean->view.updateBlurred(value)}
+   Prop("bottomExtension") {view:SdaMotionArtworkView,value:Boolean->view.updateBottomExtension(value)}
   }
  }
 }
@@ -55,6 +78,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private var presented=false
  private var prepared=false
  private var blurred=false
+ private var bottomExtension=false
  private var foreground=true
  @Volatile private var generation=0
  private var starting=false
@@ -84,7 +108,14 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  }
  fun updateBlurred(value:Boolean){
   blurred=value
-  if(android.os.Build.VERSION.SDK_INT>=31){val effect=if(value)RenderEffect.createBlurEffect(36f,36f,Shader.TileMode.DECAL)else null;texture.setRenderEffect(effect);reverseImage.setRenderEffect(effect)}
+  updatePaint()
+ }
+ fun updateBottomExtension(value:Boolean){bottomExtension=value;updatePaint();crop();updateReverseMatrix()}
+ private fun updatePaint(){
+  val extended=blurred && bottomExtension
+  val filter=if(extended)ColorMatrixColorFilter(ColorMatrix().apply{setSaturation(.78f)})else null
+  texture.setLayerPaint(Paint().apply{colorFilter=filter});reverseImage.colorFilter=filter
+  if(android.os.Build.VERSION.SDK_INT>=31){val effect=if(blurred)RenderEffect.createBlurEffect(36f,36f,if(extended)Shader.TileMode.CLAMP else Shader.TileMode.DECAL)else null;texture.setRenderEffect(effect);reverseImage.setRenderEffect(effect)}
  }
  override fun onAttachedToWindow(){super.onAttachedToWindow();react?.addLifecycleEventListener(this);startIfNeeded()}
  override fun onDetachedFromWindow(){react?.removeLifecycleEventListener(this);pause();super.onDetachedFromWindow()}
@@ -94,8 +125,18 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  override fun onHostDestroy(){foreground=false;stop()}
  private fun crop(){
   if(videoWidth<=0 || videoHeight<=0 || texture.width<=0 || texture.height<=0)return
+  if(blurred && bottomExtension){texture.setTransform(Matrix().apply{setScale(1f,1f/.28f,0f,texture.height.toFloat())});return}
   val ratio=videoWidth.toFloat()/videoHeight;val viewport=texture.width.toFloat()/texture.height
   val matrix=Matrix();matrix.setScale(if(ratio>viewport)ratio/viewport else 1f,if(ratio<viewport)viewport/ratio else 1f,texture.width/2f,texture.height/2f);texture.setTransform(matrix)
+ }
+ private fun updateReverseMatrix(){
+  val bitmap=lastReverseBitmap
+  if(blurred && bottomExtension && bitmap!=null && width>0 && height>0){
+   reverseImage.scaleType=ImageView.ScaleType.MATRIX
+   val imageWidth=reverseImage.drawable?.intrinsicWidth?.takeIf{it>0} ?: bitmap.width
+   val imageHeight=reverseImage.drawable?.intrinsicHeight?.takeIf{it>0} ?: bitmap.height
+   reverseImage.imageMatrix=Matrix().apply{setScale(width.toFloat()/imageWidth,height.toFloat()/(imageHeight*.28f));postTranslate(0f,-height*(1f-.28f)/.28f)}
+  }else{reverseImage.scaleType=ImageView.ScaleType.CENTER_CROP}
  }
  private fun startIfNeeded(){
   if(player!=null){resume();return}
@@ -155,7 +196,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
   reverseFrames?.request(position*1000L,videoWidth,videoHeight,if(blurred)384 else 1024){frame->
    if(generation!=token || reverseEpoch!=epoch || !reversing || !canAnimate())return@request
    if(frame==null){val uri=source;stop();onStatus(mapOf("uri" to uri,"ready" to false,"unavailable" to true));return@request}
-   if(lastReverseBitmap!==frame){lastReverseBitmap=frame;reverseImage.setImageBitmap(frame);reverseImage.visibility=View.VISIBLE}
+   if(lastReverseBitmap!==frame){lastReverseBitmap=frame;reverseImage.setImageBitmap(frame);updateReverseMatrix();reverseImage.visibility=View.VISIBLE}
   }
   scheduleReverse()
  }
@@ -164,7 +205,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  private fun stop(){generation++;starting=false;pause();prepared=false;reversing=false;reversePositionMs=0;reverseStartedNs=0;reverseFrames?.release();reverseFrames=null;clearReverseImage();player?.setOnPreparedListener(null);player?.setOnErrorListener(null);player?.setOnInfoListener(null);player?.setOnCompletionListener(null);player?.setOnSeekCompleteListener(null);player?.setOnVideoSizeChangedListener(null);player?.release();player=null;surface?.release();surface=null;videoWidth=0;videoHeight=0}
  private fun pause(){if(reversing){reversePositionMs=currentReversePosition();reverseStartedNs=0};reverseEpoch++;main.removeCallbacks(reverseTick);main.removeCallbacks(tailTick);tailScheduled=false;reverseScheduled=false;if(prepared)try{player?.pause()}catch(_:IllegalStateException){}}
  override fun onSurfaceTextureAvailable(surface:SurfaceTexture,width:Int,height:Int){startIfNeeded()}
- override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop()}
+ override fun onSurfaceTextureSizeChanged(surface:SurfaceTexture,width:Int,height:Int){crop();updateReverseMatrix()}
  override fun onSurfaceTextureDestroyed(surface:SurfaceTexture):Boolean{stop();return true}
  override fun onSurfaceTextureUpdated(surface:SurfaceTexture){if(waitingForwardFrame && forwardSeekComplete)clearReverseImage()}
  companion object {private val reader=Executors.newSingleThreadExecutor {r->Thread(r,"SDA-motion-artwork").apply{isDaemon=true}}}
