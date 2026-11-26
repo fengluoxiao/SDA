@@ -50,6 +50,7 @@ assert(source.indexOf('<SafeAreaView edges=',edgeLayer)>edgeLayer,'page text and
 const edge=readFileSync('apps/mobile/src/PhoneLandscapeBlur.tsx','utf8');
 assert.match(edge,/community\/masked-view/);assert.match(edge,/p.edge \? -frame.left : 0/);
 assert.doesNotMatch(edge,/writeAsString|saveTo|captureRef/);
-assert.match(source, /tabletLandscape && hasArtwork && <TabletArtworkFeather/);
+assert.match(source, /tabletLandscape && hasArtwork && !landscapeMotionActive && <TabletArtworkFeather/);
+assert.match(source, /phoneLandscapeBlur && hasArtwork && !landscapeMotionActive && <PhoneLandscapeBlur edge/);
 assert.doesNotMatch(edge, /tablet-artwork-continuation-bottom/);
 console.log('Phone landscape blur: original-gradient overlap, unchanged sharp cover, screen-aligned backdrop and no generated image/cache files passed.');

@@ -21,18 +21,19 @@ test("portrait motion stays under the same tablet right/bottom feather and prese
 test("dynamic artwork is opt-in and only mounted on the large player cover",()=>{
  const prefs=readFileSync("apps/mobile/src/navigation-preferences.tsx","utf8");assert.match(prefs,/const defaults[^\n]*motionArtwork: false/);
 const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");assert.match(overlay,/if\(!motionArtwork \|\| !NativeArtwork/);assert.match(overlay,/unavailable/);assert.match(overlay,/MotionFrame key=\{uri\} sourceUri=\{uri\}/);assert.match(overlay,/uri===sourceUri && visible && active && foreground/);assert.match(overlay,/active=\{active\} blurred=\{blurred\} pointerEvents/);assert.doesNotMatch(overlay,/!visible \|\| !foreground/);assert.doesNotMatch(overlay,/!foreground \|\| !sourceUri/);assert.match(overlay,/report\(event\.nativeEvent\.ready\)/);assert.match(overlay,/setReady\(event\.nativeEvent\.ready\)/);
- const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,3);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
+ const ui=readFileSync("apps/mobile/src/IOSPlayer.tsx","utf8");assert.equal((ui.match(/<EmbeddedMotionArtwork /g)||[]).length,2);assert.match(ui,/!sharedMini\.active/);assert.match(ui,/const motionSurfaceVisible =/);assert.doesNotMatch(ui,/active=\{immersiveHome && playing[^\n]*\} \/>/);
  const rows=ui.slice(ui.indexOf("track.metadata.coverUri ?"));assert(!rows.split("</ScrollView>")[0].includes("EmbeddedMotionArtwork"));
  assert(!readFileSync("apps/mobile/src/SharedMiniPlayerTransition.tsx","utf8").includes("EmbeddedMotionArtwork"));
  for(const file of ["IOSNativeSettings.tsx","AndroidSettings.tsx"]){const text=readFileSync("apps/mobile/src/"+file,"utf8");assert(text.includes("动态封面")&&text.includes("setMotionArtwork"));}
  assert.match(ui,/const tabletMotionEnabled = tabletPortrait && motionEnabled/);
  assert.match(ui,/const motionSourceKey=p.selectedUri/);
- assert.match(ui,/\{tabletMotionEnabled && <View testID="tablet-motion-ambient-motion"/);
- assert.match(ui,/<MotionArtworkFeather[^>]*>\s*<View[^>]*motionPlaneFrame[^>]*>\s*<EmbeddedMotionArtwork sourceUri=\{selectedMotionUri\}/);
+ assert.match(ui,/liveBackdropEnabled=motionEnabled && \(tabletPortrait \|\| phoneLandscapeBlur \|\| tabletLandscape\)/);
+ assert.match(ui,/\{liveBackdropEnabled && <View testID="motion-artwork-live-backdrop"/);
+ assert.match(ui,/<MotionArtworkFeather enabled=\{motionEnabled\} mode=\{motionFeatherMode\}/);
  assert.match(ui,/const showStaticArtwork=motionSelection.current==="static"/);
  assert.doesNotMatch(ui,/motionAppearance|Animated\.timing\(motion/);
  assert.doesNotMatch(overlay,/Animated|revealDuration/);
- assert.equal((ui.match(/nextSourceUri=\{nextMotionSourceUri\}/g)||[]).length,3);
+ assert.equal((ui.match(/nextSourceUri=\{nextMotionSourceUri\}/g)||[]).length,2);
  assert.match(ui,/p\.queue\.slice\(p\.queueIndex \+ 1\)\.find\(track => !track\.preparation\)/);
  assert.equal((ui.match(/<QueuedArtwork[^>]*nextUri=\{nextPortraitArtwork\}/g) || []).length, 2);
  assert.doesNotMatch(ui,/tabletStillReady|motionScene|CrossfadeArtwork/);
@@ -74,12 +75,40 @@ test("portrait motion fades the sharp artwork down into the separate full-height
  try {
   const tree = MotionArtworkFeather({ children: video, surfaceWidth: 430, surfaceHeight: 900, artworkTop: 0, artworkHeight: 480, fallbackColor: "#303034" });
   assert.equal(tree.type, "MaskedView");
-  assert.equal(tree.props.children[0], video);
-  const [solid, ramp] = tree.props.maskElement.props.children;
+  const vertical=tree.props.children[0];
+  assert.equal(vertical.props.children[0], video);
+  assert.equal(tree.props.maskElement.props.style.backgroundColor,"#ffffff");
+  const [solid, ramp] = vertical.props.maskElement.props.children;
   assert.equal(solid.props.style.backgroundColor, "#ffffff");
   assert.deepEqual(ramp.props.style.transform, [{ scaleY: -1 }]);
   assert.equal(solid.props.style.height + ramp.props.style.height, 480);
  } finally { globalThis.expo = previous; }
+});
+
+test("rotation keeps one video under directional masks and exposes the same live blur at each cover edge",()=>{
+ const previous=globalThis.expo;globalThis.expo={modules:{ExpoUI:{}},getViewConfig:()=>({})};
+ try{
+  const common={children:video,surfaceWidth:1000,surfaceHeight:700,artworkLeft:24,artworkTop:10,artworkWidth:500,artworkHeight:500,fallbackColor:"#303034"};
+  const portrait=MotionArtworkFeather({...common,mode:"portrait"});
+  const phone=MotionArtworkFeather({...common,mode:"phone-landscape"});
+  const tablet=MotionArtworkFeather({...common,mode:"tablet-landscape"});
+  for(const tree of [phone,tablet]){
+   assert.equal(tree.type,portrait.type);
+   assert.equal(tree.props.children[0].type,portrait.props.children[0].type);
+   assert.equal(tree.props.children[0].props.children[0],video);
+  }
+  const phoneRamp=phone.props.maskElement.props.children[1];
+  assert.equal(phoneRamp.props.style.left,374);assert.equal(phoneRamp.props.style.width,150);
+  assert.deepEqual(phoneRamp.props.style.transform,[{scaleX:-1}]);
+  assert.equal(phone.props.children[0].props.maskElement.props.style.backgroundColor,"#ffffff");
+  const tabletRamp=tablet.props.maskElement.props.children[1];
+  assert.equal(tabletRamp.props.style.left,476);assert.equal(tabletRamp.props.style.width,48);
+  assert.equal(tablet.props.children[0].props.maskElement.props.children[1].props.style.height,175);
+  const still=MotionArtworkFeather({...common,mode:"none"});
+  assert.equal(still.props.maskElement.props.style.backgroundColor,"#ffffff");
+  assert.equal(still.props.children[0].props.maskElement.props.style.backgroundColor,"#ffffff");
+  const disabled=MotionArtworkFeather({...common,enabled:false});assert.equal(disabled.props.children[0],video);
+ }finally{globalThis.expo=previous;}
 });
 
 test("the next poster and blur become visible in their original keyed views, without an outgoing layer", () => {

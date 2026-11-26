@@ -13,6 +13,8 @@ type MotionBackdropProps = {
   children: React.ReactNode;
   surfaceWidth: number; surfaceHeight: number;
   artworkTop: number; artworkHeight: number; fallbackColor: string;
+  artworkLeft?: number; artworkWidth?: number;
+  enabled?: boolean; mode?: "portrait" | "phone-landscape" | "tablet-landscape" | "none";
 };
 
 type QueuedArtworkProps = {
@@ -31,22 +33,35 @@ function nativeMask() {
 }
 
 export function MotionArtworkFeather(p: MotionBackdropProps) {
+  if (p.enabled === false) return <>{p.children}</>;
   const MaskedView = nativeMask();
+  const mode=p.mode??"portrait";
   const boundary = p.artworkTop + p.artworkHeight;
-  const span = Math.min(boundary, p.artworkHeight * .30);
+  const span = mode==="portrait" || mode==="tablet-landscape" ? Math.min(boundary,p.artworkHeight*(mode==="portrait"?.30:.35)):0;
   const start = boundary - span;
-  if (!MaskedView || span <= 0) return <>
+  const artworkWidth=p.artworkWidth??p.surfaceWidth;
+  const rightSpan=mode==="phone-landscape"?artworkWidth*.30:mode==="tablet-landscape"?Math.min(48,artworkWidth*.10):0;
+  const rightStart=(p.artworkLeft??0)+artworkWidth-rightSpan;
+  if (!MaskedView) return <>
     {p.children}
     {span > 0 && <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch"
       style={{ position: "absolute", top: start, width: p.surfaceWidth, height: span, tintColor: p.fallbackColor }} />}
   </>;
-  return <MaskedView testID="tablet-motion-backdrop-mask" pointerEvents="none" style={StyleSheet.absoluteFill}
-    maskElement={<View style={{ width: p.surfaceWidth, height: p.surfaceHeight }}>
+  const fullMask=<View style={{width:p.surfaceWidth,height:p.surfaceHeight,backgroundColor:"#ffffff"}} />;
+  return <MaskedView testID="motion-artwork-horizontal-mask" pointerEvents="none" style={StyleSheet.absoluteFill}
+    maskElement={rightSpan>0?<View style={{width:p.surfaceWidth,height:p.surfaceHeight}}>
+      <View style={{position:"absolute",left:0,top:0,width:Math.max(0,rightStart),height:p.surfaceHeight,backgroundColor:"#ffffff"}} />
+      <Image source={require("../assets/artwork-color-fade-horizontal.png")} resizeMode="stretch" fadeDuration={0}
+        style={{position:"absolute",left:rightStart,top:0,width:rightSpan,height:p.surfaceHeight,transform:[{scaleX:-1}]}} />
+    </View>:fullMask}>
+  <MaskedView testID="tablet-motion-backdrop-mask" pointerEvents="none" style={StyleSheet.absoluteFill}
+    maskElement={span>0?<View style={{ width: p.surfaceWidth, height: p.surfaceHeight }}>
       <View style={{ height: start, backgroundColor: "#ffffff" }} />
       <Image source={require("../assets/artwork-color-fade.png")} resizeMode="stretch" fadeDuration={0}
         style={{ width: p.surfaceWidth, height: span, transform: [{ scaleY: -1 }] }} />
-    </View>}>
+    </View>:fullMask}>
     {p.children}
+  </MaskedView>
   </MaskedView>;
 }
 
