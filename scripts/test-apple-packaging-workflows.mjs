@@ -80,3 +80,29 @@ try{
  for(const [name,value]of Object.entries(savedEnvironment)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
 }
 console.log('Branch and tag requests pin source commits and route to the same default-branch cache scope.');
+
+const shared=workflow('ios-shared-cache.yml');
+assert.equal(shared.on.workflow_dispatch.inputs.source_ref.required,true);
+assert.match(shared.jobs.package.uses,/^fengluoxiao\/SDA\/\.github\/workflows\/ios-port-ci\.yml@[a-f0-9]{40}$/);
+assert.equal(shared.jobs.package.with.source_ref,'${{ needs.source.outputs.commit }}');
+const resolveScript=shared.jobs.source.steps[0].with.script;
+try{
+ process.env.SOURCE_REF='v0.9.40';process.env.PACKAGE_SCOPE='motion-artwork';process.env.RELEASE_TAG='';
+ for(const ref of ['refs/heads/master','refs/heads/feature/artwork','refs/tags/v0.9.40']){
+  const outputs={},dispatched=[];
+  const sourceSha='b'.repeat(40);
+  const github={rest:{repos:{getCommit:async()=>({data:{sha:sourceSha}})},actions:{createWorkflowDispatch:async request=>dispatched.push(request)}}};
+  const context={repo:{owner:'test',repo:'SDA'},ref,payload:{repository:{default_branch:'master'}}};
+  const summary={addHeading(){return this;},addRaw(){return this;},async write(){}};
+  await new AsyncFunction('github','context','core',resolveScript)(github,context,{summary,notice(){},setOutput(name,value){outputs[name]=value;}});
+  if(ref==='refs/heads/master'){
+   assert.equal(outputs.commit,sourceSha);assert.equal(dispatched.length,0);
+  }else{
+   assert.equal(outputs.commit,undefined);assert.equal(dispatched.length,1);
+   assert.equal(dispatched[0].ref,'master');assert.equal(dispatched[0].inputs.source_ref,sourceSha);
+  }
+ }
+}finally{
+ for(const [name,value]of Object.entries(savedEnvironment)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
+}
+console.log('Shared entry builds only in the default-branch scope; non-default entries redirect without a duplicate build.');

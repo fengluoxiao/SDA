@@ -1,0 +1,52 @@
+name: iOS package with shared build cache
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag or commit to package
+        type: string
+        required: true
+      scope:
+        description: Package scope
+        type: choice
+        default: motion-artwork
+        options: [motion-artwork, full]
+      release_tag:
+        description: Optional existing draft release tag to upload to
+        type: string
+        required: false
+permissions:
+  contents: write
+  actions: write
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Pin source and canonicalize cache scope
+        id: source
+        uses: actions/github-script@v7
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          PACKAGE_SCOPE: ${{ inputs.scope }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        with:
+          script: |
+            const {data:source}=await github.rest.repos.getCommit({...context.repo,ref:process.env.SOURCE_REF});
+            const branch=context.payload.repository.default_branch;
+            if(context.ref!==`refs/heads/${branch}`){
+              await github.rest.actions.createWorkflowDispatch({...context.repo,workflow_id:'ios-shared-cache.yml',ref:branch,inputs:{source_ref:source.sha,scope:process.env.PACKAGE_SCOPE,release_tag:process.env.RELEASE_TAG}});
+              core.notice(`Forwarded ${source.sha} to the shared ${branch} cache scope.`);
+              return;
+            }
+            core.setOutput('commit',source.sha);
+            await core.summary.addHeading('iOS shared build cache').addRaw(`Source: ${process.env.SOURCE_REF}\n\nCommit: ${source.sha}\n\nCache scope: ${branch}\n\n`).write();
+  package:
+    needs: source
+    if: needs.source.outputs.commit != ''
+    uses: fengluoxiao/SDA/.github/workflows/ios-port-ci.yml@8e6fd79bbb9d84b50c48bb320c8365d543c5087f
+    with:
+      source_ref: ${{ needs.source.outputs.commit }}
+      scope: ${{ inputs.scope }}
+      release_tag: ${{ inputs.release_tag }}
