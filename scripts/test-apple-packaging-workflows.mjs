@@ -41,3 +41,42 @@ for(const input of ['SdaHrtfMesh.h','PersonalHrtfNative/*.hpp','stage-faceframe-
 for(const output of ['StandardCyborgFusion.xcframework','PersonalHrtfFusion/FaceFrame','Licenses/StandardCyborg','Licenses/FaceFrame','personal-scan-framework.json'])assert(fusion.with.path.includes(output));
 assert.equal(focused.steps.find(step=>step.name==='Embed on-device TrueDepth framework').if,"steps.fusion-cache.outputs.cache-hit != 'true'");
 console.log('Focused iOS builds restore the actual compiler cache and reuse complete frameworks only for identical inputs.');
+
+const iosWorkflow=workflow('ios-port-ci.yml');
+assert.equal(iosWorkflow.on.workflow_call.inputs.source_ref.required,true);
+assert.equal(iosWorkflow.permissions.actions,'write');
+const route=iosWorkflow.jobs['shared-cache-entry'];
+assert(route.if.includes("github.ref != format('refs/heads/{0}', github.event.repository.default_branch)"));
+for(const job of [ios,focused]){
+ assert(job.if.includes("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"));
+ const rust=job.steps.find(step=>step.uses==='Swatinem/rust-cache@v2');
+ assert.equal(rust.with['shared-key'],'ios-device-release');
+ assert.equal(rust.with.key,'ios-device-${{ steps.xcode.outputs.fingerprint }}');
+ const checkout=job.steps.find(step=>step.uses==='actions/checkout@v4');
+ assert(checkout.with.ref.includes('inputs.source_ref'));
+ for(const step of job.steps.filter(step=>step.uses==='actions/cache@v4')){
+  for(const value of Object.values(step.with))assert(!String(value).includes('github.ref'),'cache keys must be independent of the requested tag or branch');
+ }
+ assert(!job.steps.some(step=>step.run?.includes('git show "$GITHUB_WORKFLOW_SHA:scripts/record-ios-build.mjs"')),'provenance must describe the selected source checkout, not replace it from the entry branch');
+}
+const dispatchScript=route.steps[0].with.script;
+const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+const savedEnvironment={SOURCE_REF:process.env.SOURCE_REF,PACKAGE_SCOPE:process.env.PACKAGE_SCOPE,RELEASE_TAG:process.env.RELEASE_TAG};
+try{
+ for(const requested of ['feature/lyrics','v0.9.40']){
+  process.env.SOURCE_REF=requested;process.env.PACKAGE_SCOPE='motion-artwork';process.env.RELEASE_TAG='';
+  const dispatched=[];
+  const sourceSha='a'.repeat(40);
+  const github={rest:{repos:{getCommit:async request=>{assert.equal(request.ref,requested);return{data:{sha:sourceSha}};}},actions:{createWorkflowDispatch:async request=>dispatched.push(request)}}};
+  const context={repo:{owner:'test',repo:'SDA'},payload:{repository:{default_branch:'master'}},serverUrl:'https://github.com'};
+  const summary={addHeading(){return this;},addRaw(){return this;},addLink(){return this;},async write(){}};
+  await new AsyncFunction('github','context','core',dispatchScript)(github,context,{summary});
+  assert.equal(dispatched.length,1);
+  assert.equal(dispatched[0].ref,'master');
+  assert.equal(dispatched[0].inputs.source_ref,sourceSha);
+  assert.equal(dispatched[0].workflow_id,'ios-shared-cache.yml');
+ }
+}finally{
+ for(const [name,value]of Object.entries(savedEnvironment)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
+}
+console.log('Branch and tag requests pin source commits and route to the same default-branch cache scope.');

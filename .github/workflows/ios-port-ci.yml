@@ -1,5 +1,16 @@
 name: iOS device package
 on:
+  workflow_call:
+    inputs:
+      scope:
+        type: string
+        default: motion-artwork
+      source_ref:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       scope:
@@ -44,12 +55,29 @@ on:
       - 'pnpm-lock.yaml'
 permissions:
   contents: write
+  actions: write
 concurrency:
-  group: ios-port-${{ github.ref }}
+  group: ios-port-${{ inputs.source_ref || github.event.client_payload.source_ref || github.sha }}-${{ inputs.scope || github.event.client_payload.scope || 'motion-artwork' }}
   cancel-in-progress: true
 jobs:
+  shared-cache-entry:
+    if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start package in the default-branch cache scope
+        uses: actions/github-script@v7
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || github.event.client_payload.source_ref || github.sha }}
+          PACKAGE_SCOPE: ${{ inputs.scope || github.event.client_payload.scope || 'motion-artwork' }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.client_payload.release_tag || '' }}
+        with:
+          script: |
+            const requested=process.env.SOURCE_REF;
+            const {data:source}=await github.rest.repos.getCommit({...context.repo,ref:requested});
+            await github.rest.actions.createWorkflowDispatch({...context.repo,workflow_id:'ios-shared-cache.yml',ref:context.payload.repository.default_branch,inputs:{source_ref:source.sha,scope:process.env.PACKAGE_SCOPE,release_tag:process.env.RELEASE_TAG}});
+            await core.summary.addHeading('iOS shared build cache').addRaw(`Requested source: ${requested}\n\nPinned source: ${source.sha}\n\nBuild and cache scope: ${context.payload.repository.default_branch}\n\n`).addLink('Open the shared packaging runs',`${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/ios-shared-cache.yml`).write();
   motion-artwork-ios:
-    if: ${{ github.event_name == 'push' || inputs.scope == 'motion-artwork' || github.event.client_payload.scope == 'motion-artwork' }}
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (inputs.scope || github.event.client_payload.scope || 'motion-artwork') == 'motion-artwork' }}
     name: iOS motion artwork package
     runs-on: xcode-27
     timeout-minutes: 100
@@ -92,25 +120,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/sda-native -> ../../ios-build/cargo
-          key: ios-device-motion-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'crates/sda-native/Cargo.lock') }}
+          shared-key: ios-device-release
+          key: ios-device-${{ steps.xcode.outputs.fingerprint }}
           cache-on-failure: true
-          restore-keys: |
-            ios-device-${{ steps.xcode.outputs.fingerprint }}-
       - name: Validate provenance inputs and pin runtime source
-        env:
-          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
           export SDA_SOURCE_COMMIT="$source_sha"
           echo "SDA_SOURCE_COMMIT=$source_sha" >> "$GITHUB_ENV"
-          if [[ -n "$REQUESTED_SOURCE_REF" && "$GITHUB_WORKFLOW_SHA" != "$source_sha" ]]; then
-            git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
-            git show "$GITHUB_WORKFLOW_SHA:scripts/record-ios-build.mjs" > "$RUNNER_TEMP/sda-record-ios-build.mjs"
-            cp "$RUNNER_TEMP/sda-record-ios-build.mjs" scripts/record-ios-build.mjs
-            changed="$(git diff --name-only)"
-            [[ "$changed" == 'scripts/record-ios-build.mjs' ]]
-          fi
           node scripts/record-ios-build.mjs --check-inputs
       - name: Install dependencies and prepare resources
         run: |
@@ -194,7 +212,7 @@ jobs:
           retention-days: 14
 
   ios:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope != 'motion-artwork' }}
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.scope == 'full' }}
     name: iOS SDK ${{ matrix.sdk }}
     runs-on: xcode-27
     timeout-minutes: 90
@@ -263,25 +281,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/sda-native -> ../../ios-build/cargo
-          key: ios-device-${{ matrix.sdk }}-${{ steps.xcode.outputs.fingerprint }}
+          shared-key: ios-device-release
+          key: ios-device-${{ steps.xcode.outputs.fingerprint }}
           cache-on-failure: true
       - name: Validate provenance inputs and pin runtime source
-        env:
-          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
           export SDA_SOURCE_COMMIT="$source_sha"
           echo "SDA_SOURCE_COMMIT=$source_sha" >> "$GITHUB_ENV"
-          if [[ -n "$REQUESTED_SOURCE_REF" && "$GITHUB_WORKFLOW_SHA" != "$source_sha" ]]; then
-            # Only the provenance collector comes from the current workflow.
-            # All application/Rust/assets remain at the requested source.
-            git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
-            git show "$GITHUB_WORKFLOW_SHA:scripts/record-ios-build.mjs" > "$RUNNER_TEMP/sda-record-ios-build.mjs"
-            cp "$RUNNER_TEMP/sda-record-ios-build.mjs" scripts/record-ios-build.mjs
-            changed="$(git diff --name-only)"
-            [[ "$changed" == 'scripts/record-ios-build.mjs' ]]
-          fi
           node scripts/record-ios-build.mjs --check-inputs
           node scripts/test-ios-output-calibration-provenance.mjs
       - name: Install dependencies and prepare resources
