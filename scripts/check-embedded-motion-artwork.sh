@@ -53,5 +53,5 @@ if [[ "$simulator_state" != Booted ]]; then
  xcrun simctl boot "$udid"
 fi
 xcrun simctl bootstatus "$udid" -b
-xcrun simctl spawn "$udid" "$out/motion-simulator-test" "$fixture" "$out/simulator-inputs" | tee "$out/motion-simulator-result.json"
 bash scripts/check-motion-artwork-ui.sh "$out" "$udid"
+xcrun simctl spawn "$udid" "$out/motion-simulator-test" "$fixture" "$out/simulator-inputs" | tee "$out/motion-simulator-result.json"
