@@ -459,10 +459,10 @@ fn mix_source(
                 enabled: ctx.near_active || source.distance_m.is_some(),
                 ..ctx.near_field
             };
-            source.near_target = if ctx.near_active {
-                crate::near_field::gains(source.render_position(), head_pose, near_settings)
-            } else if let Some(position) = Engine::physical_near_position(source, near_settings) {
+            source.near_target = if let Some(position) = Engine::physical_near_position(source, near_settings) {
                 crate::near_field::gains(position, head_pose, near_settings)
+            } else if ctx.near_active {
+                crate::near_field::gains(source.render_position(), head_pose, near_settings)
             } else {
                 [1.0; 2]
             };
@@ -478,24 +478,9 @@ fn mix_source(
         let reflection_sample = if input != 0.0 {
             // Near sources sit outside the reverberant field: fade their room
             // contribution as they close in (mirror of the general path).
-            let norm = if ctx.near_active {
-                source
-                    .position
-                    .iter()
-                    .map(|axis| axis * axis)
-                    .sum::<f32>()
-                    .sqrt()
-            } else {
-                source
-                    .distance_m
-                    .map(|distance| distance / ctx.near_field.metres_per_unit)
-                    .unwrap_or(1.0)
-            };
-            let proximity_dry = if norm < 1.0 {
-                (0.25 + 0.75 * norm).max(0.25)
-            } else {
-                1.0
-            };
+            let proximity_dry = crate::near_field::reflection_gain(
+                source.render_position(), source.distance_m,
+                crate::near_field::Settings { enabled: ctx.near_active, ..ctx.near_field });
             input * proximity_dry * cue_gain
         } else {
             0.0

@@ -1,5 +1,6 @@
-//! Default perceptual source-bearing shadow model, shared by desktop/mobile.
-//! An artistic emitter interaction heuristic, not physical obstacle metadata.
+//! Legacy, explicitly authored source-bearing interaction effect.
+//! An audio emitter is not obstacle geometry. Ordinary music keeps this effect
+//! disabled; measured HRTFs already contain the listener's head shadow.
 
 /// One-pole low shelf per ear. `1.0` = bypass; smaller = more shadow.
 #[derive(Clone, Copy, Debug)]

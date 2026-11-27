@@ -65,7 +65,7 @@ impl Engine {
         settings.validate()?;
         self.authored = Processing::default();
         if !settings.enabled {
-            self.source_occlusion_enabled = true;
+            self.source_occlusion_enabled = false;
             self.refresh_stereo_bass();
             return Ok(());
         }
@@ -376,7 +376,7 @@ impl Engine {
             return Err("authored room response missing".into());
         }
         let interaction = &snapshot["sourceOcclusion"];
-        let source_occlusion = if interaction.is_null() { true } else {
+        let source_occlusion = if interaction.is_null() { false } else {
             if interaction["algorithm"] != "source-bearing-8deg-v1" {
                 return Err("unsupported source occlusion algorithm".into());
             }
@@ -447,7 +447,6 @@ impl Engine {
         );
         self.configure_near_field(near)?;
         self.source_extent = extent;
-        self.source_occlusion_enabled = source_occlusion;
         self.binaural_eq = eq;
         self.headphone = headphone;
         self.master_preamp
@@ -457,6 +456,7 @@ impl Engine {
         self.set_speaker_monitor(mutes, focus);
         self.stereo_mode = StereoMode::Room;
         self.configure_authored_processing(scene.processing)?;
+        self.source_occlusion_enabled = source_occlusion;
         self.set_binaural_enabled(monitor.0);
         self.binaural_mix = monitor.1;
         self.plain_warmup = monitor.2;
@@ -577,6 +577,20 @@ mod scene_tests {
         assert_eq!(e.binaural_mix,0.0);assert_eq!(e.plain_warmup,0);
         f.scene.render["playbackSnapshot"]["sourceOcclusion"]["algorithm"]=json!("unknown");
         assert!(e.configure_authored_scene(f.scene.clone()).is_err());
+    }
+
+    #[test]
+    fn missing_scene_occlusion_is_open_and_explicit_legacy_effect_survives_processing_off() {
+        let mut f=fixture();
+        let mut e=Engine::new(48000,2);
+        e.configure_authored_scene(f.scene.clone()).unwrap();
+        assert!(!e.source_occlusion_enabled);
+        f.scene.processing.enabled=false;
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]=json!({"enabled":true,"algorithm":"source-bearing-8deg-v1"});
+        e.configure_authored_scene(f.scene.clone()).unwrap();
+        assert!(e.source_occlusion_enabled);
+        e.configure_authored_processing(Default::default()).unwrap();
+        assert!(!e.source_occlusion_enabled);
     }
 
     #[test]

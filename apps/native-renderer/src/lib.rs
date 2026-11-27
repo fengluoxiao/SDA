@@ -120,6 +120,8 @@ pub mod hrtf;
 pub mod monitor;
 pub mod near_field;
 #[cfg(test)]
+mod near_field_scene_tests;
+#[cfg(test)]
 mod atmos_front_pair_probe;
 #[cfg(test)]
 mod mix_parity_probe;
@@ -1391,7 +1393,9 @@ impl Engine {
             compatible_pcm: None,
             source_extent: Default::default(),
             near_field: Default::default(),
-            source_occlusion_enabled: true,
+            // Audio-object coordinates do not describe solid obstacles.
+            // Retain the legacy effect only for explicitly authored scenes.
+            source_occlusion_enabled: false,
             directional_hrtf_requested: false,
             directional_hrtf: false,
             program_codec: None,
@@ -1846,9 +1850,10 @@ impl Engine {
         Some(position.map(|axis| axis * units / norm))
     }
 
-    /// Perceptual source-to-source shadowing. This is an explicitly selected
-    /// renderer heuristic, not physical obstacle metadata. Only sounding objects
-    /// participate; key-based writeback keeps sparse/dense scenes identical.
+    /// Legacy source-to-source shadowing for explicitly authored effects only.
+    /// Ordinary music never infers obstacles from overlapping emitter bearings.
+    /// Head shadow is already encoded by the HRTF; auditory masking is handled
+    /// independently by the source-domain spatial balance controller.
     fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
         for source in self.sources.values_mut() { source.occlusion_targets = [1.0; 2]; }
         if !self.binaural_enabled || self.bed_compatibility || !self.source_occlusion_enabled { return; }
@@ -3380,12 +3385,12 @@ impl Engine {
                             enabled: near_active || source.distance_m.is_some(),
                             ..self.near_field
                         };
-                        source.near_target = if near_active {
-                            near_field::gains(source.render_position(), head_pose, near_settings)
-                        } else if let Some(position) =
+                        source.near_target = if let Some(position) =
                             Self::physical_near_position(source, near_settings)
                         {
                             near_field::gains(position, head_pose, near_settings)
+                        } else if near_active {
+                            near_field::gains(source.render_position(), head_pose, near_settings)
                         } else {
                             [1.0; 2]
                         };
@@ -3410,24 +3415,9 @@ impl Engine {
                         if input != 0.0 {
                             // Near sources sit outside the reverberant field:
                             // fade their room contribution as they close in.
-                            let norm = if near_active {
-                                source
-                                    .position
-                                    .iter()
-                                    .map(|axis| axis * axis)
-                                    .sum::<f32>()
-                                    .sqrt()
-                            } else {
-                                source
-                                    .distance_m
-                                    .map(|distance| distance / self.near_field.metres_per_unit)
-                                    .unwrap_or(1.0)
-                            };
-                            let proximity_dry = if norm < 1.0 {
-                                (0.25 + 0.75 * norm).max(0.25)
-                            } else {
-                                1.0
-                            };
+                            let proximity_dry = near_field::reflection_gain(
+                                source.render_position(), source.distance_m,
+                                near_field::Settings { enabled: near_active, ..self.near_field });
                             self.bus_renderer.as_mut().unwrap().add_reflections(
                                 input * proximity_dry * cue_gain,
                                 &std::array::from_fn(|bus| {
@@ -4444,7 +4434,7 @@ mod tests {
     }
 
     #[test]
-    fn only_sounding_emitters_cast_default_occlusion_and_binaural_off_bypasses_it() {
+    fn only_sounding_emitters_cast_explicit_legacy_occlusion_and_binaural_off_bypasses_it() {
         let source = |position, pcm: Vec<f32>| {
             let mut source = Source {
                 kind: SourceKind::Object,
@@ -4459,6 +4449,7 @@ mod tests {
             source
         };
         let mut engine = Engine::new(48_000, 2);
+        engine.source_occlusion_enabled = true; // Explicit legacy artistic scene.
         // The nearer silent placeholder has the same bearing as the audible
         // far object. Before the activity gate it incorrectly shaded the far
         // object's left ear, making a mono stem appear right-biased.
@@ -4510,6 +4501,7 @@ mod tests {
             source
         };
         let mut engine = Engine::new(48_000, 2);
+        engine.source_occlusion_enabled = true; // Exercise the opt-in legacy path.
         let block = convolution::DEFAULT_PARTITION;
         let mut far = source([0.0, 1.0, 0.0], vec![0.1; block]);
         far.object_id = Some(10);
@@ -4550,6 +4542,7 @@ mod tests {
     fn source_occlusion_handles_dense_scenes_and_mirrors_without_an_ear_bias() {
         let block = convolution::DEFAULT_PARTITION;
         let mut engine = Engine::new(48000, 2);
+        engine.source_occlusion_enabled = true;
         for id in 0..108_u32 {
             let mut source = Source { kind: SourceKind::Object, object_id: Some(id),
                 position: [0.0, -1.0, 0.0], gain: 1.0, target_gain: 1.0,
@@ -4569,7 +4562,7 @@ mod tests {
         engine.source_occlusion_enabled=false;engine.update_occlusion(None);
         assert!(engine.sources.values().all(|s|s.occlusion_targets==[1.0;2]));
         engine.configure_authored_processing(Default::default()).unwrap();
-        assert!(engine.source_occlusion_enabled,"ordinary playback restores the requested default");
+        assert!(!engine.source_occlusion_enabled,"ordinary playback must not infer solid obstacles from emitters");
     }
 
     #[test]
