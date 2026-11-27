@@ -3101,7 +3101,7 @@ mod tests {
                         source.spatial_events.insert(0, crate::SpatialEvent {
                             position: [0.8, -0.4, 0.1], extent: [0.0;3],
                             zone_exclusion: Default::default(), horizontal_only: false,
-                            diffuse: 0.0, spread: 0.0, distance_m: None, ramp: 32768,
+                            diffuse: 0.0, spread: 0.0, distance_infinite: false, depth_only: false, distance_m: None, ramp: 32768,
                         });
                     }
                     let pcm: Vec<_> = (0..32768).map(|i| 0.01*(i as f32*0.13+id as f32).sin()).collect();
@@ -3430,7 +3430,7 @@ mod tests {
                         horizontal_only: false,
                         diffuse: 0.0,
                         spread: 0.0,
-                        distance_m: None,
+                        distance_infinite: false, depth_only: false, distance_m: None,
                         ramp: total_frames,
                     },
                 );
@@ -3548,7 +3548,7 @@ mod tests {
                             horizontal_only: id % 2 == 0,
                             diffuse: 0.2,
                             spread: 0.0,
-                            distance_m: None,
+                            distance_infinite: false, depth_only: false, distance_m: None,
                             ramp: 15000,
                         },
                     );

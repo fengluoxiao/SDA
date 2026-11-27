@@ -713,6 +713,9 @@ pub struct SpatialEvent {
     horizontal_only: bool,
     zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
     distance_m: Option<f32>,
+    distance_infinite: bool,
+    /// A distance-only update must not replace an in-flight authored trajectory.
+    depth_only: bool,
     ramp: u32,
 }
 
@@ -883,10 +886,12 @@ pub struct Source {
     suspended: bool,
     /// Smoothed inverse-distance loudness, enabled only by explicit codec metres.
     distance_gain: f32,
-    /// Finite codec distance in metres. `None` means direction-only metadata.
+    /// Finite codec distance in metres; infinity is retained separately so it
+    /// cannot accidentally fall back to a user coordinate-to-distance mapping.
     distance_m: Option<f32>,
-    /// Per-ear openness targets (1 = unoccluded). Kept open in the absence
-    /// of explicit physical occlusion information.
+    distance_infinite: bool,
+    /// Per-ear openness for the existing artistic source interaction effect.
+    /// These values are not physical obstacle metadata.
     occlusion_targets: [f32; 2],
 }
 
@@ -961,6 +966,7 @@ impl Default for Source {
             suspended: false,
             distance_gain: 1.0,
             distance_m: None,
+            distance_infinite: false,
             occlusion_targets: [1.0; 2],
         }
     }
@@ -1393,9 +1399,7 @@ impl Engine {
             compatible_pcm: None,
             source_extent: Default::default(),
             near_field: Default::default(),
-            // Audio-object coordinates do not describe solid obstacles.
-            // Retain the legacy effect only for explicitly authored scenes.
-            source_occlusion_enabled: false,
+            source_occlusion_enabled: true,
             directional_hrtf_requested: false,
             directional_hrtf: false,
             program_codec: None,
@@ -1810,6 +1814,7 @@ impl Engine {
         }
         let target = source
             .distance_m
+            .filter(|_| !source.distance_infinite)
             .filter(|distance| distance.is_finite() && *distance >= 1e-4)
             .map_or(1.0, |distance| distance.recip().clamp(0.25, 2.8));
         // No explicit distance (normal Atmos objects) has a settled unity
@@ -1833,6 +1838,7 @@ impl Engine {
     /// Convert explicit physical metres to the coordinate scale expected by
     /// the near-field filter while retaining the authored direction vector.
     fn physical_near_position(source: &Source, settings: near_field::Settings) -> Option<[f32; 3]> {
+        if source.distance_infinite { return None; }
         let distance = source.distance_m?;
         if !distance.is_finite() || distance <= 0.0 || !settings.valid() {
             return None;
@@ -1850,10 +1856,9 @@ impl Engine {
         Some(position.map(|axis| axis * units / norm))
     }
 
-    /// Legacy source-to-source shadowing for explicitly authored effects only.
-    /// Ordinary music never infers obstacles from overlapping emitter bearings.
-    /// Head shadow is already encoded by the HRTF; auditory masking is handled
-    /// independently by the source-domain spatial balance controller.
+    /// Perceptual source-to-source shadowing: an artistic renderer heuristic,
+    /// not physical obstacle metadata. Only sounding objects participate.
+    /// Keep the established default; research alone does not validate changing it.
     fn update_occlusion(&mut self, head_pose: Option<[f32; 4]>) {
         for source in self.sources.values_mut() { source.occlusion_targets = [1.0; 2]; }
         if !self.binaural_enabled || self.bed_compatibility || !self.source_occlusion_enabled { return; }
@@ -1942,6 +1947,13 @@ impl Engine {
     }
 
     fn start_source_motion(source: &mut Source, event: SpatialEvent) -> bool {
+        if event.depth_only {
+            let changed = source.distance_m != event.distance_m
+                || source.distance_infinite != event.distance_infinite;
+            source.distance_m = event.distance_m;
+            source.distance_infinite = event.distance_infinite;
+            return changed;
+        }
         if source.motion.is_none()
             && source.position == event.position
             && source.spread == event.spread
@@ -1950,12 +1962,14 @@ impl Engine {
             && source.horizontal_only == event.horizontal_only
             && source.zone_exclusion == event.zone_exclusion
             && source.distance_m == event.distance_m
+            && source.distance_infinite == event.distance_infinite
         {
             return false;
         }
         source.horizontal_only = event.horizontal_only;
         source.zone_exclusion = event.zone_exclusion.clone();
         source.distance_m = event.distance_m;
+        source.distance_infinite = event.distance_infinite;
         if event.ramp == 0 {
             source.position = event.position;
             source.extent = event.extent;
@@ -2497,7 +2511,8 @@ impl Engine {
         // Codec-provided metres enable the same dry-reference path as the
         // manual near-field switch. Applying the correction to the full BRIR
         // would also filter room residuals and alter the authored ambience.
-        let source_near_active = near_active || source.distance_m.is_some();
+        let source_near_active = !source.distance_infinite
+            && (near_active || source.distance_m.is_some());
         if source.auto_sky_directional != auto_sky_directional {
             source.auto_sky_directional = auto_sky_directional;
         }
@@ -3389,7 +3404,7 @@ impl Engine {
                             Self::physical_near_position(source, near_settings)
                         {
                             near_field::gains(position, head_pose, near_settings)
-                        } else if near_active {
+                        } else if near_active && !source.distance_infinite {
                             near_field::gains(source.render_position(), head_pose, near_settings)
                         } else {
                             [1.0; 2]
@@ -3416,7 +3431,7 @@ impl Engine {
                             // Near sources sit outside the reverberant field:
                             // fade their room contribution as they close in.
                             let proximity_dry = near_field::reflection_gain(
-                                source.render_position(), source.distance_m,
+                                source.render_position(), source.distance_m, source.distance_infinite,
                                 near_field::Settings { enabled: near_active, ..self.near_field });
                             self.bus_renderer.as_mut().unwrap().add_reflections(
                                 input * proximity_dry * cue_gain,
@@ -4562,7 +4577,7 @@ mod tests {
         engine.source_occlusion_enabled=false;engine.update_occlusion(None);
         assert!(engine.sources.values().all(|s|s.occlusion_targets==[1.0;2]));
         engine.configure_authored_processing(Default::default()).unwrap();
-        assert!(!engine.source_occlusion_enabled,"ordinary playback must not infer solid obstacles from emitters");
+        assert!(engine.source_occlusion_enabled,"ordinary playback restores the established default");
     }
 
     #[test]
@@ -5109,7 +5124,7 @@ mod tests {
                     diffuse: 0.0,
                     position: [-1.0, -1.0, 0.0],
                     spread: 0.0,
-                    distance_m: None,
+                    distance_infinite: false, depth_only: false, distance_m: None,
                     ramp: 1536,
                 },
             );
@@ -5200,7 +5215,7 @@ mod tests {
                     diffuse: 0.0,
                     position: [1.0, 1.0, 0.0],
                     spread: 0.0,
-                    distance_m: None,
+                    distance_infinite: false, depth_only: false, distance_m: None,
                     ramp: 24000,
                 },
             );
@@ -5592,7 +5607,7 @@ mod tests {
                 diffuse: 0.0,
                 position: target_position,
                 spread: 0.2,
-                distance_m: None,
+                distance_infinite: false, depth_only: false, distance_m: None,
                 ramp: 32,
             },
         );
@@ -5689,7 +5704,7 @@ mod tests {
                 diffuse: 0.0,
                 position,
                 spread: 0.2,
-                distance_m: None,
+                distance_infinite: false, depth_only: false, distance_m: None,
                 ramp: 0,
             },
         );
@@ -6572,7 +6587,7 @@ mod tests {
                                 diffuse: event.diffuse.clamp(0.0, 1.0),
                                 horizontal_only: event.horizontal_only,
                                 zone_exclusion: event.zone_exclusion.clone().into(),
-                                distance_m: if event.distance_infinite {
+                                distance_infinite: event.distance_infinite, depth_only: false, distance_m: if event.distance_infinite {
                                     None
                                 } else {
                                     event
@@ -6779,7 +6794,7 @@ mod tests {
                                 diffuse: event.diffuse.clamp(0.0, 1.0),
                                 horizontal_only: event.horizontal_only,
                                 zone_exclusion: event.zone_exclusion.clone().into(),
-                                distance_m: if event.distance_infinite {
+                                distance_infinite: event.distance_infinite, depth_only: false, distance_m: if event.distance_infinite {
                                     None
                                 } else {
                                     event

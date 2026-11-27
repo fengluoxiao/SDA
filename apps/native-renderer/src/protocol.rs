@@ -985,6 +985,8 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
             },
             horizontal_only: event.horizontal_only,
             zone_exclusion: event.zone_exclusion.into(),
+            distance_infinite: event.distance_infinite,
+            depth_only: false,
             distance_m,
             ramp,
         };
@@ -1003,6 +1005,8 @@ fn apply_object_event(source: &mut Source, sample_pos: u64, event: NativeObjectE
             diffuse: source.diffuse,
             horizontal_only: source.horizontal_only,
             zone_exclusion: source.zone_exclusion.clone(),
+            distance_infinite: event.distance_infinite,
+            depth_only: true,
             distance_m,
             ramp,
         };
@@ -2168,6 +2172,109 @@ mod tests {
         assert!((source.gain - 1.0).abs() < 1e-6);
         Engine::advance_distance_gain(&mut source, 48_000);
         assert!((source.distance_gain - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn explicit_infinite_distance_cannot_become_near_when_manual_mapping_is_enabled() {
+        for has_pos in [false, true] {
+            for disable_fast in [false, true] {
+                let mut engine = Engine::new(48000, 2);
+                let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../web/public/hrtf/hrtf-set.json");
+                engine
+                    .replace_hrtf(
+                        hrtf::NativeHrtfSet::load_calibrated(&manifest).unwrap(),
+                        0.0,
+                    )
+                    .unwrap();
+                engine.set_direct_objects(true).unwrap();
+                engine.set_directional_hrtf(true);
+                engine
+                    .configure_near_field(near_field::Settings {
+                        enabled: true,
+                        metres_per_unit: 1.0,
+                    })
+                    .unwrap();
+                engine.paused = false;
+                engine.output_active = true;
+                engine.direct_mix = 1.0;
+                engine.disable_fast_objects = disable_fast;
+                let mut source = Source {
+                    kind: SourceKind::Object,
+                    position: [0.25, 0.0, 0.0],
+                    distance_m: Some(0.3),
+                    gain: 1.0,
+                    target_gain: 1.0,
+                    availability: 1.0,
+                    availability_target: 1.0,
+                    ..Default::default()
+                };
+                let samples: Vec<_> = (0..8192).map(|i| 0.01 * (i as f32 * 0.05).sin()).collect();
+                source.samples.write(0, 0, &samples);
+                let event: NativeObjectEvent = serde_json::from_value(serde_json::json!({
+                    "id":1,"samplePos":0,"hasPos":has_pos,"pos":[0.25,0,0],
+                    "gainDb":0,"size":[0,0,0],"distanceInfinite":true,"rampDuration":0
+                }))
+                .unwrap();
+                apply_object_event(&mut source, 0, event);
+                engine.sources.insert("obj:1".into(), source);
+                engine.route_source_now("obj:1", 0).unwrap();
+                let mut output = vec![0.0; 16384];
+                engine.render_into(&mut output, 2);
+                assert_eq!(engine.sources["obj:1"].distance_m, None);
+                assert_eq!(
+                    engine.sources["obj:1"].near_target, [1.0; 2],
+                    "explicit infinity was reinterpreted as close ADM coordinates; hasPos={has_pos}"
+                );
+                assert!(engine.sources["obj:1"].distance_infinite);
+            }
+        }
+    }
+
+    #[test]
+    fn queued_distance_only_update_preserves_the_existing_object_trajectory() {
+        for infinite in [false, true] {
+            for scheduled in [false, true] {
+                let mut source = Source {
+                    kind: SourceKind::Object,
+                    position: [0.0, 1.0, 0.0],
+                    ..Default::default()
+                };
+                let moving: NativeObjectEvent = serde_json::from_value(serde_json::json!({
+                    "id":1,"samplePos":0,"hasPos":true,"pos":[1,0,0],
+                    "gainDb":0,"size":[0,0,0],"rampDuration":1024
+                }))
+                .unwrap();
+                apply_object_event(&mut source, 0, moving);
+                let depth: NativeObjectEvent = serde_json::from_value(serde_json::json!({
+                    "id":1,"samplePos":if scheduled{512}else{0},"hasPos":false,"pos":[0,0,0],
+                    "gainDb":0,"size":[0,0,0],"distanceM":if infinite{None}else{Some(0.5)},
+                    "distanceInfinite":infinite,"rampDuration":128
+                }))
+                .unwrap();
+                apply_object_event(&mut source, 0, depth);
+                if scheduled {
+                    assert!(!source.distance_infinite);
+                    assert_eq!(source.distance_m, None);
+                }
+                Engine::advance_source_envelopes(&mut source, 512);
+                assert_eq!(source.position, [0.5, 0.5, 0.0]);
+                if scheduled {
+                    let (at, event) = source.spatial_events.pop_first().unwrap();
+                    assert_eq!(at, 512);
+                    Engine::start_source_motion(&mut source, event);
+                }
+                assert_eq!(source.motion.as_ref().unwrap().ramp, 512);
+                Engine::advance_source_envelopes(&mut source, 512);
+                assert_eq!(
+                    source.position,
+                    [1.0, 0.0, 0.0],
+                    "depth-only metadata reset the authored Cartesian motion"
+                );
+                assert_eq!(source.distance_m, if infinite { None } else { Some(0.5) });
+                assert_eq!(source.distance_infinite, infinite);
+            }
+        }
     }
 
     #[test]

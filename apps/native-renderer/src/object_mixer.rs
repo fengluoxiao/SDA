@@ -461,7 +461,7 @@ fn mix_source(
             };
             source.near_target = if let Some(position) = Engine::physical_near_position(source, near_settings) {
                 crate::near_field::gains(position, head_pose, near_settings)
-            } else if ctx.near_active {
+            } else if ctx.near_active && !source.distance_infinite {
                 crate::near_field::gains(source.render_position(), head_pose, near_settings)
             } else {
                 [1.0; 2]
@@ -479,7 +479,7 @@ fn mix_source(
             // Near sources sit outside the reverberant field: fade their room
             // contribution as they close in (mirror of the general path).
             let proximity_dry = crate::near_field::reflection_gain(
-                source.render_position(), source.distance_m,
+                source.render_position(), source.distance_m, source.distance_infinite,
                 crate::near_field::Settings { enabled: ctx.near_active, ..ctx.near_field });
             input * proximity_dry * cue_gain
         } else {

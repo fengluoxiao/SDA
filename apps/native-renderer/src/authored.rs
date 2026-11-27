@@ -65,7 +65,7 @@ impl Engine {
         settings.validate()?;
         self.authored = Processing::default();
         if !settings.enabled {
-            self.source_occlusion_enabled = false;
+            self.source_occlusion_enabled = true;
             self.refresh_stereo_bass();
             return Ok(());
         }
@@ -376,7 +376,7 @@ impl Engine {
             return Err("authored room response missing".into());
         }
         let interaction = &snapshot["sourceOcclusion"];
-        let source_occlusion = if interaction.is_null() { false } else {
+        let source_occlusion = if interaction.is_null() { true } else {
             if interaction["algorithm"] != "source-bearing-8deg-v1" {
                 return Err("unsupported source occlusion algorithm".into());
             }
@@ -580,17 +580,20 @@ mod scene_tests {
     }
 
     #[test]
-    fn missing_scene_occlusion_is_open_and_explicit_legacy_effect_survives_processing_off() {
+    fn explicit_scene_occlusion_switch_survives_processing_off() {
         let mut f=fixture();
         let mut e=Engine::new(48000,2);
         e.configure_authored_scene(f.scene.clone()).unwrap();
-        assert!(!e.source_occlusion_enabled);
+        assert!(e.source_occlusion_enabled);
         f.scene.processing.enabled=false;
-        f.scene.render["playbackSnapshot"]["sourceOcclusion"]=json!({"enabled":true,"algorithm":"source-bearing-8deg-v1"});
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]=json!({"enabled":false,"algorithm":"source-bearing-8deg-v1"});
+        e.configure_authored_scene(f.scene.clone()).unwrap();
+        assert!(!e.source_occlusion_enabled);
+        f.scene.render["playbackSnapshot"]["sourceOcclusion"]["enabled"]=json!(true);
         e.configure_authored_scene(f.scene.clone()).unwrap();
         assert!(e.source_occlusion_enabled);
         e.configure_authored_processing(Default::default()).unwrap();
-        assert!(!e.source_occlusion_enabled);
+        assert!(e.source_occlusion_enabled);
     }
 
     #[test]

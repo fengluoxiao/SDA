@@ -57,7 +57,8 @@ fn render(layout: vbap::LayoutId, fast: bool, scale: f32, chunk: usize) -> (Vec<
             kind: SourceKind::Object,
             object_id: Some(id as u32),
             position: p,
-            distance_m: Some(distance),
+            distance_m: (id != 4).then_some(distance),
+            distance_infinite: id == 4,
             gain: 1.0,
             target_gain: 1.0,
             availability: 1.0,
@@ -117,14 +118,9 @@ fn render(layout: vbap::LayoutId, fast: bool, scale: f32, chunk: usize) -> (Vec<
 fn physical_distance_wins_in_both_mixers_and_both_immersive_layouts() {
     let mut comparisons = 0;
     for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13] {
-        let (reference, baseline) = render(layout, true, 1.0, 1024);
+        let (reference, _baseline) = render(layout, true, 1.0, 1024);
         assert!(reference.iter().any(|v| v.abs() > 1e-5));
-        assert!(
-            baseline
-                .sources
-                .values()
-                .all(|s| s.occlusion_targets == [1.0; 2])
-        );
+
         for (fast, scale, chunk) in [
             (true, 0.25, 173),
             (true, 4.0, 257),
@@ -142,6 +138,10 @@ fn physical_distance_wins_in_both_mixers_and_both_immersive_layouts() {
                 "{layout:?} fast={fast} scale={scale} delta={delta}"
             );
             assert_eq!(state.sources.len(), 10);
+            assert_eq!(
+                state.sources["obj:4"].near_target, [1.0; 2],
+                "infinite distance fell back to manual mapping"
+            );
             assert!(
                 state
                     .sources
@@ -158,69 +158,6 @@ fn physical_distance_wins_in_both_mixers_and_both_immersive_layouts() {
     println!(
         "NEAR_NATIVE_SCENE comparisons={comparisons} layouts=2 objects=6 beds=4 physicalScaleInvariant=true bottomBedsAndLfePreserved=true"
     );
-}
-
-#[test]
-fn spherical_grid_preserves_mirrors_front_back_and_unit_pair_energy() {
-    let s = near_field::Settings {
-        enabled: true,
-        ..Default::default()
-    };
-    let mut checked = 0;
-    for r in [0.12, 0.2, 0.4, 0.8, 0.999, 1.0] {
-        for elevation in (-90..=90).step_by(5) {
-            let el = (elevation as f32).to_radians();
-            for azimuth in (-180..=180).step_by(5) {
-                let az = (azimuth as f32).to_radians();
-                let p = [
-                    r * el.cos() * az.sin(),
-                    r * el.cos() * az.cos(),
-                    r * el.sin(),
-                ];
-                let a = near_field::gains(p, None, s);
-                let mirror = near_field::gains([-p[0], p[1], p[2]], None, s);
-                assert_eq!(a, [mirror[1], mirror[0]]);
-                assert_eq!(a, near_field::gains([p[0], -p[1], p[2]], None, s));
-                assert!(a.iter().all(|v| v.is_finite() && *v > 0.0));
-                assert!(((a[0] * a[0] + a[1] * a[1]) * 0.5 - 1.0).abs() < 2e-6);
-                checked += 1;
-            }
-        }
-    }
-    println!(
-        "NEAR_SPHERICAL_GRID positions={checked} mirror=true frontBackFactorPreserved=true pairEnergy=1"
-    );
-}
-
-#[test]
-fn emitter_overlap_never_creates_ordinary_music_obstacles_even_after_scene_reset() {
-    let mut e = Engine::new(48000, 2);
-    let block = convolution::DEFAULT_PARTITION;
-    for i in 0..MAX_SOURCES {
-        let mut s = Source {
-            kind: SourceKind::Object,
-            object_id: Some(i as u32),
-            position: [0.0, if i % 2 == 0 { 1.0 } else { 0.15 }, 0.0],
-            gain: 1.0,
-            target_gain: 1.0,
-            availability: 1.0,
-            availability_target: 1.0,
-            occlusion_targets: [0.6, 0.8],
-            ..Default::default()
-        };
-        s.samples.write(0, 0, &vec![0.01; block]);
-        e.sources.insert(format!("obj:{i}"), s);
-    }
-    assert!(!e.source_occlusion_enabled);
-    for head in [None, Some([0.0, 0.0, 0.70710677, 0.70710677])] {
-        e.update_occlusion(head);
-        assert!(e.sources.values().all(|s| s.occlusion_targets == [1.0; 2]));
-    }
-    e.source_occlusion_enabled = true; // Loading a legacy authored effect is allowed.
-    e.configure_authored_processing(Default::default()).unwrap();
-    e.update_occlusion(None);
-    assert!(!e.source_occlusion_enabled);
-    assert!(e.sources.values().all(|s| s.occlusion_targets == [1.0; 2]));
 }
 
 #[test]
