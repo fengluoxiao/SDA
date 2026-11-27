@@ -42,6 +42,13 @@ import AVFoundation
  // real frame after idle memory is released, without rewinding the cover.
  view.testReverse(at:2)
  try await waitFor("Reverse leg did not start"){view.testReversePosition<1.9}
+ let recreated=SdaMotionArtworkView()
+ recreated.bounds=view.bounds;recreated.blurred=true;recreated.window=window
+ recreated.presented=true;recreated.active=true;recreated.sourceUri=url.absoluteString
+ try await waitFor("Recreated background started an independent reverse timeline"){
+  recreated.testDirection == view.testDirection && recreated.testReverseFrameTime>0 && abs(recreated.testReverseFrameTime-view.testReverseFrameTime)<0.07
+ }
+ recreated.active=false;recreated.testStop()
  view.active=false
  let frozen=view.testReversePosition
  try require(view.testRetainedBytes==0,"Paused view retained reverse working windows")
@@ -60,5 +67,5 @@ import AVFoundation
  UIApplication.shared.applicationState = .active
  NotificationCenter.default.post(name:UIApplication.didBecomeActiveNotification,object:nil)
  try await waitFor("Foreground restoration did not resume the reverse cover"){view.testReversePosition<backgroundPosition-0.05}
- print("{\"motionViewLifecycle\":true,\"detachedPreparationRecovered\":true,\"settingsAndStyleRotations\":3,\"forwardAndReverseResumed\":true,\"pausedWindowsReleased\":true,\"physicalDeviceTested\":false}")
+ print("{\"motionViewLifecycle\":true,\"detachedPreparationRecovered\":true,\"settingsAndStyleRotations\":3,\"forwardAndReverseResumed\":true,\"recreatedBlurSharesSharpTimeline\":true,\"pausedWindowsReleased\":true,\"physicalDeviceTested\":false}")
 }

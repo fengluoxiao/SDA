@@ -7,13 +7,18 @@ ios="$PWD/apps/mobile/modules/sda-core/ios"
 python3 - "$ios/SdaMotionArtworkModule.swift" "$out/MotionArtworkViewUnderTest.swift" <<'PY'
 import pathlib,sys
 source=pathlib.Path(sys.argv[1]).read_text()
-view=source[source.index('final class SdaMotionArtworkView:'):]
+view=source[source.index('private final class MotionArtworkWeakView'):]
 probes='''
 extension SdaMotionArtworkView {
  var testStarting:Bool{starting}
  var testPlayer:AVPlayer?{player}
  var testDirection:Float{direction}
- var testPlaybackPosition:Double{fallbackReverse ? reverseClock.current(at:CACurrentMediaTime()):player?.currentTime().seconds ?? 0}
+ var testPlaybackPosition:Double{if blurred,let leader{return leader.testPlaybackPosition};return fallbackReverse ? reverseClock.current(at:CACurrentMediaTime()):player?.currentTime().seconds ?? 0}
+ var testReverseFrameTime:Double{latestReverseFrame?.time ?? -1}
+ var testState:[String:Any]{
+  let time=testPlaybackPosition,duration=player?.currentItem?.duration.seconds ?? 0
+  return ["active":active,"presented":presented,"attached":window != nil,"canAnimate":canAnimate,"direction":direction,"reverse":fallbackReverse,"position":time.isFinite ? time:-1,"duration":duration.isFinite ? duration:-1,"rate":player?.rate ?? 0,"reverseTimer":reverseTimer != nil,"followerTimer":followerTimer != nil,"reverseFrame":testReverseFrameTime,"framesFailed":reverseFrames?.failed ?? false,"featherMode":featherMode]
+ }
  var testReversePosition:Double{reverseClock.current(at:CACurrentMediaTime())}
  var testRetainedBytes:Int{reverseFrames?.statistics.retainedBytes ?? 0}
  func testStop(){stop()}

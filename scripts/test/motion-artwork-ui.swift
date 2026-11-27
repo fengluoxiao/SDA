@@ -79,7 +79,7 @@ final class MotionArtworkTestController:UIViewController {
   guard let window=view.window else{throw NSError(domain:"Missing window for screen sample",code:1)}
   let frame=sharp.convert(sharp.bounds,to:window),size=window.bounds.size
   let rect=[(frame.minX+frame.width*0.2)/size.width,(frame.minY+frame.height*0.18)/size.height,frame.width*0.20/size.width,frame.height*0.12/size.height]
-  MotionUIResult.write("request.json",["id":id,"label":label,"rect":rect])
+  MotionUIResult.write("request.json",["id":id,"label":label,"rect":rect,"playback":sharp.testState])
   var difference=0.0
   try await wait("Screen capture acknowledgement missing",timeout:60){
    guard let data=try? Data(contentsOf:MotionUIResult.directory.appendingPathComponent("ack.json")),let ack=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],ack["id"] as? Int==id else{return false}
@@ -136,8 +136,9 @@ final class MotionArtworkTestController:UIViewController {
   view.setNeedsLayout();view.layoutIfNeeded();sharp.active=true;backdrop?.active=true
  }
  private func finish(_ passed:Bool,_ error:String?){
+  let playback=sharp.testState
   sharp.testStop();backdrop?.testStop()
-  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"realOrientationChanges":rotations,"styleSwitches":[false,true],"visibleMotionChecks":captures,"screenshots":requestID,"physicalDeviceTested":false]
+  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"realOrientationChanges":rotations,"styleSwitches":[false,true],"visibleMotionChecks":captures,"screenshots":requestID,"playback":playback,"physicalDeviceTested":false]
   if let error{result["error"]=error}
   MotionUIResult.write("result.json",result);exit(passed ? 0:1)
  }
