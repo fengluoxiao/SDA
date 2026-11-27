@@ -48,7 +48,8 @@ try:
  assert result.exists(),'Real UIKit motion application did not finish'
  value=json.loads(result.read_text());(out/'motion-ui-result.json').write_text(json.dumps(value,indent=2)+'\n');print(json.dumps(value),flush=True)
  assert value.get('passed'),value
- assert value['realUIKitWindow'] and value['realOrientationChanges']==6 and len(value['visibleMotionChecks'])==11
+ assert value['realUIKitWindow'] and value['realOrientationChanges']==6 and len(value['visibleMotionChecks'])==15
+ assert value['nativeNavigationPushPop'] and value['settingsReturns']==6
  assert value['styleSwitches']==[False,True]
 finally:
  with (out/'motion-ui-runtime.log').open('w')as log:

@@ -4,6 +4,7 @@ import {readFileSync} from "node:fs";
 import {build} from "esbuild";
 import "./motion-artwork-selection.test.mjs";
 import "./portrait-motion-artwork-layout.test.mjs";
+import "./motion-artwork-navigation.test.mjs";
 
 const compiled=await build({entryPoints:["apps/mobile/src/ArtworkEdgeBlend.tsx"],bundle:true,platform:"node",format:"cjs",external:["*"],write:false});
 const React={createElement:(type,props,...children)=>({type,props:{...props,children}}),Fragment:"Fragment"};

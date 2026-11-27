@@ -93,8 +93,8 @@ export function IOSHeadTrackingButton({ enabled, disabled: isDisabled, accent, a
 
 // A single native navigation stack stays mounted over the existing player.
 // Its controlled path changes only presentation, never the audio engine.
-export function IOSSettingsNavigation({ children, settings, onSettingsChange, title, player, accent, theme, immersive = false, fullscreen = false }: {
-  children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void;
+export function IOSSettingsNavigation({ children, settings, onSettingsChange, onPlayerVisibilityChange, title, player, accent, theme, immersive = false, fullscreen = false }: {
+  children: React.ReactElement; settings: boolean; onSettingsChange(value: boolean): void; onPlayerVisibilityChange?(visible: boolean): void;
   title: string; player: PlayerProps; accent: string; theme: "light" | "dark"; immersive?: boolean; fullscreen?: boolean;
 }) {
   if (!swiftUI || !hasNativeIOSSettings) return children;
@@ -105,7 +105,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
     return <ScreenStack style={{ flex: 1 }}>
       {/* NativeStack forbids decreasing activityState; UIKit owns push/pop visibility.
           Stack screens overlap at full size; flex siblings would split the viewport. */}
-      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false} testID="space-fullscreen-controller" statusBarHidden={fullscreen} homeIndicatorHidden={fullscreen} unstable_safeAreaEdges={fullscreen ? { top: false, right: false, bottom: false, left: false } : undefined}
+      <ScreenStackItem screenId="sda-home" activityState={2} freezeOnBlur={false} onWillDisappear={() => onPlayerVisibilityChange?.(false)} onAppear={() => onPlayerVisibilityChange?.(true)} testID="space-fullscreen-controller" statusBarHidden={fullscreen} homeIndicatorHidden={fullscreen} unstable_safeAreaEdges={fullscreen ? { top: false, right: false, bottom: false, left: false } : undefined}
         headerConfig={{ hidden: true, title }} contentStyle={{ flex: 1, backgroundColor: immersive ? "transparent" : PlatformColor("systemGroupedBackground") }} style={StyleSheet.absoluteFill}>
         {children}
       </ScreenStackItem>
@@ -122,7 +122,7 @@ export function IOSSettingsNavigation({ children, settings, onSettingsChange, ti
       </ScreenStackItem>}
     </ScreenStack>;
   }
-  return <>{children}<Modal visible={settings} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => onSettingsChange(false)}>
+  return <>{children}<Modal visible={settings} animationType="slide" presentationStyle="fullScreen" onShow={() => onPlayerVisibilityChange?.(false)} onDismiss={() => onPlayerVisibilityChange?.(true)} onRequestClose={() => onSettingsChange(false)}>
     <IOSSettingsCompatibilityPage player={player} theme={theme} onClose={() => onSettingsChange(false)} />
   </Modal></>;
 }

@@ -129,6 +129,7 @@ function ThemedPlayer(p: PlayerProps) {
   }, [measureLandscapeLyrics]);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [settings, setSettings] = useState(chromeSmoke.startsWith("settings"));
+  const [playerNavigationVisible, setPlayerNavigationVisible] = useState(true);
   useEffect(() => {
     if (Platform.OS !== "android" || !settings) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => { setSettings(false); return true; });
@@ -230,7 +231,7 @@ function ThemedPlayer(p: PlayerProps) {
     left: tabletArtworkFrame?.left ?? 0,
     top: 0, width: tabletLayout!.coverSize, height: tabletLayout!.coverSize,
   } : { left: artworkLeft, top: artworkTop, width: artworkWidth, height: artworkSize };
-  const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings, page, rootRef: surfaceRef,
+  const sharedMini = useSharedMiniPlayerTransition({ enabled: circularMiniPlayerActive && layoutReady && !settings && playerNavigationVisible, page, rootRef: surfaceRef,
     layoutKey: [width, height, cutoutSide, navigationPreferences.sideTabPosition, tabletPlayer].join(":"), mediaKey: `${p.selectedUri || ""}:${hasArtwork ? artworkUri : "placeholder"}`, artworkUri: hasArtwork ? artworkUri : "" });
   const fallbackArtwork = React.useMemo(() => <Symbol name="music.note" fallback="♫" size={110} color="#a0a0a5" />, []);
   const transportMargin = tabletLayout?.transportGap ?? landscapeSpacing?.transportGap ?? playerGap + transportInset;
@@ -251,7 +252,7 @@ function ThemedPlayer(p: PlayerProps) {
   const presetDisabled = audioOptionsDisabled || p.roomBusy || p.nearFieldBusy;
   const currentPreset = renderingPresets.find(profile => isPresetSelected(p, profile));
   const playing = p.playing && !p.paused;
-  const motionSurfaceVisible = immersiveHome && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!lyricsPageSelected || landscapePlayer);
+  const motionSurfaceVisible = immersiveHome && playerNavigationVisible && !p.ended && !p.busy && !p.preparingAudio && !settings && !sharedMini.active && (!lyricsPageSelected || landscapePlayer);
   const tabletPortrait = tabletPlayer && !landscapePlayer;
   const motionEnabled = supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork;
   const tabletMotionEnabled = tabletPortrait && motionEnabled;
@@ -415,7 +416,7 @@ function ThemedPlayer(p: PlayerProps) {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}>{infoRows.map(([name, value]) => <View key={name} style={{ paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }}><Text style={{ color: PlatformColor("label"), fontSize: 13, fontWeight: "600" }}>{name}</Text><Text selectable style={{ color: PlatformColor("label"), fontSize: 16, lineHeight: 23, marginTop: 6 }}>{value}</Text></View>)}</ScrollView>
     </SafeAreaView>}
   </IOSMetadataSheet>
-  <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
+  <IOSSettingsNavigation fullscreen={fullscreenSpace} immersive={immersiveHome} settings={settings} onSettingsChange={setSettings} onPlayerVisibilityChange={setPlayerNavigationVisible} title={homeTitle} player={p} accent={c.accent} theme={isLight ? "light" : "dark"}>
   <View ref={surfaceRef} collapsable={false} style={[s.presentationSurface, { backgroundColor: immersiveHome ? fadeColor : c.bg }]} onLayout={() => { onSurfaceLayout(); sharedMini.capture(); }}>
   {(immersiveHome || motionEnabled) && <View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[StyleSheet.absoluteFill, { overflow: "hidden", backgroundColor: fadeColor, opacity: immersiveHome ? 1 : 0 }]}>
     {tabletPortrait && <>

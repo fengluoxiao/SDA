@@ -27,14 +27,15 @@ enum MotionUIResult {
  var window:UIWindow?
  func scene(_ scene:UIScene,willConnectTo session:UISceneSession,options:UIScene.ConnectionOptions){
   guard let scene=scene as? UIWindowScene else{return}
-  let window=UIWindow(windowScene:scene);window.rootViewController=MotionArtworkTestController()
+  let window=UIWindow(windowScene:scene),navigation=UINavigationController(rootViewController:MotionArtworkTestController())
+  navigation.setNavigationBarHidden(true,animated:false);window.rootViewController=navigation
   self.window=window;window.makeKeyAndVisible()
  }
 }
 final class MotionArtworkTestController:UIViewController {
  private let sharp=SdaMotionArtworkView()
  private var backdrop:SdaMotionArtworkView?
- private var tabletStyle=true,started=false,requestID=0,rotations=0
+ private var tabletStyle=true,started=false,requestID=0,rotations=0,settingsReturns=0
  private var captures=[[String:Any]]()
  override var supportedInterfaceOrientations:UIInterfaceOrientationMask{.allButUpsideDown}
  override var prefersStatusBarHidden:Bool{true}
@@ -45,8 +46,12 @@ final class MotionArtworkTestController:UIViewController {
   sharp.presented=true;sharp.active=true
  }
  override func viewDidAppear(_ animated:Bool){
-  super.viewDidAppear(animated);guard !started else{return};started=true
+  super.viewDidAppear(animated);sharp.active=true;backdrop?.active=true
+  guard !started else{return};started=true
   Task{@MainActor in do{try await run()}catch{finish(false,String(describing:error))}}
+ }
+ override func viewWillDisappear(_ animated:Bool){
+  super.viewWillDisappear(animated);sharp.active=false;backdrop?.active=false
  }
  private func addBackdrop(){
   let background=SdaMotionArtworkView();backdrop=background;view.insertSubview(background,at:0)
@@ -108,18 +113,22 @@ final class MotionArtworkTestController:UIViewController {
   try await wait("Real UIKit motion player was not ready"){self.sharp.testPlayer?.currentItem?.status == .readyToPlay && UIApplication.shared.applicationState == .active}
   let player=sharp.testPlayer
   try await movingScreen("tablet-portrait")
+  try await visitSettings(nil);try await movingScreen("settings-unchanged-first-return")
+  try await visitSettings(nil);try await movingScreen("settings-unchanged-repeat-return")
   try await rotate(true);try await movingScreen("tablet-landscape")
   try await rotate(false);try await movingScreen("tablet-portrait-return")
-  try await setTabletStyle(false)
+  try await visitSettings(false)
   try await movingScreen("style-disabled-return")
   try await rotate(true);try await movingScreen("disabled-landscape")
   try await rotate(false);try await movingScreen("disabled-portrait")
-  try await setTabletStyle(true)
+  try await visitSettings(true)
   try await movingScreen("style-re-enabled-return")
   try await rotate(true);try await movingScreen("re-enabled-landscape")
   try await rotate(false);try await movingScreen("re-enabled-portrait")
+  try await visitSettings(nil);try await movingScreen("extra-settings-after-re-enabled")
   guard sharp.testPlayer === player else{throw NSError(domain:"Rotation replaced the selected player",code:1)}
   sharp.testReverse(at:4.4);try await movingScreen("reverse-after-rotation")
+  try await visitSettings(nil);try await movingScreen("settings-unchanged-reverse-return")
   sharp.active=false;try await Task.sleep(nanoseconds:200_000_000)
   _=try await screenshot("paused-before");try await Task.sleep(nanoseconds:650_000_000)
   let pausedDifference=try await screenshot("paused-after")
@@ -127,19 +136,27 @@ final class MotionArtworkTestController:UIViewController {
   sharp.active=true;try await movingScreen("manual-resume")
   finish(true,nil)
  }
- @MainActor private func setTabletStyle(_ enabled:Bool)async throws {
+ @MainActor private func visitSettings(_ enabled:Bool?)async throws {
+  guard let navigation=navigationController else{throw NSError(domain:"Missing production-style navigation stack",code:1)}
   sharp.active=false;backdrop?.active=false
-  let settings=UIViewController();settings.view.backgroundColor = .black;settings.modalPresentationStyle = .fullScreen
-  await withCheckedContinuation{continuation in present(settings,animated:false){continuation.resume()}}
-  tabletStyle=enabled;backdrop?.testStop();backdrop?.removeFromSuperview();backdrop=nil
-  if enabled{addBackdrop();backdrop?.active=false}
-  await withCheckedContinuation{continuation in settings.dismiss(animated:false){continuation.resume()}}
-  view.setNeedsLayout();view.layoutIfNeeded();sharp.active=true;backdrop?.active=true
+  let settings=UIViewController();settings.view.backgroundColor = .black
+  navigation.pushViewController(settings,animated:true)
+  try await wait("Settings push did not finish"){navigation.topViewController === settings && settings.view.window != nil && navigation.transitionCoordinator==nil}
+  if let enabled{
+   tabletStyle=enabled;backdrop?.testStop();backdrop?.removeFromSuperview();backdrop=nil
+   if enabled{addBackdrop();backdrop?.active=false}
+  }
+  // React clears `settings` at pop start. Media remains inactive until the
+  // home's viewDidAppear/onAppear callback, matching IOSSettingsNavigation.
+  navigation.popViewController(animated:true)
+  try await wait("Settings pop did not finish"){navigation.topViewController === self && self.view.window != nil && navigation.transitionCoordinator==nil}
+  view.setNeedsLayout();view.layoutIfNeeded();settingsReturns+=1
+  guard sharp.active else{throw NSError(domain:"Home appearance did not resume motion",code:1)}
  }
  private func finish(_ passed:Bool,_ error:String?){
   let playback=sharp.testState
   sharp.testStop();backdrop?.testStop()
-  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"realOrientationChanges":rotations,"styleSwitches":[false,true],"visibleMotionChecks":captures,"screenshots":requestID,"playback":playback,"physicalDeviceTested":false]
+  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"nativeNavigationPushPop":true,"settingsReturns":settingsReturns,"realOrientationChanges":rotations,"styleSwitches":[false,true],"visibleMotionChecks":captures,"screenshots":requestID,"playback":playback,"physicalDeviceTested":false]
   if let error{result["error"]=error}
   MotionUIResult.write("result.json",result);exit(passed ? 0:1)
  }
