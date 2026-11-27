@@ -3,15 +3,19 @@ import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url), {parse}=require('yaml');
 const workflow=name=>parse(readFileSync('.github/workflows/'+name,'utf8'));
-const ios=workflow('ios-port-ci.yml').jobs.ios;
+const ios=workflow('ios-port-ci.yml').jobs['device-ios'];
 const mac=workflow('release.yml').jobs['build-macos'];
 assert.equal(ios['runs-on'],'xcode-27');
-assert.deepEqual(ios.strategy.matrix.sdk,['27.1']);
+assert.equal(ios.strategy,undefined,'device packaging has no simulator/test matrix');
+assert.equal(ios.env.SDA_PACKAGE_SCOPE,'package-only');
+assert.equal(ios.env.SDA_PACKAGE_TESTS,'0');
+assert(!ios.steps.some(step=>/cargo test|node --test|check-embedded-motion-artwork|test-ios-ui/.test(step.run??'')));
+assert.deepEqual(Object.keys(workflow('ios-port-ci.yml').jobs).sort(),['device-ios','shared-cache-entry']);
 assert.deepEqual(mac.strategy.matrix.include.map(x=>[x.arch,x.runner,x.target,x.probe_arch]),[
  ['x64','xcode-27','x86_64-apple-darwin','x86_64'],
  ['arm64','xcode-27','aarch64-apple-darwin','arm64'],
 ]);
-for(const job of [ios,mac]){
+for(const job of [mac]){
  const stage=job.steps.findIndex(x=>x.name==='Stage pinned Apple toolchain selector');
  const select=job.steps.findIndex(x=>x.run?.includes('$SDA_APPLE_TOOLCHAIN_SELECTOR'));
  assert(stage>=0&&select>stage);
@@ -20,14 +24,14 @@ for(const job of [ios,mac]){
  assert(job.steps[select].run.includes('--record-dir'));
  assert(!job.steps[select]['continue-on-error']);
 }
-assert(ios.steps.find(x=>x.id==='sdk').run.includes('--ios-sdk-version'));
+assert(ios.steps.find(x=>x.name==='Select Xcode and verify iOS SDK').run.includes('--ios-sdk-version'));
 assert(ios.steps.some(x=>x.run?.includes('IPHONEOS_DEPLOYMENT_TARGET=16.4 archive')));
 assert(mac.steps.find(x=>x.id==='apple_tools').run.includes('--probe-macos-arch'));
 assert(mac.steps.find(x=>x.uses==='Swatinem/rust-cache@v2').with.key.includes('steps.apple_tools.outputs.fingerprint'));
 assert.equal(mac.steps.find(x=>x.name==='Ensure Intel cross-build tools can execute').if,"matrix.arch == 'x64'");
 console.log('Apple package runner, toolchain pinning, SDK/architecture probes and old-source staging checks passed.');
 
-const focused=workflow('ios-port-ci.yml').jobs['motion-artwork-ios'];
+const focused=ios;
 const compileCache=focused.steps.find(step=>step.name==='Restore Xcode compilation cache');
 assert.equal(compileCache.with.path,'ios-build/CompilationCache.noindex');
 assert(compileCache.with.key.includes('github.run_id'),'successful runs must save newly compiled entries under a new key');
@@ -47,7 +51,7 @@ assert.equal(iosWorkflow.on.workflow_call.inputs.source_ref.required,true);
 assert.equal(iosWorkflow.permissions.actions,'write');
 const route=iosWorkflow.jobs['shared-cache-entry'];
 assert(route.if.includes("github.ref != format('refs/heads/{0}', github.event.repository.default_branch)"));
-for(const job of [ios,focused]){
+for(const job of [ios]){
  assert(job.if.includes("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"));
  const rust=job.steps.find(step=>step.uses==='Swatinem/rust-cache@v2');
  assert.equal(rust.with['shared-key'],'ios-device-release');
