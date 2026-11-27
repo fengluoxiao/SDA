@@ -1,5 +1,6 @@
 import Foundation
 import CoreMotion
+import AVFoundation
 import simd
 
 // All state and renderer commands are serialized by SdaPlayer.lock.
@@ -80,7 +81,9 @@ extension SdaPlayer {
     guard self.handle != nil, self.systemSpatial == nil else { return }
     // Native callback -> Rust session-relative pose -> KU100 renderer, with no JS hop.
     guard let filtered = try? self.command("trackingProvider", ["x":current.imag.x,
-      "y":current.imag.y,"z":current.imag.z,"w":current.real]) else { return }
+      "y":current.imag.y,"z":current.imag.z,"w":current.real,
+      "sampleAge":max(0, ProcessInfo.processInfo.systemUptime - motion.timestamp),
+      "outputLatency":AVAudioSession.sharedInstance().outputLatency]) else { return }
     guard filtered is [Double] else {
      self.headTrackingDetail = "等待有效姿态"
      return

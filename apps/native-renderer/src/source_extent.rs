@@ -16,6 +16,25 @@ impl Settings {
             .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
     }
 }
+/// Independent authored dimensions for the spatial-balance presentation.
+/// The blend retains a narrow centre at small extents without collapsing height
+/// and depth into the scalar spread used by the legacy routing path.
+pub(crate) fn presentation_angles(size: [f32;3], spread:f32, horizontal:bool, settings:Settings, enhanced:bool)->[f32;3] {
+    let bounded=|v:f32| if v.is_finite(){v.clamp(0.0,1.0)}else{0.0};
+    let curve=|v:f32| {let v=bounded(v);(0.7*v*v+0.3*v)*120.0};
+    if enhanced {
+        // Formats with scalar spread but no independent dimensions retain it.
+        let scalar_only=size.iter().all(|&v|v==0.0);
+        let authored_width=if scalar_only{spread}else{size[0]};
+        let authored_height=if scalar_only{spread}else{size[2]};
+        let width=if settings.enabled{authored_width.max(settings.width)}else{authored_width};
+        [curve(width),if horizontal{0.0}else{curve(authored_height)},bounded(size[1])]
+    } else {
+        let w=if settings.enabled{size[0].max(settings.width)}else{spread};
+        let h=if settings.enabled{size[2]}else{spread};
+        [w*w*120.0,if horizontal{0.0}else{h*h*120.0},if settings.enabled{size[1]}else{0.0}]
+    }
+}
 pub fn route(
     solver: &vbap::VbapSolver,
     position: [f32; 3],
@@ -107,6 +126,10 @@ pub struct Diffuser {
     filters: Vec<Allpass>,
 }
 impl Diffuser {
+    pub(crate) fn reset(&mut self) {
+        for filter in &mut self.filters {filter.data.fill(0.0);filter.cursor=0;filter.pristine=true;}
+    }
+    pub(crate) fn allocated_samples(&self)->usize {self.filters.iter().map(|f|f.data.len()).sum()}
     pub fn new() -> Self {
         Self {
             filters: (0..vbap::MAX_BUS_COUNT)

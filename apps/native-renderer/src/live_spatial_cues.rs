@@ -136,7 +136,7 @@ mod tests {
         for layout in [vbap::LayoutId::Dolby7_1_4, vbap::LayoutId::Sony360Ra13, vbap::LayoutId::parse("2.0").unwrap()] {
             let mut initial=PreparedCueUpdate::load(&shared_path(),layout.as_str(),0.5011872).unwrap();
             let mut e=Engine::new(48000,2); e.layout=layout;e.vbap=vbap::VbapSolver::with_layout(layout);
-            let direction=crate::directional::Direction { diffuse:0., horizontal_only:false, position:[0.4,0.6,0.7], head:None, width:0.,height:0.,depth:0. };
+            let direction=crate::directional::Direction { perceptual_width: false, diffuse:0., horizontal_only:false, position:[0.4,0.6,0.7], head:None, width:0.,height:0.,depth:0. };
             let gains=crate::bus_renderer::route(&e.vbap,direction.position,None,0.);
             let amounts=[0.;vbap::MAX_BUS_COUNT];
             let dry=initial.set.directional_dry_compact(direction,layout,gains,amounts).unwrap();

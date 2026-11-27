@@ -15,6 +15,8 @@ pub const MAX_QUEUED_PCM_BYTES: usize = 16 * 1024 * 1024;
 
 pub enum RenderCommand {
     Command(Command),
+    TrackedHeadPose {orientation:[f32;4],sampled_at:std::time::Instant,output_latency_seconds:f64},
+    ResetTrackingPrediction,
     TransportReset { epoch:u64, command:Command },
     /// One queue entry so mobile settings cannot be only partially enqueued.
     ObjectRendering {
@@ -82,6 +84,13 @@ pub enum RenderCommand {
 }
 
 impl RenderCommand {
+    fn valid_pose(&self)->bool {
+        match self {
+            Self::Command(Command::HeadPose{orientation})|Self::TrackedHeadPose{orientation,..}=>
+                crate::spatial::normalize_quaternion(*orientation).is_some(),
+            _=>false,
+        }
+    }
     fn pcm_bytes(&self) -> usize {
         match self {
             Self::Command(Command::Feed { samples, .. }) => samples.len() * size_of::<f32>(),
@@ -161,17 +170,12 @@ impl RenderCommandQueue {
         // reset, settings and reply-bearing commands remain ordering barriers.
         // Do this before the capacity check so stale poses cannot reject the
         // newest pose merely because they filled the queue themselves.
-        if let RenderCommand::Command(Command::HeadPose { orientation }) = &command {
-            if crate::spatial::normalize_quaternion(*orientation).is_some()
-                && matches!(pending.commands.back(),Some(RenderCommand::Command(Command::HeadPose{orientation:old}))
-                if crate::spatial::normalize_quaternion(*old).is_some())
-            {
+        if command.valid_pose() && pending.commands.back().is_some_and(RenderCommand::valid_pose) {
                 *pending.commands.back_mut().unwrap() = command;
                 if let Some(consumer) = self.consumer.get() {
                     consumer.unpark();
                 }
                 return Ok(());
-            }
         }
         if pending.commands.len() >= self.capacity
             || pending.pcm_bytes.saturating_add(bytes) > MAX_QUEUED_PCM_BYTES
@@ -315,6 +319,20 @@ mod tests {
         assert!(
             matches!(queue.pop(),Some(RenderCommand::Command(Command::HeadPose{orientation}))if orientation[2]==0.2)
         );
+    }
+    #[test]
+    fn timed_pose_keeps_latest_timestamp_and_prediction_reset_is_a_barrier() {
+        let queue=RenderCommandQueue::new(8);
+        let time=std::time::Instant::now();
+        let timed=|ms|RenderCommand::TrackedHeadPose{orientation:[0.,0.,0.,1.],
+            sampled_at:time+Duration::from_millis(ms),output_latency_seconds:0.03};
+        for cmd in [timed(0),timed(1),RenderCommand::ResetTrackingPrediction,timed(2),timed(3)]{
+            assert!(queue.push(cmd).is_ok());
+        }
+        assert_eq!(queue.len(),3);
+        assert!(matches!(queue.pop(),Some(RenderCommand::TrackedHeadPose{sampled_at,..})if sampled_at==time+Duration::from_millis(1)));
+        assert!(matches!(queue.pop(),Some(RenderCommand::ResetTrackingPrediction)));
+        assert!(matches!(queue.pop(),Some(RenderCommand::TrackedHeadPose{sampled_at,..})if sampled_at==time+Duration::from_millis(3)));
     }
     #[test]
     fn parked_consumer_wakes_without_reacquiring_a_condition_lock() {

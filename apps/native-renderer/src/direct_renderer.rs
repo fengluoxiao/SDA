@@ -488,7 +488,7 @@ mod tests {
             let mut near = DirectSource::new(&set, 0.04).unwrap();
             near.near_reference = Some(Box::new(DirectSource::new(&set, 0.0).unwrap()));
             if directional {
-                near.direction = Some(crate::directional::Direction {
+                near.direction = Some(crate::directional::Direction { perceptual_width: false,
                     diffuse: 0.0,
                     horizontal_only: false,
                     position: [0.7, -0.4, 0.3],

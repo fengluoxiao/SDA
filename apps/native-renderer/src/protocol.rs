@@ -249,40 +249,8 @@ fn handle_command(
             ingest_pcm(state, &id, start, samples);
         }
         Command::HeadPose { orientation } => {
-            // Pose delivery can run at 60–120 Hz. Rebuilding every source filter
-            // here holds the shared render lock long enough to cause WASAPI xruns.
-            // Throttle to one route rebuild per 20 ms and keep the newest pose;
-            // the render loop interpolates between accepted poses per block, so
-            // orientation motion stays smooth at the block cadence.
-            const POSE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-            let now = std::time::Instant::now();
-            let throttled = state
-                .last_pose_apply
-                .is_some_and(|previous| now.duration_since(previous) < POSE_MIN_INTERVAL);
-            let normalized = spatial::normalize_quaternion(orientation);
-            let accepted = normalized.is_some();
-            if let Some(pose) = normalized {
-                state.pending_pose = Some(pose);
-                if !throttled {
-                    state.last_pose_apply = Some(now);
-                    state.head_pose = Some(pose);
-                    state.pending_pose = None;
-                    if state.pose_route_base.is_none() {
-                        state.pose_route_base = Some(pose);
-                    }
-                }
-            }
-            if accepted && !throttled {
-                let ids: Vec<String> = state.sources.keys().cloned().collect();
-                for id in ids {
-                    let _ = state.route_source_now(&id, convolution::DEFAULT_PARTITION as u32);
-                }
-            }
-            write_event(&Event::Ack {
-                command: "headPose",
-                accepted,
-                detail: (!accepted).then_some("invalid quaternion"),
-            });
+            let accepted=state.accept_head_pose(orientation,std::time::Instant::now(),0.0,fifo.available_read());
+            write_event(&Event::Ack{command:"headPose",accepted,detail:(!accepted).then_some("invalid quaternion")});
         }
         Command::SetHrtf { set, wet_weight } => {
             let personal = set.strip_prefix("hrtf-personal-").is_some_and(|id| {
@@ -516,6 +484,7 @@ fn handle_command(
             });
         }
         Command::ClearHeadPose => {
+            state.pose_predictor.reset();
             state.head_pose = None;
             state.pending_pose = None;
             state.last_pose_apply = None;
@@ -852,6 +821,12 @@ pub(super) fn apply_render_command(
         render_command::RenderCommand::Command(command) => {
             handle_command(state, command, fifo, telemetry)
         }
+        render_command::RenderCommand::TrackedHeadPose{orientation,sampled_at,output_latency_seconds}=>{
+            state.accept_head_pose(orientation,sampled_at,output_latency_seconds,fifo.available_read());
+            telemetry.publish_rendering_state(state);
+            true
+        }
+        render_command::RenderCommand::ResetTrackingPrediction=>{state.pose_predictor.reset();true}
         render_command::RenderCommand::TransportReset{epoch,command}=>{
             state.transport_epoch=epoch;
             handle_command(state,command,fifo,telemetry)

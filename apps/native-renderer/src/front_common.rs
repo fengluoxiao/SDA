@@ -450,7 +450,7 @@ impl FrontCommon {
             self.drain_presence();
             return;
         };
-        let center_direction = directional::Direction {
+        let center_direction = directional::Direction { perceptual_width: false,
             position: [0.0, 1.0, 0.0],
             head,
             width: 0.0,
@@ -574,7 +574,7 @@ mod tests {
         let solver = vbap::VbapSolver::new();
         let mut continuous = directional::ContinuousSource::new(set).unwrap();
         let position = [x, cached_y, 0.0];
-        continuous.schedule(directional::Direction {
+        continuous.schedule(directional::Direction { perceptual_width: false,
             position, head: None, width: 0.0, height: 0.0, depth: 0.0,
             diffuse: 0.0, horizontal_only: false,
         }, vbap::LayoutId::Dolby7_1_4, solver.pan(position, 0.0), [0.0; vbap::MAX_BUS_COUNT]);

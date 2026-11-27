@@ -119,6 +119,9 @@ pub mod headphone;
 pub mod hrtf;
 pub mod monitor;
 pub mod near_field;
+mod head_motion;
+mod spatial_presentation;
+pub const SPATIAL_PRESENTATION_ALGORITHM:&str=spatial_presentation::ALGORITHM;
 #[cfg(test)]
 mod near_field_scene_tests;
 #[cfg(test)]
@@ -588,6 +591,9 @@ pub struct Health {
     stereo_bass_preservation_algorithm: &'static str,
     spatial_enhancement_enabled: bool,
     spatial_balance_algorithm: &'static str,
+    spatial_presentation_algorithm: &'static str,
+    spatial_presentation_active: bool,
+    head_prediction_lead_degrees: f32,
     temporal_detail_enabled: bool,
     authored_playback: bool,
     authored_policy: &'static str,
@@ -865,6 +871,7 @@ pub struct Source {
     zone_exclusion: std::sync::Arc<[adm_zone::Zone]>,
     diffusion_mix: f32,
     diffuse_route: [f32; vbap::MAX_BUS_COUNT],
+    envelopment_route: [f32;vbap::MAX_BUS_COUNT],
     spatial_events: BTreeMap<u64, SpatialEvent>,
     motion: Option<SpatialEvent>,
     bus_gains: [f32; vbap::MAX_BUS_COUNT],
@@ -947,6 +954,7 @@ impl Default for Source {
             zone_exclusion: Default::default(),
             diffusion_mix: 0.0,
             diffuse_route: [0.0; vbap::MAX_BUS_COUNT],
+            envelopment_route: [0.0;vbap::MAX_BUS_COUNT],
             spatial_events: BTreeMap::new(),
             motion: None,
             bus_gains: [0.0; vbap::MAX_BUS_COUNT],
@@ -1224,6 +1232,7 @@ pub struct Engine {
     /// Newest accepted pose waiting for the next throttle window, plus the
     /// timestamp of the last route rebuild triggered by a pose.
     pending_pose: Option<[f32; 4]>,
+    pose_predictor: head_motion::Predictor,
     last_pose_apply: Option<std::time::Instant>,
     /// Pose the current object routes were built against; the slerp origin.
     pose_route_base: Option<[f32; 4]>,
@@ -1382,6 +1391,7 @@ impl Engine {
             output_channels: channels,
             head_pose: None,
             pending_pose: None,
+            pose_predictor: Default::default(),
             last_pose_apply: None,
             pose_route_base: None,
             pending_object_events: HashMap::new(),
@@ -1483,6 +1493,10 @@ impl Engine {
         // Listener monitoring is separate from immutable authored parameters.
         if self.binaural_enabled && !enabled { self.plain_warmup = convolution::DEFAULT_PARTITION; }
         self.binaural_enabled = enabled;
+        if !enabled {
+            if let Some(raw)=self.pose_predictor.raw(){self.pending_pose=Some(raw);}
+            self.pose_predictor.reset();
+        }
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.spatial_enhancement_enabled && !self.authored.source_spatial_handled, true, self.block_offset);
             self.output_dynamics.set_enabled(enabled && !self.cinema.monitor.hardware.enabled, true);
@@ -1657,7 +1671,8 @@ impl Engine {
         set.configure_cinema(self.cinema.clone(), self.room_profile.clone());
         set.configure_spatial_cues(self.layout)?;
         let wet = set.effective_wet(wet);
-        let bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
+        let mut bus = bus_renderer::BusRenderer::new(&set, &self.vbap, wet)?;
+        bus.set_presentation(self.spatial_presentation_active(),!self.output_active||self.paused);
         direct_renderer::warm_banks(&mut set, &self.vbap, wet)?;
         self.apply_hrtf_presentation_defaults(&set)?;
         // Publish all related state only after every speaker filter is ready.
@@ -1697,6 +1712,8 @@ impl Engine {
             &self.vbap,
             self.hrtf_wet_weight,
         )?);
+        let presentation=self.spatial_presentation_active();
+        self.bus_renderer.as_mut().unwrap().set_presentation(presentation,!self.output_active||self.paused);
         self.refresh_stereo_bass();
         for source in self.sources.values_mut() {
             source.direct = None;
@@ -2064,6 +2081,10 @@ impl Engine {
             std::f32::consts::FRAC_1_SQRT_2, if enabled { 0.6 } else { 0.0 })?;
         self.output_clarity = [clarity; 2];
         self.spatial_enhancement_enabled = enabled;
+        if !enabled {
+            if let Some(raw)=self.pose_predictor.raw(){self.pending_pose=Some(raw);}
+            self.pose_predictor.reset();
+        }
         self.refresh_programme_output_makeup(!self.output_active || self.paused);
         if !self.output_active || self.paused {
             self.auxiliary_balance.set_enabled(enabled && self.binaural_enabled, true, self.block_offset);
@@ -2084,7 +2105,36 @@ impl Engine {
         let shared = self.active_hrtf_set.as_ref()
             .is_some_and(hrtf::NativeHrtfSet::uses_shared_measured_response);
         self.configure_shared_front_presentation(shared)?;
+        let active=self.spatial_presentation_active();
+        if let Some(bus)=&mut self.bus_renderer {bus.set_presentation(active,!self.output_active||self.paused);}
         Ok(())
+    }
+
+    fn spatial_presentation_active(&self)->bool {
+        self.spatial_enhancement_enabled&&self.binaural_enabled&&!self.authored.enabled
+            &&!self.cinema.monitor.hardware.enabled
+    }
+
+    pub(crate) fn accept_head_pose(&mut self,orientation:[f32;4],sampled:Instant,output_latency:f64,queued_frames:usize)->bool {
+        let Some(raw)=spatial::normalize_quaternion(orientation) else{return false;};
+        let active=self.spatial_presentation_active();
+        let pose=if active {
+            let horizon=sampled.elapsed().as_secs_f64()+if output_latency.is_finite(){output_latency.clamp(0.0,2.0)}else{0.0}
+                +(queued_frames+2*convolution::DEFAULT_PARTITION)as f64/f64::from(self.output_sample_rate)+0.025;
+            let Some(pose)=self.pose_predictor.predict(raw,sampled,horizon,true)else{return false;};pose
+        }else{raw};
+        let previous=self.pending_pose.or(self.head_pose);
+        if previous.is_some_and(|q|q==pose||q==pose.map(|v|-v)){return true;}
+        let now=Instant::now();
+        let throttled=self.last_pose_apply.is_some_and(|t|now.duration_since(t)<Duration::from_millis(20));
+        self.pending_pose=Some(pose);
+        if !throttled {
+            self.last_pose_apply=Some(now);self.head_pose=Some(pose);self.pending_pose=None;
+            if self.pose_route_base.is_none(){self.pose_route_base=Some(pose);}
+            let ids:Vec<_>=self.sources.keys().cloned().collect();
+            for id in ids{let _=self.route_source_now(&id,convolution::DEFAULT_PARTITION as u32);}
+        }
+        true
     }
 
     fn set_output_volume(&mut self, volume: f32, immediate: bool) {
@@ -2297,6 +2347,7 @@ impl Engine {
         self.clear_object_activity(origin);
         self.head_pose = None;
         self.pending_pose = None;
+        self.pose_predictor.reset();
         self.last_pose_apply = None;
         self.pose_route_base = None;
         self.lfe_muted = false;
@@ -2374,6 +2425,9 @@ impl Engine {
             authored_policy: "file-authored-v1",
             master_preamp_db: self.master_preamp.target_db(),
             spatial_balance_algorithm: SPATIAL_BALANCE_ALGORITHM,
+            spatial_presentation_algorithm: SPATIAL_PRESENTATION_ALGORITHM,
+            spatial_presentation_active: self.spatial_presentation_active(),
+            head_prediction_lead_degrees: self.pose_predictor.lead_degrees,
             temporal_detail_enabled: self.auxiliary_balance.temporal_enabled(),
             program_enabled: self.program_enabled,
             program_gain_db: 20. * f64::from(self.program_gain).max(1e-12).log10(),
@@ -2670,6 +2724,7 @@ impl Engine {
             extent: self.source_extent,
             bundled_cues: self.active_hrtf_set.as_ref().is_some_and(|set| set.spatial_cues_active()),
             near_active,
+            presentation:self.spatial_presentation_active(),
             near_field: self.near_field,
             sample_rate: self.output_sample_rate,
             start: self.sample_pos,
@@ -2852,6 +2907,8 @@ impl Engine {
         let stage_started = Instant::now();
         let vbap = self.vbap.clone();
         let head_pose = self.head_pose;
+        let presentation_active=self.spatial_presentation_active();
+        if let Some(bus)=&mut self.bus_renderer {bus.set_presentation(presentation_active,self.authored.enabled||self.cinema.monitor.hardware.enabled);}
         let speaker_targets: [f32; vbap::MAX_BUS_COUNT] = std::array::from_fn(|bus| {
             vbap::speakers(self.layout)
                 .get(bus)
@@ -3219,6 +3276,10 @@ impl Engine {
                     self.auxiliary_balance.gains[block_index], &mut self.auxiliary_reference[block_index],
                     self.output_sample_rate, &vbap,Some(self.auxiliary_balance.temporal_control()),block_index);
                 let original_sample = sample;
+                if presentation_active&&!source.muted&&source.auxiliary_weight>0.0&&source.lfe_gain==0.0&&source.lfe_target==0.0 {
+                    if block_index==0 {source.envelopment_route=bus_renderer::route_zoned(&vbap,source.render_position(),None,0.0,1.0,source.horizontal_only,&source.zone_exclusion);}
+                    self.bus_renderer.as_mut().unwrap().add_envelopment(sample*source.auxiliary_weight,&source.envelopment_route,block_index);
+                }
                 if (self.cinema_bass_mix > 1e-6 || bass_target > 0.0) && source.lfe_gain == 0.0 {
                     if source
                         .bass_split
@@ -3349,6 +3410,8 @@ impl Engine {
                                 if source.horizontal_only {
                                     position[2] = 0.0;
                                 }
+                                let [width,height,depth]=source_extent::presentation_angles(source.extent,source.spread,
+                                    source.horizontal_only,self.source_extent,presentation_active);
                                 directional::Direction {
                                     position,
                                     head: head_pose,
@@ -3358,31 +3421,10 @@ impl Engine {
                                         0.0
                                     }),
                                     horizontal_only: source.horizontal_only,
-                                    // spread/size were authored against the VBAP snap path,
-                                    // where spread only tilts gains across a few grid
-                                    // directions. The continuous footprint renders the full
-                                    // angular width, which broadens vocals far beyond the
-                                    // authored impression; square the spread so small
-                                    // spreads stay point-like and large ones keep width.
-                                    width: if self.source_extent.enabled {
-                                        (source.extent[0].max(self.source_extent.width)
-                                            * source.extent[0].max(self.source_extent.width))
-                                            * (120.0)
-                                    } else {
-                                        source.spread * source.spread * 120.0
-                                    },
-                                    height: if source.horizontal_only {
-                                        0.0
-                                    } else if self.source_extent.enabled {
-                                        (source.extent[2] * source.extent[2]) * 120.0
-                                    } else {
-                                        source.spread * source.spread * 120.0
-                                    },
-                                    depth: if self.source_extent.enabled {
-                                        source.extent[1]
-                                    } else {
-                                        0.0
-                                    },
+                                    width,
+                                    height,
+                                    depth,
+                                    perceptual_width: presentation_active,
                                 }
                             };
                             continuous.schedule(
@@ -3476,6 +3518,7 @@ impl Engine {
                 .as_mut()
                 .expect("checked above")
                 .finish_diffuse_frame(block_index);
+            self.bus_renderer.as_mut().unwrap().process_presentation_frame(block_index,head_pose,&vbap,&self.speaker_levels);
             self.bus_renderer
                 .as_mut()
                 .expect("checked above")
@@ -7108,3 +7151,6 @@ mod hrtfhq_depth_probe;
 
 #[cfg(test)]
 mod spatial_headroom_tests;
+
+#[cfg(test)]
+mod spatial_presentation_tests;

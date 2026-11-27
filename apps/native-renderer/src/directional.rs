@@ -10,6 +10,7 @@ pub struct Direction {
     pub width: f32,
     pub height: f32,
     pub depth: f32,
+    pub perceptual_width: bool,
 }
 
 pub(crate) type Route = (
@@ -173,7 +174,7 @@ mod dominant_measurement_tests {
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/hrtf-dense/hrtf-set.json"),
         ).unwrap();
-        let pair = |y| set.directional_dry_compact(super::Direction {
+        let pair = |y| set.directional_dry_compact(super::Direction { perceptual_width: false,
             position: [0.0, y, 0.0], head: None, diffuse: 0.0,
             horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
         }, crate::vbap::LayoutId::Dolby7_1_4,
@@ -243,7 +244,7 @@ mod dominant_measurement_tests {
         for azimuth in [5.0_f64, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0] {
             let position = |az: f64| [-az.to_radians().sin() as f32,
                 az.to_radians().cos() as f32, 0.0];
-            let pair = |az| set.directional_dry_compact(super::Direction {
+            let pair = |az| set.directional_dry_compact(super::Direction { perceptual_width: false,
                 position: position(az), head: None, diffuse: 0.0,
                 horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
             }, crate::vbap::LayoutId::Dolby7_1_4,
@@ -266,7 +267,7 @@ mod dominant_measurement_tests {
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../web/public/hrtf-dense/hrtf-set.json"),
         ).unwrap();
-        let pair = |position| set.directional_dry_compact(super::Direction {
+        let pair = |position| set.directional_dry_compact(super::Direction { perceptual_width: false,
             position, head: None, diffuse: 0.0, horizontal_only: false,
             width: 0.0, height: 0.0, depth: 0.0,
         }, crate::vbap::LayoutId::Dolby7_1_4,
@@ -292,7 +293,7 @@ mod dominant_measurement_tests {
                 .join("../web/public/hrtf-dense/hrtf-set.json"),
         ).unwrap();
         for side in [-1.0_f32, 1.0] {
-            let pair = |x| set.directional_dry_compact(super::Direction {
+            let pair = |x| set.directional_dry_compact(super::Direction { perceptual_width: false,
                 position: [x, 1.0, 1.0], head: None, diffuse: 0.0,
                 horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
             }, crate::vbap::LayoutId::Dolby7_1_4,
@@ -316,6 +317,7 @@ pub(crate) fn equivalent_direction(a: Direction, b: Direction) -> bool {
         || a.width != b.width
         || a.height != b.height
         || a.depth != b.depth
+        || a.perceptual_width != b.perceptual_width
     {
         return false;
     }
@@ -1884,15 +1886,27 @@ impl Grid {
                 points.push((p, 1.0 / 12.0));
             }
         }
+        let energy = |p: &(Vec<f32>,Vec<f32>)| p.0.iter().chain(&p.1).map(|&v| f64::from(v).powi(2)).sum::<f64>();
+        let mut target_energy = energy(&pair)*f64::from(points[0].1);
         for x in pair.0.iter_mut().chain(&mut pair.1) {
             *x *= points[0].1;
         }
         for &(p, weight) in &points[1..] {
             let next = at(p);
+            if direction.perceptual_width {target_energy += energy(&next)*f64::from(weight);}
             for (out, input) in [(&mut pair.0, next.0), (&mut pair.1, next.1)] {
                 for (a, b) in out.iter_mut().zip(input) {
                     *a += b * weight;
                 }
+            }
+        }
+        if direction.perceptual_width {
+            let mixed=energy(&pair);
+            if mixed>1e-20 {
+                // One common scalar preserves interaural ratios. Limit makeup
+                // when coherent angular samples cancel; never normalise ears separately.
+                let scale=(target_energy/mixed).sqrt().min(2.0) as f32;
+                for v in pair.0.iter_mut().chain(&mut pair.1){*v*=scale;}
             }
         }
         pair
@@ -1920,6 +1934,25 @@ fn rear_hemisphere_weight(az: f64, el: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn presentation_width_uses_one_energy_scale_and_zero_extent_is_exact() {
+        let set=crate::hrtf::NativeHrtfSet::synthetic(48,128,256).unwrap();
+        let irs:Vec<_>=(0..24).map(|i|set.nearest(i as f64*15.-180.,0.).unwrap()).collect();
+        let grid=Grid::new(&irs);
+        let point=Direction{perceptual_width:false,position:[0.3,1.,0.2],head:None,
+            diffuse:0.,horizontal_only:false,width:0.,height:0.,depth:0.};
+        assert_eq!(grid.direct_footprint(&irs,point),grid.direct_footprint(&irs,Direction{perceptual_width:true,..point}));
+        let wide=Direction{width:60.,height:18.,depth:0.4,..point};
+        let legacy=grid.direct_footprint(&irs,wide);
+        let enhanced=grid.direct_footprint(&irs,Direction{perceptual_width:true,..wide});
+        let reference=legacy.0.iter().chain(&legacy.1).zip(enhanced.0.iter().chain(&enhanced.1))
+            .find(|(a,_)|a.abs()>1e-6).map(|(a,b)|b/a).unwrap();
+        assert!(reference>=1.&&reference<=2.);
+        for (a,b)in legacy.0.iter().chain(&legacy.1).zip(enhanced.0.iter().chain(&enhanced.1)){
+            assert!((a*reference-b).abs()<1e-6,"ear ratio or spectral shape changed by normalization");
+        }
+        assert_ne!(grid.direct_footprint(&irs,point),enhanced,"extent must alter the measured footprint");
+    }
+    #[test]
     fn small_head_turns_are_not_swallowed_by_the_object_direction_deadband() {
         let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
@@ -1927,7 +1960,7 @@ mod tests {
         let solver=crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
         for y in [-1.0,1.0] {
             let mut source=ContinuousSource::new(&set).unwrap();
-            let mut direction=Direction {position:[0.0,y,0.0],head:Some([0.0,0.0,0.0,1.0]),
+            let mut direction=Direction { perceptual_width: false,position:[0.0,y,0.0],head:Some([0.0,0.0,0.0,1.0]),
                 diffuse:0.0,horizontal_only:false,width:0.0,height:0.0,depth:0.0};
             let gains=solver.pan(direction.position,0.0);
             source.schedule(direction,solver.layout(),gains,[0.0;crate::vbap::MAX_BUS_COUNT]);
@@ -1948,7 +1981,7 @@ mod tests {
     #[test]
     fn asynchronous_gate_never_defers_authored_position_width_or_gain() {
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
-        let direction = Direction { position: [0.0,1.0,0.0], head: None, diffuse: 0.0,
+        let direction = Direction { perceptual_width: false, position: [0.0,1.0,0.0], head: None, diffuse: 0.0,
             horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
         let current = (direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
         let mut target = current;
@@ -1972,7 +2005,7 @@ mod tests {
             .join("../web/public/hrtf-dense/hrtf-set.json");
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
-        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+        let direction = Direction { perceptual_width: false, position: [0.0,1.0,0.0],head:None,diffuse:0.0,
             horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
         let mut source = ContinuousSource::new(&set).unwrap();
         source.schedule(direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]);
@@ -2005,7 +2038,7 @@ mod tests {
             .join("../web/public/hrtf-dense/hrtf-set.json");
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
-        let direction = Direction { position: [0.0,1.0,0.0],head:None,diffuse:0.0,
+        let direction = Direction { perceptual_width: false, position: [0.0,1.0,0.0],head:None,diffuse:0.0,
             horizontal_only:false,width:0.0,height:0.0,depth:0.0 };
         let mut asynchronous = ContinuousSource::new(&set).unwrap();
         let mut reference = ContinuousSource::new(&set).unwrap();
@@ -2024,7 +2057,7 @@ mod tests {
             .join("../web/public/hrtf-dense/hrtf-set.json");
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
-        let direction = Direction { position: [0.0, 1.0, 0.0], head: None,
+        let direction = Direction { perceptual_width: false, position: [0.0, 1.0, 0.0], head: None,
             diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
         let mut actual = ContinuousSource::new(&set).unwrap();
         let mut reference = ContinuousSource::new(&set).unwrap();
@@ -2078,7 +2111,7 @@ mod tests {
         for tick in 0..20 {
             for (i, source) in sources.iter_mut().enumerate() {
                 let angle = (tick as f32 + i as f32 * 5.0).to_radians();
-                let direction = Direction { position: [angle.sin(), angle.cos(), 0.0], head: None,
+                let direction = Direction { perceptual_width: false, position: [angle.sin(), angle.cos(), 0.0], head: None,
                     diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
                 source.pending = Some((direction,solver.layout(),solver.pan(direction.position,0.0),[0.0;crate::vbap::MAX_BUS_COUNT]));
             }
@@ -2103,7 +2136,7 @@ mod tests {
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
         let mut source = ContinuousSource::new(&set).unwrap();
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
-        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+        let base = Direction { perceptual_width: false, position: [0.0, 1.0, 0.0], head: None,
             diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
         let amounts = [0.0; crate::vbap::MAX_BUS_COUNT];
         let first = (base, solver.layout(), solver.pan(base.position, 0.0), amounts);
@@ -2153,7 +2186,7 @@ mod tests {
         let irs: Vec<_> = [-60.0, -30.0, 0.0, 30.0, 60.0].iter()
             .map(|&az| set.nearest(az, 0.0).unwrap()).collect();
         let grid = Grid::new(&irs);
-        let base = Direction { position: [0.0, 1.0, 0.0], head: None,
+        let base = Direction { perceptual_width: false, position: [0.0, 1.0, 0.0], head: None,
             diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
         let half = 30.0_f32.to_radians() / 2.0;
         let pose = [0.0, 0.0, half.sin(), half.cos()];
@@ -2204,7 +2237,7 @@ mod tests {
         let mut energy = 0.0_f64;
         let mut max_difference = 0.0_f32;
         for block in 0..16 {
-            let direction = Direction { position: [0.2, if block < 8 { 0.8 } else { -0.8 }, 0.3],
+            let direction = Direction { perceptual_width: false, position: [0.2, if block < 8 { 0.8 } else { -0.8 }, 0.3],
                 head: None, diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0 };
             let gains = solver.pan(direction.position, 0.0);
             if block == 0 || block == 8 {
@@ -2295,7 +2328,7 @@ mod tests {
         let direction = |az: f64, el: f64| {
             let a = az.to_radians();
             let e = el.to_radians();
-            Direction {
+            Direction { perceptual_width: false,
                 position: [
                     (-a.sin() * e.cos()) as f32,
                     (a.cos() * e.cos()) as f32,
@@ -2348,7 +2381,7 @@ mod tests {
     fn continuous_schedule_accumulates_subdegree_motion_but_keeps_explicit_changes() {
         let set = crate::hrtf::NativeHrtfSet::synthetic(12, 64, 0).unwrap();
         let mut source = ContinuousSource::new(&set).unwrap();
-        let direction = |degrees: f32| Direction {
+        let direction = |degrees: f32| Direction { perceptual_width: false,
             position: [degrees.to_radians().sin(), degrees.to_radians().cos(), 0.0],
             head: None,
             diffuse: 0.0,
@@ -2426,7 +2459,7 @@ mod tests {
             -135.0_f32, -120.0, -105.0, -90.0, -75.0, -60.0, -45.0, -30.0, -15.0, 0.0,
         ];
         let frequencies = [500.0_f32, 1_000.0, 2_000.0, 4_000.0, 8_000.0];
-        let to_direction = |azimuth: f32| Direction {
+        let to_direction = |azimuth: f32| Direction { perceptual_width: false,
             // ADM x is right, and adm_to_spherical maps it to negative azimuth.
             position: [-azimuth.to_radians().sin(), azimuth.to_radians().cos(), 0.0],
             head: None,
@@ -2549,7 +2582,7 @@ mod tests {
                 .sum::<f64>())
             .sqrt()
         };
-        let direction = |azimuth: f32, elevation: f32| Direction {
+        let direction = |azimuth: f32, elevation: f32| Direction { perceptual_width: false,
             // ADM x is right, and adm_to_spherical maps it to negative azimuth.
             position: [
                 -elevation.to_radians().cos() * azimuth.to_radians().sin(),
@@ -2664,7 +2697,7 @@ mod tests {
             }
             real * real + imaginary * imaginary
         };
-        let direction = |azimuth: f32| Direction {
+        let direction = |azimuth: f32| Direction { perceptual_width: false,
             position: [-azimuth.to_radians().sin(), azimuth.to_radians().cos(), 0.0],
             head: None,
             diffuse: 0.0,
@@ -3267,7 +3300,7 @@ mod tests {
             })
             .collect();
         let grid = Grid::new(&irs);
-        let base = Direction {
+        let base = Direction { perceptual_width: false,
             position: [0.0, 1.0, 0.0],
             head: None,
             width: 0.0,
@@ -3313,7 +3346,7 @@ mod tests {
                 }
             })
             .collect();
-        let direction = |position| Direction {
+        let direction = |position| Direction { perceptual_width: false,
             position,
             head: None,
             diffuse: 0.35,
@@ -3339,7 +3372,7 @@ mod tests {
 
         // A static spherical field must not be reused for a horizontal-only
         // source merely because neither source has head tracking enabled.
-        let horizontal = Direction {
+        let horizontal = Direction { perceptual_width: false,
             horizontal_only: true,
             ..direction([0.4, -0.6, 0.1])
         };
@@ -3795,7 +3828,7 @@ mod tests {
             buses.begin_block();
             for (id, (a, b)) in old.iter_mut().zip(&mut new).enumerate() {
                 let gains = solver.pan([id as f32 * 0.2 - 0.3, 0.6, 0.4], 0.0);
-                let direction = Direction {
+                let direction = Direction { perceptual_width: false,
                     // Compare decomposition at a fixed direction. Legacy and continuous
                     // paths intentionally use different motion crossfade durations.
                     position: [(id as f32).sin() * 0.6, 0.5, 0.3],
@@ -3874,7 +3907,7 @@ mod tests {
                     let position = [angle.cos() * 0.7, angle.sin() * 0.7, 0.3];
                     let gains = solver.pan(position, 0.0);
                     source.schedule(
-                        Direction {
+                        Direction { perceptual_width: false,
                             position,
                             head: None,
                             diffuse: 0.0,
@@ -3929,7 +3962,7 @@ mod tests {
                 for (id, source) in sources.iter_mut().enumerate() {
                     let phase = id as f32 * 0.13 + block as f32 * 0.01;
                     let position = [phase.cos() * 0.7, phase.sin() * 0.7, 0.3];
-                    source.direction = Some(Direction {
+                    source.direction = Some(Direction { perceptual_width: false,
                         position,
                         head: None,
                         diffuse: 0.0,
@@ -4139,7 +4172,7 @@ mod fractional_delay_regressions {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../mobile/assets/hrtf-mobile-direct/hrtf-set.json");
         let set = crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
-        let pair = |az: f64, el: f64| set.directional_dry_compact(Direction {
+        let pair = |az: f64, el: f64| set.directional_dry_compact(Direction { perceptual_width: false,
             position: unit(az, el).map(|v| v as f32), head: None,
             diffuse: 0.0, horizontal_only: false, width: 0.0, height: 0.0, depth: 0.0,
         }, crate::vbap::LayoutId::Dolby7_1_4,
@@ -4774,7 +4807,7 @@ mod rear_refresh_performance_tests {
                                 source.route_age_blocks = 0;
                             }
                             source.schedule(
-                                Direction {
+                                Direction { perceptual_width: false,
                                     position: p,
                                     head: None,
                                     width: 0.,

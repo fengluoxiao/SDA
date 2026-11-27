@@ -159,6 +159,7 @@ pub unsafe extern "C" fn sda_ios_command(
         };
         match unsafe { text(op)? } {
             "trackingProviderReset" => {
+                e.reset_tracking_prediction()?;
                 *host.last_tracking_pose.lock().map_err(|_| "pose cache poisoned")? = None;
                 *host.orientation.lock().map_err(|_| "orientation poisoned")? = Default::default();
                 return Ok(Value::Null);
@@ -173,7 +174,10 @@ pub unsafe extern "C" fn sda_ios_command(
                     if norm > 1e-9 {
                         let orientation = [0.0, 0.0, (q.z / norm) as f32, (q.w / norm) as f32];
                         let mut last = host.last_tracking_pose.lock().map_err(|_| "pose cache poisoned")?;
-                        if tracking_pose_changed(*last, orientation) {
+                        if let (Some(age),Some(latency))=(a["sampleAge"].as_f64(),a["outputLatency"].as_f64()) {
+                            e.set_tracked_head_orientation(orientation,age,latency)?;
+                            *last=Some(orientation);
+                        } else if tracking_pose_changed(*last, orientation) {
                             e.set_head_orientation(orientation)?;
                             *last = Some(orientation);
                         }

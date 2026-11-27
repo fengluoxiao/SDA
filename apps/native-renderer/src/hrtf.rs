@@ -830,7 +830,7 @@ impl NativeHrtfSet {
     /// Fixed, explicitly opted-in short spatial cues are separate from user room
     /// simulation. Raw mobile HRIR/wet files remain pure direct/zero respectively.
     pub fn configure_spatial_cues(&mut self, layout: crate::vbap::LayoutId) -> Result<(), String> {
-        let reference = crate::directional::Direction {
+        let reference = crate::directional::Direction { perceptual_width: false,
             position: [0., 1., 0.],
             head: None,
             width: 0.,
@@ -841,7 +841,7 @@ impl NativeHrtfSet {
         };
         self.diffuse_reference(reference, layout)?;
         self.diffuse_reference(
-            crate::directional::Direction {
+            crate::directional::Direction { perceptual_width: false,
                 horizontal_only: true,
                 ..reference
             },
@@ -1654,7 +1654,7 @@ mod raw_tests {
         assert!(std::sync::Arc::ptr_eq(&snapshot, &set.preparation_snapshot()));
         assert!(snapshot.prepared.is_empty() && snapshot.speaker_prepared.is_empty());
         for diffuse in [0.0, 0.35] {
-            let direction = crate::directional::Direction { position: [-0.6,0.8,0.2],
+            let direction = crate::directional::Direction { perceptual_width: false, position: [-0.6,0.8,0.2],
                 head:Some([0.0,0.0,0.1,0.9949874]),diffuse,horizontal_only:false,
                 width:12.0,height:3.0,depth:0.2 };
             let gains = solver.pan(direction.position, 0.0);
@@ -2286,7 +2286,7 @@ mod front_ear_integration_tests {
     fn policy_survives_snapshot_and_covers_bed_and_object_kernels() {
         let mut set=NativeHrtfSet::synthetic(12,256,512).unwrap();
         let solver=crate::vbap::VbapSolver::new();
-        let direction=crate::directional::Direction {position:[-1.,1.,0.], head:None,
+        let direction=crate::directional::Direction { perceptual_width: false,position:[-1.,1.,0.], head:None,
             diffuse:0.,horizontal_only:false,width:0.,height:0.,depth:0.};
         let mut gains=[0.;crate::vbap::MAX_BUS_COUNT];gains[0]=1.;let amounts=[0.;crate::vbap::MAX_BUS_COUNT];
         let dry=set.directional_dry_compact(direction,solver.layout(),gains,amounts).unwrap();
@@ -2394,7 +2394,7 @@ mod measured_response_tests {
     fn shared_hrtfhq_head_pose_retains_measured_ear_timing() {
         let set=NativeHrtfSet::load_calibrated(&manifest()).unwrap();
         let q=std::f32::consts::FRAC_1_SQRT_2;
-        let direction=crate::directional::Direction {position:[0.0,1.0,0.0],head:Some([0.0,0.0,q,q]),
+        let direction=crate::directional::Direction { perceptual_width: false,position:[0.0,1.0,0.0],head:Some([0.0,0.0,q,q]),
             width:0.0,height:0.0,depth:0.0,diffuse:0.0,horizontal_only:false};
         let actual=set.directional_grid.footprint(&set.cache,direction);
         let expected=set.directional_grid.interpolate(&set.cache,-90.0,0.0);
@@ -2444,7 +2444,7 @@ mod continuous_diffuse_reference_tests {
                     if norm < 1e-8 {
                         let pair = set
                             .directional_dry_compact(
-                                crate::directional::Direction {
+                                crate::directional::Direction { perceptual_width: false,
                                     position: p,
                                     head: None,
                                     width: 0.,
@@ -2471,7 +2471,7 @@ mod continuous_diffuse_reference_tests {
                     let expected = legacy.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
                     let got = set
                         .diffuse_reference(
-                            crate::directional::Direction {
+                            crate::directional::Direction { perceptual_width: false,
                                 position: p,
                                 head: None,
                                 width: 0.,
@@ -2505,7 +2505,7 @@ mod continuous_diffuse_reference_tests {
                 let a = azimuth.to_radians();
                 let make = |elevation: f64| {
                     let e = elevation.to_radians();
-                    crate::directional::Direction {
+                    crate::directional::Direction { perceptual_width: false,
                         position: [
                             (-a.sin() * e.cos()) as f32,
                             (a.cos() * e.cos()) as f32,
@@ -2535,7 +2535,7 @@ mod continuous_diffuse_reference_tests {
         let solver = crate::vbap::VbapSolver::with_layout(layout);
         let p = [0.3, 0.7, 0.6];
         let gains = solver.pan(p, 0.);
-        let d = crate::directional::Direction {
+        let d = crate::directional::Direction { perceptual_width: false,
             position: p,
             head: None,
             width: 20.,
@@ -2564,7 +2564,7 @@ mod continuous_diffuse_reference_tests {
             let set = set.clone();
             workers.push(std::thread::spawn(move || {
                 set.diffuse_reference(
-                    crate::directional::Direction {
+                    crate::directional::Direction { perceptual_width: false,
                         position: [0., 0., 1.],
                         head: None,
                         width: 0.,

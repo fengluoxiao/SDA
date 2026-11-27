@@ -1111,6 +1111,26 @@ impl MobileEngine {
             .map_err(|_| "command queue full".into())
     }
 
+    /// Live sensor time is represented as age at this FFI boundary. Convert it
+    /// to Instant here so render-queue waiting is included in presentation lead.
+    pub fn set_tracked_head_orientation(&self,orientation:[f32;4],sample_age_seconds:f64,output_latency_seconds:f64)->EngineResult<()> {
+        let orientation=sda_native_renderer::spatial::normalize_quaternion(orientation).ok_or("invalid tracking quaternion")?;
+        if !sample_age_seconds.is_finite()||!(0.0..=1.0).contains(&sample_age_seconds)
+            ||!output_latency_seconds.is_finite()||!(0.0..=2.0).contains(&output_latency_seconds) {
+            return Err("invalid tracking timing".into());
+        }
+        let sampled_at=Instant::now().checked_sub(Duration::from_secs_f64(sample_age_seconds)).ok_or("invalid tracking age")?;
+        let pipeline=self.pipeline.as_ref().ok_or("engine not started")?;
+        pipeline.commands.push(render_command::RenderCommand::TrackedHeadPose{orientation,sampled_at,output_latency_seconds})
+            .map_err(|_|"command queue full".into())
+    }
+    pub fn reset_tracking_prediction(&self)->EngineResult<()> {
+        if let Some(pipeline)=&self.pipeline {
+            pipeline.commands.push(render_command::RenderCommand::ResetTrackingPrediction).map_err(|_|"command queue full")?;
+        }
+        Ok(())
+    }
+
     /// Start with the platform output: AAudio blocking-write sink (T2.2).
     /// Android only; hosts elsewhere construct their own AudioOutput.
     #[cfg(target_os = "android")]

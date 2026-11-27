@@ -334,7 +334,7 @@ function LegacyRemotePlayer(p: PlayerProps) {
           </View>
           {label("声音增强", true, s.groupTitle)}
           <View style={[s.settingsCard, { backgroundColor: c.panel }]}>
-            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("按位置平滑调整辅助声部与清晰度，开关共用同一响度基准；可配合音量平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.authoredPlayback?false:p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive || p.authoredPlayback} onValueChange={p.setSpatialEnhancement} /></View>
+            <View style={s.settingRow}><View style={s.settingCopy}>{label("空间平衡", false, s.settingTitle)}{label("根据位置与可用余量调整空间细节，分离直达声与反射、保留声源宽高，并增强环境包围感。开启头部追踪后补偿转头响应延迟；仅对 SDA 共享渲染生效，可配合音量平衡。", true, s.settingDescription)}</View><Switch accessibilityLabel="空间平衡" trackColor={{ false: c.line, true: c.accent }} thumbColor="#ffffff" value={p.authoredPlayback?false:p.spatialEnhancementEnabled} disabled={p.busy || p.systemSpatial360RAActive || p.authoredPlayback} onValueChange={p.setSpatialEnhancement} /></View>
           </View>
           {Platform.OS === "ios" && <>
             {label("360RA／Audio Vivid", true, s.groupTitle)}

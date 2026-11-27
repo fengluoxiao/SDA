@@ -98,7 +98,7 @@ export function AndroidSettings({ player: p, dark, onClose, phoneLayoutOptions =
           id => { if (PLAYBACK_MODES.includes(id as typeof p.playbackMode)) p.setPlaybackMode(id as typeof p.playbackMode); })}
       </>, p.authoredPlayback?"当前 SDAR 由文件混音参数控制，已写入音频的处理不重复执行。":"节目参考只衰减；已识别的空间节目另含 +1.8 dB 输出校准，仍受峰值保护。Audio Vivid 在导入时完成整曲响度分析，播放、定位和重复播放使用同一参考。")}
       {section("声音增强", <>{toggle("空间平衡", p.authoredPlayback?false:p.spatialEnhancementEnabled, p.setSpatialEnhancement, audioDisabled)}{separator()}{menu("耳机与个人试听校准", "四步试听与前后对比", [{id:"start",label:"开始试听"}], "", () => showListeningCalibration(p), audioDisabled || !p.setListeningProfile)}</>,
-        "根据前后层级和可用余量调整空间细节，开关共用同一响度基准；测量不足时不额外增强。")}
+        "根据位置与可用余量调整空间细节，分离直达声与反射、保留声源宽高，并增强环境包围感。开启头部追踪后补偿转头响应延迟；仅对 SDA 共享渲染生效，可配合音量平衡。")}
       {section("360 Reality Audio", <View style={s.row}><View style={s.copy}>{text("系统空间音频", false, s.title)}{text("Android 系统多声道输出尚未接通", true, s.subtitle)}</View></View>,
         "360RA 文件仍可通过 SDA Spatial 双耳渲染播放。此项不是 Apple 系统空间音频的等价实现。")}
       {section("ALAC 立体声", toggle("立体声上混 · 7.1.4", p.alacStereoUpmix, p.setAlacStereoUpmix, audioDisabled),

@@ -21,6 +21,8 @@ assert re.fullmatch(r"[a-f0-9]{40}", source)
 assert build["sourceCommit"] == build["sourceCheckoutCommit"] == source
 assert build["packagingMode"] == "device-package-only"
 assert build["testsExecuted"] is False
+assert build["spatialPresentationAlgorithm"] == "microturn-precedence-envelopment-v1"
+assert build["spatialPresentationPersistentAudioCache"] is False
 assert build["nativeDispatchStackRegression"]["passed"] is False
 assert build["devicePlaybackTested"] is False
 assert build["appVersion"] == config["version"]
@@ -28,6 +30,7 @@ assert str(build["appBuildNumber"]) == config["ios"]["buildNumber"]
 assert re.fullmatch(r"[a-f0-9]{64}", build["nativeLibrarySha256"])
 
 for name in ("lib.rs", "near_field.rs", "authored.rs", "protocol.rs", "object_mixer.rs",
+             "head_motion.rs", "spatial_presentation.rs", "directional.rs", "source_extent.rs", "bus_renderer.rs",
              "spatial.rs", "convolution.rs", "headphone.rs", "render_command.rs", "perceptual_masking.rs"):
     relative = "apps/native-renderer/src/" + name
     assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative

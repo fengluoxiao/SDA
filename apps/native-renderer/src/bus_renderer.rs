@@ -14,6 +14,10 @@ pub(super) struct BusRenderer {
     diffuser: crate::source_extent::Diffuser,
     stereo_bass: Option<FrontBass>,
     stereo_bass_enabled: bool,
+    layout:vbap::LayoutId,
+    sample_rate:u32,
+    presentation:Option<Box<crate::spatial_presentation::Field>>,
+    envelopment_input:Vec<[f32;vbap::MAX_BUS_COUNT]>,
 }
 
 #[derive(Clone)]
@@ -142,6 +146,7 @@ impl BusRenderer {
             }
         });
         Ok(Self {
+            layout:solver.layout(),sample_rate:set.sample_rate,presentation:None,envelopment_input:Vec::new(),
             stereo_bass,
             stereo_bass_enabled: false,
             buses,
@@ -211,6 +216,7 @@ impl BusRenderer {
     }
 
     pub(super) fn begin_block(&mut self) {
+        self.envelopment_input.fill([0.0;vbap::MAX_BUS_COUNT]);
         for bus in self.buses.iter_mut().chain(&mut self.reflections) {
             bus.input.fill(0.0);
         }
@@ -223,6 +229,7 @@ impl BusRenderer {
     }
 
     pub(super) fn add_accumulated(&mut self, frame: usize, input: &crate::object_mixer::Frame) {
+        if let Some(out)=self.envelopment_input.get_mut(frame){for(i,v)in out.iter_mut().enumerate(){*v+=input.envelopment[i];}}
         for (i, bus) in self.buses.iter_mut().enumerate() {
             bus.input[frame] += input.main[i];
         }
@@ -236,6 +243,26 @@ impl BusRenderer {
     }
     pub(super) fn add_diffuse(&mut self, bus: usize, sample: f32, frame: usize) {
         self.diffuse_input[frame][bus] += sample;
+    }
+    pub(super) fn set_presentation(&mut self,enabled:bool,immediate:bool){
+        if enabled&&self.presentation.is_none(){
+            self.presentation=Some(Box::new(crate::spatial_presentation::Field::new(self.sample_rate,&vbap::VbapSolver::with_layout(self.layout))));
+            self.envelopment_input.resize(convolution::DEFAULT_PARTITION,[0.0;vbap::MAX_BUS_COUNT]);
+        }
+        if let Some(field)=&mut self.presentation{field.set_enabled(enabled,immediate);}
+    }
+    pub(super) fn add_envelopment(&mut self,sample:f32,route:&[f32;vbap::MAX_BUS_COUNT],frame:usize){
+        if let Some(input)=self.envelopment_input.get_mut(frame){for(i,v)in input.iter_mut().enumerate(){*v+=sample*route[i];}}
+    }
+    pub(super) fn process_presentation_frame(&mut self,frame:usize,head:Option<[f32;4]>,solver:&vbap::VbapSolver,levels:&[f32;vbap::MAX_BUS_COUNT]){
+        let Some(field)=&mut self.presentation else{return;};
+        if !field.active(){return;}
+        field.orient(solver,head);
+        let mut main=[0.0;vbap::MAX_BUS_COUNT];let mut wet=main;
+        for i in 0..self.buses.len(){main[i]=self.buses[i].input[frame];wet[i]=self.reflections[i].input[frame];}
+        let input=std::mem::replace(&mut self.envelopment_input[frame],[0.0;vbap::MAX_BUS_COUNT]);
+        self.reflections_active|=field.process(&mut main,&mut wet,input,levels);
+        for i in 0..self.buses.len(){self.buses[i].input[frame]=main[i];self.reflections[i].input[frame]=wet[i];}
     }
     pub(super) fn add_reflections(
         &mut self,
@@ -331,6 +358,8 @@ impl BusRenderer {
     }
 
     pub(super) fn reset(&mut self) {
+        if let Some(field)=&mut self.presentation{field.reset();}
+        self.envelopment_input.fill([0.0;vbap::MAX_BUS_COUNT]);
         self.reflections_active = false;
         self.diffuser = crate::source_extent::Diffuser::new();
         self.diffuse_input.fill([0.0; vbap::MAX_BUS_COUNT]);
@@ -425,6 +454,40 @@ mod adm_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn actual_convolution_keeps_direct_impulse_and_replaces_only_the_residual() {
+        let set=hrtf::NativeHrtfSet::synthetic(8,256,256).unwrap();
+        let solver=vbap::VbapSolver::with_layout(vbap::LayoutId::Dolby7_1_4);
+        let mut bank=BusRenderer::new(&set,&solver,0.2).unwrap();
+        // A known direct impulse at 0 and residual at 96; use the real bus
+        // summing/convolution pipeline rather than inspecting Field internals.
+        let(mut main,mut wet)=(vec![0.;256],vec![0.;256]);
+        main[0]=1.;main[96]=0.2;wet[96]=0.2;
+        let n=convolution::DEFAULT_PARTITION;
+        bank.buses[0].convolver=convolution::StereoPartitionedConvolver::new(&main,&main,n).unwrap();
+        bank.reflections[0].convolver=convolution::StereoPartitionedConvolver::new(&wet,&wet,n).unwrap();
+        bank.set_presentation(true,true);
+        let mut actual=Vec::new();
+        for block in 0..4 {
+            bank.begin_block();
+            for frame in 0..n {
+                if block==0&&frame==0 {bank.buses[0].input[frame]=1.;}
+                bank.process_presentation_frame(frame,None,&solver,&[1.;vbap::MAX_BUS_COUNT]);
+            }
+            bank.finish_block().unwrap();
+            for frame in 0..n {actual.push(bank.output_at(frame)[0]);}
+        }
+        assert!((actual[0]-1.).abs()<1e-6,"direct impulse changed");
+        assert!(actual[96].abs()<1e-6,"original reflection must be replaced");
+        assert!((actual[144]-0.11).abs()<1e-6,"protected reflection must be delayed by 48 samples");
+        let other_energy:f32=actual.iter().enumerate().filter(|(i,_)|*i!=0&&*i!=144).map(|(_,v)|v*v).sum();
+        assert!(other_energy<1e-10,"duplicated direct/residual output");
     }
 }
 

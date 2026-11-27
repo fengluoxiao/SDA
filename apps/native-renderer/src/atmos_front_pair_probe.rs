@@ -390,7 +390,7 @@ fn moving_direction_tone_transfer() {
             e.sources.get_mut("synthetic-moving-source").unwrap().position=position;
             e.route_source_now("synthetic-moving-source",0).unwrap();
             let source=&e.sources["synthetic-moving-source"];
-            let direction=directional::Direction {diffuse:0.0,horizontal_only:false,position,
+            let direction=directional::Direction { perceptual_width: false,diffuse:0.0,horizontal_only:false,position,
                 head:None,width:0.0,height:0.0,depth:0.0};
             let kernel=e.active_hrtf_set.as_ref().unwrap().directional_dry_compact(
                 direction,e.layout,source.bus_gains,[0.0;vbap::MAX_BUS_COUNT]).unwrap();

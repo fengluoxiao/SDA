@@ -196,7 +196,7 @@ fn export_rear_hrtf_sweep() {
             for step in 0..=720 {
                 let az = step as f64 * 0.5;
                 let pos = position(az, el);
-                let direction = directional::Direction {
+                let direction = directional::Direction { perceptual_width: false,
                     position: pos,
                     head: None,
                     width: 0.,
@@ -328,7 +328,7 @@ fn export_overhead_response_audit() {
             ] {
                 let t = theta.to_radians();
                 let pos = [0., t.cos() as f32, t.sin() as f32];
-                let direction = directional::Direction {
+                let direction = directional::Direction { perceptual_width: false,
                     position: pos,
                     head: None,
                     width,
@@ -513,7 +513,7 @@ fn overhead_extent_and_diffuse_targets_cross_poles_continuously() {
                     let t = theta.to_radians();
                     let p = [0., t.cos() as f32, t.sin() as f32];
                     set.directional_dry_compact(
-                        directional::Direction {
+                        directional::Direction { perceptual_width: false,
                             position: p,
                             head: None,
                             width,
@@ -575,7 +575,7 @@ fn oblique_extents_retain_bearing_at_exact_poles() {
                     ];
                     let pair = set
                         .directional_dry_compact(
-                            directional::Direction {
+                            directional::Direction { perceptual_width: false,
                                 position: p,
                                 head: None,
                                 width,
@@ -892,7 +892,7 @@ fn export_rear_vertical_hemisphere_grid() {
                     let p = position(az as f64, elevation as f64);
                     let pair = set
                         .directional_dry_compact(
-                            directional::Direction {
+                            directional::Direction { perceptual_width: false,
                                 position: p,
                                 head: None,
                                 width,

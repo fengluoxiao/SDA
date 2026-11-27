@@ -31,6 +31,7 @@ pub struct Context<'a> {
     pub head: Option<[f32; 4]>,
     pub extent: source_extent::Settings,
     pub near_active: bool,
+    pub presentation:bool,
     pub bundled_cues: bool,
     pub near_field: crate::near_field::Settings,
     pub sample_rate: u32,
@@ -47,6 +48,7 @@ pub struct Frame {
     pub main: [f32; vbap::MAX_BUS_COUNT],
     pub reflections: [f32; vbap::MAX_BUS_COUNT],
     pub diffuse: [f32; vbap::MAX_BUS_COUNT],
+    pub envelopment:[f32;vbap::MAX_BUS_COUNT],
     pub bass: f32,
     pub(crate) auxiliary_reference: crate::auxiliary_balance::Reference,
 }
@@ -344,6 +346,10 @@ fn mix_source(
         sample = crate::auxiliary_balance::process_source_detail(source, sample, at,
             ctx.auxiliary_gains[block_index], &mut buffer.frames[block_index].auxiliary_reference,
             ctx.sample_rate, vbap,Some(ctx.temporal),block_index);
+        if ctx.presentation&&!source.muted&&source.auxiliary_weight>0.0&&source.lfe_gain==0.0&&source.lfe_target==0.0 {
+            if block_index==0 {source.envelopment_route=crate::bus_renderer::route_zoned(vbap,source.render_position(),None,0.0,1.0,source.horizontal_only,&source.zone_exclusion);}
+            for (i,out)in buffer.frames[block_index].envelopment.iter_mut().enumerate(){*out+=sample*source.auxiliary_weight*source.envelopment_route[i];}
+        }
         if bass_mix > 1e-6 {
             if let Some(crossover_hz) = ctx.bass_crossover_hz {
                 if source
@@ -414,6 +420,8 @@ fn mix_source(
             if source.horizontal_only {
                 position[2] = 0.0;
             }
+            let [width,height,depth]=source_extent::presentation_angles(source.extent,source.spread,
+                source.horizontal_only,ctx.extent,ctx.presentation);
             let direction = crate::directional::Direction {
                 position,
                 head: head_pose,
@@ -423,29 +431,10 @@ fn mix_source(
                     0.0
                 }),
                 horizontal_only: source.horizontal_only,
-                // Square the spread/extent the same way as the general path
-                // (Engine::route): the continuous footprint renders the authored
-                // width literally, which unstabilises vocals authored against the
-                // VBAP snap path where spread only tilts bus gains.
-                width: if ctx.extent.enabled {
-                    let w = source.extent[0].max(ctx.extent.width);
-                    w * w * 120.0
-                } else {
-                    source.spread * source.spread * 120.0
-                },
-                height: if source.horizontal_only {
-                    0.0
-                } else if ctx.extent.enabled {
-                    let h = source.extent[2];
-                    h * h * 120.0
-                } else {
-                    source.spread * source.spread * 120.0
-                },
-                depth: if ctx.extent.enabled {
-                    source.extent[1]
-                } else {
-                    0.0
-                },
+                width,
+                height,
+                depth,
+                perceptual_width: ctx.presentation,
             };
             source.continuous.as_mut().unwrap().schedule(
                 direction,
