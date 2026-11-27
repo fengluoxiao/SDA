@@ -36,7 +36,7 @@ final class MotionArtworkReverseFrames {
   if active{activeViews.insert(view);lock.unlock();return}
   let removed=activeViews.remove(view) != nil
   guard removed,activeViews.isEmpty else{lock.unlock();return}
-  let activeReader=resetLocked();lock.unlock();activeReader?.cancelReading()
+  let retired=resetLocked();lock.unlock();withExtendedLifetime(retired){}
  }
  private init(_ uri:String){
   self.uri=uri
@@ -83,12 +83,12 @@ final class MotionArtworkReverseFrames {
   return ["readerSeconds":decodeSeconds,"sharpSeconds":sharpSeconds,"blurSeconds":blurSeconds,"bottomSeconds":bottomSeconds,"toneSeconds":toneSeconds]
  }
  func prepareTail(){
-  lock.lock();defer{lock.unlock()};guard !closed else{return}
+  lock.lock();let retained=windows;defer{lock.unlock();withExtendedLifetime(retained){}};guard !closed else{return}
   wantsTail=true
   if let configuration{wantedIndex=configuration.lastIndex;pruneLocked();scheduleLocked()}
  }
  func frame(at position:Double)->Frame?{
-  lock.lock();defer{lock.unlock()}
+  lock.lock();let retained=windows;defer{lock.unlock();withExtendedLifetime(retained){}}
   guard !closed,let configuration,position.isFinite else{return nil}
   let bounded=max(0,min(position,configuration.duration))
   let index=min(configuration.lastIndex,Int(bounded/configuration.windowDuration))
@@ -116,11 +116,12 @@ final class MotionArtworkReverseFrames {
    let token=revision;lock.unlock()
    do{
     let frames=try decode(index,configuration,source.asset,token)
-    lock.lock()
+    lock.lock();let retained=windows
     if !closed,revision==token,let currentIndex=self.wantedIndex,abs(index-currentIndex)<=1{
      windows[index]=frames;decodedWindows+=1;peakWindowBytes=max(peakWindowBytes,frames.reduce(0){$0+$1.bytes});pruneLocked()
     }
     lock.unlock()
+    withExtendedLifetime(retained){}
    }catch{
     lock.lock();if !closed,revision==token{failure=error};lock.unlock()
    }
@@ -140,6 +141,8 @@ final class MotionArtworkReverseFrames {
   var decoded=0.0,sharpRendered=0.0,blurRendered=0.0,bottomRendered=0.0,toneRendered=0.0
   defer{lock.lock();decodeSeconds+=decoded;sharpSeconds+=sharpRendered;blurSeconds+=blurRendered;bottomSeconds+=bottomRendered;toneSeconds+=toneRendered;lock.unlock()}
   while true{
+   lock.lock();let shouldStop=closed || revision != token;lock.unlock()
+   if shouldStop{break}
    let reading=Date.timeIntervalSinceReferenceDate
    let next=output.copyNextSampleBuffer();decoded+=Date.timeIntervalSinceReferenceDate-reading
    guard let sample=next else{break}
@@ -179,14 +182,17 @@ final class MotionArtworkReverseFrames {
   return frames.sorted{$0.time<$1.time}
  }
  func reset(){
-  lock.lock();let activeReader=resetLocked();lock.unlock();activeReader?.cancelReading()
+  lock.lock();let retired=resetLocked();lock.unlock();withExtendedLifetime(retired){}
  }
- private func resetLocked()->AVAssetReader?{
-  revision+=1;windows.removeAll();wantedIndex=nil;wantsTail=false;return reader
+ private func resetLocked()->[Int:[Frame]]{
+  // Do not cancel a reader on the UI thread while copyNextSampleBuffer is
+  // executing on the decode queue. Revision checks stop at the next sample;
+  // decode's defer performs cancelReading on that same queue.
+  revision+=1;let retired=windows;windows=[:];wantedIndex=nil;wantsTail=false;return retired
  }
  private func close(){
-  lock.lock();closed=true;revision+=1;windows.removeAll();let activeReader=reader;let source=self.source;self.source=nil;lock.unlock()
-  configurationTask?.cancel();activeReader?.cancelReading();source?.close()
+  lock.lock();closed=true;let retired=resetLocked();let source=self.source;self.source=nil;lock.unlock()
+  configurationTask?.cancel();queue.async{source?.close()};withExtendedLifetime(retired){}
  }
  deinit{configurationTask?.cancel();reader?.cancelReading();source?.close()}
 }
