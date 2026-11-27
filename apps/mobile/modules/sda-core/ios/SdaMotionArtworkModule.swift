@@ -289,6 +289,10 @@ final class SdaMotionArtworkView: ExpoView {
     }
    }
   }else{
+   if !reverseLayer.isHidden{
+    CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.isHidden=true;reverseLayer.contents=nil;CATransaction.commit()
+    latestReverseFrame=nil;lastReverseFrameTime=nil
+   }
    if player.rate==0{player.playImmediately(atRate:1)}
   }
   return true

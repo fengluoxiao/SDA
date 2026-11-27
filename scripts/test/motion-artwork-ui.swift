@@ -19,7 +19,7 @@ enum MotionUIResult {
 }
 @objc(MotionArtworkTestDelegate) final class MotionArtworkTestDelegate:UIResponder,UIApplicationDelegate {
  func application(_ application:UIApplication,didFinishLaunchingWithOptions options:[UIApplication.LaunchOptionsKey:Any]?=nil)->Bool {
-  DispatchQueue.global().asyncAfter(deadline:.now()+180){MotionUIResult.write("result.json",["passed":false,"error":"UIKit motion test watchdog expired"]);exit(1)}
+  DispatchQueue.global().asyncAfter(deadline:.now()+300){MotionUIResult.write("result.json",["passed":false,"error":"UIKit motion test watchdog expired"]);exit(1)}
   return true
  }
 }

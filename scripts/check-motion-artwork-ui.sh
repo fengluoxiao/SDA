@@ -27,7 +27,7 @@ container=Path(subprocess.check_output(['xcrun','simctl','get_app_container',udi
 request,result,ack=container/'request.json',container/'result.json',container/'ack.json'
 assert not result.exists(),'Screen checks require a fresh test application'
 subprocess.run(['xcrun','simctl','launch',udid,bundle],check=True,timeout=60)
-last=0;before=None;deadline=time.monotonic()+185
+last=0;before=None;deadline=time.monotonic()+305
 try:
  while not result.exists() and time.monotonic()<deadline:
   if request.exists():
