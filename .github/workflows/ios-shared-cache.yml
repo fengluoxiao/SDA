@@ -45,7 +45,7 @@ jobs:
   package:
     needs: source
     if: needs.source.outputs.commit != ''
-    uses: fengluoxiao/SDA/.github/workflows/ios-port-ci.yml@8e6fd79bbb9d84b50c48bb320c8365d543c5087f
+    uses: fengluoxiao/SDA/.github/workflows/ios-port-ci.yml@ff7842fc09a055b63f5414b3cbf07e85d381df06
     with:
       source_ref: ${{ needs.source.outputs.commit }}
       scope: package-only
