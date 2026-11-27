@@ -46,12 +46,16 @@ final class MotionArtworkTestController:UIViewController {
   sharp.presented=true;sharp.active=true
  }
  override func viewDidAppear(_ animated:Bool){
+  MotionUIResult.write("step.json",["step":"home-did-appear-before-resume"])
   super.viewDidAppear(animated);sharp.active=true;backdrop?.active=true
+  MotionUIResult.write("step.json",["step":"home-did-appear-resumed"])
   guard !started else{return};started=true
   Task{@MainActor in do{try await run()}catch{finish(false,String(describing:error))}}
  }
  override func viewWillDisappear(_ animated:Bool){
+  MotionUIResult.write("step.json",["step":"home-will-disappear-before-pause"])
   super.viewWillDisappear(animated);sharp.active=false;backdrop?.active=false
+  MotionUIResult.write("step.json",["step":"home-will-disappear-paused"])
  }
  private func addBackdrop(){
   let background=SdaMotionArtworkView();backdrop=background;view.insertSubview(background,at:0)
@@ -138,9 +142,14 @@ final class MotionArtworkTestController:UIViewController {
  }
  @MainActor private func visitSettings(_ enabled:Bool?)async throws {
   guard let navigation=navigationController else{throw NSError(domain:"Missing production-style navigation stack",code:1)}
-  sharp.active=false;backdrop?.active=false
+  MotionUIResult.write("step.json",["step":"visit-settings-before-pause","visit":settingsReturns+1])
+  sharp.active=false
+  MotionUIResult.write("step.json",["step":"visit-settings-sharp-paused","visit":settingsReturns+1])
+  backdrop?.active=false
+  MotionUIResult.write("step.json",["step":"visit-settings-both-paused","visit":settingsReturns+1])
   let settings=UIViewController();settings.view.backgroundColor = .black
   navigation.pushViewController(settings,animated:true)
+  MotionUIResult.write("step.json",["step":"settings-push-requested","visit":settingsReturns+1])
   try await wait("Settings push did not finish"){navigation.topViewController === settings && settings.view.window != nil && navigation.transitionCoordinator==nil}
   if let enabled{
    tabletStyle=enabled;backdrop?.testStop();backdrop?.removeFromSuperview();backdrop=nil
@@ -149,6 +158,7 @@ final class MotionArtworkTestController:UIViewController {
   // React clears `settings` at pop start. Media remains inactive until the
   // home's viewDidAppear/onAppear callback, matching IOSSettingsNavigation.
   navigation.popViewController(animated:true)
+  MotionUIResult.write("step.json",["step":"settings-pop-requested","visit":settingsReturns+1])
   try await wait("Settings pop did not finish"){navigation.topViewController === self && self.view.window != nil && navigation.transitionCoordinator==nil}
   view.setNeedsLayout();view.layoutIfNeeded();settingsReturns+=1
   guard sharp.active else{throw NSError(domain:"Home appearance did not resume motion",code:1)}
