@@ -201,7 +201,11 @@ import CoreImage
   print("{\"longGopResolution\":\"720x1280\",\"reverseFrames\":\(stressDelivered),\"decodeSeconds\":\(stressSeconds),\"decodeFramesPerSecond\":\(Double(stressDelivered)/max(stressSeconds,0.000001)),\"retainedBytes\":\(stress.statistics.retainedBytes),\"windowByteLimit\":\(MotionArtworkReverseFrames.windowByteLimit)}")
   try require(Double(stressDelivered)/max(stressSeconds,0.000001)>=24,"Long-GOP reverse decode remains below 24 frames per second")
   stress.reset();try require(stress.statistics.retainedBytes==0,"Long-GOP windows survived reset")
+  // AVPlayer/AVPlayerLayer on iOS require a real application/scene. The
+  // simulator exercises those paths in MotionArtworkUITest, not this CLI.
+  #if !targetEnvironment(simulator)
   try await testMotionArtworkViewLifecycle(stressParent)
+  #endif
   generator.cancelAllCGImageGeneration();source.close();source.close()
   try require(try FileManager.default.contentsOfDirectory(atPath:root.path).sorted()==before,"Created a decoded/extracted cover cache")
   print("{\"passed\":true,\"portraitSelectedOverDefaultSquare\":true,\"malformedCases\":7,\"embeddedBytesPreserved\":true,\"decodedPortraitFrame\":true,\"reverseFramesVerified\":true,\"reversePauseAndResume\":true,\"audioTracks\":0,\"clipCacheCreated\":false,\"physicalDeviceTested\":false}")
