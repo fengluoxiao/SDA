@@ -73,6 +73,7 @@ import CoreImage
   reverseClock.begin(at:0)
   try require(reverseClock.current(at:300)==0,"Track switches must reset the reverse clock")
   let args=CommandLine.arguments;try require(args.count==3,"Pass synthetic clip and fresh test directory")
+  try testMotionArtworkMask(URL(fileURLWithPath:args[1]).deletingLastPathComponent().appendingPathComponent("../../../apps/mobile/assets/artwork-color-fade.png").standardizedFileURL)
   let video=try Data(contentsOf:URL(fileURLWithPath:args[1])),root=URL(fileURLWithPath:args[2],isDirectory:true)
   try require(!FileManager.default.fileExists(atPath:root.path),"Fresh directory required");try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false)
   func be(_ value:UInt32)->Data {var n=value.bigEndian;return withUnsafeBytes(of:&n){Data($0)}}

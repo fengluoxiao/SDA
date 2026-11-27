@@ -33,6 +33,8 @@ public final class SdaMotionArtworkModule: Module {
    Prop("presented") { (view:SdaMotionArtworkView, value:Bool) in view.presented=value }
    Prop("blurred") { (view:SdaMotionArtworkView, value:Bool) in view.blurred=value }
    Prop("bottomExtension") { (view:SdaMotionArtworkView, value:Bool) in view.bottomExtension=value }
+   Prop("featherMode") { (view:SdaMotionArtworkView, value:String) in view.featherMode=value }
+   Prop("featherHeight") { (view:SdaMotionArtworkView, value:Double) in view.featherHeight=value }
   }
  }
 }
@@ -52,6 +54,9 @@ final class SdaMotionArtworkView: ExpoView {
   else if !active,blurred,let item=player?.currentItem,let asset=source?.asset{item.videoComposition=makeVideoComposition(asset)}
  }}
  private let backdrop=MotionArtworkBackdrop()
+ var featherMode="none" {didSet{updateFeather()}}
+ var featherHeight=0.0 {didSet{updateFeather()}}
+ private let feather=MotionArtworkMask()
  private let videoLayer=AVPlayerLayer()
  private var source:MotionArtworkSource?, player:AVPlayer?
  private var ready:NSKeyValueObservation?, failure:NSKeyValueObservation?, observers=[NSObjectProtocol]()
@@ -75,9 +80,17 @@ final class SdaMotionArtworkView: ExpoView {
  }
  override func layoutSubviews(){
   super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;toneLayer.frame=bounds;CATransaction.commit()
+  updateFeather()
   // Mask/layout changes can detach and pause an existing player without
   // changing the React active prop. Reconcile after its visible bounds return.
   if canAnimate,bounds.width>0,bounds.height>0{startIfNeeded()}
+ }
+ private func updateFeather(){
+  feather.update(size:bounds.size,mode:featherMode,height:featherHeight)
+  CATransaction.begin();CATransaction.setDisableActions(true)
+  let target=blurred || featherMode=="none" ? nil:feather.layer
+  if layer.mask !== target{layer.mask=target}
+  CATransaction.commit()
  }
  private func updateGravity(){
   CATransaction.begin();CATransaction.setDisableActions(true)
@@ -85,6 +98,7 @@ final class SdaMotionArtworkView: ExpoView {
   reverseLayer.contentsGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
   toneLayer.isHidden = !(blurred && bottomExtension)
   CATransaction.commit()
+  updateFeather()
  }
  private func makeVideoComposition(_ asset:AVAsset)->AVVideoComposition {
   let policy=backdrop,token=generation

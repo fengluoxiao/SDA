@@ -1,5 +1,6 @@
 import React from "react";
 import { Image, Platform, StyleSheet, View } from "react-native";
+import { supportsEmbeddedMotionArtwork } from "./motion-artwork-capability";
 import { phoneLandscapeBlurEdge, artworkBackdropBottomEdge, portraitMotionBackdropEdge, artworkRightContinuation, ARTWORK_AMBIENT_PAINT, type ArtworkAmbientPaint } from "./phone-landscape-blur-model";
 
 type Props = {
@@ -34,6 +35,9 @@ function nativeMask() {
 
 export function MotionArtworkFeather(p: MotionBackdropProps) {
   if (p.enabled === false) return <>{p.children}</>;
+  // AVPlayerLayer/CGImage updates must not pass through nested SwiftUI Masks.
+  // The iOS motion view applies the same alpha ramps directly to its CALayer.
+  if (Platform.OS === "ios" && supportsEmbeddedMotionArtwork) return <>{p.children}</>;
   const MaskedView = nativeMask();
   const mode=p.mode??"portrait";
   const boundary = p.artworkTop + p.artworkHeight;

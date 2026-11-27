@@ -12,6 +12,8 @@ probes='''
 extension SdaMotionArtworkView {
  var testStarting:Bool{starting}
  var testPlayer:AVPlayer?{player}
+ var testDirection:Float{direction}
+ var testPlaybackPosition:Double{fallbackReverse ? reverseClock.current(at:CACurrentMediaTime()):player?.currentTime().seconds ?? 0}
  var testReversePosition:Double{reverseClock.current(at:CACurrentMediaTime())}
  var testRetainedBytes:Int{reverseFrames?.statistics.retainedBytes ?? 0}
  func testStop(){stop()}
@@ -21,9 +23,10 @@ extension SdaMotionArtworkView {
  }
 }
 '''
-pathlib.Path(sys.argv[2]).write_text('import Foundation\nimport AVFoundation\nimport CoreImage\nimport QuartzCore\n'+view+probes)
+pathlib.Path(sys.argv[2]).write_text('import Foundation\nimport AVFoundation\nimport CoreImage\nimport QuartzCore\n#if SDA_MOTION_UI_TEST\nimport UIKit\n#endif\n'+view+probes)
 PY
-sources=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$PWD/scripts/test/motion-artwork-view-stubs.swift" "$out/MotionArtworkViewUnderTest.swift" "$PWD/scripts/test/motion-artwork-view-lifecycle.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
+core=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$ios/MotionArtworkMask.swift")
+sources=("${core[@]}" "$PWD/scripts/test/motion-artwork-view-stubs.swift" "$out/MotionArtworkViewUnderTest.swift" "$PWD/scripts/test/motion-artwork-view-lifecycle.swift" "$PWD/scripts/test/motion-artwork-mask.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
 fixture="$PWD/scripts/test/fixtures/motion-artwork-tall.mp4"
 xcrun swiftc -O -parse-as-library -swift-version 5 "${sources[@]}" -o "$out/motion-host-test"
 "$out/motion-host-test" "$fixture" "$out/host-inputs" | tee "$out/motion-host-result.json"
@@ -33,7 +36,17 @@ sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" "${sources[@]}" -o "$out/motion-simulator-test"
 codesign --force --sign - "$out/motion-simulator-test"
 xcrun simctl list devices available -j > "$out/simulators.json"
-udid="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["udid"]for k,vs in sorted(d["devices"].items(),reverse=True)if "iOS"in k for v in vs if "iPhone"in v["name"]and v.get("isAvailable")))' "$out/simulators.json")"
+udid="$(python3 - "$out/simulators.json" "$out/runtime-choice.json" <<'PY'
+import json,sys,re
+from pathlib import Path
+d=json.load(open(sys.argv[1]))
+choices=[(tuple(map(int,k.rsplit('iOS-',1)[1].split('-'))),k,v)for k,vs in d['devices'].items()if re.fullmatch(r'com.apple.CoreSimulator.SimRuntime.iOS-[0-9]+-[0-9]+',k)for v in vs if v['name']=='iPhone 18 Pro Max'and v.get('isAvailable')]
+assert choices,'A standard iPhone simulator is required for visible-frame rotation tests'
+_,runtime,device=max(choices,key=lambda row:row[0])
+Path(sys.argv[2]).write_text(json.dumps({'runtime':runtime,'device':device['name'],'udid':device['udid'],'physicalDeviceTested':False},indent=2))
+print(device['udid'])
+PY
+)"
 simulator_state="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(next(v["state"]for vs in d["devices"].values()for v in vs if v["udid"]==sys.argv[2]))' "$out/simulators.json" "$udid")"
 if [[ "$simulator_state" != Booted ]]; then
  trap 'xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true' EXIT
@@ -41,3 +54,4 @@ if [[ "$simulator_state" != Booted ]]; then
 fi
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl spawn "$udid" "$out/motion-simulator-test" "$fixture" "$out/simulator-inputs" | tee "$out/motion-simulator-result.json"
+bash scripts/check-motion-artwork-ui.sh "$out" "$udid"

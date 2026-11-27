@@ -436,7 +436,7 @@ function ThemedPlayer(p: PlayerProps) {
     <View ref={sharedMini.artworkRef} collapsable={false} onLayout={sharedMini.capture} style={{ position: "absolute", top: motionPlaneFrame.top, left: motionPlaneFrame.left, width: motionPlaneFrame.width, height: motionPlaneFrame.height }}>
       {hasArtwork && <Animated.Image key={artworkUri} source={{ uri: artworkUri }} resizeMode="contain" onError={() => setFailedArtwork(artworkUri)} style={[StyleSheet.absoluteFill, { opacity: showStaticArtwork?sharedMini.mainOpacity:0 }]} />}
       {!hasArtwork && showStaticArtwork && <View style={[StyleSheet.absoluteFill,{backgroundColor:"#303034"}]} />}
-      <EmbeddedMotionArtwork motionKey={motionSourceKey} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
+      <EmbeddedMotionArtwork motionKey={motionSourceKey} featherMode={motionFeatherMode} featherHeight={motionFeatherHeight} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
     </View>
     </MotionArtworkFeather>
     </View>

@@ -73,6 +73,18 @@ const loaded = { exports: {} };
 new Function("require", "module", "exports", featherBundle.outputFiles[0].text)(name => name === "react" ? { ...React, memo: component => component } : name === "react-native" ? native : name.endsWith(".png") ? name : { MaskedView: "MaskedView" }, loaded, loaded.exports);
 const { MotionArtworkFeather, QueuedArtwork } = loaded.exports;
 
+test("native iOS motion stays outside SwiftUI masks through style and orientation changes",()=>{
+ const previous=globalThis.expo,ios={exports:{}};
+ globalThis.expo={modules:{SdaMotionArtwork:{},ExpoUI:{}},getViewConfig:()=>({})};
+ try{
+  new Function("require","module","exports",featherBundle.outputFiles[0].text)(name=>name==="react"?{...React,memo:component=>component}:name==="react-native"?native:name.endsWith(".png")?name:{MaskedView:"MaskedView"},ios,ios.exports);
+  for(const mode of ["portrait","phone-landscape","portrait","portrait","none","portrait"]){
+   const tree=ios.exports.MotionArtworkFeather({children:video,mode,surfaceWidth:430,surfaceHeight:932,artworkTop:0,artworkHeight:559,fallbackColor:"#303034"});
+   assert.equal(tree.type,React.Fragment);assert.equal(tree.props.children[0],video);
+  }
+ }finally{globalThis.expo=previous;}
+});
+
 test("portrait motion fades the sharp artwork down into the separate full-height backdrop", () => {
  const previous = globalThis.expo;
  globalThis.expo = { modules: { ExpoUI: {} }, getViewConfig: () => ({}) };
@@ -148,7 +160,7 @@ function motionHarness(){
  };
  hooks.useLayoutEffect=hooks.useEffect;
  const animated={View:"Animated.View",Value:class{constructor(value){this.value=value;}setValue(value){this.value=value;}},timing:(value,config)=>({start(){value.value=config.toValue;},stop(){}})};
- const native={View:"View",Animated:animated,AppState:{currentState:"active",addEventListener:()=>({remove(){}})},StyleSheet:{absoluteFill:{}}};
+ const native={View:"View",Platform:{OS:"ios"},Animated:animated,AppState:{currentState:"active",addEventListener:()=>({remove(){}})},StyleSheet:{absoluteFill:{}}};
  const previous=globalThis.expo;
  globalThis.expo={modules:{SdaMotionArtwork:{}}};
  const exports={exports:{}};
@@ -198,4 +210,14 @@ test("an absent or failed next video remains invisible and cannot hide a static-
  assert.equal(reports.length,0);
  const third=queue.render(queue.component,{...props,sourceUri:"file:///third.m4a",nextSourceUri:undefined}).props.children[0];
  assert.deepEqual(third.map(layer=>layer.props.sourceUri),["file:///third.m4a"]);
+});
+
+test("rotation and removing tablet blur preserve the sharp native instance and its playback intent",()=>{
+ const queue=motionHarness();let nativeType;
+ for(const [mode,height,visible]of [["portrait",559,true],["phone-landscape",430,true],["portrait",559,true],["portrait",559,false],["portrait",559,true],["none",430,true],["portrait",559,true]]){
+  const layer=queue.render(queue.component,{sourceUri:"file:///same.m4a",visible,active:true,featherMode:mode,featherHeight:height}).props.children[0][0];
+  nativeType??=layer.type;assert.equal(layer.type,nativeType);assert.equal(layer.props.key,"file:///same.m4a");
+  const view=queue.render(layer.type,layer.props).props.children[0];
+  assert.equal(view.props.active,visible);assert.equal(view.props.featherMode,mode);assert.equal(view.props.featherHeight,height);
+ }
 });
