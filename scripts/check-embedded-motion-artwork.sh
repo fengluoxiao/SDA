@@ -15,6 +15,7 @@ extension SdaMotionArtworkView {
  var testDirection:Float{direction}
  var testPlaybackPosition:Double{if blurred,let leader{return leader.testPlaybackPosition};return fallbackReverse ? reverseClock.current(at:CACurrentMediaTime()):player?.currentTime().seconds ?? 0}
  var testReverseFrameTime:Double{latestReverseFrame?.time ?? -1}
+ var testReportedReady:Bool{reportedReady}
  var testState:[String:Any]{
   let time=testPlaybackPosition,duration=player?.currentItem?.duration.seconds ?? 0
   return ["active":active,"presented":presented,"attached":window != nil,"canAnimate":canAnimate,"direction":direction,"reverse":fallbackReverse,"position":time.isFinite ? time:-1,"duration":duration.isFinite ? duration:-1,"rate":player?.rate ?? 0,"reverseTimer":reverseTimer != nil,"followerTimer":followerTimer != nil,"reverseFrame":testReverseFrameTime,"framesFailed":reverseFrames?.failed ?? false,"featherMode":featherMode]

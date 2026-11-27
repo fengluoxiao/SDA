@@ -46,7 +46,7 @@ import AVFoundation
  recreated.bounds=view.bounds;recreated.blurred=true;recreated.window=window
  recreated.presented=true;recreated.active=true;recreated.sourceUri=url.absoluteString
  try await waitFor("Recreated background started an independent reverse timeline"){
-  recreated.testDirection == view.testDirection && recreated.testReverseFrameTime>0 && abs(recreated.testReverseFrameTime-view.testReverseFrameTime)<0.07
+  recreated.testDirection == view.testDirection && recreated.testReverseFrameTime>0 && recreated.testReportedReady && abs(recreated.testReverseFrameTime-view.testReverseFrameTime)<0.07
  }
  recreated.active=false;recreated.testStop()
  view.active=false

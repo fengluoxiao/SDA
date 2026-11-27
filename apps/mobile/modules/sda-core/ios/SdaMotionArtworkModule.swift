@@ -80,6 +80,7 @@ final class SdaMotionArtworkView: ExpoView {
  private let reverseLayer=CALayer()
  private let toneLayer=CAGradientLayer()
  private var generation=0,starting=false
+ private var reportedReady=false
  required init(appContext:AppContext? = nil) {
   super.init(appContext:appContext);clipsToBounds=true;isUserInteractionEnabled=false;layer.masksToBounds=true
   Self.views.removeAll{$0.value==nil};Self.views.append(MotionArtworkWeakView(self))
@@ -162,7 +163,7 @@ final class SdaMotionArtworkView: ExpoView {
      DispatchQueue.main.async { [weak self] in guard let self,self.generation==token else{return}
       if layer.isReadyForDisplay {
        if !self.active || !self.presented {self.pause()}
-       self.onStatus(["uri":uri,"ready":true])
+       self.reportReady()
       }
      }
     }
@@ -175,7 +176,7 @@ final class SdaMotionArtworkView: ExpoView {
   }
  }
  private func stop() {
-  generation+=1;starting=false;ready?.invalidate();ready=nil;failure?.invalidate();failure=nil
+  generation+=1;starting=false;reportedReady=false;ready?.invalidate();ready=nil;failure?.invalidate();failure=nil
   if let endObserver{NotificationCenter.default.removeObserver(endObserver)};endObserver=nil
   if let timeObserver{player?.removeTimeObserver(timeObserver)};timeObserver=nil
   pause();reverseFrames?.release();reverseFrames=nil
@@ -246,6 +247,10 @@ final class SdaMotionArtworkView: ExpoView {
   lastReverseFrameTime=frame.time
   if blurred && bottomExtension{paintTone(frame.bottomTone)}
   CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=blurred ? (bottomExtension ? frame.bottomImage:frame.blurredImage):frame.image;reverseLayer.isHidden=false;CATransaction.commit()
+  reportReady()
+ }
+ private func reportReady(){
+  guard !reportedReady else{return};reportedReady=true;onStatus(["uri":sourceUri,"ready":true])
  }
  private func playForwardFromStart() {
   pause();direction=1;fallbackReverse=false;lastReverseFrameTime=nil
