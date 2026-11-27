@@ -1920,6 +1920,32 @@ fn rear_hemisphere_weight(az: f64, el: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn small_head_turns_are_not_swallowed_by_the_object_direction_deadband() {
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../mobile/assets/hrtf-restored/hrtf-dense/hrtf-set.json");
+        let set=crate::hrtf::NativeHrtfSet::load_calibrated(&path).unwrap();
+        let solver=crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
+        for y in [-1.0,1.0] {
+            let mut source=ContinuousSource::new(&set).unwrap();
+            let mut direction=Direction {position:[0.0,y,0.0],head:Some([0.0,0.0,0.0,1.0]),
+                diffuse:0.0,horizontal_only:false,width:0.0,height:0.0,depth:0.0};
+            let gains=solver.pan(direction.position,0.0);
+            source.schedule(direction,solver.layout(),gains,[0.0;crate::vbap::MAX_BUS_COUNT]);
+            for frame in &mut source.frames {frame.input=0.01;}
+            source.finish_with_preparation(&set,false).unwrap();
+            for degrees in [-0.5_f32,-0.1,-0.01,0.01,0.1,0.5,0.0] {
+                let angle=degrees.to_radians()/2.0;
+                direction.head=Some([0.0,0.0,angle.sin(),angle.cos()]);
+                source.schedule(direction,solver.layout(),gains,[0.0;crate::vbap::MAX_BUS_COUNT]);
+                assert!(source.pending.is_some(),"small head turn was discarded: {degrees}/{y}");
+                for frame in &mut source.frames {frame.input=0.01;}
+                source.finish_with_preparation(&set,false).unwrap();
+                assert_eq!(source.route.unwrap().0.head,direction.head);
+                assert!(source.pending.is_none());
+            }
+        }
+    }
+    #[test]
     fn asynchronous_gate_never_defers_authored_position_width_or_gain() {
         let solver = crate::vbap::VbapSolver::with_layout(crate::vbap::LayoutId::Dolby7_1_4);
         let direction = Direction { position: [0.0,1.0,0.0], head: None, diffuse: 0.0,

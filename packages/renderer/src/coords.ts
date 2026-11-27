@@ -26,12 +26,15 @@ export function admToSpherical(pos: [number, number, number]): Spherical {
   const [x, y, z] = pos;
   // 不钳制到 1：房间角落的 ADM 距离可达 √3，供环外 inverse 距离增益使用
   // （VBAP 只用方向，不受距离影响）。上限 4 防异常值。
-  const distance = Math.min(4, Math.hypot(x, y, z));
+  const radius = Math.hypot(x, y, z);
+  const distance = Math.min(4, radius);
   if (distance < 1e-6) return { azimuth: 0, elevation: 0, distance: 0 };
   return {
     // +az = 左 = cartesian X 负侧（EBU EAR: azimuth = -atan2(x, y)）
     azimuth: (-Math.atan2(x, y) * 180) / Math.PI,
-    elevation: (Math.asin(Math.min(1, Math.max(-1, z / distance))) * 180) / Math.PI,
+    // Keep bearing independent of the capped display/range value, matching
+    // the native renderer even for coordinates outside the reference cube.
+    elevation: (Math.asin(Math.min(1, Math.max(-1, z / radius))) * 180) / Math.PI,
     distance,
   };
 }
