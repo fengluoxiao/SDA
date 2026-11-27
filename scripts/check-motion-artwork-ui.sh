@@ -60,12 +60,18 @@ try:
  assert value['nativeNavigationPushPop'] and value['settingsReturns']==6
  assert value['styleSwitches']==[False,True]
 finally:
+ failed=not result.exists() or not json.loads(result.read_text()).get('passed')
  if not result.exists():
   with (out/'motion-ui-sample.txt').open('w')as sample:
    subprocess.run(['/usr/bin/sample',str(pid),'3','-file',str(out/'motion-ui-thread-stacks.txt')],stdout=sample,stderr=subprocess.STDOUT,timeout=30)
  for crash in (Path.home()/'Library/Logs/DiagnosticReports').glob('MotionArtworkUITest*.ips'):
   shutil.copy2(crash,out/crash.name)
- with (out/'motion-ui-runtime.log').open('w')as log:
-  subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','3m','--style','compact','--predicate','process == "MotionArtworkUITest"'],stdout=log,stderr=subprocess.STDOUT,timeout=30)
- subprocess.run(['xcrun','simctl','terminate',udid,bundle],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+ if failed:
+  try:
+   with (out/'motion-ui-runtime.log').open('w')as log:
+    subprocess.run(['xcrun','simctl','spawn',udid,'log','show','--last','3m','--style','compact','--predicate','process == "MotionArtworkUITest"'],stdout=log,stderr=subprocess.STDOUT,timeout=30)
+   subprocess.run(['xcrun','simctl','terminate',udid,bundle],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+  except subprocess.TimeoutExpired as error:print(f'Diagnostic cleanup timed out: {error}',flush=True)
+ # Successful tests exit themselves after writing the result. Asking simctl
+ # to terminate that already-dead process must not invalidate passed checks.
 PY
