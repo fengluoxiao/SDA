@@ -37,6 +37,7 @@ const hasDispatchStackTest=existsSync(join(root,'crates/sda-native/src/ios_stack
 const packageScope=process.env.SDA_PACKAGE_SCOPE??'full';
 const noPackageTests=['package-only','motion-artwork'].includes(packageScope);
 paths.push('apps/native-renderer/src/near_field.rs','apps/native-renderer/src/authored.rs');
+paths.push('apps/native-renderer/src/headphone.rs','apps/native-renderer/src/render_command.rs','apps/native-renderer/src/perceptual_masking.rs');
 if(hasDispatchStackTest)paths.push('crates/sda-native/src/ios_stack_tests.rs');
 const sources=Object.fromEntries(paths.map(path=>[path,sha(readFileSync(join(root,path)))]));
 const sourceCheckoutCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();

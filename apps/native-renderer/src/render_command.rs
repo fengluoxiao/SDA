@@ -157,6 +157,22 @@ impl RenderCommandQueue {
     pub fn push(&self, command: RenderCommand) -> Result<(), RenderCommand> {
         let bytes = command.pcm_bytes();
         let mut pending = self.pending.lock().expect("render command queue poisoned");
+        // Only adjacent valid pose states may supersede one another. PCM,
+        // reset, settings and reply-bearing commands remain ordering barriers.
+        // Do this before the capacity check so stale poses cannot reject the
+        // newest pose merely because they filled the queue themselves.
+        if let RenderCommand::Command(Command::HeadPose { orientation }) = &command {
+            if crate::spatial::normalize_quaternion(*orientation).is_some()
+                && matches!(pending.commands.back(),Some(RenderCommand::Command(Command::HeadPose{orientation:old}))
+                if crate::spatial::normalize_quaternion(*old).is_some())
+            {
+                *pending.commands.back_mut().unwrap() = command;
+                if let Some(consumer) = self.consumer.get() {
+                    consumer.unpark();
+                }
+                return Ok(());
+            }
+        }
         if pending.commands.len() >= self.capacity
             || pending.pcm_bytes.saturating_add(bytes) > MAX_QUEUED_PCM_BYTES
         {
@@ -164,7 +180,9 @@ impl RenderCommandQueue {
         }
         pending.pcm_bytes += bytes;
         pending.commands.push_back(command);
-        if let Some(consumer) = self.consumer.get() { consumer.unpark(); }
+        if let Some(consumer) = self.consumer.get() {
+            consumer.unpark();
+        }
         Ok(())
     }
 
@@ -221,6 +239,83 @@ impl RenderCommandQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pose_updates_coalesce_without_starving_pcm_or_crossing_audio_boundaries() {
+        let queue = RenderCommandQueue::new(2);
+        let mut latest = [0.0; 4];
+        for i in 0..100 {
+            let a = i as f32 * 0.005;
+            latest = [0.0, 0.0, a.sin(), a.cos()];
+            queue
+                .push(RenderCommand::Command(Command::HeadPose {
+                    orientation: latest,
+                }))
+                .unwrap_or_else(|_| panic!("pose burst exhausted the command queue at {i}"));
+        }
+        assert_eq!(queue.len(), 1);
+        queue
+            .push(RenderCommand::Pcm {
+                id: "object".into(),
+                start: 0,
+                samples: vec![0.1; 8],
+            })
+            .unwrap_or_else(|_| panic!("obsolete poses starved PCM"));
+        assert!(
+            queue
+                .push(RenderCommand::Command(Command::HeadPose {
+                    orientation: [0.0, 0.0, 0.0, 1.0]
+                }))
+                .is_err(),
+            "a pose must not be moved across a queued PCM boundary"
+        );
+        match queue.pop().unwrap() {
+            RenderCommand::Command(Command::HeadPose { orientation }) => {
+                assert_eq!(orientation, latest)
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(
+            queue.pop(),
+            Some(RenderCommand::Pcm { start: 0, .. })
+        ));
+        assert_eq!(queue.pending.lock().unwrap().pcm_bytes, 0);
+    }
+
+    #[test]
+    fn pose_coalescing_preserves_resets_and_invalid_command_boundaries() {
+        let queue = RenderCommandQueue::new(8);
+        let pose = |z: f32, w: f32| {
+            RenderCommand::Command(Command::HeadPose {
+                orientation: [0.0, 0.0, z, w],
+            })
+        };
+        for command in [
+            pose(0.0, 1.0),
+            pose(f32::NAN, 1.0),
+            pose(0.1, 0.995),
+            RenderCommand::Command(Command::ClearHeadPose),
+            pose(0.2, 0.98),
+        ] {
+            queue.push(command).unwrap_or_else(|_| panic!());
+        }
+        assert_eq!(queue.len(), 5);
+        assert!(
+            matches!(queue.pop(),Some(RenderCommand::Command(Command::HeadPose{orientation}))if orientation[2]==0.0)
+        );
+        assert!(
+            matches!(queue.pop(),Some(RenderCommand::Command(Command::HeadPose{orientation}))if orientation[2].is_nan())
+        );
+        assert!(
+            matches!(queue.pop(),Some(RenderCommand::Command(Command::HeadPose{orientation}))if orientation[2]==0.1)
+        );
+        assert!(matches!(
+            queue.pop(),
+            Some(RenderCommand::Command(Command::ClearHeadPose))
+        ));
+        assert!(
+            matches!(queue.pop(),Some(RenderCommand::Command(Command::HeadPose{orientation}))if orientation[2]==0.2)
+        );
+    }
     #[test]
     fn parked_consumer_wakes_without_reacquiring_a_condition_lock() {
         let queue = std::sync::Arc::new(RenderCommandQueue::new(4));

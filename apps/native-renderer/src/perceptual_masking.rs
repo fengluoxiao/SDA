@@ -4,6 +4,7 @@
 use crate::dsp::Biquad;
 pub(crate) struct Detector {
     filters: [[[Biquad; 2]; 4]; 2],
+    clean_filters: [Biquad;2],
     power: [[f64; 2]; 2],
     alpha: f64,
     samples: u64,
@@ -17,6 +18,7 @@ impl Detector {
         ];
         Self {
             filters: [[pair; 4]; 2],
+            clean_filters: pair,
             power: [[0.; 2]; 2],
             alpha: 1. - (-1. / (f64::from(rate.max(1)) * 0.12)).exp(),
             samples: 0,
@@ -27,10 +29,17 @@ impl Detector {
         for (g, group) in groups.iter().enumerate() {
             let mut power = [0.; 2];
             for (a, x) in group.iter().enumerate() {
-                let x = if x.is_finite() { *x as f32 } else { 0. };
+                let narrowed = *x as f32;
+                let x = if narrowed.is_finite() { narrowed } else { 0. };
                 let h = self.filters[g][a][0].process(x);
                 let air = self.filters[g][a][1].process(h);
-                for (i, y) in [h - air, air].iter().enumerate() {
+                let detail = h - air;
+                if !h.is_finite() || !air.is_finite() || !detail.is_finite() {
+                    self.filters[g][a] = self.clean_filters;
+                    self.power[g] = [0.0; 2];
+                    continue;
+                }
+                for (i, y) in [detail, air].iter().enumerate() {
                     power[i] += f64::from(*y).powi(2);
                 }
             }
@@ -59,6 +68,21 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn masking_recovers_after_out_of_range_finite_reference() {
+        for corrupt in [f64::MAX, f64::from(f32::MAX)] {
+            let mut d = Detector::new(48000);
+            d.observe([[corrupt; 4]; 2]);
+            for i in 0..96000 {
+                let x = (std::f64::consts::TAU * 7000.0 * i as f64 / 48000.0).sin();
+                d.observe([[0.2 * x, 0.0, 0.0, 0.0], [0.02 * x, 0.0, 0.0, 0.0]]);
+            }
+            assert!(
+                d.targets(1.0)[1] > 0.6,
+                "one finite outlier permanently poisoned the masking filters"
+            );
+        }
+    }
     fn run(front: f32, aux: f32) -> [f32; 2] {
         let mut d = Detector::new(48000);
         for i in 0..96000 {

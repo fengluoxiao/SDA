@@ -27,7 +27,8 @@ assert build["appVersion"] == config["version"]
 assert str(build["appBuildNumber"]) == config["ios"]["buildNumber"]
 assert re.fullmatch(r"[a-f0-9]{64}", build["nativeLibrarySha256"])
 
-for name in ("lib.rs", "near_field.rs", "authored.rs", "protocol.rs", "object_mixer.rs"):
+for name in ("lib.rs", "near_field.rs", "authored.rs", "protocol.rs", "object_mixer.rs",
+             "spatial.rs", "convolution.rs", "headphone.rs", "render_command.rs", "perceptual_masking.rs"):
     relative = "apps/native-renderer/src/" + name
     assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative
 

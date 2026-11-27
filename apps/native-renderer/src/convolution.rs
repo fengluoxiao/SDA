@@ -202,6 +202,15 @@ impl StereoPartitionedConvolver {
             filters_right: self.filters_right.clone(),
         }
     }
+    /// Compare immutable active responses without copying taps or spectra.
+    /// Used only when selecting headphone profiles, not on the sample path.
+    pub(crate) fn same_static_response(&self, other: &Self) -> bool {
+        self.partition == other.partition
+            && self.transition.is_none()
+            && other.transition.is_none()
+            && self.filters_left == other.filters_left
+            && self.filters_right == other.filters_right
+    }
     pub(crate) fn accepts_prepared_filter(&self, filter: &PreparedStereoFilter) -> bool {
         let bins = self.fft_len / 2 + 1;
         filter.filters_left.len() == self.history.len()

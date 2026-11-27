@@ -65,12 +65,30 @@ impl HeadphoneCompensation {
 
     /// Queue the latest selection; never discard an audible convolution history.
     pub(super) fn transition_to(&mut self, mut next: Self, sample_rate: u32) {
+        let selected = self
+            .queued
+            .as_deref()
+            .or(self.pending.as_deref())
+            .unwrap_or(self);
+        if selected.preamp == next.preamp
+            && selected.left.same_static_response(&next.left)
+            && selected.right.same_static_response(&next.right)
+        {
+            return;
+        }
         next.fade_frames = (sample_rate as usize / 20).max(1);
         self.queued = Some(Box::new(next));
     }
 
     pub(super) fn begin_block(&mut self) {
-        if self.pending.is_none() {
+        // A superseded filter still warming up has never been audible. Start
+        // the latest choice directly instead of first playing that stale EQ.
+        // Once a fade has become audible, retain its convolution history.
+        let replace_warming = self.queued.is_some()
+            && self.pending.as_ref().is_some_and(|next| {
+                self.transition_frame <= next.history_frames + convolution::DEFAULT_PARTITION
+            });
+        if self.pending.is_none() || replace_warming {
             self.pending = self.queued.take();
             self.transition_frame = 0;
         }
@@ -163,6 +181,140 @@ impl HeadphoneCompensation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_same_headphone_selection_does_not_restart_warmup() {
+        let mut p = HeadphoneCompensation::bypass().unwrap();
+        let mut fir = vec![0.0; 8192];
+        fir[8191] = 0.25;
+        let mut last = 0.0;
+        for _ in 0..24 {
+            p.transition_to(HeadphoneCompensation::new(&fir, &fir, 1.0).unwrap(), 48000);
+            p.begin_block();
+            for i in 0..convolution::DEFAULT_PARTITION {
+                last = p.output_at(i)[0];
+                p.add(i, [1.0; 2]);
+            }
+            p.finish_block().unwrap();
+        }
+        assert!(
+            (last - 0.25).abs() < 1e-5,
+            "repeated identical settings starved profile warmup: {last}"
+        );
+        assert!(p.pending.is_none() && p.queued.is_none());
+    }
+    #[test]
+    fn latest_headphone_choice_replaces_a_profile_that_has_not_become_audible() {
+        let mut processor = HeadphoneCompensation::bypass().unwrap();
+        let mut long = vec![0.0; 32768];
+        long[32767] = 0.25;
+        processor.transition_to(
+            HeadphoneCompensation::new(&long, &long, 1.0).unwrap(),
+            48000,
+        );
+        let mut previous = 1.0_f32;
+        for block in 0..12 {
+            if block == 1 {
+                processor.transition_to(
+                    HeadphoneCompensation::new(&[0.5, 0.0], &[0.5, 0.0], 1.0).unwrap(),
+                    48000,
+                );
+            }
+            processor.begin_block();
+            for i in 0..convolution::DEFAULT_PARTITION {
+                let y = processor.output_at(i);
+                if block > 0 {
+                    assert!((y[0] - previous).abs() < 0.001);
+                    previous = y[0];
+                }
+                assert!((y[0] - y[1]).abs() < 1e-6);
+                processor.add(i, [1.0; 2]);
+            }
+            processor.finish_block().unwrap();
+        }
+        assert!(
+            (previous - 0.5).abs() < 1e-5,
+            "latest selection still waiting behind an inaudible stale profile: {previous}"
+        );
+        assert!(processor.pending.is_none() && processor.queued.is_none());
+    }
+
+    #[test]
+    fn audible_headphone_transition_keeps_history_until_the_next_choice_is_ready() {
+        let mut p = HeadphoneCompensation::bypass().unwrap();
+        p.transition_to(
+            HeadphoneCompensation::new(&[0.25, 0.0], &[0.25, 0.0], 1.0).unwrap(),
+            48000,
+        );
+        let mut previous = 1.0_f32;
+        for block in 0..16 {
+            if block == 2 {
+                assert!(
+                    p.transition_frame
+                        > p.pending.as_ref().unwrap().history_frames
+                            + convolution::DEFAULT_PARTITION
+                );
+                p.transition_to(
+                    HeadphoneCompensation::new(&[0.8, 0.0], &[0.8, 0.0], 1.0).unwrap(),
+                    48000,
+                );
+            }
+            let elapsed = p.transition_frame;
+            p.begin_block();
+            if block == 2 {
+                assert_eq!(p.transition_frame, elapsed);
+                assert!(p.queued.is_some());
+            }
+            for i in 0..convolution::DEFAULT_PARTITION {
+                let y = p.output_at(i);
+                if block > 0 {
+                    assert!((y[0] - previous).abs() < 0.001);
+                    previous = y[0];
+                }
+                p.add(i, [1.0; 2]);
+            }
+            p.finish_block().unwrap();
+        }
+        assert!((previous - 0.8).abs() < 1e-5);
+        assert!(p.pending.is_none() && p.queued.is_none());
+    }
+
+    #[test]
+    fn headphone_compensation_preserves_the_authored_interaural_delay_and_polarity() {
+        let mut left = vec![0.0; 16];
+        left[3] = 1.0;
+        let mut right = vec![0.0; 16];
+        right[7] = 0.5;
+        let mut p = HeadphoneCompensation::new(&left, &right, 1.0).unwrap();
+        let mut output = Vec::new();
+        for block in 0..3 {
+            p.begin_block();
+            for i in 0..convolution::DEFAULT_PARTITION {
+                output.push(p.output_at(i));
+                p.add(
+                    i,
+                    if block == 0 && i == 0 {
+                        [0.25, -0.8]
+                    } else {
+                        [0.0; 2]
+                    },
+                );
+            }
+            p.finish_block().unwrap();
+        }
+        for (ear, offset, amplitude) in [(0, 3, 0.25_f32), (1, 7, -0.4_f32)] {
+            for (i, frame) in output.iter().enumerate() {
+                let expected = if i == convolution::DEFAULT_PARTITION + offset {
+                    amplitude
+                } else {
+                    0.0
+                };
+                assert!(
+                    (frame[ear] - expected).abs() < 1e-6,
+                    "unexpected ear delay or crossfeed at {i}/{ear}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn identity_fast_path_keeps_delay_and_profile_transition_pcm() {

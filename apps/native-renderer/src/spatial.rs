@@ -79,6 +79,11 @@ pub fn spread_from_size(size: [f32; 3]) -> f32 {
 /// at the block cadence instead of the arrival cadence of pose messages.
 #[must_use]
 pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let a = normalize_quaternion(a).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let b = normalize_quaternion(b).unwrap_or(a);
+    if !t.is_finite() {
+        return a;
+    }
     let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
     // Take the short arc: a and -a describe the same rotation.
     let (b, dot) = if dot < 0.0 {
@@ -86,7 +91,7 @@ pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     } else {
         (b, dot)
     };
-    let (sin_a, sin_b_weight) = if dot > 0.9995 {
+    if dot > 0.9995 {
         // Nearly identical: fall back to normalized lerp for stability.
         let w = [
             a[0] + t * (b[0] - a[0]),
@@ -95,17 +100,12 @@ pub fn slerp_quaternion(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
             a[3] + t * (b[3] - a[3]),
         ];
         return normalize_quaternion(w).unwrap_or(b);
-    } else {
-        (dot.acos(), ((1.0 - t) * dot.acos()).sin())
-    };
-    let sin_b = (t * sin_a).sin();
-    let inv_sin = if sin_a.abs() < 1e-6 { 0.0 } else { 1.0 / sin_a };
-    [
-        (sin_b_weight * a[0] + sin_b * b[0]) * inv_sin,
-        (sin_b_weight * a[1] + sin_b * b[1]) * inv_sin,
-        (sin_b_weight * a[2] + sin_b * b[2]) * inv_sin,
-        (sin_b_weight * a[3] + sin_b * b[3]) * inv_sin,
-    ]
+    }
+    let theta = dot.clamp(0.0, 1.0).acos();
+    let denominator = theta.sin();
+    let wa = ((1.0 - t) * theta).sin() / denominator;
+    let wb = (t * theta).sin() / denominator;
+    normalize_quaternion(std::array::from_fn(|i| wa * a[i] + wb * b[i])).unwrap_or(b)
 }
 
 pub fn normalize_quaternion(q: [f32; 4]) -> Option<[f32; 4]> {
@@ -113,6 +113,12 @@ pub fn normalize_quaternion(q: [f32; 4]) -> Option<[f32; 4]> {
         return None;
     }
     let length = q.iter().map(|value| value * value).sum::<f32>().sqrt();
+    // Retain the normal fast path and its rounding. Finite but very large
+    // components can overflow the f32 norm and otherwise normalize to zero.
+    if !length.is_finite() {
+        let length = q.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt();
+        return (length >= 1e-8).then(|| q.map(|v| (f64::from(v) / length) as f32));
+    }
     (length >= 1e-8).then(|| [q[0] / length, q[1] / length, q[2] / length, q[3] / length])
 }
 
@@ -145,6 +151,41 @@ pub fn head_relative_adm(position: [f32; 3], head_to_world: Option<[f32; 4]>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spherical_interpolation_keeps_unit_norm_and_endpoint_rotations() {
+        for degrees in [30.0_f32, 90.0, 170.0] {
+            let angle = degrees.to_radians();
+            let a = [0.0, 0.0, 0.0, 1.0];
+            let b = [0.0, 0.0, (angle / 2.0).sin(), (angle / 2.0).cos()];
+            for t in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+                let q = slerp_quaternion(a, b, t);
+                let expected = [0.0, 0.0, (angle * t / 2.0).sin(), (angle * t / 2.0).cos()];
+                assert!(
+                    (q.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 2e-6,
+                    "non-unit interpolation at {degrees}deg / t={t}: {q:?}"
+                );
+                for i in 0..4 {
+                    assert!((q[i] - expected[i]).abs() < 2e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quaternion_normalization_is_scale_invariant_for_finite_inputs() {
+        for scale in [1e-6_f32, 1.0, 1e6, 1e20, f32::MAX / 2.0] {
+            let normalized = normalize_quaternion([scale / 2.0; 4]).unwrap();
+            for x in normalized {
+                assert!((x - 0.5).abs() < 1e-6);
+            }
+        }
+        assert!(normalize_quaternion([0.0; 4]).is_none());
+        assert!(normalize_quaternion([f32::NAN; 4]).is_none());
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        assert_eq!(slerp_quaternion(identity, [f32::NAN; 4], 0.5), identity);
+        assert_eq!(slerp_quaternion(identity, identity, f32::NAN), identity);
+    }
 
     #[test]
     fn left_right_and_front_back_directions_are_distinct_and_pose_rotates_world_front() {
