@@ -4,7 +4,26 @@ out="${1:?Pass a fresh test directory}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 ios="$PWD/apps/mobile/modules/sda-core/ios"
-sources=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
+python3 - "$ios/SdaMotionArtworkModule.swift" "$out/MotionArtworkViewUnderTest.swift" <<'PY'
+import pathlib,sys
+source=pathlib.Path(sys.argv[1]).read_text()
+view=source[source.index('final class SdaMotionArtworkView:'):]
+probes='''
+extension SdaMotionArtworkView {
+ var testStarting:Bool{starting}
+ var testPlayer:AVPlayer?{player}
+ var testReversePosition:Double{reverseClock.current(at:CACurrentMediaTime())}
+ var testRetainedBytes:Int{reverseFrames?.statistics.retainedBytes ?? 0}
+ func testStop(){stop()}
+ func testReverse(at position:Double){
+  player?.pause();direction = -1;fallbackReverse=true;awaitingReverseFrame=true
+  reverseClock.begin(at:position);resume()
+ }
+}
+'''
+pathlib.Path(sys.argv[2]).write_text('import Foundation\nimport AVFoundation\nimport CoreImage\nimport QuartzCore\n'+view+probes)
+PY
+sources=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$PWD/scripts/test/motion-artwork-view-stubs.swift" "$out/MotionArtworkViewUnderTest.swift" "$PWD/scripts/test/motion-artwork-view-lifecycle.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
 fixture="$PWD/scripts/test/fixtures/motion-artwork-tall.mp4"
 xcrun swiftc -O -parse-as-library -swift-version 5 "${sources[@]}" -o "$out/motion-host-test"
 "$out/motion-host-test" "$fixture" "$out/host-inputs" | tee "$out/motion-host-result.json"

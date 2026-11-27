@@ -73,7 +73,12 @@ final class SdaMotionArtworkView: ExpoView {
   observers.append(center.addObserver(forName:UIApplication.willResignActiveNotification,object:nil,queue:.main){[weak self]_ in self?.pause()})
   observers.append(center.addObserver(forName:UIApplication.didBecomeActiveNotification,object:nil,queue:.main){[weak self]_ in self?.startIfNeeded()})
  }
- override func layoutSubviews(){super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;toneLayer.frame=bounds;CATransaction.commit()}
+ override func layoutSubviews(){
+  super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;toneLayer.frame=bounds;CATransaction.commit()
+  // Mask/layout changes can detach and pause an existing player without
+  // changing the React active prop. Reconcile after its visible bounds return.
+  if canAnimate,bounds.width>0,bounds.height>0{startIfNeeded()}
+ }
  private func updateGravity(){
   CATransaction.begin();CATransaction.setDisableActions(true)
   videoLayer.videoGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
@@ -104,8 +109,9 @@ final class SdaMotionArtworkView: ExpoView {
   DispatchQueue.global(qos:.userInitiated).async { [weak self] in
    let prepared=MotionArtworkSource(url:url)
    DispatchQueue.main.async { [weak self] in
-    guard let self,self.generation==token,self.window != nil,UIApplication.shared.applicationState == .active else{prepared?.close();return}
+    guard let self,self.generation==token else{prepared?.close();return}
     self.starting=false
+    guard self.window != nil,UIApplication.shared.applicationState == .active else{prepared?.close();return}
     guard let prepared else {self.onStatus(["uri":uri,"ready":false,"unavailable":true]);return}
     let item=AVPlayerItem(asset:prepared.asset),player=AVPlayer()
     if self.blurred {item.videoComposition=self.makeVideoComposition(prepared.asset)}
