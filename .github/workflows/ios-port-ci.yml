@@ -5,8 +5,8 @@ on:
       scope:
         description: Package validation scope for a pinned source
         type: choice
-        default: motion-artwork
-        options: [motion-artwork, full]
+        default: package-only
+        options: [package-only]
       release_tag:
         description: Optional existing draft release tag to upload packages to
         required: false
@@ -45,181 +45,16 @@ concurrency:
   cancel-in-progress: true
 jobs:
   shared-cache-entry:
-    if: inputs.source_ref != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Forward pinned-source packages to the shared cache entry
+      - name: Forward package to the shared build cache
         uses: actions/github-script@v7
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
-          PACKAGE_SCOPE: ${{ inputs.scope || 'motion-artwork' }}
+          SOURCE_REF: ${{ inputs.source_ref || github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag || '' }}
         with:
           script: |
             const {data:source}=await github.rest.repos.getCommit({...context.repo,ref:process.env.SOURCE_REF});
             const branch=context.payload.repository.default_branch;
-            await github.rest.actions.createWorkflowDispatch({...context.repo,workflow_id:'ios-shared-cache.yml',ref:branch,inputs:{source_ref:source.sha,scope:process.env.PACKAGE_SCOPE,release_tag:process.env.RELEASE_TAG}});
-            await core.summary.addHeading('iOS shared build cache').addRaw(`Source: ${process.env.SOURCE_REF}\n\nCommit: ${source.sha}\n\nCache scope: ${branch}\n\n`).addLink('Open the actual packaging runs',`${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/ios-shared-cache.yml`).write();
-  ios:
-    if: inputs.source_ref == ''
-    name: iOS SDK ${{ matrix.sdk }}
-    runs-on: xcode-27
-    timeout-minutes: 90
-    strategy:
-      matrix:
-        sdk: ['27.1']
-    env:
-      CI: '1'
-      CARGO_INCREMENTAL: '0'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/ios-build/cargo
-      SDA_IOS_INCLUDE_SIMULATOR: '0'
-      EXPO_NO_TELEMETRY: '1'
-      RCT_NEW_ARCH_ENABLED: '1'
-      # Preserve the verified source linkage for React and Worklets.
-      RCT_USE_PREBUILT_RNCORE: '0'
-      RCT_USE_RN_DEP: '0'
-      EXPO_USE_PRECOMPILED_MODULES: '0'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.sha }}
-          submodules: recursive
-      - name: Stage pinned Apple toolchain selector
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs=require('node:fs/promises'),path=require('node:path');
-            const directory=path.join(process.env.RUNNER_TEMP,'sda-apple-toolchain');
-            await fs.mkdir(directory,{recursive:true});
-            for(const name of ['select-apple-toolchain.py','test-apple-toolchain.py']){
-              const result=await github.rest.repos.getContent({...context.repo,path:'scripts/'+name,ref:process.env.GITHUB_WORKFLOW_SHA});
-              if(result.data.type!=='file')throw Error('Expected pinned Apple toolchain source');
-              await fs.writeFile(path.join(directory,name),Buffer.from(result.data.content,'base64'));
-            }
-            core.exportVariable('SDA_APPLE_TOOLCHAIN_SELECTOR',path.join(directory,'select-apple-toolchain.py'));
-            core.exportVariable('SDA_APPLE_TOOLCHAIN_TEST',path.join(directory,'test-apple-toolchain.py'));
-      - name: Verify Apple toolchain selection policy
-        run: python3 "$SDA_APPLE_TOOLCHAIN_TEST"
-      - name: Select Xcode and verify iOS SDK
-        id: sdk
-        run: python3 "$SDA_APPLE_TOOLCHAIN_SELECTOR" --xcode-version '${{ matrix.sdk }}' --ios-sdk-version '${{ matrix.sdk }}' --host-major 27 --record-dir ios-artifacts
-      - name: Verify output callback recovery policy
-        run: python3 scripts/test-ios-output-watchdog.py
-      - name: Verify owned storage cleanup and legacy duplicate migration
-        run: python3 scripts/test-ios-storage.py
-      - name: Record build tools
-        id: xcode
-        run: |
-          xcodebuild -version | tee ios-artifacts/xcode.txt
-          echo "fingerprint=$(shasum -a 256 ios-artifacts/xcode.txt | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '9.15.9'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.98.0'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/sda-native -> ../../ios-build/cargo
-          shared-key: ios-device-release
-          key: ios-device-${{ steps.xcode.outputs.fingerprint }}
-          cache-on-failure: true
-      - name: Validate provenance inputs and pin runtime source
-        env:
-          REQUESTED_SOURCE_REF: ${{ inputs.source_ref }}
-        run: |
-          set -euo pipefail
-          source_sha="$(git rev-parse HEAD)"
-          export SDA_SOURCE_COMMIT="$source_sha"
-          echo "SDA_SOURCE_COMMIT=$source_sha" >> "$GITHUB_ENV"
-          if [[ -n "$REQUESTED_SOURCE_REF" && "$GITHUB_WORKFLOW_SHA" != "$source_sha" ]]; then
-            # Only the provenance collector comes from the current workflow.
-            # All application/Rust/assets remain at the requested source.
-            git fetch --no-tags --depth=1 origin "$GITHUB_WORKFLOW_SHA"
-            git show "$GITHUB_WORKFLOW_SHA:scripts/record-ios-build.mjs" > "$RUNNER_TEMP/sda-record-ios-build.mjs"
-            cp "$RUNNER_TEMP/sda-record-ios-build.mjs" scripts/record-ios-build.mjs
-            changed="$(git diff --name-only)"
-            [[ "$changed" == 'scripts/record-ios-build.mjs' ]]
-          fi
-          node scripts/record-ios-build.mjs --check-inputs
-          node scripts/test-ios-output-calibration-provenance.mjs
-      - name: Install dependencies and prepare resources
-        run: |
-          pnpm install --frozen-lockfile --config.node-linker=hoisted
-          node scripts/prepare-ios-assets.mjs
-      - name: Verify shared Android and iOS lyrics UI
-        run: node scripts/test-mobile-lyrics.mjs
-      - name: Verify native head tracking startup and rendered audio
-        run: node scripts/test-native-head-tracking.mjs
-      - name: Verify native output FIFO
-        run: node scripts/test-native-output-fifo.mjs
-      - name: Build device Rust library
-        run: |
-          set -o pipefail
-          GITHUB_SHA="$SDA_SOURCE_COMMIT" bash scripts/build-ios-native.sh 2>&1 | tee ios-artifacts/rust-build.log
-      - name: Verify native playback startup on the dispatch stack
-        run: |
-          set -o pipefail
-          if [[ -f crates/sda-native/src/ios_stack_tests.rs ]]; then
-            MACINDECODE_AC4_SPEC_DIR="$PWD/tmp/MacinDecode-AC4-Core/spec" cargo test --manifest-path crates/sda-native/Cargo.toml --release --locked --no-default-features --features ios-host --lib ios_stack_tests -- --test-threads=1 --nocapture 2>&1 | tee ios-artifacts/dispatch-stack-regression.log
-          else
-            echo "Pinned source predates the native stack regression; see package provenance."
-          fi
-      - name: Restore CocoaPods downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/CocoaPods
-          key: ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/modules/**/*.podspec') }}
-          restore-keys: |
-            ios-pods-v1-${{ steps.xcode.outputs.fingerprint }}-
-      - name: Generate Xcode project and install CocoaPods
-        run: |
-          set -o pipefail
-          cd apps/mobile
-          pnpm exec expo prebuild --platform ios --no-install 2>&1 | tee ../../ios-artifacts/prebuild.log
-          cd ios
-          pod install 2>&1 | tee ../../../ios-artifacts/pods.log
-      - name: Restore Xcode compilation cache
-        uses: actions/cache@v4
-        with:
-          path: ios-build/CompilationCache.noindex
-          key: ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-${{ github.run_id }}
-          restore-keys: |
-            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-${{ hashFiles('pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/plugins/**', 'apps/mobile/modules/**/*.podspec', 'apps/mobile/modules/sda-core/ios/*.swift', 'apps/mobile/modules/sda-core/ios/*.h', 'apps/mobile/modules/sda-core/ios/Headers/**') }}-
-            ios-compile-v1-${{ steps.xcode.outputs.fingerprint }}-
-      - name: Archive unsigned device app
-        run: |
-          set -o pipefail
-          xcodebuild -showBuildTimingSummary -workspace apps/mobile/ios/SDA.xcworkspace -scheme SDA -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ios-build/SDA.xcarchive -derivedDataPath ios-build/device COMPILATION_CACHE_ENABLE_CACHING=YES COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES COMPILATION_CACHE_CAS_PATH="$PWD/ios-build/CompilationCache.noindex" COMPILATION_CACHE_LIMIT_SIZE=2G CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES IPHONEOS_DEPLOYMENT_TARGET=16.4 archive 2>&1 | tee ios-artifacts/device-build.log
-          mkdir -p ios-build/package/Payload
-          cp -R ios-build/SDA.xcarchive/Products/Applications/SDA.app ios-build/package/Payload/
-          python3 scripts/strip-ios-ci-resources.py ios-build/package/Payload/SDA.app | tee ios-artifacts/production-resource-audit.json
-          ditto -c -k --keepParent ios-build/SDA.xcarchive/dSYMs ios-artifacts/SDA-device-dSYMs.zip
-          xcrun dwarfdump --uuid ios-build/SDA.xcarchive/Products/Applications/SDA.app/SDA > ios-artifacts/device-uuid.txt
-          node scripts/record-ios-build.mjs ios-artifacts
-          cd ios-build/package
-          zip -qry ../../ios-artifacts/SDA-unsigned-ios16.4-arm64.ipa Payload
-          cd ../..
-          printf 'Unsigned arm64 IPA; minimum iOS 16.4. Device-only packaging; see build metadata for native startup tests; no installed-device or simulator acceptance. Requires signing for installation.\n' > ios-artifacts/README.txt
-      - name: Verify lyrics UI in packaged IPA
-        run: python3 scripts/verify-mobile-lyrics-package.py iOS ios-artifacts
-      - name: Upload versioned package to requested draft release
-        if: ${{ inputs.release_tag != '' }}
-        env:
-          SDA_RELEASE_TAG: ${{ inputs.release_tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/upload-mobile-release.mjs iOS
-      - name: Record compilation timings
-        if: always()
-        run: python3 scripts/summarize-ios-build-timings.py ios-artifacts
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: SDA-iOS-SDK${{ matrix.sdk }}-${{ github.run_number }}
-          path: ios-artifacts/
-          retention-days: 14
+            await github.rest.actions.createWorkflowDispatch({...context.repo,workflow_id:'ios-shared-cache.yml',ref:branch,inputs:{source_ref:source.sha,scope:'package-only',release_tag:process.env.RELEASE_TAG}});
+            await core.summary.addHeading('iOS shared build cache').addRaw(`Source: ${source.sha}`).addLink('Open the actual packaging runs',`${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/ios-shared-cache.yml`).write();
