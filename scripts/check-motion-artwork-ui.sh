@@ -23,10 +23,12 @@ out,udid,app=Path(sys.argv[1]),sys.argv[2],sys.argv[3]
 bundle='app.sda.motion-artwork-ui-test'
 subprocess.run(['xcrun','simctl','uninstall',udid,bundle],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
 subprocess.run(['xcrun','simctl','install',udid,app],check=True,timeout=120)
-container=Path(subprocess.check_output(['xcrun','simctl','get_app_container',udid,bundle,'data'],text=True,timeout=30).strip())/'Documents'
+subprocess.run(['xcrun','simctl','launch',udid,bundle],check=True,timeout=120)
+container=Path(subprocess.check_output(['xcrun','simctl','get_app_container',udid,bundle,'data'],text=True,timeout=120).strip())/'Documents'
+container.mkdir(parents=True,exist_ok=True)
 request,result,ack=container/'request.json',container/'result.json',container/'ack.json'
 assert not result.exists(),'Screen checks require a fresh test application'
-subprocess.run(['xcrun','simctl','launch',udid,bundle],check=True,timeout=60)
+(container/'harness-ready').write_text('ready')
 last=0;before=None;deadline=time.monotonic()+305
 try:
  while not result.exists() and time.monotonic()<deadline:

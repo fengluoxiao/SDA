@@ -19,7 +19,7 @@ enum MotionUIResult {
 }
 @objc(MotionArtworkTestDelegate) final class MotionArtworkTestDelegate:UIResponder,UIApplicationDelegate {
  func application(_ application:UIApplication,didFinishLaunchingWithOptions options:[UIApplication.LaunchOptionsKey:Any]?=nil)->Bool {
-  DispatchQueue.global().asyncAfter(deadline:.now()+300){MotionUIResult.write("result.json",["passed":false,"error":"UIKit motion test watchdog expired"]);exit(1)}
+  DispatchQueue.global().asyncAfter(deadline:.now()+480){MotionUIResult.write("result.json",["passed":false,"error":"UIKit motion test watchdog expired"]);exit(1)}
   return true
  }
 }
@@ -104,6 +104,7 @@ final class MotionArtworkTestController:UIViewController {
   captures.append(["phase":label,"meanScreenDifference":difference])
  }
  @MainActor private func run()async throws {
+  try await wait("Screen harness did not attach",timeout:180){FileManager.default.fileExists(atPath:MotionUIResult.directory.appendingPathComponent("harness-ready").path)}
   try await wait("Real UIKit motion player was not ready"){self.sharp.testPlayer?.currentItem?.status == .readyToPlay && UIApplication.shared.applicationState == .active}
   let player=sharp.testPlayer
   try await movingScreen("tablet-portrait")
