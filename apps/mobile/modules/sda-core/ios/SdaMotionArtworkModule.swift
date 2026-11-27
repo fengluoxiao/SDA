@@ -265,10 +265,10 @@ final class SdaMotionArtworkView: ExpoView {
  @discardableResult private func followLeader()->Bool{
   guard blurred,canAnimate,let leader,let player,let reference=leader.player else{return false}
   reverseTimer?.cancel();reverseTimer=nil
-  guard leader.canAnimate else{player.pause();return true}
+  guard leader.canAnimate else{if player.rate != 0{player.pause()};return true}
   if leader.fallbackReverse{
    if !fallbackReverse{lastReverseFrameTime=nil;seekRevision+=1;followerSeekPending=false}
-   fallbackReverse=true;direction = -1;player.pause()
+   fallbackReverse=true;direction = -1;if player.rate != 0{player.pause()}
    if let frame=leader.latestReverseFrame{showReverseFrame(frame)}
    return true
   }

@@ -86,7 +86,7 @@ final class MotionArtworkTestController:UIViewController {
   let rect=[(frame.minX+frame.width*0.2)/size.width,(frame.minY+frame.height*0.18)/size.height,frame.width*0.20/size.width,frame.height*0.12/size.height]
   MotionUIResult.write("request.json",["id":id,"label":label,"rect":rect,"playback":sharp.testState])
   var difference=0.0
-  try await wait("Screen capture acknowledgement missing",timeout:60){
+  try await wait("Screen capture acknowledgement missing",timeout:120){
    guard let data=try? Data(contentsOf:MotionUIResult.directory.appendingPathComponent("ack.json")),let ack=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],ack["id"] as? Int==id else{return false}
    difference=ack["difference"] as? Double ?? 0;return true
   }

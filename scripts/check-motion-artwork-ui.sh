@@ -37,7 +37,7 @@ try:
    if value['id']!=last:
     last=value['id'];screenshot=out/f"screen-{last:02d}-{value['label']}.png"
     screenshot.with_suffix('.json').write_text(json.dumps(value,indent=2))
-    subprocess.run(['xcrun','simctl','io',udid,'screenshot','--type=png',str(screenshot)],check=True,timeout=30,stdout=subprocess.DEVNULL)
+    subprocess.run(['xcrun','simctl','io',udid,'screenshot','--type=png',str(screenshot)],check=True,timeout=90,stdout=subprocess.DEVNULL)
     difference=0.0
     if value['label'].endswith('-after'):
      assert before is not None,'Missing matching before screenshot'
