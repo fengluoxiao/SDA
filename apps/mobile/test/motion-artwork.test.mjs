@@ -78,7 +78,7 @@ test("native iOS motion stays outside SwiftUI masks through style and orientatio
  globalThis.expo={modules:{SdaMotionArtwork:{},ExpoUI:{}},getViewConfig:()=>({})};
  try{
   new Function("require","module","exports",featherBundle.outputFiles[0].text)(name=>name==="react"?{...React,memo:component=>component}:name==="react-native"?native:name.endsWith(".png")?name:{MaskedView:"MaskedView"},ios,ios.exports);
-  for(const mode of ["portrait","phone-landscape","portrait","portrait","none","portrait"]){
+  for(const mode of ["portrait","phone-landscape","portrait","portrait","none","portrait","portrait","phone-landscape","portrait"]){
    const tree=ios.exports.MotionArtworkFeather({children:video,mode,surfaceWidth:430,surfaceHeight:932,artworkTop:0,artworkHeight:559,fallbackColor:"#303034"});
    assert.equal(tree.type,React.Fragment);assert.equal(tree.props.children[0],video);
   }
@@ -214,7 +214,7 @@ test("an absent or failed next video remains invisible and cannot hide a static-
 
 test("rotation and removing tablet blur preserve the sharp native instance and its playback intent",()=>{
  const queue=motionHarness();let nativeType;
- for(const [mode,height,visible]of [["portrait",559,true],["phone-landscape",430,true],["portrait",559,true],["portrait",559,false],["portrait",559,true],["none",430,true],["portrait",559,true]]){
+ for(const [mode,height,visible]of [["portrait",559,true],["phone-landscape",430,true],["portrait",559,true],["portrait",559,false],["portrait",559,true],["none",430,true],["portrait",559,true],["portrait",559,false],["portrait",559,true],["phone-landscape",430,true],["portrait",559,true]]){
   const layer=queue.render(queue.component,{sourceUri:"file:///same.m4a",visible,active:true,featherMode:mode,featherHeight:height}).props.children[0][0];
   nativeType??=layer.type;assert.equal(layer.type,nativeType);assert.equal(layer.props.key,"file:///same.m4a");
   const view=queue.render(layer.type,layer.props).props.children[0];

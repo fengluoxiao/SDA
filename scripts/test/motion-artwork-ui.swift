@@ -34,7 +34,7 @@ enum MotionUIResult {
 final class MotionArtworkTestController:UIViewController {
  private let sharp=SdaMotionArtworkView()
  private var backdrop:SdaMotionArtworkView?
- private var tabletStyle=true,started=false,requestID=0
+ private var tabletStyle=true,started=false,requestID=0,rotations=0
  private var captures=[[String:Any]]()
  override var supportedInterfaceOrientations:UIInterfaceOrientationMask{.allButUpsideDown}
  override var prefersStatusBarHidden:Bool{true}
@@ -62,8 +62,8 @@ final class MotionArtworkTestController:UIViewController {
   sharp.featherHeight=Double(landscape ? coverHeight:min(coverHeight,size.height*0.6))
   backdrop?.frame=view.bounds;backdrop?.bottomExtension = !landscape
  }
- @MainActor private func wait(_ reason:String,_ condition:()->Bool)async throws {
-  let deadline=Date().addingTimeInterval(15)
+ @MainActor private func wait(_ reason:String,timeout:Double=15,_ condition:()->Bool)async throws {
+  let deadline=Date().addingTimeInterval(timeout)
   while !condition(){if Date()>deadline{throw NSError(domain:reason,code:1)};try await Task.sleep(nanoseconds:25_000_000)}
  }
  @MainActor private func rotate(_ landscape:Bool)async throws {
@@ -71,6 +71,7 @@ final class MotionArtworkTestController:UIViewController {
   setNeedsUpdateOfSupportedInterfaceOrientations()
   scene.requestGeometryUpdate(.iOS(interfaceOrientations:landscape ? .landscapeRight:.portrait))
   try await wait("Window did not rotate"){(self.view.bounds.width>self.view.bounds.height) == landscape}
+  rotations+=1
   try await Task.sleep(nanoseconds:250_000_000)
  }
  @MainActor private func screenshot(_ label:String)async throws->Double {
@@ -80,7 +81,7 @@ final class MotionArtworkTestController:UIViewController {
   let rect=[(frame.minX+frame.width*0.2)/size.width,(frame.minY+frame.height*0.18)/size.height,frame.width*0.20/size.width,frame.height*0.12/size.height]
   MotionUIResult.write("request.json",["id":id,"label":label,"rect":rect])
   var difference=0.0
-  try await wait("Screen capture acknowledgement missing"){
+  try await wait("Screen capture acknowledgement missing",timeout:60){
    guard let data=try? Data(contentsOf:MotionUIResult.directory.appendingPathComponent("ack.json")),let ack=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],ack["id"] as? Int==id else{return false}
    difference=ack["difference"] as? Double ?? 0;return true
   }
@@ -95,7 +96,10 @@ final class MotionArtworkTestController:UIViewController {
   }
   _=try await screenshot(label+"-before")
   try await Task.sleep(nanoseconds:650_000_000)
-  let difference=try await screenshot(label+"-after")
+  var difference=try await screenshot(label+"-after")
+  // A slow first simulator capture can span a complete ping-pong period.
+  // One additional screen sample rejects that alias; a frozen view still fails.
+  if difference<=1{try await Task.sleep(nanoseconds:450_000_000);difference=max(difference,try await screenshot(label+"-recheck-after"))}
   guard difference>1 else{throw NSError(domain:"Visible artwork froze at "+label,code:1)}
   captures.append(["phase":label,"meanScreenDifference":difference])
  }
@@ -105,15 +109,14 @@ final class MotionArtworkTestController:UIViewController {
   try await movingScreen("tablet-portrait")
   try await rotate(true);try await movingScreen("tablet-landscape")
   try await rotate(false);try await movingScreen("tablet-portrait-return")
-  sharp.active=false;backdrop?.active=false
-  let settings=UIViewController();settings.view.backgroundColor = .black;settings.modalPresentationStyle = .fullScreen
-  await withCheckedContinuation{continuation in present(settings,animated:false){continuation.resume()}}
-  tabletStyle=false;backdrop?.testStop();backdrop?.removeFromSuperview();backdrop=nil
-  await withCheckedContinuation{continuation in settings.dismiss(animated:false){continuation.resume()}}
-  view.setNeedsLayout();view.layoutIfNeeded();sharp.active=true
+  try await setTabletStyle(false)
   try await movingScreen("style-disabled-return")
   try await rotate(true);try await movingScreen("disabled-landscape")
   try await rotate(false);try await movingScreen("disabled-portrait")
+  try await setTabletStyle(true)
+  try await movingScreen("style-re-enabled-return")
+  try await rotate(true);try await movingScreen("re-enabled-landscape")
+  try await rotate(false);try await movingScreen("re-enabled-portrait")
   guard sharp.testPlayer === player else{throw NSError(domain:"Rotation replaced the selected player",code:1)}
   sharp.testReverse(at:4.4);try await movingScreen("reverse-after-rotation")
   sharp.active=false;try await Task.sleep(nanoseconds:200_000_000)
@@ -123,9 +126,18 @@ final class MotionArtworkTestController:UIViewController {
   sharp.active=true;try await movingScreen("manual-resume")
   finish(true,nil)
  }
+ @MainActor private func setTabletStyle(_ enabled:Bool)async throws {
+  sharp.active=false;backdrop?.active=false
+  let settings=UIViewController();settings.view.backgroundColor = .black;settings.modalPresentationStyle = .fullScreen
+  await withCheckedContinuation{continuation in present(settings,animated:false){continuation.resume()}}
+  tabletStyle=enabled;backdrop?.testStop();backdrop?.removeFromSuperview();backdrop=nil
+  if enabled{addBackdrop();backdrop?.active=false}
+  await withCheckedContinuation{continuation in settings.dismiss(animated:false){continuation.resume()}}
+  view.setNeedsLayout();view.layoutIfNeeded();sharp.active=true;backdrop?.active=true
+ }
  private func finish(_ passed:Bool,_ error:String?){
   sharp.testStop();backdrop?.testStop()
-  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"realOrientationChanges":4,"visibleMotionChecks":captures,"screenshots":requestID,"physicalDeviceTested":false]
+  var result:[String:Any]=["passed":passed,"realUIKitWindow":true,"realOrientationChanges":rotations,"styleSwitches":[false,true],"visibleMotionChecks":captures,"screenshots":requestID,"physicalDeviceTested":false]
   if let error{result["error"]=error}
   MotionUIResult.write("result.json",result);exit(passed ? 0:1)
  }
