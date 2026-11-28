@@ -38,34 +38,33 @@ import AVFoundation
    try require(view.testPlayer === original,"Rotation recreated the selected cover player")
   }
  }
- // Repeat in the reverse leg: resume must restart its timer and wait for a
- // real frame after idle memory is released, without rewinding the cover.
- view.testReverse(at:2)
- try await waitFor("Reverse leg did not start"){view.testReversePosition<1.9}
+ // Exercise the real native loop before recreating its blurred follower.
+ let loops=view.testLoopCount
+ try await waitFor("Forward loop did not complete"){view.testLoopCount>loops}
+ try require(original.rate>0,"Native loop did not continue forward")
  let recreated=SdaMotionArtworkView()
  recreated.bounds=view.bounds;recreated.blurred=true;recreated.window=window
  recreated.presented=true;recreated.active=true;recreated.sourceUri=url.absoluteString
- try await waitFor("Recreated background started an independent reverse timeline"){
-  recreated.testDirection == view.testDirection && recreated.testReverseFrameTime>0 && recreated.testReportedReady && abs(recreated.testReverseFrameTime-view.testReverseFrameTime)<0.07
+ try await waitFor("Recreated background did not follow the sharp cover"){
+  recreated.testPlayer?.currentItem?.status == .readyToPlay && abs(recreated.testLocalPosition-view.testPlaybackPosition)<0.15
  }
  recreated.active=false;recreated.testStop()
  view.active=false
- let frozen=view.testReversePosition
- try require(view.testRetainedBytes==0,"Paused view retained reverse working windows")
+ let frozen=view.testPlaybackPosition
  view.bounds=CGRect(x:0,y:0,width:932,height:430);view.layoutSubviews()
  try await Task.sleep(nanoseconds:50_000_000)
- try require(abs(view.testReversePosition-frozen)<0.001,"Hidden reverse cover advanced during settings")
+ try require(abs(view.testPlaybackPosition-frozen)<0.03,"Hidden cover advanced during settings")
  view.active=true
  view.bounds=CGRect(x:0,y:0,width:430,height:932);view.layoutSubviews()
- try await waitFor("Rotation left the reverse timer paused"){view.testReversePosition<frozen-0.05}
+ try await waitFor("Rotation left the forward loop paused"){original.rate>0}
  UIApplication.shared.applicationState = .background
  NotificationCenter.default.post(name:UIApplication.willResignActiveNotification,object:nil)
  view.layoutSubviews()
- let backgroundPosition=view.testReversePosition
+ let backgroundPosition=view.testPlaybackPosition
  try await Task.sleep(nanoseconds:50_000_000)
- try require(abs(view.testReversePosition-backgroundPosition)<0.001,"Background layout resumed the cover")
+ try require(abs(view.testPlaybackPosition-backgroundPosition)<0.03,"Background layout resumed the cover")
  UIApplication.shared.applicationState = .active
  NotificationCenter.default.post(name:UIApplication.didBecomeActiveNotification,object:nil)
- try await waitFor("Foreground restoration did not resume the reverse cover"){view.testReversePosition<backgroundPosition-0.05}
- print("{\"motionViewLifecycle\":true,\"detachedPreparationRecovered\":true,\"settingsAndStyleRotations\":3,\"forwardAndReverseResumed\":true,\"recreatedBlurSharesSharpTimeline\":true,\"pausedWindowsReleased\":true,\"physicalDeviceTested\":false}")
+ try await waitFor("Foreground restoration did not resume the forward cover"){original.rate>0}
+ print("{\"motionViewLifecycle\":true,\"detachedPreparationRecovered\":true,\"settingsAndStyleRotations\":3,\"forwardLoopResumed\":true,\"recreatedBlurSharesSharpTimeline\":true,\"nativeForwardLoopVerified\":true,\"physicalDeviceTested\":false}")
 }

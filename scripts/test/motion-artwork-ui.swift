@@ -97,16 +97,16 @@ final class MotionArtworkTestController:UIViewController {
   return difference
  }
  @MainActor private func movingScreen(_ label:String)async throws {
-  // Stay away from either ping-pong endpoint, where equal before/after
+  // Stay away from the loop endpoint, where equal before/after
   // positions can legitimately display the same frame.
   try await wait("Motion clock stopped before screen verification"){
    let position=self.sharp.testPlaybackPosition
-   return self.sharp.testDirection>0 ? position>0.5 && position<1.8:position>3.2 && position<4.5
+   return position>0.5 && position<1.8
   }
   _=try await screenshot(label+"-before")
   try await Task.sleep(nanoseconds:650_000_000)
   var difference=try await screenshot(label+"-after")
-  // A slow first simulator capture can span a complete ping-pong period.
+  // A slow first simulator capture can span a complete playback loop.
   // One additional screen sample rejects that alias; a frozen view still fails.
   if difference<=1{try await Task.sleep(nanoseconds:450_000_000);difference=max(difference,try await screenshot(label+"-recheck-after"))}
   guard difference>1 else{throw NSError(domain:"Visible artwork froze at "+label,code:1)}
@@ -131,8 +131,10 @@ final class MotionArtworkTestController:UIViewController {
   try await rotate(false);try await movingScreen("re-enabled-portrait")
   try await visitSettings(nil);try await movingScreen("extra-settings-after-re-enabled")
   guard sharp.testPlayer === player else{throw NSError(domain:"Rotation replaced the selected player",code:1)}
-  sharp.testReverse(at:4.4);try await movingScreen("reverse-after-rotation")
-  try await visitSettings(nil);try await movingScreen("settings-unchanged-reverse-return")
+  let previousLoop=sharp.testLoopCount
+  try await wait("Full cover did not loop forward"){self.sharp.testLoopCount>previousLoop}
+  try await movingScreen("forward-loop-after-rotation")
+  try await visitSettings(nil);try await movingScreen("settings-unchanged-loop-return")
   sharp.active=false;try await Task.sleep(nanoseconds:200_000_000)
   _=try await screenshot("paused-before");try await Task.sleep(nanoseconds:650_000_000)
   let pausedDifference=try await screenshot("paused-after")

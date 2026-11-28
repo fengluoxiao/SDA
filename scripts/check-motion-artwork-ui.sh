@@ -8,7 +8,7 @@ mkdir -p "$app"
 sim_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun swiftc -O scripts/test/motion-artwork-screen-difference.swift -o "$out/screen-difference"
 xcrun --sdk iphonesimulator swiftc -O -parse-as-library -swift-version 5 -D SDA_MOTION_UI_TEST -target "$(uname -m)-apple-ios16.4-simulator" -sdk "$sim_sdk" \
- "$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$ios/MotionArtworkMask.swift" \
+ "$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkMask.swift" \
  "$out/MotionArtworkViewUnderTest.swift" scripts/test/motion-artwork-ui.swift -o "$app/MotionArtworkUITest"
 cp "$out/host-inputs/long-gop.m4a" "$app/motion.m4a"
 python3 - "$app/Info.plist" <<'PY'

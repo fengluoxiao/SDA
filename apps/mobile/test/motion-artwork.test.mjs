@@ -43,29 +43,21 @@ const overlay=readFileSync("apps/mobile/src/EmbeddedMotionArtwork.tsx","utf8");a
  const androidNative=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");assert.doesNotMatch(androidNative,/if\(!active \|\| !foreground/);assert.match(androidNative,/if\(!active \|\| !presented\)pause\(\)/);assert.match(androidNative,/AsyncFunction\("hasMotionArtwork"\)/);assert.match(androidNative,/if\(value\)startIfNeeded\(\)else rewind\(\)/);
 });
 
-test("native covers alternate direction without creating reversed-video files or retaining a full decoded clip",()=>{
+test("native covers loop forward without reverse decoders or extracted-video files",()=>{
  const ios=readFileSync("apps/mobile/modules/sda-core/ios/SdaMotionArtworkModule.swift","utf8");
- assert.doesNotMatch(ios,/AVPlayerLooper/);
- assert.match(ios,/direction = -1/);assert.match(ios,/playImmediately\(atRate:direction\)/);
- assert.doesNotMatch(ios,/generateCGImagesAsynchronously|item.canPlayReverse/);
- assert.match(ios,/MotionArtworkReverseFrames.acquire\(uri\)/);
- assert.match(ios,/bottomExtension \? frame.bottomImage:frame.blurredImage/);
+ assert.match(ios,/player=AVQueuePlayer\(\)/);
+ assert.match(ios,/AVPlayerLooper\(player:player,templateItem:item\)/);
+ assert.match(ios,/candidate.asset.load\(\.duration\)/);
+ assert.match(ios,/looper\?\.disableLooping\(\)/);
+ assert.match(ios,/player\?\.removeAllItems\(\)/);
+ assert.match(ios,/followLeader\(\)/);
+ assert.doesNotMatch(ios,/ReverseFrames|ReverseClock|reverseLayer|atRate:-1|beginReverse/);
  assert.doesNotMatch(ios,/toneLayer|paintTone|bottomTone/);
- const iosFrames=readFileSync("apps/mobile/modules/sda-core/ios/MotionArtworkReverseFrames.swift","utf8");
- assert.match(iosFrames,/AVAssetReaderTrackOutput/);assert.match(iosFrames,/copyNextSampleBuffer/);
- assert.match(iosFrames,/blurFrame.cropping\(to:/);assert.match(iosFrames,/deferred:false/);
- assert.doesNotMatch(iosFrames,/MotionArtworkBackdrop.blurred\(small,bottomExtension:true/);
- assert.match(iosFrames,/ProcessInfo.processInfo.physicalMemory\/128/);assert.match(iosFrames,/abs\(\$0.key-wantedIndex\)<=1/);
- assert.match(ios,/reverseClock.pause\(at:CACurrentMediaTime\(\)\)/);
  const android=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/SdaMotionArtworkModule.kt","utf8");
- assert.match(android,/next.isLooping=false/);assert.match(android,/setOnCompletionListener.*beginReverse/);
- assert.match(android,/setOnPreparedListener[^\n]*prepareReverseTail\(\)/);
- assert.match(android,/currentReversePosition\(\)/);assert.match(android,/waitingForwardFrame && forwardSeekComplete/);
- const frames=readFileSync("apps/mobile/modules/sda-core/android/src/main/java/app/sda/mobile/sda/MotionArtworkReverseFrames.kt","utf8");
- assert.match(frames,/getFramesAtIndex\(start,count\)/);assert.match(frames,/maxMemory\(\)\/12/);
- assert.match(frames,/kotlin.math.abs\(it-wanted\)>1/);
- assert.match(frames,/executor.shutdown\(\)/);
- assert.doesNotMatch(ios+android+frames+iosFrames,/AVAssetWriter|MediaMuxer|FileOutputStream|mutableListOf<Bitmap|\[CGImage\]/);
+ assert.match(android,/next.isLooping=true/);
+ assert.match(android,/setDataSource\(file.fd,range.offset,range.length\)/);
+ assert.doesNotMatch(android,/ReverseFrames|reverseImage|beginReverse|renderReverse|setOnCompletionListener/);
+ assert.doesNotMatch(ios+android,/AVAssetWriter|MediaMuxer|FileOutputStream|mutableListOf<Bitmap|\[CGImage\]/);
 });
 
 const featherBundle = await build({ entryPoints: ["apps/mobile/src/PhoneLandscapeBlur.tsx"], bundle: true, platform: "node", format: "cjs", external: ["react", "react-native", "@expo/ui/*", "*.png"], write: false });

@@ -12,26 +12,20 @@ probes='''
 extension SdaMotionArtworkView {
  var testStarting:Bool{starting}
  var testPlayer:AVPlayer?{player}
- var testDirection:Float{direction}
- var testPlaybackPosition:Double{if blurred,let leader{return leader.testPlaybackPosition};return fallbackReverse ? reverseClock.current(at:CACurrentMediaTime()):player?.currentTime().seconds ?? 0}
- var testReverseFrameTime:Double{latestReverseFrame?.time ?? -1}
+ var testLoopCount:Int{looper?.loopCount ?? 0}
+ var testPlaybackPosition:Double{if blurred,let leader{return leader.testPlaybackPosition};return player?.currentTime().seconds ?? 0}
+ var testLocalPosition:Double{player?.currentTime().seconds ?? 0}
  var testReportedReady:Bool{reportedReady}
  var testState:[String:Any]{
   let time=testPlaybackPosition,duration=player?.currentItem?.duration.seconds ?? 0
-  return ["active":active,"presented":presented,"attached":window != nil,"canAnimate":canAnimate,"direction":direction,"reverse":fallbackReverse,"position":time.isFinite ? time:-1,"duration":duration.isFinite ? duration:-1,"rate":player?.rate ?? 0,"reverseTimer":reverseTimer != nil,"followerTimer":followerTimer != nil,"reverseFrame":testReverseFrameTime,"framesFailed":reverseFrames?.failed ?? false,"featherMode":featherMode]
+  return ["active":active,"presented":presented,"attached":window != nil,"canAnimate":canAnimate,"loopCount":testLoopCount,"position":time.isFinite ? time:-1,"duration":duration.isFinite ? duration:-1,"rate":player?.rate ?? 0,"followerTimer":followerTimer != nil,"featherMode":featherMode]
  }
- var testReversePosition:Double{reverseClock.current(at:CACurrentMediaTime())}
- var testRetainedBytes:Int{reverseFrames?.statistics.retainedBytes ?? 0}
  func testStop(){stop()}
- func testReverse(at position:Double){
-  player?.pause();direction = -1;fallbackReverse=true;awaitingReverseFrame=true
-  reverseClock.begin(at:position);resume()
- }
 }
 '''
 pathlib.Path(sys.argv[2]).write_text('import Foundation\nimport AVFoundation\nimport CoreImage\nimport QuartzCore\n#if SDA_MOTION_UI_TEST\nimport UIKit\n#endif\n'+view+probes)
 PY
-core=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkReverseClock.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkReverseFrames.swift" "$ios/MotionArtworkMask.swift")
+core=("$ios/MotionArtworkRange.swift" "$ios/MotionArtworkSource.swift" "$ios/MotionArtworkBackdrop.swift" "$ios/MotionArtworkMask.swift")
 sources=("${core[@]}" "$PWD/scripts/test/motion-artwork-view-stubs.swift" "$out/MotionArtworkViewUnderTest.swift" "$PWD/scripts/test/motion-artwork-view-lifecycle.swift" "$PWD/scripts/test/motion-artwork-mask.swift" "$PWD/scripts/test/embedded-motion-artwork.swift")
 fixture="$PWD/scripts/test/fixtures/motion-artwork-tall.mp4"
 xcrun swiftc -O -parse-as-library -swift-version 5 "${sources[@]}" -o "$out/motion-host-test"

@@ -22,6 +22,7 @@ assert build["sourceCommit"] == build["sourceCheckoutCommit"] == source
 assert build["packagingMode"] == "device-package-only"
 assert build["testsExecuted"] is False
 assert build["motionArtworkBackdropColorPolicy"] == "source-color-blur-v1"
+assert build["motionArtworkPlaybackPolicy"] == "native-forward-loop-v1"
 assert build["spatialPresentationAlgorithm"] == "microturn-precedence-envelopment-v1"
 assert build["spatialPresentationPersistentAudioCache"] is False
 assert build["nativeDispatchStackRegression"]["passed"] is False
@@ -36,7 +37,7 @@ for name in ("lib.rs", "near_field.rs", "authored.rs", "protocol.rs", "object_mi
     relative = "apps/native-renderer/src/" + name
     assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative
 
-for name in ("MotionArtworkBackdrop.swift", "MotionArtworkReverseFrames.swift", "SdaMotionArtworkModule.swift"):
+for name in ("MotionArtworkBackdrop.swift", "SdaMotionArtworkModule.swift"):
     relative = "apps/mobile/modules/sda-core/ios/" + name
     assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative
 
