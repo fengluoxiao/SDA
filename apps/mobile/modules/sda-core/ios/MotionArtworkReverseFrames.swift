@@ -3,7 +3,7 @@ import CoreImage
 import CoreGraphics
 
 final class MotionArtworkReverseFrames {
- struct Frame {let time:Double;let image:CGImage;let blurredImage:CGImage;let bottomImage:CGImage;let bottomTone:CGColor;let bytes:Int}
+ struct Frame {let time:Double;let image:CGImage;let blurredImage:CGImage;let bottomImage:CGImage;let bytes:Int}
  private struct Configuration {
   let track:AVAssetTrack,transform:CGAffineTransform,frameInterval:Double,windowDuration:Double,lastIndex:Int,duration:Double
  }
@@ -138,8 +138,8 @@ final class MotionArtworkReverseFrames {
   defer{reader.cancelReading();lock.lock();if self.reader === reader{self.reader=nil};lock.unlock()}
   guard reader.startReading() else{throw reader.error ?? NSError(domain:"SDA.MotionReverse.Start",code:1)}
   var frames=[Frame](),bytes=0
-  var decoded=0.0,sharpRendered=0.0,blurRendered=0.0,bottomRendered=0.0,toneRendered=0.0
-  defer{lock.lock();decodeSeconds+=decoded;sharpSeconds+=sharpRendered;blurSeconds+=blurRendered;bottomSeconds+=bottomRendered;toneSeconds+=toneRendered;lock.unlock()}
+  var decoded=0.0,sharpRendered=0.0,blurRendered=0.0
+  defer{lock.lock();decodeSeconds+=decoded;sharpSeconds+=sharpRendered;blurSeconds+=blurRendered;lock.unlock()}
   while true{
    lock.lock();let shouldStop=closed || revision != token;lock.unlock()
    if shouldStop{break}
@@ -165,16 +165,11 @@ final class MotionArtworkReverseFrames {
     guard let blurFrame=context.createCGImage(blurred,from:small.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false),
      let bottomCrop=blurFrame.cropping(to:CGRect(x:0,y:Double(blurFrame.height)*0.72,width:Double(blurFrame.width),height:Double(blurFrame.height)*0.28)) else{return false}
     blurRendered+=Date.timeIntervalSinceReferenceDate-blurStart
-    let bottomStart=Date.timeIntervalSinceReferenceDate
-    let styledBottom=MotionArtworkBackdrop.continuationStyle(CIImage(cgImage:bottomCrop))
-    guard let bottomFrame=context.createCGImage(styledBottom,from:styledBottom.extent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{return false}
-    bottomRendered+=Date.timeIntervalSinceReferenceDate-bottomStart
-    let toneStart=Date.timeIntervalSinceReferenceDate
-    let bottomTone=MotionArtworkBackdrop.toneColor(sharpFrame)
-    toneRendered+=Date.timeIntervalSinceReferenceDate-toneStart
+    // Reuse the lower blurred crop with its original colors in both directions.
+    let bottomFrame=bottomCrop
     let frameBytes=sharpFrame.bytesPerRow*sharpFrame.height+blurFrame.bytesPerRow*blurFrame.height+bottomFrame.bytesPerRow*bottomFrame.height
     guard bytes+frameBytes<=Self.windowByteLimit else{return false}
-    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bottomTone:bottomTone,bytes:frameBytes));bytes+=frameBytes;return true
+    frames.append(Frame(time:time,image:sharpFrame,blurredImage:blurFrame,bottomImage:bottomFrame,bytes:frameBytes));bytes+=frameBytes;return true
    }
    if !keepReading{break}
   }

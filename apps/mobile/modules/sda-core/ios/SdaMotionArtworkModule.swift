@@ -78,7 +78,6 @@ final class SdaMotionArtworkView: ExpoView {
  private var latestReverseFrame:MotionArtworkReverseFrames.Frame?
  private var lastReverseFrameTime:Double?,seekRevision=0
  private let reverseLayer=CALayer()
- private let toneLayer=CAGradientLayer()
  private var generation=0,starting=false
  private var reportedReady=false
  required init(appContext:AppContext? = nil) {
@@ -86,13 +85,12 @@ final class SdaMotionArtworkView: ExpoView {
   Self.views.removeAll{$0.value==nil};Self.views.append(MotionArtworkWeakView(self))
   videoLayer.videoGravity = .resizeAspectFill;layer.addSublayer(videoLayer)
   reverseLayer.contentsGravity = .resizeAspectFill;reverseLayer.masksToBounds=true;reverseLayer.isHidden=true;layer.addSublayer(reverseLayer)
-  toneLayer.startPoint=CGPoint(x:0.5,y:0);toneLayer.endPoint=CGPoint(x:0.5,y:1);toneLayer.locations=[0,0.6,1];toneLayer.isHidden=true;layer.addSublayer(toneLayer)
   let center=NotificationCenter.default
   observers.append(center.addObserver(forName:UIApplication.willResignActiveNotification,object:nil,queue:.main){[weak self]_ in self?.pause()})
   observers.append(center.addObserver(forName:UIApplication.didBecomeActiveNotification,object:nil,queue:.main){[weak self]_ in self?.startIfNeeded()})
  }
  override func layoutSubviews(){
-  super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;toneLayer.frame=bounds;CATransaction.commit()
+  super.layoutSubviews();CATransaction.begin();CATransaction.setDisableActions(true);videoLayer.frame=bounds;reverseLayer.frame=bounds;CATransaction.commit()
   updateFeather()
   // Mask/layout changes can detach and pause an existing player without
   // changing the React active prop. Reconcile after its visible bounds return.
@@ -109,23 +107,14 @@ final class SdaMotionArtworkView: ExpoView {
   CATransaction.begin();CATransaction.setDisableActions(true)
   videoLayer.videoGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
   reverseLayer.contentsGravity=blurred && bottomExtension ? .resize:.resizeAspectFill
-  toneLayer.isHidden = !(blurred && bottomExtension)
   CATransaction.commit()
   updateFeather()
  }
  private func makeVideoComposition(_ asset:AVAsset)->AVVideoComposition {
-  let policy=backdrop,token=generation
-  return AVVideoComposition(asset:asset){[weak self] request in
-   let output=policy.render(request.sourceImage)
-   if policy.bottomExtension {
-    let tone=MotionArtworkBackdrop.toneColor(request.sourceImage)
-    DispatchQueue.main.async{[weak self] in guard let self,self.generation==token,!self.fallbackReverse,self.bottomExtension else{return};self.paintTone(tone)}
-   }
-   request.finish(with:output,context:nil)
+  let policy=backdrop
+  return AVVideoComposition(asset:asset){request in
+   request.finish(with:policy.render(request.sourceImage),context:nil)
   }
- }
- private func paintTone(_ color:CGColor){
-  CATransaction.begin();CATransaction.setDisableActions(true);toneLayer.colors=[color.copy(alpha:0)!,color.copy(alpha:0)!,color];CATransaction.commit()
  }
  override func didMoveToWindow(){super.didMoveToWindow();if window==nil{pause()}else{startIfNeeded()}}
  private func startIfNeeded() {
@@ -183,7 +172,7 @@ final class SdaMotionArtworkView: ExpoView {
   player?.replaceCurrentItem(with:nil);videoLayer.player=nil;player=nil
   direction=1;fallbackReverse=false;reverseClock.begin(at:0);seekRevision+=1
   followerSeekPending=false;latestReverseFrame=nil
-  CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=nil;reverseLayer.isHidden=true;toneLayer.colors=nil;CATransaction.commit()
+  CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=nil;reverseLayer.isHidden=true;CATransaction.commit()
   source?.close();source=nil
  }
  private var canAnimate:Bool{active && presented && window != nil && UIApplication.shared.applicationState == .active}
@@ -245,7 +234,6 @@ final class SdaMotionArtworkView: ExpoView {
   latestReverseFrame=frame
   guard lastReverseFrameTime != frame.time else{return}
   lastReverseFrameTime=frame.time
-  if blurred && bottomExtension{paintTone(frame.bottomTone)}
   CATransaction.begin();CATransaction.setDisableActions(true);reverseLayer.contents=blurred ? (bottomExtension ? frame.bottomImage:frame.blurredImage):frame.image;reverseLayer.isHidden=false;CATransaction.commit()
   reportReady()
  }

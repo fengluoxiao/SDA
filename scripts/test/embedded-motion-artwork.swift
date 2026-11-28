@@ -56,12 +56,7 @@ import CoreImage
   let white=CIImage(color:CIColor(red:1,green:1,blue:1)).cropped(to:colorExtent)
   guard let whiteFrame=renderContext.createCGImage(MotionArtworkBackdrop.blurred(white,bottomExtension:true,radius:8),from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB()),let whiteData=whiteFrame.dataProvider?.data else{throw NSError(domain:"White artwork render failed",code:1)}
   let whiteBytes=whiteData as Data
-  try require(whiteBytes[50*whiteFrame.bytesPerRow+50*4]<=165,"Bright artwork must remain dark enough under playback controls")
-  guard let rawColorFrame=renderContext.createCGImage(twoTone,from:colorExtent,format:.RGBA8,colorSpace:CGColorSpaceCreateDeviceRGB(),deferred:false) else{throw NSError(domain:"Palette reference render failed",code:1)}
-  let forwardTone=MotionArtworkBackdrop.toneColor(twoTone),reverseTone=MotionArtworkBackdrop.toneColor(rawColorFrame)
-  guard let forwardComponents=forwardTone.components,let reverseComponents=reverseTone.components else{throw NSError(domain:"Palette components missing",code:1)}
-  for channel in 0..<3{try require(abs(forwardComponents[channel]-reverseComponents[channel])<0.02,"Forward and reverse palette samplers disagree")}
-  try require(abs(reverseTone.alpha-0.85)<0.00001,"Footer tone opacity changed")
+  try require(whiteBytes[50*whiteFrame.bytesPerRow+50*4]>=250,"White artwork must not gain a dark or gray footer tint")
   var reverseClock=MotionArtworkReverseClock()
   reverseClock.begin(at:5);reverseClock.resume(at:100)
   try require(reverseClock.current(at:102)==3,"Reverse playback must move from five to three seconds")

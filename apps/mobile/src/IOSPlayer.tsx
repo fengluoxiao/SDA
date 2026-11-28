@@ -426,11 +426,11 @@ function ThemedPlayer(p: PlayerProps) {
       {hasArtwork && <View testID="tablet-ambient-scrim" style={[StyleSheet.absoluteFill, { backgroundColor: ARTWORK_AMBIENT_PAINT.scrimColor }]} />}
     </>}
     {phoneLandscapeBlur && hasArtwork && <PhoneLandscapeBlur backgroundColor={fadeColor} uri={artworkUri} surfaceWidth={width} surfaceHeight={height} artworkLeft={artworkLeft} artworkTop={artworkTop} artworkWidth={artworkWidth} artworkHeight={artworkSize} />}
-    {liveBackdropEnabled && <View testID="motion-artwork-live-backdrop" style={[StyleSheet.absoluteFill,{opacity:selectedMotionUri?1:0,backgroundColor:portraitMotionActive?"#08080a":fadeColor}]}>
+    {liveBackdropEnabled && <View testID="motion-artwork-live-backdrop" style={[StyleSheet.absoluteFill,{opacity:selectedMotionUri?1:0,backgroundColor:portraitMotionActive?"transparent":fadeColor}]}>
       <View style={[StyleSheet.absoluteFill,{transform:[{scale:portraitMotionActive?1:1.12}]}]}>
         <EmbeddedMotionArtwork blurred bottomExtension={portraitMotionActive} opacity={portraitMotionActive?1:ARTWORK_AMBIENT_PAINT.imageOpacity} sourceUri={selectedMotionUri} nextSourceUri={nextMotionSourceUri} visible={motionSurfaceVisible} active={motionSurfaceVisible && playing} onUnavailable={motionSelection.onUnavailable} />
       </View>
-      <View style={[StyleSheet.absoluteFill,{backgroundColor:portraitMotionActive?"rgba(0,0,0,.40)":ARTWORK_AMBIENT_PAINT.scrimColor}]} />
+      {!portraitMotionActive && <View style={[StyleSheet.absoluteFill,{backgroundColor:ARTWORK_AMBIENT_PAINT.scrimColor}]} />}
     </View>}
     <View testID="persistent-artwork-plane" style={[StyleSheet.absoluteFill, { opacity: tabletPortrait && !selectedMotionUri ? 0 : 1 }]}>
     <MotionArtworkFeather enabled={motionEnabled} mode={motionFeatherMode} surfaceWidth={width} surfaceHeight={height} artworkLeft={motionPlaneFrame.left} artworkTop={motionPlaneFrame.top} artworkWidth={motionPlaneFrame.width} artworkHeight={motionFeatherHeight} fallbackColor={fadeColor}>

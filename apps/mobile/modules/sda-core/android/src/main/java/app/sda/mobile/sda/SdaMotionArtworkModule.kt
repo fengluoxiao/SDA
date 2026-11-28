@@ -3,9 +3,6 @@ package app.sda.mobile.sda
 import android.content.Context
 import android.graphics.Matrix
 import android.graphics.Bitmap
-import android.graphics.Paint
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.RenderEffect
 import android.graphics.SurfaceTexture
 import android.graphics.Shader
@@ -114,8 +111,7 @@ class SdaMotionArtworkView(context: Context,appContext: AppContext): ExpoView(co
  fun updateBottomExtension(value:Boolean){bottomExtension=value;updatePaint();crop();updateReverseMatrix()}
  private fun updatePaint(){
   val extended=blurred && bottomExtension
-  val filter=if(extended)ColorMatrixColorFilter(ColorMatrix().apply{setSaturation(.78f)})else null
-  texture.setLayerPaint(Paint().apply{colorFilter=filter});reverseImage.colorFilter=filter
+  texture.setLayerPaint(null);reverseImage.clearColorFilter()
   if(android.os.Build.VERSION.SDK_INT>=31){val effect=if(blurred)RenderEffect.createBlurEffect(36f,36f,if(extended)Shader.TileMode.CLAMP else Shader.TileMode.DECAL)else null;texture.setRenderEffect(effect);reverseImage.setRenderEffect(effect)}
  }
  override fun onAttachedToWindow(){super.onAttachedToWindow();react?.addLifecycleEventListener(this);startIfNeeded()}

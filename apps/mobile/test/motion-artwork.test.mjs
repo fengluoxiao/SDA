@@ -50,7 +50,7 @@ test("native covers alternate direction without creating reversed-video files or
  assert.doesNotMatch(ios,/generateCGImagesAsynchronously|item.canPlayReverse/);
  assert.match(ios,/MotionArtworkReverseFrames.acquire\(uri\)/);
  assert.match(ios,/bottomExtension \? frame.bottomImage:frame.blurredImage/);
- assert.match(ios,/toneLayer=CAGradientLayer\(\)/);
+ assert.doesNotMatch(ios,/toneLayer|paintTone|bottomTone/);
  const iosFrames=readFileSync("apps/mobile/modules/sda-core/ios/MotionArtworkReverseFrames.swift","utf8");
  assert.match(iosFrames,/AVAssetReaderTrackOutput/);assert.match(iosFrames,/copyNextSampleBuffer/);
  assert.match(iosFrames,/blurFrame.cropping\(to:/);assert.match(iosFrames,/deferred:false/);
