@@ -10,16 +10,17 @@ export function sideNavigationDockMetrics(compact = false) {
   return { top: compact ? 8 : 16, gap: compact ? 2 : 8 };
 }
 
-export function SideNavigationDock({ side, placement, testID, children, cutoutSide = null, tablet = false, compact = false }: {
-  side: "left" | "right"; placement: "top" | "bottom"; testID: string; children: React.ReactNode; cutoutSide?: IOSCutoutSide; tablet?: boolean; compact?: boolean;
+export function SideNavigationDock({ side, placement, testID, children, cutoutSide = null, tablet = false, compact = false, hidden = false }: {
+  side: "left" | "right"; placement: "top" | "bottom"; testID: string; children: React.ReactNode; cutoutSide?: IOSCutoutSide; tablet?: boolean; compact?: boolean; hidden?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const metrics = sideNavigationDockMetrics(compact);
   const left = side === "left";
   const android = Platform.OS === "android";
-  return <SafeAreaView testID={testID} pointerEvents="box-none"
+  return <SafeAreaView testID={testID} pointerEvents={hidden ? "none" : "box-none"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
     edges={{ left: "off", right: "off", ...(placement === "top" ? { top: "additive" as const } : { bottom: "additive" as const }) }}
     style={[StyleSheet.absoluteFill, {
+      opacity: hidden ? 0 : 1,
       alignItems: left ? "flex-start" : "flex-end", justifyContent: placement === "top" ? "flex-start" : "flex-end",
       paddingLeft: left ? (tablet ? insets.left + 20 : android ? insets.left + 8 : leftSideDockInset(insets.left, cutoutSide)) : 14, paddingRight: left ? 6 : (tablet ? insets.right + 20 : android ? insets.right + 8 : rightSideDockInset(insets.right, cutoutSide)),
       paddingTop: placement === "top" ? metrics.top : 0, paddingBottom: placement === "bottom" ? 8 : 0,

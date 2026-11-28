@@ -23,6 +23,8 @@ assert build["packagingMode"] == "device-package-only"
 assert build["testsExecuted"] is False
 assert build["motionArtworkBackdropColorPolicy"] == "source-color-blur-v1"
 assert build["motionArtworkPlaybackPolicy"] == "native-forward-loop-v1"
+assert build["motionArtworkHeaderPolicy"] == "optional-track-head-v1"
+assert build["motionArtworkHideHeaderDefault"] is False
 assert build["spatialPresentationAlgorithm"] == "microturn-precedence-envelopment-v1"
 assert build["spatialPresentationPersistentAudioCache"] is False
 assert build["nativeDispatchStackRegression"]["passed"] is False
@@ -39,6 +41,10 @@ for name in ("lib.rs", "near_field.rs", "authored.rs", "protocol.rs", "object_mi
 
 for name in ("MotionArtworkBackdrop.swift", "SdaMotionArtworkModule.swift"):
     relative = "apps/mobile/modules/sda-core/ios/" + name
+    assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative
+
+for name in ("IOSPlayer.tsx", "IOSNativeSettings.tsx", "AndroidSettings.tsx", "navigation-preferences.tsx", "SideNavigationDock.tsx", "motion-artwork-header.ts"):
+    relative = "apps/mobile/src/" + name
     assert build["sources"][relative] == hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative
 
 with zipfile.ZipFile(ipa) as archive:

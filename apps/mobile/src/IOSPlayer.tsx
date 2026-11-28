@@ -26,6 +26,7 @@ import { SharedMiniPlayerArtwork, SharedMiniPlayerTransition } from "./SharedMin
 import { EmbeddedMotionArtwork, supportsEmbeddedMotionArtwork } from "./EmbeddedMotionArtwork";
 import { useMotionArtworkSelection } from "./use-motion-artwork-selection";
 import { portraitMotionArtworkLayout } from "./portrait-motion-artwork-layout";
+import { motionArtworkHeaderHidden } from "./motion-artwork-header";
 import { useSharedMiniPlayerTransition } from "./use-shared-mini-player-transition";
 import { IOSMiniPlayerBackdrop } from "./IOSMiniPlayerBackdrop";
 import { NavigationPreferencesProvider, useNavigationPreferences } from "./navigation-preferences";
@@ -267,6 +268,7 @@ function ThemedPlayer(p: PlayerProps) {
   const nextMotionSourceUri=motionSelection.next==="motion"?nextArtworkTrack?.uri??"":"";
   const showStaticArtwork=motionSelection.current==="static";
   const portraitMotionActive=!landscapePlayer && !!selectedMotionUri;
+  const hideMotionHeader = motionArtworkHeaderHidden({ motionEnabled, hideHeader: navigationPreferences.hideMotionArtworkHeader, motionUri: selectedMotionUri, page, lyricsSelected: lyricsPageSelected, tabletLandscape });
   const liveBackdropEnabled=motionEnabled && (tabletPortrait || phoneLandscapeBlur || tabletLandscape);
   const landscapeMotionActive=landscapePlayer && !!selectedMotionUri && (phoneLandscapeBlur || tabletLandscape);
   const motionFeatherMode=selectedMotionUri?(!landscapePlayer?"portrait":phoneLandscapeBlur?"phone-landscape":tabletLandscape?"tablet-landscape":"none"):"none";
@@ -329,11 +331,10 @@ function ThemedPlayer(p: PlayerProps) {
   const headIndicator = spatialHeadIndicator(p.binauralEnabled !== false, p.headTrackingEnabled, p.headYaw, headActiveColor, immersiveHome ? pc.ink : c.ink);
   const collapsedMiniSpace = CIRCULAR_MINI_PLAYER_LAYOUT.height + sideActionMetrics.gap;
   const sideActionsTravel = React.useMemo(() => sharedMini.travel.interpolate({ inputRange: [0, 1], outputRange: [-collapsedMiniSpace, 0] }), [sharedMini.travel, collapsedMiniSpace]);
-  const sideActions = <>
-        {Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} activeIconColor={headActiveColor} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive}
+  const headButton = (inline = false) => Platform.OS === "ios" && hasNativeIOSSettings ? <IOSHeadTrackingButton enabled={p.headTrackingEnabled} spatialEnabled={p.binauralEnabled !== false} headYaw={p.headYaw} activeIconColor={headActiveColor} inactiveColor={immersiveHome ? pc.ink : c.ink} sideDock={sideNavigationActive || inline}
           disabled={p.busy || p.systemSpatial360RAActive} accent={c.accent}
           onDisable={() => p.setBinauralEnabled?.(false)}
-          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive} disabled={p.busy || p.systemSpatial360RAActive}
+          onSelect={tracking => { p.setBinauralEnabled?.(true); p.setHeadTracking(tracking); }} /> : Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} spatial spatialEnabled={p.binauralEnabled !== false} trackingEnabled={p.headTrackingEnabled} headYaw={p.headYaw} accent={c.accent} sideDock={sideNavigationActive || inline} disabled={p.busy || p.systemSpatial360RAActive}
           accessibilityLabel={headIndicator.label}
           onSpatialSelect={enabled => { p.setBinauralEnabled?.(enabled); if (enabled) p.setHeadTracking(false); }} /> : <Pressable accessibilityRole="button"
           accessibilityLabel={headIndicator.label}
@@ -344,9 +345,11 @@ function ThemedPlayer(p: PlayerProps) {
             ...(Platform.OS === "ios" ? [{ text: "头部追踪", onPress: () => { p.setBinauralEnabled?.(true); p.setHeadTracking(true); } }] : []),
             { text: "取消", style: "cancel" },
           ])}
-          style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive ? 0 : 8, alignItems: "center", justifyContent: "center", opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
+          style={({ pressed }) => ({ width: 44, height: 44, marginRight: sideNavigationActive || inline ? 0 : 8, alignItems: "center", justifyContent: "center", opacity: p.busy || p.systemSpatial360RAActive ? .3 : pressed ? .55 : 1 })}>
           <View style={{ transform: [{ perspective: 400 }, { rotateY: `${headIndicator.poseDegrees}deg` }] }}><Symbol name={headIndicator.symbol} fallback="HT" size={24} color={headIndicator.color} /></View>
-        </Pressable>}
+        </Pressable>;
+  const sideActions = <>
+    {headButton()}
         {Platform.OS === "android" ? <AndroidGlassSettingsButton compact={androidPhone} onPress={() => setSettings(true)} /> : hasNativeIOSSettings ? <IOSSettingsButton sideDock={sideNavigationActive} onPress={() => setSettings(true)} /> : icon("gearshape", "更多设置", () => setSettings(true), false, 44, "⚙")}
   </>;
   const headerActions = <>
@@ -356,7 +359,7 @@ function ThemedPlayer(p: PlayerProps) {
           onTogglePlayback={togglePlayback} onOpenPlayer={openPlayer} />}
         {circularMiniPlayerActive ? <Animated.View testID="landscape-side-action-controls" pointerEvents="box-none" style={{ width: SIDE_NAVIGATION_WIDTH, alignItems: "center", gap: sideActionMetrics.gap, transform: [{ translateY: sharedMini.active ? sideActionsTravel : page === 0 ? -collapsedMiniSpace : 0 }] }}>{sideActions}</Animated.View> : sideActions}
   </>;
-  const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" style={[sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined, tabletLandscape && tabletSideNavigation && (index === 0 || (!hasUIKitIOSTabs && !hasAndroidChrome)) && tabletNavigationPageInsets(headerInsets?.left ?? 0, headerInsets?.right ?? 0)]}>
+  const homeHeader = (index: number) => <SafeAreaInsetsContext.Consumer>{headerInsets => <View testID="home-header-surface" pointerEvents={index === 0 && hideMotionHeader ? "none" : "auto"} accessibilityElementsHidden={index === 0 && hideMotionHeader} importantForAccessibility={index === 0 && hideMotionHeader ? "no-hide-descendants" : "auto"} style={[index === 0 && hideMotionHeader && { opacity: 0 },sideNavigationActive && !tabletSideNavigation && !sideNavigationRight ? { marginLeft: iosLeftContentOffset(headerInsets?.left ?? 0, cutoutSide) } : undefined, tabletLandscape && tabletSideNavigation && (index === 0 || (!hasUIKitIOSTabs && !hasAndroidChrome)) && tabletNavigationPageInsets(headerInsets?.left ?? 0, headerInsets?.right ?? 0)]}>
       {/* Match the left rail's content lane and the page host's 12 pt shift. */}
       <View style={[s.header, compactLandscape && np.compactHeader, iosLandscape && np.iosLandscapeHeader,
         sideNavigationActive && !tabletSideNavigation && !sideNavigationRight && { paddingLeft: SIDE_NAVIGATION_WIDTH + 8 - 18 + 12, paddingRight: 0, marginRight: -12 },
@@ -386,7 +389,8 @@ function ThemedPlayer(p: PlayerProps) {
 
   const playbackControls = <>
           <View style={[np.metadata, { transform: [{ translateY: tabletPlayer || landscapePlayer ? 0 : 36 }] }]} onLayout={event => measurePlayerBlock("info", event.nativeEvent.layout.height)}>
-            <View style={{ flex: 1, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, androidPhone && ap.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, androidPhone && ap.artist, { color: pc.muted }]}>{artist}</Text></View>
+            <View style={{ flex: 1, minWidth: 0, paddingRight: 10 }}><Text numberOfLines={2} style={[np.title, compactLandscape && np.compactTitle, androidPhone && ap.title, { color: pc.ink }]}>{title}</Text><Text numberOfLines={1} style={[np.artist, tabletPlayer && { marginTop: 7 }, compactLandscape && np.compactArtist, androidPhone && ap.artist, { color: pc.muted }]}>{artist}</Text></View>
+            {hideMotionHeader && <View testID="motion-artwork-track-head" style={{ flexShrink: 0, alignItems: "center", justifyContent: "center" }}>{headButton(true)}</View>}
           </View>
           <View style={[s.playerBlock, np.controlsDown, landscapePlayer && np.landscapeBlock, iosLandscape && np.iosLandscapeControlsDown, landscapeSpacing && { marginTop: landscapeSpacing.metadataGap }, tabletLayout && { marginTop: tabletLayout.metadataGap, transform: [{ translateY: 0 }] }]} onLayout={event => measurePlayerBlock("controls", Math.max(0, event.nativeEvent.layout.height - transportMargin))}>
           <LyricsGestureBoundary style={[np.infoProgressOffset, iosLandscape && np.landscapeBlock, tabletPlayer && np.landscapeBlock]}>
@@ -578,7 +582,7 @@ function ThemedPlayer(p: PlayerProps) {
           </View>
           {label("切换预设保留播放进度与播放 / 暂停状态；加载时可能短暂缓冲。", true, s.groupHint)}
           {heading("界面")}
-          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("动态封面", "播放页使用内嵌竖版视频，列表保留静态封面", supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork, navigationPreferences.setMotionArtwork, !supportsEmbeddedMotionArtwork)}{divider()}{toggle("炫彩风格", "柔光背景与彩色声源标记", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}{divider()}{toggle("纸盒 VR", "空间全屏时横屏双眼显示，支持回中和镜片校准", navigationPreferences.cardboard.enabled, enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled }))}{divider()}{toggle("显示声道音箱", "显示原有音箱模型，帮助辨认声道方位", navigationPreferences.showChannelSpeakers, navigationPreferences.setShowChannelSpeakers)}{divider()}{toggle("120fps 空间视图", sceneDisplayCapabilities().supports120 ? "开启后请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps", sceneDisplayCapabilities().supports120 && navigationPreferences.space120Fps, navigationPreferences.setSpace120Fps, !sceneDisplayCapabilities().supports120)}</View>
+          <View style={[s.group, { backgroundColor: c.panel }]}>{toggle("动态封面", "播放页使用内嵌竖版视频，列表保留静态封面", supportsEmbeddedMotionArtwork && navigationPreferences.motionArtwork, navigationPreferences.setMotionArtwork, !supportsEmbeddedMotionArtwork)}{navigationPreferences.motionArtwork && <>{divider()}{toggle("隐藏播放页顶部栏", "动态封面时隐藏顶部标题与按钮，人头移到歌曲信息右侧；设置仍可从资料库打开", navigationPreferences.hideMotionArtworkHeader, navigationPreferences.setHideMotionArtworkHeader, !supportsEmbeddedMotionArtwork)}</>}{divider()}{toggle("炫彩风格", "柔光背景与彩色声源标记", navigationPreferences.immersiveSpace, navigationPreferences.setImmersiveSpace)}{divider()}{toggle("纸盒 VR", "空间全屏时横屏双眼显示，支持回中和镜片校准", navigationPreferences.cardboard.enabled, enabled => navigationPreferences.setCardboard({ ...navigationPreferences.cardboard, enabled }))}{divider()}{toggle("显示声道音箱", "显示原有音箱模型，帮助辨认声道方位", navigationPreferences.showChannelSpeakers, navigationPreferences.setShowChannelSpeakers)}{divider()}{toggle("120fps 空间视图", sceneDisplayCapabilities().supports120 ? "开启后请求 120Hz，实际刷新率由系统决定" : "此设备或当前版本仅支持 60fps", sceneDisplayCapabilities().supports120 && navigationPreferences.space120Fps, navigationPreferences.setSpace120Fps, !sceneDisplayCapabilities().supports120)}</View>
           <View style={[s.group, { backgroundColor: c.panel }]}>{!tabletDevice && <>{toggle("平板风格界面", "竖屏使用平板布局，横屏只改为模糊背景，封面保持原样；关闭恢复原有样式", navigationPreferences.tabletPortraitLayout, navigationPreferences.setTabletPortraitLayout)}{divider()}</>}{toggle("横屏侧边导航", "横屏时在所选侧显示导航，支持长按后滑动选择，竖屏仍使用底栏", navigationPreferences.landscapeSideTabs, navigationPreferences.setLandscapeSideTabs)}{divider()}{actionRow("sidebar.left", "导航栏位置", navigationPreferences.sideTabPosition === "left" ? "左边" : "右边", () => Alert.alert("导航栏位置", undefined, [{ text: "左边", onPress: () => navigationPreferences.setSideTabPosition("left") }, { text: "右边", onPress: () => navigationPreferences.setSideTabPosition("right") }, { text: "取消", style: "cancel" }]))}</View>
           {heading("主题色")}
           <View style={[s.group, { backgroundColor: c.panel }]}>{CHARACTER_THEMES.map(t => actionRow("paintpalette", t.name, t.color, () => appTheme.setTheme(t.id), false, appTheme.id === t.id))}</View>
@@ -593,7 +597,7 @@ function ThemedPlayer(p: PlayerProps) {
       </View>}
     </View>
   </SafeAreaView>
-  {!fullscreenSpace && sideNavigationActive && !settings && !lyricsVisible && <SideNavigationDock testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" compact={compactSideActions} tablet={tabletPlayer} cutoutSide={cutoutSide}>
+  {!fullscreenSpace && sideNavigationActive && !settings && !lyricsVisible && <SideNavigationDock hidden={hideMotionHeader} testID="landscape-side-actions-dock" side={navigationPreferences.sideTabPosition} placement="top" compact={compactSideActions} tablet={tabletPlayer} cutoutSide={cutoutSide}>
     {headerActions}
   </SideNavigationDock>}
   {!fullscreenSpace && sideNavigationActive && !settings && <SideNavigationDock testID="landscape-side-tab-dock" side={navigationPreferences.sideTabPosition} placement="bottom" tablet={tabletPlayer} cutoutSide={cutoutSide}>
